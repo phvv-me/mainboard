@@ -11,8 +11,6 @@
 
 </div>
 
-> **Warning** mainboard is early (`0.0.x`). The Python API is small on purpose, but provider details may still change.
-
 ## Installation
 
 ```sh
