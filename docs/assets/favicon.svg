@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" stroke-linecap="round">
+  <title>mainboard</title>
+  <!-- gold pins -->
+  <g stroke="#d4a017" stroke-width="7">
+    <path d="M45 31 V16 M60 31 V16 M75 31 V16"/>
+    <path d="M45 89 V104 M60 89 V104 M75 89 V104"/>
+    <path d="M31 45 H16 M31 60 H16 M31 75 H16"/>
+    <path d="M89 45 H104 M89 60 H104 M89 75 H104"/>
+  </g>
+  <!-- solid green chip body -->
+  <rect x="30" y="30" width="60" height="60" rx="14" fill="#15803d"/>
+  <!-- gold die -->
+  <rect x="48" y="48" width="24" height="24" rx="6" fill="#d4a017"/>
+</svg>
