@@ -14,6 +14,7 @@ from .gpu import GPU
 from .host import Host
 from .machine import Machine
 from .models import (
+    Board,
     Clock,
     ClockInfo,
     CompilerInfo,
@@ -65,6 +66,7 @@ __all__ = [
     "AMDGPU",
     "AppleGPU",
     "AppleNPU",
+    "Board",
     "Clock",
     "ClockInfo",
     "CmakeBuildType",

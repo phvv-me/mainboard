@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .board import Board
 from .clock import Clock
 from .clock_info import ClockInfo
 from .compiler_info import CompilerInfo
@@ -27,6 +28,7 @@ from .unit_snapshot import UnitSnapshot
 from .utilization import Utilization
 
 __all__ = [
+    "Board",
     "Clock",
     "ClockInfo",
     "CompilerInfo",

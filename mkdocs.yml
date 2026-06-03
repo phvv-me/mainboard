@@ -1,5 +1,5 @@
 site_name: Mainboard
-site_description: CPU, GPU, and NPU hardware topology for Python.
+site_description: Hardware topology and machine snapshots for Python.
 site_url: https://phvv.me/mainboard/
 repo_url: https://github.com/phvv-me/mainboard
 repo_name: phvv-me/mainboard
@@ -42,7 +42,13 @@ extra_css:
 
 nav:
   - Home: index.md
-  - API: api.md
+  - Guide:
+      - Units: units.md
+      - Probe and Snapshot: probe.md
+  - Reference:
+      - Environment: environment.md
+      - Board: board.md
+      - Providers: providers.md
 
 markdown_extensions:
   - admonition
@@ -60,10 +66,14 @@ markdown_extensions:
 plugins:
   - search
   - llmstxt:
-      markdown_description: CPU, GPU, and NPU hardware topology and telemetry for Python.
+      markdown_description: Hardware topology and machine snapshots for Python.
       full_output: llms-full.txt
       sections:
         Usage:
           - index.md
+          - units.md
+          - probe.md
         Reference:
-          - api.md
+          - environment.md
+          - board.md
+          - providers.md

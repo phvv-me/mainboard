@@ -1,8 +1,8 @@
 # Mainboard
 
-**CPU, GPU, and NPU hardware topology for Python.**
+**Hardware topology and machine snapshots for Python.**
 
-Mainboard answers a simple question: what compute units does this machine have, and what can Python safely know about them? It exposes CPUs, GPUs, and NPUs as typed `Unit`s with shared snapshot semantics, without forcing every machine through a CUDA-only model.
+Mainboard answers a simple question: what is this machine made of, and what can Python safely know about it? It exposes CPUs, GPUs, and NPUs as typed `Unit`s with shared snapshot semantics, and probes the host into one serializable `MachineSnapshot` covering cpu, memory, gpus, npus, environment, and board, without forcing every machine through a CUDA-only model.
 
 ## Quickstart
 
@@ -38,6 +38,8 @@ machine = Machine()
 print(machine.cpu.name)
 print(machine.gpus)
 print(machine.npus)
+print(machine.board.model)
+print(machine.model_dump_json(indent=2))
 ```
 
 ## What Mainboard Gives You
@@ -48,7 +50,7 @@ print(machine.npus)
 | Provider isolation | Apple and NVIDIA details stay behind provider classes |
 | Safe imports | Future AMD, Intel, and Qualcomm providers are import-safe stubs |
 | Terminal view | `mainboard` renders a Rich schematic of memory and compute units |
-| One-call snapshot | `Machine().model_dump_json()` returns CPU, memory, GPUs, NPUs, and the host environment (user, group, scheduler) |
+| One-call snapshot | `Machine().model_dump_json()` returns cpu, memory, gpus, npus, environment (user, group, scheduler), and board (motherboard, BIOS) |
 
 ## Platforms
 
@@ -61,4 +63,4 @@ print(machine.npus)
 !!! warning "Mainboard is early (`0.0.x`)"
     The public API is intentionally small, but provider telemetry details may still change.
 
-Next, see the [API reference](api.md).
+Next, read the guide on [units](units.md) and the [probe and snapshot](probe.md), or jump to the [environment](environment.md), [board](board.md), and [providers](providers.md) reference.
