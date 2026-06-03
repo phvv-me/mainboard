@@ -2,11 +2,11 @@
 ![mainboard banner](assets/banner.png){ width="760" }
 </div>
 
-# Mainboard
+# mainboard
 
 **Topología de hardware e instantáneas de máquinas para Python.**
 
-Mainboard responde una pregunta sencilla: ¿de qué está hecha esta máquina y qué puede saber Python de ella de forma segura? Expone CPU, GPU y NPU como `Unit`s tipados con semántica de instantánea compartida, y sondea el host hacia una única `MachineSnapshot` serializable que cubre cpu, memoria, gpus, npus, entorno y placa, sin obligar a cada máquina a pasar por un modelo exclusivo de CUDA.
+mainboard responde una pregunta sencilla: ¿de qué está hecha esta máquina y qué puede saber Python de ella de forma segura? Expone CPU, GPU y NPU como `Unit`s tipados con semántica de instantánea compartida, y sondea el host hacia una única `MachineSnapshot` serializable que cubre cpu, memoria, gpus, npus, entorno y placa, sin obligar a cada máquina a pasar por un modelo exclusivo de CUDA.
 
 ## Inicio rápido
 
@@ -46,7 +46,7 @@ print(machine.board.model)
 print(machine.model_dump_json(indent=2))
 ```
 
-## Qué te ofrece Mainboard
+## Qué te ofrece mainboard
 
 | característica | qué significa |
 |---|---|
@@ -64,7 +64,7 @@ print(machine.model_dump_json(indent=2))
 | Linux + NVIDIA CUDA | Detección de CPU y GPU NVIDIA |
 | Otras plataformas | Respaldo de CPU más stubs inertes de futuros proveedores |
 
-!!! warning "Mainboard es temprano (`0.0.x`)"
+!!! warning "mainboard es temprano (`0.0.x`)"
     La API pública es intencionalmente pequeña, pero los detalles de telemetría de los proveedores aún pueden cambiar.
 
 A continuación, lee la guía sobre [unidades](units.md) y la [sonda e instantánea](probe.md), o salta a la referencia de [entorno](environment.md), [placa](board.md) y [proveedores](providers.md).

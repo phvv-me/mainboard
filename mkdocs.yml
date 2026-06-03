@@ -1,4 +1,4 @@
-site_name: Mainboard
+site_name: mainboard
 site_description: Hardware topology and machine snapshots for Python.
 site_url: https://phvv.me/mainboard/
 repo_url: https://github.com/phvv-me/mainboard
@@ -17,14 +17,14 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: green
+      primary: black
       accent: green
       toggle:
         icon: material/weather-night
         name: Dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: green
+      primary: black
       accent: green
       toggle:
         icon: material/weather-sunny

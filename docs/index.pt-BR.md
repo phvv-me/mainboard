@@ -2,7 +2,7 @@
 ![mainboard banner](assets/banner.png){ width="760" }
 </div>
 
-# Mainboard
+# mainboard
 
 **Topologia de hardware e snapshots de máquina para Python.**
 

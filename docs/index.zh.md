@@ -2,11 +2,11 @@
 ![mainboard banner](assets/banner.png){ width="760" }
 </div>
 
-# Mainboard
+# mainboard
 
 **面向 Python 的硬件拓扑与机器快照。**
 
-Mainboard 回答一个简单的问题：这台机器由什么组成，以及 Python 能安全地了解它的哪些信息？它将 CPU、GPU 和 NPU 暴露为带类型的 `Unit`，共享统一的快照语义，并将主机探测为一个可序列化的 `MachineSnapshot`，涵盖 cpu、内存、gpus、npus、environment 和 board，而不会强制每台机器都套用仅限 CUDA 的模型。
+mainboard 回答一个简单的问题：这台机器由什么组成，以及 Python 能安全地了解它的哪些信息？它将 CPU、GPU 和 NPU 暴露为带类型的 `Unit`，共享统一的快照语义，并将主机探测为一个可序列化的 `MachineSnapshot`，涵盖 cpu、内存、gpus、npus、environment 和 board，而不会强制每台机器都套用仅限 CUDA 的模型。
 
 ## 快速开始
 
@@ -46,7 +46,7 @@ print(machine.board.model)
 print(machine.model_dump_json(indent=2))
 ```
 
-## Mainboard 为你提供什么
+## mainboard 为你提供什么
 
 | 特性 | 含义 |
 |---|---|
@@ -64,7 +64,7 @@ print(machine.model_dump_json(indent=2))
 | Linux + NVIDIA CUDA | CPU 和 NVIDIA GPU 检测 |
 | 其他平台 | CPU 回退，外加惰性的未来 provider 桩 |
 
-!!! warning "Mainboard 尚处早期（`0.0.x`）"
+!!! warning "mainboard 尚处早期（`0.0.x`）"
     公共 API 有意保持精简，但 provider 的遥测细节仍可能变化。
 
 接下来，请阅读 [units](units.md) 指南和[探测与快照](probe.md)，或直接跳转到 [environment](environment.md)、[board](board.md) 和 [providers](providers.md) 参考。

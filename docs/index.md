@@ -2,11 +2,11 @@
 ![mainboard banner](assets/banner.png){ width="760" }
 </div>
 
-# Mainboard
+# mainboard
 
 **Hardware topology and machine snapshots for Python.**
 
-Mainboard answers a simple question: what is this machine made of, and what can Python safely know about it? It exposes CPUs, GPUs, and NPUs as typed `Unit`s with shared snapshot semantics, and probes the host into one serializable `MachineSnapshot` covering cpu, memory, gpus, npus, environment, and board, without forcing every machine through a CUDA-only model.
+mainboard answers a simple question: what is this machine made of, and what can Python safely know about it? It exposes CPUs, GPUs, and NPUs as typed `Unit`s with shared snapshot semantics, and probes the host into one serializable `MachineSnapshot` covering cpu, memory, gpus, npus, environment, and board, without forcing every machine through a CUDA-only model.
 
 ## Quickstart
 
@@ -46,7 +46,7 @@ print(machine.board.model)
 print(machine.model_dump_json(indent=2))
 ```
 
-## What Mainboard Gives You
+## What mainboard Gives You
 
 | feature | what it means |
 |---|---|
@@ -64,7 +64,7 @@ print(machine.model_dump_json(indent=2))
 | Linux + NVIDIA CUDA | CPU and NVIDIA GPU detection |
 | Other platforms | CPU fallback plus inert future-provider stubs |
 
-!!! warning "Mainboard is early (`0.0.x`)"
+!!! warning "mainboard is early (`0.0.x`)"
     The public API is intentionally small, but provider telemetry details may still change.
 
 Next, read the guide on [units](units.md) and the [probe and snapshot](probe.md), or jump to the [environment](environment.md), [board](board.md), and [providers](providers.md) reference.
