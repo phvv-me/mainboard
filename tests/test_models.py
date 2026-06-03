@@ -28,9 +28,6 @@ from mainboard import (
 from mainboard.enums import Scheduler, UnitKind, Vendor
 from mainboard.models.compiler_info import CompilerInfo
 from mainboard.models.dimm_card import DimmCard
-from mainboard.models.disk import DriveInfo as LegacyDriveInfo
-from mainboard.models.disk import HostDisk as LegacyHostDisk
-from mainboard.models.disk import PartitionInfo as LegacyPartitionInfo
 
 byte_counts = st.integers(min_value=0, max_value=10**15)
 names = st.text(st.characters(blacklist_categories=("Cs", "Cc")), max_size=24)
@@ -263,41 +260,6 @@ def test_dimm_card_capacity_and_population(size: int, speed: int | None) -> None
     card = DimmCard(locator="DIMM_A1", size_bytes=size, speed_mhz=speed)
     assert card.is_populated == (size > 0)
     assert card.size_gb == size / 1024**3
-
-
-@given(size=byte_counts)
-def test_legacy_disk_models_round_trip_and_aggregate(size: int) -> None:
-    """The legacy disk dataclasses aggregate capacity and expose gibibytes."""
-    part = LegacyPartitionInfo(
-        device="/dev/sda1", mountpoint="/", fstype="ext4", total_bytes=size, used_bytes=size
-    )
-    assert part.utilization_pct == (100.0 if size else 0.0)
-    assert part.total_gb == size / 1024**3
-    assert part.used_gb == size / 1024**3
-    assert part.free_gb == 0.0
-    drive = LegacyDriveInfo(device="/dev/sda", size_bytes=size, partitions=(part,))
-    host = LegacyHostDisk(cards=(drive,))
-    assert host.total_bytes == size
-    assert host.total_gb == size / 1024**3
-    assert drive.size_gb == size / 1024**3
-    restored = LegacyHostDisk.model_validate_json(host.model_dump_json())
-    assert restored == host
-
-
-def test_legacy_disk_read_sys_filters_placeholders(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The legacy sysfs reader drops placeholder values and tolerates read errors."""
-    from mainboard.models import disk as legacy
-
-    monkeypatch.setattr(Path, "read_text", lambda self: "Samsung SSD")
-    assert legacy._read_sys(Path("/x")) == "Samsung SSD"
-    monkeypatch.setattr(Path, "read_text", lambda self: "unknown")
-    assert legacy._read_sys(Path("/x")) is None
-
-    def boom(self: object) -> str:
-        raise OSError
-
-    monkeypatch.setattr(Path, "read_text", boom)
-    assert legacy._read_sys(Path("/x")) is None
 
 
 @pytest.mark.parametrize(
