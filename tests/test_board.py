@@ -20,44 +20,38 @@ def test_linux_probe_reads_dmi_sysfs(monkeypatch: pytest.MonkeyPatch) -> None:
 
     board = Board.probe()
 
-    assert board.vendor == "ASUSTeK COMPUTER INC."
-    assert board.model == "ROG STRIX X670E"
-    assert board.version == "Rev 1.xx"
-    assert board.bios_vendor == "American Megatrends"
-    assert board.bios_version == "2.10"
+    assert board == Board(
+        vendor="ASUSTeK COMPUTER INC.",
+        model="ROG STRIX X670E",
+        version="Rev 1.xx",
+        bios_vendor="American Megatrends",
+        bios_version="2.10",
+    )
 
 
-def test_macos_probe_uses_system_profiler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """On macOS the board is read from `system_profiler` with Apple as vendor."""
-    profile = {"SPHardwareDataType": [{"machine_model": "Mac16,8", "machine_name": "MacBook Pro"}]}
+@pytest.mark.parametrize(
+    ("hardware", "expected"),
+    [
+        pytest.param(
+            {"machine_model": "Mac16,8", "machine_name": "MacBook Pro"},
+            Board(vendor="Apple", model="Mac16,8", version="MacBook Pro"),
+            id="machine-model-and-name",
+        ),
+        pytest.param(
+            {"chip_type": "Apple M4 Pro"},
+            Board(vendor="Apple", model="Apple M4 Pro"),
+            id="chip-fallback-no-version",
+        ),
+        pytest.param({}, Board(), id="empty-profile-is-all-empty"),
+    ],
+)
+def test_macos_probe_maps_profiler_to_board(
+    hardware: dict[str, str], expected: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS folds the profiler payload to a board: model prefers machine over chip, and
+    a missing hardware record degrades to an all-empty board instead of raising."""
+    profile = {"SPHardwareDataType": [hardware]} if hardware else {}
     monkeypatch.setattr(board_mod.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(board_mod.shell, "system_profiler", lambda *types: profile)
 
-    board = Board.probe()
-
-    assert board.vendor == "Apple"
-    assert board.model == "Mac16,8"
-    assert board.version == "MacBook Pro"
-    assert board.bios_vendor == ""
-
-
-def test_macos_probe_falls_back_to_chip(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without a machine model the chip name stands in as the board model."""
-    profile = {"SPHardwareDataType": [{"chip_type": "Apple M4 Pro"}]}
-    monkeypatch.setattr(board_mod.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(board_mod.shell, "system_profiler", lambda *types: profile)
-
-    board = Board.probe()
-
-    assert board.model == "Apple M4 Pro"
-    assert board.version == ""
-
-
-def test_macos_probe_tolerates_profiler_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An empty `system_profiler` result yields an all-empty board, never an error."""
-    monkeypatch.setattr(board_mod.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(board_mod.shell, "system_profiler", lambda *types: {})
-
-    board = Board.probe()
-
-    assert board == Board()
+    assert Board.probe() == expected

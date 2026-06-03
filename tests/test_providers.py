@@ -17,15 +17,6 @@ from mainboard.providers.apple import AppleGPU, AppleNPU
 
 from .conftest import FakeNvidiaApis
 
-STUB_PROVIDERS = [AMDGPU, IntelGPU, IntelNPU, QualcommGPU, QualcommNPU]
-
-
-@pytest.mark.parametrize("provider", STUB_PROVIDERS)
-def test_future_provider_stubs_are_inert(provider: type) -> None:
-    """Stub providers are import-safe, unavailable, and detect no devices."""
-    assert provider.is_available() is False
-    assert provider.all() == ()
-
 
 @pytest.mark.parametrize(
     ("provider", "vendor", "kind"),
@@ -37,8 +28,13 @@ def test_future_provider_stubs_are_inert(provider: type) -> None:
         (QualcommNPU, Vendor.QUALCOMM, UnitKind.NPU),
     ],
 )
-def test_stub_identity_without_backend(provider: type, vendor: Vendor, kind: UnitKind) -> None:
-    """Stub provider identity fields resolve without importing any backend."""
+def test_future_provider_stubs_are_inert_with_static_identity(
+    provider: type, vendor: Vendor, kind: UnitKind
+) -> None:
+    """Every stub provider is import-safe, unavailable, detects no devices, and resolves
+    its vendor/kind identity without importing any backend."""
+    assert provider.is_available() is False
+    assert provider.all() == ()
     unit = provider(index=0)
     assert unit.vendor == vendor
     assert unit.kind == kind

@@ -56,16 +56,19 @@ def test_sysctl_reads_and_strips(monkeypatch: pytest.MonkeyPatch) -> None:
     assert shell.sysctl("machdep.cpu.brand_string") == "Apple M4 Pro"
 
 
-def test_sysctl_tolerates_missing_tool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A missing `sysctl` binary yields an empty string."""
-    monkeypatch.setattr(sysctl_mod, "local", {"sysctl": BoomCommand()})
+@pytest.mark.parametrize(
+    "local",
+    [
+        pytest.param({"sysctl": BoomCommand()}, id="missing-tool-oserror"),
+        pytest.param({}, id="unknown-key-keyerror"),
+    ],
+)
+def test_sysctl_tolerates_failure(
+    local: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both a missing binary (`OSError`) and an unknown command (`KeyError`) yield ``""``."""
+    monkeypatch.setattr(sysctl_mod, "local", local)
     assert shell.sysctl("kern.osrelease") == ""
-
-
-def test_sysctl_tolerates_unknown_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A `KeyError` from an unknown command also collapses to an empty string."""
-    monkeypatch.setattr(sysctl_mod, "local", {})
-    assert shell.sysctl("nope") == ""
 
 
 def test_system_profiler_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,42 +81,36 @@ def test_system_profiler_parses_json(monkeypatch: pytest.MonkeyPatch) -> None:
     sp_mod.system_profiler.cache_clear()
 
 
-def test_system_profiler_tolerates_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A missing tool or bad JSON yields an empty mapping."""
-    monkeypatch.setattr(sp_mod, "local", {"system_profiler": BoomCommand()})
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(BoomCommand(), id="missing-tool-oserror"),
+        pytest.param(FakeCommand("not json"), id="bad-json"),
+    ],
+)
+def test_system_profiler_tolerates_failure(
+    command: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing tool (`OSError`) and unparseable output (`JSONDecodeError`) both give ``{}``."""
+    monkeypatch.setattr(sp_mod, "local", {"system_profiler": command})
     sp_mod.system_profiler.cache_clear()
     assert shell.system_profiler("SPHardwareDataType") == {}
     sp_mod.system_profiler.cache_clear()
 
 
-def test_system_profiler_tolerates_bad_json(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unparseable profiler output collapses to an empty mapping."""
-    monkeypatch.setattr(sp_mod, "local", {"system_profiler": FakeCommand("not json")})
-    sp_mod.system_profiler.cache_clear()
-    assert shell.system_profiler("SPDisplaysDataType") == {}
-    sp_mod.system_profiler.cache_clear()
-
-
-def test_read_returns_contents(tmp_path: Path) -> None:
-    """`read` returns a file's full text."""
+def test_read_returns_contents_and_tolerates_missing(tmp_path: Path) -> None:
+    """`read` returns a present file's full text and ``""`` for a missing path."""
     target = tmp_path / "cpuinfo"
     target.write_text("model name\t: X\n")
     assert shell.read(target) == "model name\t: X\n"
-
-
-def test_read_tolerates_missing_file(tmp_path: Path) -> None:
-    """`read` returns an empty string for a missing path."""
     assert shell.read(tmp_path / "absent") == ""
 
 
-def test_read_dmi_strips_field(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """`read_dmi` reads a DMI field from the sysfs root and strips it."""
+def test_read_dmi_strips_present_field_and_tolerates_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`read_dmi` reads and strips a present DMI field and gives ``""`` for an absent one."""
     (tmp_path / "board_vendor").write_text("  ASUSTeK  \n")
     monkeypatch.setattr(shell.sysfs, "DMI_ROOT", tmp_path)
     assert shell.read_dmi("board_vendor") == "ASUSTeK"
-
-
-def test_read_dmi_tolerates_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A missing DMI field yields an empty string."""
-    monkeypatch.setattr(shell.sysfs, "DMI_ROOT", tmp_path)
     assert shell.read_dmi("board_name") == ""
