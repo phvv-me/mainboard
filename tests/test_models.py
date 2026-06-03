@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -143,32 +144,35 @@ def test_frozen_models_round_trip(snap: UnitSnapshot | GPUSnapshot | Environment
     assert restored == snap
 
 
+@pytest.mark.parametrize(
+    ("build", "divisor", "suffix"),
+    [
+        (lambda **kw: MemoryUsage(scope="m", **kw), 1024**3, "gb"),
+        (lambda **kw: MemInfo(**kw), 1024**2, "mb"),
+    ],
+    ids=["memory-usage-gib", "mem-info-mib"],
+)
 @given(total=byte_counts, used=byte_counts)
-def test_memory_usage_ratios_and_zero_total(total: int, used: int) -> None:
-    """`MemoryUsage` ratios match used/total and degrade to 0 on an empty pool."""
-    used = min(used, total)
-    usage = MemoryUsage(scope="m", total_bytes=total, used_bytes=used, free_bytes=total - used)
-    if total == 0:
-        assert usage.utilization_pct == 0.0
-    else:
-        assert usage.utilization_pct == used / total * 100
-    assert usage.total_gb == total / 1024**3
-    assert usage.used_gb == used / 1024**3
-    assert usage.free_gb == (total - used) / 1024**3
+def test_byte_pool_ratios_and_unit_conversions(
+    build: Callable[..., MemoryUsage | MemInfo],
+    divisor: int,
+    suffix: str,
+    total: int,
+    used: int,
+) -> None:
+    """Both byte-pool models scale fields by a fixed divisor and guard a zero total.
 
-
-@given(total=byte_counts, used=byte_counts)
-def test_mem_info_ratios_and_zero_total(total: int, used: int) -> None:
-    """`MemInfo` mirrors `MemoryUsage` math in mebibytes."""
+    build: constructs the model from total/used/free byte fields.
+    divisor: bytes per reported unit (GiB for MemoryUsage, MiB for MemInfo).
+    suffix: the unit-property suffix (`gb` or `mb`) the model exposes.
+    """
     used = min(used, total)
-    info = MemInfo(total_bytes=total, used_bytes=used, free_bytes=total - used)
-    if total == 0:
-        assert info.utilization_pct == 0.0
-    else:
-        assert info.utilization_pct == used / total * 100
-    assert info.total_mb == total / 1024**2
-    assert info.used_mb == used / 1024**2
-    assert info.free_mb == (total - used) / 1024**2
+    free = total - used
+    pool = build(total_bytes=total, used_bytes=used, free_bytes=free)
+    assert pool.utilization_pct == (0.0 if total == 0 else used / total * 100)
+    assert getattr(pool, f"total_{suffix}") == total / divisor
+    assert getattr(pool, f"used_{suffix}") == used / divisor
+    assert getattr(pool, f"free_{suffix}") == free / divisor
 
 
 @given(power=st.integers(0, 10**6), energy=st.integers(0, 10**9))

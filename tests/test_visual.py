@@ -144,10 +144,16 @@ def test_print_runs_without_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(0, "0 B"), (2048, "2.0 KiB"), (5 * 1024**3, "5.0 GiB"), (3 * 1024**4, "3.0 TiB")],
+    [
+        (0, "0 B"),
+        (2048, "2.0 KiB"),
+        (5 * 1024**3, "5.0 GiB"),
+        (3 * 1024**4, "3.0 TiB"),
+        (5 * 1024**5, "5120.0 TiB"),  # saturates at tebibytes for very large values
+    ],
 )
 def test_bytes_formatting(value: int, expected: str) -> None:
-    """Byte formatting picks a compact binary unit per magnitude."""
+    """Byte formatting picks a compact binary unit per magnitude and caps at TiB."""
     assert MachineView(Machine()).bytes(value) == expected
 
 
@@ -234,11 +240,6 @@ def test_distinct_memory_empty_readings_is_blank() -> None:
             return ()
 
     assert MachineView(Machine()).distinct_memory(NoMemUnit(index=0)) == ""
-
-
-def test_bytes_caps_at_tebibytes() -> None:
-    """The byte formatter saturates at tebibytes for very large values."""
-    assert MachineView(Machine()).bytes(5 * 1024**5) == "5120.0 TiB"
 
 
 def test_default_view_uses_singleton_machine() -> None:

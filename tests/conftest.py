@@ -60,6 +60,21 @@ def reset_global_caches() -> Iterator[None]:
     reset_nvidia_cache()
 
 
+@pytest.fixture(autouse=True)
+def isolate_unit_registries() -> Iterator[None]:
+    """Undo any `Unit` subclass a test defines, since `Registry.__init_subclass__`
+    appends it to the global GPU/NPU root list and an inherited `all` would then
+    recurse forever once the test's monkeypatches are torn down."""
+    from mainboard.gpu import GPU
+    from mainboard.npu import NPU
+
+    roots = [next(b for b in cls.__mro__ if "_registry" in b.__dict__) for cls in (GPU, NPU)]
+    saved = {root: list(root._registry) for root in roots}
+    yield
+    for root, members in saved.items():
+        root._registry[:] = members
+
+
 @pytest.fixture
 def apple_host(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Pretend the host is an Apple Silicon Mac with the canonical profiler payload."""

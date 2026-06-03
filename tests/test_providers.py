@@ -248,38 +248,29 @@ def test_nvidia_falls_back_to_runtime_when_nvml_memory_unsupported(
     assert clocks.memory_mhz == round(10501000 / 1000)
 
 
-def test_nvidia_apis_imports_real_module_surface(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`NvidiaApis` wires runtime/system/nvml/core handles from `import_module`."""
+@pytest.mark.parametrize("nvml_module", ["cuda.bindings._nvml", "cuda.bindings.nvml"])
+def test_nvidia_apis_wires_module_surface_via_either_nvml(
+    nvml_module: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`NvidiaApis` wires runtime/system/core/nvml handles from `import_module`, taking
+    the public `nvml` binding only when the private `_nvml` module is absent."""
     fake_nvml = FakeNvidiaApis().nvml
     fake_device = FakeNvidiaApis().cuda_device_type
     modules = {
         "cuda.bindings.runtime": FakeNvidiaApis().runtime,
         "cuda.core.system": FakeNvidiaApis().system,
-        "cuda.bindings._nvml": fake_nvml,
+        nvml_module: fake_nvml,
         "cuda.core": type("Core", (), {"Device": fake_device}),
     }
-    monkeypatch.setattr(nvidia_apis_module, "import_module", lambda name: modules[name])
-    apis = nvidia_apis_module.NvidiaApis()
-    assert apis.cuda_device_type is fake_device
-    assert apis.nvml is fake_nvml
-
-
-def test_nvidia_apis_falls_back_to_public_nvml(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A missing private `_nvml` module falls back to the public `nvml` binding."""
-    fake_nvml = FakeNvidiaApis().nvml
 
     def loader(name: str) -> object:
-        if name == "cuda.bindings._nvml":
+        if name not in modules:
             raise ModuleNotFoundError(name)
-        return {
-            "cuda.bindings.runtime": FakeNvidiaApis().runtime,
-            "cuda.core.system": FakeNvidiaApis().system,
-            "cuda.bindings.nvml": fake_nvml,
-            "cuda.core": type("Core", (), {"Device": FakeNvidiaApis().cuda_device_type}),
-        }[name]
+        return modules[name]
 
     monkeypatch.setattr(nvidia_apis_module, "import_module", loader)
     apis = nvidia_apis_module.NvidiaApis()
+    assert apis.cuda_device_type is fake_device
     assert apis.nvml is fake_nvml
 
 

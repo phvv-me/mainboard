@@ -67,17 +67,17 @@ def test_memory_card_parses_populated_slot() -> None:
 
 @pytest.mark.parametrize(
     ("size_str", "expected"),
-    [("512 GB", 512 * 1024**3), ("32768 MB", 32768 * 1024**2), ("1 TB", 1024**4), ("weird", 0)],
+    [
+        ("512 GB", 512 * 1024**3),
+        ("32768 MB", 32768 * 1024**2),
+        ("1 TB", 1024**4),
+        ("weird", 0),
+        (None, 0),
+    ],
 )
-def test_memory_card_size_parsing(size_str: str, expected: int) -> None:
-    """The dmidecode size field parses common units and rejects junk."""
-    card = MemoryCard(section=f"Memory Device\n\tSize: {size_str}\n\tLocator: X\n")
-    assert card.size_bytes == (expected if expected else 0)
-
-
-def test_memory_card_parse_size_handles_none() -> None:
-    """Parsing a missing size string yields zero bytes."""
-    assert MemoryCard._parse_size(None) == 0
+def test_memory_card_size_parsing(size_str: str | None, expected: int) -> None:
+    """The dmidecode size field parses common units, rejects junk, and handles None."""
+    assert MemoryCard._parse_size(size_str) == expected
 
 
 def test_host_memory_speed_none_without_populated_speeds(monkeypatch: pytest.MonkeyPatch) -> None:
