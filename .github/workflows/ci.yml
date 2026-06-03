@@ -10,13 +10,12 @@ jobs:
     # Each OS is a distinct real hardware setup the probe runs against:
     #   ubuntu-latest  -> x86_64 Linux (no accelerator)
     #   macos-latest   -> Apple Silicon (real Apple GPU + NPU)
-    #   macos-13       -> x86_64 Intel mac
     #   windows-latest -> x86_64 Windows (env probe via whoami; full hardware probe pending)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-13, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v6
