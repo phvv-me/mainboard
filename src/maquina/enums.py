@@ -67,3 +67,12 @@ class Vendor(StrEnum):
     AMD = "amd"
     INTEL = "intel"
     UNKNOWN = "unknown"
+
+
+class Scheduler(StrEnum):
+    """Job scheduler detected on the host's PATH."""
+
+    SLURM = "slurm"
+    PBS = "pbs"
+    PUEUE = "pueue"
+    NONE = "none"

@@ -4,6 +4,7 @@ import time
 
 from ..enums import UnitKind, Vendor
 from .base import Field, FrozenModel
+from .environment import Environment
 from .gpu_snapshot import GPUSnapshot
 from .memory_usage import MemoryUsage
 from .unit_snapshot import UnitSnapshot
@@ -39,12 +40,14 @@ class MachineSnapshot(FrozenModel):
     memory: system RAM usage at probe time.
     gpus: detected GPUs with per-device telemetry, empty when none are present.
     npus: detected neural processing units, empty when none are present.
+    environment: the user, group(s), and job scheduler available on the host.
     """
 
     timestamp_ns: int = Field(default_factory=time.perf_counter_ns)
     hostname: str = ""
     cpu: CpuSnapshot = CpuSnapshot()
     memory: MemoryUsage = MemoryUsage(scope="system")
+    environment: Environment = Environment()
     gpus: tuple[GPUSnapshot, ...] = ()
     npus: tuple[UnitSnapshot, ...] = ()
 

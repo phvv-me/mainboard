@@ -5,6 +5,7 @@ from functools import cache, cached_property
 
 from .gpu import GPU
 from .host import Host
+from .models.environment import Environment
 from .models.machine_snapshot import CpuSnapshot, MachineSnapshot
 from .models.memory_usage import MemoryUsage
 from .models.system_compilers import SystemCompilers
@@ -47,6 +48,11 @@ class Machine:
     def npus(self) -> tuple[NPU, ...]:
         """Detected neural processing units."""
         return NPU.all()
+
+    @cached_property
+    def environment(self) -> Environment:
+        """The host's execution context: user, group(s), and job scheduler on PATH."""
+        return Environment.probe()
 
     @cached_property
     def units(self) -> tuple[Unit, ...]:
@@ -101,6 +107,7 @@ class Machine:
                 free_bytes=memory.available_bytes,
                 source="psutil",
             ),
+            environment=self.environment,
             gpus=tuple(gpu.snapshot() for gpu in self.gpus),
             npus=tuple(npu.snapshot() for npu in self.npus),
         )

@@ -8,6 +8,7 @@ from .cuda_python_info import CudaPythonInfo
 from .drive_info import DriveInfo
 from .energy_interval import EnergyInterval
 from .energy_reading import EnergyReading
+from .environment import Environment
 from .gpu_snapshot import GPUSnapshot
 from .host_disk import HostDisk
 from .host_memory import HostMemory
@@ -35,6 +36,7 @@ __all__ = [
     "DriveInfo",
     "EnergyInterval",
     "EnergyReading",
+    "Environment",
     "GPUSnapshot",
     "HostDisk",
     "HostMemory",
