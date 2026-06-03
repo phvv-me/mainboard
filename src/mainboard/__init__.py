@@ -55,7 +55,10 @@ from .providers import (
 from .unit import CPU, Unit
 from .visual import MachineView
 
+NAME = __name__  # the package folder is the single source of the name
+
 __all__ = [
+    "NAME",
     "CPU",
     "GPU",
     "NPU",

@@ -25,7 +25,7 @@ jobs:
       # and assert a GPU was actually detected on this box
       - run: |
           uv run python - <<'PY'
-          from maquina import Machine
+          from mainboard import Machine
 
           snap = Machine().snapshot()
           assert snap.gpus, "no GPU detected on the self-hosted runner"

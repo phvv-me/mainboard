@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from maquina import Environment, Scheduler
-from maquina.models import environment as env_mod
+from mainboard import Environment, Scheduler
+from mainboard.models import environment as env_mod
 
 
 @pytest.mark.parametrize(

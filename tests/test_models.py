@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from maquina import (
+from mainboard import (
     Clock,
     ClockInfo,
     ComputeCapability,
@@ -24,13 +24,13 @@ from maquina import (
     UnitSnapshot,
     Utilization,
 )
-from maquina.enums import Scheduler, UnitKind, Vendor
-from maquina.models.commands import cached_run
-from maquina.models.compiler_info import CompilerInfo
-from maquina.models.dimm_card import DimmCard
-from maquina.models.disk import DriveInfo as LegacyDriveInfo
-from maquina.models.disk import HostDisk as LegacyHostDisk
-from maquina.models.disk import PartitionInfo as LegacyPartitionInfo
+from mainboard.enums import Scheduler, UnitKind, Vendor
+from mainboard.models.commands import cached_run
+from mainboard.models.compiler_info import CompilerInfo
+from mainboard.models.dimm_card import DimmCard
+from mainboard.models.disk import DriveInfo as LegacyDriveInfo
+from mainboard.models.disk import HostDisk as LegacyHostDisk
+from mainboard.models.disk import PartitionInfo as LegacyPartitionInfo
 
 byte_counts = st.integers(min_value=0, max_value=10**15)
 names = st.text(st.characters(blacklist_categories=("Cs", "Cc")), max_size=24)
@@ -283,7 +283,7 @@ def test_legacy_disk_models_round_trip_and_aggregate(size: int) -> None:
 
 def test_legacy_disk_read_sys_filters_placeholders(monkeypatch: pytest.MonkeyPatch) -> None:
     """The legacy sysfs reader drops placeholder values and tolerates read errors."""
-    from maquina.models import disk as legacy
+    from mainboard.models import disk as legacy
 
     monkeypatch.setattr(Path, "read_text", lambda self: "Samsung SSD")
     assert legacy._read_sys(Path("/x")) == "Samsung SSD"
@@ -308,7 +308,7 @@ def test_cached_run_invokes_subprocess_once(monkeypatch: pytest.MonkeyPatch) -> 
         calls.append(tuple(command))
         return Completed()
 
-    monkeypatch.setattr("maquina.models.commands.subprocess.run", fake_run)
+    monkeypatch.setattr("mainboard.models.commands.subprocess.run", fake_run)
     cached_run.cache_clear()
     first = cached_run("clang", "--version")
     second = cached_run("clang", "--version")
@@ -335,7 +335,7 @@ def test_compiler_info_parses_kind_and_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`CompilerInfo` normalizes kind and pulls a release string from `--version`."""
-    monkeypatch.setattr("maquina.models.compiler_info.cached_run", lambda *cmd: output)
+    monkeypatch.setattr("mainboard.models.compiler_info.cached_run", lambda *cmd: output)
     info = CompilerInfo(path=Path(f"/usr/bin/{binary}"))
     assert info.kind == expected_kind
     if expected_version is None:

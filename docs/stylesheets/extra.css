@@ -1,0 +1,11 @@
+/* mainboard brand layer: board green + gold, a circuit-board cue. */
+:root {
+  --mainboard-green: #15803d;
+  --mainboard-gold: #d4a017;
+  --md-accent-fg-color: var(--mainboard-green);
+}
+[data-md-color-accent="green"] { --md-accent-fg-color: var(--mainboard-green); }
+.md-header { border-bottom: 2px solid var(--mainboard-gold); }
+.md-tabs__link--active { color: var(--mainboard-green); opacity: 1; }
+.md-header__button.md-logo img, .md-header__button.md-logo svg { height: 1.8rem; width: 1.8rem; }
+.md-typeset .mermaid { text-align: center; }

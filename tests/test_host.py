@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-import maquina.host as host_mod
-from maquina.enums import Vendor
-from maquina.host import Host
+import mainboard.host as host_mod
+from mainboard.enums import Vendor
+from mainboard.host import Host
 
 LINUX_X86_CPUINFO = """processor\t: 0
 vendor_id\t: GenuineIntel
@@ -43,7 +43,7 @@ CPU part\t: 0xd85
 @pytest.fixture
 def linux_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the non-Darwin branch so `/proc/cpuinfo` parsing is exercised."""
-    monkeypatch.setattr("maquina.host.platform.system", lambda: "Linux")
+    monkeypatch.setattr("mainboard.host.platform.system", lambda: "Linux")
 
 
 def make_host(monkeypatch: pytest.MonkeyPatch, cpuinfo: str) -> Host:
@@ -104,13 +104,13 @@ def test_cpu_vendor_unknown_when_no_implementer(monkeypatch: pytest.MonkeyPatch)
 def test_cpu_falls_back_to_platform_processor(monkeypatch: pytest.MonkeyPatch) -> None:
     """An empty cpuinfo defers to `platform.processor`."""
     host = make_host(monkeypatch, "")
-    monkeypatch.setattr("maquina.host.platform.processor", lambda: "fallback-cpu")
+    monkeypatch.setattr("mainboard.host.platform.processor", lambda: "fallback-cpu")
     assert host.cpu == "fallback-cpu"
 
 
 def test_darwin_cpu_uses_sysctl(monkeypatch: pytest.MonkeyPatch) -> None:
     """On Darwin the CPU name comes from `sysctl machdep.cpu.brand_string`."""
-    monkeypatch.setattr("maquina.host.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("mainboard.host.platform.system", lambda: "Darwin")
 
     class FakeCmd:
         def __getitem__(self, args: object) -> FakeCmd:
@@ -127,10 +127,10 @@ def test_darwin_cpu_uses_sysctl(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cpu_counts_and_frequency(monkeypatch: pytest.MonkeyPatch) -> None:
     """Core counts come from psutil and frequency tolerates a missing reading."""
     monkeypatch.setattr(
-        "maquina.host.psutil.cpu_count", lambda logical=True: 14 if logical else 10
+        "mainboard.host.psutil.cpu_count", lambda logical=True: 14 if logical else 10
     )
     monkeypatch.setattr(
-        "maquina.host.psutil.cpu_freq", lambda: type("F", (), {"current": 3200.0})()
+        "mainboard.host.psutil.cpu_freq", lambda: type("F", (), {"current": 3200.0})()
     )
     host = Host()
     assert host.logical_cpus == 14
@@ -140,7 +140,7 @@ def test_cpu_counts_and_frequency(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_darwin_sysctl_failure_falls_back_to_cpuinfo(monkeypatch: pytest.MonkeyPatch) -> None:
     """A failing `sysctl` on Darwin falls through to cpuinfo/processor detection."""
-    monkeypatch.setattr("maquina.host.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("mainboard.host.platform.system", lambda: "Darwin")
 
     class FailingCmd:
         def __getitem__(self, args: object) -> FailingCmd:
@@ -151,7 +151,7 @@ def test_darwin_sysctl_failure_falls_back_to_cpuinfo(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(host_mod, "local", {"sysctl": FailingCmd()})
     host = make_host(monkeypatch, "")
-    monkeypatch.setattr("maquina.host.platform.processor", lambda: "fallback")
+    monkeypatch.setattr("mainboard.host.platform.processor", lambda: "fallback")
     assert host.cpu == "fallback"
 
 
@@ -159,26 +159,26 @@ def test_darwin_sysctl_failure_falls_back_to_cpuinfo(monkeypatch: pytest.MonkeyP
 def test_cpu_falls_back_when_arm_name_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """A cpuinfo with no model name and no MIDR data uses `platform.processor`."""
     host = make_host(monkeypatch, "processor\t: 0\nBogoMIPS\t: 100\n")
-    monkeypatch.setattr("maquina.host.platform.processor", lambda: "generic-cpu")
+    monkeypatch.setattr("mainboard.host.platform.processor", lambda: "generic-cpu")
     assert host.arm_cpu_name == ""
     assert host.cpu == "generic-cpu"
 
 
 def test_cpuinfo_text_reads_proc_or_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """`cpuinfo_text` returns file contents, or an empty string when absent."""
-    monkeypatch.setattr("maquina.host.Path.read_text", lambda self: "model name\t: X\n")
+    monkeypatch.setattr("mainboard.host.Path.read_text", lambda self: "model name\t: X\n")
     assert "model name" in Host().cpuinfo_text
 
     def boom(self: object) -> str:
         raise OSError("no /proc on this OS")
 
-    monkeypatch.setattr("maquina.host.Path.read_text", boom)
+    monkeypatch.setattr("mainboard.host.Path.read_text", boom)
     assert Host().cpuinfo_text == ""
 
 
 def test_disk_is_a_host_disk() -> None:
     """`Host.disk` exposes the `HostDisk` enumerator."""
-    from maquina.models.host_disk import HostDisk
+    from mainboard.models.host_disk import HostDisk
 
     assert isinstance(Host().disk, HostDisk)
 
@@ -189,5 +189,5 @@ def test_cpu_frequency_returns_none_when_unsupported(monkeypatch: pytest.MonkeyP
     def boom() -> None:
         raise NotImplementedError
 
-    monkeypatch.setattr("maquina.host.psutil.cpu_freq", boom)
+    monkeypatch.setattr("mainboard.host.psutil.cpu_freq", boom)
     assert Host().cpu_freq_mhz is None

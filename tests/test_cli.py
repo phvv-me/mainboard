@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from maquina import cli
+from mainboard import cli
 
 
 def test_show_renders_via_machine_view(monkeypatch: pytest.MonkeyPatch) -> None:

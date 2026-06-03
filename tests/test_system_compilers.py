@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from maquina.enums import CompilerKind
-from maquina.models.system_compilers import SystemCompilers
+from mainboard.enums import CompilerKind
+from mainboard.models.system_compilers import SystemCompilers
 
 
 @pytest.mark.parametrize(
@@ -34,14 +34,14 @@ def test_release_flags_track_architecture(
 def test_cxx_prefers_grace_clang_on_aarch64(monkeypatch: pytest.MonkeyPatch) -> None:
     """On aarch64 a Grace-flavored clang++ is chosen over plain g++."""
     monkeypatch.setattr(
-        "maquina.models.system_compilers.shutil.which",
+        "mainboard.models.system_compilers.shutil.which",
         lambda name: f"/opt/{name}" if name == "clang++" else None,
     )
     monkeypatch.setattr(
-        "maquina.models.system_compilers.cached_run", lambda *cmd: "clang version for grace"
+        "mainboard.models.system_compilers.cached_run", lambda *cmd: "clang version for grace"
     )
     monkeypatch.setattr(
-        "maquina.models.compiler_info.cached_run", lambda *cmd: "clang version for grace"
+        "mainboard.models.compiler_info.cached_run", lambda *cmd: "clang version for grace"
     )
     compilers = SystemCompilers(arch="aarch64", cpu="Neoverse-V2", cuda_arch="90")
     assert compilers.cxx.path == Path("/opt/clang++")
@@ -51,17 +51,19 @@ def test_cxx_prefers_grace_clang_on_aarch64(monkeypatch: pytest.MonkeyPatch) -> 
 def test_cxx_falls_back_to_gpp(monkeypatch: pytest.MonkeyPatch) -> None:
     """When no Grace clang is present, g++ is selected first."""
     monkeypatch.setattr(
-        "maquina.models.system_compilers.shutil.which",
+        "mainboard.models.system_compilers.shutil.which",
         lambda name: f"/usr/bin/{name}" if name == "g++" else None,
     )
-    monkeypatch.setattr("maquina.models.compiler_info.cached_run", lambda *cmd: "g++ (GCC) 13.2.0")
+    monkeypatch.setattr(
+        "mainboard.models.compiler_info.cached_run", lambda *cmd: "g++ (GCC) 13.2.0"
+    )
     compilers = SystemCompilers(arch="x86_64", cpu="Xeon", cuda_arch="90")
     assert compilers.cxx.path == Path("/usr/bin/g++")
 
 
 def test_cxx_raises_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     """No host compiler on PATH raises a clear error."""
-    monkeypatch.setattr("maquina.models.system_compilers.shutil.which", lambda name: None)
+    monkeypatch.setattr("mainboard.models.system_compilers.shutil.which", lambda name: None)
     compilers = SystemCompilers(arch="x86_64", cpu="Xeon", cuda_arch="90")
     with pytest.raises(FileNotFoundError, match="C\\+\\+ compiler"):
         _ = compilers.cxx
@@ -70,11 +72,11 @@ def test_cxx_raises_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_nvcc_found_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """nvcc is resolved from PATH when present."""
     monkeypatch.setattr(
-        "maquina.models.system_compilers.shutil.which",
+        "mainboard.models.system_compilers.shutil.which",
         lambda name: "/usr/local/cuda/bin/nvcc" if name == "nvcc" else None,
     )
     monkeypatch.setattr(
-        "maquina.models.compiler_info.cached_run",
+        "mainboard.models.compiler_info.cached_run",
         lambda *cmd: "nvcc: NVIDIA (R) Cuda compiler\nrelease 12.4, V12.4.131",
     )
     compilers = SystemCompilers(arch="x86_64", cpu="Xeon", cuda_arch="124")
@@ -84,7 +86,7 @@ def test_nvcc_found_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_nvcc_raises_when_toolkit_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     """A missing CUDA toolkit raises rather than silently succeeding."""
-    monkeypatch.setattr("maquina.models.system_compilers.shutil.which", lambda name: None)
+    monkeypatch.setattr("mainboard.models.system_compilers.shutil.which", lambda name: None)
     monkeypatch.setattr(Path, "exists", lambda self: False)
     monkeypatch.setattr(Path, "glob", lambda self, pattern: iter(()))
     compilers = SystemCompilers(arch="x86_64", cpu="Xeon", cuda_arch="90")

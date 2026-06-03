@@ -3,7 +3,7 @@ requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "maquina"
+name = "mainboard"
 version = "0.0.1"
 description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
 readme = "README.md"
@@ -49,23 +49,23 @@ nvidia = [
 ]
 
 [project.scripts]
-maquina = "maquina.cli:main"
+mainboard = "mainboard.cli:main"
 
 [project.urls]
-Documentation = "https://phvv.me/maquina"
-Homepage = "https://github.com/phvv-me/maquina"
-Repository = "https://github.com/phvv-me/maquina"
-Issues = "https://github.com/phvv-me/maquina/issues"
+Documentation = "https://phvv.me/mainboard"
+Homepage = "https://github.com/phvv-me/mainboard"
+Repository = "https://github.com/phvv-me/mainboard"
+Issues = "https://github.com/phvv-me/mainboard/issues"
 
 [tool.setuptools.package-dir]
 "" = "src"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["maquina*"]
+include = ["mainboard*"]
 
 [tool.setuptools.package-data]
-maquina = ["assets/*.svg", "py.typed"]
+mainboard = ["assets/*.svg", "py.typed"]
 
 [tool.ruff]
 line-length = 99
@@ -82,9 +82,9 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["maquina"]
+source = ["mainboard"]
 branch = true
-omit = ["src/maquina/__main__.py"]
+omit = ["src/mainboard/__main__.py"]
 
 [tool.coverage.report]
 show_missing = true

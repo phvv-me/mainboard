@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from hypothesis import strategies as st
 
-from maquina.providers import apple, nvidia
+from mainboard.providers import apple, nvidia
 
 APPLE_PROFILE: dict[str, Any] = {
     "SPHardwareDataType": [
@@ -40,7 +40,7 @@ def reset_apple_caches() -> None:
 @pytest.fixture(autouse=True)
 def reset_global_caches() -> Iterator[None]:
     """Keep tests hermetic by clearing every module-level cache around each test."""
-    from maquina.machine import Machine
+    from mainboard.machine import Machine
 
     Machine.__new__.cache_clear()
     nvidia.nvidia_apis.cache_clear()

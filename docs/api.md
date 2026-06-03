@@ -3,7 +3,7 @@
 The main entry point is `Machine`.
 
 ```python
-from maquina import Machine
+from mainboard import Machine
 
 machine = Machine()
 ```
@@ -25,7 +25,7 @@ machine = Machine()
 `Machine.snapshot()` probes the host in one call and returns a `MachineSnapshot`, a frozen Pydantic model that aggregates CPU identity, system memory, every GPU and NPU, and the host's execution environment. `Machine.model_dump_json()` is the convenience that serializes it.
 
 ```python
-from maquina import Machine
+from mainboard import Machine
 
 print(Machine().model_dump_json(indent=2))
 ```

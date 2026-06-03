@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from maquina.enums import DiskKind
-from maquina.models import memory_card as mc_mod
-from maquina.models.drive_info import DriveInfo
-from maquina.models.host_disk import HostDisk
-from maquina.models.host_memory import HostMemory
-from maquina.models.memory_card import MemoryCard
-from maquina.models.partition_info import PartitionInfo
+from mainboard.enums import DiskKind
+from mainboard.models import memory_card as mc_mod
+from mainboard.models.drive_info import DriveInfo
+from mainboard.models.host_disk import HostDisk
+from mainboard.models.host_memory import HostMemory
+from mainboard.models.memory_card import MemoryCard
+from mainboard.models.partition_info import PartitionInfo
 
 DMIDECODE = """Memory Device
 \tSize: 16384 MB
@@ -66,7 +66,7 @@ def test_memory_card_parse_size_handles_none() -> None:
 def test_host_memory_speed_none_without_populated_speeds(monkeypatch: pytest.MonkeyPatch) -> None:
     """`speed_mhz` is None when no populated slot reports a speed."""
     vm = type("VM", (), {"total": 0, "available": 0, "used": 0})()
-    monkeypatch.setattr("maquina.models.host_memory.psutil.virtual_memory", lambda: vm)
+    monkeypatch.setattr("mainboard.models.host_memory.psutil.virtual_memory", lambda: vm)
     monkeypatch.setattr(MemoryCard, "all", classmethod(lambda cls: ()))
     assert HostMemory().speed_mhz is None
     assert HostMemory().slots_used == 0
@@ -100,8 +100,8 @@ def test_host_memory_reports_psutil_snapshot(monkeypatch: pytest.MonkeyPatch) ->
     """`HostMemory` exposes psutil totals, swap, and a populated-slot summary."""
     vm = type("VM", (), {"total": 32 * 1024**3, "available": 20 * 1024**3, "used": 12 * 1024**3})()
     sm = type("SM", (), {"total": 8 * 1024**3, "used": 1 * 1024**3})()
-    monkeypatch.setattr("maquina.models.host_memory.psutil.virtual_memory", lambda: vm)
-    monkeypatch.setattr("maquina.models.host_memory.psutil.swap_memory", lambda: sm)
+    monkeypatch.setattr("mainboard.models.host_memory.psutil.virtual_memory", lambda: vm)
+    monkeypatch.setattr("mainboard.models.host_memory.psutil.swap_memory", lambda: sm)
     cards = (
         MemoryCard(section="Memory Device\n\tSize: 16384 MB\n\tLocator: A\n\tSpeed: 5600 MT/s\n"),
         MemoryCard(section="Memory Device\n\tSize: No Module Installed\n\tLocator: B\n"),
@@ -127,8 +127,10 @@ def test_partition_info_reads_psutil(monkeypatch: pytest.MonkeyPatch) -> None:
         {"device": "/dev/sda1", "mountpoint": "/", "fstype": "ext4", "opts": "rw,relatime"},
     )()
     usage = type("U", (), {"total": 100, "used": 40, "free": 60})()
-    monkeypatch.setattr("maquina.models.partition_info.psutil.disk_partitions", lambda all: [part])
-    monkeypatch.setattr("maquina.models.partition_info.psutil.disk_usage", lambda mp: usage)
+    monkeypatch.setattr(
+        "mainboard.models.partition_info.psutil.disk_partitions", lambda all: [part]
+    )
+    monkeypatch.setattr("mainboard.models.partition_info.psutil.disk_usage", lambda mp: usage)
     info = PartitionInfo.all()[0]
     assert info.device == "/dev/sda1"
     assert info.readonly is False
@@ -143,7 +145,7 @@ def test_partition_info_tolerates_inaccessible_mount(monkeypatch: pytest.MonkeyP
     def boom(_mp: str) -> object:
         raise PermissionError
 
-    monkeypatch.setattr("maquina.models.partition_info.psutil.disk_usage", boom)
+    monkeypatch.setattr("mainboard.models.partition_info.psutil.disk_usage", boom)
     assert info.readonly is True
     assert info.total_bytes == 0
     assert info.used_bytes == 0
@@ -230,7 +232,7 @@ def test_host_disk_enumerates_and_aggregates(monkeypatch: pytest.MonkeyPatch) ->
             return Path(f"/sys/block/{self.name}/{other}")
 
     monkeypatch.setattr(
-        "maquina.models.host_disk.Path.iterdir",
+        "mainboard.models.host_disk.Path.iterdir",
         lambda self: iter([DevDir("nvme0n1"), DevDir("loop0")]),
     )
     monkeypatch.setattr(Path, "exists", lambda self: True)

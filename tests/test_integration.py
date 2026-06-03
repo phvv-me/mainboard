@@ -4,8 +4,8 @@ import platform
 
 import pytest
 
-import maquina
-from maquina import Machine, MachineSnapshot
+import mainboard
+from mainboard import Machine, MachineSnapshot
 
 pytestmark = pytest.mark.integration
 
@@ -22,6 +22,6 @@ def test_real_probe_describes_this_host() -> None:
     assert snapshot.unit_count == 1 + len(snapshot.gpus) + len(snapshot.npus)
 
     if platform.system() == "Darwin" and platform.machine() == "arm64":
-        assert any(gpu.vendor == maquina.Vendor.APPLE for gpu in snapshot.gpus)
+        assert any(gpu.vendor == mainboard.Vendor.APPLE for gpu in snapshot.gpus)
     else:
         assert isinstance(snapshot.gpus, tuple)

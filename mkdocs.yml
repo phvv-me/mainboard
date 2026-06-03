@@ -1,12 +1,14 @@
-site_name: Maquina
+site_name: Mainboard
 site_description: CPU, GPU, and NPU hardware topology for Python.
-site_url: https://phvv.me/maquina/
-repo_url: https://github.com/phvv-me/maquina
-repo_name: phvv-me/maquina
+site_url: https://phvv.me/mainboard/
+repo_url: https://github.com/phvv-me/mainboard
+repo_name: phvv-me/mainboard
 copyright: MIT - Pedro Valois
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.png
   font:
     text: Inter
     code: JetBrains Mono
@@ -16,14 +18,14 @@ theme:
     - media: "(prefers-color-scheme: light)"
       scheme: default
       primary: black
-      accent: blue
+      accent: green
       toggle:
         icon: material/weather-night
         name: Dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: black
-      accent: blue
+      accent: green
       toggle:
         icon: material/weather-sunny
         name: Light mode
@@ -34,6 +36,9 @@ theme:
     - content.code.copy
     - content.code.annotate
     - toc.integrate
+
+extra_css:
+  - stylesheets/extra.css
 
 nav:
   - Home: index.md

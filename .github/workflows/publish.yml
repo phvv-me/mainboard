@@ -17,7 +17,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyrefly check
-      - run: uv run pytest -m "not integration" --cov=maquina
+      - run: uv run pytest -m "not integration" --cov=mainboard
 
   publish:
     needs: test

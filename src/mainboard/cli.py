@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from cyclopts import App
 
+from . import NAME
 from .machine import Machine
 from .visual import MachineView
 
-app = App(name="maquina", help="Inspect CPU, GPU, and NPU hardware topology.")
+app = App(name=NAME, help="Inspect CPU, GPU, and NPU hardware topology.")
 
 
 @app.default
@@ -15,7 +16,7 @@ def show(color: bool = True) -> None:
 
 
 def main() -> None:
-    """Run the Maquina command-line interface."""
+    """Run the Mainboard command-line interface."""
     app()
 
 

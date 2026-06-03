@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-import maquina
-from maquina import CPU, GPU, GPUSnapshot, UnitSnapshot
-from maquina.enums import UnitKind, Vendor
-from maquina.unit import Unit
+import mainboard
+from mainboard import CPU, GPU, GPUSnapshot, UnitSnapshot
+from mainboard.enums import UnitKind, Vendor
+from mainboard.unit import Unit
 
 
 def test_base_unit_neutral_defaults() -> None:
@@ -45,7 +45,7 @@ def test_base_gpu_defaults_and_snapshot() -> None:
 def test_cpu_exposes_identity_and_memory_readings(monkeypatch: pytest.MonkeyPatch) -> None:
     """A `CPU` surfaces its identity fields and a system memory reading."""
     vm = type("VM", (), {"total": 64 * 1024**3, "used": 8 * 1024**3, "available": 56 * 1024**3})()
-    monkeypatch.setattr("maquina.unit.psutil.virtual_memory", lambda: vm)
+    monkeypatch.setattr("mainboard.unit.psutil.virtual_memory", lambda: vm)
     cpu = CPU(
         name_value="Apple M4 Pro",
         architecture_value="arm64",
@@ -72,9 +72,9 @@ def test_cpu_clock_reading_unsupported_when_unknown() -> None:
 @pytest.mark.parametrize(
     ("provider", "kind", "vendor"),
     [
-        (maquina.AppleGPU, UnitKind.GPU, Vendor.APPLE),
-        (maquina.AppleNPU, UnitKind.NPU, Vendor.APPLE),
-        (maquina.NvidiaGPU, UnitKind.GPU, Vendor.NVIDIA),
+        (mainboard.AppleGPU, UnitKind.GPU, Vendor.APPLE),
+        (mainboard.AppleNPU, UnitKind.NPU, Vendor.APPLE),
+        (mainboard.NvidiaGPU, UnitKind.GPU, Vendor.NVIDIA),
     ],
 )
 def test_provider_identity_without_backend_imports(

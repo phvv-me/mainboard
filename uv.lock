@@ -344,7 +344,7 @@ wheels = [
 ]
 
 [[package]]
-name = "maquina"
+name = "mainboard"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [

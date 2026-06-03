@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from maquina import (
+from mainboard import (
     AMDGPU,
     GPUSnapshot,
     IntelGPU,
@@ -11,9 +11,9 @@ from maquina import (
     QualcommGPU,
     QualcommNPU,
 )
-from maquina.enums import CudaPythonVariant, UnitKind, Vendor
-from maquina.providers import apple, nvidia
-from maquina.providers.apple import AppleGPU, AppleNPU
+from mainboard.enums import CudaPythonVariant, UnitKind, Vendor
+from mainboard.providers import apple, nvidia
+from mainboard.providers.apple import AppleGPU, AppleNPU
 
 from .conftest import FakeNvidiaApis
 

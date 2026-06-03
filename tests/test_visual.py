@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 from rich.console import Console
 
-import maquina
-from maquina import GPU, NPU, Machine, MachineView
-from maquina.enums import Vendor
-from maquina.providers.apple import AppleGPU, AppleNPU
+import mainboard
+from mainboard import GPU, NPU, Machine, MachineView
+from mainboard.enums import Vendor
+from mainboard.providers.apple import AppleGPU, AppleNPU
 
 
 class _Cpu:
@@ -75,7 +75,7 @@ def test_apple_cell_shows_cores_and_metal(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_nvidia_cell_shows_compute_and_bandwidth(nvidia_host: object) -> None:
     """An NVIDIA GPU cell renders SMs, compute capability, clocks, and bandwidth."""
-    gpu = maquina.NvidiaGPU(index=0)
+    gpu = mainboard.NvidiaGPU(index=0)
     machine = Machine()
     view = MachineView(machine)
     rows = view.gpu_rows(gpu)
@@ -90,10 +90,10 @@ def test_nvidia_cell_shows_compute_and_bandwidth(nvidia_host: object) -> None:
 def test_gpu_clock_label_not_exposed_when_zero() -> None:
     """A GPU with zero clocks reports `not exposed` rather than an empty string."""
 
-    class ZeroClockGpu(maquina.NvidiaGPU):
+    class ZeroClockGpu(mainboard.NvidiaGPU):
         @property
         def clocks(self) -> object:
-            from maquina import ClockInfo
+            from mainboard import ClockInfo
 
             return ClockInfo(sm_mhz=0, memory_mhz=0)
 
@@ -105,7 +105,7 @@ def test_distinct_memory_reports_supported_and_unsupported() -> None:
     view = MachineView(Machine())
     bare = GPU(index=0)
     assert view.distinct_memory(bare) == "unsupported"  # zero total → unsupported reading
-    distinct = maquina.MemoryUsage(scope="vram", total_bytes=4 * 1024**3, used_bytes=1024**3)
+    distinct = mainboard.MemoryUsage(scope="vram", total_bytes=4 * 1024**3, used_bytes=1024**3)
     assert "vram" in view.memory_usage(distinct)
 
 
@@ -194,7 +194,7 @@ def test_apple_gpu_rows_omit_missing_cores_and_metal() -> None:
 def test_nvidia_gpu_rows_omit_zero_bandwidth(nvidia_host: object) -> None:
     """An NVIDIA GPU with zero peak bandwidth omits the bandwidth row."""
 
-    class NoBandwidthGpu(maquina.NvidiaGPU):
+    class NoBandwidthGpu(mainboard.NvidiaGPU):
         @property
         def peak_bandwidth_gbs(self) -> float:
             return 0.0
@@ -208,15 +208,15 @@ def test_gpu_and_npu_cells_render_distinct_memory(monkeypatch: pytest.MonkeyPatc
 
     class VramGpu(GPU):
         @property
-        def memory_readings(self) -> tuple[maquina.MemoryUsage, ...]:
+        def memory_readings(self) -> tuple[mainboard.MemoryUsage, ...]:
             return (
-                maquina.MemoryUsage(scope="vram", total_bytes=8 * 1024**3, used_bytes=1024**3),
+                mainboard.MemoryUsage(scope="vram", total_bytes=8 * 1024**3, used_bytes=1024**3),
             )
 
     class VramNpu(NPU):
         @property
-        def memory_readings(self) -> tuple[maquina.MemoryUsage, ...]:
-            return (maquina.MemoryUsage(scope="sram", total_bytes=1024**3, used_bytes=512),)
+        def memory_readings(self) -> tuple[mainboard.MemoryUsage, ...]:
+            return (mainboard.MemoryUsage(scope="sram", total_bytes=1024**3, used_bytes=512),)
 
     machine = Machine()
     monkeypatch.setattr(type(machine), "gpus", (VramGpu(index=0),))
@@ -231,7 +231,7 @@ def test_distinct_memory_empty_readings_is_blank() -> None:
 
     class NoMemUnit(GPU):
         @property
-        def memory_readings(self) -> tuple[maquina.MemoryUsage, ...]:
+        def memory_readings(self) -> tuple[mainboard.MemoryUsage, ...]:
             return ()
 
     assert MachineView(Machine()).distinct_memory(NoMemUnit(index=0)) == ""

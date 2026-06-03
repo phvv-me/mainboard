@@ -28,6 +28,6 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pyrefly check
       # gated unit/property suite with coverage
-      - run: uv run pytest -m "not integration" --cov=maquina
+      - run: uv run pytest -m "not integration" --cov=mainboard
       # real probe against this runner's actual hardware
       - run: uv run pytest -m integration

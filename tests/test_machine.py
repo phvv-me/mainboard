@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-import maquina
-from maquina import CPU, GPU, NPU, Machine, MachineSnapshot
-from maquina.enums import UnitKind, Vendor
+import mainboard
+from mainboard import CPU, GPU, NPU, Machine, MachineSnapshot
+from mainboard.enums import UnitKind, Vendor
 
 
 def test_units_compose_cpu_gpus_and_npus(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,12 +66,12 @@ def test_cpu_derives_from_host(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cpu.vendor in Vendor
 
 
-class FakeNvidiaGpu(maquina.NvidiaGPU):
+class FakeNvidiaGpu(mainboard.NvidiaGPU):
     """A fake CUDA GPU exposing a fixed compute capability for compiler tests."""
 
     @property
-    def cuda_architecture(self) -> maquina.ComputeCapability:
-        return maquina.ComputeCapability(9, 0)
+    def cuda_architecture(self) -> mainboard.ComputeCapability:
+        return mainboard.ComputeCapability(9, 0)
 
 
 def test_compilers_require_cuda_devices(monkeypatch: pytest.MonkeyPatch) -> None:
