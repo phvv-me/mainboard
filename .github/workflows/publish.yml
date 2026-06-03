@@ -1,14 +1,26 @@
 name: Publish
 
 # Publishes to PyPI on a version tag via Trusted Publishing (OIDC, no token to store).
-# Configure the trusted publisher once at https://pypi.org/manage/account/publishing/.
+# The publish job runs only if the test gate passes, so a release never ships a broken build.
 on:
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --extra dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyrefly check
+      - run: uv run pytest -m "not integration" --cov=maquina
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
