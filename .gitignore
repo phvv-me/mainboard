@@ -13,3 +13,5 @@ build/
 
 # docs
 site/
+uv.lock
+.coverage
