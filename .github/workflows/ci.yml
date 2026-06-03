@@ -1,9 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call: # publish.yml runs this exact gate on main before publishing
 
 jobs:
   test:
