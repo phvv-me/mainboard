@@ -58,9 +58,11 @@ machine = Machine()
 machine.cpu.snapshot()
 machine.gpus[0].snapshot()
 machine.units
+machine.environment            # user, group(s), and job scheduler on the host
+machine.model_dump_json()      # one-call JSON probe of the whole machine
 ```
 
-The API models CPU, GPU, and NPU hardware as `Unit`s with shared identity and snapshot semantics. Providers are isolated under `providers/`; Apple and NVIDIA are implemented, while AMD, Intel, and Qualcomm are import-safe stubs for future CI and hardware work.
+The API models CPU, GPU, and NPU hardware as `Unit`s with shared identity and snapshot semantics. Providers are isolated under `providers/`; Apple and NVIDIA are implemented, while AMD, Intel, and Qualcomm are import-safe stubs for future CI and hardware work. `Machine().model_dump_json()` probes the whole host in one call, including its execution environment (user, group, and job scheduler).
 
 ## Platforms
 

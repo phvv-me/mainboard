@@ -48,6 +48,7 @@ print(machine.npus)
 | Provider isolation | Apple and NVIDIA details stay behind provider classes |
 | Safe imports | Future AMD, Intel, and Qualcomm providers are import-safe stubs |
 | Terminal view | `maquina` renders a Rich schematic of memory and compute units |
+| One-call snapshot | `Machine().model_dump_json()` returns CPU, memory, GPUs, NPUs, and the host environment (user, group, scheduler) |
 
 ## Platforms
 
