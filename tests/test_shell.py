@@ -11,6 +11,7 @@ from mainboard import shell
 run_mod = sys.modules["mainboard.shell.run"]
 sysctl_mod = sys.modules["mainboard.shell.sysctl"]
 sp_mod = sys.modules["mainboard.shell.system_profiler"]
+whoami_mod = sys.modules["mainboard.shell.whoami"]
 
 
 class FakeCommand:
@@ -106,3 +107,19 @@ def test_read_dmi_strips_present_field_and_tolerates_missing(
     monkeypatch.setattr(shell.sysfs, "DMI_ROOT", tmp_path)
     assert shell.read_dmi("board_vendor") == "ASUSTeK"
     assert shell.read_dmi("board_name") == ""
+
+
+def test_whoami_groups_parses_csv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`whoami_groups` returns the group name from each CSV row of `whoami /groups`."""
+    output = (
+        '"Everyone","Well-known group","S-1-1-0","Mandatory group"\r\n'
+        '"BUILTIN\\Users","Alias","S-1-5-32-545","Enabled"\r\n'
+    )
+    monkeypatch.setattr(whoami_mod, "local", {"whoami": FakeCommand(output)})
+    assert shell.whoami_groups() == ("Everyone", "BUILTIN\\Users")
+
+
+def test_whoami_groups_tolerates_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing or failing `whoami` yields () rather than raising."""
+    monkeypatch.setattr(whoami_mod, "local", {"whoami": BoomCommand()})
+    assert shell.whoami_groups() == ()

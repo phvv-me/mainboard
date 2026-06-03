@@ -10,7 +10,7 @@ jobs:
     #   ubuntu-latest  -> x86_64 Linux (no accelerator)
     #   macos-latest   -> Apple Silicon (real Apple GPU + NPU)
     #   macos-13       -> x86_64 Intel mac
-    #   windows-latest -> x86_64 Windows (hermetic suite only; no native probe yet)
+    #   windows-latest -> x86_64 Windows (env probe via whoami; full hardware probe pending)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -27,8 +27,12 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyrefly check
-      # gated unit/property suite with coverage
+      # gated unit/property suite with coverage (POSIX + Apple paths); Windows can't run those
       - run: uv run pytest -m "not integration" --cov=mainboard
-      # real probe against this runner's actual hardware (skipped on Windows: no native probe yet)
+        if: matrix.os != 'windows-latest'
+      # Windows runs the hermetic suite as a portability guard, without the coverage gate
+      - run: uv run pytest -m "not integration"
+        if: matrix.os == 'windows-latest'
+      # real probe against this runner's actual hardware (skipped on Windows: no full probe yet)
       - run: uv run pytest -m integration
         if: matrix.os != 'windows-latest'
