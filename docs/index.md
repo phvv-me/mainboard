@@ -17,7 +17,7 @@ On Linux machines with NVIDIA GPUs, install the CUDA provider extra:
 pip install "mainboard[nvidia]"
 ```
 
-For persistent CLI use, `uv tool install mainboard` is also a good fit.
+Working in a [chefe](https://phvv.me/chefe) project? `chefe add mainboard --pypi`.
 
 ## CLI
 
