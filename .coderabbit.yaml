@@ -1,0 +1,12 @@
+# https://docs.coderabbit.ai/guides/configure-coderabbit
+language: en
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+chat:
+  auto_reply: true

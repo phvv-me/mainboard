@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="420" viewBox="0 0 1280 420" role="img" aria-labelledby="title desc">
+  <title id="title">Maquina</title>
+  <desc id="desc">CPU, GPU, and NPU hardware topology for Python.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#020617"/>
+      <stop offset="0.46" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+    <linearGradient id="unit" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#2563eb"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="10" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="420" rx="42" fill="url(#bg)"/>
+  <circle cx="1030" cy="70" r="210" fill="#2563eb" opacity="0.18"/>
+  <circle cx="230" cy="380" r="260" fill="#38bdf8" opacity="0.10"/>
+  <path d="M0 310 C170 245 270 370 430 310 C610 242 725 160 920 220 C1070 268 1120 160 1280 185 L1280 420 L0 420 Z" fill="#0ea5e9" opacity="0.08"/>
+
+  <g transform="translate(760 92)" filter="url(#glow)">
+    <rect x="0" y="0" width="360" height="220" rx="28" fill="#020617" stroke="#38bdf8" stroke-opacity="0.42" stroke-width="2"/>
+    <rect x="38" y="44" width="82" height="58" rx="16" fill="url(#unit)"/>
+    <rect x="139" y="44" width="82" height="58" rx="16" fill="url(#unit)" opacity="0.82"/>
+    <rect x="240" y="44" width="82" height="58" rx="16" fill="url(#unit)" opacity="0.66"/>
+    <rect x="38" y="128" width="284" height="34" rx="17" fill="#0f172a" stroke="#60a5fa" stroke-opacity="0.32"/>
+    <path d="M72 198 H288" stroke="#38bdf8" stroke-width="8" stroke-linecap="round" opacity="0.55"/>
+    <path d="M106 18 V-18 M180 18 V-18 M254 18 V-18 M106 238 V202 M180 238 V202 M254 238 V202" stroke="#38bdf8" stroke-width="8" stroke-linecap="round" opacity="0.34"/>
+    <text x="79" y="81" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="800" fill="#e0f2fe">CPU</text>
+    <text x="180" y="81" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="800" fill="#e0f2fe">GPU</text>
+    <text x="281" y="81" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="800" fill="#e0f2fe">NPU</text>
+  </g>
+
+  <g transform="translate(96 92)">
+    <text x="0" y="0" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="86" font-weight="900" fill="#f8fafc" letter-spacing="-3">Maquina</text>
+    <text x="3" y="58" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="28" font-weight="600" fill="#bfdbfe">Hardware topology for heterogeneous Python systems.</text>
+    <text x="3" y="112" font-family="JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" fill="#93c5fd">from maquina import Machine</text>
+    <g transform="translate(3 154)">
+      <rect x="0" y="0" width="88" height="38" rx="19" fill="#0f172a" stroke="#60a5fa" stroke-opacity="0.35"/>
+      <rect x="104" y="0" width="88" height="38" rx="19" fill="#0f172a" stroke="#60a5fa" stroke-opacity="0.35"/>
+      <rect x="208" y="0" width="88" height="38" rx="19" fill="#0f172a" stroke="#60a5fa" stroke-opacity="0.35"/>
+      <text x="44" y="25" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="800" fill="#dbeafe">CPU</text>
+      <text x="148" y="25" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="800" fill="#dbeafe">GPU</text>
+      <text x="252" y="25" text-anchor="middle" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="800" fill="#dbeafe">NPU</text>
+    </g>
+  </g>
+</svg>

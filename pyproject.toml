@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maquina"
+version = "0.0.1"
+description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Pedro Valois", email = "contact@phvv.me" }]
+keywords = [
+  "apple-silicon",
+  "cpu",
+  "cuda",
+  "gpu",
+  "hardware",
+  "machine",
+  "npu",
+  "telemetry",
+  "topology",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: System :: Hardware",
+  "Topic :: System :: Monitoring",
+]
+dependencies = [
+  "cyclopts>=4.16,<5",
+  "plumbum>=1.10,<2",
+  "psutil>=7,<8",
+  "pydantic>=2.13,<3",
+  "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = ["hypothesis>=6", "pyrefly>=1", "pytest>=9", "ruff>=0.15"]
+docs = ["mkdocs-material>=9.5", "mkdocs-llmstxt>=0.2"]
+nvidia = [
+  "cuda-bindings>=13.3,<14; platform_system == 'Linux'",
+  "cuda-core>=1,<2; platform_system == 'Linux'",
+  "cuda-python>=13.3,<14; platform_system == 'Linux'",
+]
+
+[project.scripts]
+maquina = "maquina.cli:main"
+
+[project.urls]
+Documentation = "https://phvv.me/maquina"
+Homepage = "https://github.com/phvv-me/maquina"
+Repository = "https://github.com/phvv-me/maquina"
+Issues = "https://github.com/phvv-me/maquina/issues"
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["maquina*"]
+
+[tool.setuptools.package-data]
+maquina = ["assets/*.svg", "py.typed"]
+
+[tool.ruff]
+line-length = 99
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

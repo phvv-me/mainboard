@@ -1,0 +1,20 @@
+name: Publish
+
+# Publishes to PyPI on a version tag via Trusted Publishing (OIDC, no token to store).
+# Configure the trusted publisher once at https://pypi.org/manage/account/publishing/.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
