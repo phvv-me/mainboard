@@ -278,7 +278,7 @@ class MachineView:
             if amount < 1024 or suffix == "TiB":
                 return f"{amount:.1f} {suffix}" if suffix != "B" else f"{int(amount)} B"
             amount /= 1024
-        return f"{amount:.1f} TiB"
+        return f"{amount:.1f} TiB"  # pragma: no cover - loop always returns at TiB
 
     def capacity_pair(self, used_bytes: int, total_bytes: int) -> str:
         """Format used and total bytes with a shared unit when possible."""

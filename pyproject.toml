@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["hypothesis>=6", "pyrefly>=1", "pytest>=9", "ruff>=0.15"]
+dev = ["hypothesis>=6", "pyrefly>=1", "pytest>=9", "pytest-cov>=5", "ruff>=0.15"]
 docs = ["mkdocs-material>=9.5", "mkdocs-llmstxt>=0.2"]
 nvidia = [
   "cuda-bindings>=13.3,<14; platform_system == 'Linux'",
@@ -77,3 +77,22 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -ra"
+markers = [
+  "integration: runs the real hardware probe end to end on the host (deselected from the coverage gate)",
+]
+
+[tool.coverage.run]
+source = ["maquina"]
+branch = true
+omit = ["src/maquina/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+  "\\.\\.\\.",
+]

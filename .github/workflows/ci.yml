@@ -7,11 +7,15 @@ on:
 
 jobs:
   test:
+    # Each OS is a distinct real hardware setup the probe runs against:
+    #   ubuntu-latest -> x86_64 Linux (no accelerator)
+    #   macos-latest  -> Apple Silicon (real Apple GPU + NPU)
+    #   macos-13      -> x86_64 Intel mac
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, macos-13]
         python: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
@@ -23,4 +27,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyrefly check
-      - run: uv run pytest -q
+      # gated unit/property suite with coverage
+      - run: uv run pytest -m "not integration" --cov=maquina
+      # real probe against this runner's actual hardware
+      - run: uv run pytest -m integration
