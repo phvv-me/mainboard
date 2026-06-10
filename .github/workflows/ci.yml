@@ -26,8 +26,12 @@ jobs:
       - run: uv sync --extra dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      # Type checking is OS-agnostic source analysis, so run it once on Linux. The Windows runner
+      # lacks stubs for the Unix-only modules (grp, os.getgid) the POSIX identity path references.
       - run: uv run mypy src
+        if: matrix.os == 'ubuntu-latest'
       - run: uv run pyrefly check
+        if: matrix.os == 'ubuntu-latest'
       # gated unit/property suite with coverage (POSIX + Apple paths); Windows can't run those
       - run: uv run pytest -m "not integration" --cov=mainboard
         if: matrix.os != 'windows-latest'
