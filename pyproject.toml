@@ -33,7 +33,7 @@ classifiers = [
 ]
 dependencies = [
   "cyclopts>=4.16,<5",
-  "plumbum>=1.10,<2",
+  "plumbum>=1.10,<3",
   "psutil>=7,<8",
   "pydantic>=2.13,<3",
   "rich>=13",
