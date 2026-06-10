@@ -7,7 +7,7 @@ from .base import Field, FrozenModel
 from .board import Board
 from .environment import Environment
 from .gpu_snapshot import GPUSnapshot
-from .memory_usage import MemoryUsage
+from .memory import Memory
 from .toolchain import Toolchain
 from .unit_snapshot import UnitSnapshot
 
@@ -50,7 +50,7 @@ class MachineSnapshot(FrozenModel):
     timestamp_ns: int = Field(default_factory=time.perf_counter_ns)
     hostname: str = ""
     cpu: CpuSnapshot = CpuSnapshot()
-    memory: MemoryUsage = MemoryUsage(scope="system")
+    memory: Memory = Memory(scope="system")
     environment: Environment = Environment()
     board: Board = Board()
     toolchain: Toolchain = Toolchain()

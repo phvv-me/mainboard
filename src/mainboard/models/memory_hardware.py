@@ -1,29 +1,25 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import Any
 
 import psutil
 
 from .base import FrozenModel
 from .memory_card import MemoryCard
+from .psutil_results import SwapMemory
 
 
-class HostMemory(FrozenModel):
-    """Live system RAM snapshot.
+class MemoryHardware(FrozenModel):
+    """Physical DIMM slots and swap space for the host.
 
     All properties are lazily evaluated; no data is captured at construction.
     """
 
-    @property
-    def _vm(self) -> Any:
-        """Snapshot of virtual memory at first access."""
-        return psutil.virtual_memory()
-
     @cached_property
-    def _sm(self) -> Any:
+    def _swap(self) -> SwapMemory:
         """Snapshot of swap memory at first access."""
-        return psutil.swap_memory()
+        swap: SwapMemory = psutil.swap_memory()
+        return swap
 
     @cached_property
     def cards(self) -> tuple[MemoryCard, ...]:
@@ -31,56 +27,19 @@ class HostMemory(FrozenModel):
         return MemoryCard.all()
 
     @property
-    def total_bytes(self) -> int:
-        """Total installed RAM in bytes."""
-        return self._vm.total
-
-    @property
-    def available_bytes(self) -> int:
-        """Currently available RAM in bytes."""
-        return self._vm.available
-
-    @property
-    def used_bytes(self) -> int:
-        """RAM currently in use in bytes."""
-        return self._vm.used
-
-    @property
     def swap_total_bytes(self) -> int:
         """Total swap space in bytes."""
-        return self._sm.total
+        return self._swap.total
 
     @property
     def swap_used_bytes(self) -> int:
         """Swap currently in use in bytes."""
-        return self._sm.used
-
-    @property
-    def total_gb(self) -> float:
-        """Total installed RAM in gibibytes."""
-        return self.total_bytes / 1024**3
-
-    @property
-    def available_gb(self) -> float:
-        """Currently available RAM in gibibytes."""
-        return self.available_bytes / 1024**3
-
-    @property
-    def used_gb(self) -> float:
-        """Currently used RAM in gibibytes."""
-        return self.used_bytes / 1024**3
+        return self._swap.used
 
     @property
     def swap_total_gb(self) -> float:
         """Total swap space in gibibytes."""
         return self.swap_total_bytes / 1024**3
-
-    @property
-    def utilization_pct(self) -> float:
-        """Percentage of total RAM currently in use."""
-        if self.total_bytes == 0:
-            return 0.0
-        return self.used_bytes / self.total_bytes * 100
 
     @property
     def speed_mhz(self) -> int | None:

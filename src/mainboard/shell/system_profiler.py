@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from functools import cache
-from typing import Any
 
 from plumbum import CommandNotFound, local
 
-type SystemProfile = dict[str, list[dict[str, Any]]]
+# A decoded JSON value, and one `system_profiler` record (a flat-ish JSON object).
+type Json = str | int | float | bool | None | list["Json"] | dict[str, "Json"]
+type ProfileRecord = dict[str, Json]
+type SystemProfile = dict[str, list[ProfileRecord]]
 
 
 @cache
@@ -20,6 +22,7 @@ def system_profiler(*datatypes: str) -> SystemProfile:
     datatypes: profiler datatype keys, e.g. `"SPHardwareDataType"`.
     """
     try:
-        return json.loads(local["system_profiler"]("-json", *datatypes))
+        parsed: SystemProfile = json.loads(local["system_profiler"]("-json", *datatypes))
+        return parsed
     except (CommandNotFound, OSError, json.JSONDecodeError):
         return {}

@@ -69,7 +69,7 @@ def test_apple_cell_shows_cores_and_metal(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(type(machine), "npus", tuple(AppleNPU.all()))
     text = render(MachineView(machine))
     assert "Metal 4" in text
-    assert "20" in text  # GPU core count
+    assert "20" in text
     assert "Core ML" in text
 
 
@@ -102,8 +102,8 @@ def test_distinct_memory_reports_supported_and_unsupported() -> None:
     """Distinct (non-unified) memory renders capacity, and unsupported reads say so."""
     view = MachineView(Machine())
     bare = GPU(index=0)
-    assert view.distinct_memory(bare) == "unsupported"  # zero total → unsupported reading
-    distinct = mainboard.MemoryUsage(scope="vram", total_bytes=4 * 1024**3, used_bytes=1024**3)
+    assert view.distinct_memory(bare) == "unsupported"
+    distinct = mainboard.Memory(scope="vram", total_bytes=4 * 1024**3, used_bytes=1024**3)
     assert "vram" in view.memory_usage(distinct)
 
 
@@ -116,9 +116,9 @@ def test_swap_label(
 ) -> None:
     """Swap renders `none` when absent and a capacity pair when present."""
     machine = Machine()
-    memory = type("Mem", (), {"swap_total_bytes": swap_total, "swap_used_bytes": swap_used})()
+    hardware = type("HW", (), {"swap_total_bytes": swap_total, "swap_used_bytes": swap_used})()
     monkeypatch.setattr(
-        type(machine), "host", type("Host", (), {"memory": memory})(), raising=False
+        type(machine), "host", type("Host", (), {"memory_hardware": hardware})(), raising=False
     )
     assert MachineView(machine).swap_label() == expected
 
@@ -149,7 +149,7 @@ def test_print_runs_without_error(monkeypatch: pytest.MonkeyPatch) -> None:
         (2048, "2.0 KiB"),
         (5 * 1024**3, "5.0 GiB"),
         (3 * 1024**4, "3.0 TiB"),
-        (5 * 1024**5, "5120.0 TiB"),  # saturates at tebibytes for very large values
+        (5 * 1024**5, "5120.0 TiB"),
     ],
 )
 def test_bytes_formatting(value: int, expected: str) -> None:
@@ -157,12 +157,17 @@ def test_bytes_formatting(value: int, expected: str) -> None:
     assert MachineView(Machine()).bytes(value) == expected
 
 
-def test_capacity_pair_shares_units() -> None:
+@pytest.mark.parametrize(
+    ("used", "total", "expected"),
+    [
+        (1024**3, 4 * 1024**3, "1.0 / 4.0 GiB"),
+        (1024**4, 2 * 1024**4, "1.0 / 2.0 TiB"),
+        (512, 1024, "512 B / 1.0 KiB"),
+    ],
+)
+def test_capacity_pair_shares_units(used: int, total: int, expected: str) -> None:
     """A used/total pair shares the largest fitting binary unit."""
-    view = MachineView(Machine())
-    assert view.capacity_pair(1024**3, 4 * 1024**3) == "1.0 / 4.0 GiB"
-    assert view.capacity_pair(1024**4, 2 * 1024**4) == "1.0 / 2.0 TiB"
-    assert view.capacity_pair(512, 1024) == "512 B / 1.0 KiB"
+    assert MachineView(Machine()).capacity_pair(used, total) == expected
 
 
 def test_cpu_cell_shows_clock_when_high_enough(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -213,15 +218,13 @@ def test_gpu_and_npu_cells_render_distinct_memory(monkeypatch: pytest.MonkeyPatc
 
     class VramGpu(GPU):
         @property
-        def memory_readings(self) -> tuple[mainboard.MemoryUsage, ...]:
-            return (
-                mainboard.MemoryUsage(scope="vram", total_bytes=8 * 1024**3, used_bytes=1024**3),
-            )
+        def memory(self) -> mainboard.Memory:
+            return mainboard.Memory(scope="vram", total_bytes=8 * 1024**3, used_bytes=1024**3)
 
     class VramNpu(NPU):
         @property
-        def memory_readings(self) -> tuple[mainboard.MemoryUsage, ...]:
-            return (mainboard.MemoryUsage(scope="sram", total_bytes=1024**3, used_bytes=512),)
+        def memory(self) -> mainboard.Memory:
+            return mainboard.Memory(scope="sram", total_bytes=1024**3, used_bytes=512)
 
     machine = Machine()
     monkeypatch.setattr(type(machine), "gpus", (VramGpu(index=0),))
@@ -231,15 +234,15 @@ def test_gpu_and_npu_cells_render_distinct_memory(monkeypatch: pytest.MonkeyPatc
     assert "sram" in text
 
 
-def test_distinct_memory_empty_readings_is_blank() -> None:
-    """A unit with no memory readings contributes no distinct-memory string."""
+def test_distinct_memory_unified_is_blank() -> None:
+    """A unit with unified memory contributes no distinct-memory string."""
 
-    class NoMemUnit(GPU):
+    class UnifiedUnit(GPU):
         @property
-        def memory_readings(self) -> tuple[mainboard.MemoryUsage, ...]:
-            return ()
+        def memory(self) -> mainboard.Memory:
+            return mainboard.Memory(scope="unified", total_bytes=1024**3, unified=True)
 
-    assert MachineView(Machine()).distinct_memory(NoMemUnit(index=0)) == ""
+    assert MachineView(Machine()).distinct_memory(UnifiedUnit(index=0)) == ""
 
 
 def test_default_view_uses_singleton_machine() -> None:

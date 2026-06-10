@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import platform
 from functools import cache, cached_property
-from typing import Any
 
 import psutil
 from pydantic import Field
@@ -10,8 +9,8 @@ from pydantic import Field
 from ...enums import Vendor
 from ...gpu import GPU
 from ...models.clock import Clock
-from ...models.mem_info import MemInfo
-from ...models.memory_usage import MemoryUsage
+from ...models.memory import Memory
+from ...shell import ProfileRecord
 from . import profile
 
 
@@ -30,7 +29,7 @@ class AppleGPU(GPU):
 
     @classmethod
     @cache
-    def gpu_records(cls) -> tuple[dict[str, Any], ...]:
+    def gpu_records(cls) -> tuple[ProfileRecord, ...]:
         """Apple GPU records from `system_profiler`."""
         if platform.system() != "Darwin":
             return ()
@@ -45,7 +44,7 @@ class AppleGPU(GPU):
         return tuple(cls(index=i) for i, _ in enumerate(cls.gpu_records()))
 
     @cached_property
-    def record(self) -> dict[str, Any]:
+    def record(self) -> ProfileRecord:
         """Raw `system_profiler` display record."""
         return self.gpu_records()[self.index]
 
@@ -68,11 +67,10 @@ class AppleGPU(GPU):
 
     @cached_property
     def core_count(self) -> int:
-        """Number of Apple GPU cores."""
-        raw = self.record.get("sppci_cores") or 0
+        """Number of Apple GPU cores (the profiler reports it as a numeric string)."""
         try:
-            return int(raw)
-        except (TypeError, ValueError):
+            return int(str(self.record.get("sppci_cores") or 0))
+        except ValueError:
             return 0
 
     @cached_property
@@ -80,30 +78,17 @@ class AppleGPU(GPU):
         """Metal support string reported by macOS."""
         return str(self.record.get("spdisplays_mtlgpufamilysupport") or "")
 
-    @cached_property
-    def total_memory_bytes(self) -> int:
-        """Unified system memory visible to the integrated GPU."""
-        return psutil.virtual_memory().total
-
     @property
-    def mem_info(self) -> MemInfo:
-        """Unified memory snapshot from the host OS."""
-        vm = psutil.virtual_memory()
-        return MemInfo(total_bytes=vm.total, used_bytes=vm.used, free_bytes=vm.available)
-
-    @property
-    def memory_readings(self) -> tuple[MemoryUsage, ...]:
+    def memory(self) -> Memory:
         """Unified memory visible to CPU, GPU, and Neural Engine."""
         vm = psutil.virtual_memory()
-        return (
-            MemoryUsage(
-                scope="unified",
-                total_bytes=vm.total,
-                used_bytes=vm.used,
-                free_bytes=vm.available,
-                unified=True,
-                source="psutil",
-            ),
+        return Memory(
+            scope="unified",
+            total_bytes=vm.total,
+            used_bytes=vm.used,
+            free_bytes=vm.available,
+            unified=True,
+            source="psutil",
         )
 
     @property

@@ -12,7 +12,8 @@ import psutil
 from . import shell
 from .enums import Vendor
 from .models.host_disk import HostDisk
-from .models.host_memory import HostMemory
+from .models.memory import Memory
+from .models.memory_hardware import MemoryHardware
 
 _CPU_MODEL_RE = re.compile(r"^(?:model name|hardware)\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _CPU_IMPLEMENTER_RE = re.compile(r"^CPU implementer\s*:\s*(.+)$", re.MULTILINE)
@@ -127,9 +128,21 @@ class Host:
         return freq.current if freq else None
 
     @property
-    def memory(self) -> HostMemory:
-        """Live system memory snapshot; lazily samples psutil on first field access."""
-        return HostMemory()
+    def memory(self) -> Memory:
+        """Live system RAM usage sampled from psutil."""
+        vm = psutil.virtual_memory()
+        return Memory(
+            scope="system",
+            total_bytes=vm.total,
+            used_bytes=vm.used,
+            free_bytes=vm.available,
+            source="psutil",
+        )
+
+    @property
+    def memory_hardware(self) -> MemoryHardware:
+        """Physical DIMM slots and swap space; lazily samples on first field access."""
+        return MemoryHardware()
 
     @cached_property
     def disk(self) -> HostDisk:

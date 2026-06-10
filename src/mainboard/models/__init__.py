@@ -14,11 +14,11 @@ from .energy_reading import EnergyReading
 from .environment import Environment
 from .gpu_snapshot import GPUSnapshot
 from .host_disk import HostDisk
-from .host_memory import HostMemory
 from .machine_snapshot import CpuSnapshot, MachineSnapshot
-from .mem_info import MemInfo
+from .memory import Memory
 from .memory_card import MemoryCard
-from .memory_usage import MemoryUsage
+from .memory_hardware import MemoryHardware
+from .meter import Meter, meter
 from .partition_info import PartitionInfo
 from .pcie_info import PcieInfo
 from .process_info import ProcessInfo
@@ -45,11 +45,11 @@ __all__ = [
     "Environment",
     "GPUSnapshot",
     "HostDisk",
-    "HostMemory",
     "MachineSnapshot",
-    "MemInfo",
+    "Memory",
     "MemoryCard",
-    "MemoryUsage",
+    "MemoryHardware",
+    "Meter",
     "PartitionInfo",
     "PcieInfo",
     "ProcessInfo",
@@ -62,4 +62,5 @@ __all__ = [
     "Toolchain",
     "UnitSnapshot",
     "Utilization",
+    "meter",
 ]

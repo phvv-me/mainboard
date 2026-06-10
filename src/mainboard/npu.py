@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import ClassVar, cast
+from typing import ClassVar
+
+from patos import Registry
 
 from .enums import UnitKind
-from .registry import Registry
 from .unit import Unit
 
 
@@ -19,5 +20,5 @@ class NPU(Unit, Registry):
     @classmethod
     def all(cls) -> tuple[NPU, ...]:
         """Return NPUs visible across every registered provider."""
-        providers = (cast("type[NPU]", p) for p in cls.registry() if p is not NPU)
+        providers = (p for p in cls.registry() if p is not NPU)
         return tuple(npu for provider in providers for npu in provider.all())

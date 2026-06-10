@@ -23,7 +23,7 @@ Working in a [chefe](https://phvv.me/chefe) project? Add it to your manifest:
 chefe add mainboard -l python
 ```
 
-On Linux with NVIDIA GPUs, pull the CUDA provider extra: `pip install "mainboard[nvidia]"`.
+On Linux the CUDA bindings install automatically, so NVIDIA GPUs are detected out of the box. On macOS nothing CUDA-related is pulled in, and provider detection degrades gracefully when no NVIDIA GPU is present.
 
 ## What it is
 

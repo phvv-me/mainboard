@@ -18,7 +18,10 @@ Every unit exposes:
 | `vendor` | provider identity such as `Vendor.APPLE` or `Vendor.NVIDIA` |
 | `name` | human-readable model name |
 | `architecture` | architecture string when known |
+| `memory` | a `Memory` reading: total, used, and free bytes for the memory the unit sees |
 | `snapshot()` | typed telemetry snapshot |
+
+Every unit reports memory the same way, so `unit.memory.total_bytes` and `unit.memory.used_gb` work uniformly across CPU, GPU, and NPU.
 
 ## Snapshots
 

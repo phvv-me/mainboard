@@ -9,7 +9,7 @@ from .enums import UnitKind, Vendor
 from .models.base import FrozenModel
 from .models.clock import Clock
 from .models.energy_reading import EnergyReading
-from .models.memory_usage import MemoryUsage
+from .models.memory import Memory
 from .models.thermal_state import ThermalState
 from .models.unit_snapshot import UnitSnapshot
 from .models.utilization import Utilization
@@ -37,19 +37,14 @@ class Unit(FrozenModel):
         """Human-readable architecture or generation."""
         return "unknown"
 
-    @cached_property
-    def total_memory_bytes(self) -> int:
-        """Total memory most relevant to this unit."""
-        return 0
+    @property
+    def memory(self) -> Memory:
+        """Memory visible to this unit."""
+        return Memory()
 
     @property
     def clock_readings(self) -> tuple[Clock, ...]:
         """Clock readings grouped by hardware domain."""
-        return ()
-
-    @property
-    def memory_readings(self) -> tuple[MemoryUsage, ...]:
-        """Memory regions visible to this unit."""
         return ()
 
     @property
@@ -75,7 +70,7 @@ class Unit(FrozenModel):
             kind=self.kind,
             vendor=self.vendor,
             clocks=self.clock_readings,
-            memory=self.memory_readings,
+            memory=self.memory,
             utilization=self.utilization,
             energy=self.energy,
             thermal=self.thermal,

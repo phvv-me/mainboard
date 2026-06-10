@@ -26,6 +26,7 @@ jobs:
       - run: uv sync --extra dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
+      - run: uv run mypy src
       - run: uv run pyrefly check
       # gated unit/property suite with coverage (POSIX + Apple paths); Windows can't run those
       - run: uv run pytest -m "not integration" --cov=mainboard

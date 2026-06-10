@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import Any
 
 import psutil
 
 from .base import FrozenModel
+from .psutil_results import DiskUsage
 
 
 class PartitionInfo(FrozenModel):
@@ -41,10 +41,11 @@ class PartitionInfo(FrozenModel):
         return "ro" in self.opts.split(",")
 
     @cached_property
-    def _usage(self) -> Any | None:
+    def _usage(self) -> DiskUsage | None:
         """Disk usage from `statvfs`; None if the mount is inaccessible."""
         try:
-            return psutil.disk_usage(self.mountpoint)
+            usage: DiskUsage = psutil.disk_usage(self.mountpoint)
+            return usage
         except (PermissionError, OSError):
             return None
 

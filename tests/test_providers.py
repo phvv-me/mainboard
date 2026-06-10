@@ -17,7 +17,7 @@ from mainboard.providers.apple import gpu as apple_gpu
 from mainboard.providers.apple import profile as apple_profile
 from mainboard.providers.nvidia import apis as nvidia_apis_module
 
-from .conftest import FakeNvidiaApis
+from .conftest import FakeError, FakeNvidiaApis
 
 
 @pytest.mark.parametrize(
@@ -55,10 +55,8 @@ def test_apple_gpu_reads_system_profiler() -> None:
     assert gpu.core_count == 20
     assert gpu.metal_support == "spdisplays_metal4"
     assert gpu.uuid == "00000000-1111-2222-3333-444455556666"
-    assert gpu.total_memory_bytes == 48 * 1024**3
-    reading = gpu.memory_readings[0]
-    assert reading.unified is True
-    assert reading.total_bytes == 48 * 1024**3
+    assert gpu.memory.total_bytes == 48 * 1024**3
+    assert gpu.memory.unified is True
     assert [c.domain for c in gpu.clock_readings] == ["gpu_compute", "memory"]
     assert all(not c.supported for c in gpu.clock_readings)
 
@@ -69,7 +67,7 @@ def test_apple_gpu_snapshot_is_a_gpu_snapshot() -> None:
     snapshot = AppleGPU.all()[0].snapshot("region")
     assert isinstance(snapshot, GPUSnapshot)
     assert snapshot.name == "region"
-    assert snapshot.gpu_memory.total_bytes == 48 * 1024**3
+    assert snapshot.memory.total_bytes == 48 * 1024**3
 
 
 @pytest.mark.usefixtures("apple_host", "fake_psutil_memory")
@@ -80,8 +78,8 @@ def test_apple_npu_names_itself_from_the_chip() -> None:
     assert npu.vendor == Vendor.APPLE
     assert npu.name == "Apple M4 Pro Neural Engine"
     assert npu.architecture == "Apple M4 Pro"
-    assert npu.total_memory_bytes == 48 * 1024**3
-    assert npu.memory_readings[0].unified is True
+    assert npu.memory.total_bytes == 48 * 1024**3
+    assert npu.memory.unified is True
     assert npu.clock_readings[0].domain == "npu"
 
 
@@ -132,7 +130,7 @@ def test_nvidia_detects_and_describes_devices(nvidia_host: object) -> None:
     assert str(gpu.cuda_architecture) == "8.9"
     assert gpu.architecture == "Ada"
     assert gpu.sm_count == 128
-    assert gpu.total_memory_bytes == 24 * 1024**3
+    assert gpu.memory.total_bytes == 24 * 1024**3
     assert gpu.driver_version == (13, 1)
     assert gpu.peak_bandwidth_gbs == pytest.approx(10501000 * 2 * 384 / 8 / 1e6)
 
@@ -145,7 +143,7 @@ def test_nvidia_cuda_python_variant_follows_driver(nvidia_host: object) -> None:
 def test_nvidia_live_sensors(nvidia_host: object) -> None:
     """Live NVML sensors flow through to memory, clocks, thermal, energy, and pcie."""
     gpu = NvidiaGPU(index=0)
-    mem = gpu.memory_readings[0]
+    mem = gpu.memory
     assert (mem.total_bytes, mem.used_bytes, mem.free_bytes) == (
         24 * 1024**3,
         6 * 1024**3,
@@ -168,26 +166,62 @@ def test_nvidia_snapshot_round_trips(nvidia_host: object) -> None:
     assert GPUSnapshot.model_validate_json(snapshot.model_dump_json()) == snapshot
 
 
-def test_nvidia_runtime_props_error_raises(
+def test_nvidia_nvml_only_paths(nvidia_host_no_cuda_core: FakeNvidiaApis) -> None:
+    """Without the optional `cuda.core` layer, identity and sensors read through NVML."""
+    gpu = NvidiaGPU(index=0)
+    assert gpu.name == "NVIDIA GeForce RTX 4090"
+    assert gpu.uuid == "GPU-deadbeef"
+    assert gpu.sm_count == 128
+    assert gpu.architecture == "Ampere"  # from the compute-capability table (cc 8.x)
+    assert (gpu.utilization.gpu_pct, gpu.utilization.memory_pct) == (42, 17)
+    assert gpu.memory.total_bytes == 24 * 1024**3
+    expected_bw = 10501 * 1e3 * 2 * 384 / 8 / 1e6
+    assert gpu.peak_bandwidth_gbs == pytest.approx(expected_bw)
+
+
+def test_nvidia_pci_bus_id_error_raises(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A non-success `cudaGetDeviceProperties` surfaces a clear runtime error."""
+    """A failing `cudaDeviceGetPCIBusId` surfaces as a clear runtime error."""
+    monkeypatch.setattr(
+        nvidia_host.runtime, "cudaDeviceGetPCIBusId", lambda length, index: (99, b"")
+    )
+    with pytest.raises(RuntimeError, match="cudaDeviceGetPCIBusId"):
+        _ = NvidiaGPU(index=0).pci_bus_id
 
-    def failing(index: int) -> tuple[int, object]:
-        return (99, None)
 
-    monkeypatch.setattr(nvidia_host.runtime, "cudaGetDeviceProperties", failing)
+def test_nvidia_device_properties_error_raises(
+    nvidia_host_no_cuda_core: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing `cudaGetDeviceProperties` surfaces as a clear runtime error."""
+    monkeypatch.setattr(
+        nvidia_host_no_cuda_core.runtime, "cudaGetDeviceProperties", lambda index: (99, None)
+    )
     with pytest.raises(RuntimeError, match="cudaGetDeviceProperties"):
-        _ = NvidiaGPU(index=0).total_memory_bytes
+        _ = NvidiaGPU(index=0).sm_count
 
 
-def test_nvidia_runtime_mem_info_error_raises(
+def test_nvidia_nvml_memory_unsupported_falls_back_to_runtime(
+    nvidia_host_no_cuda_core: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NVML memory raising drops to the CUDA-runtime `cudaMemGetInfo` reading."""
+
+    def boom(handle: object) -> object:
+        raise FakeNvidiaApis().nvml.NotSupportedError
+
+    monkeypatch.setattr(nvidia_host_no_cuda_core.nvml, "device_get_memory_info_v2", boom)
+    mem = NvidiaGPU(index=0).memory
+    assert mem.source == "cuda-runtime"
+    assert mem.total_bytes == 24 * 1024**3
+
+
+def test_nvidia_runtime_memory_error_raises(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `cudaMemGetInfo` failure during the runtime fallback raises."""
 
     class Unsupported:
-        NotSupportedError = nvidia_host.system.NotSupportedError
+        NotSupportedError = FakeError
 
         @property
         def memory_info(self) -> object:
@@ -198,7 +232,7 @@ def test_nvidia_runtime_mem_info_error_raises(
     gpu = NvidiaGPU(index=0)
     monkeypatch.setattr(type(gpu), "system_device", Unsupported())
     with pytest.raises(RuntimeError, match="cudaMemGetInfo"):
-        _ = gpu.mem_info
+        _ = gpu.memory
 
 
 def test_nvidia_sensors_degrade_on_nvml_errors(
@@ -229,7 +263,7 @@ def test_nvidia_falls_back_to_runtime_when_nvml_memory_unsupported(
     """When NVML memory is unsupported, memory and clocks fall back to the runtime."""
 
     class Unsupported:
-        NotSupportedError = FakeNvidiaApis().system.NotSupportedError
+        NotSupportedError = FakeError
 
         @property
         def memory_info(self) -> object:
@@ -240,12 +274,56 @@ def test_nvidia_falls_back_to_runtime_when_nvml_memory_unsupported(
 
     gpu = NvidiaGPU(index=0)
     monkeypatch.setattr(type(gpu), "system_device", Unsupported())
-    mem = gpu.memory_readings[0]
-    assert mem.total_bytes == 24 * 1024**3  # from cudaMemGetInfo
+    mem = gpu.memory
+    assert mem.total_bytes == 24 * 1024**3
     assert mem.used_bytes == 24 * 1024**3 - 8 * 1024**3
     clocks = gpu.clocks
     assert clocks.sm_mhz == round(2520000 / 1000)
     assert clocks.memory_mhz == round(10501000 / 1000)
+
+
+def test_nvidia_reads_devices_without_cuda_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When `cuda.core` fails to load (e.g. a torch wheel poisons `libstdc++`),
+    the provider still discovers devices and reads identity, memory, clocks, and
+    utilization through `cuda.bindings` (runtime + NVML) alone."""
+    apis = FakeNvidiaApis(has_cuda_core=False)
+    nvidia_apis_module.nvidia_apis.cache_clear()
+    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
+
+    assert apis.has_cuda_core is False
+    assert NvidiaGPU.is_available() is True
+    gpu = NvidiaGPU(index=0)
+    assert gpu.name == "NVIDIA GeForce RTX 4090"
+    assert gpu.uuid == "GPU-deadbeef"
+    assert str(gpu.cuda_architecture) == "8.9"
+    assert gpu.architecture == "Ampere"
+    assert gpu.sm_count == 128
+    mem = gpu.memory
+    assert (mem.total_bytes, mem.used_bytes, mem.source) == (24 * 1024**3, 6 * 1024**3, "nvml")
+    assert (gpu.clocks.sm_mhz, gpu.clocks.memory_mhz) == (2520, 10501)
+    assert (gpu.utilization.gpu_pct, gpu.utilization.memory_pct) == (42, 17)
+
+
+def test_nvidia_apis_tolerates_missing_cuda_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing `cuda.core` import leaves `NvidiaApis` usable with `has_cuda_core` False."""
+    fake_nvml = FakeNvidiaApis().nvml
+    modules = {
+        "cuda.bindings.runtime": FakeNvidiaApis().runtime,
+        "cuda.bindings.nvml": fake_nvml,
+    }
+
+    def loader(name: str) -> object:
+        if name in modules:
+            return modules[name]
+        if name in ("cuda.core", "cuda.core.system"):
+            raise ImportError("CXXABI_1.3.15 not found")
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(nvidia_apis_module, "import_module", loader)
+    apis = nvidia_apis_module.NvidiaApis()
+    assert apis.has_cuda_core is False
+    assert apis.system is None
+    assert apis.nvml is fake_nvml
 
 
 @pytest.mark.parametrize("nvml_module", ["cuda.bindings._nvml", "cuda.bindings.nvml"])

@@ -4,7 +4,6 @@ import logging
 from contextlib import suppress
 from functools import cached_property
 from importlib import util
-from typing import Any
 
 from pydantic import Field
 
@@ -14,14 +13,14 @@ from ...models.clock_info import ClockInfo
 from ...models.compute_capability import ComputeCapability
 from ...models.cuda_python_info import CudaPythonInfo
 from ...models.energy_reading import EnergyReading
-from ...models.mem_info import MemInfo
-from ...models.memory_usage import MemoryUsage
+from ...models.memory import Memory
 from ...models.pcie_info import PcieInfo
 from ...models.process_info import ProcessInfo
 from ...models.thermal_state import ThermalState
 from ...models.utilization import Utilization
 from . import apis
 from .apis import NvidiaApis, text
+from .protocols import CoreDevice, CoreSystem, DeviceProperties, NvmlHandle, SystemDevice
 
 logger = logging.getLogger(__name__)
 
@@ -57,73 +56,121 @@ class NvidiaGPU(GPU):
         return apis.nvidia_apis()
 
     @cached_property
-    def cuda_device(self) -> Any:
-        """Stable `cuda.core.Device` instance for this visible index."""
-        return self.apis.cuda_device_type(self.index)
+    def cuda_device(self) -> CoreDevice:
+        """Stable `cuda.core.Device` instance for this visible index.
+
+        Only reached behind `has_cuda_core`, so the optional class is present here.
+        """
+        device_type = self.apis.cuda_device_type
+        assert device_type is not None
+        return device_type(self.index)
 
     @cached_property
-    def system_device(self) -> Any:
-        """Stable `cuda.core.system.Device` instance for NVML-backed data."""
-        return self.apis.system.Device(index=self.index)
+    def system_api(self) -> CoreSystem:
+        """The `cuda.core.system` module, present only behind `has_cuda_core`."""
+        system = self.apis.system
+        assert system is not None
+        return system
 
     @cached_property
-    def runtime_props(self) -> Any:
-        """CUDA Runtime device properties."""
-        err, props = self.apis.runtime.cudaGetDeviceProperties(self.index)
+    def system_device(self) -> SystemDevice:
+        """Stable `cuda.core.system.Device` instance for NVML-backed data.
+
+        Only reached behind `has_cuda_core`, so the optional module is present here.
+        """
+        return self.system_api.Device(index=self.index)
+
+    @cached_property
+    def pci_bus_id(self) -> str:
+        """PCI bus ID of the visible device, honoring `CUDA_VISIBLE_DEVICES`.
+
+        Read through `cuda.bindings.runtime` so it works even when the
+        optional `cuda.core` layer failed to import.
+        """
+        err, raw = self.apis.runtime.cudaDeviceGetPCIBusId(64, self.index)
         if err != self.apis.runtime.cudaError_t.cudaSuccess:
-            raise RuntimeError(f"cudaGetDeviceProperties({self.index}) failed: {err}")
-        return props
+            raise RuntimeError(f"cudaDeviceGetPCIBusId({self.index}) failed: {err}")
+        return text(raw).split("\x00", 1)[0].strip()
 
     @cached_property
-    def handle(self) -> Any:
+    def handle(self) -> NvmlHandle:
         """NVML device handle resolved via PCI bus ID to respect `CUDA_VISIBLE_DEVICES`."""
         self.apis.nvml.init_v2()
-        handle = self.apis.nvml.device_get_handle_by_pci_bus_id_v2(self.cuda_device.pci_bus_id)
+        handle = self.apis.nvml.device_get_handle_by_pci_bus_id_v2(self.pci_bus_id)
         logger.debug(
             "GPU %s: %s (%s)",
             self.index,
             self.apis.nvml.device_get_name(handle),
-            self.cuda_device.pci_bus_id,
+            self.pci_bus_id,
         )
         return handle
 
     @cached_property
     def name(self) -> str:
         """Full GPU name string, e.g. `NVIDIA GeForce RTX 4090`."""
-        return text(self.system_device.name)
+        if self.apis.has_cuda_core:
+            return text(self.system_device.name)
+        return text(self.apis.nvml.device_get_name(self.handle))
 
     @cached_property
     def uuid(self) -> str:
         """Unique NVIDIA GPU identifier."""
-        return text(self.system_device.uuid)
+        if self.apis.has_cuda_core:
+            return text(self.system_device.uuid)
+        return text(self.apis.nvml.device_get_uuid(self.handle))
 
     @cached_property
     def cuda_architecture(self) -> ComputeCapability:
         """CUDA compute capability, e.g. `ComputeCapability(8, 9)`."""
-        major, minor = self.system_device.cuda_compute_capability
+        if self.apis.has_cuda_core:
+            major, minor = self.system_device.cuda_compute_capability
+        else:
+            major, minor = self.apis.nvml.device_get_cuda_compute_capability(self.handle)
         return ComputeCapability(major, minor)
+
+    @cached_property
+    def runtime_properties(self) -> DeviceProperties:
+        """Static device properties from `cuda.bindings.runtime`.
+
+        ABI-stable source for SM count and bandwidth when the optional
+        `cuda.core` layer is unavailable.
+        """
+        err, props = self.apis.runtime.cudaGetDeviceProperties(self.index)
+        if err != self.apis.runtime.cudaError_t.cudaSuccess:
+            raise RuntimeError(f"cudaGetDeviceProperties({self.index}) failed: {err}")
+        return props
 
     @cached_property
     def architecture(self) -> str:
         """Human-readable NVIDIA architecture name, e.g. `Ada`."""
-        arch = self.system_device.arch
-        return str(getattr(arch, "name", arch)).title()
+        if self.apis.has_cuda_core:
+            arch = self.system_device.arch
+            return str(getattr(arch, "name", arch)).title()
+        return self.cuda_architecture.architecture
+
+    @cached_property
+    def arch_key(self) -> str:
+        """The `sm_NN` compute-capability target, e.g. `sm_90` — the per-arch dispatch key."""
+        return self.cuda_architecture.sm
 
     @cached_property
     def sm_count(self) -> int:
         """Number of streaming multiprocessors."""
-        return self.cuda_device.properties.multiprocessor_count
-
-    @cached_property
-    def total_memory_bytes(self) -> int:
-        """Total CUDA-visible memory in bytes."""
-        return self.runtime_props.totalGlobalMem
+        if self.apis.has_cuda_core:
+            return self.cuda_device.properties.multiprocessor_count
+        return self.runtime_properties.multiProcessorCount
 
     @cached_property
     def peak_bandwidth_gbs(self) -> float:
         """Theoretical peak memory bandwidth in GB/s."""
-        props = self.cuda_device.properties
-        return props.memory_clock_rate * 2 * props.global_memory_bus_width / 8 / 1e6
+        if self.apis.has_cuda_core:
+            props = self.cuda_device.properties
+            return props.memory_clock_rate * 2 * props.global_memory_bus_width / 8 / 1e6
+        bus_width = self.runtime_properties.memoryBusWidth
+        max_mem_mhz = self.apis.nvml.device_get_max_clock_info(
+            self.handle, self.apis.nvml.ClockType.CLOCK_MEM
+        )
+        return max_mem_mhz * 1e3 * 2 * bus_width / 8 / 1e6
 
     @cached_property
     def driver_version(self) -> tuple[int, int]:
@@ -144,33 +191,41 @@ class NvidiaGPU(GPU):
         )
 
     @property
-    def mem_info(self) -> MemInfo:
-        """Current GPU memory allocation state."""
-        try:
-            memory = self.system_device.memory_info
-            return MemInfo(
+    def memory(self) -> Memory:
+        """CUDA-visible GPU memory allocation state.
+
+        On GH200 and other coherent platforms this reflects HBM-resident
+        allocations (the discrete-device counter). Managed memory paged into
+        Grace LPDDR is not counted here, matching `nvidia-smi`.
+        """
+        if self.apis.has_cuda_core:
+            try:
+                memory = self.system_device.memory_info
+                return Memory(
+                    scope="vram",
+                    total_bytes=memory.total,
+                    used_bytes=memory.used,
+                    free_bytes=memory.free,
+                    source="cuda-core-system",
+                )
+            except self.system_api.NotSupportedError:
+                return self.runtime_memory()
+        return self.nvml_memory()
+
+    def nvml_memory(self) -> Memory:
+        """Current memory state from NVML when `cuda.core` is unavailable."""
+        with suppress(*self.apis.nvml_errors):
+            memory = self.apis.nvml.device_get_memory_info_v2(self.handle)
+            return Memory(
+                scope="vram",
                 total_bytes=memory.total,
                 used_bytes=memory.used,
                 free_bytes=memory.free,
+                source="nvml",
             )
-        except self.apis.system.NotSupportedError:
-            return self.runtime_mem_info()
+        return self.runtime_memory()
 
-    @property
-    def memory_readings(self) -> tuple[MemoryUsage, ...]:
-        """CUDA-visible GPU memory."""
-        mem = self.mem_info
-        return (
-            MemoryUsage(
-                scope="vram",
-                total_bytes=mem.total_bytes,
-                used_bytes=mem.used_bytes,
-                free_bytes=mem.free_bytes,
-                source="cuda-runtime" if mem.used_bytes else "cuda-core-system",
-            ),
-        )
-
-    def runtime_mem_info(self) -> MemInfo:
+    def runtime_memory(self) -> Memory:
         """Current memory state from CUDA Runtime when NVML memory is unsupported."""
         err, current = self.apis.runtime.cudaGetDevice()
         has_current = err == self.apis.runtime.cudaError_t.cudaSuccess
@@ -182,30 +237,45 @@ class NvidiaGPU(GPU):
                 self.apis.runtime.cudaSetDevice(current)
         if err != self.apis.runtime.cudaError_t.cudaSuccess:
             raise RuntimeError(f"cudaMemGetInfo({self.index}) failed: {err}")
-        return MemInfo(
+        return Memory(
+            scope="vram",
             total_bytes=total_bytes,
             used_bytes=total_bytes - free_bytes,
             free_bytes=free_bytes,
+            source="cuda-runtime",
         )
 
     @property
     def clocks(self) -> ClockInfo:
         """Current SM and memory clock frequencies."""
+        if not self.apis.has_cuda_core:
+            return self.nvml_clocks()
         try:
             return ClockInfo(
                 sm_mhz=self.system_device.get_clock("sm").get_current_mhz(),
                 memory_mhz=self.system_device.get_clock("memory").get_current_mhz(),
             )
-        except self.apis.system.NotSupportedError:
+        except self.system_api.NotSupportedError:
             props = self.cuda_device.properties
             return ClockInfo(
                 sm_mhz=round(props.clock_rate / 1000),
                 memory_mhz=round(props.memory_clock_rate / 1000),
             )
 
+    def nvml_clocks(self) -> ClockInfo:
+        """Current clocks from NVML when `cuda.core` is unavailable."""
+        clock = self.apis.nvml.ClockType
+        return ClockInfo(
+            sm_mhz=self.apis.nvml.device_get_clock_info(self.handle, clock.CLOCK_SM),
+            memory_mhz=self.apis.nvml.device_get_clock_info(self.handle, clock.CLOCK_MEM),
+        )
+
     @property
     def utilization(self) -> Utilization:
         """GPU core and memory-controller utilization percentages."""
+        if not self.apis.has_cuda_core:
+            rates = self.apis.nvml.device_get_utilization_rates(self.handle)
+            return Utilization(gpu_pct=rates.gpu, memory_pct=rates.memory)
         utilization = self.system_device.utilization
         return Utilization(gpu_pct=utilization.gpu, memory_pct=utilization.memory)
 

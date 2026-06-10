@@ -18,7 +18,10 @@ Cada unidad expone:
 | `vendor` | identidad del proveedor, como `Vendor.APPLE` o `Vendor.NVIDIA` |
 | `name` | nombre de modelo legible por humanos |
 | `architecture` | cadena de arquitectura cuando se conoce |
+| `memory` | lectura `Memory`: bytes total, usado y libre de la memoria que ve la unidad |
 | `snapshot()` | instantánea de telemetría tipada |
+
+Cada unidad reporta la memoria del mismo modo, así que `unit.memory.total_bytes` y `unit.memory.used_gb` funcionan de forma uniforme en CPU, GPU y NPU.
 
 ## Instantáneas
 

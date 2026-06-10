@@ -45,11 +45,13 @@ print(Machine().model_dump_json(indent=2))
     "current_clock_mhz": 4.0
   },
   "memory": {
-    "scope": "system",
     "total_bytes": 51539607552,
     "used_bytes": 25495814144,
     "free_bytes": 20745732096,
-    "source": "psutil"
+    "scope": "system",
+    "unified": false,
+    "source": "psutil",
+    "supported": true
   },
   "environment": {
     "user": "pedro",
@@ -73,7 +75,7 @@ print(Machine().model_dump_json(indent=2))
 |---|---|---|
 | `hostname` | `str` | nombre de red del host sondeado |
 | `cpu` | `CpuSnapshot` | nombre, arquitectura, proveedor, conteos de núcleos y memoria de la CPU |
-| `memory` | `MemoryUsage` | uso de RAM del sistema al momento del sondeo |
+| `memory` | `Memory` | uso de RAM del sistema al momento del sondeo |
 | `environment` | `Environment` | usuario, grupo(s) y planificador de trabajos disponible en el host |
 | `board` | `Board` | identidad de la placa madre y el firmware |
 | `gpus` | `tuple[GPUSnapshot, ...]` | telemetría por GPU, vacía en un host sin GPU |

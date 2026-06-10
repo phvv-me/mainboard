@@ -45,11 +45,13 @@ print(Machine().model_dump_json(indent=2))
     "current_clock_mhz": 4.0
   },
   "memory": {
-    "scope": "system",
     "total_bytes": 51539607552,
     "used_bytes": 25495814144,
     "free_bytes": 20745732096,
-    "source": "psutil"
+    "scope": "system",
+    "unified": false,
+    "source": "psutil",
+    "supported": true
   },
   "environment": {
     "user": "pedro",
@@ -73,9 +75,10 @@ print(Machine().model_dump_json(indent=2))
 |---|---|---|
 | `hostname` | `str` | network name of the probed host |
 | `cpu` | `CpuSnapshot` | CPU name, architecture, vendor, core counts, memory |
-| `memory` | `MemoryUsage` | system RAM usage at probe time |
+| `memory` | `Memory` | system RAM usage at probe time |
 | `environment` | `Environment` | user, group(s), and job scheduler available on the host |
 | `board` | `Board` | motherboard and firmware identity |
+| `toolchain` | `Toolchain` | C/C++/CUDA compilers and build systems on the host PATH (see [Toolchain](toolchain.md)) |
 | `gpus` | `tuple[GPUSnapshot, ...]` | per-GPU telemetry, empty on a host with no GPU |
 | `npus` | `tuple[UnitSnapshot, ...]` | per-NPU telemetry, empty on a host with no NPU |
 | `unit_count` | `int` | CPU plus every GPU and NPU |

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -17,8 +16,7 @@ from mainboard import (
     Environment,
     GPUSnapshot,
     MachineSnapshot,
-    MemInfo,
-    MemoryUsage,
+    Memory,
     ThermalState,
     ThermalTracker,
     ThrottleReason,
@@ -33,10 +31,10 @@ byte_counts = st.integers(min_value=0, max_value=10**15)
 names = st.text(st.characters(blacklist_categories=("Cs", "Cc")), max_size=24)
 
 
-def mem_usage() -> st.SearchStrategy[MemoryUsage]:
-    """Build `MemoryUsage` directly from its model with valid byte fields."""
+def memory() -> st.SearchStrategy[Memory]:
+    """Build `Memory` directly from its model with valid byte fields."""
     return st.builds(
-        MemoryUsage,
+        Memory,
         scope=names,
         total_bytes=byte_counts,
         used_bytes=byte_counts,
@@ -67,7 +65,7 @@ def unit_snapshot() -> st.SearchStrategy[UnitSnapshot]:
         kind=st.sampled_from(list(UnitKind)),
         vendor=st.sampled_from(list(Vendor)),
         clocks=st.lists(clock(), max_size=3).map(tuple),
-        memory=st.lists(mem_usage(), max_size=3).map(tuple),
+        memory=memory(),
     )
 
 
@@ -78,8 +76,7 @@ def gpu_snapshot() -> st.SearchStrategy[GPUSnapshot]:
         name=names,
         unit_name=names,
         vendor=st.sampled_from(list(Vendor)),
-        memory=st.lists(mem_usage(), max_size=2).map(tuple),
-        gpu_memory=st.builds(MemInfo, total_bytes=byte_counts),
+        memory=memory(),
         fan_speed_pct=st.integers(0, 100),
     )
 
@@ -109,7 +106,7 @@ def machine_snapshot() -> st.SearchStrategy[MachineSnapshot]:
             physical_cores=st.integers(0, 256),
             total_memory_bytes=byte_counts,
         ),
-        memory=mem_usage(),
+        memory=memory(),
         environment=environment(),
         gpus=st.lists(gpu_snapshot(), max_size=3).map(tuple),
         npus=st.lists(unit_snapshot(), max_size=2).map(tuple),
@@ -141,35 +138,16 @@ def test_frozen_models_round_trip(snap: UnitSnapshot | GPUSnapshot | Environment
     assert restored == snap
 
 
-@pytest.mark.parametrize(
-    ("build", "divisor", "suffix"),
-    [
-        (lambda **kw: MemoryUsage(scope="m", **kw), 1024**3, "gb"),
-        (lambda **kw: MemInfo(**kw), 1024**2, "mb"),
-    ],
-    ids=["memory-usage-gib", "mem-info-mib"],
-)
 @given(total=byte_counts, used=byte_counts)
-def test_byte_pool_ratios_and_unit_conversions(
-    build: Callable[..., MemoryUsage | MemInfo],
-    divisor: int,
-    suffix: str,
-    total: int,
-    used: int,
-) -> None:
-    """Both byte-pool models scale fields by a fixed divisor and guard a zero total.
-
-    build: constructs the model from total/used/free byte fields.
-    divisor: bytes per reported unit (GiB for MemoryUsage, MiB for MemInfo).
-    suffix: the unit-property suffix (`gb` or `mb`) the model exposes.
-    """
+def test_memory_ratios_and_unit_conversions(total: int, used: int) -> None:
+    """`Memory` scales each field to gibibytes and guards a zero total."""
     used = min(used, total)
     free = total - used
-    pool = build(total_bytes=total, used_bytes=used, free_bytes=free)
-    assert pool.utilization_pct == (0.0 if total == 0 else used / total * 100)
-    assert getattr(pool, f"total_{suffix}") == total / divisor
-    assert getattr(pool, f"used_{suffix}") == used / divisor
-    assert getattr(pool, f"free_{suffix}") == free / divisor
+    pool = Memory(scope="m", total_bytes=total, used_bytes=used, free_bytes=free)
+    assert pool.percent_used == (0.0 if total == 0 else used / total * 100)
+    assert pool.total_gb == total / 1024**3
+    assert pool.used_gb == used / 1024**3
+    assert pool.free_gb == free / 1024**3
 
 
 @given(power=st.integers(0, 10**6), energy=st.integers(0, 10**9))

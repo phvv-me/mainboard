@@ -15,11 +15,7 @@ pip install mainboard
 mainboard
 ```
 
-NVIDIA GPU を搭載した Linux マシンでは、CUDA プロバイダの extra をインストールしてください。
-
-```sh
-pip install "mainboard[nvidia]"
-```
+Linux では CUDA バインディングが自動的にインストールされるため、NVIDIA GPU はそのまま検出されます。macOS では CUDA 関連は一切取り込まれず、NVIDIA GPU がないホストでも検出は適切にフォールバックします。
 
 [chefe](https://phvv.me/chefe) プロジェクトで作業していますか？ `chefe add mainboard -l python`。
 

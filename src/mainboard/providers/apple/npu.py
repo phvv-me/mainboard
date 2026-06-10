@@ -8,7 +8,7 @@ from pydantic import Field
 
 from ...enums import Vendor
 from ...models.clock import Clock
-from ...models.memory_usage import MemoryUsage
+from ...models.memory import Memory
 from ...npu import NPU
 from . import profile
 
@@ -42,24 +42,17 @@ class AppleNPU(NPU):
         hardware = profile.apple_system_profile().get("SPHardwareDataType", [{}])[0]
         return str(hardware.get("chip_type") or "Apple Silicon")
 
-    @cached_property
-    def total_memory_bytes(self) -> int:
-        """Unified system memory visible to the Neural Engine."""
-        return psutil.virtual_memory().total
-
     @property
-    def memory_readings(self) -> tuple[MemoryUsage, ...]:
+    def memory(self) -> Memory:
         """Unified memory visible to CPU, GPU, and Neural Engine."""
         vm = psutil.virtual_memory()
-        return (
-            MemoryUsage(
-                scope="unified",
-                total_bytes=vm.total,
-                used_bytes=vm.used,
-                free_bytes=vm.available,
-                unified=True,
-                source="psutil",
-            ),
+        return Memory(
+            scope="unified",
+            total_bytes=vm.total,
+            used_bytes=vm.used,
+            free_bytes=vm.available,
+            unified=True,
+            source="psutil",
         )
 
     @property

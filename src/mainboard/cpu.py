@@ -8,7 +8,7 @@ from pydantic import Field
 
 from .enums import UnitKind, Vendor
 from .models.clock import Clock
-from .models.memory_usage import MemoryUsage
+from .models.memory import Memory
 from .unit import Unit
 
 
@@ -19,7 +19,6 @@ class CPU(Unit):
     architecture_value: str
     logical_cores: int = 0
     physical_cores: int = 0
-    total_memory_value_bytes: int = 0
     current_clock_mhz: float | None = None
     vendor: Vendor = Field(default=Vendor.UNKNOWN)
     kind: ClassVar[UnitKind] = UnitKind.CPU
@@ -35,11 +34,6 @@ class CPU(Unit):
         """CPU architecture string."""
         return self.architecture_value
 
-    @cached_property
-    def total_memory_bytes(self) -> int:
-        """System memory visible to the CPU."""
-        return self.total_memory_value_bytes
-
     @property
     def clock_readings(self) -> tuple[Clock, ...]:
         """CPU clock readings from the OS."""
@@ -53,15 +47,13 @@ class CPU(Unit):
         )
 
     @property
-    def memory_readings(self) -> tuple[MemoryUsage, ...]:
+    def memory(self) -> Memory:
         """System memory visible to the CPU."""
         vm = psutil.virtual_memory()
-        return (
-            MemoryUsage(
-                scope="system",
-                total_bytes=vm.total,
-                used_bytes=vm.used,
-                free_bytes=vm.available,
-                source="psutil",
-            ),
+        return Memory(
+            scope="system",
+            total_bytes=vm.total,
+            used_bytes=vm.used,
+            free_bytes=vm.available,
+            source="psutil",
         )

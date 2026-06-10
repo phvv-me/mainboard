@@ -45,11 +45,13 @@ print(Machine().model_dump_json(indent=2))
     "current_clock_mhz": 4.0
   },
   "memory": {
-    "scope": "system",
     "total_bytes": 51539607552,
     "used_bytes": 25495814144,
     "free_bytes": 20745732096,
-    "source": "psutil"
+    "scope": "system",
+    "unified": false,
+    "source": "psutil",
+    "supported": true
   },
   "environment": {
     "user": "pedro",
@@ -73,7 +75,7 @@ print(Machine().model_dump_json(indent=2))
 |---|---|---|
 | `hostname` | `str` | 被探测主机的网络名称 |
 | `cpu` | `CpuSnapshot` | CPU 名称、架构、vendor、核心数、内存 |
-| `memory` | `MemoryUsage` | 探测时的系统 RAM 使用情况 |
+| `memory` | `Memory` | 探测时的系统 RAM 使用情况 |
 | `environment` | `Environment` | 主机上可用的用户、组和作业调度器 |
 | `board` | `Board` | 主板与固件标识 |
 | `gpus` | `tuple[GPUSnapshot, ...]` | 每个 GPU 的遥测信息，在无 GPU 的主机上为空 |

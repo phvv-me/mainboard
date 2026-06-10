@@ -10,4 +10,4 @@ Providers detect vendor-specific hardware and telemetry while keeping the public
 
 AMD, Intel, and Qualcomm providers are import-safe stubs today. They return unavailable so imports and CI do not require hardware or vendor SDKs.
 
-Provider details should add telemetry, not rename the public concepts. A GPU is still a `GPU`; CUDA, Metal, ROCm, Level Zero, and Core ML are backend details.
+Provider details should add telemetry, not rename the public concepts. A GPU is still a `GPU`. CUDA, Metal, ROCm, Level Zero, and Core ML are backend details.

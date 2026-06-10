@@ -15,11 +15,7 @@ pip install mainboard
 mainboard
 ```
 
-On Linux machines with NVIDIA GPUs, install the CUDA provider extra:
-
-```sh
-pip install "mainboard[nvidia]"
-```
+On Linux the CUDA bindings install automatically, so NVIDIA GPUs are detected out of the box. macOS pulls in nothing CUDA-related, and detection degrades gracefully on hosts with no NVIDIA GPU.
 
 Working in a [chefe](https://phvv.me/chefe) project? `chefe add mainboard -l python`.
 
@@ -56,6 +52,7 @@ print(machine.model_dump_json(indent=2))
 | Terminal view | `mainboard` renders a Rich schematic of memory and compute units |
 | Toolchain discovery | An expandable probe registry reports C/C++/CUDA compilers and build systems on PATH, with versions |
 | One-call snapshot | `Machine().model_dump_json()` returns cpu, memory, gpus, npus, environment (user, group, scheduler), board (motherboard, BIOS), and toolchain (compilers, build systems) |
+| Profiling | `profile(fn)` returns a one-call bottleneck report, with `gpu_busy` / `wait_for_idle` to gate on a clean GPU |
 
 ## Platforms
 
@@ -68,4 +65,4 @@ print(machine.model_dump_json(indent=2))
 !!! warning "mainboard is early (`0.0.x`)"
     The public API is intentionally small, but provider telemetry details may still change.
 
-Next, read the guide on [units](units.md) and the [probe and snapshot](probe.md), or jump to the [environment](environment.md), [board](board.md), and [providers](providers.md) reference.
+Next, read the guide on [units](units.md), the [probe and snapshot](probe.md), and [profiling](profiling.md), or jump to the [environment](environment.md), [board](board.md), and [providers](providers.md) reference.

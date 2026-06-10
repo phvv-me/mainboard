@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar
 
+from patos import Registry
 from pydantic import Field
 
 from .enums import UnitKind, Vendor
@@ -10,12 +11,10 @@ from .models.clock import Clock
 from .models.clock_info import ClockInfo
 from .models.energy_reading import EnergyReading
 from .models.gpu_snapshot import GPUSnapshot
-from .models.mem_info import MemInfo
-from .models.memory_usage import MemoryUsage
+from .models.memory import Memory
 from .models.pcie_info import PcieInfo
 from .models.thermal_state import ThermalState
 from .models.utilization import Utilization
-from .registry import Registry
 from .unit import Unit
 
 if TYPE_CHECKING:
@@ -37,7 +36,7 @@ class GPU(Unit, Registry):
     @classmethod
     def all(cls) -> tuple[GPU, ...]:
         """Return GPUs visible across every registered provider."""
-        providers = (cast("type[GPU]", p) for p in cls.registry() if p is not GPU)
+        providers = (p for p in cls.registry() if p is not GPU)
         return tuple(gpu for provider in providers for gpu in provider.all())
 
     @cached_property
@@ -56,9 +55,16 @@ class GPU(Unit, Registry):
         return "unknown"
 
     @cached_property
-    def total_memory_bytes(self) -> int:
-        """Total memory managed by this accelerator."""
-        return 0
+    def arch_key(self) -> str:
+        """A stable, machine-friendly architecture id for per-arch dispatch.
+
+        The key to look this device up in an arch-keyed table (see
+        `mainboard.profiling.arch_config`): vendor backends return a precise,
+        dot-free target such as `sm_90` (NVIDIA) so tile sizes and kernel
+        configs can be pinned per generation. The base falls back to the
+        lowercased human architecture name.
+        """
+        return self.architecture.lower()
 
     @cached_property
     def peak_bandwidth_gbs(self) -> float:
@@ -71,24 +77,9 @@ class GPU(Unit, Registry):
         return None
 
     @property
-    def mem_info(self) -> MemInfo:
+    def memory(self) -> Memory:
         """Current accelerator memory state."""
-        return MemInfo(total_bytes=self.total_memory_bytes)
-
-    @property
-    def memory_readings(self) -> tuple[MemoryUsage, ...]:
-        """Memory regions visible to this GPU."""
-        mem = self.mem_info
-        return (
-            MemoryUsage(
-                scope="device",
-                total_bytes=mem.total_bytes,
-                used_bytes=mem.used_bytes,
-                free_bytes=mem.free_bytes,
-                source=self.backend,
-                supported=mem.total_bytes > 0,
-            ),
-        )
+        return Memory(scope="device", source=self.backend, supported=False)
 
     @property
     def clocks(self) -> ClockInfo:
@@ -164,13 +155,11 @@ class GPU(Unit, Registry):
             unit_name=self.name,
             kind=self.kind,
             vendor=self.vendor,
-            memory=self.memory_readings,
+            memory=self.memory,
             clocks=self.clock_readings,
             utilization=self.utilization,
             energy=self.energy,
             thermal=self.thermal,
-            gpu_memory=self.mem_info,
-            gpu_clocks=self.clocks,
             pcie=self.pcie,
             fan_speed_pct=self.fan_speed_pct,
             processes=self.processes,

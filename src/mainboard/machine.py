@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import platform
-from functools import cache, cached_property
+from functools import cached_property
+
+from patos import Singleton
 
 from .cpu import CPU
 from .gpu import GPU
@@ -9,7 +11,6 @@ from .host import Host
 from .models.board import Board
 from .models.environment import Environment
 from .models.machine_snapshot import CpuSnapshot, MachineSnapshot
-from .models.memory_usage import MemoryUsage
 from .models.system_compilers import SystemCompilers
 from .models.toolchain import Toolchain
 from .npu import NPU
@@ -17,12 +18,8 @@ from .providers import NvidiaGPU
 from .unit import Unit
 
 
-class Machine:
+class Machine(Singleton):
     """Singleton facade for the host and hardware units."""
-
-    @cache
-    def __new__(cls):
-        return super().__new__(cls)
 
     @cached_property
     def host(self) -> Host:
@@ -37,7 +34,6 @@ class Machine:
             architecture_value=self.host.arch,
             logical_cores=self.host.logical_cpus,
             physical_cores=self.host.physical_cpus,
-            total_memory_value_bytes=self.host.memory.total_bytes,
             current_clock_mhz=self.host.cpu_freq_mhz,
             vendor=self.host.cpu_vendor,
         )
@@ -110,16 +106,10 @@ class Machine:
                 vendor=cpu.vendor,
                 logical_cores=cpu.logical_cores,
                 physical_cores=cpu.physical_cores,
-                total_memory_bytes=cpu.total_memory_bytes,
+                total_memory_bytes=memory.total_bytes,
                 current_clock_mhz=cpu.current_clock_mhz,
             ),
-            memory=MemoryUsage(
-                scope="system",
-                total_bytes=memory.total_bytes,
-                used_bytes=memory.used_bytes,
-                free_bytes=memory.available_bytes,
-                source="psutil",
-            ),
+            memory=memory,
             environment=self.environment,
             board=self.board,
             toolchain=self.toolchain,

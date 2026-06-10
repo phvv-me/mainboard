@@ -18,7 +18,10 @@ for unit in Machine().units:
 | `vendor` | provider 标识，例如 `Vendor.APPLE` 或 `Vendor.NVIDIA` |
 | `name` | 人类可读的型号名称 |
 | `architecture` | 已知时的架构字符串 |
+| `memory` | `Memory` 读数：该单元可见内存的总量、已用和空闲字节 |
 | `snapshot()` | 带类型的遥测快照 |
+
+每个单元都以相同方式报告内存，因此 `unit.memory.total_bytes` 和 `unit.memory.used_gb` 在 CPU、GPU 和 NPU 上用法一致。
 
 ## 快照
 

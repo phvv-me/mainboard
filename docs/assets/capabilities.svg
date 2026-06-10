@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1020" height="721" viewBox="0 0 1020 721" font-family="-apple-system, Segoe UI, sans-serif">
+<rect width="1020" height="721" fill="#f8fafc"/>
+<text x="28" y="34" font-size="22" font-weight="800" fill="#0f172a">mainboard · profiler capabilities</text>
+<circle cx="32" cy="70" r="6" fill="#16a34a"/><text x="44" y="75" font-size="13" fill="#475569">shipped</text><circle cx="120" cy="70" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/><text x="132" y="75" font-size="13" fill="#475569">roadmap</text>
+<rect x="28" y="90" width="470" height="138" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="46" y="113" font-size="16" font-weight="700" fill="#0f172a">Annotate</text>
+<line x1="44" y1="120" x2="482" y2="120" stroke="#e2e8f0"/>
+<circle cx="54" cy="132" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="136" font-size="14" fill="#0f172a">region() &amp; @profile</text>
+<circle cx="54" cy="155" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="159" font-size="14" fill="#0f172a">auto-annotate (PEP 669)</text>
+<circle cx="54" cy="178" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="182" font-size="14" fill="#0f172a">AST source rewrite</text>
+<circle cx="54" cy="201" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="205" font-size="14" fill="#0f172a">NVTX → Nsight timeline</text>
+<rect x="522" y="90" width="470" height="138" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="540" y="113" font-size="16" font-weight="700" fill="#0f172a">Telemetry sampling</text>
+<line x1="538" y1="120" x2="976" y2="120" stroke="#e2e8f0"/>
+<circle cx="548" cy="132" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="136" font-size="14" fill="#0f172a">memory used / peak</text>
+<circle cx="548" cy="155" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="159" font-size="14" fill="#0f172a">power &amp; energy</text>
+<circle cx="548" cy="178" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="182" font-size="14" fill="#0f172a">utilization</text>
+<circle cx="548" cy="201" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="205" font-size="14" fill="#0f172a">temperature &amp; clocks</text>
+<rect x="28" y="252" width="470" height="276" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="46" y="275" font-size="16" font-weight="700" fill="#0f172a">CUPTI Activity trace</text>
+<line x1="44" y1="282" x2="482" y2="282" stroke="#e2e8f0"/>
+<circle cx="54" cy="294" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="298" font-size="14" fill="#0f172a">kernels</text>
+<circle cx="54" cy="317" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="321" font-size="14" fill="#0f172a">memcpy / bandwidth</text>
+<circle cx="54" cy="340" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="344" font-size="14" fill="#0f172a">memset</text>
+<circle cx="54" cy="363" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="367" font-size="14" fill="#0f172a">driver &amp; runtime API</text>
+<circle cx="54" cy="386" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="390" font-size="14" fill="#0f172a">memory alloc / free</text>
+<circle cx="54" cy="409" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="413" font-size="14" fill="#0f172a">JIT</text>
+<circle cx="54" cy="432" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="436" font-size="14" fill="#0f172a">overhead</text>
+<circle cx="54" cy="455" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="459" font-size="14" fill="#0f172a">synchronization</text>
+<circle cx="54" cy="478" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="70" y="482" font-size="14" fill="#0f172a">memory pool</text>
+<circle cx="54" cy="501" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="70" y="505" font-size="14" fill="#475569">NVTX records</text>
+<rect x="522" y="252" width="470" height="138" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="540" y="275" font-size="16" font-weight="700" fill="#0f172a">CUPTI advanced</text>
+<line x1="538" y1="282" x2="976" y2="282" stroke="#e2e8f0"/>
+<circle cx="548" cy="294" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="298" font-size="14" fill="#0f172a">Callback API (API counts)</text>
+<circle cx="548" cy="317" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="564" y="321" font-size="14" fill="#475569">PC sampling</text>
+<circle cx="548" cy="340" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="564" y="344" font-size="14" fill="#475569">Range / PM profiling</text>
+<circle cx="548" cy="363" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="564" y="367" font-size="14" fill="#475569">SASS / metric counters</text>
+<rect x="28" y="552" width="470" height="115" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="46" y="575" font-size="16" font-weight="700" fill="#0f172a">Nsight ingest</text>
+<line x1="44" y1="582" x2="482" y2="582" stroke="#e2e8f0"/>
+<circle cx="54" cy="594" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="70" y="598" font-size="14" fill="#475569">Nsight Compute (ncu_report)</text>
+<circle cx="54" cy="617" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="70" y="621" font-size="14" fill="#475569">Nsight Systems (sqlite)</text>
+<circle cx="54" cy="640" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="70" y="644" font-size="14" fill="#475569">occupancy &amp; roofline metrics</text>
+<rect x="522" y="414" width="470" height="230" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+<text x="540" y="437" font-size="16" font-weight="700" fill="#0f172a">Analyze &amp; export</text>
+<line x1="538" y1="444" x2="976" y2="444" stroke="#e2e8f0"/>
+<circle cx="548" cy="456" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="460" font-size="14" fill="#0f172a">rich report</text>
+<circle cx="548" cy="479" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="483" font-size="14" fill="#0f172a">bottlenecks</text>
+<circle cx="548" cy="502" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="506" font-size="14" fill="#0f172a">profile diff</text>
+<circle cx="548" cy="525" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="529" font-size="14" fill="#0f172a">Perfetto / Chrome trace</text>
+<circle cx="548" cy="548" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="552" font-size="14" fill="#0f172a">save / load</text>
+<circle cx="548" cy="571" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
+<text x="564" y="575" font-size="14" fill="#0f172a">CLI</text>
+<circle cx="548" cy="594" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="564" y="598" font-size="14" fill="#475569">roofline (hardware-aware)</text>
+<circle cx="548" cy="617" r="6" fill="#ffffff" stroke="#9ca3af" stroke-width="2"/>
+<text x="564" y="621" font-size="14" fill="#475569">memory timeline</text>
+<text x="28" y="711" font-size="12" fill="#475569">CUDA-first. macOS (os_signpost + snapshots) and AMD (ROCTx + snapshots) ship annotate and telemetry today; their deep trace is on the roadmap.</text>
+</svg>

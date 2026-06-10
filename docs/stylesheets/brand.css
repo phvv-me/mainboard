@@ -1,0 +1,8 @@
+/* mainboard accent: emerald. Loads after base.css, sets only the
+   --brand-* hooks. The shared base maps them onto Material. */
+
+:root {
+  --brand-primary: #10b981;
+  --brand-primary-dark: #047857;
+  --brand-accent: #10b981;
+}

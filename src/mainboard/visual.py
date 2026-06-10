@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from rich import box
 from rich.align import Align
@@ -15,7 +15,7 @@ from .providers import AppleGPU, AppleNPU, NvidiaGPU
 
 if TYPE_CHECKING:
     from .gpu import GPU
-    from .models.memory_usage import MemoryUsage
+    from .models.memory import Memory
     from .npu import NPU
     from .unit import Unit
 
@@ -33,7 +33,7 @@ class MachineView:
     """Simple Rich schematic for the current machine."""
 
     def __init__(self, machine: Machine | None = None) -> None:
-        self.machine: Machine = machine if machine is not None else cast("Machine", Machine())
+        self.machine: Machine = machine if machine is not None else Machine()
 
     def print(self, *, color: bool = True) -> None:
         """Render the machine schematic to the terminal."""
@@ -137,7 +137,7 @@ class MachineView:
             (
                 ("total", self.bytes(memory.total_bytes)),
                 ("used", self.bytes(memory.used_bytes)),
-                ("available", self.bytes(memory.available_bytes)),
+                ("available", self.bytes(memory.free_bytes)),
                 ("swap", self.swap_label()),
                 ("fabric", self.short_fabric_label()),
                 ("units", self.shared_memory_units()),
@@ -163,7 +163,7 @@ class MachineView:
 
     def memory_title(self) -> str:
         """Return the memory cell title."""
-        if any(memory.unified for unit in self.machine.units for memory in unit.memory_readings):
+        if any(unit.memory.unified for unit in self.machine.units):
             return "Memory (Unified)"
         return "Memory (System)"
 
@@ -194,15 +194,12 @@ class MachineView:
 
     def distinct_memory(self, unit: Unit) -> str:
         """Return memory only when it is distinct from the shared system pool."""
-        readings = unit.memory_readings
-        if not readings:
-            return ""
-        memory = readings[0]
+        memory = unit.memory
         if memory.unified:
             return ""
         return self.memory_usage(memory)
 
-    def memory_usage(self, memory: MemoryUsage) -> str:
+    def memory_usage(self, memory: Memory) -> str:
         """Return one memory reading in human units."""
         if not memory.supported:
             return "unsupported"
@@ -211,7 +208,7 @@ class MachineView:
 
     def fabric_label(self) -> str:
         """Return the dominant host-to-accelerator fabric label."""
-        if any(memory.unified for unit in self.machine.units for memory in unit.memory_readings):
+        if any(unit.memory.unified for unit in self.machine.units):
             return "unified memory"
         if self.machine.gpus:
             return "PCIe / runtime"
@@ -224,10 +221,10 @@ class MachineView:
 
     def swap_label(self) -> str:
         """Return compact swap usage."""
-        memory = self.machine.host.memory
-        if memory.swap_total_bytes == 0:
+        hardware = self.machine.host.memory_hardware
+        if hardware.swap_total_bytes == 0:
             return "none"
-        return self.capacity_pair(memory.swap_used_bytes, memory.swap_total_bytes)
+        return self.capacity_pair(hardware.swap_used_bytes, hardware.swap_total_bytes)
 
     def gpu_clock_label(self, gpu: NvidiaGPU) -> str:
         """Return compact NVIDIA clock info."""

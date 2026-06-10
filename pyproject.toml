@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mainboard"
-version = "0.0.3"
+version = "0.0.5"
 description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -33,31 +33,37 @@ classifiers = [
 ]
 dependencies = [
   "cyclopts>=4.16,<5",
-  "plumbum>=1.10,<3",
+  "patos>=0.0.1",
+  "plumbum>=2,<3",
   "psutil>=7,<8",
   "pydantic>=2.13,<3",
   "rich>=13",
+  "cuda-bindings>=13.3,<14; platform_system == 'Linux'",
+  "cuda-core>=1,<2; platform_system == 'Linux'",
+  "cuda-python>=13.3,<14; platform_system == 'Linux'",
 ]
 
 [project.optional-dependencies]
 dev = [
   "hypothesis>=6",
+  "mypy>=1.13",
   "pyrefly>=1",
   "pytest>=9",
+  "pytest-benchmark>=4",
   "pytest-cov>=5",
   "pytest-randomly>=3",
   "ruff>=0.15",
 ]
 docs = [
   "mkdocs-material>=9.5",
-  "mkdocs-llmstxt>=0.2",
   "mkdocs-static-i18n>=1.2",
   "mkdocstrings[python]>=0.26",
 ]
-nvidia = [
-  "cuda-bindings>=13.3,<14; platform_system == 'Linux'",
-  "cuda-core>=1,<2; platform_system == 'Linux'",
-  "cuda-python>=13.3,<14; platform_system == 'Linux'",
+# Native annotation backends for the profiler (region/@profile -> native timeline).
+# ROCTx and amdsmi ship with a ROCm install (not on PyPI), so are not listed here.
+profiling = [
+  "nvtx>=0.2; platform_system == 'Linux'",
+  "os-signpost>=0.0.3; platform_system == 'Darwin'",
 ]
 
 [project.scripts]
@@ -91,6 +97,57 @@ project-includes = ["src", "tests"]
 search-path = ["src", "."]
 python-platform = "linux"  # analyze the POSIX paths uniformly; Windows-only code degrades at runtime
 
+[tool.mypy]
+python_version = "3.13"
+strict = true
+disallow_any_explicit = true
+plugins = ["pydantic.mypy"]
+files = ["src"]
+mypy_path = "src"
+namespace_packages = false
+
+[[tool.mypy.overrides]]
+# Third-party surfaces without type stubs that mainboard probes structurally.
+module = [
+  "cyclopts.*",
+  "plumbum.*",
+  "psutil.*",
+  "nvtx.*",
+  "cuda.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `explicit-any` is suppressed in these modules for two irreducible reasons, both with no
+# narrower type available, so `disallow_any_explicit` still guards every other module:
+#  - Pydantic's stubs declare inherited class vars as `Dict[str, Any]` (e.g.
+#    `__pydantic_extra__`), which mypy re-flags on every `BaseModel` subclass we define.
+#  - `profiling.annotate` types the `sys.monitoring` PY_RETURN callback's return value as
+#    `Any`: CPython hands back the profiled function's arbitrary result, which we ignore.
+module = [
+  "mainboard.models.*",
+  "mainboard.cpu",
+  "mainboard.gpu",
+  "mainboard.npu",
+  "mainboard.unit",
+  "mainboard.profiling.annotate",
+  "mainboard.profiling.benchmark",
+  "mainboard.profiling.models",
+  "mainboard.profiling.report",
+  "mainboard.profiling.result",
+  "mainboard.profiling.stages",
+  "mainboard.profiling.trace",
+  "mainboard.providers.amd.gpu",
+  "mainboard.providers.apple.gpu",
+  "mainboard.providers.apple.npu",
+  "mainboard.providers.intel.gpu",
+  "mainboard.providers.intel.npu",
+  "mainboard.providers.nvidia.gpu",
+  "mainboard.providers.qualcomm.gpu",
+  "mainboard.providers.qualcomm.npu",
+]
+disable_error_code = ["explicit-any"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q -ra"
@@ -101,7 +158,13 @@ markers = [
 [tool.coverage.run]
 source = ["mainboard"]
 branch = true
-omit = ["src/mainboard/__main__.py"]
+# `protocols.py` modules are pure typing contracts (Protocol bodies, no logic) and some are
+# imported only under `TYPE_CHECKING`, so they carry no runtime coverage to gate on.
+omit = [
+  "src/mainboard/__main__.py",
+  "src/mainboard/*/protocols.py",
+  "src/mainboard/*/*/protocols.py",
+]
 
 [tool.coverage.report]
 show_missing = true

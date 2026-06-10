@@ -30,6 +30,6 @@ jobs:
           snap = Machine().snapshot()
           assert snap.gpus, "no GPU detected on the self-hosted runner"
           gpu = snap.gpus[0]
-          print("detected:", gpu.unit_name, gpu.vendor, gpu.gpu_memory.total_bytes)
-          assert gpu.gpu_memory.total_bytes > 0, "GPU reported zero memory"
+          print("detected:", gpu.unit_name, gpu.vendor, gpu.memory.total_bytes)
+          assert gpu.memory.total_bytes > 0, "GPU reported zero memory"
           PY

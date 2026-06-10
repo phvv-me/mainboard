@@ -107,9 +107,7 @@ def test_probe_version_none_when_unparseable(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_probe_keeps_only_available_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     """`Toolchain.probe` drops tools absent from PATH and keeps the present ones."""
-    monkeypatch.setattr(
-        toolchain_mod.shutil, "which", fake_which({"cmake": "/usr/bin/cmake"})
-    )
+    monkeypatch.setattr(toolchain_mod.shutil, "which", fake_which({"cmake": "/usr/bin/cmake"}))
     monkeypatch.setattr(toolchain_mod.shell, "run", fake_run(CMAKE_OUTPUT))
 
     chain = Toolchain.probe()

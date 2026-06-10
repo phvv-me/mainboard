@@ -124,7 +124,7 @@ def test_cpu_counts_and_frequency(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "mainboard.host.psutil.cpu_freq",
         lambda: type("F", (), {"current": 3200.0})(),
-        raising=False,  # psutil omits cpu_freq on some macOS builds
+        raising=False,
     )
     host = Host()
     assert host.logical_cpus == 14

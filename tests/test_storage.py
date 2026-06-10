@@ -8,8 +8,8 @@ from mainboard.enums import DiskKind
 from mainboard.models import memory_card as mc_mod
 from mainboard.models.drive_info import DriveInfo
 from mainboard.models.host_disk import HostDisk
-from mainboard.models.host_memory import HostMemory
 from mainboard.models.memory_card import MemoryCard
+from mainboard.models.memory_hardware import MemoryHardware
 from mainboard.models.partition_info import PartitionInfo
 
 
@@ -22,7 +22,7 @@ def fake_sysfs(files: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
 
     def read_text(self: Path, *args: object, **kwargs: object) -> str:
         try:
-            return files[self.as_posix()]  # as_posix so forward-slash keys match on Windows
+            return files[self.as_posix()]
         except KeyError:
             raise FileNotFoundError(self) from None
 
@@ -61,7 +61,7 @@ def test_memory_card_parses_populated_slot() -> None:
     assert populated.part_number == "M321R2GA3BB6"
     assert empty.populated is False
     assert empty.size_bytes == 0
-    assert empty.memory_type == ""  # "Unknown" is treated as a placeholder
+    assert empty.memory_type == ""
     assert empty.manufacturer is None
 
 
@@ -80,14 +80,13 @@ def test_memory_card_size_parsing(size_str: str | None, expected: int) -> None:
     assert MemoryCard._parse_size(size_str) == expected
 
 
-def test_host_memory_speed_none_without_populated_speeds(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_memory_hardware_speed_none_without_populated_speeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """`speed_mhz` is None when no populated slot reports a speed."""
-    vm = type("VM", (), {"total": 0, "available": 0, "used": 0})()
-    monkeypatch.setattr("mainboard.models.host_memory.psutil.virtual_memory", lambda: vm)
     monkeypatch.setattr(MemoryCard, "all", classmethod(lambda cls: ()))
-    assert HostMemory().speed_mhz is None
-    assert HostMemory().slots_used == 0
-    assert HostMemory().utilization_pct == 0.0
+    assert MemoryHardware().speed_mhz is None
+    assert MemoryHardware().slots_used == 0
 
 
 def test_memory_card_all_parses_sections(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,27 +112,21 @@ def test_memory_card_all_tolerates_missing_dmidecode(monkeypatch: pytest.MonkeyP
     assert MemoryCard.all() == ()
 
 
-def test_host_memory_reports_psutil_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`HostMemory` exposes psutil totals, swap, and a populated-slot summary."""
-    vm = type("VM", (), {"total": 32 * 1024**3, "available": 20 * 1024**3, "used": 12 * 1024**3})()
+def test_memory_hardware_reports_swap_and_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`MemoryHardware` exposes swap totals and a populated-slot summary."""
     sm = type("SM", (), {"total": 8 * 1024**3, "used": 1 * 1024**3})()
-    monkeypatch.setattr("mainboard.models.host_memory.psutil.virtual_memory", lambda: vm)
-    monkeypatch.setattr("mainboard.models.host_memory.psutil.swap_memory", lambda: sm)
+    monkeypatch.setattr("mainboard.models.memory_hardware.psutil.swap_memory", lambda: sm)
     cards = (
         MemoryCard(section="Memory Device\n\tSize: 16384 MB\n\tLocator: A\n\tSpeed: 5600 MT/s\n"),
         MemoryCard(section="Memory Device\n\tSize: No Module Installed\n\tLocator: B\n"),
     )
     monkeypatch.setattr(MemoryCard, "all", classmethod(lambda cls: cards))
-    memory = HostMemory()
-    assert memory.total_gb == 32.0
-    assert memory.available_gb == 20.0
-    assert memory.used_gb == 12.0
-    assert memory.swap_total_gb == 8.0
-    assert memory.swap_used_bytes == 1 * 1024**3
-    assert memory.utilization_pct == pytest.approx(12 / 32 * 100)
-    assert memory.slots_total == 2
-    assert memory.slots_used == 1
-    assert memory.speed_mhz == 5600
+    hardware = MemoryHardware()
+    assert hardware.swap_total_gb == 8.0
+    assert hardware.swap_used_bytes == 1 * 1024**3
+    assert hardware.slots_total == 2
+    assert hardware.slots_used == 1
+    assert hardware.speed_mhz == 5600
 
 
 def test_partition_info_reads_psutil(monkeypatch: pytest.MonkeyPatch) -> None:

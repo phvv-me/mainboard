@@ -15,11 +15,7 @@ pip install mainboard
 mainboard
 ```
 
-En máquinas Linux con GPU NVIDIA, instala el extra del proveedor CUDA:
-
-```sh
-pip install "mainboard[nvidia]"
-```
+En Linux, los bindings de CUDA se instalan automáticamente, por lo que las GPU NVIDIA se detectan sin configuración adicional. En macOS no se instala nada relacionado con CUDA, y la detección degrada con normalidad en hosts sin GPU NVIDIA.
 
 ¿Trabajas en un proyecto [chefe](https://phvv.me/chefe)? `chefe add mainboard -l python`.
 

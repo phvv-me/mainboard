@@ -15,9 +15,9 @@ def test_base_unit_neutral_defaults() -> None:
     assert unit.vendor == Vendor.UNKNOWN
     assert unit.name == "unknown"
     assert unit.architecture == "unknown"
-    assert unit.total_memory_bytes == 0
+    assert unit.memory.total_bytes == 0
     assert unit.clock_readings == ()
-    assert unit.memory_readings == ()
+    assert unit.memory.supported is True
     snapshot = unit.snapshot("region")
     assert isinstance(snapshot, UnitSnapshot)
     assert snapshot.name == "region"
@@ -30,7 +30,9 @@ def test_base_gpu_defaults_and_snapshot() -> None:
     assert gpu.name == "unknown"
     assert gpu.uuid == ""
     assert gpu.architecture == "unknown"
-    assert gpu.total_memory_bytes == 0
+    assert gpu.arch_key == "unknown"  # base key is the lowercased architecture name
+    assert gpu.memory.total_bytes == 0
+    assert gpu.memory.supported is False
     assert gpu.peak_bandwidth_gbs == 0.0
     assert gpu.driver_version is None
     assert gpu.temperature_c == 0
@@ -39,10 +41,10 @@ def test_base_gpu_defaults_and_snapshot() -> None:
     assert gpu.processes == []
     snapshot = gpu.snapshot("kernel")
     assert isinstance(snapshot, GPUSnapshot)
-    assert snapshot.gpu_memory.total_bytes == 0
+    assert snapshot.memory.total_bytes == 0
 
 
-def test_cpu_exposes_identity_and_memory_readings(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cpu_exposes_identity_and_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     """A `CPU` surfaces its identity fields and a system memory reading."""
     vm = type("VM", (), {"total": 64 * 1024**3, "used": 8 * 1024**3, "available": 56 * 1024**3})()
     monkeypatch.setattr("mainboard.cpu.psutil.virtual_memory", lambda: vm)
@@ -58,9 +60,8 @@ def test_cpu_exposes_identity_and_memory_readings(monkeypatch: pytest.MonkeyPatc
     assert cpu.name == "Apple M4 Pro"
     assert cpu.architecture == "arm64"
     assert cpu.clock_readings[0].current_mhz == 3200.0
-    reading = cpu.memory_readings[0]
-    assert reading.scope == "system"
-    assert reading.total_bytes == 64 * 1024**3
+    assert cpu.memory.scope == "system"
+    assert cpu.memory.total_bytes == 64 * 1024**3
 
 
 def test_cpu_clock_reading_unsupported_when_unknown() -> None:

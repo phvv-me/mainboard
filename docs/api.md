@@ -25,6 +25,18 @@ This page is generated from the source docstrings. For task-oriented guides, see
 
 ::: mainboard.GPUSnapshot
 
+## Memory
+
+::: mainboard.Memory
+
+::: mainboard.MemoryHardware
+
+## Runtime metrics
+
+::: mainboard.Meter
+
+::: mainboard.meter
+
 ## Host
 
 ::: mainboard.Environment
@@ -48,6 +60,20 @@ This page is generated from the source docstrings. For task-oriented guides, see
 ::: mainboard.AppleNPU
 
 ::: mainboard.NvidiaGPU
+
+## Profiling
+
+::: mainboard.profile
+
+::: mainboard.ProfileReport
+
+::: mainboard.KernelStat
+
+::: mainboard.Bound
+
+::: mainboard.gpu_busy
+
+::: mainboard.wait_for_idle
 
 ## Terminal view
 

@@ -18,7 +18,10 @@ for unit in Machine().units:
 | `vendor` | プロバイダの識別子（例: `Vendor.APPLE` や `Vendor.NVIDIA`） |
 | `name` | 人間が読めるモデル名 |
 | `architecture` | 判明している場合のアーキテクチャ文字列 |
+| `memory` | `Memory` の読み取り値: ユニットから見えるメモリの total / used / free バイト |
 | `snapshot()` | 型付きのテレメトリスナップショット |
+
+すべてのユニットが同じ方法でメモリを報告するため、`unit.memory.total_bytes` と `unit.memory.used_gb` は CPU・GPU・NPU で一様に使えます。
 
 ## スナップショット
 

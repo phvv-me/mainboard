@@ -45,11 +45,13 @@ print(Machine().model_dump_json(indent=2))
     "current_clock_mhz": 4.0
   },
   "memory": {
-    "scope": "system",
     "total_bytes": 51539607552,
     "used_bytes": 25495814144,
     "free_bytes": 20745732096,
-    "source": "psutil"
+    "scope": "system",
+    "unified": false,
+    "source": "psutil",
+    "supported": true
   },
   "environment": {
     "user": "pedro",
@@ -73,7 +75,7 @@ print(Machine().model_dump_json(indent=2))
 |---|---|---|
 | `hostname` | `str` | 探査したホストのネットワーク名 |
 | `cpu` | `CpuSnapshot` | CPU 名、アーキテクチャ、ベンダー、コア数、メモリ |
-| `memory` | `MemoryUsage` | 探査時点のシステム RAM 使用状況 |
+| `memory` | `Memory` | 探査時点のシステム RAM 使用状況 |
 | `environment` | `Environment` | ホスト上で利用可能なユーザー、グループ、ジョブスケジューラ |
 | `board` | `Board` | マザーボードとファームウェアの識別情報 |
 | `gpus` | `tuple[GPUSnapshot, ...]` | GPU ごとのテレメトリ。GPU のないホストでは空 |

@@ -15,11 +15,7 @@ pip install mainboard
 mainboard
 ```
 
-在配备 NVIDIA GPU 的 Linux 机器上，请安装 CUDA provider 扩展：
-
-```sh
-pip install "mainboard[nvidia]"
-```
+在 Linux 上，CUDA 绑定会自动安装，因此 NVIDIA GPU 开箱即可被检测到。macOS 不会引入任何 CUDA 相关依赖，在没有 NVIDIA GPU 的主机上检测会优雅降级。
 
 在 [chefe](https://phvv.me/chefe) 项目中工作？`chefe add mainboard -l python`。
 

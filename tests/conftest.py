@@ -47,16 +47,23 @@ def reset_nvidia_cache() -> None:
     nvidia_apis_module.nvidia_apis.cache_clear()
 
 
+def reset_machine_singleton() -> None:
+    """Drop the cached `Machine` so each test builds a fresh, isolated instance."""
+    from patos.singleton import SingletonMeta
+
+    from mainboard.machine import Machine
+
+    SingletonMeta.instances.pop(Machine, None)
+
+
 @pytest.fixture(autouse=True)
 def reset_global_caches() -> Iterator[None]:
     """Keep tests hermetic by clearing every module-level cache around each test."""
-    from mainboard.machine import Machine
-
-    Machine.__new__.cache_clear()
+    reset_machine_singleton()
     reset_nvidia_cache()
     reset_apple_caches()
     yield
-    Machine.__new__.cache_clear()
+    reset_machine_singleton()
     reset_nvidia_cache()
 
 
@@ -68,11 +75,12 @@ def isolate_unit_registries() -> Iterator[None]:
     from mainboard.gpu import GPU
     from mainboard.npu import NPU
 
-    roots = [next(b for b in cls.__mro__ if "_registry" in b.__dict__) for cls in (GPU, NPU)]
-    saved = {root: list(root._registry) for root in roots}
+    # `registry()` returns the nearest root's live list; snapshot a copy, restore in place.
+    saved_gpu = list(GPU.registry())
+    saved_npu = list(NPU.registry())
     yield
-    for root, members in saved.items():
-        root._registry[:] = members
+    GPU.registry()[:] = saved_gpu
+    NPU.registry()[:] = saved_npu
 
 
 @pytest.fixture
@@ -124,7 +132,19 @@ class FakeRuntime:
         return (CudaErrorT.cudaSuccess, self.count)
 
     def cudaGetDeviceProperties(self, index: int) -> tuple[int, Any]:
-        return (CudaErrorT.cudaSuccess, type("Props", (), {"totalGlobalMem": 24 * 1024**3})())
+        props = type(
+            "Props",
+            (),
+            {
+                "totalGlobalMem": 24 * 1024**3,
+                "multiProcessorCount": 128,
+                "memoryBusWidth": 384,
+            },
+        )()
+        return (CudaErrorT.cudaSuccess, props)
+
+    def cudaDeviceGetPCIBusId(self, length: int, index: int) -> tuple[int, bytes]:
+        return (CudaErrorT.cudaSuccess, f"0000:0{index}:00.0\x00".encode())
 
     def cudaDriverGetVersion(self) -> tuple[int, int]:
         return (CudaErrorT.cudaSuccess, 13010)
@@ -194,6 +214,10 @@ class FakeNvml:
         TEMPERATURE_THRESHOLD_SHUTDOWN = 0
         TEMPERATURE_THRESHOLD_SLOWDOWN = 1
 
+    class ClockType:
+        CLOCK_SM = 1
+        CLOCK_MEM = 2
+
     NotSupportedError = FakeError
     NoPermissionError = FakeError
     UnknownError = FakeError
@@ -207,6 +231,26 @@ class FakeNvml:
 
     def device_get_name(self, handle: str) -> str:
         return "NVIDIA GeForce RTX 4090"
+
+    def device_get_uuid(self, handle: str) -> str:
+        return "GPU-deadbeef"
+
+    def device_get_cuda_compute_capability(self, handle: str) -> tuple[int, int]:
+        return (8, 9)
+
+    def device_get_memory_info_v2(self, handle: str) -> Any:
+        return type(
+            "Mem", (), {"total": 24 * 1024**3, "used": 6 * 1024**3, "free": 18 * 1024**3}
+        )()
+
+    def device_get_clock_info(self, handle: str, clock: int) -> int:
+        return 2520 if clock == FakeNvml.ClockType.CLOCK_SM else 10501
+
+    def device_get_max_clock_info(self, handle: str, clock: int) -> int:
+        return 10501
+
+    def device_get_utilization_rates(self, handle: str) -> Any:
+        return type("Util", (), {"gpu": 42, "memory": 17})()
 
     def device_get_current_clocks_event_reasons(self, handle: str) -> int:
         return 0x08  # HW_SLOWDOWN
@@ -243,14 +287,23 @@ class FakeSystem:
 
 
 class FakeNvidiaApis:
-    """Drop-in replacement for `NvidiaApis` wired to the fakes above."""
+    """Drop-in replacement for `NvidiaApis` wired to the fakes above.
 
-    def __init__(self, device_count: int = 2) -> None:
+    `has_cuda_core=False` drops `cuda.core` to exercise the NVML/runtime-only
+    paths the provider uses on hosts where the optional layer fails to load.
+    """
+
+    def __init__(self, device_count: int = 2, has_cuda_core: bool = True) -> None:
         self.runtime = FakeRuntime(device_count)
-        self.system = FakeSystem()
+        self.system = FakeSystem() if has_cuda_core else None
         self.nvml = FakeNvml()
-        self.cuda_device_type = FakeCudaDevice
+        self.cuda_device_type = FakeCudaDevice if has_cuda_core else None
         self.nvml_errors = (FakeError,)
+
+    @property
+    def has_cuda_core(self) -> bool:
+        """Whether the optional `cuda.core` layer is wired in this fake."""
+        return self.cuda_device_type is not None
 
 
 @pytest.fixture
@@ -262,6 +315,124 @@ def nvidia_host(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNvidiaApis]:
     yield apis
 
 
+@pytest.fixture
+def nvidia_host_no_cuda_core(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNvidiaApis]:
+    """A CUDA stack without the optional `cuda.core` layer, exercising NVML-only paths."""
+    apis = FakeNvidiaApis(has_cuda_core=False)
+    nvidia_apis_module.nvidia_apis.cache_clear()
+    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
+    yield apis
+
+
 def text_strategy() -> st.SearchStrategy[str]:
     """Printable text without control characters for name-like fields."""
     return st.text(st.characters(blacklist_categories=("Cs", "Cc")), max_size=40)
+
+
+class FakeGPU:
+    """A GPU stand-in for the profiling/contention helpers (no real device needed).
+
+    Carries just the telemetry those helpers read: a peak bandwidth to score copies
+    against, and live `utilization`/`memory` so `gpu_busy` has something to judge.
+    """
+
+    def __init__(self, *, gpu_pct: int = 0, memory_pct: int = 0, used_pct: float = 0.0) -> None:
+        from mainboard.enums import Vendor
+        from mainboard.models.memory import Memory
+        from mainboard.models.utilization import Utilization
+
+        self.vendor = Vendor.UNKNOWN  # so `Tracer.detect` picks the no-op base
+        self.peak_bandwidth_gbs = 900.0
+        self.utilization = Utilization(gpu_pct=gpu_pct, memory_pct=memory_pct)
+        total = 1000
+        self.memory = Memory(total_bytes=total, used_bytes=int(total * used_pct / 100.0))
+
+
+class FakeTracer:
+    """A no-op `Tracer` whose deep-trace support is fixed to `KERNEL | MEMCPY`."""
+
+    def supported(self) -> Any:
+        from mainboard.profiling.trace import Activity
+
+        return Activity.KERNEL | Activity.MEMCPY
+
+    def push(self, name: str) -> None:
+        return None
+
+    def pop(self) -> None:
+        return None
+
+
+class RecordingProfiler:
+    """A `Profiler` stand-in that ignores tracing and returns a fixed kernel `Profile`.
+
+    Stands in for the CUPTI-backed profiler so the orchestration in `bottleneck.profile`
+    is testable without CUDA; its `result()` carries one hot `gemm` kernel.
+    """
+
+    def __init__(self, **_: Any) -> None:
+        pass
+
+    def __enter__(self) -> RecordingProfiler:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def result(self) -> Any:
+        from mainboard.profiling.result import Profile
+        from mainboard.profiling.trace import KernelTrace
+
+        return Profile(device="fake", kernels=(KernelTrace(name="gemm", start_ns=0, end_ns=1000),))
+
+
+def _patch_gpu_all(monkeypatch: pytest.MonkeyPatch, gpu: FakeGPU | None) -> None:
+    """Point `GPU.all` at a single fake GPU (or none) for every reader."""
+    from mainboard.gpu import GPU
+
+    devices = (gpu,) if gpu is not None else ()
+    monkeypatch.setattr(GPU, "all", classmethod(lambda cls: devices))
+
+
+@pytest.fixture
+def gpu_profiling_host(monkeypatch: pytest.MonkeyPatch) -> FakeGPU:
+    """Pretend a traceable GPU is present, with a fake tracer and recording profiler."""
+    from mainboard.profiling import annotate, bottleneck
+
+    gpu = FakeGPU()
+    tracer = FakeTracer()
+    _patch_gpu_all(monkeypatch, gpu)
+    monkeypatch.setattr(bottleneck, "tracer", lambda: tracer)
+    monkeypatch.setattr(annotate, "tracer", lambda: tracer)  # region() reads this one
+    monkeypatch.setattr(bottleneck, "Profiler", RecordingProfiler)
+    return gpu
+
+
+@pytest.fixture
+def idle_gpu_host(monkeypatch: pytest.MonkeyPatch) -> FakeGPU:
+    """One GPU sitting idle, below both the utilization and memory thresholds."""
+    gpu = FakeGPU(gpu_pct=2, used_pct=10.0)
+    _patch_gpu_all(monkeypatch, gpu)
+    return gpu
+
+
+@pytest.fixture
+def busy_gpu_host(monkeypatch: pytest.MonkeyPatch) -> FakeGPU:
+    """One GPU under heavy compute load (above the utilization threshold)."""
+    gpu = FakeGPU(gpu_pct=85, used_pct=40.0)
+    _patch_gpu_all(monkeypatch, gpu)
+    return gpu
+
+
+@pytest.fixture
+def memory_pressure_gpu_host(monkeypatch: pytest.MonkeyPatch) -> FakeGPU:
+    """One GPU idle on compute but nearly full on memory."""
+    gpu = FakeGPU(gpu_pct=1, used_pct=95.0)
+    _patch_gpu_all(monkeypatch, gpu)
+    return gpu
+
+
+@pytest.fixture
+def cpu_only_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend the host has no GPU at all (the contention/profile helpers degrade)."""
+    _patch_gpu_all(monkeypatch, None)
