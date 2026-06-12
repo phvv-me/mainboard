@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..enums import ToolCategory
 from .board import Board
 from .clock import Clock

@@ -4,6 +4,8 @@ Kept separate from :mod:`.result` so the result value stays pure data; ``Profile
 and ``ProfileDiff.show`` delegate here. :func:`region_text` is the no-rich fallback.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from rich import box

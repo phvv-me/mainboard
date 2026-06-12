@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ..enums import ToolCategory
 from .base import Field, FrozenModel
 

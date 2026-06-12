@@ -4,6 +4,8 @@
 pins the range and mark API the tracer emits, visible under `rocprofv3 --marker-trace`.
 """
 
+from __future__ import annotations
+
 from typing import Protocol
 
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .cpu import CPU
 from .enums import (
     CmakeBuildType,

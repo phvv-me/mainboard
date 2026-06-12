@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .amd import AMDGPU
 from .apple import AppleGPU, AppleNPU
 from .intel import IntelGPU, IntelNPU

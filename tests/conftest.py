@@ -47,11 +47,11 @@ def reset_nvidia_cache() -> None:
 
 def reset_machine_singleton() -> None:
     """Drop the cached `Machine` so each test builds a fresh, isolated instance."""
-    from patos.singleton import SingletonMeta
-
     from mainboard.machine import Machine
 
-    SingletonMeta.instances.pop(Machine, None)
+    # SingletonMeta caches the instance on the class itself, so dropping the
+    # class attribute is the reset.
+    Machine.__dict__.get("singleton_instance") and delattr(Machine, "singleton_instance")
 
 
 @pytest.fixture(autouse=True)

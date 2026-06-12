@@ -7,7 +7,7 @@ name = "mainboard"
 version = "0.0.6"
 description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Pedro Valois", email = "contact@phvv.me" }]
@@ -26,6 +26,7 @@ classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: System :: Hardware",
   "Topic :: System :: Monitoring",

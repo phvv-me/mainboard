@@ -9,6 +9,8 @@ drains buffers at session boundaries; records carry GPU-clock timestamps so the
 profiler bins them into regions afterwards with no per-region synchronize.
 """
 
+from __future__ import annotations
+
 import threading
 from collections import defaultdict
 from contextlib import suppress

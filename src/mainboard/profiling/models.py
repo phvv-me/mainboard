@@ -1,5 +1,7 @@
 """Aggregated profiling results: one row per region from its sampled snapshots."""
 
+from __future__ import annotations
+
 from collections import defaultdict
 from typing import TYPE_CHECKING
 

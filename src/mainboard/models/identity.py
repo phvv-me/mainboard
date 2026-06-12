@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import getpass
 import os
 import sys
@@ -27,7 +29,7 @@ class Identity(ABC):
         """Login name of the current user, or "" when it cannot be determined."""
         try:
             return getpass.getuser()
-        except KeyError, OSError:
+        except (KeyError, OSError):
             return ""
 
     @abstractmethod
@@ -45,13 +47,13 @@ class PosixIdentity(Identity):
     def primary_group(self) -> str:
         try:
             return grp.getgrgid(os.getgid()).gr_name
-        except KeyError, OSError:
+        except (KeyError, OSError):
             return ""
 
     def all_groups(self) -> tuple[str, ...]:
         try:
             return tuple(grp.getgrgid(gid).gr_name for gid in os.getgroups())
-        except KeyError, OSError:
+        except (KeyError, OSError):
             return ()
 
 

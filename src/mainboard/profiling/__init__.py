@@ -17,6 +17,8 @@ Auto-annotation: ``Profiler.auto(["my.package"])`` (runtime, PEP 669) or
 vendor tracers.
 """
 
+from __future__ import annotations
+
 from .annotate import (
     callbacks,
     disable_auto,

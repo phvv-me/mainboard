@@ -7,6 +7,8 @@ in `trace.py` stays fully typed without leaning on `Any`. The few fields CUPTI o
 some record kinds are read defensively with `getattr`, so they stay off the Protocols.
 """
 
+from __future__ import annotations
+
 from typing import Protocol
 
 # JSON values accepted by the Chrome/Perfetto trace-event writer.
