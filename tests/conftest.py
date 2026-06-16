@@ -2,7 +2,6 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from hypothesis import strategies as st
 
 from mainboard import shell
 from mainboard.providers import apple
@@ -112,6 +111,11 @@ def fake_psutil_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class FakeError(Exception):
     """Shared NVML/system error type for the fake CUDA stack."""
+
+
+def raise_unsupported(*args: object, **kwargs: object) -> object:
+    """Raise the fake NVML `NotSupportedError`, modelling a sensor a device lacks."""
+    raise FakeError
 
 
 class CudaErrorT:
@@ -324,11 +328,6 @@ def nvidia_host_no_cuda_core(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNv
     yield apis
 
 
-def text_strategy() -> st.SearchStrategy[str]:
-    """Printable text without control characters for name-like fields."""
-    return st.text(st.characters(blacklist_categories=("Cs", "Cc")), max_size=40)
-
-
 class FakeGPU:
     """A GPU stand-in for the profiling/contention helpers (no real device needed).
 
@@ -436,3 +435,66 @@ def memory_pressure_gpu_host(monkeypatch: pytest.MonkeyPatch) -> FakeGPU:
 def cpu_only_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pretend the host has no GPU at all (the contention/profile helpers degrade)."""
     _patch_gpu_all(monkeypatch, None)
+
+
+def make_clock_tracer() -> Any:
+    """A no-op tracer with a monotonic device clock and KERNEL/MEMCPY deep support.
+
+    Stands in for any real backend in the sampling/annotation tests: `timestamp`
+    ticks a counter for region windows, and `open` hands back the no-op base
+    collector so a deep trace records windows without a GPU.
+    """
+    from mainboard.profiling.trace import Activity, TraceCollector
+    from mainboard.profiling.tracer import Tracer
+
+    class ClockTracer(Tracer):
+        def __init__(self) -> None:
+            self.clock = 0
+
+        def supported(self) -> Activity:
+            return Activity.KERNEL | Activity.MEMCPY
+
+        def timestamp(self) -> int:
+            self.clock += 1
+            return self.clock
+
+        def open(self, kinds: Activity) -> TraceCollector:
+            return TraceCollector()
+
+    return ClockTracer()
+
+
+@pytest.fixture
+def one_gpu(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A one-GPU host whose snapshot carries fixed telemetry, with a clock tracer.
+
+    Returns the installed `ClockTracer` so a test can swap its `push` for a spy.
+    """
+    from mainboard.enums import UnitKind, Vendor
+    from mainboard.gpu import GPU
+    from mainboard.models.gpu_snapshot import GPUSnapshot
+    from mainboard.models.memory import Memory
+    from mainboard.models.utilization import Utilization
+    from mainboard.profiling import annotate
+    from mainboard.profiling import profiler as profiler_mod
+
+    class OneGPU(GPU):
+        @classmethod
+        def all(cls) -> tuple[GPU, ...]:
+            return (cls(),)
+
+        def snapshot(self, name: str = "") -> GPUSnapshot:
+            return GPUSnapshot(
+                name=name,
+                unit_name="probe",
+                kind=UnitKind.GPU,
+                vendor=Vendor.UNKNOWN,
+                memory=Memory(total_bytes=100, used_bytes=40),
+                utilization=Utilization(gpu_pct=25, memory_pct=10),
+            )
+
+    tracer = make_clock_tracer()
+    monkeypatch.setattr(profiler_mod.GPU, "all", classmethod(lambda cls: (OneGPU(),)))
+    monkeypatch.setattr(annotate, "_tracer", tracer)
+    monkeypatch.setattr(annotate, "profiler", None)
+    return tracer

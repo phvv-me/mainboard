@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import pytest
 
 from mainboard import (
@@ -17,7 +19,7 @@ from mainboard.providers.apple import gpu as apple_gpu
 from mainboard.providers.apple import profile as apple_profile
 from mainboard.providers.nvidia import apis as nvidia_apis_module
 
-from .conftest import FakeError, FakeNvidiaApis
+from .conftest import FakeError, FakeNvidiaApis, raise_unsupported
 
 
 @pytest.mark.parametrize(
@@ -180,14 +182,21 @@ def test_nvidia_snapshot_round_trips(nvidia_host: object) -> None:
 
 
 def test_nvidia_nvml_only_paths(nvidia_host_no_cuda_core: FakeNvidiaApis) -> None:
-    """Without the optional `cuda.core` layer, identity and sensors read through NVML."""
+    """When `cuda.core` is absent (e.g. a torch wheel poisons `libstdc++`), discovery,
+    identity, capability, memory, clocks, utilization, and bandwidth all read through
+    `cuda.bindings` (runtime + NVML) alone."""
+    assert nvidia_host_no_cuda_core.has_cuda_core is False
+    assert NvidiaGPU.is_available() is True
     gpu = NvidiaGPU(index=0)
     assert gpu.name == "NVIDIA GeForce RTX 4090"
     assert gpu.uuid == "GPU-deadbeef"
-    assert gpu.sm_count == 128
+    assert str(gpu.cuda_architecture) == "8.9"
     assert gpu.architecture == "Ada"  # from the compute-capability table (cc 8.9)
+    assert gpu.sm_count == 128
+    mem = gpu.memory
+    assert (mem.total_bytes, mem.used_bytes, mem.source) == (24 * 1024**3, 6 * 1024**3, "nvml")
+    assert (gpu.clocks.sm_mhz, gpu.clocks.memory_mhz) == (2520, 10501)
     assert (gpu.utilization.gpu_pct, gpu.utilization.memory_pct) == (42, 17)
-    assert gpu.memory.total_bytes == 24 * 1024**3
     expected_bw = 10501 * 1e3 * 2 * 384 / 8 / 1e6
     assert gpu.peak_bandwidth_gbs == pytest.approx(expected_bw)
 
@@ -218,11 +227,9 @@ def test_nvidia_nvml_memory_unsupported_falls_back_to_runtime(
     nvidia_host_no_cuda_core: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """NVML memory raising drops to the CUDA-runtime `cudaMemGetInfo` reading."""
-
-    def boom(handle: object) -> object:
-        raise FakeNvidiaApis().nvml.NotSupportedError
-
-    monkeypatch.setattr(nvidia_host_no_cuda_core.nvml, "device_get_memory_info_v2", boom)
+    monkeypatch.setattr(
+        nvidia_host_no_cuda_core.nvml, "device_get_memory_info_v2", raise_unsupported
+    )
     mem = NvidiaGPU(index=0).memory
     assert mem.source == "cuda-runtime"
     assert mem.total_bytes == 24 * 1024**3
@@ -248,62 +255,59 @@ def test_nvidia_runtime_memory_error_raises(
         _ = gpu.memory
 
 
+@pytest.mark.parametrize(
+    ("fixture", "broken", "expected"),
+    [
+        pytest.param(
+            "nvidia_host",
+            (
+                "device_get_fan_speed",
+                "device_get_power_usage",
+                "device_get_pcie_throughput",
+                "device_get_compute_running_processes_v3",
+            ),
+            lambda gpu: (gpu.fan_speed_pct, gpu.energy.power_mw, gpu.pcie.tx_kbs, gpu.processes)
+            == (0, 0, 0, []),
+            id="sensors-degrade",
+        ),
+        pytest.param(
+            "nvidia_host_no_cuda_core",
+            (
+                "device_get_temperature_v",
+                "device_get_temperature_threshold",
+                "device_get_current_clocks_event_reasons",
+                "device_get_utilization_rates",
+            ),
+            lambda gpu: (
+                gpu.thermal.temperature_c,
+                gpu.thermal.slowdown_threshold_c,
+                gpu.thermal.throttle_reasons,
+                gpu.utilization.gpu_pct,
+                gpu.utilization.memory_pct,
+            )
+            == (0, 0, 0, 0, 0),
+            id="thermal-and-util-degrade",
+        ),
+        pytest.param(
+            "nvidia_host",
+            ("device_get_temperature_threshold",),
+            lambda gpu: (gpu.thermal.temperature_c, gpu.thermal.slowdown_threshold_c) == (65, 0),
+            id="threshold-fails-temp-survives",
+        ),
+    ],
+)
 def test_nvidia_sensors_degrade_on_nvml_errors(
-    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+    fixture: str,
+    broken: tuple[str, ...],
+    expected: Callable[[NvidiaGPU], bool],
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fan speed, energy, pcie, and processes degrade to defaults on NVML errors."""
-
-    def boom(*args: object, **kwargs: object) -> object:
-        raise FakeNvidiaApis().nvml.NotSupportedError
-
-    for method in (
-        "device_get_fan_speed",
-        "device_get_power_usage",
-        "device_get_pcie_throughput",
-        "device_get_compute_running_processes_v3",
-    ):
-        monkeypatch.setattr(nvidia_host.nvml, method, boom)
-    gpu = NvidiaGPU(index=0)
-    assert gpu.fan_speed_pct == 0
-    assert gpu.energy.power_mw == 0
-    assert gpu.pcie.tx_kbs == 0
-    assert gpu.processes == []
-
-
-def test_nvidia_thermal_and_utilization_degrade_on_nvml_errors(
-    nvidia_host_no_cuda_core: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """On devices like GB10 the thermal and utilization sensors degrade to zeros."""
-
-    def boom(*args: object, **kwargs: object) -> object:
-        raise FakeNvidiaApis().nvml.NotSupportedError
-
-    for method in (
-        "device_get_temperature_v",
-        "device_get_temperature_threshold",
-        "device_get_current_clocks_event_reasons",
-        "device_get_utilization_rates",
-    ):
-        monkeypatch.setattr(nvidia_host_no_cuda_core.nvml, method, boom)
-    gpu = NvidiaGPU(index=0)
-    assert gpu.thermal.temperature_c == 0
-    assert gpu.thermal.slowdown_threshold_c == 0
-    assert gpu.thermal.throttle_reasons == 0
-    assert (gpu.utilization.gpu_pct, gpu.utilization.memory_pct) == (0, 0)
-
-
-def test_nvidia_thermal_keeps_temperature_when_thresholds_unsupported(
-    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A threshold read failing mid-way still surfaces the temperature already read."""
-
-    def boom(*args: object, **kwargs: object) -> object:
-        raise FakeNvidiaApis().nvml.NotSupportedError
-
-    monkeypatch.setattr(nvidia_host.nvml, "device_get_temperature_threshold", boom)
-    thermal = NvidiaGPU(index=0).thermal
-    assert thermal.temperature_c == 65
-    assert thermal.slowdown_threshold_c == 0
+    """NVML sensors that raise degrade to defaults while the rest of the read survives."""
+    apis: FakeNvidiaApis = request.getfixturevalue(fixture)
+    for method in broken:
+        monkeypatch.setattr(apis.nvml, method, raise_unsupported)
+    assert expected(NvidiaGPU(index=0))
 
 
 def test_nvidia_utilization_degrades_when_cuda_core_unsupported(
@@ -346,28 +350,6 @@ def test_nvidia_falls_back_to_runtime_when_nvml_memory_unsupported(
     clocks = gpu.clocks
     assert clocks.sm_mhz == round(2520000 / 1000)
     assert clocks.memory_mhz == round(10501000 / 1000)
-
-
-def test_nvidia_reads_devices_without_cuda_core(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When `cuda.core` fails to load (e.g. a torch wheel poisons `libstdc++`),
-    the provider still discovers devices and reads identity, memory, clocks, and
-    utilization through `cuda.bindings` (runtime + NVML) alone."""
-    apis = FakeNvidiaApis(has_cuda_core=False)
-    nvidia_apis_module.nvidia_apis.cache_clear()
-    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
-
-    assert apis.has_cuda_core is False
-    assert NvidiaGPU.is_available() is True
-    gpu = NvidiaGPU(index=0)
-    assert gpu.name == "NVIDIA GeForce RTX 4090"
-    assert gpu.uuid == "GPU-deadbeef"
-    assert str(gpu.cuda_architecture) == "8.9"
-    assert gpu.architecture == "Ada"
-    assert gpu.sm_count == 128
-    mem = gpu.memory
-    assert (mem.total_bytes, mem.used_bytes, mem.source) == (24 * 1024**3, 6 * 1024**3, "nvml")
-    assert (gpu.clocks.sm_mhz, gpu.clocks.memory_mhz) == (2520, 10501)
-    assert (gpu.utilization.gpu_pct, gpu.utilization.memory_pct) == (42, 17)
 
 
 def test_nvidia_apis_tolerates_missing_cuda_core(monkeypatch: pytest.MonkeyPatch) -> None:

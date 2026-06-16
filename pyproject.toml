@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mainboard"
-version = "0.0.6"
+version = "0.0.7"
 description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
 readme = "README.md"
 requires-python = ">=3.13"

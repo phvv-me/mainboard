@@ -19,6 +19,8 @@ from mainboard.profiling.result import Profile
 from mainboard.profiling.trace import Activity
 from mainboard.profiling.tracer import Tracer
 
+from .conftest import make_clock_tracer
+
 
 class FakeProfiler:
     """A `Profiler` stand-in capturing how the CLI opened it and what it returned."""
@@ -70,47 +72,7 @@ def test_cli_profile_runs_a_script_and_exports(
 # ── Profiler sampling thread + auto-annotation ───────────────────────────────────
 
 
-class ClockTracer(Tracer):
-    """A no-op tracer with a monotonic device clock for region windows."""
-
-    def __init__(self) -> None:
-        self._clock = 0
-
-    def timestamp(self) -> int:
-        self._clock += 1
-        return self._clock
-
-
-@pytest.fixture
-def one_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A one-GPU host whose snapshot carries fixed telemetry, with a no-op tracer."""
-    from mainboard.enums import UnitKind, Vendor
-    from mainboard.gpu import GPU
-    from mainboard.models.gpu_snapshot import GPUSnapshot
-    from mainboard.models.memory import Memory
-    from mainboard.models.utilization import Utilization
-
-    class OneGPU(GPU):
-        @classmethod
-        def all(cls) -> tuple[GPU, ...]:
-            return (cls(),)
-
-        def snapshot(self, name: str = "") -> GPUSnapshot:
-            return GPUSnapshot(
-                name=name,
-                unit_name="probe",
-                kind=UnitKind.GPU,
-                vendor=Vendor.UNKNOWN,
-                memory=Memory(total_bytes=100, used_bytes=40),
-                utilization=Utilization(gpu_pct=25, memory_pct=10),
-            )
-
-    monkeypatch.setattr(profiler_mod.GPU, "all", classmethod(lambda cls: (OneGPU(),)))
-    monkeypatch.setattr(annotate, "_tracer", ClockTracer())
-    monkeypatch.setattr(annotate, "profiler", None)
-
-
-def test_profiler_sampler_attributes_snapshots_to_region(one_gpu: None) -> None:
+def test_profiler_sampler_attributes_snapshots_to_region(one_gpu: object) -> None:
     """The background sampler folds device snapshots into the open region's summary."""
     import time
 
@@ -123,7 +85,9 @@ def test_profiler_sampler_attributes_snapshots_to_region(one_gpu: None) -> None:
     assert summary.avg_memory_util_pct == 10.0
 
 
-def test_profiler_auto_annotates_a_module(one_gpu: None, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_profiler_auto_annotates_a_module(
+    one_gpu: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`auto` instruments a package by file root, and disables on context exit."""
     import importlib
 
@@ -157,7 +121,7 @@ def test_profiler_module_roots_skips_modules_without_file() -> None:
 
 def test_auto_hooks_balance_returns_and_unwinds(monkeypatch: pytest.MonkeyPatch) -> None:
     """The start/return/unwind hooks push and pop the per-thread frame stack evenly."""
-    monkeypatch.setattr(annotate, "_tracer", ClockTracer())
+    monkeypatch.setattr(annotate, "_tracer", make_clock_tracer())
     monkeypatch.setattr(annotate, "profiler", None)
     monkeypatch.setattr(annotate, "_predicate", lambda code: True)
     annotate._stack().clear()
@@ -173,7 +137,7 @@ def test_auto_hooks_balance_returns_and_unwinds(monkeypatch: pytest.MonkeyPatch)
 
 def test_auto_start_skips_unmatched_code(monkeypatch: pytest.MonkeyPatch) -> None:
     """A code object failing the predicate is tracked as an empty (None) frame."""
-    monkeypatch.setattr(annotate, "_tracer", ClockTracer())
+    monkeypatch.setattr(annotate, "_tracer", make_clock_tracer())
     monkeypatch.setattr(annotate, "_predicate", lambda code: False)
     annotate._stack().clear()
     annotate._on_start((lambda: None).__code__, 0)
@@ -260,7 +224,7 @@ def test_auto_hooks_exit_an_active_region(monkeypatch: pytest.MonkeyPatch) -> No
         def exit(self, name: str, wall_ns: int) -> None:
             closed.append(name)
 
-    monkeypatch.setattr(annotate, "_tracer", ClockTracer())
+    monkeypatch.setattr(annotate, "_tracer", make_clock_tracer())
     monkeypatch.setattr(annotate, "profiler", ActiveProfiler())
     monkeypatch.setattr(annotate, "_predicate", lambda code: True)
     annotate._stack().clear()
@@ -276,7 +240,7 @@ def test_profiler_exit_without_enter_is_safe() -> None:
 
 
 def test_sampler_skips_when_no_region_is_open(
-    one_gpu: None, monkeypatch: pytest.MonkeyPatch
+    one_gpu: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A sampler tick with no open region takes no snapshot and simply continues."""
     profiler = Profiler(sample_interval_ms=1)

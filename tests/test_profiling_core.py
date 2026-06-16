@@ -31,6 +31,8 @@ from mainboard.profiling.trace import (
 )
 from mainboard.profiling.tracer import Tracer
 
+from .conftest import make_clock_tracer
+
 
 def _traced_profile() -> Profile:
     """A profile with two regions and kernels/memcpys binned across their windows."""
@@ -307,47 +309,7 @@ def test_region_stat_aggregate_collapses_calls() -> None:
 # ── Profiler (sampling, mocked tracer + GPU) ─────────────────────────────────────
 
 
-class FakeSamplingTracer(Tracer):
-    """A tracer with a monotonic device clock and KERNEL/MEMCPY deep support."""
-
-    def __init__(self) -> None:
-        self._clock = 0
-
-    def supported(self) -> Activity:
-        return Activity.KERNEL | Activity.MEMCPY
-
-    def timestamp(self) -> int:
-        self._clock += 1
-        return self._clock
-
-    def open(self, kinds: Activity) -> TraceCollector:
-        return TraceCollector()
-
-
-@pytest.fixture
-def sampling_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Wire the profiler's annotate/GPU seam to a fake tracer and a one-GPU probe."""
-    from mainboard.gpu import GPU
-    from mainboard.models.utilization import Utilization
-    from mainboard.profiling import profiler as profiler_mod
-
-    tracer = FakeSamplingTracer()
-    monkeypatch.setattr(annotate, "_tracer", tracer)
-    monkeypatch.setattr(annotate, "profiler", None)
-
-    class OneGPU(GPU):
-        @classmethod
-        def all(cls) -> tuple[GPU, ...]:
-            return (cls(),)
-
-        @property
-        def utilization(self) -> Utilization:
-            return Utilization(gpu_pct=30, memory_pct=10)
-
-    monkeypatch.setattr(profiler_mod.GPU, "all", classmethod(lambda cls: (OneGPU(),)))
-
-
-def test_profiler_times_regions_and_aggregates(sampling_host: None) -> None:
+def test_profiler_times_regions_and_aggregates(one_gpu: object) -> None:
     """The profiler brackets a region, samples the GPU, and yields a stat for it."""
     with Profiler(sample_interval_ms=1) as profiler, annotate.region("step"):
         pass
@@ -356,7 +318,7 @@ def test_profiler_times_regions_and_aggregates(sampling_host: None) -> None:
     assert profiler.summaries()[0].name == "step"
 
 
-def test_profiler_deep_trace_opens_collector(sampling_host: None) -> None:
+def test_profiler_deep_trace_opens_collector(one_gpu: object) -> None:
     """With `trace`, the profiler opens a collector and records region windows."""
     with Profiler(trace=Activity.KERNEL, sample_interval_ms=1) as profiler, annotate.region("k"):
         pass
@@ -365,7 +327,7 @@ def test_profiler_deep_trace_opens_collector(sampling_host: None) -> None:
     assert profiler.supported() == (Activity.KERNEL | Activity.MEMCPY)
 
 
-def test_profiler_exit_without_open_frame_is_safe(sampling_host: None) -> None:
+def test_profiler_exit_without_open_frame_is_safe(one_gpu: object) -> None:
     """Closing a region that was never opened is ignored rather than erroring."""
     profiler = Profiler()
     with profiler:
@@ -374,7 +336,7 @@ def test_profiler_exit_without_open_frame_is_safe(sampling_host: None) -> None:
 
 
 def test_profiler_trace_report_and_show(
-    sampling_host: None, capsys: pytest.CaptureFixture[str]
+    one_gpu: object, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The profiler proxies the result's reports and show during/after a run."""
     with Profiler(trace=Activity.KERNEL, sample_interval_ms=1) as profiler:
@@ -394,7 +356,7 @@ def test_profiler_trace_report_and_show(
 def test_region_without_profiler_only_annotates(monkeypatch: pytest.MonkeyPatch) -> None:
     """A region with no active profiler still pushes/pops native annotation."""
     pushes: list[str] = []
-    tracer = FakeSamplingTracer()
+    tracer = make_clock_tracer()
     monkeypatch.setattr(tracer, "push", lambda name: pushes.append(name))
     monkeypatch.setattr(annotate, "_tracer", tracer)
     monkeypatch.setattr(annotate, "profiler", None)
@@ -405,7 +367,7 @@ def test_region_without_profiler_only_annotates(monkeypatch: pytest.MonkeyPatch)
 
 def test_profile_decorator_wraps_each_call(monkeypatch: pytest.MonkeyPatch) -> None:
     """`@profile` names each call a region; bare and parameterized forms both work."""
-    monkeypatch.setattr(annotate, "_tracer", FakeSamplingTracer())
+    monkeypatch.setattr(annotate, "_tracer", make_clock_tracer())
     monkeypatch.setattr(annotate, "profiler", None)
 
     @annotate.profile
@@ -422,7 +384,7 @@ def test_profile_decorator_wraps_each_call(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_callbacks_proxies_the_tracer(monkeypatch: pytest.MonkeyPatch) -> None:
     """`callbacks()` returns the active tracer's callback session."""
-    monkeypatch.setattr(annotate, "_tracer", FakeSamplingTracer())
+    monkeypatch.setattr(annotate, "_tracer", make_clock_tracer())
     with annotate.callbacks() as session:
         pass
     assert session.counts() == {}
@@ -439,7 +401,7 @@ def test_tracer_lazy_detection_is_cached(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_enable_auto_instruments_matching_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     """Runtime auto-annotation brackets every call whose code matches the predicate."""
     seen: list[str] = []
-    tracer = FakeSamplingTracer()
+    tracer = make_clock_tracer()
     monkeypatch.setattr(tracer, "push", lambda name: seen.append(name))
     monkeypatch.setattr(annotate, "_tracer", tracer)
     monkeypatch.setattr(annotate, "profiler", None)
