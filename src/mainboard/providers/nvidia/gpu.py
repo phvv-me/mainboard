@@ -190,14 +190,41 @@ class NvidiaGPU(GPU):
             and util.find_spec("cupti") is not None,
         )
 
+    @cached_property
+    def coherent(self) -> bool:
+        """Whether this GPU shares a cache-coherent memory pool with the host.
+
+        Probed, not guessed: a device that reports both
+        `cudaDevAttrPageableMemoryAccess` and `cudaDevAttrConcurrentManagedAccess`
+        sits on a coherent fabric where host RAM is a peer NUMA node of HBM (Grace
+        Hopper, GB10), not a PCIe copy away. A discrete card (the 4090) reports
+        neither, so `unified` stays False there. A binding that lacks the attribute
+        query degrades to False rather than raising.
+        """
+        runtime = self.apis.runtime
+        with suppress(*self.apis.nvml_errors, AttributeError):
+            attrs = runtime.cudaDeviceAttr
+            ok = runtime.cudaError_t.cudaSuccess
+            err_p, pageable = runtime.cudaDeviceGetAttribute(
+                attrs.cudaDevAttrPageableMemoryAccess, self.index
+            )
+            err_m, managed = runtime.cudaDeviceGetAttribute(
+                attrs.cudaDevAttrConcurrentManagedAccess, self.index
+            )
+            return err_p == ok and err_m == ok and bool(pageable) and bool(managed)
+        return False
+
     @property
     def memory(self) -> Memory:
         """CUDA-visible GPU memory allocation state.
 
         On GH200 and other coherent platforms this reflects HBM-resident
-        allocations (the discrete-device counter). Managed memory paged into
-        Grace LPDDR is not counted here, matching `nvidia-smi`.
+        allocations (the discrete-device counter) and carries `unified=True`, the
+        probed signal that host RAM is a peer pool the residency policy can spend.
+        Managed memory paged into Grace LPDDR is not counted here, matching
+        `nvidia-smi`.
         """
+        unified = self.coherent
         if self.apis.has_cuda_core:
             try:
                 memory = self.system_device.memory_info
@@ -206,6 +233,7 @@ class NvidiaGPU(GPU):
                     total_bytes=memory.total,
                     used_bytes=memory.used,
                     free_bytes=memory.free,
+                    unified=unified,
                     source="cuda-core-system",
                 )
             except self.system_api.NotSupportedError:
@@ -221,6 +249,7 @@ class NvidiaGPU(GPU):
                 total_bytes=memory.total,
                 used_bytes=memory.used,
                 free_bytes=memory.free,
+                unified=self.coherent,
                 source="nvml",
             )
         return self.runtime_memory()
@@ -242,6 +271,7 @@ class NvidiaGPU(GPU):
             total_bytes=total_bytes,
             used_bytes=total_bytes - free_bytes,
             free_bytes=free_bytes,
+            unified=self.coherent,
             source="cuda-runtime",
         )
 

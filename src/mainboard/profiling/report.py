@@ -69,8 +69,10 @@ class ProfileReport(FrozenModel):
     dominant_kernel/dominant_share_pct: the hottest kernel and its slice of kernel time.
     bound: the memory-vs-compute verdict (:class:`Bound`). total_kernel_ns/total_memcpy_ns:
     summed GPU time per class. achieved_bandwidth_gbps/peak_bandwidth_gbps: copy bandwidth
-    measured against the device peak (the memory-bound signal). kernels: the per-kernel
-    breakdown, hottest first. unavailable: activity-kind labels the device could not trace.
+    measured against the device peak (the memory-bound signal). peak_memory_bytes/
+    avg_memory_bytes: the device-memory high-water mark and mean over the sampled run — the
+    answer to "how much HBM did this kernel need". kernels: the per-kernel breakdown,
+    hottest first. unavailable: activity-kind labels the device could not trace.
     """
 
     device: str = ""
@@ -85,6 +87,8 @@ class ProfileReport(FrozenModel):
     memcpy_pct: float = 0.0
     achieved_bandwidth_gbps: float = 0.0
     peak_bandwidth_gbps: float = 0.0
+    peak_memory_bytes: int = 0
+    avg_memory_bytes: int = 0
     avg_memory_util_pct: float = 0.0
     avg_compute_util_pct: float = 0.0
     kernels: tuple[KernelStat, ...] = ()
@@ -113,6 +117,7 @@ class ProfileReport(FrozenModel):
         achieved = cls._copy_bandwidth_gbps(profile.memcpys)
         denom = total_kernel + total_memcpy or 1
         mem_util, gpu_util = cls._utilization(profile)
+        peak_memory, avg_memory = cls._memory(profile)
         return cls(
             device=profile.device,
             iterations=iterations,
@@ -126,6 +131,8 @@ class ProfileReport(FrozenModel):
             memcpy_pct=100.0 * total_memcpy / denom,
             achieved_bandwidth_gbps=achieved,
             peak_bandwidth_gbps=peak_bandwidth_gbps,
+            peak_memory_bytes=peak_memory,
+            avg_memory_bytes=avg_memory,
             avg_memory_util_pct=mem_util,
             avg_compute_util_pct=gpu_util,
             kernels=kernels,
@@ -163,6 +170,21 @@ class ProfileReport(FrozenModel):
         compute = sum(s.avg_util_pct for s in summaries) / len(summaries)
         memory = sum(s.avg_memory_util_pct for s in summaries) / len(summaries)
         return memory, compute
+
+    @staticmethod
+    def _memory(profile: Profile) -> tuple[int, int]:
+        """Device-memory (peak high-water mark, mean) in bytes over the sampled regions.
+
+        Peak is the largest single sample (the footprint the kernel needs to fit), mean is
+        averaged across regions. Zero when nothing was sampled — e.g. a kernel that finished
+        between two sampler ticks, where the deep kernel trace remains the reliable signal.
+        """
+        summaries = profile.summaries
+        if not summaries:
+            return 0, 0
+        peak = max(s.peak_memory_bytes for s in summaries)
+        avg = sum(s.avg_memory_bytes for s in summaries) // len(summaries)
+        return peak, avg
 
     @staticmethod
     def _kernels(kernels: Sequence[KernelTrace]) -> tuple[KernelStat, ...]:
@@ -224,8 +246,10 @@ class ProfileReport(FrozenModel):
         return "\n".join([head, *rows]) + self._notes()
 
     def _notes(self) -> str:
-        """Trailing notes: copy bandwidth vs peak, and any untraced activity kinds."""
+        """Trailing notes: peak memory, copy bandwidth vs peak, and any untraced kinds."""
         notes = []
+        if self.peak_memory_bytes:
+            notes.append(f"peak memory {self.peak_memory_bytes / 1e9:.3f} GB")
         if self.peak_bandwidth_gbps:
             pct = 100.0 * self.achieved_bandwidth_gbps / self.peak_bandwidth_gbps
             notes.append(

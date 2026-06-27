@@ -1,26 +1,10 @@
-from __future__ import annotations
+"""Pydantic v2 base models for mainboard machine schemas.
 
-from functools import cached_property
+The house bases live in :mod:`patos`; mainboard re-exports the two its schemas use plus `Field`,
+so call sites import everything from one place.
+"""
 
-from pydantic import BaseModel, ConfigDict, Field
-
-_IGNORED_TYPES = (cached_property,)
-
-
-class Model(BaseModel):
-    """Mutable pydantic model for machine schemas."""
-
-    model_config = ConfigDict(ignored_types=_IGNORED_TYPES)
-
-
-class FrozenModel(BaseModel):
-    """Immutable pydantic model for machine schemas."""
-
-    model_config = ConfigDict(
-        frozen=True,
-        populate_by_name=True,
-        ignored_types=_IGNORED_TYPES,
-    )
-
+from patos import FrozenModel, Model
+from pydantic import Field
 
 __all__ = ["Field", "FrozenModel", "Model"]

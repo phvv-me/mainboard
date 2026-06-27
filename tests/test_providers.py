@@ -155,6 +155,44 @@ def test_nvidia_cuda_python_variant_follows_driver(nvidia_host: object) -> None:
     assert NvidiaGPU(index=0).cuda_python.variant == CudaPythonVariant.CU13
 
 
+def test_nvidia_discrete_gpu_is_not_coherent(nvidia_host: object) -> None:
+    """A discrete card reports neither coherence attribute, so its memory is not unified."""
+    gpu = NvidiaGPU(index=0)
+    assert gpu.coherent is False
+    assert gpu.memory.unified is False
+
+
+def test_nvidia_coherent_pool_sets_unified(nvidia_coherent_host: object) -> None:
+    """A device reporting both coherence attributes flags its memory as unified."""
+    gpu = NvidiaGPU(index=0)
+    assert gpu.coherent is True
+    assert gpu.memory.unified is True
+
+
+def test_nvidia_coherent_pool_sets_unified_without_cuda_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unified flag flows through the NVML-only memory path too (no `cuda.core`)."""
+    apis = FakeNvidiaApis(has_cuda_core=False, coherent=True)
+    nvidia_apis_module.nvidia_apis.cache_clear()
+    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
+    assert NvidiaGPU(index=0).memory.unified is True
+
+
+def test_nvidia_coherence_probe_degrades_when_attribute_query_absent(
+    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A binding without `cudaDeviceGetAttribute` degrades to not-coherent, not a crash."""
+
+    def absent(*args: object) -> object:
+        raise AttributeError("module 'cuda.bindings.runtime' has no cudaDeviceGetAttribute")
+
+    monkeypatch.setattr(nvidia_host.runtime, "cudaDeviceGetAttribute", absent)
+    gpu = NvidiaGPU(index=0)
+    assert gpu.coherent is False
+    assert gpu.memory.unified is False
+
+
 def test_nvidia_live_sensors(nvidia_host: object) -> None:
     """Live NVML sensors flow through to memory, clocks, thermal, energy, and pcie."""
     gpu = NvidiaGPU(index=0)
@@ -453,3 +491,61 @@ def test_machine_degrades_without_cuda_bindings(monkeypatch: pytest.MonkeyPatch)
     assert NvidiaGPU.all() == ()
     assert all(gpu.vendor is not Vendor.NVIDIA for gpu in GPU.all())
     assert all(gpu.vendor is not Vendor.NVIDIA for gpu in Machine().gpus)
+
+
+def test_gpu_all_skips_a_provider_that_raises() -> None:
+    """One provider whose `all` throws must not sink the whole machine probe.
+
+    A backend can load and then fail mid-probe (an unexpected NVML error, a
+    binding that imports but throws). `GPU.all` fans out best-effort, so a
+    raising provider is dropped and the surviving providers still report.
+    `isolate_unit_registries` restores the registry after this test."""
+
+    class GoodGPU(GPU):
+        @classmethod
+        def all(cls) -> tuple[GPU, ...]:
+            return (cls(index=0),)
+
+    class BrokenGPU(GPU):
+        @classmethod
+        def all(cls) -> tuple[GPU, ...]:
+            raise RuntimeError("backend exploded mid-probe")
+
+    gpus = GPU.all()
+    assert any(isinstance(gpu, GoodGPU) for gpu in gpus)
+    assert not any(isinstance(gpu, BrokenGPU) for gpu in gpus)
+
+
+def test_npu_all_skips_a_provider_that_raises() -> None:
+    """The NPU fan-out degrades per provider exactly like the GPU one."""
+    from mainboard import NPU
+
+    class GoodNPU(NPU):
+        @classmethod
+        def all(cls) -> tuple[NPU, ...]:
+            return (cls(index=0),)
+
+    class BrokenNPU(NPU):
+        @classmethod
+        def all(cls) -> tuple[NPU, ...]:
+            raise OSError("driver handle vanished")
+
+    npus = NPU.all()
+    assert any(isinstance(npu, GoodNPU) for npu in npus)
+    assert not any(isinstance(npu, BrokenNPU) for npu in npus)
+
+
+@pytest.mark.usefixtures("apple_host")
+def test_machine_probe_survives_a_broken_gpu_provider() -> None:
+    """`Machine().gpus` keeps the working providers when one backend raises.
+
+    The snapshot contract promises best-effort detection rather than a crash,
+    so a provider that throws must be skipped at the `Machine` boundary too."""
+
+    class BrokenGPU(GPU):
+        @classmethod
+        def all(cls) -> tuple[GPU, ...]:
+            raise RuntimeError("backend exploded mid-probe")
+
+    gpus = Machine().gpus
+    assert not any(isinstance(gpu, BrokenGPU) for gpu in gpus)

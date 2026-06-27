@@ -124,6 +124,30 @@ def test_zero_duration_copy_has_zero_bandwidth() -> None:
     assert report.achieved_bandwidth_gbps == 0.0
 
 
+def test_peak_memory_is_the_high_water_mark_across_regions() -> None:
+    """The report surfaces the largest sampled memory footprint and the mean."""
+    profile = Profile(
+        summaries=(
+            RegionSummary(name="r", wall_ms=1.0, peak_memory_bytes=300, avg_memory_bytes=200),
+            RegionSummary(name="r", wall_ms=1.0, peak_memory_bytes=900, avg_memory_bytes=600),
+        )
+    )
+    report = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=0.0)
+    assert report.peak_memory_bytes == 900  # max single sample, the footprint to fit
+    assert report.avg_memory_bytes == 400  # (200 + 600) / 2
+    assert "peak memory" in report.report()
+
+
+def test_peak_memory_absent_when_nothing_sampled() -> None:
+    """A kernel that finished between sampler ticks reports zero peak memory, not a note."""
+    report = ProfileReport.from_profile(
+        Profile(kernels=(_kernel("k", 100),)), iterations=1, peak_bandwidth_gbps=0.0
+    )
+    assert report.peak_memory_bytes == 0
+    assert report.avg_memory_bytes == 0
+    assert "peak memory" not in report.report()
+
+
 def test_unavailable_lists_dropped_activity_kinds() -> None:
     """Kinds requested but unsupported by the device surface in `unavailable`."""
     report = ProfileReport.from_profile(

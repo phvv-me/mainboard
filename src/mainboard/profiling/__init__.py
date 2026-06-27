@@ -32,11 +32,13 @@ from .benchmark import BenchSample, benchmark, compare
 from .bottleneck import gpu_busy, wait_for_idle
 from .bottleneck import profile as profile_fn
 from .dispatch import arch_config, current_arch_key
+from .health import Diagnosis
 from .models import RegionStat, RegionSummary
 from .profiler import Profiler
 from .report import Bound, KernelStat, ProfileReport
 from .result import Profile, ProfileDiff, RegionDelta
 from .stages import StageProfile, profile_stages
+from .storage import ReadResult, StorageBandwidth, nvme_to_hbm
 from .trace import (
     Activity,
     ActivityRecord,
@@ -56,6 +58,7 @@ __all__ = [
     "BottleneckReport",
     "Bound",
     "CallbackSession",
+    "Diagnosis",
     "HotKernel",
     "HotRegion",
     "KernelStat",
@@ -65,10 +68,12 @@ __all__ = [
     "ProfileDiff",
     "ProfileReport",
     "Profiler",
+    "ReadResult",
     "RegionDelta",
     "RegionStat",
     "RegionSummary",
     "StageProfile",
+    "StorageBandwidth",
     "Tracer",
     "arch_config",
     "benchmark",
@@ -79,6 +84,7 @@ __all__ = [
     "enable_auto",
     "gpu_busy",
     "instrument_source",
+    "nvme_to_hbm",
     "profile",
     "profile_fn",
     "profile_stages",

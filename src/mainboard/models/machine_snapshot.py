@@ -5,9 +5,11 @@ import time
 from ..enums import UnitKind, Vendor
 from .base import Field, FrozenModel
 from .board import Board
+from .cgroup_memory import CgroupMemory
 from .environment import Environment
 from .gpu_snapshot import GPUSnapshot
 from .memory import Memory
+from .scratch import Scratch
 from .toolchain import Toolchain
 from .unit_snapshot import UnitSnapshot
 
@@ -45,6 +47,8 @@ class MachineSnapshot(FrozenModel):
     environment: the user, group(s), and job scheduler available on the host.
     board: the host's motherboard and firmware identity.
     toolchain: C/C++/CUDA compilers and build systems found on the host PATH.
+    cgroup_memory: the enforced cgroup memory cap, the real OOM-kill ceiling for the job.
+    scratch: the fastest writable node-local scratch tier with its free space.
     """
 
     timestamp_ns: int = Field(default_factory=time.perf_counter_ns)
@@ -54,6 +58,8 @@ class MachineSnapshot(FrozenModel):
     environment: Environment = Environment()
     board: Board = Board()
     toolchain: Toolchain = Toolchain()
+    cgroup_memory: CgroupMemory = CgroupMemory()
+    scratch: Scratch = Scratch()
     gpus: tuple[GPUSnapshot, ...] = ()
     npus: tuple[UnitSnapshot, ...] = ()
 

@@ -124,13 +124,30 @@ class CudaErrorT:
     cudaSuccess = 0
 
 
+class CudaDeviceAttr:
+    """Mimic `cudaDeviceAttr` with the two coherence-probe members mainboard reads."""
+
+    cudaDevAttrPageableMemoryAccess = 24
+    cudaDevAttrConcurrentManagedAccess = 89
+
+
 class FakeRuntime:
-    """Minimal `cuda.bindings.runtime` returning two visible devices."""
+    """Minimal `cuda.bindings.runtime` returning two visible devices.
+
+    `coherent` toggles the two `cudaDeviceGetAttribute` coherence flags so a test can
+    model a discrete card (the default 4090, both flags off) or a Grace-Hopper-style
+    coherent pool (both flags on, the `unified=True` signal).
+    """
 
     cudaError_t = CudaErrorT
+    cudaDeviceAttr = CudaDeviceAttr
 
-    def __init__(self, count: int = 2) -> None:
+    def __init__(self, count: int = 2, coherent: bool = False) -> None:
         self.count = count
+        self.coherent = coherent
+
+    def cudaDeviceGetAttribute(self, attr: int, index: int) -> tuple[int, int]:
+        return (CudaErrorT.cudaSuccess, 1 if self.coherent else 0)
 
     def cudaGetDeviceCount(self) -> tuple[int, int]:
         return (CudaErrorT.cudaSuccess, self.count)
@@ -297,8 +314,10 @@ class FakeNvidiaApis:
     paths the provider uses on hosts where the optional layer fails to load.
     """
 
-    def __init__(self, device_count: int = 2, has_cuda_core: bool = True) -> None:
-        self.runtime = FakeRuntime(device_count)
+    def __init__(
+        self, device_count: int = 2, has_cuda_core: bool = True, coherent: bool = False
+    ) -> None:
+        self.runtime = FakeRuntime(device_count, coherent=coherent)
         self.system = FakeSystem() if has_cuda_core else None
         self.nvml = FakeNvml()
         self.cuda_device_type = FakeCudaDevice if has_cuda_core else None
@@ -323,6 +342,15 @@ def nvidia_host(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNvidiaApis]:
 def nvidia_host_no_cuda_core(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNvidiaApis]:
     """A CUDA stack without the optional `cuda.core` layer, exercising NVML-only paths."""
     apis = FakeNvidiaApis(has_cuda_core=False)
+    nvidia_apis_module.nvidia_apis.cache_clear()
+    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
+    yield apis
+
+
+@pytest.fixture
+def nvidia_coherent_host(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNvidiaApis]:
+    """A CUDA stack whose device reports the Grace-Hopper coherent-pool attributes."""
+    apis = FakeNvidiaApis(coherent=True)
     nvidia_apis_module.nvidia_apis.cache_clear()
     monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
     yield apis

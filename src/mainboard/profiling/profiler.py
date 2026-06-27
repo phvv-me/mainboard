@@ -125,12 +125,17 @@ class Profiler:
         Auto-annotation can fire in worker threads, so a frame is owned by the
         thread that opened it; popping the shared LIFO blindly would misattribute
         regions across threads.
+
+        Takes one synchronous boundary snapshot as the region closes so a region shorter
+        than the async sampler's interval — a fast kernel timed against a per-call sync
+        barrier — still records its live memory footprint instead of a false zero peak.
         """
         with self._lock:
             frame = self._pop_thread_frame(threading.get_ident())
         if frame is None:
             return
-        self._summaries.append(RegionSummary.from_snaps(name, wall_ns / 1e6, frame.snaps))
+        snaps = frame.snaps if frame.snaps else self._boundary_snapshot(name)
+        self._summaries.append(RegionSummary.from_snaps(name, wall_ns / 1e6, snaps))
         if self.trace:
             self._windows.append(
                 RegionWindow(
@@ -147,6 +152,18 @@ class Profiler:
             if self._frames[position].thread == thread:
                 return self._frames.pop(position)
         return None
+
+    def _boundary_snapshot(self, name: str) -> list[GPUSnapshot]:
+        """One snapshot taken as a region closes, or empty if the sensor read fails.
+
+        The fallback when the async sampler took no tick inside a short region, so memory
+        and utilization are still recorded once rather than left at zero.
+        """
+        try:
+            return [self._gpu.snapshot(name=name)]
+        except Exception:
+            logger.warning("boundary snapshot failed for region %r", name, exc_info=True)
+            return []
 
     def _sample(self) -> None:
         interval = self.sample_interval_ms / 1000.0

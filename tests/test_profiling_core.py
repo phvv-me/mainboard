@@ -335,6 +335,21 @@ def test_profiler_exit_without_open_frame_is_safe(one_gpu: object) -> None:
     assert profiler.summaries() == []
 
 
+def test_short_region_still_records_memory_via_boundary_snapshot(one_gpu: object) -> None:
+    """A region too fast for the async sampler keeps a boundary snapshot, not a zero peak.
+
+    With a 1-second sampling interval the poller never ticks inside the region, so without
+    the synchronous boundary read the memory footprint would be lost — the failure mode
+    when profiling a fast kernel against a per-call sync barrier.
+    """
+    with Profiler(sample_interval_ms=1000) as profiler:
+        profiler.enter("kernel")
+        profiler.exit("kernel", wall_ns=1)
+    summary = profiler.summaries()[0]
+    assert summary.samples == 1  # the boundary snapshot, since no async tick landed
+    assert summary.peak_memory_bytes == 40  # from the one_gpu fixture snapshot
+
+
 def test_profiler_trace_report_and_show(
     one_gpu: object, capsys: pytest.CaptureFixture[str]
 ) -> None:

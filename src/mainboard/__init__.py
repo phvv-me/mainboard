@@ -17,6 +17,7 @@ from .host import Host
 from .machine import Machine
 from .models import (
     Board,
+    CgroupMemory,
     Clock,
     ClockInfo,
     CompilerInfo,
@@ -37,6 +38,7 @@ from .models import (
     PartitionInfo,
     PcieInfo,
     ProcessInfo,
+    Scratch,
     SystemCompilers,
     ThermalState,
     ThermalTracker,
@@ -50,9 +52,13 @@ from .models import (
 from .npu import NPU
 from .profiling import (
     Bound,
+    Diagnosis,
     KernelStat,
     ProfileReport,
+    ReadResult,
+    StorageBandwidth,
     gpu_busy,
+    nvme_to_hbm,
     wait_for_idle,
 )
 from .profiling import profile_fn as profile
@@ -70,9 +76,11 @@ from .unit import Unit
 from .visual import MachineView
 
 NAME = __name__  # the package folder is the single source of the name
+__version__ = "0.0.8"  # in-tree source of truth; kept in step with pyproject
 
 __all__ = [
     "NAME",
+    "__version__",
     "CPU",
     "GPU",
     "NPU",
@@ -81,6 +89,7 @@ __all__ = [
     "AppleNPU",
     "Board",
     "Bound",
+    "CgroupMemory",
     "Clock",
     "ClockInfo",
     "CmakeBuildType",
@@ -91,6 +100,7 @@ __all__ = [
     "CudaPythonInfo",
     "CudaPythonVariant",
     "DetectedTool",
+    "Diagnosis",
     "DiskKind",
     "DriveInfo",
     "EnergyReading",
@@ -115,7 +125,10 @@ __all__ = [
     "ProcessInfo",
     "QualcommGPU",
     "QualcommNPU",
+    "ReadResult",
     "Scheduler",
+    "Scratch",
+    "StorageBandwidth",
     "SystemCompilers",
     "SystemFamily",
     "ThermalState",
@@ -131,6 +144,7 @@ __all__ = [
     "Vendor",
     "gpu_busy",
     "meter",
+    "nvme_to_hbm",
     "profile",
     "wait_for_idle",
 ]

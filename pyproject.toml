@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mainboard"
-version = "0.0.7"
+version = "0.0.8"
 description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -167,10 +167,12 @@ source = ["mainboard"]
 branch = true
 # `protocols.py` modules are pure typing contracts (Protocol bodies, no logic) and some are
 # imported only under `TYPE_CHECKING`, so they carry no runtime coverage to gate on.
+# leading `*/` anchors the glob to the package tree wherever pytest's cwd sits, so the gate
+# reads a true 100% whether run from the package dir or the monorepo root.
 omit = [
-  "src/mainboard/__main__.py",
-  "src/mainboard/*/protocols.py",
-  "src/mainboard/*/*/protocols.py",
+  "*/mainboard/__main__.py",
+  "*/mainboard/*/protocols.py",
+  "*/mainboard/*/*/protocols.py",
 ]
 
 [tool.coverage.report]

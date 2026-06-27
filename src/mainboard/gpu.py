@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar
 
@@ -20,6 +21,8 @@ from .unit import Unit
 if TYPE_CHECKING:
     from .models.process_info import ProcessInfo
 
+logger = logging.getLogger(__name__)
+
 
 class GPU(Unit, Registry):
     """GPU with telemetry and legacy profiling sensor accessors.
@@ -35,8 +38,24 @@ class GPU(Unit, Registry):
 
     @classmethod
     def all(cls) -> tuple[GPU, ...]:
-        """Return GPUs visible across every registered provider."""
-        return tuple(gpu for provider in cls.implementations() for gpu in provider.all())
+        """Return GPUs visible across every registered provider.
+
+        Probing is best-effort per provider: a backend whose `all` raises (a
+        binding that loads but then throws, an unexpected NVML error) is logged
+        and skipped so one broken vendor never sinks the whole machine probe.
+        """
+        return tuple(gpu for provider in cls.implementations() for gpu in cls.probe(provider))
+
+    @classmethod
+    def probe(cls, provider: type[GPU]) -> tuple[GPU, ...]:
+        """One provider's devices, or an empty tuple when its probe fails."""
+        try:
+            return tuple(provider.all())
+        except Exception:
+            logger.warning(
+                "GPU provider %s failed to probe; skipping", provider.__name__, exc_info=True
+            )
+            return ()
 
     @cached_property
     def name(self) -> str:

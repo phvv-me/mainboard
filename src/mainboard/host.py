@@ -11,9 +11,11 @@ import psutil
 
 from . import shell
 from .enums import Vendor
+from .models.cgroup_memory import CgroupMemory
 from .models.host_disk import HostDisk
 from .models.memory import Memory
 from .models.memory_hardware import MemoryHardware
+from .models.scratch import Scratch
 
 _CPU_MODEL_RE = re.compile(r"^(?:model name|hardware)\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _CPU_IMPLEMENTER_RE = re.compile(r"^CPU implementer\s*:\s*(.+)$", re.MULTILINE)
@@ -149,3 +151,23 @@ class Host:
     def disk(self) -> HostDisk:
         """All physical drives with their mounted partitions."""
         return HostDisk()
+
+    @cached_property
+    def cgroup_memory(self) -> CgroupMemory:
+        """The enforced cgroup memory cap (v1 and v2), the real ceiling an OOM kill fires against.
+
+        Walks both cgroup hierarchies up to the root and reports the tightest finite limit, or
+        the host's total RAM when the job is uncapped. This is the ceiling a memory-bounded
+        working set should size itself under, not psutil's free RAM (which on a coherent Grace
+        Hopper OS double-counts HBM through the second NUMA node).
+        """
+        return CgroupMemory.probe()
+
+    @cached_property
+    def scratch(self) -> Scratch:
+        """The fastest writable node-local scratch tier with its free space.
+
+        The scheduler's node-local NVMe (`LOCALDIR`/`PBS_LOCALDIR`/`SLURM_TMPDIR`, then a bare
+        local mount) a spill engine offloads to, or an unavailable tier when nothing is writable.
+        """
+        return Scratch.probe()

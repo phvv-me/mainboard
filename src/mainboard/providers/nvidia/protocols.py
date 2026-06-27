@@ -147,6 +147,19 @@ class TemperatureThresholds(Protocol):
     TEMPERATURE_THRESHOLD_SLOWDOWN: int
 
 
+class DeviceAttr(Protocol):
+    """The `cudaDeviceAttr` enum members mainboard reads to probe memory coherence.
+
+    `cudaDevAttrPageableMemoryAccess` is set when the GPU can read host pageable memory
+    directly, and `cudaDevAttrConcurrentManagedAccess` when CPU and GPU may touch managed
+    pages concurrently. Both true is the Grace-Hopper / GB10 coherent-pool signature, where
+    host RAM is a peer NUMA node of HBM rather than a PCIe copy away.
+    """
+
+    cudaDevAttrPageableMemoryAccess: int  # noqa: N815 — mirrors the CUDA enum member name
+    cudaDevAttrConcurrentManagedAccess: int  # noqa: N815
+
+
 class CudaRuntime(Protocol):
     """The `cuda.bindings.runtime` functions and enums mainboard calls.
 
@@ -155,6 +168,7 @@ class CudaRuntime(Protocol):
     """
 
     cudaError_t: CudaError  # noqa: N815 — the binding exposes the enum under this exact name
+    cudaDeviceAttr: DeviceAttr  # noqa: N815 — the coherence-probe attribute enum
 
     def cudaGetDeviceCount(self) -> tuple[int, int]: ...  # noqa: N802
     def cudaGetDevice(self) -> tuple[int, int]: ...  # noqa: N802
@@ -164,6 +178,7 @@ class CudaRuntime(Protocol):
     def cudaDriverGetVersion(self) -> tuple[int, int]: ...  # noqa: N802
     def cudaGetDeviceProperties(self, index: int) -> tuple[int, DeviceProperties]: ...  # noqa: N802
     def cudaDeviceGetPCIBusId(self, length: int, index: int) -> tuple[int, bytes]: ...  # noqa: N802
+    def cudaDeviceGetAttribute(self, attr: int, index: int) -> tuple[int, int]: ...  # noqa: N802
 
 
 class Nvml(Protocol):

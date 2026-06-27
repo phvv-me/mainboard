@@ -113,6 +113,8 @@ class Machine(Singleton):
             environment=self.environment,
             board=self.board,
             toolchain=self.toolchain,
+            cgroup_memory=self.host.cgroup_memory,
+            scratch=self.host.scratch,
             gpus=tuple(gpu.snapshot() for gpu in self.gpus),
             npus=tuple(npu.snapshot() for npu in self.npus),
         )

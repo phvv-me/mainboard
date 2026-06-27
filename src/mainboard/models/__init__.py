@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..enums import ToolCategory
 from .board import Board
+from .cgroup_memory import CgroupMemory
 from .clock import Clock
 from .clock_info import ClockInfo
 from .compiler_info import CompilerInfo
@@ -21,6 +22,7 @@ from .meter import Meter, meter
 from .partition_info import PartitionInfo
 from .pcie_info import PcieInfo
 from .process_info import ProcessInfo
+from .scratch import Scratch
 from .system_compilers import SystemCompilers
 from .thermal_state import ThermalState
 from .thermal_tracker import ThermalTracker
@@ -31,6 +33,7 @@ from .utilization import Utilization
 
 __all__ = [
     "Board",
+    "CgroupMemory",
     "Clock",
     "ClockInfo",
     "CompilerInfo",
@@ -51,6 +54,7 @@ __all__ = [
     "PartitionInfo",
     "PcieInfo",
     "ProcessInfo",
+    "Scratch",
     "SystemCompilers",
     "ThermalState",
     "ThermalTracker",
