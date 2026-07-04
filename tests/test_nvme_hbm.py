@@ -7,6 +7,7 @@ read, the GDS read, and the skips (kvikio absent, kvikio in compat mode). The by
 ``as_result`` and the ``speedup`` ratio are checked directly.
 """
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -23,6 +24,25 @@ from mainboard.profiling.storage import (
     nvme_to_hbm,
     write_probe_file,
 )
+
+
+def force_posix_fadvise(monkeypatch: pytest.MonkeyPatch, *, present: bool) -> list[int]:
+    """Force `os.posix_fadvise` to exist (or not), regardless of the real host platform.
+
+    `drop_page_cache` is best-effort across a POSIX advice only Linux offers, and the CI
+    matrix gates coverage on both Linux and macOS, so each branch needs to be reachable on
+    either runner rather than relying on whichever platform happens to run the test.
+    Returns the list `posix_fadvise`'s ``advice`` arguments land in, when forced present.
+    """
+    if not present:
+        monkeypatch.delattr(os, "posix_fadvise", raising=False)
+        return []
+    calls: list[int] = []
+    monkeypatch.setattr(
+        os, "posix_fadvise", lambda fd, offset, length, advice: calls.append(advice), raising=False
+    )
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+    return calls
 
 
 def force_scratch(monkeypatch: pytest.MonkeyPatch, path: Path | None) -> None:
@@ -234,6 +254,31 @@ def test_speedup_is_none_without_a_gds_read() -> None:
     assert only_mmap.speedup is None
 
 
-def test_drop_page_cache_is_silent_on_a_missing_file(tmp_path: Path) -> None:
+def test_drop_page_cache_is_silent_on_a_missing_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Cache eviction is best-effort: an absent file is a no-op, never a raised error."""
+    force_posix_fadvise(monkeypatch, present=True)
     drop_page_cache(tmp_path / "does_not_exist.bin")  # returns without raising
+
+
+def test_drop_page_cache_is_a_noop_without_the_posix_advice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """macOS and Windows lack `posix_fadvise`, so the cache is left warm rather than raising."""
+    calls = force_posix_fadvise(monkeypatch, present=False)
+    path = tmp_path / "probe.bin"
+    path.write_bytes(b"x")
+    drop_page_cache(path)
+    assert calls == []
+
+
+def test_drop_page_cache_evicts_with_dontneed_when_the_advice_is_offered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Where `posix_fadvise` exists, eviction actually calls it with `POSIX_FADV_DONTNEED`."""
+    calls = force_posix_fadvise(monkeypatch, present=True)
+    path = tmp_path / "probe.bin"
+    path.write_bytes(b"x")
+    drop_page_cache(path)
+    assert calls == [os.POSIX_FADV_DONTNEED]

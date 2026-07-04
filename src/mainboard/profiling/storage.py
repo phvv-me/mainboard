@@ -133,6 +133,8 @@ def drop_page_cache(path: Path) -> None:
     that never touches the cache. Best-effort: a platform without the advice leaves the cache warm,
     which only understates the GDS speedup.
     """
+    if not hasattr(os, "posix_fadvise"):
+        return  # macOS and Windows lack the advice; the mmap read stays a best-effort cold read
     try:
         fd = os.open(path, os.O_RDONLY)
     except OSError:
