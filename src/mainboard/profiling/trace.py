@@ -9,8 +9,6 @@ device sync drains the buffers at session end. The records are vendor-neutral
 time goes. :class:`TraceCollector` is the no-op base a vendor backend overrides.
 """
 
-from __future__ import annotations
-
 from collections import defaultdict
 from enum import Flag
 from types import TracebackType

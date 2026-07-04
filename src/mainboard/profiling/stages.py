@@ -9,8 +9,6 @@ traced, the deep :class:`Profile`. It reuses :func:`benchmark`, :class:`Profiler
 `region`; it does not reimplement timing or tracing.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from ..gpu import GPU

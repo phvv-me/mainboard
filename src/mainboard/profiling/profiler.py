@@ -7,8 +7,6 @@ thread polls the device while `region`/`@profile`/auto-annotated calls bracket t
 work; each region's snapshots aggregate into a :class:`RegionSummary`.
 """
 
-from __future__ import annotations
-
 import importlib
 import logging
 import threading

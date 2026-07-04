@@ -7,8 +7,6 @@ read, the GDS read, and the skips (kvikio absent, kvikio in compat mode). The by
 ``as_result`` and the ``speedup`` ratio are checked directly.
 """
 
-from __future__ import annotations
-
 import sys
 import types
 from pathlib import Path

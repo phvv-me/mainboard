@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from cyclopts import App
 
 from . import NAME, __version__

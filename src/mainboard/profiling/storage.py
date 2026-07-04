@@ -15,8 +15,6 @@ mmap number alone with GDS skipped, never a compat bounce dressed up as GDS. Whe
 two GB/s figures sit side by side as the evidence that the direct path is live.
 """
 
-from __future__ import annotations
-
 import os
 from importlib.util import find_spec
 from pathlib import Path

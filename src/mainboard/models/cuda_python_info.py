@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from ..enums import CudaPythonVariant
 from .base import FrozenModel
 

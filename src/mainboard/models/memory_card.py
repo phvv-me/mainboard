@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 import subprocess
 from functools import cached_property

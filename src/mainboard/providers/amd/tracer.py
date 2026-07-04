@@ -1,7 +1,5 @@
 """AMD annotation backend: ROCTx ranges, visible under `rocprofv3 --marker-trace`."""
 
-from __future__ import annotations
-
 from contextlib import suppress
 from importlib import import_module
 from typing import TYPE_CHECKING, ClassVar

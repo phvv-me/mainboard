@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from ..enums import ToolCategory
 from .board import Board
 from .cgroup_memory import CgroupMemory

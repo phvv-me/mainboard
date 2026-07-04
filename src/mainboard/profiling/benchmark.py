@@ -8,8 +8,6 @@ times any callable on any backend. For memory and per-kernel breakdowns, wrap th
 :class:`Profiler` instead; this answers "how fast, and which is fastest".
 """
 
-from __future__ import annotations
-
 import time
 from typing import TYPE_CHECKING
 

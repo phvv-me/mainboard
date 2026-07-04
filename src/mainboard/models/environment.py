@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import shutil
 
 from ..enums import Scheduler

@@ -7,8 +7,6 @@ they line up on the same timeline; otherwise regions are laid out sequentially b
 time. This is the cross-vendor view — nsys, rocprofv3, and xctrace all speak Perfetto too.
 """
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING

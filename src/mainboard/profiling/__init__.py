@@ -15,9 +15,11 @@ Nsight, `rocprofv3`, or Instruments — and free when nothing is attached.
 Auto-annotation: ``Profiler.auto(["my.package"])`` (runtime, PEP 669) or
 :func:`instrument_source` (static AST rewrite). Importing this package registers the
 vendor tracers.
-"""
 
-from __future__ import annotations
+For always-on timing in production code rather than a bounded benchmark session, see
+:func:`span`: ``with span("extract"):`` or ``@span``, off by default, async-safe, and
+collapsed by :class:`Collector` into per-path count/total/mean/p50/p95/max stats.
+"""
 
 from .annotate import (
     callbacks,
@@ -31,12 +33,14 @@ from .annotate import (
 from .benchmark import BenchSample, benchmark, compare
 from .bottleneck import gpu_busy, wait_for_idle
 from .bottleneck import profile as profile_fn
+from .collector import Collector, Reservoir, default_collector
 from .dispatch import arch_config, current_arch_key
 from .health import Diagnosis
-from .models import RegionStat, RegionSummary
+from .models import RegionStat, RegionSummary, SpanRecord, SpanStat
 from .profiler import Profiler
 from .report import Bound, KernelStat, ProfileReport
 from .result import Profile, ProfileDiff, RegionDelta
+from .spans import Span, disable_spans, enable_spans, span, spans_enabled
 from .stages import StageProfile, profile_stages
 from .storage import ReadResult, StorageBandwidth, nvme_to_hbm
 from .trace import (
@@ -58,6 +62,7 @@ __all__ = [
     "BottleneckReport",
     "Bound",
     "CallbackSession",
+    "Collector",
     "Diagnosis",
     "HotKernel",
     "HotRegion",
@@ -72,6 +77,10 @@ __all__ = [
     "RegionDelta",
     "RegionStat",
     "RegionSummary",
+    "Reservoir",
+    "Span",
+    "SpanRecord",
+    "SpanStat",
     "StageProfile",
     "StorageBandwidth",
     "Tracer",
@@ -80,8 +89,11 @@ __all__ = [
     "callbacks",
     "compare",
     "current_arch_key",
+    "default_collector",
     "disable_auto",
+    "disable_spans",
     "enable_auto",
+    "enable_spans",
     "gpu_busy",
     "instrument_source",
     "nvme_to_hbm",
@@ -89,6 +101,8 @@ __all__ = [
     "profile_fn",
     "profile_stages",
     "region",
+    "span",
+    "spans_enabled",
     "tracer",
     "wait_for_idle",
 ]

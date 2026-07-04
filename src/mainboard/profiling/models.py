@@ -1,7 +1,5 @@
 """Aggregated profiling results: one row per region from its sampled snapshots."""
 
-from __future__ import annotations
-
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -83,3 +81,37 @@ class RegionStat(FrozenModel):
             for name, rows in groups.items()
         ]
         return sorted(stats, key=lambda s: s.total_ms, reverse=True)
+
+
+class SpanRecord(FrozenModel):
+    """One completed `span`: its label, dotted ancestry, timing, and optional memory delta.
+
+    name: this span's own label. path: dotted ancestry joined by `.` (`parent.child`).
+    depth: nesting depth, 0 at the root. wall_ms: wall-clock duration.
+    rss_delta_bytes/gpu_delta_bytes: process/GPU memory growth over the span, or `None`
+    when the span wasn't asked to track memory.
+    """
+
+    name: str
+    path: str
+    depth: int
+    wall_ms: float
+    rss_delta_bytes: int | None = None
+    gpu_delta_bytes: int | None = None
+
+
+class SpanStat(FrozenModel):
+    """One dotted path's aggregate across all its occurrences (calls collapsed).
+
+    count/total_ms/mean_ms/max_ms are exact. p50_ms/p95_ms are estimated from a
+    bounded reservoir sample (see `Collector`) — exact whenever `count` stays within
+    the reservoir's capacity, an approximation beyond it.
+    """
+
+    path: str
+    count: int
+    total_ms: float
+    mean_ms: float
+    p50_ms: float
+    p95_ms: float
+    max_ms: float

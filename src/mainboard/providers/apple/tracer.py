@@ -5,8 +5,6 @@ session is recording. Uses the `os-signpost` package; absent it, this backend is
 simply unavailable and the no-op base is used instead.
 """
 
-from __future__ import annotations
-
 import platform
 from contextlib import suppress
 from importlib import import_module

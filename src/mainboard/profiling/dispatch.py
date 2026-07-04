@@ -9,8 +9,6 @@ arch-keyed table it returns the entry for this machine's GPU, falling back to
 whatever the caller stores (a Helion config, a tile-size tuple, a dataclass).
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from ..gpu import GPU

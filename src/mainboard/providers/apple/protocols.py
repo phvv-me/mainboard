@@ -4,8 +4,6 @@ The `os-signpost` package ships no stubs, so these Protocols pin the `Signposter
 API the tracer drives and the opaque interval token it threads from begin to end.
 """
 
-from __future__ import annotations
-
 from typing import Protocol
 
 

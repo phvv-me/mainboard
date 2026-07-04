@@ -10,8 +10,6 @@ opaque enum member compared against `cudaError_t.cudaSuccess`, so it is typed `i
 (it compares and formats like one) and the value fields keep their real shapes.
 """
 
-from __future__ import annotations
-
 from collections.abc import Callable
 from typing import Protocol
 

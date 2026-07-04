@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import NamedTuple
 
 ARCHITECTURE_BY_MAJOR = {

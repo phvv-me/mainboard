@@ -10,8 +10,6 @@ throttled (a non-benign NVML throttle reason), and renders the dominant one as a
 human-readable line. It is a pure value object, inputs to verdict, with no I/O.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from ..gpu import GPU

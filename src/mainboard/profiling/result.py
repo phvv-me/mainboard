@@ -8,8 +8,6 @@ runs, :meth:`save` / :meth:`load` to persist, :meth:`perfetto` to export a timel
 here, so the surface grows without new concepts.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 from typing import TYPE_CHECKING
 

@@ -14,8 +14,6 @@ provider already exposes, so a caller can wait for a clean measurement window be
 profiling rather than timing against someone else's load.
 """
 
-from __future__ import annotations
-
 import time
 from typing import TYPE_CHECKING
 

@@ -4,8 +4,6 @@ Kept separate from :mod:`.result` so the result value stays pure data; ``Profile
 and ``ProfileDiff.show`` delegate here. :func:`region_text` is the no-rich fallback.
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 from rich import box
@@ -15,7 +13,7 @@ from rich.table import Table
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from .models import RegionStat
+    from .models import RegionStat, SpanStat
     from .result import Profile, ProfileDiff
     from .trace import BottleneckReport
 
@@ -110,3 +108,46 @@ def show_diff(diff: ProfileDiff, *, color: bool = True) -> None:
             style=style,
         )
     console.print(table)
+
+
+def span_text(stats: Sequence[SpanStat]) -> str:
+    """Plain-text per-path table (the fallback when rich output is unwanted)."""
+    if not stats:
+        return "No spans recorded."
+    header = (
+        f"{'path':<32}{'calls':>6}{'total ms':>10}{'mean ms':>9}{'p50 ms':>9}"
+        f"{'p95 ms':>9}{'max ms':>9}"
+    )
+    rows = [header]
+    rows += [
+        f"{s.path:<32}{s.count:>6d}{s.total_ms:>10.2f}{s.mean_ms:>9.2f}"
+        f"{s.p50_ms:>9.2f}{s.p95_ms:>9.2f}{s.max_ms:>9.2f}"
+        for s in stats
+    ]
+    return "\n".join(rows)
+
+
+def _span_table(stats: Sequence[SpanStat]) -> Table:
+    table = Table(title="spans (by total time)", box=box.ROUNDED, header_style="bold")
+    table.add_column("path")
+    for name in ("calls", "total ms", "mean ms", "p50 ms", "p95 ms", "max ms"):
+        table.add_column(name, justify="right")
+    for s in stats:
+        table.add_row(
+            s.path,
+            str(s.count),
+            f"{s.total_ms:.2f}",
+            f"{s.mean_ms:.2f}",
+            f"{s.p50_ms:.2f}",
+            f"{s.p95_ms:.2f}",
+            f"{s.max_ms:.2f}",
+        )
+    return table
+
+
+def show_spans(stats: Sequence[SpanStat], *, color: bool = True) -> None:
+    """Print the per-path span stats as a rich table."""
+    if not stats:
+        print("No spans recorded.")
+        return
+    Console(no_color=not color).print(_span_table(stats))

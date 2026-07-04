@@ -8,8 +8,6 @@ GPU provider and self-register via :class:`Registry`; :meth:`detect` picks the o
 whose library is importable, preferring a match for a GPU actually present.
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from typing import ClassVar

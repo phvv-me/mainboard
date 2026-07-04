@@ -53,15 +53,27 @@ def reset_machine_singleton() -> None:
     Machine.__dict__.get("singleton_instance") and delattr(Machine, "singleton_instance")
 
 
+def reset_span_state() -> None:
+    """Turn spans off, drop the cached GPU list, and swap in a fresh default collector."""
+    from mainboard.profiling import spans as span_module
+    from mainboard.profiling.collector import default_collector
+
+    span_module.disable_spans()
+    span_module._gpu_units.cache_clear()
+    default_collector.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def reset_global_caches() -> Iterator[None]:
     """Keep tests hermetic by clearing every module-level cache around each test."""
     reset_machine_singleton()
     reset_nvidia_cache()
     reset_apple_caches()
+    reset_span_state()
     yield
     reset_machine_singleton()
     reset_nvidia_cache()
+    reset_span_state()
 
 
 @pytest.fixture(autouse=True)

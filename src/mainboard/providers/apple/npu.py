@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import platform
 from functools import cached_property
 

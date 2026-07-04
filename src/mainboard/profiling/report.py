@@ -11,8 +11,6 @@ trace, so a partial report on a GPU like GB10 (no ``MEMORY`` kind) reads as part
 rather than silently wrong.
 """
 
-from __future__ import annotations
-
 from collections import defaultdict
 from enum import Enum
 from typing import TYPE_CHECKING

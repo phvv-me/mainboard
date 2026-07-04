@@ -28,6 +28,7 @@ Each [example](https://github.com/phvv-me/mainboard/tree/main/examples) is a few
 | `decorator.py` | `@profile` every call of a function |
 | `diff.py` | compare two runs (what got faster) |
 | `deep_trace.py` | CUDA per-kernel trace + Perfetto export |
+| `spans.py` | nested `span`s, sync + async, scoped `Collector`, a `.show()` report |
 
 ## Annotate
 
@@ -137,3 +138,46 @@ subset and logs anything dropped. Asking for a specific kind the device can't co
 ```python
 Profiler(trace=Activity.MEMORY)   # ValueError if this GPU has no MEMORY activity kind
 ```
+
+## Spans: always-on timing for production code
+
+`Profiler` is a bounded session you open around a benchmark. `span` is the opposite
+shape: a lightweight, nestable timer meant to stay wired into a live service — a stage
+timer in an ingestion pipeline, a sequential recall call — off by default so a disabled
+span costs one boolean check, and async-safe so many concurrent `asyncio.Task`s each
+keep their own nesting stack.
+
+```python
+from mainboard.profiling import Collector, enable_spans, span
+
+enable_spans()  # off by default; call once at startup
+
+with span("pipeline"):
+    with span("extract"):
+        ...
+    with span("embed"):
+        ...
+```
+
+`@span` decorates a function (bare uses its qualname, `@span("label")` sets one
+explicitly), and works on both sync and async functions — a coroutine is properly
+`await`ed inside the span, and a fresh `Span` opens per call, so concurrent calls of
+the same decorated function never share timing state.
+
+Every closed span folds into a `Collector`: the process-wide default when no
+`collector=` is given, or one you own for a scoped window (one `Collector` per recall
+call, say — pass `collector=` explicitly and it never touches the default).
+
+```python
+collector = Collector()
+with span("stage", collector=collector, memory=True):  # also track RSS/GPU memory delta
+    ...
+
+collector.records()   # every occurrence, typed rows (SpanRecord)
+collector.stats()     # per dotted path: count, total/mean/p50/p95/max ms (SpanStat)
+collector.show()      # rich table
+```
+
+`p50`/`p95` come from a bounded reservoir sample (exact while a path's occurrence count
+stays within the reservoir's capacity), so a path that runs for hours stays O(1) memory
+per key instead of accumulating every wall time it ever saw.

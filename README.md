@@ -51,3 +51,21 @@ The CLI renders a Rich schematic of the board:
 ```sh
 mainboard
 ```
+
+## Timing spans
+
+`span` is a lightweight, nestable timer for production code, off by default so a disabled span costs one boolean check. `with span("extract"):` or `@span` times a block or a function (sync or async, nesting tracked per-`asyncio.Task` via a `ContextVar` so concurrent tasks never share a stack), and every closed span folds into a `Collector` — the process-wide default, or one you own for a scoped window such as a single request.
+
+```python
+from mainboard.profiling import enable_spans, span
+
+enable_spans()
+
+with span("pipeline"):
+    with span("extract"):
+        ...
+    with span("embed"):
+        ...
+```
+
+Read the result with `Collector.records()` (the raw per-occurrence log) or `Collector.stats()` (per dotted-path count/total/mean/p50/p95/max), and print either with `.report()` or `.show()`. See [`docs/profiling.md`](docs/profiling.md) for the full profiling API, including the GPU-sampling `Profiler`.

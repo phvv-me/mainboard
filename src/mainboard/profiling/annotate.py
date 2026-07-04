@@ -8,8 +8,6 @@ two ways: ``enable_auto`` instruments every Python call at runtime via PEP 669
 a module's source to wrap each function body in a ``region`` (the inspectable path).
 """
 
-from __future__ import annotations
-
 import ast
 import functools
 import sys

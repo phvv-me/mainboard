@@ -7,7 +7,7 @@ name = "mainboard"
 version = "0.0.8"
 description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Pedro Valois", email = "contact@phvv.me" }]
@@ -125,12 +125,15 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# `explicit-any` is suppressed in these modules for two irreducible reasons, both with no
+# `explicit-any` is suppressed in these modules for three irreducible reasons, all with no
 # narrower type available, so `disallow_any_explicit` still guards every other module:
 #  - Pydantic's stubs declare inherited class vars as `Dict[str, Any]` (e.g.
 #    `__pydantic_extra__`), which mypy re-flags on every `BaseModel` subclass we define.
 #  - `profiling.annotate` types the `sys.monitoring` PY_RETURN callback's return value as
 #    `Any`: CPython hands back the profiled function's arbitrary result, which we ignore.
+#  - `profiling.spans` types a decorated coroutine function as `Coroutine[Any, Any, R]`,
+#    mirroring typeshed's own convention: the send/yield types are irreducible for a
+#    decorator that only ever awaits, never drives, the wrapped coroutine.
 module = [
   "mainboard.models.*",
   "mainboard.cpu",
@@ -142,6 +145,7 @@ module = [
   "mainboard.profiling.models",
   "mainboard.profiling.report",
   "mainboard.profiling.result",
+  "mainboard.profiling.spans",
   "mainboard.profiling.stages",
   "mainboard.profiling.trace",
   "mainboard.providers.amd.gpu",

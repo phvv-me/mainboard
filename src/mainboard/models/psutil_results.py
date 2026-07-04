@@ -5,8 +5,6 @@ results are otherwise opaque. These Protocols pin the named-tuple fields mainboa
 the models stay typed across the psutil boundary instead of leaking `Any` into their getters.
 """
 
-from __future__ import annotations
-
 from typing import Protocol
 
 
