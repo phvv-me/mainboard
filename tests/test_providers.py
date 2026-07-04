@@ -52,7 +52,7 @@ def test_apple_gpu_reads_system_profiler() -> None:
     assert len(gpus) == 1
     gpu = gpus[0]
     assert gpu.vendor == Vendor.APPLE
-    assert gpu.name == "Apple M4 Pro"
+    assert gpu.label == "Apple M4 Pro"
     assert gpu.architecture == "Apple M4 Pro"
     assert gpu.core_count == 20
     assert gpu.metal_support == "spdisplays_metal4"
@@ -78,7 +78,7 @@ def test_apple_npu_names_itself_from_the_chip() -> None:
     assert AppleNPU.is_available() is True
     npu = AppleNPU.all()[0]
     assert npu.vendor == Vendor.APPLE
-    assert npu.name == "Apple M4 Pro Neural Engine"
+    assert npu.label == "Apple M4 Pro Neural Engine"
     assert npu.architecture == "Apple M4 Pro"
     assert npu.memory.total_bytes == 48 * 1024**3
     assert npu.memory.unified is True
@@ -130,7 +130,7 @@ def test_apple_units_tolerate_empty_hardware_records(monkeypatch: pytest.MonkeyP
     assert gpu.architecture == "Apple M4 Pro"  # falls back to the GPU name
     npu = AppleNPU()
     assert npu.architecture == "Apple Silicon"
-    assert npu.name == "Apple Silicon Neural Engine"
+    assert npu.label == "Apple Silicon Neural Engine"
 
 
 def test_nvidia_detects_and_describes_devices(nvidia_host: object) -> None:
@@ -140,7 +140,7 @@ def test_nvidia_detects_and_describes_devices(nvidia_host: object) -> None:
     assert len(gpus) == 2
     gpu = gpus[0]
     assert gpu.vendor == Vendor.NVIDIA
-    assert gpu.name == "NVIDIA GeForce RTX 4090"
+    assert gpu.label == "NVIDIA GeForce RTX 4090"
     assert gpu.uuid == "GPU-deadbeef"
     assert str(gpu.cuda_architecture) == "8.9"
     assert gpu.architecture == "Ada"
@@ -226,7 +226,7 @@ def test_nvidia_nvml_only_paths(nvidia_host_no_cuda_core: FakeNvidiaApis) -> Non
     assert nvidia_host_no_cuda_core.has_cuda_core is False
     assert NvidiaGPU.is_available() is True
     gpu = NvidiaGPU(index=0)
-    assert gpu.name == "NVIDIA GeForce RTX 4090"
+    assert gpu.label == "NVIDIA GeForce RTX 4090"
     assert gpu.uuid == "GPU-deadbeef"
     assert str(gpu.cuda_architecture) == "8.9"
     assert gpu.architecture == "Ada"  # from the compute-capability table (cc 8.9)
@@ -304,8 +304,10 @@ def test_nvidia_runtime_memory_error_raises(
                 "device_get_pcie_throughput",
                 "device_get_compute_running_processes_v3",
             ),
-            lambda gpu: (gpu.fan_speed_pct, gpu.energy.power_mw, gpu.pcie.tx_kbs, gpu.processes)
-            == (0, 0, 0, []),
+            lambda gpu: (
+                (gpu.fan_speed_pct, gpu.energy.power_mw, gpu.pcie.tx_kbs, gpu.processes)
+                == (0, 0, 0, [])
+            ),
             id="sensors-degrade",
         ),
         pytest.param(
@@ -317,13 +319,15 @@ def test_nvidia_runtime_memory_error_raises(
                 "device_get_utilization_rates",
             ),
             lambda gpu: (
-                gpu.thermal.temperature_c,
-                gpu.thermal.slowdown_threshold_c,
-                gpu.thermal.throttle_reasons,
-                gpu.utilization.gpu_pct,
-                gpu.utilization.memory_pct,
-            )
-            == (0, 0, 0, 0, 0),
+                (
+                    gpu.thermal.temperature_c,
+                    gpu.thermal.slowdown_threshold_c,
+                    gpu.thermal.throttle_reasons,
+                    gpu.utilization.gpu_pct,
+                    gpu.utilization.memory_pct,
+                )
+                == (0, 0, 0, 0, 0)
+            ),
             id="thermal-and-util-degrade",
         ),
         pytest.param(

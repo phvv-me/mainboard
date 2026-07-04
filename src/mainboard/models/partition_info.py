@@ -44,7 +44,7 @@ class PartitionInfo(FrozenModel):
         try:
             usage: DiskUsage = psutil.disk_usage(self.mountpoint)
             return usage
-        except (PermissionError, OSError):
+        except PermissionError, OSError:
             return None
 
     @property

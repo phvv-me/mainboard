@@ -15,9 +15,7 @@ def clear_scratch_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def test_env_var_wins_over_local_mounts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_env_var_wins_over_local_mounts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A scheduler `PBS_LOCALDIR` is chosen ahead of any bare local mount, with its free bytes."""
     clear_scratch_env(monkeypatch)
     monkeypatch.setenv("PBS_LOCALDIR", str(tmp_path))
@@ -50,9 +48,7 @@ def test_falls_back_to_first_writable_literal_mount(
     assert scratch.source == str(local)
 
 
-def test_unwritable_candidate_is_skipped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_unwritable_candidate_is_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A candidate that exists but is not writable is passed over."""
     clear_scratch_env(monkeypatch)
     monkeypatch.setenv("LOCALDIR", str(tmp_path))

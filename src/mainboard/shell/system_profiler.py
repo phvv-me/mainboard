@@ -22,5 +22,5 @@ def system_profiler(*datatypes: str) -> SystemProfile:
     try:
         parsed: SystemProfile = json.loads(local["system_profiler"]("-json", *datatypes))
         return parsed
-    except (CommandNotFound, OSError, json.JSONDecodeError):
+    except CommandNotFound, OSError, json.JSONDecodeError:
         return {}

@@ -36,7 +36,7 @@ class NvidiaGPU(GPU):
             api = apis.nvidia_apis()
             err, count = api.runtime.cudaGetDeviceCount()
             return err == api.runtime.cudaError_t.cudaSuccess and count > 0
-        except (ModuleNotFoundError, ImportError, OSError, RuntimeError):
+        except ModuleNotFoundError, ImportError, OSError, RuntimeError:
             return False
 
     @classmethod
@@ -104,7 +104,7 @@ class NvidiaGPU(GPU):
         return handle
 
     @cached_property
-    def name(self) -> str:
+    def label(self) -> str:
         """Full GPU name string, e.g. `NVIDIA GeForce RTX 4090`."""
         if self.apis.has_cuda_core:
             return text(self.system_device.name)

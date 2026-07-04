@@ -35,7 +35,7 @@ Ambos comandos renderizan el mismo esquema de la máquina. `--color=False` es ú
 from mainboard import Machine
 
 machine = Machine()
-print(machine.cpu.name)
+print(machine.cpu.label)
 print(machine.gpus)
 print(machine.npus)
 print(machine.board.model)

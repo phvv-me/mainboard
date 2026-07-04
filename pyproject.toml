@@ -60,6 +60,9 @@ dev = [
   "pytest-cov>=5",
   "pytest-randomly>=3",
   "ruff>=0.15",
+  # CPU-only torch drives the nvme_to_hbm probe's test suite (tensors, `device="cpu"` reads);
+  # kvikio stays a real optional runtime extra since its tests fake the module entirely.
+  "torch>=2",
 ]
 docs = [
   "mkdocs-material>=9.5",
@@ -103,6 +106,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 project-includes = ["src", "tests"]
 search-path = ["src", "."]
 python-platform = "linux"  # analyze the POSIX paths uniformly; Windows-only code degrades at runtime
+# Third-party surfaces without type stubs that mainboard probes structurally (mirrors the mypy
+# `ignore_missing_imports` override above): both are optional extras absent from the dev env.
+ignore-missing-imports = ["torch", "kvikio.*"]
 
 [tool.mypy]
 python_version = "3.14"
@@ -121,11 +127,13 @@ module = [
   "psutil.*",
   "nvtx.*",
   "cuda.*",
+  "torch.*",
+  "kvikio.*",
 ]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# `explicit-any` is suppressed in these modules for three irreducible reasons, all with no
+# `explicit-any` is suppressed in these modules for four irreducible reasons, all with no
 # narrower type available, so `disallow_any_explicit` still guards every other module:
 #  - Pydantic's stubs declare inherited class vars as `Dict[str, Any]` (e.g.
 #    `__pydantic_extra__`), which mypy re-flags on every `BaseModel` subclass we define.
@@ -134,6 +142,9 @@ ignore_missing_imports = true
 #  - `profiling.spans` types a decorated coroutine function as `Coroutine[Any, Any, R]`,
 #    mirroring typeshed's own convention: the send/yield types are irreducible for a
 #    decorator that only ever awaits, never drives, the wrapped coroutine.
+#  - `profiling.storage` probes an injected `kvikio` module (or a test double standing in for
+#    one) across builds whose attributes differ (see `compat_mode_preferred`); the module has
+#    no type stubs and the probed shape is inherently dynamic, so `Any` is the only honest type.
 module = [
   "mainboard.models.*",
   "mainboard.cpu",
@@ -143,10 +154,12 @@ module = [
   "mainboard.profiling.annotate",
   "mainboard.profiling.benchmark",
   "mainboard.profiling.models",
+  "mainboard.profiling.health",
   "mainboard.profiling.report",
   "mainboard.profiling.result",
   "mainboard.profiling.spans",
   "mainboard.profiling.stages",
+  "mainboard.profiling.storage",
   "mainboard.profiling.trace",
   "mainboard.providers.amd.gpu",
   "mainboard.providers.apple.gpu",

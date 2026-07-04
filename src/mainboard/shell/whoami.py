@@ -13,6 +13,6 @@ def whoami_groups() -> tuple[str, ...]:
     """
     try:
         output = local["whoami"]("/groups", "/fo", "csv", "/nh")
-    except (CommandNotFound, OSError, ProcessExecutionError):
+    except CommandNotFound, OSError, ProcessExecutionError:
         return ()
     return tuple(row[0] for row in csv.reader(output.splitlines()) if row)

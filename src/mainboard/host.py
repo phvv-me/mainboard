@@ -131,7 +131,7 @@ class Host:
         """Current CPU frequency in MHz; `None` if the platform cannot report it."""
         try:
             freq = psutil.cpu_freq()
-        except (AttributeError, NotImplementedError, OSError):
+        except AttributeError, NotImplementedError, OSError:
             return None
         return freq.current if freq else None
 

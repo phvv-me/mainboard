@@ -6,7 +6,7 @@
 from mainboard import Machine
 
 for unit in Machine().units:
-    print(unit.kind, unit.vendor, unit.name)
+    print(unit.kind, unit.vendor, unit.label)
     print(unit.snapshot())
 ```
 

@@ -25,7 +25,7 @@ def test_snapshot_aggregates_and_round_trips(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(type(machine), "npus", (NPU(index=0),))
     snapshot = machine.snapshot()
     assert isinstance(snapshot, MachineSnapshot)
-    assert snapshot.cpu.name == machine.cpu.name
+    assert snapshot.cpu.name == machine.cpu.label
     assert snapshot.unit_count == 1 + len(snapshot.gpus) + len(snapshot.npus)
     assert UnitKind.GPU in snapshot.kinds
     assert MachineSnapshot.model_validate_json(snapshot.model_dump_json()) == snapshot
@@ -59,7 +59,7 @@ def test_cpu_derives_from_host(monkeypatch: pytest.MonkeyPatch) -> None:
     machine = Machine()
     cpu = machine.cpu
     assert isinstance(cpu, CPU)
-    assert cpu.name == machine.host.cpu
+    assert cpu.label == machine.host.cpu
     assert cpu.architecture == machine.host.arch
     assert cpu.vendor in Vendor
 

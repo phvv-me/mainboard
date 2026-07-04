@@ -35,7 +35,7 @@ Both commands render the same machine schematic. `--color=False` is useful for l
 from mainboard import Machine
 
 machine = Machine()
-print(machine.cpu.name)
+print(machine.cpu.label)
 print(machine.gpus)
 print(machine.npus)
 print(machine.board.model)

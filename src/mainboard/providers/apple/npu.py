@@ -27,7 +27,7 @@ class AppleNPU(NPU):
         return (cls(),) if cls.is_available() else ()
 
     @cached_property
-    def name(self) -> str:
+    def label(self) -> str:
         """Apple Neural Engine model name."""
         return f"{self.architecture} Neural Engine"
 

@@ -41,7 +41,7 @@ class MachineView:
         """Return a compact schematic with connected hardware cells."""
         return Panel(
             self.schematic_grid(),
-            title=Text(self.machine.cpu.name, style="bold"),
+            title=Text(self.machine.cpu.label, style="bold"),
             subtitle=self.compact_summary(),
             border_style="bright_blue",
             box=box.ROUNDED,
@@ -92,7 +92,7 @@ class MachineView:
         """Return compact CPU identity and capacity rows."""
         cpu = self.machine.cpu
         rows = [
-            ("model", cpu.name),
+            ("model", cpu.label),
             ("cores", f"{cpu.physical_cores}C / {cpu.logical_cores}T"),
             ("arch", cpu.architecture),
             ("vendor", cpu.vendor.value),
@@ -112,7 +112,7 @@ class MachineView:
 
     def gpu_rows(self, gpu: GPU) -> list[tuple[str, str]]:
         """Return provider-aware GPU rows."""
-        rows = [("model", gpu.name), ("backend", gpu.backend), ("arch", gpu.architecture)]
+        rows = [("model", gpu.label), ("backend", gpu.backend), ("arch", gpu.architecture)]
         if isinstance(gpu, AppleGPU):
             if gpu.core_count:
                 rows.append(("cores", str(gpu.core_count)))
@@ -153,7 +153,7 @@ class MachineView:
 
     def npu_rows(self, npu: NPU) -> list[tuple[str, str]]:
         """Return provider-aware NPU rows."""
-        rows = [("model", npu.name), ("backend", npu.backend), ("arch", npu.architecture)]
+        rows = [("model", npu.label), ("backend", npu.backend), ("arch", npu.architecture)]
         if isinstance(npu, AppleNPU):
             rows.append(("api", "Core ML"))
             rows.append(("telemetry", "limited"))

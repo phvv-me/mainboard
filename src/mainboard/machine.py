@@ -99,7 +99,7 @@ class Machine(Singleton):
         return MachineSnapshot(
             hostname=platform.node(),
             cpu=CpuSnapshot(
-                name=cpu.name,
+                name=cpu.label,
                 architecture=cpu.architecture,
                 vendor=cpu.vendor,
                 logical_cores=cpu.logical_cores,

@@ -222,7 +222,7 @@ class Profiler:
         :class:`Profile`; this is the only call that crosses from collection to result.
         """
         return Profile(
-            device=self._gpu.name,
+            device=self._gpu.label,
             summaries=tuple(self._summaries),
             windows=tuple(self._windows),
             kernels=tuple(self._collector.kernels()),

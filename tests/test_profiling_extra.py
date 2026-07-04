@@ -275,6 +275,26 @@ def test_sampler_survives_a_snapshot_failure(monkeypatch: pytest.MonkeyPatch) ->
     assert profiler.summaries()[0].samples == 1  # only the good tick landed
 
 
+def test_boundary_snapshot_failure_is_logged_not_raised() -> None:
+    """A region too short for the sampler that also fails its own boundary read logs and continues.
+
+    The synchronous fallback in `exit` is best-effort: a transient sensor failure at the
+    boundary must not surface to the caller closing the region, only cost that region its
+    memory reading.
+    """
+    from mainboard.models.gpu_snapshot import GPUSnapshot
+
+    class FailingGPU:
+        def snapshot(self, name: str = "") -> GPUSnapshot:
+            raise RuntimeError("nvml hiccup")
+
+    profiler = Profiler(sample_interval_ms=1000)
+    profiler._gpu = FailingGPU()  # pyrefly: ignore[bad-assignment]
+    profiler.enter("kernel")
+    profiler.exit("kernel", wall_ns=1)  # no async tick landed, then the boundary read also fails
+    assert profiler.summaries()[0].samples == 0
+
+
 def test_exit_closes_the_calling_threads_frame() -> None:
     """A worker's exit closes its own frame even when the main thread opened a later one."""
     import threading

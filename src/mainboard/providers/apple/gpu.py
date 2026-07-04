@@ -46,7 +46,7 @@ class AppleGPU(GPU):
         return self.gpu_records()[self.index]
 
     @cached_property
-    def name(self) -> str:
+    def label(self) -> str:
         """Apple GPU model name."""
         return str(self.record.get("sppci_model") or self.record.get("_name") or "Apple GPU")
 
@@ -58,7 +58,7 @@ class AppleGPU(GPU):
     @cached_property
     def architecture(self) -> str:
         """Apple SoC family backing this GPU."""
-        return str(profile.hardware_record().get("chip_type") or self.name)
+        return str(profile.hardware_record().get("chip_type") or self.label)
 
     @cached_property
     def core_count(self) -> int:

@@ -22,7 +22,7 @@ class CPU(Unit):
     backend: str = "os"
 
     @cached_property
-    def name(self) -> str:
+    def label(self) -> str:
         """CPU model name."""
         return self.name_value
 

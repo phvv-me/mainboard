@@ -67,6 +67,30 @@ def fake_kvikio(compat: bool) -> types.SimpleNamespace:
     )
 
 
+def fake_kvikio_refusing_dma() -> types.SimpleNamespace:
+    """A stand-in for kvikio whose ``CuFile.read`` refuses the DMA, as a sandboxed mount would."""
+
+    class CuFile:
+        def __init__(self, path: str, flags: str) -> None:
+            pass
+
+        def __enter__(self) -> CuFile:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+        def read(self, buf: object) -> int:
+            raise OSError("Operation not permitted")
+
+    mode = types.SimpleNamespace(ON=False, OFF=False)
+    return types.SimpleNamespace(
+        CompatMode=mode,
+        CuFile=CuFile,
+        defaults=types.SimpleNamespace(compat_mode=lambda: mode.OFF),
+    )
+
+
 def install_kvikio(monkeypatch: pytest.MonkeyPatch, module: object | None) -> None:
     """Make ``find_spec('kvikio')`` resolve to ``module`` (or be absent), leaving torch intact.
 
@@ -134,6 +158,19 @@ def test_gds_skipped_in_compat_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert result.available is True
     assert result.gds is None
     assert "compat" in result.skipped
+
+
+def test_gds_dma_refused_is_reported_as_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A mount that refuses the DMA (EPERM in a job sandbox) skips GDS, naming the refusal."""
+    force_cuda(monkeypatch, available=True)
+    force_scratch(monkeypatch, tmp_path)
+    install_kvikio(monkeypatch, fake_kvikio_refusing_dma())
+    result = nvme_to_hbm(file_gb=1 / 1024, iters=2, warmup=1, device="cpu")
+    assert result.available is True
+    assert result.gds is None
+    assert "refused" in result.skipped
 
 
 def test_gds_and_mmap_both_run_when_gds_is_live(

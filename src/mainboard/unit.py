@@ -26,7 +26,7 @@ class Unit(FrozenModel):
     backend: str = "none"
 
     @cached_property
-    def name(self) -> str:
+    def label(self) -> str:
         """Human-readable unit name."""
         return "unknown"
 
@@ -64,7 +64,7 @@ class Unit(FrozenModel):
         """Capture neutral telemetry for this unit."""
         return UnitSnapshot(
             name=name,
-            unit_name=self.name,
+            unit_name=self.label,
             kind=self.kind,
             vendor=self.vendor,
             clocks=self.clock_readings,

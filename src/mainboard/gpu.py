@@ -56,7 +56,7 @@ class GPU(Unit, Registry):
             return ()
 
     @cached_property
-    def name(self) -> str:
+    def label(self) -> str:
         """Human-readable GPU name."""
         return "unknown"
 
@@ -168,7 +168,7 @@ class GPU(Unit, Registry):
         """
         return GPUSnapshot(
             name=name,
-            unit_name=self.name,
+            unit_name=self.label,
             kind=self.kind,
             vendor=self.vendor,
             memory=self.memory,

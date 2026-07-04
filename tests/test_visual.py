@@ -10,7 +10,7 @@ from mainboard.providers.apple import AppleGPU, AppleNPU
 class _Cpu:
     """Minimal CPU stand-in exposing the fields `cpu_rows` reads."""
 
-    name = "Test CPU"
+    label = "Test CPU"
     physical_cores = 8
     logical_cores = 16
     architecture = "arm64"

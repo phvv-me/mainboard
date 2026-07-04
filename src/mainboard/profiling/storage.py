@@ -18,14 +18,11 @@ two GB/s figures sit side by side as the evidence that the direct path is live.
 import os
 from importlib.util import find_spec
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 from ..models.base import FrozenModel
 from ..models.scratch import Scratch
 from .benchmark import benchmark
-
-if TYPE_CHECKING:
-    pass
 
 
 class ReadResult(FrozenModel):
@@ -88,7 +85,7 @@ def nvme_to_hbm(
     import torch
 
     scratch = Scratch.probe()
-    if not torch.cuda.is_available() or not scratch.available:
+    if not torch.cuda.is_available() or scratch.path is None:
         why = "no CUDA device" if not torch.cuda.is_available() else "no node-local scratch"
         return StorageBandwidth(scratch_path=scratch.path, skipped=why)
 
@@ -203,20 +200,24 @@ def read_gds(
     return as_result("gds", nbytes, sample.mean_us), ""
 
 
-def compat_mode_preferred(kvikio: object) -> bool:
+def compat_mode_preferred(kvikio: Any) -> bool:
     """Whether kvikio prefers cuFile compat mode, across the submodule and dual-API differences.
 
     The modern cu13 wheel does not auto-import ``kvikio.defaults`` on ``import kvikio`` and renamed
     the getter to ``is_compat_mode_preferred``, while older builds exposed ``compat_mode()``
-    returning a ``CompatMode`` enum. Import the submodule when the attribute is missing, then read
-    whichever getter the build offers, so a stuck-in-compat probe is caught on every kvikio.
+    returning a ``CompatMode`` enum. Import the submodule (aliased, so it attaches to the real
+    ``kvikio`` package as a side effect without rebinding this function's own parameter) when the
+    attribute is missing, then read whichever getter the build offers, so a stuck-in-compat probe
+    is caught on every kvikio. ``kvikio`` takes the untyped module (or a test double standing in
+    for one), the one case in this module with no narrower type: see the `explicit-any` override.
     """
     if not hasattr(kvikio, "defaults"):
-        import kvikio.defaults  # noqa: F401  (the cu13 wheel needs the submodule imported)
-    defaults = kvikio.defaults  # pyrefly: ignore  (kvikio has no type stubs)
+        # A real cu13 install's own package layout, not fakeable with a test double.
+        import kvikio.defaults as _kvikio_defaults  # noqa: F401  # pragma: no cover
+    defaults = kvikio.defaults
     if hasattr(defaults, "is_compat_mode_preferred"):
         return bool(defaults.is_compat_mode_preferred())
-    return defaults.compat_mode() is not kvikio.CompatMode.OFF  # pyrefly: ignore
+    return defaults.compat_mode() is not kvikio.CompatMode.OFF
 
 
 def as_result(label: str, nbytes: int, mean_us: float) -> ReadResult:

@@ -11,7 +11,7 @@ def test_base_unit_neutral_defaults() -> None:
     unit = Unit()
     assert unit.kind == UnitKind.UNKNOWN
     assert unit.vendor == Vendor.UNKNOWN
-    assert unit.name == "unknown"
+    assert unit.label == "unknown"
     assert unit.architecture == "unknown"
     assert unit.memory.total_bytes == 0
     assert unit.clock_readings == ()
@@ -25,7 +25,7 @@ def test_base_gpu_defaults_and_snapshot() -> None:
     """A bare `GPU` exposes zeroed sensors and a `GPUSnapshot`."""
     gpu = GPU()
     assert gpu.kind == UnitKind.GPU
-    assert gpu.name == "unknown"
+    assert gpu.label == "unknown"
     assert gpu.uuid == ""
     assert gpu.architecture == "unknown"
     assert gpu.arch_key == "unknown"  # base key is the lowercased architecture name
@@ -55,7 +55,7 @@ def test_cpu_exposes_identity_and_memory(monkeypatch: pytest.MonkeyPatch) -> Non
         vendor=Vendor.APPLE,
     )
     assert cpu.kind == UnitKind.CPU
-    assert cpu.name == "Apple M4 Pro"
+    assert cpu.label == "Apple M4 Pro"
     assert cpu.architecture == "arm64"
     assert cpu.clock_readings[0].current_mhz == 3200.0
     assert cpu.memory.scope == "system"

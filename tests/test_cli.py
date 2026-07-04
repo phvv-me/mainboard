@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from mainboard import __version__, cli
+from mainboard import __version__, cli, profiling
+from mainboard.profiling.storage import ReadResult, StorageBandwidth
 
 
 def test_show_renders_via_machine_view(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,3 +123,57 @@ def test_profile_requires_a_target() -> None:
 
     with pytest.raises(CycloptsError):
         cli.app(["profile"], exit_on_error=False)
+
+
+def test_storage_command_reports_unavailable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unavailable probe (no CUDA, no scratch, ...) prints the skip reason and returns."""
+    monkeypatch.setattr(
+        profiling, "nvme_to_hbm", lambda **_: StorageBandwidth(skipped="no CUDA device")
+    )
+    assert ran_clean(run_cli("storage"))
+    assert "unavailable: no CUDA device" in capsys.readouterr().out
+
+
+def test_storage_command_prints_reads_and_speedup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A live GDS run prints both reads and the speedup ratio over the mmap bounce."""
+    mmap = ReadResult(label="mmap", gigabytes_per_s=5.0, latency_ms=2.0)
+    gds = ReadResult(label="gds", gigabytes_per_s=10.0, latency_ms=1.0)
+    result = StorageBandwidth(available=True, scratch_path=None, file_gb=2.0, mmap=mmap, gds=gds)
+    monkeypatch.setattr(profiling, "nvme_to_hbm", lambda **_: result)
+    assert ran_clean(run_cli("storage"))
+    out = capsys.readouterr().out
+    assert "mmap" in out and "gds" in out
+    assert "2.00x the mmap bounce" in out
+
+
+def test_storage_command_reports_skip_reason_without_speedup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A run with no GDS read prints the mmap number alone and why GDS was skipped."""
+    mmap = ReadResult(label="mmap", gigabytes_per_s=5.0, latency_ms=2.0)
+    result = StorageBandwidth(
+        available=True, scratch_path=None, file_gb=2.0, mmap=mmap, skipped="kvikio not installed"
+    )
+    monkeypatch.setattr(profiling, "nvme_to_hbm", lambda **_: result)
+    assert ran_clean(run_cli("storage"))
+    out = capsys.readouterr().out
+    assert "mmap" in out
+    assert "gds skipped: kvikio not installed" in out
+
+
+def test_storage_command_prints_nothing_extra_with_no_speedup_or_skip_reason(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With neither a speedup nor a skip reason, the command prints only the read lines."""
+    mmap = ReadResult(label="mmap", gigabytes_per_s=5.0, latency_ms=2.0)
+    result = StorageBandwidth(available=True, scratch_path=None, file_gb=2.0, mmap=mmap)
+    monkeypatch.setattr(profiling, "nvme_to_hbm", lambda **_: result)
+    assert ran_clean(run_cli("storage"))
+    out = capsys.readouterr().out
+    assert "mmap" in out
+    assert "x the mmap bounce" not in out
+    assert "gds skipped" not in out
