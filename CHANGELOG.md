@@ -4,6 +4,25 @@ All notable changes to Mainboard are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project uses semantic versioning while it is published.
 
+## Unreleased
+
+### Changed
+
+- Profiling now has one public `Profiler`, one immutable `Profile`, and dormant `span` annotations. Feature flags choose Python sampling, span timing, target process device telemetry, native markers, and GPU activity while results show only observed evidence.
+- Automatic spans use code object local `sys.monitoring` events instead of a predicate on every Python call.
+- Python 3.15 Tachyon is a private backend for `run`, `attach`, and `dump`, including one execution combined Python and native collection.
+- The root API declares an audited PEP 810 `__lazy_modules__` set. Imports remain eager on Python 3.14 and become explicit lazy imports on Python 3.15 without enabling global lazy mode.
+
+### Fixed
+
+- NVIDIA activity kinds are flushed and disabled when capture ends.
+- CUPTI callbacks now copy bounded raw records and defer Pydantic construction and API name resolution until result creation.
+- Device telemetry requires the target PID, so another process using an installed GPU no longer creates false GPU evidence.
+
+### Removed
+
+- Public `region`, `Collector`, `enable_spans`, `disable_spans`, and `Tachyon` interfaces. Span annotations no longer contain collection or memory policy.
+
 ## [0.0.6] - 2026-06-10
 
 ### Changed

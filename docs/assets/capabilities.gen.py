@@ -27,9 +27,9 @@ SECTIONS = [
     (
         "Annotate",
         [
-            ("region() & @profile", "S"),
-            ("auto-annotate (PEP 669)", "S"),
-            ("AST source rewrite", "S"),
+            ("dormant span / @span", "S"),
+            ("targeted auto spans (PEP 669)", "S"),
+            ("Python 3.15 sampling", "S"),
             ("NVTX → Nsight timeline", "S"),
         ],
     ),

@@ -63,6 +63,12 @@ This page is generated from the source docstrings. For task-oriented guides, see
 
 ## Profiling
 
+::: mainboard.Profiler
+
+::: mainboard.Profile
+
+::: mainboard.span
+
 ::: mainboard.profile
 
 ::: mainboard.ProfileReport

@@ -1,13 +1,6 @@
-"""Structural contracts for the untyped CUPTI activity records.
-
-`cupti-python` ships no type stubs, so the records its buffer-completed callback yields
-are statically opaque. These Protocols pin down exactly the snake_case fields mainboard
-reads off each record kind (CUPTI rule: attribute names are snake_case), so the parsing
-in `trace.py` stays fully typed without leaning on `Any`. The few fields CUPTI omits on
-some record kinds are read defensively with `getattr`, so they stay off the Protocols.
-"""
-
-from typing import Protocol
+from collections.abc import Callable
+from types import TracebackType
+from typing import Protocol, runtime_checkable
 
 # JSON values accepted by the Chrome/Perfetto trace-event writer.
 type Json = str | int | float | bool | None | list["Json"] | dict[str, "Json"]
@@ -57,3 +50,85 @@ class RawActivity(KernelActivity, MemcpyActivity, Protocol):
     superset lets the collector pass a record to the kind-specific reader without a cast,
     and the reader takes only the fields its kind defines.
     """
+
+
+class DType(Protocol):
+    """An opaque tensor data type used only as a library argument."""
+
+
+class Tensor(Protocol):
+    """The small tensor surface used by the storage bandwidth probe."""
+
+    def copy_(self, source: Tensor) -> Tensor: ...
+
+
+class Cuda(Protocol):
+    """CUDA availability and synchronization used by the storage probe."""
+
+    def is_available(self) -> bool: ...
+    def synchronize(self) -> None: ...
+
+
+class Torch(Protocol):
+    """The optional Torch operations used by the storage probe."""
+
+    cuda: Cuda
+    uint8: DType
+
+    def empty(self, size: int, *, dtype: DType, device: str) -> Tensor: ...
+    def from_file(self, path: str, *, dtype: DType, size: int) -> Tensor: ...
+
+
+class CompatValue(Protocol):
+    """An opaque kvikio compatibility enum member."""
+
+
+class CompatModeApi(Protocol):
+    """The kvikio compatibility enum surface used by the probe."""
+
+    OFF: CompatValue
+
+
+@runtime_checkable
+class CurrentKvikioDefaults(Protocol):
+    """The current kvikio compatibility getter."""
+
+    def is_compat_mode_preferred(self) -> bool: ...
+
+
+class LegacyKvikioDefaults(Protocol):
+    """The legacy kvikio compatibility getter."""
+
+    def compat_mode(self) -> CompatValue: ...
+
+
+type KvikioDefaults = CurrentKvikioDefaults | LegacyKvikioDefaults
+
+
+class CuFile(Protocol):
+    """A direct-storage file handle that reads into a device tensor."""
+
+    def __enter__(self) -> CuFile: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+    def read(self, buffer: Tensor) -> int: ...
+
+
+class KvikioCompatibility(Protocol):
+    """The kvikio members used to reject host-bounce compatibility mode."""
+
+    @property
+    def CompatMode(self) -> CompatModeApi: ...
+
+    @property
+    def defaults(self) -> KvikioDefaults: ...
+
+
+class Kvikio(KvikioCompatibility, Protocol):
+    """The optional kvikio module surface used by the storage probe."""
+
+    CuFile: Callable[[str, str], CuFile]

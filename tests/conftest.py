@@ -1,9 +1,11 @@
+import os
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
 from mainboard import shell
+from mainboard.profiling.profiler import Profiler as RealProfiler
 from mainboard.providers import apple
 from mainboard.providers.apple import gpu as apple_gpu
 from mainboard.providers.apple import npu as apple_npu
@@ -54,13 +56,10 @@ def reset_machine_singleton() -> None:
 
 
 def reset_span_state() -> None:
-    """Turn spans off, drop the cached GPU list, and swap in a fresh default collector."""
+    """Remove any profiler left active by a failed test."""
     from mainboard.profiling import spans as span_module
-    from mainboard.profiling.collector import default_collector
 
-    span_module.disable_spans()
-    span_module._gpu_units.cache_clear()
-    default_collector.cache_clear()
+    span_module._active = None
 
 
 @pytest.fixture(autouse=True)
@@ -409,6 +408,8 @@ class RecordingProfiler:
     is testable without CUDA; its `result()` carries one hot `gemm` kernel.
     """
 
+    Feature = RealProfiler.Feature
+
     def __init__(self, **_: Any) -> None:
         pass
 
@@ -514,6 +515,7 @@ def one_gpu(monkeypatch: pytest.MonkeyPatch) -> Any:
     from mainboard.gpu import GPU
     from mainboard.models.gpu_snapshot import GPUSnapshot
     from mainboard.models.memory import Memory
+    from mainboard.models.process_info import ProcessInfo
     from mainboard.models.utilization import Utilization
     from mainboard.profiling import annotate
     from mainboard.profiling import profiler as profiler_mod
@@ -531,10 +533,10 @@ def one_gpu(monkeypatch: pytest.MonkeyPatch) -> Any:
                 vendor=Vendor.UNKNOWN,
                 memory=Memory(total_bytes=100, used_bytes=40),
                 utilization=Utilization(gpu_pct=25, memory_pct=10),
+                processes=[ProcessInfo(pid=os.getpid(), used_bytes=40)],
             )
 
     tracer = make_clock_tracer()
     monkeypatch.setattr(profiler_mod.GPU, "all", classmethod(lambda cls: (OneGPU(),)))
     monkeypatch.setattr(annotate, "_tracer", tracer)
-    monkeypatch.setattr(annotate, "profiler", None)
     return tracer

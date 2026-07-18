@@ -160,6 +160,7 @@ def test_collector_lifecycle_collects_and_routes_records(fake_cupti: FakeCupti) 
         # RUNTIME wasn't enabled here, so its record is ignored by the router
         assert collector.activities() == []
     assert fake_cupti.flushes > 0  # stop drained the buffer
+    assert fake_cupti.enabled == set()  # every activity kind was disabled at capture end
 
 
 def test_collector_routes_generic_activity_when_kind_enabled(fake_cupti: FakeCupti) -> None:
@@ -186,6 +187,33 @@ def test_nested_collection_is_rejected(fake_cupti: FakeCupti) -> None:
         nv.CuptiCollector(Activity.KERNEL).__enter__()
 
 
+def test_failed_collector_start_disables_every_enabled_kind(
+    fake_cupti: FakeCupti, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed initial flush must not leave process-wide CUPTI activity enabled."""
+
+    def fail(_flag: int) -> None:
+        raise RuntimeError("flush failed")
+
+    monkeypatch.setattr(fake_cupti, "activity_flush_all", fail)
+    collector = nv.CuptiCollector(Activity.KERNEL)
+    with pytest.raises(RuntimeError, match="flush failed"):
+        collector.__enter__()
+    assert collector.enabled_kinds == ()
+    assert fake_cupti.enabled == set()
+
+
+def test_stop_cleans_up_even_when_active_slot_was_lost(fake_cupti: FakeCupti) -> None:
+    """Cleanup disables native kinds even if external state lost the active slot."""
+    collector = nv.CuptiCollector(Activity.KERNEL)
+    collector.enabled_kinds = (FakeActivityKind.CONCURRENT_KERNEL,)
+    collector.running = True
+    fake_cupti.enabled.add(FakeActivityKind.CONCURRENT_KERNEL)
+    collector.stop()
+    assert collector.running is False
+    assert fake_cupti.enabled == set()
+
+
 def test_collector_reset_drops_records(fake_cupti: FakeCupti) -> None:
     """`reset` flushes in-flight records then clears everything collected so far."""
     with nv.CuptiCollector(Activity.KERNEL) as collector:
@@ -202,16 +230,41 @@ def test_buffer_requested_returns_size_and_count() -> None:
     assert size > 0 and count == 0
 
 
-def test_record_name_prefers_explicit_name(fake_cupti: FakeCupti) -> None:
-    """A record carrying a name uses it directly, ignoring cbid resolution."""
-    act: Any = types.SimpleNamespace(name="explicit", kind=FakeActivityKind.RUNTIME, cbid=1)
-    assert nv._record_name(act, "runtime") == "explicit"
+def test_deferred_activity_name_prefers_explicit_name(fake_cupti: FakeCupti) -> None:
+    """Model conversion resolves names only after the buffer callback returns."""
+    record = nv.RawGeneric(
+        kind_id=FakeActivityKind.RUNTIME,
+        kind="runtime",
+        name="explicit",
+        cbid=1,
+        start_ns=0,
+        end_ns=1,
+        correlation_id=0,
+    )
+    assert nv.CuptiCollector.activity_name(record) == "explicit"
 
 
-def test_record_name_falls_back_to_label_without_cbid(fake_cupti: FakeCupti) -> None:
-    """With neither a name nor a resolvable cbid, the kind label is the name."""
-    act: Any = types.SimpleNamespace(name=None, kind=FakeActivityKind.MEMSET, cbid=None)
-    assert nv._record_name(act, "memset") == "memset"
+def test_deferred_activity_name_falls_back_to_kind(fake_cupti: FakeCupti) -> None:
+    record = nv.RawGeneric(
+        kind_id=FakeActivityKind.MEMSET,
+        kind="memset",
+        name=None,
+        cbid=None,
+        start_ns=0,
+        end_ns=1,
+        correlation_id=0,
+    )
+    assert nv.CuptiCollector.activity_name(record) == "memset"
+
+
+def test_raw_activity_buffer_is_bounded() -> None:
+    collector = nv.CuptiCollector(max_records=1)
+    record = nv.RawMemcpy(copy_kind=1, start_ns=0, end_ns=1, bytes_moved=1)
+    collector.append(record)
+    collector.append(record)
+    assert len(collector.records) == 1
+    assert collector.dropped_records == 1
+    assert collector.dropped() == 1
 
 
 def test_sync_is_a_noop_without_runtime(fake_cupti: FakeCupti) -> None:
@@ -235,6 +288,8 @@ def test_nvtx_tracer_annotation_forwards_to_nvtx(monkeypatch: pytest.MonkeyPatch
     fake_nvtx = types.SimpleNamespace(
         push_range=lambda name: events.append(("push", name)),
         pop_range=lambda: events.append(("pop", None)),
+        start_range=lambda name: events.append(("start", name)) or (len(events), 0),
+        end_range=lambda range_id: events.append(("end", range_id)),
         mark=lambda message: events.append(("mark", message)),
     )
     monkeypatch.setattr(nv, "nvtx", fake_nvtx)
@@ -243,7 +298,19 @@ def test_nvtx_tracer_annotation_forwards_to_nvtx(monkeypatch: pytest.MonkeyPatch
     tracer.push("r")
     tracer.mark("m")
     tracer.pop()
-    assert events == [("push", "r"), ("mark", "m"), ("pop", None)]
+    finish_first = tracer.start("first")
+    finish_second = tracer.start("second")
+    finish_first()
+    finish_second()
+    assert events == [
+        ("push", "r"),
+        ("mark", "m"),
+        ("pop", None),
+        ("start", "first"),
+        ("start", "second"),
+        ("end", (4, 0)),
+        ("end", (5, 0)),
+    ]
 
 
 def test_nvtx_tracer_timestamp_uses_cupti(fake_cupti: FakeCupti) -> None:
@@ -260,6 +327,7 @@ def test_nvtx_tracer_degrades_without_libraries(monkeypatch: pytest.MonkeyPatch)
     tracer.push("x")
     tracer.pop()
     tracer.mark("x")
+    tracer.start("x")()
     assert tracer.supported() == Activity(0)
     assert isinstance(tracer.open(Activity.KERNEL), TraceCollector)
     assert tracer.callbacks().counts() == {}

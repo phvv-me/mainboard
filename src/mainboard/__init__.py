@@ -1,3 +1,20 @@
+NAME = __name__
+__version__ = "0.0.8"
+
+__lazy_modules__ = {
+    "mainboard.cpu",
+    "mainboard.enums",
+    "mainboard.gpu",
+    "mainboard.host",
+    "mainboard.machine",
+    "mainboard.models",
+    "mainboard.npu",
+    "mainboard.profiling",
+    "mainboard.providers",
+    "mainboard.unit",
+    "mainboard.visual",
+}
+
 from .cpu import CPU
 from .enums import (
     CmakeBuildType,
@@ -52,11 +69,14 @@ from .profiling import (
     Bound,
     Diagnosis,
     KernelStat,
+    Profile,
     ProfileReport,
+    Profiler,
     ReadResult,
     StorageBandwidth,
     gpu_busy,
     nvme_to_hbm,
+    span,
     wait_for_idle,
 )
 from .profiling import profile_fn as profile
@@ -72,9 +92,6 @@ from .providers import (
 )
 from .unit import Unit
 from .visual import MachineView
-
-NAME = __name__  # the package folder is the single source of the name
-__version__ = "0.0.8"  # in-tree source of truth; kept in step with pyproject
 
 __all__ = [
     "NAME",
@@ -119,6 +136,8 @@ __all__ = [
     "NvidiaGPU",
     "PartitionInfo",
     "ProfileReport",
+    "Profile",
+    "Profiler",
     "PcieInfo",
     "ProcessInfo",
     "QualcommGPU",
@@ -144,5 +163,6 @@ __all__ = [
     "meter",
     "nvme_to_hbm",
     "profile",
+    "span",
     "wait_for_idle",
 ]

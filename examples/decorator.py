@@ -1,16 +1,16 @@
-"""Profile functions with the @profile decorator — each call is a region."""
+"""Leave dormant spans in functions and activate them for one bounded profile."""
 
 import time
 
-from mainboard.profiling import Profiler, profile
+from mainboard.profiling import Profiler, span
 
 
-@profile
+@span
 def load() -> None:
     time.sleep(0.05)
 
 
-@profile
+@span
 def compute() -> None:
     time.sleep(0.10)
 

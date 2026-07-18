@@ -1,9 +1,8 @@
-import json
 from pathlib import Path
 
 import pytest
 
-from mainboard import __version__, cli, profiling
+from mainboard import __version__, cli
 from mainboard.profiling.storage import ReadResult, StorageBandwidth
 
 
@@ -82,28 +81,32 @@ def test_no_color_flag_reaches_the_renderer(
 
 
 def test_profile_runs_a_script_target_end_to_end(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    cpu_only_host: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`profile <script.py>` runs the script as `__main__` under the real profiler.
+    """`profile run <script.py>` runs once and prints only observed evidence.
 
     Mocks nothing but the filesystem target: the parse, the `runpy` dispatch,
     the `Profiler` context, and `result().show()` all run for real."""
     script = tmp_path / "work.py"
     script.write_text("print('SCRIPT_MARKER', sum(range(100)))\n")
-    assert ran_clean(run_cli("profile", str(script)))
-    assert "SCRIPT_MARKER 4950" in capsys.readouterr().out
+    assert ran_clean(run_cli("profile", "run", str(script)))
+    output = capsys.readouterr().out
+    assert "SCRIPT_MARKER 4950" in output
+    assert "program" in output
+    assert "Unavailable" not in output
 
 
-def test_profile_writes_a_perfetto_timeline(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_profile_run_accepts_python_output_options(
+    cpu_only_host: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The `--perfetto` path is wired to `result.perfetto`, writing a Chrome trace."""
+    """The unified command accepts a Tachyon output path even when 3.15 is unavailable."""
     script = tmp_path / "work.py"
     script.write_text("x = 1\n")
-    timeline = tmp_path / "trace.json"
-    assert ran_clean(run_cli("profile", str(script), "--perfetto", str(timeline)))
-    payload = json.loads(timeline.read_text())
-    assert "traceEvents" in payload
+    artifact = tmp_path / "profile.html"
+    assert ran_clean(
+        run_cli("profile", "run", str(script), "--output", str(artifact), "--no-device")
+    )
+    assert "Unavailable" not in capsys.readouterr().out
 
 
 def test_profile_missing_module_surfaces_an_import_error(
@@ -111,7 +114,7 @@ def test_profile_missing_module_surfaces_an_import_error(
 ) -> None:
     """A non-existent module target reaches `runpy` and raises, not a silent no-op."""
     with pytest.raises((ImportError, SystemExit)):
-        cli.app(["profile", "no.such.module.zzz"], exit_on_error=False)
+        cli.app(["profile", "run", "no.such.module.zzz"], exit_on_error=False)
 
 
 def test_profile_requires_a_target() -> None:
@@ -122,16 +125,14 @@ def test_profile_requires_a_target() -> None:
     from cyclopts.exceptions import CycloptsError
 
     with pytest.raises(CycloptsError):
-        cli.app(["profile"], exit_on_error=False)
+        cli.app(["profile", "run"], exit_on_error=False)
 
 
 def test_storage_command_reports_unavailable(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """An unavailable probe (no CUDA, no scratch, ...) prints the skip reason and returns."""
-    monkeypatch.setattr(
-        profiling, "nvme_to_hbm", lambda **_: StorageBandwidth(skipped="no CUDA device")
-    )
+    monkeypatch.setattr(cli, "nvme_to_hbm", lambda **_: StorageBandwidth(skipped="no CUDA device"))
     assert ran_clean(run_cli("storage"))
     assert "unavailable: no CUDA device" in capsys.readouterr().out
 
@@ -143,7 +144,7 @@ def test_storage_command_prints_reads_and_speedup(
     mmap = ReadResult(label="mmap", gigabytes_per_s=5.0, latency_ms=2.0)
     gds = ReadResult(label="gds", gigabytes_per_s=10.0, latency_ms=1.0)
     result = StorageBandwidth(available=True, scratch_path=None, file_gb=2.0, mmap=mmap, gds=gds)
-    monkeypatch.setattr(profiling, "nvme_to_hbm", lambda **_: result)
+    monkeypatch.setattr(cli, "nvme_to_hbm", lambda **_: result)
     assert ran_clean(run_cli("storage"))
     out = capsys.readouterr().out
     assert "mmap" in out and "gds" in out
@@ -158,7 +159,7 @@ def test_storage_command_reports_skip_reason_without_speedup(
     result = StorageBandwidth(
         available=True, scratch_path=None, file_gb=2.0, mmap=mmap, skipped="kvikio not installed"
     )
-    monkeypatch.setattr(profiling, "nvme_to_hbm", lambda **_: result)
+    monkeypatch.setattr(cli, "nvme_to_hbm", lambda **_: result)
     assert ran_clean(run_cli("storage"))
     out = capsys.readouterr().out
     assert "mmap" in out
@@ -171,7 +172,7 @@ def test_storage_command_prints_nothing_extra_with_no_speedup_or_skip_reason(
     """With neither a speedup nor a skip reason, the command prints only the read lines."""
     mmap = ReadResult(label="mmap", gigabytes_per_s=5.0, latency_ms=2.0)
     result = StorageBandwidth(available=True, scratch_path=None, file_gb=2.0, mmap=mmap)
-    monkeypatch.setattr(profiling, "nvme_to_hbm", lambda **_: result)
+    monkeypatch.setattr(cli, "nvme_to_hbm", lambda **_: result)
     assert ran_clean(run_cli("storage"))
     out = capsys.readouterr().out
     assert "mmap" in out

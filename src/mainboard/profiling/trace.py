@@ -1,16 +1,7 @@
-"""Deep per-operation tracing: kernel/memcpy records and bottleneck ranking.
-
-The deep tier is *opt-in* (``Profiler(trace=True)``) and built for minimal impact:
-collection is asynchronous and buffered (CUPTI Activity, ROCprofiler) so nothing runs
-on the application's launch path, records are attributed to regions **after the fact**
-by GPU-timestamp binning (no per-region synchronize in the default mode), and a single
-device sync drains the buffers at session end. The records are vendor-neutral
-:class:`KernelTrace` / :class:`MemcpyTrace`; :class:`BottleneckReport` ranks where GPU
-time goes. :class:`TraceCollector` is the no-op base a vendor backend overrides.
-"""
+"""Native activity records, span attribution, and bottleneck ranking."""
 
 from collections import defaultdict
-from enum import Flag
+from enum import Flag, auto
 from types import TracebackType
 from typing import TYPE_CHECKING
 
@@ -31,16 +22,16 @@ class Activity(Flag):
     ``label`` is the lowercase name used in records and on the Perfetto timeline.
     """
 
-    KERNEL = 1
-    MEMCPY = 2
-    MEMSET = 4
-    SYNC = 8
-    OVERHEAD = 16
-    MEMORY = 32
-    JIT = 64
-    RUNTIME = 128
-    DRIVER = 256
-    MEMORY_POOL = 512
+    KERNEL = auto()
+    MEMCPY = auto()
+    MEMSET = auto()
+    SYNC = auto()
+    OVERHEAD = auto()
+    MEMORY = auto()
+    JIT = auto()
+    RUNTIME = auto()
+    DRIVER = auto()
+    MEMORY_POOL = auto()
     DEFAULT = KERNEL | MEMCPY
     ALL = (
         KERNEL | MEMCPY | MEMSET | SYNC | OVERHEAD | MEMORY | JIT | RUNTIME | DRIVER | MEMORY_POOL
@@ -221,6 +212,10 @@ class TraceCollector:
     def activities(self) -> list[ActivityRecord]:
         """Generic timed records for the enabled non-kernel/memcpy activity kinds."""
         return []
+
+    def dropped(self) -> int:
+        """Number of native records discarded by a bounded capture buffer."""
+        return 0
 
 
 class CallbackSession:

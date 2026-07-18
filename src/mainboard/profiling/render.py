@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 
 from rich import box
 from rich.console import Console, Group, RenderableType
+from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from .models import RegionStat, SpanStat
+    from .models import RegionStat
     from .result import Profile, ProfileDiff
     from .trace import BottleneckReport
 
@@ -70,21 +72,33 @@ def _kernel_table(report: BottleneckReport) -> Table:
 
 
 def profile_renderable(profile: Profile) -> RenderableType:
-    """A rich renderable of a profile: the region table + hot kernels when traced.
+    """A labeled rich view of every populated evidence section.
 
     Backs both ``Profile.__rich__`` (so ``print(profile)`` and Jupyter just work) and
     :func:`show_profile`.
     """
+    sections: list[RenderableType] = []
+    if profile.python is not None:
+        result = profile.python
+        content = result.stdout.strip() or str(result.output or "No text output")
+        sections.append(Panel(Text.from_ansi(content), title=f"Python {result.action}"))
     stats = profile.stats()
-    if not stats:
-        return "No regions recorded."
+    if stats:
+        sections.append(_region_table(stats))
     if profile.kernels:
-        return Group(_region_table(stats), _kernel_table(profile.trace_report()))
-    return _region_table(stats)
+        sections.append(_kernel_table(profile.trace_report()))
+    drops = []
+    if profile.dropped_spans:
+        drops.append(f"{profile.dropped_spans} oldest spans dropped")
+    if profile.dropped_activities:
+        drops.append(f"{profile.dropped_activities} oldest GPU activities dropped")
+    if drops:
+        sections.append(Panel("\n".join(drops), title="Capture limit"))
+    return Group(*sections) if sections else "No profiling data collected."
 
 
 def show_profile(profile: Profile, *, color: bool = True) -> None:
-    """Print the region stats, plus the hot-kernel report when the run was traced."""
+    """Print every available profiling lane with an explicit label."""
     Console(no_color=not color).print(profile_renderable(profile))
 
 
@@ -108,46 +122,3 @@ def show_diff(diff: ProfileDiff, *, color: bool = True) -> None:
             style=style,
         )
     console.print(table)
-
-
-def span_text(stats: Sequence[SpanStat]) -> str:
-    """Plain-text per-path table (the fallback when rich output is unwanted)."""
-    if not stats:
-        return "No spans recorded."
-    header = (
-        f"{'path':<32}{'calls':>6}{'total ms':>10}{'mean ms':>9}{'p50 ms':>9}"
-        f"{'p95 ms':>9}{'max ms':>9}"
-    )
-    rows = [header]
-    rows += [
-        f"{s.path:<32}{s.count:>6d}{s.total_ms:>10.2f}{s.mean_ms:>9.2f}"
-        f"{s.p50_ms:>9.2f}{s.p95_ms:>9.2f}{s.max_ms:>9.2f}"
-        for s in stats
-    ]
-    return "\n".join(rows)
-
-
-def _span_table(stats: Sequence[SpanStat]) -> Table:
-    table = Table(title="spans (by total time)", box=box.ROUNDED, header_style="bold")
-    table.add_column("path")
-    for name in ("calls", "total ms", "mean ms", "p50 ms", "p95 ms", "max ms"):
-        table.add_column(name, justify="right")
-    for s in stats:
-        table.add_row(
-            s.path,
-            str(s.count),
-            f"{s.total_ms:.2f}",
-            f"{s.mean_ms:.2f}",
-            f"{s.p50_ms:.2f}",
-            f"{s.p95_ms:.2f}",
-            f"{s.max_ms:.2f}",
-        )
-    return table
-
-
-def show_spans(stats: Sequence[SpanStat], *, color: bool = True) -> None:
-    """Print the per-path span stats as a rich table."""
-    if not stats:
-        print("No spans recorded.")
-        return
-    Console(no_color=not color).print(_span_table(stats))

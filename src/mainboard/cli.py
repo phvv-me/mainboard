@@ -1,7 +1,11 @@
+import sys
+
 from cyclopts import App
 
 from . import NAME, __version__
 from .machine import Machine
+from .profiling import Profiler, nvme_to_hbm
+from .profiling.python import PythonFormat, PythonMode
 from .visual import MachineView
 
 # Pin the version explicitly: left to its default, cyclopts derives `--version`
@@ -13,6 +17,11 @@ app = App(
     version=__version__,
     help="Inspect CPU, GPU, and NPU hardware topology.",
 )
+profiles = App(
+    name="profile",
+    help="Profile Python, GPU activity, or a live process through one interface.",
+)
+app.command(profiles)
 
 
 @app.default
@@ -21,36 +30,107 @@ def show(color: bool = True) -> None:
     MachineView(Machine()).print(color=color)
 
 
-@app.command
-def profile(
+@profiles.command(name="run")
+def profile_run(
     target: str,
     *,
-    auto: str = "",
-    trace: bool = False,
-    perfetto: str = "",
+    python: bool = True,
+    spans: bool = True,
+    device: bool = True,
+    markers: bool = True,
+    activity: bool = True,
+    mode: PythonMode = PythonMode.WALL,
+    format: PythonFormat = PythonFormat.PSTATS,
+    output: str = "",
+    duration: float | None = None,
+    sampling_rate: str = "1khz",
+    executable: str = sys.executable,
+    timeout: float | None = None,
     color: bool = True,
 ) -> None:
-    """Run a module or script under the profiler and show where time goes.
+    """Run a module or script once and show every available profiling lane.
 
-    target: a module name (``pkg.mod``) or a ``.py`` script path, run as ``__main__``.
-    auto: comma-separated package prefixes to auto-annotate (every call becomes a region).
-    trace: enable deep per-kernel tracing (CUDA). perfetto: also write a timeline JSON to
-    this path (open at ui.perfetto.dev).
+    target: module name or `.py` script path.
+    python: collect Tachyon samples when Python 3.15 is available.
+    spans: record dormant `span` annotations and the whole program span.
+    device: sample target-process GPU telemetry while spans are open.
+    markers: emit native NVTX, ROCTx, or signpost ranges for spans.
+    activity: collect asynchronous native kernel and memory-copy activities.
+    mode: Python wall, CPU, GIL, or exception sampling mode.
+    format: Python profile output representation.
+    output: optional Python profile artifact path.
+    duration: optional Tachyon duration in seconds.
+    sampling_rate: Tachyon sample rate such as `1khz` or `20khz`.
+    executable: Python executable used by Tachyon and the target.
+    timeout: hard deadline for the target process.
     """
-    import runpy
+    features = Profiler.Feature(0)
+    for enabled, feature in (
+        (python, Profiler.Feature.PYTHON),
+        (spans, Profiler.Feature.SPANS),
+        (device, Profiler.Feature.DEVICE),
+        (markers, Profiler.Feature.MARKERS),
+        (activity, Profiler.Feature.ACTIVITY),
+    ):
+        if enabled:
+            features |= feature
+    Profiler.run(
+        target,
+        features=features,
+        mode=mode,
+        format=format,
+        output=output or None,
+        duration=duration,
+        sampling_rate=sampling_rate,
+        executable=executable,
+        timeout=timeout,
+    ).show(color=color)
 
-    from .profiling import Profiler
 
-    modules = tuple(part for part in auto.split(",") if part)
-    with Profiler(trace=trace, auto=modules) as profiler:
-        if target.endswith(".py"):
-            runpy.run_path(target, run_name="__main__")
-        else:
-            runpy.run_module(target, run_name="__main__")
-    result = profiler.result()
-    result.show(color=color)
-    if perfetto:
-        result.perfetto(perfetto)
+@profiles.command
+def attach(
+    pid: int,
+    *,
+    mode: PythonMode = PythonMode.WALL,
+    format: PythonFormat = PythonFormat.PSTATS,
+    output: str = "",
+    duration: float = 30.0,
+    sampling_rate: str = "1khz",
+    executable: str = sys.executable,
+    timeout: float | None = None,
+    color: bool = True,
+) -> None:
+    """Attach Tachyon to a live Python process and show its sampled hotspots."""
+    Profiler.attach(
+        pid,
+        mode=mode,
+        format=format,
+        output=output or None,
+        duration=duration,
+        sampling_rate=sampling_rate,
+        executable=executable,
+        timeout=timeout,
+    ).show(color=color)
+
+
+@profiles.command
+def dump(
+    pid: int,
+    *,
+    all_threads: bool = True,
+    async_aware: bool = False,
+    executable: str = sys.executable,
+    timeout: float = 10.0,
+    color: bool = True,
+) -> None:
+    """Print one Python stack snapshot from a live process."""
+    Profiler.dump(
+        pid,
+        all_threads=all_threads,
+        async_aware=async_aware,
+        executable=executable,
+        timeout=timeout,
+    ).show(color=color)
 
 
 @app.command
@@ -64,8 +144,6 @@ def storage(file_gb: float = 2.0, iters: int = 5, device: str = "cuda") -> None:
 
     file_gb: probe file size in gigabytes. iters: timed read count. device: accelerator device.
     """
-    from .profiling import nvme_to_hbm
-
     result = nvme_to_hbm(file_gb=file_gb, iters=iters, device=device)
     if not result.available:
         print(f"nvme->hbm probe unavailable: {result.skipped}")

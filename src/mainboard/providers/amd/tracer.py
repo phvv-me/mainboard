@@ -2,20 +2,17 @@
 
 from contextlib import suppress
 from importlib import import_module
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from ...enums import Vendor
-from ...profiling.tracer import Tracer
+from ...profiling.tracer import Marker, Tracer
 
 if TYPE_CHECKING:
     from .protocols import Roctx
 
 
-# `roctx` ships with ROCm (no stubs), so the loader returns the `Roctx` Protocol bound to the
-# real module. `import_module` returns an untyped `ModuleType` that pyrefly cannot bridge to a
-# Protocol (its `__getattr__` defeats the structural check), hence the `pyrefly: ignore`.
 def _load_roctx() -> Roctx:
-    return import_module("roctx")  # pyrefly: ignore[bad-return]
+    return cast("Roctx", import_module("roctx"))
 
 
 roctx: Roctx | None = None
@@ -44,6 +41,14 @@ class RoctxTracer(Tracer):
         if self._ids:
             assert roctx is not None
             roctx.rangeStop(self._ids.pop())
+
+    def start(self, name: str) -> Marker:
+        """Open a correlatable range and return its exact closer."""
+        api = roctx
+        if api is None:
+            return lambda: None
+        range_id = api.rangeStart(name)
+        return lambda: api.rangeStop(range_id)
 
     def mark(self, name: str) -> None:
         assert roctx is not None

@@ -14,11 +14,14 @@ from typing import Any
 
 import pytest
 
+from mainboard.enums import Vendor
+from mainboard.gpu import GPU
 from mainboard.profiling import annotate, perfetto, render
 from mainboard.profiling.benchmark import compare
 from mainboard.profiling.models import RegionStat, RegionSummary
 from mainboard.profiling.profiler import Profiler
 from mainboard.profiling.result import Profile, ProfileDiff
+from mainboard.profiling.spans import span
 from mainboard.profiling.trace import (
     Activity,
     ActivityRecord,
@@ -148,6 +151,7 @@ def test_trace_collector_base_is_a_noop_context() -> None:
     assert collector.kernels() == []
     assert collector.memcpys() == []
     assert collector.activities() == []
+    assert collector.dropped() == 0
 
 
 def test_callback_session_base_counts_nothing() -> None:
@@ -190,6 +194,14 @@ def test_tracer_resolve_adapts_all_to_supported() -> None:
     assert _SupportingTracer().resolve(Activity.ALL) == (Activity.KERNEL | Activity.MEMCPY)
 
 
+def test_tracer_resolve_all_with_full_support() -> None:
+    class FullTracer(Tracer):
+        def supported(self) -> Activity:
+            return Activity.ALL
+
+    assert FullTracer().resolve(Activity.ALL) is Activity.ALL
+
+
 def test_tracer_resolve_fails_fast_on_explicit_unsupported_kind() -> None:
     """An explicit unsupported kind is an error, not a silent omission."""
     with pytest.raises(ValueError, match="not supported"):
@@ -200,6 +212,37 @@ def test_tracer_detect_prefers_present_vendor(monkeypatch: pytest.MonkeyPatch) -
     """`detect` returns the no-op base when no backend library is available."""
     monkeypatch.setattr(Tracer, "registry", classmethod(lambda cls: [Tracer]))
     assert type(Tracer.detect()) is Tracer
+
+
+def test_tracer_detect_uses_matching_available_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MatchingTracer(Tracer):
+        vendor = Vendor.NVIDIA
+
+        @classmethod
+        def is_available(cls) -> bool:
+            return True
+
+    gpu = GPU(vendor=Vendor.NVIDIA)
+    monkeypatch.setattr(Tracer, "registry", classmethod(lambda cls: [MatchingTracer]))
+    monkeypatch.setattr(GPU, "all", classmethod(lambda cls: (gpu,)))
+    assert isinstance(Tracer.detect(), MatchingTracer)
+
+
+def test_tracer_detect_uses_available_backend_without_matching_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An annotation library remains useful when its hardware probe is unavailable."""
+
+    class AvailableTracer(Tracer):
+        @classmethod
+        def is_available(cls) -> bool:
+            return True
+
+    monkeypatch.setattr(Tracer, "registry", classmethod(lambda cls: [AvailableTracer]))
+    monkeypatch.setattr(GPU, "all", classmethod(lambda cls: ()))
+    assert isinstance(Tracer.detect(), AvailableTracer)
 
 
 # ── Profile result verbs ─────────────────────────────────────────────────────────
@@ -232,7 +275,7 @@ def test_profile_report_and_str_are_plain_text() -> None:
     """`report`/`__str__` give a per-region table; an empty profile says so."""
     assert "encode" in _traced_profile().report()
     assert str(_traced_profile()) == _traced_profile().report()
-    assert "No regions" in Profile().report()
+    assert "No profiling data" in Profile().report()
 
 
 def test_profile_perfetto_export(tmp_path: Path) -> None:
@@ -286,7 +329,7 @@ def test_profile_rich_renderable_without_kernels() -> None:
 
 def test_profile_rich_renderable_empty_is_a_message() -> None:
     """An empty profile renders a 'no regions' message rather than a table."""
-    assert render.profile_renderable(Profile()) == "No regions recorded."
+    assert render.profile_renderable(Profile()) == "No profiling data collected."
 
 
 def test_show_diff_colors_regressions(capsys: pytest.CaptureFixture[str]) -> None:
@@ -310,29 +353,35 @@ def test_region_stat_aggregate_collapses_calls() -> None:
 
 
 def test_profiler_times_regions_and_aggregates(one_gpu: object) -> None:
-    """The profiler brackets a region, samples the GPU, and yields a stat for it."""
-    with Profiler(sample_interval_ms=1) as profiler, annotate.region("step"):
+    """The profiler brackets a span, samples the target GPU, and yields a stat."""
+    with Profiler(sample_interval_ms=1) as profiler, span("step"):
         pass
     stats = profiler.result().stats()
     assert any(s.name == "step" for s in stats)
-    assert profiler.summaries()[0].name == "step"
+    assert profiler.result().summaries[0].name == "step"
 
 
 def test_profiler_deep_trace_opens_collector(one_gpu: object) -> None:
-    """With `trace`, the profiler opens a collector and records region windows."""
-    with Profiler(trace=Activity.KERNEL, sample_interval_ms=1) as profiler, annotate.region("k"):
+    """The activity feature opens a collector and records span windows."""
+    with (
+        Profiler(
+            features=Profiler.Feature.SPANS | Profiler.Feature.ACTIVITY,
+            activities=Activity.KERNEL,
+            sample_interval_ms=1,
+        ) as profiler,
+        span("k"),
+    ):
         pass
     result = profiler.result()
     assert result.windows and result.windows[0].name == "k"
-    assert profiler.supported() == (Activity.KERNEL | Activity.MEMCPY)
 
 
 def test_profiler_exit_without_open_frame_is_safe(one_gpu: object) -> None:
     """Closing a region that was never opened is ignored rather than erroring."""
     profiler = Profiler()
     with profiler:
-        profiler.exit("ghost", wall_ns=1)
-    assert profiler.summaries() == []
+        profiler.exit(999, wall_ns=1)
+    assert profiler.result().summaries == ()
 
 
 def test_short_region_still_records_memory_via_boundary_snapshot(one_gpu: object) -> None:
@@ -343,9 +392,9 @@ def test_short_region_still_records_memory_via_boundary_snapshot(one_gpu: object
     when profiling a fast kernel against a per-call sync barrier.
     """
     with Profiler(sample_interval_ms=1000) as profiler:
-        profiler.enter("kernel")
-        profiler.exit("kernel", wall_ns=1)
-    summary = profiler.summaries()[0]
+        token = profiler.enter("kernel")
+        profiler.exit(token, wall_ns=1)
+    summary = profiler.result().summaries[0]
     assert summary.samples == 1  # the boundary snapshot, since no async tick landed
     assert summary.peak_memory_bytes == 40  # from the one_gpu fixture snapshot
 
@@ -354,8 +403,12 @@ def test_profiler_trace_report_and_show(
     one_gpu: object, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The profiler proxies the result's reports and show during/after a run."""
-    with Profiler(trace=Activity.KERNEL, sample_interval_ms=1) as profiler:
-        with annotate.region("k"):
+    with Profiler(
+        features=Profiler.Feature.SPANS | Profiler.Feature.ACTIVITY,
+        activities=Activity.KERNEL,
+        sample_interval_ms=1,
+    ) as profiler:
+        with span("k"):
             pass
         assert isinstance(profiler.bottlenecks(), list)
         assert isinstance(profiler.stats(), list)
@@ -365,36 +418,7 @@ def test_profiler_trace_report_and_show(
     assert capsys.readouterr().out is not None
 
 
-# ── Annotation surface ───────────────────────────────────────────────────────────
-
-
-def test_region_without_profiler_only_annotates(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A region with no active profiler still pushes/pops native annotation."""
-    pushes: list[str] = []
-    tracer = make_clock_tracer()
-    monkeypatch.setattr(tracer, "push", lambda name: pushes.append(name))
-    monkeypatch.setattr(annotate, "_tracer", tracer)
-    monkeypatch.setattr(annotate, "profiler", None)
-    with annotate.region("solo"):
-        pass
-    assert pushes == ["solo"]
-
-
-def test_profile_decorator_wraps_each_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`@profile` names each call a region; bare and parameterized forms both work."""
-    monkeypatch.setattr(annotate, "_tracer", make_clock_tracer())
-    monkeypatch.setattr(annotate, "profiler", None)
-
-    @annotate.profile
-    def bare() -> int:
-        return 1
-
-    @annotate.profile(name="named")
-    def given() -> int:
-        return 2
-
-    assert bare() == 1
-    assert given() == 2
+# ── Native callbacks and targeted automatic spans ───────────────────────────────
 
 
 def test_callbacks_proxies_the_tracer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -413,30 +437,19 @@ def test_tracer_lazy_detection_is_cached(monkeypatch: pytest.MonkeyPatch) -> Non
     assert annotate.tracer() is first
 
 
-def test_enable_auto_instruments_matching_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Runtime auto-annotation brackets every call whose code matches the predicate."""
-    seen: list[str] = []
-    tracer = make_clock_tracer()
-    monkeypatch.setattr(tracer, "push", lambda name: seen.append(name))
-    monkeypatch.setattr(annotate, "_tracer", tracer)
-    monkeypatch.setattr(annotate, "profiler", None)
+def test_enable_auto_instruments_matching_calls() -> None:
+    """Runtime auto-annotation installs local events for selected code only."""
 
     def target() -> int:
         return 41
 
-    annotate.enable_auto(lambda code: code.co_name == "target")
-    try:
-        target()
-    finally:
-        annotate.disable_auto()
-    assert any(name.endswith("target") for name in seen)
-
-
-def test_instrument_source_wraps_function_bodies() -> None:
-    """Static AST rewrite wraps each def body in a `region` and prepends the import."""
-    rewritten = annotate.instrument_source("def f(x):\n    return x\n")
-    assert "_mb_region" in rewritten
-    assert "region as _mb_region" in rewritten
+    with Profiler(features=Profiler.Feature.SPANS) as profiler:
+        annotate.enable_auto((target.__code__,))
+        try:
+            assert target() == 41
+        finally:
+            annotate.disable_auto()
+    assert profiler.result().summaries[0].name.endswith("target")
 
 
 # ── benchmark.compare ────────────────────────────────────────────────────────────
@@ -474,7 +487,13 @@ def test_roctx_tracer_push_pop_mark(monkeypatch: pytest.MonkeyPatch) -> None:
     tracer.mark("m")
     tracer.pop()
     tracer.pop()  # empty stack: ignored
+    finish_first = tracer.start("first")
+    finish_second = tracer.start("second")
+    finish_first()
+    finish_second()
     assert ("start", "r") in events and ("mark", "m") in events
+    monkeypatch.setattr(amd_tracer, "roctx", None)
+    tracer.start("unavailable")()
 
 
 def test_signpost_tracer_intervals(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -507,4 +526,8 @@ def test_signpost_tracer_intervals(monkeypatch: pytest.MonkeyPatch) -> None:
     tracer.mark("e")
     tracer.pop()
     tracer.pop()  # empty stack: ignored
+    finish_first = tracer.start("first")
+    finish_second = tracer.start("second")
+    finish_first()
+    finish_second()
     assert ("begin", "a") in calls and ("event", "e") in calls

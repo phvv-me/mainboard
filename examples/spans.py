@@ -3,9 +3,7 @@
 import asyncio
 import time
 
-from mainboard.profiling import Collector, enable_spans, span
-
-enable_spans()  # off by default; call once at startup
+from mainboard.profiling import Profiler, span
 
 
 @span
@@ -13,19 +11,19 @@ def load() -> None:
     time.sleep(0.02)
 
 
-async def process(chunk_id: int, collector: Collector) -> None:
-    with span("pipeline", collector=collector):
-        with span("extract", collector=collector):
+async def process(chunk_id: int) -> None:
+    with span("pipeline"):
+        with span("extract"):
             await asyncio.sleep(0.01)
-        with span("embed", collector=collector):
+        with span("embed"):
             await asyncio.sleep(0.02)
 
 
 async def main() -> None:
-    collector = Collector()  # a scoped window: one per operation, isolated from the default
-    await asyncio.gather(*(process(i, collector) for i in range(8)))
-    collector.show()  # rich table: path, calls, total/mean/p50/p95/max ms
+    with Profiler(features=Profiler.Feature.SPANS) as profiler:
+        load()
+        await asyncio.gather(*(process(i) for i in range(8)))
+    profiler.show()
 
 
-load()  # sync context manager + bare decorator both write to the default collector
 asyncio.run(main())

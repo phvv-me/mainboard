@@ -1,7 +1,7 @@
 from contextlib import suppress
 from functools import cache
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .protocols import CoreDeviceType, CoreSystem, CudaRuntime, Nvml
@@ -14,23 +14,19 @@ def text(value: bytes | str) -> str:
     return value
 
 
-# The bindings ship no type stubs, so each loader returns the Protocol in `protocols.py`
-# (the surface mainboard calls) bound to the real module. `import_module` returns an untyped
-# `ModuleType` that pyrefly cannot bridge to a Protocol (its `__getattr__` defeats the
-# structural check), so each loader carries a `pyrefly: ignore` for that genuine stub gap.
 def _load_runtime() -> CudaRuntime:
-    return import_module("cuda.bindings.runtime")  # pyrefly: ignore[bad-return]
+    return cast("CudaRuntime", import_module("cuda.bindings.runtime"))
 
 
 def _load_nvml() -> Nvml:
     try:
-        return import_module("cuda.bindings._nvml")  # pyrefly: ignore[bad-return]
+        return cast("Nvml", import_module("cuda.bindings._nvml"))
     except ImportError:
-        return import_module("cuda.bindings.nvml")  # pyrefly: ignore[bad-return]
+        return cast("Nvml", import_module("cuda.bindings.nvml"))
 
 
 def _load_system() -> CoreSystem:
-    return import_module("cuda.core.system")  # pyrefly: ignore[bad-return]
+    return cast("CoreSystem", import_module("cuda.core.system"))
 
 
 class NvidiaApis:

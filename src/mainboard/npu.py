@@ -1,3 +1,4 @@
+import importlib
 import logging
 from typing import ClassVar
 
@@ -25,6 +26,7 @@ class NPU(Unit, Registry):
         Probing is best-effort per provider: a backend whose `all` raises is
         logged and skipped so one broken vendor never sinks the whole probe.
         """
+        importlib.import_module("mainboard.providers")
         return tuple(npu for provider in cls.implementations() for npu in cls.probe(provider))
 
     @classmethod

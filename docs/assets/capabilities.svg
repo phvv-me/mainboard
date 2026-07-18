@@ -6,11 +6,11 @@
 <text x="46" y="113" font-size="16" font-weight="700" fill="#0f172a">Annotate</text>
 <line x1="44" y1="120" x2="482" y2="120" stroke="#e2e8f0"/>
 <circle cx="54" cy="132" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
-<text x="70" y="136" font-size="14" fill="#0f172a">region() &amp; @profile</text>
+<text x="70" y="136" font-size="14" fill="#0f172a">dormant span / @span</text>
 <circle cx="54" cy="155" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
-<text x="70" y="159" font-size="14" fill="#0f172a">auto-annotate (PEP 669)</text>
+<text x="70" y="159" font-size="14" fill="#0f172a">targeted auto spans (PEP 669)</text>
 <circle cx="54" cy="178" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
-<text x="70" y="182" font-size="14" fill="#0f172a">AST source rewrite</text>
+<text x="70" y="182" font-size="14" fill="#0f172a">Python 3.15 sampling</text>
 <circle cx="54" cy="201" r="6" fill="#16a34a" stroke="#16a34a" stroke-width="2"/>
 <text x="70" y="205" font-size="14" fill="#0f172a">NVTX → Nsight timeline</text>
 <rect x="522" y="90" width="470" height="138" rx="12" fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>

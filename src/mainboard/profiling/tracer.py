@@ -8,8 +8,10 @@ GPU provider and self-register via :class:`Registry`; :meth:`detect` picks the o
 whose library is importable, preferring a match for a GPU actually present.
 """
 
+import importlib
 import logging
 import time
+from collections.abc import Callable
 from typing import ClassVar
 
 from patos import Registry
@@ -19,6 +21,7 @@ from ..gpu import GPU
 from .trace import Activity, CallbackSession, TraceCollector
 
 logger = logging.getLogger(__name__)
+type Marker = Callable[[], None]
 
 
 class Tracer(Registry):
@@ -39,6 +42,7 @@ class Tracer(Registry):
     @classmethod
     def detect(cls) -> Tracer:
         """The best available tracer: one matching a present GPU, else any, else no-op."""
+        importlib.import_module("mainboard.providers")
         backends = [b for b in cls.implementations() if b.is_available()]
         present = {gpu.vendor for gpu in GPU.all()}
         for backend in backends:
@@ -51,6 +55,11 @@ class Tracer(Registry):
 
     def pop(self) -> None:
         """Close the most recently opened range."""
+
+    def start(self, name: str) -> Marker:
+        """Open a native range and return the exact operation that closes it."""
+        self.push(name)
+        return self.pop
 
     def mark(self, name: str) -> None:
         """Emit an instantaneous named event."""

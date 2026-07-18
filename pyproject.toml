@@ -69,7 +69,7 @@ docs = [
   "mkdocs-static-i18n>=1.2",
   "mkdocstrings[python]>=0.26",
 ]
-# Native annotation backends for the profiler (region/@profile -> native timeline).
+# Native annotation backends for active spans on vendor timelines.
 # ROCTx and amdsmi ship with a ROCm install (not on PyPI), so are not listed here.
 profiling = [
   "nvtx>=0.2; platform_system == 'Linux'",
@@ -101,6 +101,10 @@ target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# PEP 810 requires `__lazy_modules__` to exist before the imports it selects.
+"src/mainboard/__init__.py" = ["E402", "I001"]
 
 [tool.pyrefly]
 project-includes = ["src", "tests"]
@@ -137,29 +141,21 @@ ignore_missing_imports = true
 # narrower type available, so `disallow_any_explicit` still guards every other module:
 #  - Pydantic's stubs declare inherited class vars as `Dict[str, Any]` (e.g.
 #    `__pydantic_extra__`), which mypy re-flags on every `BaseModel` subclass we define.
-#  - `profiling.annotate` types the `sys.monitoring` PY_RETURN callback's return value as
-#    `Any`: CPython hands back the profiled function's arbitrary result, which we ignore.
-#  - `profiling.spans` types a decorated coroutine function as `Coroutine[Any, Any, R]`,
-#    mirroring typeshed's own convention: the send/yield types are irreducible for a
-#    decorator that only ever awaits, never drives, the wrapped coroutine.
-#  - `profiling.storage` probes an injected `kvikio` module (or a test double standing in for
-#    one) across builds whose attributes differ (see `compat_mode_preferred`); the module has
-#    no type stubs and the probed shape is inherently dynamic, so `Any` is the only honest type.
 module = [
   "mainboard.models.*",
   "mainboard.cpu",
   "mainboard.gpu",
   "mainboard.npu",
   "mainboard.unit",
-  "mainboard.profiling.annotate",
   "mainboard.profiling.benchmark",
   "mainboard.profiling.models",
+  "mainboard.profiling.python",
   "mainboard.profiling.health",
   "mainboard.profiling.report",
   "mainboard.profiling.result",
-  "mainboard.profiling.spans",
   "mainboard.profiling.stages",
   "mainboard.profiling.storage",
+  "mainboard.profiling.target",
   "mainboard.profiling.trace",
   "mainboard.providers.amd.gpu",
   "mainboard.providers.apple.gpu",

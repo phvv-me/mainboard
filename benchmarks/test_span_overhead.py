@@ -1,64 +1,42 @@
-"""Load test: how much does `span` cost? Measures the disabled/enabled overhead.
-
-Runs the *same* annotated workload with spans off, on (timing only), and on with
-`memory=True`, so the deltas are the cost of `span` itself — the near-zero-overhead
-requirement is that "disabled" costs barely more than the bare workload.
-
-Run: ``pytest benchmarks --benchmark-only`` (add ``-q``). Compare the ``Mean`` column
-across the ``config`` params. Kept out of the default test run (its own directory).
-"""
-
 from collections.abc import Iterator
 
 import pytest
+from pytest_benchmark.fixture import BenchmarkFixture
 
-from mainboard.profiling.collector import Collector
-from mainboard.profiling.spans import disable_spans, enable_spans, span
+from mainboard.profiling import Profiler, span
 
-_ITERS = 200
-
-
-def _workload(collector: Collector) -> None:
-    """A fixed unit of nested, annotated work: no real payload, just the span machinery."""
-    for _ in range(_ITERS):
-        with span("outer", collector=collector), span("inner", collector=collector):
-            pass
-
-
+_ITERATIONS = 200
 _CONFIGS = {
-    "disabled": (False, False),
-    "enabled_timing_only": (True, False),
-    "enabled_with_memory": (True, True),
+    "dormant": None,
+    "timing": Profiler.Feature.SPANS,
+    "timing_and_markers": Profiler.Feature.SPANS | Profiler.Feature.MARKERS,
 }
 
 
-@pytest.fixture(params=list(_CONFIGS))
-def configured(request: pytest.FixtureRequest) -> Iterator[tuple[bool, Collector]]:
-    """Toggle the module switch for the benchmarked workload; always a fresh collector."""
-    enabled, memory = _CONFIGS[request.param]
-    if enabled:
-        enable_spans()
-    else:
-        disable_spans()
-    yield memory, Collector()
-    disable_spans()
+@span
+def annotated() -> None:
+    """A permanently annotated function with no payload."""
+
+
+def workload() -> None:
+    """Run the same dormant annotations under every collection policy."""
+    for _ in range(_ITERATIONS):
+        with span("outer"):
+            annotated()
+
+
+@pytest.fixture(params=tuple(_CONFIGS))
+def profiled(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Activate one feature set while leaving the annotations unchanged."""
+    features = _CONFIGS[request.param]
+    if features is None:
+        yield
+        return
+    with Profiler(features=features, max_spans=_ITERATIONS * 2):
+        yield
 
 
 @pytest.mark.benchmark(group="span-overhead")
-def test_span_overhead(
-    benchmark: pytest.FixtureRequest, configured: tuple[bool, Collector]
-) -> None:
-    """Benchmark the workload under each span config (compare Mean across params)."""
-    memory, collector = configured
-    if memory:
-        benchmark(lambda: _memory_workload(collector))
-    else:
-        benchmark(lambda: _workload(collector))
-
-
-def _memory_workload(collector: Collector) -> None:
-    for _ in range(_ITERS):
-        outer = span("outer", collector=collector, memory=True)
-        inner = span("inner", collector=collector, memory=True)
-        with outer, inner:
-            pass
+def test_span_overhead(benchmark: BenchmarkFixture, profiled: None) -> None:
+    """Measure dormant, timed, and native-marker annotation costs."""
+    benchmark(workload)

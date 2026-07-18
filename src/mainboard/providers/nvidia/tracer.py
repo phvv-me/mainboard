@@ -10,10 +10,11 @@ profiler bins them into regions afterwards with no per-region synchronize.
 """
 
 import threading
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import suppress
+from dataclasses import dataclass
 from importlib import import_module
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from ...enums import Vendor
 from ...profiling.trace import (
@@ -24,7 +25,7 @@ from ...profiling.trace import (
     MemcpyTrace,
     TraceCollector,
 )
-from ...profiling.tracer import Tracer
+from ...profiling.tracer import Marker, Tracer
 
 if TYPE_CHECKING:
     from ...profiling.protocols import RawActivity
@@ -38,15 +39,15 @@ if TYPE_CHECKING:
 # that pyrefly cannot bridge to a Protocol (its `__getattr__` defeats the structural check),
 # so the one assignment per loader carries a `pyrefly: ignore` for that genuine stub gap.
 def _load_nvtx() -> Nvtx:
-    return import_module("nvtx")  # pyrefly: ignore[bad-return]
+    return cast("Nvtx", import_module("nvtx"))
 
 
 def _load_cupti() -> Cupti:  # the `cupti` package's `cupti` submodule
-    return import_module("cupti.cupti")  # pyrefly: ignore[bad-return]
+    return cast("Cupti", import_module("cupti.cupti"))
 
 
 def _load_runtime() -> CudaRuntimeApi:
-    return import_module("cuda.bindings.runtime")  # pyrefly: ignore[bad-return]
+    return cast("CudaRuntimeApi", import_module("cuda.bindings.runtime"))
 
 
 nvtx: Nvtx | None = None
@@ -64,6 +65,20 @@ with suppress(ImportError):
 _CONCURRENT_KERNEL = 10  # int(cupti.ActivityKind.CONCURRENT_KERNEL) — literal per CUPTI rule
 _MEMCPY = 1  # int(cupti.ActivityKind.MEMCPY)
 _BUFFER_SIZE = 8 * 1024 * 1024
+_MAX_RECORDS = 262_144
+_MEMCPY_NAME = {
+    0: "unknown",
+    1: "HtoD",
+    2: "DtoH",
+    3: "HtoA",
+    4: "AtoH",
+    5: "AtoA",
+    6: "AtoD",
+    7: "DtoA",
+    8: "DtoD",
+    9: "HtoH",
+    10: "PtoP",
+}
 
 # Each Activity flag -> its CUPTI ActivityKind enum-member name.
 _CUPTI_KIND = {
@@ -101,48 +116,48 @@ def _on_buffer_requested() -> tuple[int, int]:
     return _BUFFER_SIZE, 0
 
 
-def _record_name(act: RawActivity, label: str) -> str:
-    """Resolve a record's name: kernel name, else API function (via cbid), else the kind."""
-    name: str | None = getattr(act, "name", None)
-    if name:
-        return name
-    cbid: int | None = getattr(act, "cbid", None)
-    domain = _domain.get(int(act.kind))
-    if cbid is not None and domain is not None and cupti is not None:
-        return cupti.get_callback_name(domain, cbid)
-    return label
-
-
 def _on_buffer_completed(activities: list[RawActivity]) -> None:
-    """Route a completed buffer to the live collector — runs off the launch path.
-
-    Parsing here is necessary (the raw activity is only valid during the callback) but
-    happens on a CUPTI worker, not the application's compute stream.
-    """
+    """Copy bounded raw records while CUPTI still owns the activity objects."""
     if not _active:
         return
     target = _active[-1]
-    kernels, memcpys, others = [], [], []
-    for act in activities:
-        kind = int(act.kind)
-        if kind == _CONCURRENT_KERNEL:
-            kernels.append(KernelTrace.from_activity(act))
-        elif kind == _MEMCPY:
-            memcpys.append(MemcpyTrace.from_activity(act))
-        elif kind in _label:
-            others.append(
-                ActivityRecord(
-                    kind=_label[kind],
-                    name=_record_name(act, _label[kind]),
-                    start_ns=act.start,
-                    end_ns=act.end,
-                    correlation_id=getattr(act, "correlation_id", 0),
-                )
-            )
     with target.lock:
-        target.kernel_records.extend(kernels)
-        target.memcpy_records.extend(memcpys)
-        target.activity_records.extend(others)
+        for act in activities:
+            kind = int(act.kind)
+            if kind == _CONCURRENT_KERNEL:
+                target.append(
+                    RawKernel(
+                        name=act.name,
+                        start_ns=act.start,
+                        end_ns=act.end,
+                        grid=f"{act.grid_x}x{act.grid_y}x{act.grid_z}",
+                        block=f"{act.block_x}x{act.block_y}x{act.block_z}",
+                        static_shared_mem=act.static_shared_memory,
+                        dynamic_shared_mem=act.dynamic_shared_memory,
+                        registers=act.registers_per_thread,
+                    )
+                )
+            elif kind == _MEMCPY:
+                target.append(
+                    RawMemcpy(
+                        copy_kind=int(act.copy_kind),
+                        start_ns=act.start,
+                        end_ns=act.end,
+                        bytes_moved=getattr(act, "bytes", 0),
+                    )
+                )
+            elif kind in _label:
+                target.append(
+                    RawGeneric(
+                        kind_id=kind,
+                        kind=_label[kind],
+                        name=getattr(act, "name", None),
+                        cbid=getattr(act, "cbid", None),
+                        start_ns=act.start,
+                        end_ns=act.end,
+                        correlation_id=getattr(act, "correlation_id", 0),
+                    )
+                )
 
 
 def _ensure_registered() -> None:
@@ -186,19 +201,69 @@ def _supported() -> Activity:
     return found
 
 
-def _enable(kinds: Activity) -> None:
-    """Enable each requested Activity flag's CUPTI kind (idempotent; never disabled).
+def _enable(kinds: Activity) -> tuple[int, ...]:
+    """Enable requested CUPTI kinds and return the exact native members enabled.
 
     ``kinds`` is already reconciled against :func:`_supported`, so every kind here is
     known to enable; an error would be a real bug, not an unsupported device.
     """
     api = _cupti()
+    enabled = []
     for flag, enum_name in _CUPTI_KIND.items():
         if flag not in kinds:
             continue
         kind = getattr(api.ActivityKind, enum_name)
         api.activity_enable(kind)
         _label[int(kind)] = flag.label
+        enabled.append(kind)
+    return tuple(enabled)
+
+
+def _disable(kinds: tuple[int, ...]) -> None:
+    """Disable exactly the native activity kinds enabled for one capture."""
+    api = _cupti()
+    for kind in kinds:
+        api.activity_disable(kind)
+
+
+@dataclass(frozen=True, slots=True)
+class RawKernel:
+    """Fields copied from one kernel activity before CUPTI releases its buffer."""
+
+    name: str
+    start_ns: int
+    end_ns: int
+    grid: str
+    block: str
+    static_shared_mem: int
+    dynamic_shared_mem: int
+    registers: int
+
+
+@dataclass(frozen=True, slots=True)
+class RawMemcpy:
+    """Fields copied from one memory transfer before CUPTI releases its buffer."""
+
+    copy_kind: int
+    start_ns: int
+    end_ns: int
+    bytes_moved: int
+
+
+@dataclass(frozen=True, slots=True)
+class RawGeneric:
+    """Fields copied from one generic activity before deferred name resolution."""
+
+    kind_id: int
+    kind: str
+    name: str | None
+    cbid: int | None
+    start_ns: int
+    end_ns: int
+    correlation_id: int
+
+
+type RawRecord = RawKernel | RawMemcpy | RawGeneric
 
 
 class CuptiCollector(TraceCollector):
@@ -208,35 +273,60 @@ class CuptiCollector(TraceCollector):
     records; the rest become generic :class:`ActivityRecord`s.
     """
 
-    def __init__(self, kinds: Activity = Activity.DEFAULT) -> None:
+    def __init__(
+        self, kinds: Activity = Activity.DEFAULT, max_records: int = _MAX_RECORDS
+    ) -> None:
         self.lock = threading.Lock()
         self.kinds = kinds
-        self.kernel_records: list[KernelTrace] = []
-        self.memcpy_records: list[MemcpyTrace] = []
-        self.activity_records: list[ActivityRecord] = []
+        self.records: deque[RawRecord] = deque(maxlen=max_records)
+        self.dropped_records = 0
+        self.enabled_kinds: tuple[int, ...] = ()
+        self.running = False
+
+    def append(self, record: RawRecord) -> None:
+        """Append one raw record while keeping capture memory bounded."""
+        if len(self.records) == self.records.maxlen:
+            self.dropped_records += 1
+        self.records.append(record)
 
     def __enter__(self) -> CuptiCollector:
         _ensure_registered()
         if _active:
             raise RuntimeError("nested CUPTI collection unsupported (single-subscriber)")
-        _enable(self.kinds)
-        _sync()
-        _cupti().activity_flush_all(1)  # drain any prior region's records before we start
-        _active.append(self)
-        return self
+        self.enabled_kinds = _enable(self.kinds)
+        started = False
+        try:
+            _sync()
+            _cupti().activity_flush_all(1)  # drain prior records before capture starts
+            _active.append(self)
+            self.running = True
+            started = True
+            return self
+        finally:
+            if not started:
+                _disable(self.enabled_kinds)
+                self.enabled_kinds = ()
 
     def stop(self) -> None:
-        _sync()
-        _cupti().activity_flush_all(1)
-        if _active and _active[-1] is self:
-            _active.pop()
+        if not self.running:
+            return
+        try:
+            _sync()
+            _cupti().activity_flush_all(1)
+        finally:
+            if _active and _active[-1] is self:
+                _active.pop()
+            try:
+                _disable(self.enabled_kinds)
+            finally:
+                self.enabled_kinds = ()
+                self.running = False
 
     def reset(self) -> None:
         self.flush()  # drain in-flight records, then drop everything so far
         with self.lock:
-            self.kernel_records.clear()
-            self.memcpy_records.clear()
-            self.activity_records.clear()
+            self.records.clear()
+            self.dropped_records = 0
 
     def flush(self) -> None:
         _sync()
@@ -244,15 +334,61 @@ class CuptiCollector(TraceCollector):
 
     def kernels(self) -> list[KernelTrace]:
         with self.lock:
-            return list(self.kernel_records)
+            records = tuple(record for record in self.records if isinstance(record, RawKernel))
+        return [
+            KernelTrace(
+                name=record.name,
+                start_ns=record.start_ns,
+                end_ns=record.end_ns,
+                grid=record.grid,
+                block=record.block,
+                static_shared_mem=record.static_shared_mem,
+                dynamic_shared_mem=record.dynamic_shared_mem,
+                registers=record.registers,
+            )
+            for record in records
+        ]
 
     def memcpys(self) -> list[MemcpyTrace]:
         with self.lock:
-            return list(self.memcpy_records)
+            records = tuple(record for record in self.records if isinstance(record, RawMemcpy))
+        return [
+            MemcpyTrace(
+                kind=_MEMCPY_NAME.get(record.copy_kind, f"kind_{record.copy_kind}"),
+                start_ns=record.start_ns,
+                end_ns=record.end_ns,
+                bytes_moved=record.bytes_moved,
+            )
+            for record in records
+        ]
 
     def activities(self) -> list[ActivityRecord]:
         with self.lock:
-            return list(self.activity_records)
+            records = tuple(record for record in self.records if isinstance(record, RawGeneric))
+        return [
+            ActivityRecord(
+                kind=record.kind,
+                name=self.activity_name(record),
+                start_ns=record.start_ns,
+                end_ns=record.end_ns,
+                correlation_id=record.correlation_id,
+            )
+            for record in records
+        ]
+
+    def dropped(self) -> int:
+        """Return raw activity records overwritten by the bounded deque."""
+        return self.dropped_records
+
+    @staticmethod
+    def activity_name(record: RawGeneric) -> str:
+        """Resolve an API function name after the CUPTI callback has returned."""
+        if record.name:
+            return record.name
+        domain = _domain.get(record.kind_id)
+        if record.cbid is not None and domain is not None and cupti is not None:
+            return cupti.get_callback_name(domain, record.cbid)
+        return record.kind
 
 
 _CB_DOMAIN_NAME = {"runtime": "RUNTIME_API", "driver": "DRIVER_API", "nvtx": "NVTX"}
@@ -309,6 +445,14 @@ class NvtxTracer(Tracer):
     def pop(self) -> None:
         if nvtx is not None:
             nvtx.pop_range()
+
+    def start(self, name: str) -> Marker:
+        """Open an overlap-safe process range and return its exact closer."""
+        api = nvtx
+        if api is None:
+            return super().start(name)
+        range_id = api.start_range(name)
+        return lambda: api.end_range(range_id)
 
     def mark(self, name: str) -> None:
         if nvtx is not None:

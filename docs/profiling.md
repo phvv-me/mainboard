@@ -1,183 +1,199 @@
 # Profiling
 
-`mainboard.profiling` times your code and shows where time and memory go, the same API
-on CUDA, macOS, and AMD. Annotation is near-free when no profiler is attached, and the
-deep per-kernel tier is off by default.
+Mainboard exposes one `Profiler`, one immutable `Profile`, and one dormant `span`
+annotation. A span describes application structure. It never chooses clocks, memory
+sampling, native markers, or GPU collectors. The active profiler owns those choices.
 
 ![Profiler capabilities](assets/capabilities.svg)
 
-## How it works
+## The contract
 
-You run a **`Profiler`**, and it produces a **`Profile`**, an immutable result. Everything
-you do with a measurement is a verb on that `Profile`.
+Feature flags decide what may be collected. Observed evidence decides what appears in
+the result.
 
-1. **Annotate** regions with `region()` / `@profile`, or auto-annotate a whole package.
-2. While it runs, a background sampler records memory/power/utilization. With
-   `trace=True`, CUPTI captures every GPU kernel (asynchronously, one device sync at the
-   end, minimal impact).
-3. **`p.result()`** returns the `Profile`: `show()`, `bottlenecks()`, `diff()`,
-   `perfetto()`, `save()` / `load()`.
+* Python samples appear only when Python 3.15 Tachyon ran successfully
+* Span timing appears only when `SPANS` was selected and a span executed
+* Device telemetry appears only when the target process was present on that device
+* GPU activity appears only when kernels, copies, or other native records were captured
+* Unsupported or unused collectors do not add empty or unavailable sections
 
-## Examples
+A machine merely having a GPU is not evidence that the profiled code used it.
 
-Each [example](https://github.com/phvv-me/mainboard/tree/main/examples) is a few lines:
+## Dormant annotations
 
-| File | Shows |
-|---|---|
-| `regions.py` | time named regions, print a table |
-| `decorator.py` | `@profile` every call of a function |
-| `diff.py` | compare two runs (what got faster) |
-| `deep_trace.py` | CUDA per-kernel trace + Perfetto export |
-| `spans.py` | nested `span`s, sync + async, scoped `Collector`, a `.show()` report |
-
-## Annotate
+Use `span` as a context manager, a bare decorator, or a named decorator.
 
 ```python
-from mainboard.profiling import Profiler, region, profile
+from mainboard.profiling import Profiler, span
 
-with Profiler() as p:
-    with region("load"):
-        ...
-    p.show()
-```
-
-`@profile` wraps a function so each call is a region. To profile code you don't want to
-edit, auto-annotate by package (`Profiler(auto=["mypkg"])`) or from the shell with no
-code at all:
-
-```sh
-mainboard profile your.module --auto your.package
-```
-
-## Read the result
-
-```python
-prof = p.result()
-print(prof)             # the profile prints itself (rich table in a rich console)
-prof.bottlenecks(5)     # the slowest regions, aggregated by name
-prof.diff(baseline).show()   # per-region deltas: green where faster, red where slower
-```
-
-Save a run and diff against it later to track an optimization:
-
-```python
-prof.save("before.mbprof")
-# ... optimize ...
-after.diff(Profile.load("before.mbprof")).show()
-```
-
-## One-call bottleneck report
-
-When you just want the verdict on a single hot function, `profile` runs it under the
-profiler and hands back a structured `ProfileReport`: the dominant kernel, a
-memory-versus-compute `bound`, achieved versus peak bandwidth, and the per-kernel
-breakdown. It is exported straight from the top level.
-
-```python
-from mainboard import profile
-
-report = profile(lambda: model(batch), iters=50, warmup=5, sync=torch.cuda.synchronize)
-print(report)                 # the report prints itself as a rich table
-report.bound                  # Bound.MEMORY or Bound.COMPUTE
-report.dominant_kernel        # the kernel eating the most time
-report.kernels                # the full per-kernel KernelStat breakdown
-```
-
-Pass a zero-arg callable (bind args with a lambda or `functools.partial`). `sync` is a
-device barrier run after each pass, so async GPU work is captured rather than just the
-launch. The report degrades per device: it asks only for the activity kinds the GPU
-supports, and any dropped kind lands in `report.unavailable` instead of raising.
-
-To profile against a clean window rather than someone else's load, gate on GPU
-contention first:
-
-```python
-from mainboard import gpu_busy, wait_for_idle
-
-if not gpu_busy():            # is another job using GPU 0 right now?
-    report = profile(work)
-
-wait_for_idle(timeout=60)     # block until the GPU is free, True if it became idle
-```
-
-`gpu_busy` reads live NVML utilization and memory (busy means compute over 10 percent or
-memory over 90 percent of capacity) and reads `False` on a CPU-only host. `wait_for_idle`
-polls it until the device is free or the timeout elapses.
-
-## Deep trace and Perfetto
-
-`trace` is one knob: `False` (off), `True` (kernels + memcpy), or an `Activity` flag for
-exactly the CUPTI kinds you want:
-
-```python
-from mainboard.profiling import Activity
-
-with Profiler(trace=Activity.ALL) as p:   # or trace=True for just kernels + memcpy
-    with region("matmul"):
-        ...
-prof = p.result()
-prof.trace_report()           # compute-vs-copy split, hot regions and kernels
-prof.perfetto("trace.json")   # open at https://ui.perfetto.dev
-```
-
-Regions and kernels share the GPU clock, so they line up on one timeline. The same
-export works wherever the deep tier is available (CUDA today, see the roadmap above).
-
-### What this device supports
-
-CUPTI activity kinds vary by GPU and driver, so mainboard probes the device and adapts:
-
-```python
-Profiler().supported()        # e.g. Activity.KERNEL|MEMCPY|MEMSET|...|MEMORY_POOL
-```
-
-`trace=Activity.ALL` means "everything this device offers", so it collects the supported
-subset and logs anything dropped. Asking for a specific kind the device can't collect
-*fails fast* instead of silently returning nothing:
-
-```python
-Profiler(trace=Activity.MEMORY)   # ValueError if this GPU has no MEMORY activity kind
-```
-
-## Spans: always-on timing for production code
-
-`Profiler` is a bounded session you open around a benchmark. `span` is the opposite
-shape: a lightweight, nestable timer meant to stay wired into a live service — a stage
-timer in an ingestion pipeline, a sequential recall call — off by default so a disabled
-span costs one boolean check, and async-safe so many concurrent `asyncio.Task`s each
-keep their own nesting stack.
-
-```python
-from mainboard.profiling import Collector, enable_spans, span
-
-enable_spans()  # off by default; call once at startup
-
-with span("pipeline"):
-    with span("extract"):
-        ...
-    with span("embed"):
-        ...
-```
-
-`@span` decorates a function (bare uses its qualname, `@span("label")` sets one
-explicitly), and works on both sync and async functions — a coroutine is properly
-`await`ed inside the span, and a fresh `Span` opens per call, so concurrent calls of
-the same decorated function never share timing state.
-
-Every closed span folds into a `Collector`: the process-wide default when no
-`collector=` is given, or one you own for a scoped window (one `Collector` per recall
-call, say — pass `collector=` explicitly and it never touches the default).
-
-```python
-collector = Collector()
-with span("stage", collector=collector, memory=True):  # also track RSS/GPU memory delta
+@span
+def load() -> None:
     ...
 
-collector.records()   # every occurrence, typed rows (SpanRecord)
-collector.stats()     # per dotted path: count, total/mean/p50/p95/max ms (SpanStat)
-collector.show()      # rich table
+@span("forward")
+def predict() -> None:
+    ...
+
+with Profiler(features=Profiler.Feature.SPANS) as profiler:
+    with span("request"):
+        load()
+        predict()
+
+profiler.show()
 ```
 
-`p50`/`p95` come from a bounded reservoir sample (exact while a path's occurrence count
-stays within the reservoir's capacity), so a path that runs for hours stays O(1) memory
-per key instead of accumulating every wall time it ever saw.
+The annotation accepts only a name. Collection policy belongs to `Profiler`. Without
+an active profiler, a decorated function performs one active session check and calls
+the original function directly. It does not read a clock or a context variable.
+
+Nested paths use dotted names such as `request.forward`. Context variables keep
+nesting independent across threads and asyncio tasks. The session stores at most
+`max_spans` raw measurements and at most 4096 device samples per live span.
+
+Native marker backends use correlatable start and end ranges for profiler spans. Each
+span closes its own range, so overlapping asyncio tasks do not corrupt a thread-local
+push and pop stack.
+
+## Feature flags
+
+`Profiler.Feature` is a `Flag` enum and values combine with `|`.
+
+| Feature | Collection cost and result |
+|---|---|
+| `PYTHON` | External Python 3.15 statistical sampling for launched or attached targets |
+| `SPANS` | Wall time for executed `span` annotations |
+| `DEVICE` | Background target process GPU telemetry while spans are open |
+| `MARKERS` | NVTX, ROCTx, or signpost ranges for active spans |
+| `ACTIVITY` | Asynchronous native kernels and memory copies through the vendor backend |
+| `DEFAULT` | Every feature above |
+
+Choose the smallest set that answers the question.
+
+```python
+timing = Profiler.Feature.SPANS
+timeline = timing | Profiler.Feature.MARKERS
+gpu = timeline | Profiler.Feature.DEVICE | Profiler.Feature.ACTIVITY
+
+with Profiler(features=timing) as profiler:
+    work()
+```
+
+In a local July 2026 measurement, a direct call took 13.9 ns and the same dormant
+decorated call took 45.5 ns. The incremental dormant cost was 31.6 ns. An active timed
+decorator call took 3.56 microseconds and an active timed context took 3.75
+microseconds. These measurements exclude device and native activity collectors and
+should be repeated on the deployment host with the benchmark suite.
+
+## Profile one target once
+
+`Profiler.run` accepts a module name or a Python script path. Local collectors run in
+the target process. Tachyon wraps that same process from the outside when Python 3.15
+sampling is available. The target is never run once per collector.
+
+```python
+profile = Profiler.run("package.train")
+profile.show()
+profile.save("train.mbprof")
+```
+
+```sh
+mainboard profile run package.train
+mainboard profile run train.py --no-activity --no-device
+```
+
+The command exposes one boolean toggle per feature. This makes an overhead comparison
+explicit without changing application annotations.
+
+## Python 3.15 sampling
+
+Python sampling uses the standard library `profiling.sampling` command internally.
+Mainboard does not expose a second Tachyon client or Python profiler class.
+
+Tachyon supports wall, CPU, GIL, and exception sampling. It can produce pstats,
+collapsed stacks, flamegraphs, Gecko profiles, heatmaps, and binary captures. Attach
+requires the profiler and target to use the same Python minor version. Prerelease
+builds require the exact same release. Free threaded and regular builds must also
+match.
+
+Attaching may require ptrace permission on Linux, root or a debugger entitlement on
+macOS, and administrator debug permission on Windows. A normal production capture is
+usually bounded to 10 through 30 seconds.
+
+```sh
+mainboard profile attach 1234 --duration 20
+mainboard profile dump 1234
+```
+
+When Python sampling is unavailable, normal `run` continues with selected local
+collectors. Pass `strict=True` to the Python API when absence must fail before the
+target starts.
+
+## Automatic spans
+
+`Profiler(auto=("package.module",))` uses `sys.monitoring`. Mainboard discovers code
+objects owned by the selected module and enables local events only for those code
+objects. It does not run a Python predicate for every function call in the process.
+Exceptional unwinds use the global unwind event because CPython does not allow that
+event in a local event set. The callback immediately ignores code outside the selected
+set.
+
+Explicit `span` annotations remain easier to read and have the smallest dormant cost.
+Automatic spans are useful for a bounded investigation of code that cannot be edited.
+
+## Process GPU evidence
+
+Device snapshots are retained only when their process list contains the current target
+PID. Mainboard replaces device wide used memory with that process resident GPU memory
+before aggregating the span. This prevents another job on the same GPU from making a
+CPU only target look like a GPU workload.
+
+Providers that cannot identify device processes omit device telemetry. Native activity
+records are independent evidence and may still produce a GPU activity section.
+
+## CUPTI activity lifecycle
+
+The NVIDIA backend uses CUPTI Activity. It does not enable counter replay, PC sampling,
+or synchronous runtime callbacks for the normal profile. Kernel and memory copy records
+arrive through asynchronous buffers.
+
+The completion callback copies only fields whose CUPTI lifetime ends with the callback.
+It writes compact raw records into a bounded 262144 record deque. Pydantic model
+construction and API name resolution happen when the result is read. When capture ends,
+Mainboard synchronizes once, flushes buffered records, removes the active collector, and
+disables every activity kind that capture enabled.
+
+Use `Profiler.Activity.DEFAULT` for kernels and copies. `Profiler.Activity.ALL` adapts to the kinds the
+device supports. Explicit unsupported kinds fail before collection begins.
+
+```python
+from mainboard.profiling import Profiler, span
+
+features = Profiler.Feature.SPANS | Profiler.Feature.MARKERS | Profiler.Feature.ACTIVITY
+
+with Profiler(features=features, activities=Profiler.Activity.DEFAULT) as profiler:
+    with span("matmul"):
+        work()
+
+profile = profiler.result()
+profile.trace_report()
+profile.perfetto("trace.json")
+```
+
+## Read and compare results
+
+`Profile` is pure data. It can be saved, loaded, rendered, compared, or exported after
+all collectors have stopped.
+
+```python
+before = profiler.result()
+before.save("before.mbprof")
+
+after = Profiler.run("package.train")
+after.diff(Profile.load("before.mbprof")).show()
+after.perfetto("trace.json")
+```
+
+`stats()` collapses repeated span paths. `bottlenecks()` returns the slowest paths.
+`trace_report()` attributes GPU activities to the narrowest enclosing span window.
+`dropped_spans` and `dropped_activities` report bounded capture overflow instead of
+allowing an unbounded log.

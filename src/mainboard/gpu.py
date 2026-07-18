@@ -1,3 +1,4 @@
+import importlib
 import logging
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar
@@ -42,6 +43,7 @@ class GPU(Unit, Registry):
         binding that loads but then throws, an unexpected NVML error) is logged
         and skipped so one broken vendor never sinks the whole machine probe.
         """
+        importlib.import_module("mainboard.providers")
         return tuple(gpu for provider in cls.implementations() for gpu in cls.probe(provider))
 
     @classmethod

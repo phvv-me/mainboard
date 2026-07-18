@@ -16,13 +16,25 @@ two GB/s figures sit side by side as the evidence that the direct path is live.
 """
 
 import os
+from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from ..models.base import FrozenModel
 from ..models.scratch import Scratch
 from .benchmark import benchmark
+from .protocols import CurrentKvikioDefaults, Kvikio, KvikioCompatibility, Torch
+
+
+def torch_api() -> Torch:
+    """Load the optional Torch module through its structural contract."""
+    return cast("Torch", import_module("torch"))
+
+
+def kvikio_api() -> Kvikio:
+    """Load the optional kvikio module through its structural contract."""
+    return cast("Kvikio", import_module("kvikio"))
 
 
 class ReadResult(FrozenModel):
@@ -82,7 +94,7 @@ def nvme_to_hbm(
     """
     if find_spec("torch") is None:
         return StorageBandwidth(skipped="torch not installed")
-    import torch
+    torch = torch_api()
 
     scratch = Scratch.probe()
     if not torch.cuda.is_available() or scratch.path is None:
@@ -152,7 +164,7 @@ def read_mmap(path: Path, nbytes: int, device: str, iters: int, warmup: int) -> 
     HBM path a mmap-tier gather takes, dropping the cache before each read so the NVMe stream is
     cold. The device sync is folded into the timing so the copy's async tail counts.
     """
-    import torch
+    torch = torch_api()
 
     out = torch.empty(nbytes, dtype=torch.uint8, device=device)
 
@@ -179,8 +191,8 @@ def read_gds(
     """
     if find_spec("kvikio") is None:
         return None, "kvikio not installed"
-    import kvikio
-    import torch
+    kvikio = kvikio_api()
+    torch = torch_api()
 
     if compat_mode_preferred(kvikio):
         return None, "kvikio in cuFile compat mode (host bounce, not a GDS DMA)"
@@ -202,7 +214,7 @@ def read_gds(
     return as_result("gds", nbytes, sample.mean_us), ""
 
 
-def compat_mode_preferred(kvikio: Any) -> bool:
+def compat_mode_preferred(kvikio: KvikioCompatibility) -> bool:
     """Whether kvikio prefers cuFile compat mode, across the submodule and dual-API differences.
 
     The modern cu13 wheel does not auto-import ``kvikio.defaults`` on ``import kvikio`` and renamed
@@ -210,14 +222,12 @@ def compat_mode_preferred(kvikio: Any) -> bool:
     returning a ``CompatMode`` enum. Import the submodule (aliased, so it attaches to the real
     ``kvikio`` package as a side effect without rebinding this function's own parameter) when the
     attribute is missing, then read whichever getter the build offers, so a stuck-in-compat probe
-    is caught on every kvikio. ``kvikio`` takes the untyped module (or a test double standing in
-    for one), the one case in this module with no narrower type: see the `explicit-any` override.
+    is caught on every kvikio.
     """
     if not hasattr(kvikio, "defaults"):
-        # A real cu13 install's own package layout, not fakeable with a test double.
-        import kvikio.defaults as _kvikio_defaults  # noqa: F401  # pragma: no cover
+        import_module("kvikio.defaults")  # pragma: no cover
     defaults = kvikio.defaults
-    if hasattr(defaults, "is_compat_mode_preferred"):
+    if isinstance(defaults, CurrentKvikioDefaults):
         return bool(defaults.is_compat_mode_preferred())
     return defaults.compat_mode() is not kvikio.CompatMode.OFF
 

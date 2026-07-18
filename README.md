@@ -26,6 +26,12 @@ chefe add mainboard -l python
 
 The base install is light and pure Python, so GPU-less Linux hosts like a Raspberry Pi pull nothing CUDA-related. The `cuda` extra installs the NVIDIA bindings on Linux for full GPU detection and telemetry, and provider detection degrades gracefully to no NVIDIA devices whenever the bindings or the hardware are absent.
 
+The root API uses the PEP 810 `__lazy_modules__` compatibility bridge. Python 3.14
+keeps the normal eager import behavior. Python 3.15 defers only the audited Mainboard
+modules until their exported names are first used. Mainboard does not enable global
+lazy imports. `GPU.all()` and `NPU.all()` explicitly load provider registration before
+probing, so lazy imports cannot hide hardware backends.
+
 ## What it is
 
 mainboard tells Python what compute is on the current machine, without assuming the world is only CUDA. It models CPUs, GPUs, and NPUs as `Unit`s, keeps vendor-specific probing behind providers (Apple and NVIDIA today), and gives you the whole board in one call.
@@ -54,18 +60,19 @@ mainboard
 
 ## Timing spans
 
-`span` is a lightweight, nestable timer for production code, off by default so a disabled span costs one boolean check. `with span("extract"):` or `@span` times a block or a function (sync or async, nesting tracked per-`asyncio.Task` via a `ContextVar` so concurrent tasks never share a stack), and every closed span folds into a `Collector` — the process-wide default, or one you own for a scoped window such as a single request.
+`span` is a dormant annotation that is safe to leave in application code. It contains no collection policy and performs no clock, memory, marker, device, or context variable work until a `Profiler` is active. The profiler decides what to collect through `Profiler.Feature` flags. The resulting `Profile` shows only evidence that was observed.
 
 ```python
-from mainboard.profiling import enable_spans, span
+from mainboard.profiling import Profiler, span
 
-enable_spans()
+with Profiler(features=Profiler.Feature.SPANS) as profiler:
+    with span("pipeline"):
+        with span("extract"):
+            ...
+        with span("embed"):
+            ...
 
-with span("pipeline"):
-    with span("extract"):
-        ...
-    with span("embed"):
-        ...
+profiler.show()
 ```
 
-Read the result with `Collector.records()` (the raw per-occurrence log) or `Collector.stats()` (per dotted-path count/total/mean/p50/p95/max), and print either with `.report()` or `.show()`. See [`docs/profiling.md`](docs/profiling.md) for the full profiling API, including the GPU-sampling `Profiler`.
+`Profiler.run("package.module")` profiles a module or script once. Python 3.15 sampling, span timing, process GPU telemetry, native markers, and GPU activity all feed the same result. A detected but unused GPU creates no GPU section. See [`docs/profiling.md`](docs/profiling.md) for feature costs, CLI usage, Tachyon requirements, and native activity behavior.

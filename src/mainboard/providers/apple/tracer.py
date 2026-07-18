@@ -8,20 +8,17 @@ simply unavailable and the no-op base is used instead.
 import platform
 from contextlib import suppress
 from importlib import import_module
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from ...enums import Vendor
-from ...profiling.tracer import Tracer
+from ...profiling.tracer import Marker, Tracer
 
 if TYPE_CHECKING:
     from .protocols import IntervalToken, SignpostModule
 
 
-# `os-signpost` ships no type stubs, so the loader returns the `SignpostModule` Protocol
-# bound to the real module. `import_module` returns an untyped `ModuleType` that pyrefly
-# cannot bridge to a Protocol (its `__getattr__` defeats the check), hence the ignore.
 def _load_signpost() -> SignpostModule:
-    return import_module("os_signpost")  # pyrefly: ignore[bad-return]
+    return cast("SignpostModule", import_module("os_signpost"))
 
 
 _signpost: SignpostModule | None = None
@@ -53,6 +50,11 @@ class SignpostTracer(Tracer):
         if self._stack:
             name, token = self._stack.pop()
             self._signposter.end_interval(name, token)
+
+    def start(self, name: str) -> Marker:
+        """Open a correlatable signpost interval and return its exact closer."""
+        token = self._signposter.begin_interval(name)
+        return lambda: self._signposter.end_interval(name, token)
 
     def mark(self, name: str) -> None:
         self._signposter.emit_event(name)

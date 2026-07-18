@@ -4,6 +4,7 @@ The `os-signpost` package ships no stubs, so these Protocols pin the `Signposter
 API the tracer drives and the opaque interval token it threads from begin to end.
 """
 
+from collections.abc import Callable
 from typing import Protocol
 
 
@@ -22,4 +23,4 @@ class Signposter(Protocol):
 class SignpostModule(Protocol):
     """The `os_signpost` module: its `Signposter` factory bound to a subsystem string."""
 
-    def Signposter(self, subsystem: str) -> Signposter: ...  # noqa: N802 — the binding's class
+    Signposter: Callable[[str], Signposter]

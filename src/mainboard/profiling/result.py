@@ -8,17 +8,17 @@ runs, :meth:`save` / :meth:`load` to persist, :meth:`perfetto` to export a timel
 here, so the surface grows without new concepts.
 """
 
+from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+from rich.console import RenderableType
 
 from ..models.base import FrozenModel
 from .models import RegionStat, RegionSummary
+from .perfetto import write_trace
+from .python import PythonProfile
+from .render import profile_renderable, region_text, show_diff, show_profile
 from .trace import ActivityRecord, BottleneckReport, KernelTrace, MemcpyTrace, RegionWindow
-
-if TYPE_CHECKING:
-    from os import PathLike
-
-    from rich.console import RenderableType
 
 
 class RegionDelta(FrozenModel):
@@ -57,24 +57,25 @@ class ProfileDiff(FrozenModel):
 
     def show(self, *, color: bool = True) -> None:
         """Print the deltas as a rich table (green = faster, red = slower)."""
-        from .render import show_diff
-
         show_diff(self, color=color)
 
 
 class Profile(FrozenModel):
-    """An immutable profiling result: region telemetry + deep op traces.
+    """One immutable result containing only evidence that was observed.
 
-    device: the sampled accelerator's name. summaries: per-occurrence region telemetry.
-    windows/kernels/memcpys: the deep-trace timeline (present when ``trace=True``).
+    Python samples, span timings, process GPU telemetry, and native activities are
+    independently optional. A detected but unused GPU never creates GPU output.
     """
 
+    python: PythonProfile | None = None
     device: str = ""
     summaries: tuple[RegionSummary, ...] = ()
     windows: tuple[RegionWindow, ...] = ()
     kernels: tuple[KernelTrace, ...] = ()
     memcpys: tuple[MemcpyTrace, ...] = ()
     activities: tuple[ActivityRecord, ...] = ()  # memset/runtime/driver/sync/... when enabled
+    dropped_spans: int = 0
+    dropped_activities: int = 0
 
     def stats(self) -> list[RegionStat]:
         """Per-name aggregates (calls/total/avg/peak), slowest total first."""
@@ -103,27 +104,39 @@ class Profile(FrozenModel):
 
     def perfetto(self, path: str | PathLike[str]) -> None:
         """Write a Perfetto/Chrome timeline (open at ui.perfetto.dev)."""
-        from .perfetto import write_trace
-
         write_trace(self, path)
 
     def show(self, *, color: bool = True) -> None:
         """Print a rich table of the region stats (and the deep report if traced)."""
-        from .render import show_profile
-
         show_profile(self, color=color)
 
     def report(self) -> str:
-        """A plain-text per-name table — the no-rich fallback of :meth:`show`."""
-        from .render import region_text
-
-        return region_text(self.stats())
+        """A plain-text report containing only populated evidence sections."""
+        sections = []
+        if self.python is not None:
+            sections.append(f"Python profile\n{self.python}")
+        if self.summaries:
+            sections.append(f"Spans\n{region_text(self.stats())}")
+        if self.kernels or self.memcpys or self.activities:
+            report = self.trace_report()
+            sections.append(
+                "GPU activity\n"
+                f"{len(self.kernels)} kernels, {len(self.memcpys)} copies, "
+                f"{len(self.activities)} other activities, "
+                f"{report.total_kernel_ns / 1e6:.2f} ms kernel time"
+            )
+        drops = []
+        if self.dropped_spans:
+            drops.append(f"{self.dropped_spans} oldest spans dropped")
+        if self.dropped_activities:
+            drops.append(f"{self.dropped_activities} oldest GPU activities dropped")
+        if drops:
+            sections.append("Capture limit\n" + "\n".join(drops))
+        return "\n\n".join(sections) or "No profiling data collected."
 
     def __str__(self) -> str:
         return self.report()
 
     def __rich__(self) -> RenderableType:
         """Rich renderable so ``print(profile)`` (rich/Jupyter) shows the tables."""
-        from .render import profile_renderable
-
         return profile_renderable(self)

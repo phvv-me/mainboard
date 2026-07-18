@@ -2,14 +2,14 @@
 
 import time
 
-from mainboard.profiling import Profiler, region
+from mainboard.profiling import Profile, Profiler, span
 
 
-def run(compute_ms: int):
+def run(compute_ms: int) -> Profile:
     with Profiler() as p:
-        with region("load"):
+        with span("load"):
             time.sleep(0.05)
-        with region("compute"):
+        with span("compute"):
             time.sleep(compute_ms / 1000)
     return p.result()
 

@@ -11,11 +11,13 @@ import os
 import sys
 import types
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 import mainboard.profiling.storage as storage_mod
 from mainboard.models.scratch import Scratch
+from mainboard.profiling.protocols import KvikioCompatibility
 from mainboard.profiling.storage import (
     ReadResult,
     StorageBandwidth,
@@ -212,18 +214,41 @@ def test_gds_and_mmap_both_run_when_gds_is_live(
 
 def test_compat_mode_preferred_reads_the_modern_getter() -> None:
     """The cu13/26.x kvikio reports its preference through ``is_compat_mode_preferred``."""
-    kvikio = types.SimpleNamespace(
-        defaults=types.SimpleNamespace(is_compat_mode_preferred=lambda: True)
-    )
+
+    class Defaults:
+        def is_compat_mode_preferred(self) -> bool:
+            return True
+
+        def compat_mode(self) -> bool:
+            return False
+
+    class Mode:
+        OFF = False
+
+    class Kvikio:
+        defaults = Defaults()
+        CompatMode = Mode
+
+    kvikio = cast(KvikioCompatibility, Kvikio())
     assert storage_mod.compat_mode_preferred(kvikio) is True
 
 
 def test_compat_mode_preferred_falls_back_to_the_legacy_enum() -> None:
     """An older kvikio without the new getter is read via ``compat_mode()`` vs ``CompatMode``."""
-    mode = types.SimpleNamespace(ON=object(), OFF=object())
-    kvikio = types.SimpleNamespace(
-        CompatMode=mode, defaults=types.SimpleNamespace(compat_mode=lambda: mode.OFF)
-    )
+
+    class Mode:
+        ON = True
+        OFF = False
+
+    class Defaults:
+        def compat_mode(self) -> bool:
+            return Mode.OFF
+
+    class Kvikio:
+        defaults = Defaults()
+        CompatMode = Mode
+
+    kvikio = cast(KvikioCompatibility, Kvikio())
     assert storage_mod.compat_mode_preferred(kvikio) is False
 
 

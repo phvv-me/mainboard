@@ -18,9 +18,10 @@ import time
 from typing import TYPE_CHECKING
 
 from ..gpu import GPU
-from .annotate import region, tracer
+from .annotate import tracer
 from .profiler import Profiler
 from .report import ProfileReport
+from .spans import span
 from .trace import Activity
 
 if TYPE_CHECKING:
@@ -72,14 +73,23 @@ def _run[T, S](
     kinds: Activity,
     device_index: int,
 ) -> Profile:
-    """Warm up, then run ``iters`` timed passes inside one traced ``region``."""
+    """Warm up, then run `iters` timed passes inside one traced `span`."""
     for _ in range(warmup):
         fn()
     if sync is not None:
         sync()
-    with Profiler(trace=kinds, device_index=device_index) as profiler:
+    with Profiler(
+        features=(
+            Profiler.Feature.SPANS
+            | Profiler.Feature.DEVICE
+            | Profiler.Feature.MARKERS
+            | Profiler.Feature.ACTIVITY
+        ),
+        activities=kinds,
+        device_index=device_index,
+    ) as profiler:
         for _ in range(iters):
-            with region("fn"):
+            with span("fn"):
                 fn()
             if sync is not None:
                 sync()

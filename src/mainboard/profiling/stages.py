@@ -2,21 +2,21 @@
 
 The "profile an experiment" pattern is always the same: build a dict of named callables
 (pool build, encode, decode, a transform), wall-clock each with a device ``sync``, and on
-a GPU host also run *one* CUPTI activity pass that wraps each step in a `region` for the
+a GPU host also run *one* CUPTI activity pass that wraps each step in a `span` for the
 kernel-level breakdown. :func:`profile_stages` collapses that boilerplate into a single
 call returning a :class:`StageProfile` — the per-stage :class:`BenchSample` list plus, when
 traced, the deep :class:`Profile`. It reuses :func:`benchmark`, :class:`Profiler`, and
-`region`; it does not reimplement timing or tracing.
+`span`; it does not reimplement timing or tracing.
 """
 
 from typing import TYPE_CHECKING
 
 from ..gpu import GPU
 from ..models.base import FrozenModel
-from .annotate import region
 from .benchmark import BenchSample, benchmark
 from .profiler import Profiler
 from .result import Profile
+from .spans import span
 from .trace import Activity
 
 if TYPE_CHECKING:
@@ -90,9 +90,12 @@ def _trace_stages[T, S](
 ) -> Profile:
     """Run one CUPTI pass, each stage bracketed by a `region` and a device ``sync``."""
     kinds = trace if isinstance(trace, Activity) else Activity.ALL
-    with Profiler(trace=kinds) as profiler:
+    with Profiler(
+        features=Profiler.Feature.SPANS | Profiler.Feature.MARKERS | Profiler.Feature.ACTIVITY,
+        activities=kinds,
+    ) as profiler:
         for name, fn in cases.items():
-            with region(name):
+            with span(name):
                 fn()
             if sync is not None:
                 sync()

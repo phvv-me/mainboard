@@ -9,12 +9,14 @@ from mainboard.models.compute_capability import ComputeCapability
 from mainboard.profiling import (
     BenchSample,
     Profile,
+    Profiler,
     StageProfile,
     arch_config,
     current_arch_key,
     profile_stages,
 )
 from mainboard.profiling.models import RegionSummary
+from mainboard.profiling.trace import Activity
 
 
 class FakeGPU(GPU):
@@ -147,10 +149,12 @@ class StubProfiler:
     standing in for the GPU-only backend that cannot run without CUDA.
     """
 
-    opened_with: object = None
+    Feature = Profiler.Feature
+    opened_with: Activity | None = None
 
-    def __init__(self, *, trace: object) -> None:
-        StubProfiler.opened_with = trace
+    def __init__(self, *, features: Profiler.Feature, activities: Activity) -> None:
+        del features
+        StubProfiler.opened_with = activities
 
     def __enter__(self) -> StubProfiler:
         return self
