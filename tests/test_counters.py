@@ -205,20 +205,22 @@ def test_counter_profile_round_trips_and_renders(
 
 def test_ncu_command_contains_every_curated_metric_and_raw_csv_flags() -> None:
     """The provider owns the complete reproducible Nsight Compute command."""
+    ncu = Path("/opt/nvidia/ncu")
+    executable = Path("/env/python")
     command = NcuProfiler(
-        ncu=Path("/opt/nvidia/ncu"),
-        executable=Path("/env/python"),
+        ncu=ncu,
+        executable=executable,
         launch_skip=2,
         launch_count=3,
     ).command(Target.resolve("package.train"))
     joined = " ".join(command)
-    assert command[:5] == ("/opt/nvidia/ncu", "--csv", "--page", "raw", "--replay-mode")
+    assert command[:5] == (str(ncu), "--csv", "--page", "raw", "--replay-mode")
     assert "--kernel-name-base demangled" in joined
     assert "gpu__time_duration.sum" in joined
     assert "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct" in joined
     assert "l1tex__t_requests_pipe_lsu_mem_global_op_ld.sum" in joined
     assert "dram__throughput.avg.pct_of_peak_sustained_elapsed" in joined
-    assert command[-3:] == ("/env/python", "-m", "package.train")
+    assert command[-3:] == (str(executable), "-m", "package.train")
 
 
 def test_ncu_provider_executes_once_and_parses_stdout(

@@ -1,4 +1,5 @@
 import subprocess
+from os import pathsep
 from pathlib import Path
 
 import pytest
@@ -67,9 +68,10 @@ def test_run_prepends_required_import_paths(monkeypatch: pytest.MonkeyPatch) -> 
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", capture)
-    Tachyon().run("work.py", import_paths=(Path("/mainboard/src"),))
+    root = Path("/mainboard/src")
+    Tachyon().run("work.py", import_paths=(root,))
     assert environment is not None
-    assert environment["PYTHONPATH"].split(":")[0] == "/mainboard/src"
+    assert environment["PYTHONPATH"].split(pathsep)[0] == str(root)
 
 
 def test_every_sampling_option_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
