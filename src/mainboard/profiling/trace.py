@@ -1,11 +1,13 @@
 """Native activity records, span attribution, and bottleneck ranking."""
 
+from __future__ import annotations
+
 from collections import defaultdict
 from enum import Flag, auto
 from types import TracebackType
 from typing import TYPE_CHECKING
 
-from ..models.base import FrozenModel
+from ..models.base import FrozenModel, FrozenSequence
 from .protocols import KernelActivity, MemcpyActivity
 
 if TYPE_CHECKING:
@@ -66,11 +68,17 @@ class KernelTrace(FrozenModel):
     The launch shape (``grid``/``block``, shared memory split into static/dynamic,
     registers per thread) comes straight from the CUPTI activity record so a bottleneck
     report can reason about occupancy without re-launching the kernel.
+
+    ``correlation_id`` is CUPTI's link back to the runtime call that launched this kernel,
+    which arrives as its own activity with a host-clock window. Keeping it here is what lets
+    a kernel be attributed to the callsite that launched it rather than only to the region it
+    happened to fall inside, and it is the join a host-side sampler needs.
     """
 
     name: str = ""
     start_ns: int = 0
     end_ns: int = 0
+    correlation_id: int = 0
     grid: str = ""
     block: str = ""
     static_shared_mem: int = 0
@@ -119,15 +127,21 @@ class KernelTrace(FrozenModel):
             static_shared_mem=act.static_shared_memory,
             dynamic_shared_mem=act.dynamic_shared_memory,
             registers=act.registers_per_thread,
+            correlation_id=getattr(act, "correlation_id", 0),
         )
 
 
 class MemcpyTrace(FrozenModel):
-    """One memory copy, with device-clock start/end, direction, and bytes moved."""
+    """One memory copy, with device-clock start/end, direction, and bytes moved.
+
+    ``correlation_id`` links back to the runtime call that issued the copy, as it does on a
+    kernel.
+    """
 
     kind: str = "unknown"
     start_ns: int = 0
     end_ns: int = 0
+    correlation_id: int = 0
     bytes_moved: int = 0
 
     @property
@@ -146,6 +160,7 @@ class MemcpyTrace(FrozenModel):
             start_ns=act.start,
             end_ns=act.end,
             bytes_moved=getattr(act, "bytes", 0),
+            correlation_id=getattr(act, "correlation_id", 0),
         )
 
 
@@ -273,8 +288,8 @@ class BottleneckReport(FrozenModel):
     total_memcpy_bytes: int
     compute_pct: float
     memcpy_pct: float
-    hot_regions: tuple[HotRegion, ...]
-    hot_kernels: tuple[HotKernel, ...]
+    hot_regions: FrozenSequence[HotRegion]
+    hot_kernels: FrozenSequence[HotKernel]
 
     @classmethod
     def from_traces(

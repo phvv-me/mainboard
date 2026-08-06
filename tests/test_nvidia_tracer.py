@@ -259,7 +259,7 @@ def test_deferred_activity_name_falls_back_to_kind(fake_cupti: FakeCupti) -> Non
 
 def test_raw_activity_buffer_is_bounded() -> None:
     collector = nv.CuptiCollector(max_records=1)
-    record = nv.RawMemcpy(copy_kind=1, start_ns=0, end_ns=1, bytes_moved=1)
+    record = nv.RawMemcpy(copy_kind=1, start_ns=0, end_ns=1, bytes_moved=1, correlation_id=0)
     collector.append(record)
     collector.append(record)
     assert len(collector.records) == 1

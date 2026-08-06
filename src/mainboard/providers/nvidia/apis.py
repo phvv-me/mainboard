@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from contextlib import suppress
 from functools import cache
 from importlib import import_module

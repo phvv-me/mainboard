@@ -1,8 +1,12 @@
-import runpy
-import sys
-from os import PathLike
+from __future__ import annotations
 
-from ..models.base import FrozenModel
+import runpy
+import subprocess
+import sys
+from os import PathLike, environ, pathsep
+from pathlib import Path
+
+from ..models.base import FrozenModel, FrozenSequence
 
 
 class Target(FrozenModel):
@@ -10,7 +14,7 @@ class Target(FrozenModel):
 
     name: str
     module: bool
-    args: tuple[str, ...] = ()
+    args: FrozenSequence[str] = ()
 
     @classmethod
     def resolve(
@@ -36,3 +40,30 @@ class Target(FrozenModel):
                 runpy.run_path(self.name, run_name="__main__")
         finally:
             sys.argv = previous
+
+    def launch(
+        self,
+        executable: Path,
+        *,
+        timeout: float | None = None,
+        import_paths: tuple[Path, ...] = (),
+    ) -> None:
+        """Execute the target in a bounded child of the selected Python interpreter."""
+        command = [str(executable), *(("-m",) if self.module else ()), self.name, *self.args]
+        subprocess.run(
+            command,
+            check=True,
+            timeout=timeout,
+            env=self.environment(import_paths),
+        )
+
+    @staticmethod
+    def environment(import_paths: tuple[Path, ...]) -> dict[str, str] | None:
+        """Prepend required import roots while preserving the caller's environment."""
+        if not import_paths:
+            return None
+        current = environ.get("PYTHONPATH")
+        python_path = pathsep.join(str(item) for item in import_paths)
+        if current:
+            python_path = pathsep.join((python_path, current))
+        return environ | {"PYTHONPATH": python_path}

@@ -9,10 +9,12 @@ traced, the deep :class:`Profile`. It reuses :func:`benchmark`, :class:`Profiler
 `span`; it does not reimplement timing or tracing.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from ..gpu import GPU
-from ..models.base import FrozenModel
+from ..models.base import FrozenModel, FrozenSequence
 from .benchmark import BenchSample, benchmark
 from .profiler import Profiler
 from .result import Profile
@@ -31,7 +33,7 @@ class StageProfile(FrozenModel):
         tracing was off or no GPU was present.
     """
 
-    samples: tuple[BenchSample, ...] = ()
+    samples: FrozenSequence[BenchSample] = ()
     profile: Profile | None = None
 
     def timing_text(self) -> str:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import shutil
 from collections import defaultdict
@@ -7,7 +9,7 @@ from plumbum import ProcessExecutionError
 
 from .. import shell
 from ..enums import ToolCategory
-from .base import FrozenModel
+from .base import FrozenModel, FrozenSequence
 from .detected_tool import DetectedTool
 
 
@@ -85,7 +87,7 @@ class Toolchain(FrozenModel):
     tools: every available tool, ordered as registered in `TOOL_PROBES`.
     """
 
-    tools: tuple[DetectedTool, ...] = ()
+    tools: FrozenSequence[DetectedTool] = ()
 
     @classmethod
     def probe(cls, probes: tuple[ToolProbe, ...] = TOOL_PROBES) -> Toolchain:

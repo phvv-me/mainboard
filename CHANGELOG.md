@@ -4,7 +4,13 @@ All notable changes to Mainboard are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project uses semantic versioning while it is published.
 
-## Unreleased
+## [0.0.9] - 2026-08-06
+
+### Added
+
+- `mainboard profile counters` runs a separate Nsight Compute replay pass, parses raw CSV into
+  immutable per-kernel counter models, derives cycles, issue use, coalescing and normalized stall
+  shares, assigns bottleneck verdicts, and compares captures across hosts by demangled name.
 
 ### Changed
 
@@ -15,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- `profile run --executable` now runs both instrumented and fallback targets with the selected interpreter, injects Mainboard into cross-environment runner processes, and enforces the requested timeout.
+- Automatic spans now select only code owned by the requested modules and keep independent asyncio task stacks, preventing imported-code floods and false cross-task nesting.
 - NVIDIA activity kinds are flushed and disabled when capture ends.
 - CUPTI callbacks now copy bounded raw records and defer Pydantic construction and API name resolution until result creation.
 - Device telemetry requires the target PID, so another process using an installed GPU no longer creates false GPU evidence.

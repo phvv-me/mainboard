@@ -413,7 +413,7 @@ class RecordingProfiler:
     def __init__(self, **_: Any) -> None:
         pass
 
-    def __enter__(self) -> RecordingProfiler:
+    def __enter__(self) -> "RecordingProfiler":
         return self
 
     def __exit__(self, *_: object) -> None:

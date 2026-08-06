@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mainboard"
-version = "0.0.8"
+version = "0.0.9"
 description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Pedro Valois", email = "contact@phvv.me" }]
@@ -97,7 +97,7 @@ mainboard = ["assets/*.svg", "py.typed"]
 
 [tool.ruff]
 line-length = 99
-target-version = "py314"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -115,7 +115,7 @@ python-platform = "linux"  # analyze the POSIX paths uniformly; Windows-only cod
 ignore-missing-imports = ["torch", "kvikio.*"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.13"
 strict = true
 disallow_any_explicit = true
 plugins = ["pydantic.mypy"]
@@ -148,20 +148,25 @@ module = [
   "mainboard.npu",
   "mainboard.unit",
   "mainboard.profiling.benchmark",
+  "mainboard.profiling.counters",
+  "mainboard.profiling.efficiency",
   "mainboard.profiling.models",
   "mainboard.profiling.python",
   "mainboard.profiling.health",
+  "mainboard.profiling.profiler",
   "mainboard.profiling.report",
   "mainboard.profiling.result",
   "mainboard.profiling.stages",
   "mainboard.profiling.storage",
   "mainboard.profiling.target",
+  "mainboard.profiling.timeline",
   "mainboard.profiling.trace",
   "mainboard.providers.amd.gpu",
   "mainboard.providers.apple.gpu",
   "mainboard.providers.apple.npu",
   "mainboard.providers.intel.gpu",
   "mainboard.providers.intel.npu",
+  "mainboard.providers.nvidia.counters",
   "mainboard.providers.nvidia.gpu",
   "mainboard.providers.qualcomm.gpu",
   "mainboard.providers.qualcomm.npu",
@@ -170,7 +175,7 @@ disable_error_code = ["explicit-any"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -ra"
+addopts = "-q -ra -p no:rerunfailures"
 markers = [
   "integration: runs the real hardware probe end to end on the host (deselected from the coverage gate)",
 ]

@@ -226,7 +226,7 @@ def test_host_disk_enumerates_and_aggregates(monkeypatch: pytest.MonkeyPatch) ->
         def __init__(self, name: str) -> None:
             self.name = name
 
-        def __lt__(self, other: DevDir) -> bool:
+        def __lt__(self, other: "DevDir") -> bool:
             return self.name < other.name
 
     monkeypatch.setattr(

@@ -109,6 +109,25 @@ def test_profile_run_accepts_python_output_options(
     assert "Unavailable" not in capsys.readouterr().out
 
 
+def test_profile_run_accepts_consistent_worker_thread_sampling(
+    cpu_only_host: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Worker-thread profiling knobs remain usable when Tachyon is unavailable."""
+    script = tmp_path / "work.py"
+    script.write_text("x = 1\n")
+    assert ran_clean(
+        run_cli(
+            "profile",
+            "run",
+            str(script),
+            "--all-threads",
+            "--blocking",
+            "--no-device",
+        )
+    )
+    assert "Unavailable" not in capsys.readouterr().out
+
+
 def test_profile_missing_module_surfaces_an_import_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

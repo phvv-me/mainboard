@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 from types import TracebackType
 from typing import Protocol, runtime_checkable

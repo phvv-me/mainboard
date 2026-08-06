@@ -1,0 +1,6 @@
+==PROF== Connected to process 8200
+"ID","Process ID","Process Name","Host Name","Kernel Name","Context","Stream","Block Size","Grid Size","Device","CC","Section Name","Metric Name","Metric Unit","Metric Value"
+"0","8200","python","miyabi","vector_load(float const*, float*)","1","7","256,1,1","128,1,1","NVIDIA GH200 480GB","9.0","Raw","gpu__time_duration.sum","nsecond","4,000"
+"0","8200","python","miyabi","vector_load(float const*, float*)","1","7","256,1,1","128,1,1","NVIDIA GH200 480GB","9.0","Raw","gpc__cycles_elapsed.avg.per_second","cycle/nsecond","1.5"
+"1","8200","python","miyabi","architecture_kernel(int*)","1","7","256,1,1","128,1,1","NVIDIA GH200 480GB","9.0","Raw","gpu__time_duration.sum","nsecond","1,200"
+"1","8200","python","miyabi","architecture_kernel(int*)","1","7","256,1,1","128,1,1","NVIDIA GH200 480GB","9.0","Raw","gpc__cycles_elapsed.avg.per_second","cycle/nsecond","2"

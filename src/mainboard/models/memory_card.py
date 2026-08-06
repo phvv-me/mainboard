@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import subprocess
 from functools import cached_property
@@ -36,7 +38,7 @@ class MemoryCard(FrozenModel):
                 return ()
             sections = [s for s in result.stdout.split("\n\n") if "Memory Device" in s]
             return tuple(cls(section=sec) for sec in sections)
-        except FileNotFoundError, subprocess.TimeoutExpired, PermissionError:
+        except (FileNotFoundError, subprocess.TimeoutExpired, PermissionError):
             return ()
 
     @cached_property

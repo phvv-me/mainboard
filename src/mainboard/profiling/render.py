@@ -4,6 +4,8 @@ Kept separate from :mod:`.result` so the result value stays pure data; ``Profile
 and ``ProfileDiff.show`` delegate here. :func:`region_text` is the no-rich fallback.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
 from rich import box
@@ -15,6 +17,7 @@ from rich.text import Text
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from .counters import KernelCounterDelta, KernelCounters
     from .models import RegionStat
     from .result import Profile, ProfileDiff
     from .trace import BottleneckReport
@@ -71,6 +74,45 @@ def _kernel_table(report: BottleneckReport) -> Table:
     return table
 
 
+def _counter_table(rows: Sequence[KernelCounters]) -> Table:
+    table = Table(title="kernel counters", box=box.ROUNDED, header_style="bold")
+    table.add_column("kernel")
+    for name in ("calls", "duration ms", "cycles", "clock GHz", "issue %", "sec/req"):
+        table.add_column(name, justify="right")
+    table.add_column("verdict")
+    for row in rows:
+        table.add_row(
+            row.demangled_name[:48],
+            str(row.calls),
+            f"{row.duration_ns / 1e6:.3f}",
+            f"{row.cycles:.0f}",
+            f"{row.achieved_clock_hz / 1e9:.2f}",
+            f"{row.issue_utilization_pct:.1f}",
+            f"{row.sectors_per_request:.2f}",
+            row.verdict.value,
+        )
+    return table
+
+
+def _counter_diff_table(rows: Sequence[KernelCounterDelta], title: str) -> Table:
+    table = Table(title=title, box=box.ROUNDED, header_style="bold")
+    table.add_column("kernel")
+    for name in ("base ms", "current ms", "duration Δ%", "cycles Δ%", "clock Δ%"):
+        table.add_column(name, justify="right")
+    table.add_column("divergence")
+    for row in rows:
+        table.add_row(
+            row.name[:48],
+            f"{row.baseline_duration_ns / 1e6:.3f}",
+            f"{row.current_duration_ns / 1e6:.3f}",
+            f"{row.duration_change_pct:+.1f}",
+            f"{row.cycle_change_pct:+.1f}",
+            f"{row.clock_change_pct:+.1f}",
+            row.divergence.value,
+        )
+    return table
+
+
 def profile_renderable(profile: Profile) -> RenderableType:
     """A labeled rich view of every populated evidence section.
 
@@ -87,6 +129,8 @@ def profile_renderable(profile: Profile) -> RenderableType:
         sections.append(_region_table(stats))
     if profile.kernels:
         sections.append(_kernel_table(profile.trace_report()))
+    if profile.counters:
+        sections.append(_counter_table(profile.counter_bottlenecks()))
     drops = []
     if profile.dropped_spans:
         drops.append(f"{profile.dropped_spans} oldest spans dropped")
@@ -103,22 +147,32 @@ def show_profile(profile: Profile, *, color: bool = True) -> None:
 
 
 def show_diff(diff: ProfileDiff, *, color: bool = True) -> None:
-    """Print per-region deltas; green where faster, red where slower."""
+    """Print region deltas and cross-host kernel divergence."""
     console = Console(no_color=not color)
-    table = Table(title="profile diff (baseline → current)", box=box.ROUNDED, header_style="bold")
-    table.add_column("region")
-    for name in ("baseline ms", "current ms", "Δ ms", "speedup"):
-        table.add_column(name, justify="right")
-    for row in diff.rows:
-        faster = row.speedup > 1.0
-        style = "green" if faster else ("red" if row.delta_ms > 0 else None)
-        speed = f"{row.speedup:.2f}x" if row.speedup else "—"
-        table.add_row(
-            row.name,
-            f"{row.baseline_ms:.2f}",
-            f"{row.current_ms:.2f}",
-            f"{row.delta_ms:+.2f}",
-            speed,
-            style=style,
+    sections: list[RenderableType] = []
+    if diff.rows:
+        table = Table(
+            title="profile diff (baseline → current)",
+            box=box.ROUNDED,
+            header_style="bold",
         )
-    console.print(table)
+        table.add_column("region")
+        for name in ("baseline ms", "current ms", "Δ ms", "speedup"):
+            table.add_column(name, justify="right")
+        for row in diff.rows:
+            faster = row.speedup > 1.0
+            style = "green" if faster else ("red" if row.delta_ms > 0 else None)
+            speed = f"{row.speedup:.2f}x" if row.speedup else "—"
+            table.add_row(
+                row.name,
+                f"{row.baseline_ms:.2f}",
+                f"{row.current_ms:.2f}",
+                f"{row.delta_ms:+.2f}",
+                speed,
+                style=style,
+            )
+        sections.append(table)
+    if diff.kernels:
+        hosts = f"{diff.baseline_host or 'baseline'} → {diff.current_host or 'current'}"
+        sections.append(_counter_diff_table(diff.kernels, f"kernel counter diff ({hosts})"))
+    console.print(Group(*sections) if sections else "No comparable profiling data.")

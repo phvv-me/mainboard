@@ -67,7 +67,7 @@ def fake_kvikio(compat: bool) -> types.SimpleNamespace:
         def __init__(self, path: str, flags: str) -> None:
             self.handle = open(path, "rb")  # noqa: SIM115 (closed in __exit__)
 
-        def __enter__(self) -> CuFile:
+        def __enter__(self) -> "CuFile":
             return self
 
         def __exit__(self, *exc: object) -> None:
@@ -96,7 +96,7 @@ def fake_kvikio_refusing_dma() -> types.SimpleNamespace:
         def __init__(self, path: str, flags: str) -> None:
             pass
 
-        def __enter__(self) -> CuFile:
+        def __enter__(self) -> "CuFile":
             return self
 
         def __exit__(self, *exc: object) -> None:

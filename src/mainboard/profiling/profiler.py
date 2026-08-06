@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 from collections import deque
+from collections.abc import Sequence
 from contextlib import ExitStack
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -11,12 +12,13 @@ from enum import Flag, auto
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import CodeType, FunctionType, ModuleType, TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from ..gpu import GPU
+from ..models.base import FrozenModel
 from . import annotate
 from .models import RegionStat, RegionSummary
-from .python import AsyncMode, PythonFormat, PythonMode, Tachyon
+from .python import AsyncMode, Tachyon
 from .result import Profile
 from .spans import activate, deactivate
 from .target import Target
@@ -25,8 +27,6 @@ from .trace import BottleneckReport, RegionWindow, TraceCollector
 from .tracer import Marker, Tracer
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from ..models.gpu_snapshot import GPUSnapshot
 
 
@@ -42,7 +42,7 @@ class SpanFrame:
     thread: int
     device_start_ns: int
     finish_marker: Marker | None
-    samples: deque[GPUSnapshot] = field(default_factory=lambda: deque(maxlen=4096))
+    samples: deque["GPUSnapshot"] = field(default_factory=lambda: deque(maxlen=4096))
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +51,100 @@ class SpanMeasurement:
 
     name: str
     wall_ms: float
-    samples: tuple[GPUSnapshot, ...]
+    samples: tuple["GPUSnapshot", ...]
+
+
+class Feature(Flag):
+    """Independent collection costs that may be combined with `|`.
+
+    Independence is the contract, not a convenience: `DEFAULT` ORs every member because each
+    one can be collected alongside the others without changing what the others observe. A
+    capability that cannot honour that, such as hardware counter collection needing kernel
+    replay, does not belong in this flag however convenient the syntax would be. It belongs in
+    its own pass.
+    """
+
+    PYTHON = auto()
+    SPANS = auto()
+    DEVICE = auto()
+    MARKERS = auto()
+    ACTIVITY = auto()
+    DEFAULT = PYTHON | SPANS | DEVICE | MARKERS | ACTIVITY
+
+
+class Collection(FrozenModel):
+    """What evidence to gather and at what cost, as one value.
+
+    These six choices were six constructor arguments, two of which were then repeated on every
+    other entry point, so the same policy had to be restated wherever it was wanted and nothing
+    checked that two statements of it agreed. As one model it can be built once, passed around,
+    compared and stored beside the measurement it produced, which is what a study needs: a
+    throughput number whose collection policy is not attached to it is hard to reproduce.
+
+    features: which capabilities may be collected.
+    activities: which CUPTI activity kinds to keep when `ACTIVITY` is on.
+    device_index: which GPU to sample.
+    sample_interval_ms: how often to take a device telemetry sample.
+    max_spans: the bound on retained spans and windows, past which they are dropped and counted.
+    auto: modules whose functions are annotated automatically.
+    """
+
+    features: Feature = Feature.DEFAULT
+    activities: NativeActivity = NativeActivity.DEFAULT
+    device_index: int = 0
+    sample_interval_ms: int = 50
+    max_spans: int = 100_000
+    auto: tuple[str, ...] = ()
+
+
+class Reach(FrozenModel):
+    """How to get at the thing being measured, as one value.
+
+    There are exactly three ways and they were three entry points, which is why `executable` and
+    `timeout` were spelled out on each of them. As one model the choice is data, so a study can
+    hold it, vary it, or record which one produced a number, and one method serves all three.
+
+    target: a script path or a module name. Empty means the calling process itself.
+    module: whether `target` names a module rather than a path, or None to infer.
+    args: arguments passed to a launched target.
+    pid: a live process to attach to. Non-zero selects attachment and ignores `target`.
+    timeout: how long to wait on a launched or attached target.
+    """
+
+    target: str = ""
+    module: bool | None = None
+    args: tuple[str, ...] = ()
+    pid: int = 0
+    timeout: float | None = None
+
+    @classmethod
+    def here(cls) -> "Reach":
+        """Measure the calling process, which is what a `with` block does."""
+        return cls()
+
+    @classmethod
+    def launch(
+        cls,
+        target: str,
+        *,
+        module: bool | None = None,
+        args: tuple[str, ...] = (),
+        timeout: float | None = None,
+    ) -> "Reach":
+        """Run one script or module once and measure it."""
+        return cls(target=target, module=module, args=args, timeout=timeout)
+
+    @classmethod
+    def attaching(cls, pid: int, *, timeout: float | None = None) -> "Reach":
+        """Attach to a process already running."""
+        return cls(pid=pid, timeout=timeout)
+
+    @property
+    def kind(self) -> str:
+        """Return which of the three this is, for a row key or an error message."""
+        if self.pid:
+            return "attach"
+        return "launch" if self.target else "here"
 
 
 class Profiler:
@@ -62,34 +155,35 @@ class Profiler:
     was actually observed. Python sampling applies to `run`, `attach`, and `dump`.
     """
 
-    class Feature(Flag):
-        """Independent collection costs that may be combined with `|`."""
-
-        PYTHON = auto()
-        SPANS = auto()
-        DEVICE = auto()
-        MARKERS = auto()
-        ACTIVITY = auto()
-        DEFAULT = PYTHON | SPANS | DEVICE | MARKERS | ACTIVITY
-
+    # `TypeAlias` tells mypy this is a type, not a plain variable, so a method below that
+    # annotates a parameter as bare `Feature` still resolves to the module-level enum instead
+    # of this class attribute of the same name. The PEP 695 `type` statement ruff suggests here
+    # would wrap `Feature` in a `TypeAliasType`, which does not forward attribute access, so
+    # `Profiler.Feature.SPANS` would break at runtime for every caller.
+    Feature: TypeAlias = Feature  # noqa: UP040
     Activity = NativeActivity
 
     def __init__(
         self,
         *,
-        features: Profiler.Feature = Feature.DEFAULT,
+        features: Feature = Feature.DEFAULT,
         activities: NativeActivity = NativeActivity.DEFAULT,
         device_index: int = 0,
         sample_interval_ms: int = 50,
         max_spans: int = 100_000,
         auto: Sequence[str] = (),
     ) -> None:
-        self.features = features
-        self.activities = activities
-        self.device_index = device_index
-        self.sample_interval_ms = sample_interval_ms
-        self.max_spans = max_spans
-        self.auto_modules = tuple(auto)
+        # The constructor stays a flat façade over the model, the way the command line is a flat
+        # façade over `Tachyon`. One object is what a study passes around; loose keywords are
+        # what a caller writing one line wants.
+        self.collection = Collection(
+            features=features,
+            activities=activities,
+            device_index=device_index,
+            sample_interval_ms=sample_interval_ms,
+            max_spans=max_spans,
+            auto=tuple(auto),
+        )
         self.gpu: GPU | None = None
         self.gpu_label = ""
         self.tracer: Tracer = Tracer()
@@ -107,23 +201,43 @@ class Profiler:
         self.auto_on = False
         self.active = False
 
-    def __enter__(self) -> Profiler:
+    @classmethod
+    def under(cls, collection: Collection) -> "Profiler":
+        """Build a profiler from one collection policy.
+
+        The constructor takes the six choices flat because that is what a caller writing one line
+        wants. Anything holding a policy already, a study most of all, should hand over the value
+        rather than unpack it into six arguments and risk unpacking it differently next time.
+        """
+        return cls(
+            features=collection.features,
+            activities=collection.activities,
+            device_index=collection.device_index,
+            sample_interval_ms=collection.sample_interval_ms,
+            max_spans=collection.max_spans,
+            auto=collection.auto,
+        )
+
+    def __enter__(self) -> "Profiler":
         if self.active:
             raise RuntimeError("a Profiler instance cannot be entered twice")
-        gpus = GPU.all() if self.features & (self.Feature.DEVICE | self.Feature.ACTIVITY) else ()
+        wanted = self.collection.features
+        index = self.collection.device_index
+        gpus = GPU.all() if wanted & (self.Feature.DEVICE | self.Feature.ACTIVITY) else ()
         if gpus:
-            self.gpu = gpus[self.device_index] if self.device_index < len(gpus) else gpus[0]
-        if self.features & (self.Feature.MARKERS | self.Feature.ACTIVITY):
+            self.gpu = gpus[index] if index < len(gpus) else gpus[0]
+        if wanted & (self.Feature.MARKERS | self.Feature.ACTIVITY):
             self.tracer = annotate.tracer()
         with ExitStack() as rollback:
             activate(self)
             rollback.callback(deactivate, self)
-            if self.features & self.Feature.ACTIVITY and self.gpu is not None:
-                self.collector = rollback.enter_context(self.tracer.collect(self.activities))
-            if self.auto_modules:
-                self.auto(self.auto_modules)
+            if wanted & self.Feature.ACTIVITY and self.gpu is not None:
+                kinds = self.collection.activities
+                self.collector = rollback.enter_context(self.tracer.collect(kinds))
+            if self.collection.auto:
+                self.auto(self.collection.auto)
                 rollback.callback(annotate.disable_auto)
-            if self.features & self.Feature.DEVICE and self.gpu is not None:
+            if wanted & self.Feature.DEVICE and self.gpu is not None:
                 self.stop_event.clear()
                 self.sampler = threading.Thread(
                     target=self.sample, daemon=True, name="mainboard-profiler"
@@ -145,7 +259,7 @@ class Profiler:
             self.auto_on = False
         deactivate(self)
         self.stop_sampler()
-        if self.features & self.Feature.ACTIVITY and self.gpu is not None:
+        if self.collection.features & self.Feature.ACTIVITY and self.gpu is not None:
             self.collector.stop()
         self.active = False
 
@@ -159,7 +273,8 @@ class Profiler:
     def enter(self, name: str) -> int:
         """Open one span and return the exact token later used to close it."""
         stack = self.stack.get()
-        finish_marker = self.tracer.start(name) if self.features & self.Feature.MARKERS else None
+        marking = self.collection.features & self.Feature.MARKERS
+        finish_marker = self.tracer.start(name) if marking else None
         with self.lock:
             self.next_token += 1
             token = self.next_token
@@ -169,7 +284,7 @@ class Profiler:
                 path=".".join((*parents, name)),
                 thread=threading.get_ident(),
                 device_start_ns=self.tracer.timestamp()
-                if self.features & self.Feature.ACTIVITY
+                if self.collection.features & self.Feature.ACTIVITY
                 else 0,
                 finish_marker=finish_marker,
             )
@@ -188,11 +303,11 @@ class Profiler:
         if frame.finish_marker is not None:
             frame.finish_marker()
         samples = list(frame.samples)
-        if not samples and self.features & self.Feature.DEVICE:
+        if not samples and self.collection.features & self.Feature.DEVICE:
             boundary = self.target_snapshot(frame.path)
             samples = [boundary] if boundary is not None else []
-        if self.features & self.Feature.SPANS or samples:
-            if len(self.measurements) == self.max_spans:
+        if self.collection.features & self.Feature.SPANS or samples:
+            if len(self.measurements) == self.collection.max_spans:
                 self.dropped_spans += 1
             self.measurements.append(
                 SpanMeasurement(
@@ -201,8 +316,8 @@ class Profiler:
                     samples=tuple(samples),
                 )
             )
-        if self.features & self.Feature.ACTIVITY:
-            if len(self.windows) == self.max_spans:
+        if self.collection.features & self.Feature.ACTIVITY:
+            if len(self.windows) == self.collection.max_spans:
                 self.dropped_spans += 1
             self.windows.append(
                 RegionWindow(
@@ -213,7 +328,7 @@ class Profiler:
                 )
             )
 
-    def target_snapshot(self, name: str) -> GPUSnapshot | None:
+    def target_snapshot(self, name: str) -> "GPUSnapshot | None":
         """Read one GPU snapshot only when it contains this process."""
         gpu = self.gpu
         if gpu is None:
@@ -235,7 +350,7 @@ class Profiler:
 
     def sample(self) -> None:
         """Poll target-process device telemetry while at least one span is open."""
-        interval = self.sample_interval_ms / 1000.0
+        interval = self.collection.sample_interval_ms / 1000.0
         while not self.stop_event.wait(interval):
             with self.lock:
                 frames = tuple(self.frames.values())
@@ -258,13 +373,8 @@ class Profiler:
     def module_codes(modules: Sequence[str]) -> set[CodeType]:
         """Find owned module and nested code objects for local PEP 669 events."""
         loaded = [importlib.import_module(name) for name in modules]
-        roots = tuple(
-            str(Path(file).parent)
-            for module in loaded
-            if (file := getattr(module, "__file__", None))
-        )
         found: set[CodeType] = set()
-        pending = {code for module in loaded for code in Profiler.owned_codes(module, roots)}
+        pending = {code for module in loaded for code in Profiler.owned_codes(module)}
         while pending:
             code = pending.pop()
             found.add(code)
@@ -274,21 +384,25 @@ class Profiler:
         return found
 
     @staticmethod
-    def owned_codes(module: ModuleType, roots: tuple[str, ...]) -> tuple[CodeType, ...]:
-        """Return function code owned by selected roots, including class methods."""
-        functions = (value for value in vars(module).values() if isinstance(value, FunctionType))
-        classes = (value for value in vars(module).values() if isinstance(value, type))
+    def owned_codes(module: ModuleType) -> tuple[CodeType, ...]:
+        """Return function code owned by one module, including its class methods."""
+        functions = (
+            value
+            for value in vars(module).values()
+            if isinstance(value, FunctionType) and value.__module__ == module.__name__
+        )
+        classes = (
+            value
+            for value in vars(module).values()
+            if isinstance(value, type) and value.__module__ == module.__name__
+        )
         methods = (
             member
             for cls in classes
             for member in vars(cls).values()
             if isinstance(member, FunctionType)
         )
-        return tuple(
-            function.__code__
-            for function in (*functions, *methods)
-            if function.__code__.co_filename.startswith(roots)
-        )
+        return tuple(function.__code__ for function in (*functions, *methods))
 
     def result(self) -> Profile:
         """Freeze the evidence collected so far into one `Profile`."""
@@ -333,33 +447,65 @@ class Profiler:
         self.result().show(color=color)
 
     @classmethod
+    def measure(
+        cls,
+        reach: Reach,
+        *,
+        collection: Collection | None = None,
+        sampler: Tachyon | None = None,
+        strict: bool = False,
+    ) -> Profile:
+        """Measure whatever `reach` names, under `collection`, driving `sampler`.
+
+        One method for all three ways of reaching a target, because which one applies is a
+        property of the `Reach` rather than a choice of function. `run` and `attach` remain as
+        the two shorthands a caller writes by hand. `Reach.here()` names the calling process,
+        which has no target for this classmethod to launch, so it raises rather than launching
+        an empty target: that measurement is what `with Profiler(...) as profiler:` is for.
+        """
+        policy = collection or Collection()
+        if reach.kind == "attach":
+            tachyon = sampler or Tachyon(duration=30.0)
+            tachyon.require_available()
+            return Profile(python=tachyon.attach(reach.pid, timeout=reach.timeout))
+        if reach.kind == "here":
+            raise ValueError(
+                "Reach.here() names the calling process, which measure() cannot launch; wrap "
+                "that code in `with Profiler(...) as profiler:` instead."
+            )
+        return cls.run(
+            reach.target,
+            module=reach.module,
+            args=reach.args,
+            features=policy.features,
+            activities=policy.activities,
+            sampler=sampler,
+            timeout=reach.timeout,
+            strict=strict,
+        )
+
+    @classmethod
     def run(
         cls,
         target: str,
         *,
         module: bool | None = None,
         args: tuple[str, ...] = (),
-        features: Profiler.Feature = Feature.DEFAULT,
+        features: Feature = Feature.DEFAULT,
         activities: NativeActivity = NativeActivity.DEFAULT,
-        mode: PythonMode = PythonMode.WALL,
-        format: PythonFormat = PythonFormat.PSTATS,
-        output: str | None = None,
-        duration: float | None = None,
-        sampling_rate: str = "1khz",
-        executable: str = sys.executable,
+        sampler: Tachyon | None = None,
         timeout: float | None = None,
         strict: bool = False,
     ) -> Profile:
-        """Run one target once and collect every selected capability that works."""
+        """Run one target once and collect every selected capability that works.
+
+        sampler: how to drive the external Python sampler, as the model that already describes
+            it. Its `executable` is also the interpreter the target runs under, so the two
+            cannot drift apart the way two separate arguments could.
+        """
         target_spec = Target.resolve(target, module=module, args=args)
-        tachyon = Tachyon(
-            executable=Path(executable),
-            mode=mode,
-            format=format,
-            output=Path(output) if output else None,
-            duration=duration,
-            sampling_rate=sampling_rate,
-        )
+        tachyon = sampler or Tachyon()
+        executable = str(tachyon.executable)
         wants_python = bool(features & cls.Feature.PYTHON)
         python_available = wants_python and tachyon.available()
         if strict and wants_python and not python_available:
@@ -369,6 +515,7 @@ class Profiler:
             return cls.run_instrumented(
                 target_spec,
                 tachyon=tachyon if python_available else None,
+                executable=Path(executable),
                 features=local_features,
                 activities=activities,
                 timeout=timeout,
@@ -378,11 +525,14 @@ class Profiler:
                 python=tachyon.run(
                     target_spec.name,
                     module=target_spec.module,
-                    args=target_spec.args,
+                    args=tuple(target_spec.args),
                     timeout=timeout,
                 )
             )
-        target_spec.run()
+        if Path(executable) == Path(sys.executable) and timeout is None:
+            target_spec.run()
+        else:
+            target_spec.launch(Path(executable), timeout=timeout)
         return Profile()
 
     @classmethod
@@ -391,7 +541,8 @@ class Profiler:
         target: Target,
         *,
         tachyon: Tachyon | None,
-        features: Profiler.Feature,
+        executable: Path,
+        features: Feature,
         activities: NativeActivity,
         timeout: float | None,
     ) -> Profile:
@@ -407,13 +558,22 @@ class Profiler:
                 *target.args,
             )
             if tachyon is None:
-                Target(name="mainboard.profiling.runner", module=True, args=arguments).run()
+                runner = Target(name="mainboard.profiling.runner", module=True, args=arguments)
+                if executable == Path(sys.executable) and timeout is None:
+                    runner.run()
+                else:
+                    runner.launch(
+                        executable,
+                        timeout=timeout,
+                        import_paths=(Path(__file__).parents[2],),
+                    )
                 return Profile.load(profile_path)
             python_profile = tachyon.run(
                 "mainboard.profiling.runner",
                 module=True,
                 args=arguments,
                 timeout=timeout,
+                import_paths=(Path(__file__).parents[2],),
             ).model_copy(update={"target": target.name})
             return Profile.load(profile_path).model_copy(update={"python": python_profile})
 
@@ -421,23 +581,18 @@ class Profiler:
     def attach(
         pid: int,
         *,
-        mode: PythonMode = PythonMode.WALL,
-        format: PythonFormat = PythonFormat.PSTATS,
-        output: str | None = None,
-        duration: float | None = 30.0,
-        sampling_rate: str = "1khz",
-        executable: str = sys.executable,
+        sampler: Tachyon | None = None,
         timeout: float | None = None,
     ) -> Profile:
-        """Attach Python sampling to one live process."""
-        python_profile = Tachyon(
-            executable=Path(executable),
-            mode=mode,
-            format=format,
-            output=Path(output) if output else None,
-            duration=duration,
-            sampling_rate=sampling_rate,
-        ).attach(pid, timeout=timeout)
+        """Attach Python sampling to one live process.
+
+        sampler: how to drive the external sampler. `Tachyon` already models every one of those
+            choices, so this takes the model rather than taking its fields loose and rebuilding
+            it, which is what let two call sites disagree about the same policy.
+        """
+        tachyon = sampler or Tachyon(duration=30.0)
+        tachyon.require_available()
+        python_profile = tachyon.attach(pid, timeout=timeout)
         return Profile(python=python_profile)
 
     @staticmethod
@@ -450,10 +605,12 @@ class Profiler:
         timeout: float | None = 10.0,
     ) -> Profile:
         """Return one sampled Python stack snapshot from a live process."""
-        python_profile = Tachyon(
+        tachyon = Tachyon(
             executable=Path(executable),
             all_threads=all_threads,
             async_aware=async_aware,
             async_mode=AsyncMode.ALL,
-        ).dump(pid, timeout=timeout)
+        )
+        tachyon.require_available()
+        python_profile = tachyon.dump(pid, timeout=timeout)
         return Profile(python=python_profile)

@@ -6,9 +6,11 @@ CUPTI/NVTX tracer — none of which needs a real GPU here: the device clock, the
 activity stream, and the NVTX/ROCTx/signpost libraries are all faked.
 """
 
+import inspect
 import json
 import sys
 import types
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from mainboard.enums import Vendor
 from mainboard.gpu import GPU
 from mainboard.profiling import annotate, perfetto, render
 from mainboard.profiling.benchmark import compare
+from mainboard.profiling.counters import KernelCounters
 from mainboard.profiling.models import RegionStat, RegionSummary
 from mainboard.profiling.profiler import Profiler
 from mainboard.profiling.result import Profile, ProfileDiff
@@ -121,6 +124,20 @@ def test_bottleneck_report_splits_compute_and_copy() -> None:
     assert report.compute_pct > report.memcpy_pct
     assert report.hot_kernels[0].name == "gemm"
     assert report.hot_regions[0].name in {"encode", "decode"}
+
+
+def test_profile_efficiency_reads_launch_shape_off_the_kernel_traces() -> None:
+    """`Profile.efficiency` is a thin verb over `EfficiencyReport.build`."""
+    report = _traced_profile().efficiency(sm_count=2)
+    assert {row.name for row in report.rows} == {"gemm", "relu"}
+    assert report.sm_count == 2
+
+
+def test_profile_timeline_reads_busy_and_idle_off_the_kernel_traces() -> None:
+    """`Profile.timeline` is a thin verb over `DeviceTimeline.from_traces`."""
+    timeline = _traced_profile().timeline()
+    assert timeline.busy_ns > 0
+    assert timeline.activities == 4  # 3 kernels + 1 memcpy
 
 
 def test_bottleneck_report_attributes_kernel_outside_any_window() -> None:
@@ -278,6 +295,14 @@ def test_profile_report_and_str_are_plain_text() -> None:
     assert "No profiling data" in Profile().report()
 
 
+def test_report_lists_gpu_counters_when_a_counter_pass_was_captured() -> None:
+    """The plain-text report grows a `GPU counters` section only when one was captured."""
+    counters = KernelCounters.from_metrics("kernel", {"gpu__time_duration.sum": 1_000.0})
+    report = Profile(counters=(counters,)).report()
+    assert "GPU counters" in report
+    assert "kernel" in report
+
+
 def test_profile_perfetto_export(tmp_path: Path) -> None:
     """`Profile.perfetto` writes loadable Chrome trace JSON with all four tracks."""
     path = tmp_path / "trace.json"
@@ -350,6 +375,12 @@ def test_region_stat_aggregate_collapses_calls() -> None:
 
 
 # ── Profiler (sampling, mocked tracer + GPU) ─────────────────────────────────────
+
+
+def test_profiler_signature_resolves_runtime_annotations() -> None:
+    """Public constructor annotations remain available to runtime introspection."""
+    signature = inspect.signature(Profiler)
+    assert signature.parameters["auto"].annotation == Sequence[str]
 
 
 def test_profiler_times_regions_and_aggregates(one_gpu: object) -> None:

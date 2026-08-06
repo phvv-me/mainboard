@@ -11,11 +11,13 @@ trace, so a partial report on a GPU like GB10 (no ``MEMORY`` kind) reads as part
 rather than silently wrong.
 """
 
+from __future__ import annotations
+
 from collections import defaultdict
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from ..models.base import FrozenModel
+from ..models.base import FrozenModel, FrozenSequence
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -89,8 +91,8 @@ class ProfileReport(FrozenModel):
     avg_memory_bytes: int = 0
     avg_memory_util_pct: float = 0.0
     avg_compute_util_pct: float = 0.0
-    kernels: tuple[KernelStat, ...] = ()
-    unavailable: tuple[str, ...] = ()
+    kernels: FrozenSequence[KernelStat] = ()
+    unavailable: FrozenSequence[str] = ()
 
     @classmethod
     def from_profile(

@@ -179,6 +179,26 @@ profile.trace_report()
 profile.perfetto("trace.json")
 ```
 
+## Replay based kernel counters
+
+Hardware counters need kernel replay, so they run as a separate pass and never become a
+`Profiler.Feature`. The NVIDIA provider wraps Nsight Compute with the curated raw metric set and
+returns the same immutable `Profile` used by every other lane.
+
+```sh
+mainboard profile counters package.train --output train-counters.mbprof
+mainboard profile counters train.py --launch-skip 2 --launch-count 5
+```
+
+Each demangled kernel row retains duration, achieved clock, IPC, occupancy limits, warp stalls,
+cache hit rates, global load sectors and requests, and Speed Of Light throughput. It also stores
+cycles, four-wide issue use, sectors per request, normalized stall shares, and a bottleneck
+verdict. Repeated launches are aggregated before storage.
+
+Counter diffs align demangled names across hosts. Cycles within three percent with duration more
+than five percent apart are classified as clock bound. Cycles more than three percent apart are
+classified as architectural divergence.
+
 ## Read and compare results
 
 `Profile` is pure data. It can be saved, loaded, rendered, compared, or exported after

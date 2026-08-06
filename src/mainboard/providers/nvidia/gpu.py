@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from contextlib import suppress
 from functools import cached_property
@@ -36,7 +38,7 @@ class NvidiaGPU(GPU):
             api = apis.nvidia_apis()
             err, count = api.runtime.cudaGetDeviceCount()
             return err == api.runtime.cudaError_t.cudaSuccess and count > 0
-        except ModuleNotFoundError, ImportError, OSError, RuntimeError:
+        except (ModuleNotFoundError, ImportError, OSError, RuntimeError):
             return False
 
     @classmethod

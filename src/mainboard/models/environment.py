@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import shutil
 
 from ..enums import Scheduler
-from .base import FrozenModel
+from .base import FrozenModel, FrozenSequence
 from .identity import Identity
 
 
@@ -30,7 +32,7 @@ class Environment(FrozenModel):
 
     user: str = ""
     group: str = ""
-    groups: tuple[str, ...] = ()
+    groups: FrozenSequence[str] = ()
     scheduler: Scheduler = Scheduler.NONE
 
     @classmethod

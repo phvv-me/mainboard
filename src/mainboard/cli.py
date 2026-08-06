@@ -1,11 +1,13 @@
 import sys
+from pathlib import Path
 
 from cyclopts import App
 
 from . import NAME, __version__
 from .machine import Machine
 from .profiling import Profiler, nvme_to_hbm
-from .profiling.python import PythonFormat, PythonMode
+from .profiling.python import PythonFormat, PythonMode, Tachyon
+from .providers.nvidia import NcuProfiler
 from .visual import MachineView
 
 # Pin the version explicitly: left to its default, cyclopts derives `--version`
@@ -30,6 +32,34 @@ def show(color: bool = True) -> None:
     MachineView(Machine()).print(color=color)
 
 
+def sampler_from_flags(
+    *,
+    mode: PythonMode,
+    format: PythonFormat,
+    output: str,
+    duration: float | None,
+    sampling_rate: str,
+    all_threads: bool,
+    blocking: bool,
+    executable: str,
+) -> Tachyon:
+    """Build the sampler model from flat command-line flags.
+
+    A command line wants flat flags and the library wants one model, so the conversion belongs
+    here at the boundary rather than in every entry point that used to take these loose.
+    """
+    return Tachyon(
+        executable=Path(executable),
+        mode=mode,
+        format=format,
+        output=Path(output) if output else None,
+        duration=duration,
+        sampling_rate=sampling_rate,
+        all_threads=all_threads,
+        blocking=blocking,
+    )
+
+
 @profiles.command(name="run")
 def profile_run(
     target: str,
@@ -44,6 +74,8 @@ def profile_run(
     output: str = "",
     duration: float | None = None,
     sampling_rate: str = "1khz",
+    all_threads: bool = False,
+    blocking: bool = False,
     executable: str = sys.executable,
     timeout: float | None = None,
     color: bool = True,
@@ -61,6 +93,8 @@ def profile_run(
     output: optional Python profile artifact path.
     duration: optional Tachyon duration in seconds.
     sampling_rate: Tachyon sample rate such as `1khz` or `20khz`.
+    all_threads: sample worker threads as well as the main thread.
+    blocking: briefly stop target threads for each consistent sample.
     executable: Python executable used by Tachyon and the target.
     timeout: hard deadline for the target process.
     """
@@ -77,14 +111,44 @@ def profile_run(
     Profiler.run(
         target,
         features=features,
-        mode=mode,
-        format=format,
-        output=output or None,
-        duration=duration,
-        sampling_rate=sampling_rate,
-        executable=executable,
+        sampler=sampler_from_flags(
+            mode=mode,
+            format=format,
+            output=output,
+            duration=duration,
+            sampling_rate=sampling_rate,
+            all_threads=all_threads,
+            blocking=blocking,
+            executable=executable,
+        ),  # fmt: skip
         timeout=timeout,
     ).show(color=color)
+
+
+@profiles.command
+def counters(
+    target: str,
+    *,
+    output: str = "",
+    executable: str = sys.executable,
+    ncu: str = "ncu",
+    timeout: float = 600.0,
+    launch_skip: int = 0,
+    launch_count: int = 0,
+    target_args: tuple[str, ...] = (),
+    color: bool = True,
+) -> None:
+    """Run one replay based Nsight Compute counter pass."""
+    profile = NcuProfiler(
+        ncu=Path(ncu),
+        executable=Path(executable),
+        timeout=timeout,
+        launch_skip=launch_skip,
+        launch_count=launch_count,
+    ).run(target, args=target_args)
+    if output:
+        profile.save(output)
+    profile.show(color=color)
 
 
 @profiles.command
@@ -96,6 +160,8 @@ def attach(
     output: str = "",
     duration: float = 30.0,
     sampling_rate: str = "1khz",
+    all_threads: bool = False,
+    blocking: bool = False,
     executable: str = sys.executable,
     timeout: float | None = None,
     color: bool = True,
@@ -103,12 +169,16 @@ def attach(
     """Attach Tachyon to a live Python process and show its sampled hotspots."""
     Profiler.attach(
         pid,
-        mode=mode,
-        format=format,
-        output=output or None,
-        duration=duration,
-        sampling_rate=sampling_rate,
-        executable=executable,
+        sampler=sampler_from_flags(
+            mode=mode,
+            format=format,
+            output=output,
+            duration=duration,
+            sampling_rate=sampling_rate,
+            all_threads=all_threads,
+            blocking=blocking,
+            executable=executable,
+        ),  # fmt: skip
         timeout=timeout,
     ).show(color=color)
 

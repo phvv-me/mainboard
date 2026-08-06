@@ -6,11 +6,21 @@ the same `ConfigDict` shape so call sites can switch to the `patos` re-export on
 version ships.
 """
 
+from collections.abc import Sequence
 from functools import cached_property
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 IGNORED_TYPES: tuple[type, ...] = (cached_property,)
+
+
+def _frozen[Item](values: Sequence[Item]) -> tuple[Item, ...]:
+    """Normalize one accepted sequence to stable immutable storage."""
+    return tuple(values)
+
+
+type FrozenSequence[Item] = Annotated[Sequence[Item], AfterValidator(_frozen)]
 
 
 class Model(BaseModel):
@@ -29,4 +39,4 @@ class FrozenModel(BaseModel):
     )
 
 
-__all__ = ["Field", "FrozenModel", "Model"]
+__all__ = ["Field", "FrozenModel", "FrozenSequence", "Model"]

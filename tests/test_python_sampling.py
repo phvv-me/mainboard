@@ -20,9 +20,10 @@ def completed(
     capture_output: bool,
     text: bool = False,
     timeout: float | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Return a deterministic subprocess result for command construction tests."""
-    del check, capture_output, text, timeout
+    del check, capture_output, text, timeout, env
     return subprocess.CompletedProcess(command, 0, stdout="sample", stderr="warning")
 
 
@@ -46,6 +47,29 @@ def test_run_builds_module_and_script_commands(monkeypatch: pytest.MonkeyPatch) 
     assert "-m" in module.command
     assert script.command[-2:] == ("train.py", "1")
     assert script.target == "train.py"
+
+
+def test_run_prepends_required_import_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    environment: dict[str, str] | None = None
+
+    def capture(
+        command: tuple[str, ...],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        timeout: float | None,
+        env: dict[str, str] | None,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, capture_output, text, timeout
+        nonlocal environment
+        environment = env
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", capture)
+    Tachyon().run("work.py", import_paths=(Path("/mainboard/src"),))
+    assert environment is not None
+    assert environment["PYTHONPATH"].split(":")[0] == "/mainboard/src"
 
 
 def test_every_sampling_option_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,3 +194,5 @@ def test_available_handles_process_failures(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(subprocess, "run", unavailable)
     assert Tachyon().available() is False
+    with pytest.raises(RuntimeError, match="Python sampling requires Python 3.15"):
+        Tachyon().require_available()

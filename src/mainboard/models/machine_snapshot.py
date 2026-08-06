@@ -1,7 +1,7 @@
 import time
 
 from ..enums import UnitKind, Vendor
-from .base import Field, FrozenModel
+from .base import Field, FrozenModel, FrozenSequence
 from .board import Board
 from .cgroup_memory import CgroupMemory
 from .environment import Environment
@@ -58,8 +58,8 @@ class MachineSnapshot(FrozenModel):
     toolchain: Toolchain = Toolchain()
     cgroup_memory: CgroupMemory = CgroupMemory()
     scratch: Scratch = Scratch()
-    gpus: tuple[GPUSnapshot, ...] = ()
-    npus: tuple[UnitSnapshot, ...] = ()
+    gpus: FrozenSequence[GPUSnapshot] = ()
+    npus: FrozenSequence[UnitSnapshot] = ()
 
     @property
     def unit_count(self) -> int:

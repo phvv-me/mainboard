@@ -1,7 +1,7 @@
 import time
 
 from ..enums import UnitKind, Vendor
-from .base import Field, FrozenModel
+from .base import Field, FrozenModel, FrozenSequence
 from .clock import Clock
 from .energy_reading import EnergyReading
 from .memory import Memory
@@ -29,7 +29,7 @@ class UnitSnapshot(FrozenModel):
     kind: UnitKind = Field(default=UnitKind.UNKNOWN)
     vendor: Vendor = Field(default=Vendor.UNKNOWN)
     timestamp_ns: int = Field(default_factory=time.perf_counter_ns)
-    clocks: tuple[Clock, ...] = ()
+    clocks: FrozenSequence[Clock] = ()
     memory: Memory = Memory()
     utilization: Utilization = Utilization()
     energy: EnergyReading = EnergyReading()

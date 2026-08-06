@@ -19,7 +19,7 @@ class FakeCommand:
         self.output = output
         self.calls: list[tuple[object, ...]] = []
 
-    def __getitem__(self, args: object) -> FakeCommand:
+    def __getitem__(self, args: object) -> "FakeCommand":
         return self
 
     def __call__(self, *args: object) -> str:
@@ -30,7 +30,7 @@ class FakeCommand:
 class BoomCommand:
     """A plumbum command stand-in that raises on use."""
 
-    def __getitem__(self, args: object) -> BoomCommand:
+    def __getitem__(self, args: object) -> "BoomCommand":
         return self
 
     def __call__(self, *args: object) -> str:

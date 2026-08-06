@@ -1,8 +1,8 @@
 import sys
-import threading
 from collections.abc import Iterable
+from contextvars import ContextVar
 from types import CodeType
-from typing import Protocol, cast
+from typing import Protocol
 
 from .spans import SpanToken, finish, start
 from .trace import CallbackSession
@@ -11,7 +11,7 @@ from .tracer import Tracer
 _tracer: Tracer | None = None
 _tool_id = sys.monitoring.PROFILER_ID
 _codes: tuple[CodeType, ...] = ()
-_frames = threading.local()
+_frames: ContextVar[list[SpanToken] | None] = ContextVar("mainboard_auto_spans", default=None)
 
 
 class ReturnedValue(Protocol):
@@ -32,16 +32,18 @@ def callbacks(domains: tuple[str, ...] = ("runtime", "driver")) -> CallbackSessi
 
 
 def frames() -> list[SpanToken]:
-    """Return the current thread's automatic span stack."""
-    if not hasattr(_frames, "value"):
-        _frames.value = []
-    return cast(list[SpanToken], _frames.value)
+    """Return the current task's automatic span stack."""
+    stack = _frames.get()
+    if stack is None:
+        stack = []
+        _frames.set(stack)
+    return stack
 
 
 def on_start(code: CodeType, offset: int) -> None:
     """Open a span for one code object selected through local monitoring."""
     del offset
-    frames().append(start(code.co_qualname))
+    _frames.set([*frames(), start(code.co_qualname)])
 
 
 def on_return(code: CodeType, offset: int, retval: ReturnedValue) -> None:
@@ -49,7 +51,8 @@ def on_return(code: CodeType, offset: int, retval: ReturnedValue) -> None:
     del code, offset, retval
     stack = frames()
     if stack:
-        finish(stack.pop())
+        finish(stack[-1])
+        _frames.set(stack[:-1])
 
 
 def on_unwind(code: CodeType, offset: int, exc: BaseException) -> None:

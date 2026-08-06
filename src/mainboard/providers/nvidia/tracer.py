@@ -9,6 +9,8 @@ drains buffers at session boundaries; records carry GPU-clock timestamps so the
 profiler bins them into regions afterwards with no per-region synchronize.
 """
 
+from __future__ import annotations
+
 import threading
 from collections import defaultdict, deque
 from contextlib import suppress
@@ -135,6 +137,7 @@ def _on_buffer_completed(activities: list[RawActivity]) -> None:
                         static_shared_mem=act.static_shared_memory,
                         dynamic_shared_mem=act.dynamic_shared_memory,
                         registers=act.registers_per_thread,
+                        correlation_id=getattr(act, "correlation_id", 0),
                     )
                 )
             elif kind == _MEMCPY:
@@ -144,6 +147,7 @@ def _on_buffer_completed(activities: list[RawActivity]) -> None:
                         start_ns=act.start,
                         end_ns=act.end,
                         bytes_moved=getattr(act, "bytes", 0),
+                        correlation_id=getattr(act, "correlation_id", 0),
                     )
                 )
             elif kind in _label:
@@ -238,6 +242,7 @@ class RawKernel:
     static_shared_mem: int
     dynamic_shared_mem: int
     registers: int
+    correlation_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +253,7 @@ class RawMemcpy:
     start_ns: int
     end_ns: int
     bytes_moved: int
+    correlation_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,6 +351,7 @@ class CuptiCollector(TraceCollector):
                 static_shared_mem=record.static_shared_mem,
                 dynamic_shared_mem=record.dynamic_shared_mem,
                 registers=record.registers,
+                correlation_id=record.correlation_id,
             )
             for record in records
         ]
@@ -358,6 +365,7 @@ class CuptiCollector(TraceCollector):
                 start_ns=record.start_ns,
                 end_ns=record.end_ns,
                 bytes_moved=record.bytes_moved,
+                correlation_id=record.correlation_id,
             )
             for record in records
         ]

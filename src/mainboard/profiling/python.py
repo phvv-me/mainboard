@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import subprocess
 import sys
 from enum import StrEnum, auto
@@ -6,7 +8,8 @@ from pathlib import Path
 
 from pydantic import Field, model_validator
 
-from ..models.base import FrozenModel
+from ..models.base import FrozenModel, FrozenSequence
+from .target import Target
 
 
 class PythonAction(StrEnum):
@@ -49,7 +52,7 @@ class PythonProfile(FrozenModel):
     """One completed Tachyon command and its produced artifact or text."""
 
     action: PythonAction
-    command: tuple[str, ...]
+    command: FrozenSequence[str]
     target: str | None = None
     mode: PythonMode | None = None
     format: PythonFormat | None = None
@@ -121,6 +124,7 @@ class Tachyon(FrozenModel):
         module: bool | None = None,
         args: tuple[str, ...] = (),
         timeout: float | None = None,
+        import_paths: tuple[Path, ...] = (),
     ) -> PythonProfile:
         """Launch and sample a Python module or script from process startup.
 
@@ -132,9 +136,12 @@ class Tachyon(FrozenModel):
         target_text = str(target)
         is_module = not target_text.endswith(".py") if module is None else module
         command = [*self.command(PythonAction.RUN), *(("-m",) if is_module else ()), target_text]
-        return self.execute(PythonAction.RUN, (*command, *args), timeout).model_copy(
-            update={"target": target_text}
-        )
+        return self.execute(
+            PythonAction.RUN,
+            (*command, *args),
+            timeout,
+            environment=Target.environment(import_paths),
+        ).model_copy(update={"target": target_text})
 
     def attach(self, pid: int, *, timeout: float | None = None) -> PythonProfile:
         """Sample an already-running process with the matching Python executable."""
@@ -203,7 +210,12 @@ class Tachyon(FrozenModel):
         return options
 
     def execute(
-        self, action: PythonAction, command: tuple[str, ...], timeout: float | None
+        self,
+        action: PythonAction,
+        command: tuple[str, ...],
+        timeout: float | None,
+        *,
+        environment: dict[str, str] | None = None,
     ) -> PythonProfile:
         """Run one bounded Tachyon command and preserve its text and artifact location."""
         completed = subprocess.run(
@@ -212,6 +224,7 @@ class Tachyon(FrozenModel):
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=environment,
         )
         return PythonProfile(
             action=action,
@@ -235,3 +248,8 @@ class Tachyon(FrozenModel):
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return False
         return True
+
+    def require_available(self) -> None:
+        """Reject a sampling action before launching an unsupported interpreter."""
+        if not self.available():
+            raise RuntimeError("Python sampling requires Python 3.15")

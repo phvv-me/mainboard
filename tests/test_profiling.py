@@ -29,7 +29,7 @@ class FakeGPU(GPU):
     arch_value: str = "sm_90"
 
     @classmethod
-    def all(cls) -> tuple[FakeGPU, ...]:
+    def all(cls) -> tuple["FakeGPU", ...]:
         return ()
 
     @cached_property
@@ -156,7 +156,7 @@ class StubProfiler:
         del features
         StubProfiler.opened_with = activities
 
-    def __enter__(self) -> StubProfiler:
+    def __enter__(self) -> "StubProfiler":
         return self
 
     def __exit__(self, *_: object) -> None:
