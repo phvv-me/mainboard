@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 import inspect
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from types import TracebackType
 from typing import Protocol, cast, overload
 
@@ -117,7 +117,7 @@ def _decorate_sync[**P, R](func: Callable[P, R], label: str) -> Callable[P, R]:
 
 def _decorate_async[**P, R](
     func: Callable[P, Awaitable[R]], label: str
-) -> Callable[P, Awaitable[R]]:
+) -> Callable[P, Coroutine[object, object, R]]:
     """Wrap a coroutine with one active-session branch on every awaited call."""
 
     @functools.wraps(func)
@@ -137,8 +137,8 @@ def _decorate_async[**P, R](
 
 @overload
 def span[**P, R](
-    name: Callable[P, Awaitable[R]],
-) -> Callable[P, Awaitable[R]]: ...
+    name: Callable[P, Coroutine[object, object, R]],
+) -> Callable[P, Coroutine[object, object, R]]: ...
 
 
 @overload
