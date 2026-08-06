@@ -19,11 +19,14 @@ jobs:
         python: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      # the shared chefe action owns the uv version, the cache paths and the cache key in one
+      # place instead of each repository hand rolling its own. mainboard gitignores uv.lock, so
+      # resolve stays true here to solve fresh, matching the old unfrozen `uv sync`
+      - uses: phvv-me/chefe/.github/actions/setup@main
         with:
+          mode: uv
           python-version: ${{ matrix.python }}
-          enable-cache: true
-      - run: uv sync --extra dev
+          resolve: true
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       # Type checking is OS-agnostic source analysis, so run it once on Linux. The Windows runner
