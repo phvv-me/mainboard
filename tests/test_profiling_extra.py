@@ -119,8 +119,15 @@ def test_sampler_skips_failed_reads(one_gpu: object, monkeypatch: pytest.MonkeyP
         return original(name)
 
     monkeypatch.setattr(type(gpu), "snapshot", flaky)
+    # Wait for the sampler to have read twice rather than for a stretch of wall clock, since
+    # the point is that the first read raises and the second still lands. A fixed sleep ties
+    # the assertion to the platform's timer resolution, which on Windows is about 15 ms and so
+    # can deliver a single tick for a 1 ms interval, leaving the only read the failing one.
     with Profiler(sample_interval_ms=1) as profiler, span("work"):
-        time.sleep(0.01)
+        deadline = time.monotonic() + 5.0
+        while calls < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+    assert calls >= 2
     assert profiler.result().summaries[0].samples >= 1
 
 
