@@ -26,13 +26,14 @@ Use `span` as a context manager, a bare decorator, or a named decorator.
 ```python
 from mainboard.profiling import Profiler, span
 
+
 @span
-def load() -> None:
-    ...
+def load() -> None: ...
+
 
 @span("forward")
-def predict() -> None:
-    ...
+def predict() -> None: ...
+
 
 with Profiler(features=Profiler.Feature.SPANS) as profiler:
     with span("request"):

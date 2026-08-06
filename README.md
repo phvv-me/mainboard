@@ -39,17 +39,17 @@ mainboard tells Python what compute is on the current machine, without assuming 
 ```python
 from mainboard import Machine
 
-print(Machine().model_dump_json(indent=2))   # cpu, memory, gpus, npus, and the host environment
+print(Machine().model_dump_json(indent=2))  # cpu, memory, gpus, npus, and the host environment
 ```
 
 ## Usage
 
 ```python
 machine = Machine()
-machine.cpu.snapshot()             # CPU identity and capacity
-machine.gpus[0].snapshot()         # per-GPU telemetry
-machine.environment                # user, group(s), and job scheduler on the host
-machine.model_dump_json()          # one-call JSON probe of the whole machine
+machine.cpu.snapshot()  # CPU identity and capacity
+machine.gpus[0].snapshot()  # per-GPU telemetry
+machine.environment  # user, group(s), and job scheduler on the host
+machine.model_dump_json()  # one-call JSON probe of the whole machine
 ```
 
 The CLI renders a Rich schematic of the board:
