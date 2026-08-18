@@ -7,6 +7,7 @@ build/
 *.egg-info/
 
 # tooling
+.mainboard/
 .ruff_cache/
 .pytest_cache/
 .pyrefly/

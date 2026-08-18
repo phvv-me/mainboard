@@ -1,0 +1,13 @@
+{{ activation }}
+{% if pythonpath %}
+export PYTHONPATH={{ pythonpath }}
+{% elif isolate_pythonpath %}
+# A dispatched job imports from its own environment only, so a PYTHONPATH the submitting shell
+# happened to export is dropped here on purpose rather than inherited without anyone deciding.
+unset PYTHONPATH
+{% endif %}
+{% if container_command %}
+{{ container_command }}
+{% else %}
+bash -c {{ cmd }}
+{% endif %}

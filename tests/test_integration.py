@@ -1,29 +1,58 @@
-import platform
+from typing import TYPE_CHECKING
 
 import pytest
 
-import mainboard
-from mainboard import Machine, MachineSnapshot
+from mainboard import Resolver, load
+from mainboard.context import admit
+from mainboard.dispatch.wrapping import wrap
+from mainboard.engines.runtimes import resolve
 
-pytestmark = pytest.mark.integration
+from .conftest import MANIFEST
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
-def test_real_probe_describes_this_host() -> None:
-    """The unmocked probe returns a valid snapshot adapted to the running hardware.
+def test_the_whole_promise_composes(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One manifest resolves into a containerized, module-loaded remote command.
 
-    Apple Silicon exposes only Apple GPUs, yet a headless or virtualized macOS host may
-    expose none, so vendor is validated without assuming any GPU is present.
+    The end-to-end seam no single subsystem owns: manifest to plan, plan to
+    container argv, argv into the wrapped shell line a PBS host executes, with
+    the queue policy consulted on the way. The fused tool's promise in one
+    assertion block.
     """
-    payload = Machine().model_dump_json()
-    snapshot = MachineSnapshot.model_validate_json(payload)
+    manifest = load(workspace / MANIFEST)
+    plan = Resolver(manifest).plan("miyabi-g")
+    admit(plan.profile, queue="short-g", walltime="06:00:00", mem_gb=100)
 
-    assert isinstance(snapshot, MachineSnapshot)
-    assert snapshot.cpu.name
-    assert snapshot.cpu.physical_cores > 0
-    assert snapshot.memory.total_bytes > 0
-    assert snapshot.unit_count == 1 + len(snapshot.gpus) + len(snapshot.npus)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/apptainer")
+    assert plan.container is not None
+    runtime = resolve(plan.container.runtime)()
+    root = "/work/xg25g007/x10537/projects"
+    line = wrap(
+        plan,
+        root,
+        command="python -m experiments.run",
+        containerize=lambda argv: runtime.command(
+            plan.container, prefix_bind=plan.prefix(root), argv=argv
+        ),
+    )
+    assert f"cd {root}" in line
+    assert "module load singularity/4.2.1" in line
+    assert "apptainer exec --nv" in line
+    assert "nvcr.io/nvidia/pytorch:25.06-py3" in line
+    assert "python -m experiments.run" in line
 
-    if platform.system() == "Darwin" and platform.machine() == "arm64":
-        assert all(gpu.vendor == mainboard.Vendor.APPLE for gpu in snapshot.gpus)
-    else:
-        assert isinstance(snapshot.gpus, tuple)
+
+def test_bare_hosts_skip_the_container_stage(workspace: Path) -> None:
+    manifest = load(workspace / MANIFEST)
+    plan = Resolver(manifest).plan("gold")
+    line = wrap(plan, "/home/pedro/projects", command="nvidia-smi")
+    assert "apptainer" not in line and "docker" not in line
+    assert "nvidia-smi" in line
+
+
+def test_containerized_plans_demand_a_builder(workspace: Path) -> None:
+    plan = Resolver(load(workspace / MANIFEST)).plan("miyabi-g")
+    with pytest.raises(LookupError, match="containerized"):
+        wrap(plan, "/work/projects", command="true")

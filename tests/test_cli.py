@@ -1,199 +1,299 @@
-from pathlib import Path
+import json
+from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import __version__, cli
-from mainboard.profiling.storage import ReadResult, StorageBandwidth
+from mainboard import Board, Job, MissionError, Monitor
+from mainboard.cli import build, main
+from mainboard.dispatch import Handle
+from mainboard.dispatch.state import DownHost, Failed, Finished, MonitorReport
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_FIELD_VALUE_HEADER = "field\tvalue"
+_MIYABI_G = "miyabi-g"
 
 
-def test_show_renders_via_machine_view(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The default command builds a `MachineView` and prints it with the color flag."""
-    calls: list[bool] = []
-
-    class FakeView:
-        def __init__(self, machine: object) -> None:
-            self.machine = machine
-
-        def print(self, *, color: bool = True) -> None:
-            calls.append(color)
-
-    monkeypatch.setattr(cli, "MachineView", FakeView)
-    cli.show(color=False)
-    assert calls == [False]
+def _fake_submit(self: Board, command: str, **options: str | int | None) -> Job:
+    return Job(self, Handle(id="4242", host=self.host, root="/work/p", kind="pbs"))
 
 
-def test_main_invokes_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`main` runs the cyclopts application object."""
-    ran: list[bool] = []
-    monkeypatch.setattr(cli, "app", lambda: ran.append(True))
-    cli.main()
-    assert ran == [True]
+def _swept() -> MonitorReport:
+    """A report with one job of every outcome, so a render covers each row shape."""
+    return MonitorReport(
+        running=2,
+        finished=[Finished(handle="1", target="gold", pulled_path="results/run")],
+        failed=[Failed(handle="2", target="gold", reason="exited 137 (out of memory)")],
+        unreachable_hosts=[DownHost(host=_MIYABI_G, reason="daemon down")],
+    )
 
 
-def run_cli(*argv: str) -> object:
-    """Drive the real cyclopts app with argv, returning its result or exit code.
-
-    Cyclopts returns the command's value (commands here return `None`, so a
-    clean run yields `None` or `0`); a `--version`/`--help` flag raises
-    `SystemExit`, whose code we surface for the caller to assert on."""
-    try:
-        return cli.app(list(argv), exit_on_error=False)
-    except SystemExit as exit_signal:
-        return exit_signal.code if isinstance(exit_signal.code, int) else 1
-
-
-def ran_clean(result: object) -> bool:
-    """Whether `run_cli` returned a success sentinel (a `None`/`0`-returning command)."""
-    return result in (None, 0)
-
-
-def test_version_flag_reports_the_in_tree_version(capsys: pytest.CaptureFixture[str]) -> None:
-    """`--version` reports the package's own version, not a stale install's.
-
-    Regression: cyclopts defaults `--version` to `importlib.metadata`, which
-    drifts to an older wheel under an editable install. The app pins its version
-    to the in-tree `__version__`, so the CLI always names the code it runs."""
-    assert run_cli("--version") == 0
-    assert capsys.readouterr().out.strip() == __version__
-
-
-def test_default_command_renders_real_machine_view(
-    nvidia_host: object, capsys: pytest.CaptureFixture[str]
+def test_plan_verb_prints_the_resolved_plan(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """No-argument dispatch runs the real `MachineView` over a fake NVIDIA host.
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["plan", _MIYABI_G, "--json"])
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["host"] == _MIYABI_G
+    assert plan["container"]["image"].startswith("nvcr.io")
 
-    Exercises the whole parse -> default-command -> render path (not a mocked
-    view), so a broken `renderable()` or a row reading the GPU telemetry seam
-    would surface here rather than slipping past a high mock."""
-    assert ran_clean(run_cli())
+
+def test_plan_verb_default_is_a_rich_table(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["plan", _MIYABI_G])
     out = capsys.readouterr().out
-    assert "GPU" in out
-    assert "NVIDIA" in out  # the GPU row read the fake telemetry seam
-    assert "cuda" in out  # the NVIDIA backend label rendered
+    assert _MIYABI_G in out
+    assert "plan" in out
 
 
-def test_no_color_flag_reaches_the_renderer(
-    nvidia_host: object, capsys: pytest.CaptureFixture[str]
+def test_plan_verb_agent_mode_is_tabular(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`--no-color` actually disables ANSI styling in the rendered output."""
-    assert ran_clean(run_cli("--no-color"))
-    assert "\x1b[" not in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["plan", _MIYABI_G, "--agent"])
+    text = capsys.readouterr().out
+    assert text.splitlines()[0] == _FIELD_VALUE_HEADER
+    assert _MIYABI_G in text
 
 
-def test_profile_runs_a_script_target_end_to_end(
-    cpu_only_host: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_check_verb_lists_the_declared_surface(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`profile run <script.py>` runs once and prints only observed evidence.
-
-    Mocks nothing but the filesystem target: the parse, the `runpy` dispatch,
-    the `Profiler` context, and `result().show()` all run for real."""
-    script = tmp_path / "work.py"
-    script.write_text("print('SCRIPT_MARKER', sum(range(100)))\n")
-    assert ran_clean(run_cli("profile", "run", str(script)))
-    output = capsys.readouterr().out
-    assert "SCRIPT_MARKER 4950" in output
-    assert "program" in output
-    assert "Unavailable" not in output
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["check", "--json"])
+    surface = json.loads(capsys.readouterr().out)
+    assert surface["workspace"] == "lab"
+    assert _MIYABI_G in surface["hosts"]
+    assert "ngc" in surface["containers"]
 
 
-def test_profile_run_accepts_python_output_options(
-    cpu_only_host: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_check_verb_agent_mode_is_tabular(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The unified command accepts a Tachyon output path even when 3.15 is unavailable."""
-    script = tmp_path / "work.py"
-    script.write_text("x = 1\n")
-    artifact = tmp_path / "profile.html"
-    assert ran_clean(
-        run_cli("profile", "run", str(script), "--output", str(artifact), "--no-device")
-    )
-    assert "Unavailable" not in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["check", "--agent"])
+    text = capsys.readouterr().out
+    assert text.splitlines()[0] == _FIELD_VALUE_HEADER
+    assert "workspace" in text
+    assert "lab" in text
 
 
-def test_profile_run_accepts_consistent_worker_thread_sampling(
-    cpu_only_host: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_check_verb_rejects_json_and_agent_together(workspace: Path) -> None:
+    with pytest.raises(MissionError, match="only one"):
+        build(workspace)(["check", "--json", "--agent"])
+
+
+def test_check_verb_fields_flag_trims_and_drops_blank_entries(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Worker-thread profiling knobs remain usable when Tachyon is unavailable."""
-    script = tmp_path / "work.py"
-    script.write_text("x = 1\n")
-    assert ran_clean(
-        run_cli(
-            "profile",
-            "run",
-            str(script),
-            "--all-threads",
-            "--blocking",
-            "--no-device",
-        )
-    )
-    assert "Unavailable" not in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["check", "--json", "--fields", "workspace, , hosts"])
+    payload = json.loads(capsys.readouterr().out)
+    assert set(payload) == {"workspace", "hosts"}
 
 
-def test_profile_missing_module_surfaces_an_import_error(
+def test_root_discovery_walks_up_from_the_cwd(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    nested = workspace / "deep" / "inside"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    with pytest.raises(SystemExit, match="0"):
+        build()(["check", "--json"])
+    assert json.loads(capsys.readouterr().out)["workspace"] == "lab"
+
+
+def test_main_prints_mission_errors_without_traceback(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A non-existent module target reaches `runpy` and raises, not a silent no-op."""
-    with pytest.raises((ImportError, SystemExit)):
-        cli.app(["profile", "run", "no.such.module.zzz"], exit_on_error=False)
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr("sys.argv", ["mainboard", "plan", "gold", "--env", "ghost"])
+    with pytest.raises(SystemExit, match="1"):
+        main()
+    assert "declared environments" in capsys.readouterr().err
 
 
-def test_profile_requires_a_target() -> None:
-    """Omitting the required `target` is a usage error the parser rejects.
-
-    Cyclopts raises rather than dispatching `profile` with no target, so the
-    command body never runs on a missing argument."""
-    from cyclopts.exceptions import CycloptsError
-
-    with pytest.raises(CycloptsError):
-        cli.app(["profile", "run"], exit_on_error=False)
-
-
-def test_storage_command_reports_unavailable(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_main_runs_a_clean_verb(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """An unavailable probe (no CUDA, no scratch, ...) prints the skip reason and returns."""
-    monkeypatch.setattr(cli, "nvme_to_hbm", lambda **_: StorageBandwidth(skipped="no CUDA device"))
-    assert ran_clean(run_cli("storage"))
-    assert "unavailable: no CUDA device" in capsys.readouterr().out
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr("sys.argv", ["mainboard", "check"])
+    with pytest.raises(SystemExit, match="0"):
+        main()
+    assert "lab" in capsys.readouterr().out
 
 
-def test_storage_command_prints_reads_and_speedup(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_run_verb_executes_locally(workspace: Path) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["run", "true"])
+    with pytest.raises(SystemExit, match="1"):
+        build(workspace)(["run", "false"])
+
+
+def test_run_verb_passes_leading_hyphen_tokens_through(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A live GDS run prints both reads and the speedup ratio over the mmap bounce."""
-    mmap = ReadResult(label="mmap", gigabytes_per_s=5.0, latency_ms=2.0)
-    gds = ReadResult(label="gds", gigabytes_per_s=10.0, latency_ms=1.0)
-    result = StorageBandwidth(available=True, scratch_path=None, file_gb=2.0, mmap=mmap, gds=gds)
-    monkeypatch.setattr(cli, "nvme_to_hbm", lambda **_: result)
-    assert ran_clean(run_cli("storage"))
+    seen: list[str] = []
+    monkeypatch.setattr(Board, "run", lambda self, command, **options: seen.append(command) or 0)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["run", "python", "-c", "print(1)"])
+    assert seen == ["python -c 'print(1)'"]
+
+
+@pytest.mark.parametrize("flag", ["--version", "--help", "-h"])
+def test_run_verb_hands_the_cli_s_own_flags_to_the_command_after_the_delimiter(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, flag: str
+) -> None:
+    """`--version` and `--help` after `--` belong to the wrapped program, not to this CLI."""
+    seen: list[str] = []
+    monkeypatch.setattr(Board, "run", lambda self, command, **options: seen.append(command) or 0)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["run", "--", "python", flag])
+    assert seen == [f"python {flag}"]
+
+
+@pytest.mark.parametrize("flag", ["--version", "--help", "-h"])
+def test_submit_verb_hands_the_cli_s_own_flags_to_the_command_after_the_delimiter(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flag: str
+) -> None:
+    monkeypatch.setattr(Board, "submit", _fake_submit)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["submit", "--on", _MIYABI_G, "--", "python", flag])
+    assert capsys.readouterr().out.strip() == "4242"
+
+
+def test_run_verb_still_documents_itself_before_the_delimiter(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Dropping the version flag from the passthrough verbs must not cost them their help."""
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["run", "--help"])
+    assert "container" in capsys.readouterr().out
+
+
+def test_submit_verb_prints_the_handle(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(Board, "submit", _fake_submit)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["submit", "--on", _MIYABI_G, "python", "-m", "exp.run"])
+    assert capsys.readouterr().out.strip() == "4242"
+
+
+def test_submit_verb_json_mode_prints_the_full_handle(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(Board, "submit", _fake_submit)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["submit", "--on", _MIYABI_G, "--json", "python", "-m", "exp.run"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "id": "4242",
+        "host": _MIYABI_G,
+        "root": "/work/p",
+        "kind": "pbs",
+        "fetch_path": None,
+    }
+
+
+def test_submit_verb_agent_mode_prints_the_tabular_handle(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(Board, "submit", _fake_submit)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["submit", "--on", _MIYABI_G, "--agent", "python", "-m", "exp.run"])
+    text = capsys.readouterr().out
+    assert text.splitlines()[0] == _FIELD_VALUE_HEADER
+    assert "4242" in text
+
+
+def test_monitor_verb_json_mode_prints_the_whole_report(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(Monitor, "once", lambda self: _swept())
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["monitor", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["running"] == 2
+    assert payload["changed"] is True
+    assert payload["finished"][0]["pulled_path"] == "results/run"
+    assert payload["unreachable_hosts"][0]["host"] == _MIYABI_G
+
+
+def test_monitor_verb_sweeps_an_untouched_cache_without_changes(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(workspace)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["monitor", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "running": 0,
+        "finished": [],
+        "failed": [],
+        "unreachable_hosts": [],
+        "changed": False,
+    }
+
+
+def test_monitor_verb_default_tables_what_changed(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(Monitor, "once", lambda self: _swept())
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["monitor"])
     out = capsys.readouterr().out
-    assert "mmap" in out and "gds" in out
-    assert "2.00x the mmap bounce" in out
+    assert "2 running" in out
+    assert "unreachable" in out and "daemon down" in out
+    assert "failed" in out
 
 
-def test_storage_command_reports_skip_reason_without_speedup(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_monitor_verb_still_prints_its_heading_when_nothing_moved(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A run with no GDS read prints the mmap number alone and why GDS was skipped."""
-    mmap = ReadResult(label="mmap", gigabytes_per_s=5.0, latency_ms=2.0)
-    result = StorageBandwidth(
-        available=True, scratch_path=None, file_gb=2.0, mmap=mmap, skipped="kvikio not installed"
-    )
-    monkeypatch.setattr(cli, "nvme_to_hbm", lambda **_: result)
-    assert ran_clean(run_cli("storage"))
+    monkeypatch.chdir(workspace)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["monitor"])
     out = capsys.readouterr().out
-    assert "mmap" in out
-    assert "gds skipped: kvikio not installed" in out
+    assert "monitor: 0 running" in out
+    assert "outcome" in out
 
 
-def test_storage_command_prints_nothing_extra_with_no_speedup_or_skip_reason(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_monitor_verb_agent_mode_is_tabular(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """With neither a speedup nor a skip reason, the command prints only the read lines."""
-    mmap = ReadResult(label="mmap", gigabytes_per_s=5.0, latency_ms=2.0)
-    result = StorageBandwidth(available=True, scratch_path=None, file_gb=2.0, mmap=mmap)
-    monkeypatch.setattr(cli, "nvme_to_hbm", lambda **_: result)
-    assert ran_clean(run_cli("storage"))
-    out = capsys.readouterr().out
-    assert "mmap" in out
-    assert "x the mmap bounce" not in out
-    assert "gds skipped" not in out
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(Monitor, "once", lambda self: _swept())
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["monitor", "--agent", "--fields", "running,changed"])
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == _FIELD_VALUE_HEADER
+    assert [line.split("\t")[0] for line in lines[1:]] == ["running", "changed"]
+
+
+def test_monitor_verb_watch_renders_every_pass(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(Monitor, "watch", lambda self, interval: iter([_swept(), _swept()]))
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["monitor", "--watch", "0.1", "--json"])
+    assert capsys.readouterr().out.count('"running": 2') == 2
+
+
+def test_monitor_verb_watch_stops_quietly_on_an_interrupt(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupted(self: Monitor, interval: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(Monitor, "watch", interrupted)
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["monitor", "--watch", "0.1"])

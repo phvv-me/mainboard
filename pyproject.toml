@@ -1,205 +1,67 @@
 [build-system]
-requires = ["setuptools>=77.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "mainboard"
-version = "0.0.9"
-description = "CPU, GPU, and NPU hardware topology and telemetry for Python."
+version = "0.1.0"
+description = "One interface for environments, remote dispatch, and hardware: manifest, execution context, probe, profile."
 readme = "README.md"
-requires-python = ">=3.13"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
-authors = [{ name = "Pedro Valois", email = "contact@phvv.me" }]
-keywords = [
-  "apple-silicon",
-  "cpu",
-  "cuda",
-  "gpu",
-  "hardware",
-  "machine",
-  "npu",
-  "telemetry",
-  "topology",
-]
-classifiers = [
-  "Development Status :: 3 - Alpha",
-  "Intended Audience :: Developers",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.13",
-  "Programming Language :: Python :: 3.14",
-  "Topic :: System :: Hardware",
-  "Topic :: System :: Monitoring",
-]
+requires-python = ">=3.14"
+license = "MIT"
+authors = [{ name = "Pedro Valois" }]
 dependencies = [
-  "cyclopts>=4.16,<5",
-  "patos>=0.0.1",
-  "plumbum>=2,<3",
-  "psutil>=7,<8",
-  "pydantic>=2.13,<3",
-  "rich>=13",
+    "cyclopts>=3.0",
+    "filelock>=3.13",
+    "jinja2>=3.1",
+    "packaging>=24.0",
+    "patos>=0.0.12",
+    "plumbum>=1.8",
+    "pathspec>=0.12",
+    "psutil>=6.0",
+    "pydantic>=2.9",
+    "rich>=13.0",
+    "tenacity>=9.0",
+    "tomlkit>=0.13",
 ]
 
 [project.optional-dependencies]
-# NVIDIA telemetry backend (`pip install mainboard[cuda]`). The base install stays pure
-# Python so GPU-less Linux hosts (e.g. a Raspberry Pi) never pull numpy and the CUDA
-# stack. The Linux marker stays inside the extra because the bindings ship no macOS
-# wheels, which keeps `mainboard[cuda]` resolvable everywhere and a no-op on Apple hosts.
-cuda = [
-  "cuda-bindings>=13.3,<14; platform_system == 'Linux'",
-  "cuda-core>=1,<2; platform_system == 'Linux'",
-  "cuda-python>=13.3,<14; platform_system == 'Linux'",
-]
-dev = [
-  "mainboard[cuda]",
-  "hypothesis>=6",
-  "mypy>=1.13",
-  "pyrefly>=1",
-  "pytest>=9",
-  "pytest-benchmark>=4",
-  "pytest-cov>=5",
-  "pytest-randomly>=3",
-  "ruff>=0.15",
-  # CPU-only torch drives the nvme_to_hbm probe's test suite (tensors, `device="cpu"` reads);
-  # kvikio stays a real optional runtime extra since its tests fake the module entirely.
-  "torch>=2",
-]
-docs = [
-  "mkdocs-material>=9.5",
-  "mkdocs-static-i18n>=1.2",
-  "mkdocstrings[python]>=0.26",
-]
-# Native annotation backends for active spans on vendor timelines.
-# ROCTx and amdsmi ship with a ROCm install (not on PyPI), so are not listed here.
-profiling = [
-  "nvtx>=0.2; platform_system == 'Linux'",
-  "os-signpost>=0.0.3; platform_system == 'Darwin'",
-]
+cuda = ["cuda-bindings>=13.0", "cuda-core>=1.1"]
+modal = ["modal>=1.0"]
 
 [project.scripts]
 mainboard = "mainboard.cli:main"
 
-[project.urls]
-Documentation = "https://phvv.me/mainboard"
-Homepage = "https://github.com/phvv-me/mainboard"
-Repository = "https://github.com/phvv-me/mainboard"
-Issues = "https://github.com/phvv-me/mainboard/issues"
-
-[tool.setuptools.package-dir]
-"" = "src"
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["mainboard*"]
-
-[tool.setuptools.package-data]
-mainboard = ["assets/*.svg", "py.typed"]
-
-[tool.ruff]
-line-length = 99
-target-version = "py313"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
-
-[tool.ruff.lint.per-file-ignores]
-# PEP 810 requires `__lazy_modules__` to exist before the imports it selects.
-"src/mainboard/__init__.py" = ["E402", "I001"]
-
-[tool.pyrefly]
-project-includes = ["src", "tests"]
-search-path = ["src", "."]
-python-platform = "linux"  # analyze the POSIX paths uniformly; Windows-only code degrades at runtime
-# Third-party surfaces without type stubs that mainboard probes structurally (mirrors the mypy
-# `ignore_missing_imports` override above): both are optional extras absent from the dev env.
-ignore-missing-imports = ["torch", "kvikio.*"]
-
-[tool.mypy]
-python_version = "3.13"
-strict = true
-disallow_any_explicit = true
-plugins = ["pydantic.mypy"]
-files = ["src"]
-mypy_path = "src"
-namespace_packages = false
-
-[[tool.mypy.overrides]]
-# Third-party surfaces without type stubs that mainboard probes structurally.
-module = [
-  "cyclopts.*",
-  "plumbum.*",
-  "psutil.*",
-  "nvtx.*",
-  "cuda.*",
-  "torch.*",
-  "kvikio.*",
+[dependency-groups]
+dev = [
+    "hypothesis>=6.100",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-subprocess>=1.5",
 ]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-# `explicit-any` is suppressed in these modules for four irreducible reasons, all with no
-# narrower type available, so `disallow_any_explicit` still guards every other module:
-#  - Pydantic's stubs declare inherited class vars as `Dict[str, Any]` (e.g.
-#    `__pydantic_extra__`), which mypy re-flags on every `BaseModel` subclass we define.
-module = [
-  "mainboard.models.*",
-  "mainboard.cpu",
-  "mainboard.gpu",
-  "mainboard.npu",
-  "mainboard.unit",
-  "mainboard.profiling.benchmark",
-  "mainboard.profiling.counters",
-  "mainboard.profiling.efficiency",
-  "mainboard.profiling.models",
-  "mainboard.profiling.python",
-  "mainboard.profiling.health",
-  "mainboard.profiling.profiler",
-  "mainboard.profiling.report",
-  "mainboard.profiling.result",
-  "mainboard.profiling.stages",
-  "mainboard.profiling.storage",
-  "mainboard.profiling.target",
-  "mainboard.profiling.timeline",
-  "mainboard.profiling.trace",
-  "mainboard.providers.amd.gpu",
-  "mainboard.providers.apple.gpu",
-  "mainboard.providers.apple.npu",
-  "mainboard.providers.intel.gpu",
-  "mainboard.providers.intel.npu",
-  "mainboard.providers.nvidia.counters",
-  "mainboard.providers.nvidia.gpu",
-  "mainboard.providers.qualcomm.gpu",
-  "mainboard.providers.qualcomm.npu",
-]
-disable_error_code = ["explicit-any"]
 
 [tool.pytest.ini_options]
+addopts = "-q -ra --strict-markers --cov=mainboard --cov-branch"
 testpaths = ["tests"]
-addopts = "-q -ra -p no:rerunfailures"
-markers = [
-  "integration: runs the real hardware probe end to end on the host (deselected from the coverage gate)",
-]
+strict_config = true
+strict_parametrization_ids = true
+strict_xfail = true
 
 [tool.coverage.run]
-source = ["mainboard"]
 branch = true
-# `protocols.py` modules are pure typing contracts (Protocol bodies, no logic) and some are
-# imported only under `TYPE_CHECKING`, so they carry no runtime coverage to gate on.
-# leading `*/` anchors the glob to the package tree wherever pytest's cwd sits, so the gate
-# reads a true 100% whether run from the package dir or the monorepo root.
-omit = [
-  "*/mainboard/__main__.py",
-  "*/mainboard/*/protocols.py",
-  "*/mainboard/*/*/protocols.py",
-]
 
 [tool.coverage.report]
-show_missing = true
 fail_under = 100
-exclude_lines = [
-  "pragma: no cover",
-  "raise NotImplementedError",
-  "if TYPE_CHECKING:",
-  "if __name__ == .__main__.:",
-  "\\.\\.\\.",
-]
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:"]
+
+[tool.uv.sources]
+patos = { path = "../patos", editable = true }
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+target-version = "py314"
+
+[tool.ruff.lint]
+preview = true
+extend-select = ["PLW1514"]

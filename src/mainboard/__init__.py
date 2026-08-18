@@ -1,176 +1,62 @@
-NAME = __name__
-__version__ = "0.0.8"
-
-__lazy_modules__ = {
-    "mainboard.cpu",
-    "mainboard.enums",
-    "mainboard.gpu",
-    "mainboard.host",
-    "mainboard.machine",
-    "mainboard.models",
-    "mainboard.npu",
-    "mainboard.profiling",
-    "mainboard.providers",
-    "mainboard.unit",
-    "mainboard.visual",
-}
-
-from .cpu import CPU
-from .enums import (
-    CmakeBuildType,
-    CompilerKind,
-    CudaPythonVariant,
-    DiskKind,
-    Scheduler,
-    SystemFamily,
-    ToolCategory,
-    UnitKind,
-    Vendor,
-)
-from .gpu import GPU
-from .host import Host
-from .machine import Machine
-from .models import (
-    Board,
-    CgroupMemory,
-    Clock,
-    ClockInfo,
-    CompilerInfo,
-    ComputeCapability,
-    CpuSnapshot,
-    CudaPythonInfo,
-    DetectedTool,
-    DriveInfo,
-    EnergyReading,
-    Environment,
-    GPUSnapshot,
-    HostDisk,
-    MachineSnapshot,
-    Memory,
-    MemoryCard,
-    MemoryHardware,
-    Meter,
-    PartitionInfo,
-    PcieInfo,
-    ProcessInfo,
-    Scratch,
-    SystemCompilers,
-    ThermalState,
-    ThermalTracker,
-    ThrottleReason,
-    Toolchain,
-    ToolProbe,
-    UnitSnapshot,
-    Utilization,
-    meter,
-)
-from .npu import NPU
-from .profiling import (
-    Bound,
-    Diagnosis,
-    KernelCounterDelta,
-    KernelCounters,
-    KernelDivergence,
-    KernelStat,
-    KernelVerdict,
-    Profile,
-    ProfileReport,
-    Profiler,
-    ReadResult,
-    StorageBandwidth,
-    gpu_busy,
-    nvme_to_hbm,
-    span,
-    wait_for_idle,
-)
-from .profiling import profile_fn as profile
-from .providers import (
-    AMDGPU,
-    AppleGPU,
-    AppleNPU,
-    IntelGPU,
-    IntelNPU,
-    NvidiaGPU,
-    QualcommGPU,
-    QualcommNPU,
-)
-from .unit import Unit
-from .visual import MachineView
+from .board import Board, Job
+from .context import ExecutionPlan, Resolver
+from .core import MissionError, Project
+from .core.shell import script, sh
+from .experiments.data import HfDataset, HfModel, Needs, RepoFile
+from .experiments.fleet import Fleet
+from .experiments.study import Study as ExperimentStudy
+from .manifest import Manifest, load
+from .monitor import Monitor
+from .probe.gating import gpu_busy, wait_for_idle
+from .probe.machine import Machine
+from .probe.snapshot import HostFacts
+from .profile.meter import Meter
+from .profile.profiler import Collection, Profiler, Reach
+from .profile.result import Profile
+from .profile.spans import span
+from .profile.study import Study as ProfileStudy
 
 __all__ = [
-    "NAME",
-    "__version__",
-    "CPU",
-    "GPU",
-    "NPU",
-    "AMDGPU",
-    "AppleGPU",
-    "AppleNPU",
     "Board",
-    "Bound",
-    "CgroupMemory",
-    "Clock",
-    "ClockInfo",
-    "CmakeBuildType",
-    "CompilerInfo",
-    "CompilerKind",
-    "ComputeCapability",
-    "CpuSnapshot",
-    "CudaPythonInfo",
-    "CudaPythonVariant",
-    "DetectedTool",
-    "Diagnosis",
-    "DiskKind",
-    "DriveInfo",
-    "EnergyReading",
-    "Environment",
-    "GPUSnapshot",
-    "Host",
-    "HostDisk",
-    "IntelGPU",
-    "IntelNPU",
-    "KernelStat",
-    "KernelCounterDelta",
-    "KernelCounters",
-    "KernelDivergence",
-    "KernelVerdict",
+    "Collection",
+    "ExecutionPlan",
+    "ExperimentStudy",
+    "Fleet",
+    "HfDataset",
+    "HfModel",
+    "HostFacts",
+    "Job",
     "Machine",
-    "MachineSnapshot",
-    "MachineView",
-    "Memory",
-    "MemoryCard",
-    "MemoryHardware",
+    "Manifest",
     "Meter",
-    "NvidiaGPU",
-    "PartitionInfo",
-    "ProfileReport",
+    "MissionError",
+    "Monitor",
+    "Needs",
     "Profile",
+    "ProfileStudy",
     "Profiler",
-    "PcieInfo",
-    "ProcessInfo",
-    "QualcommGPU",
-    "QualcommNPU",
-    "ReadResult",
-    "Scheduler",
-    "Scratch",
-    "StorageBandwidth",
-    "SystemCompilers",
-    "SystemFamily",
-    "ThermalState",
-    "ThermalTracker",
-    "ThrottleReason",
-    "ToolCategory",
-    "ToolProbe",
-    "Toolchain",
-    "Unit",
-    "UnitKind",
-    "UnitSnapshot",
-    "Utilization",
-    "Vendor",
+    "Project",
+    "Reach",
+    "RepoFile",
+    "Resolver",
     "gpu_busy",
-    "meter",
-    "nvme_to_hbm",
-    "profile",
+    "load",
+    "script",
+    "sh",
     "span",
     "wait_for_idle",
 ]
+# PEP 810 forward-compatible declaration, inert on 3.14 and letting 3.15
+# defer these subpackage imports for CLI startup.
+__lazy_modules__ = [
+    "mainboard.board",
+    "mainboard.context",
+    "mainboard.dispatch",
+    "mainboard.engines",
+    "mainboard.experiments",
+    "mainboard.manifest",
+    "mainboard.monitor",
+    "mainboard.probe",
+    "mainboard.profile",
+]
+__version__ = "0.1.0"

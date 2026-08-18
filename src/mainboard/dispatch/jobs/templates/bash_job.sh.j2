@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+{% if walltime_seconds %}
+# The caller chose a walltime and this host has no scheduler to enforce it, so re-run under
+# `timeout` of the same budget once (guarded by MAINBOARD_TIMED) and stamp a clear verdict into
+# the captured log when the budget kills the job, so a triage view decodes the stop instead of
+# showing a raw SIGTERM backtrace. Without an explicit walltime the job runs uncapped.
+if [ -z "${MAINBOARD_TIMED:-}" ]; then
+  export MAINBOARD_TIMED=1
+  status=0
+  timeout --kill-after=30s {{ walltime_seconds }} bash "$0" "$@" || status=$?
+  if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+    echo "mainboard: killed at walltime {{ walltime }} (exit $status)"
+  fi
+  exit "$status"
+fi
+{% endif %}
+{% include "body.sh.j2" %}

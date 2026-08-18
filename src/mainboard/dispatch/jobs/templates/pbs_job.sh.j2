@@ -1,0 +1,25 @@
+#!/bin/bash
+#PBS -q {{ queue }}
+#PBS -l {{ chunk }}
+#PBS -l walltime={{ walltime }}
+{% if account %}
+#PBS -W group_list={{ account }}
+{% endif %}
+#PBS -j oe
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+mkdir -p {{ state_dir }}/logs
+# Record the job's own exit into an artifact the caller can autopsy after the PBS server purges
+# the job from qstat/history; the TERM trap turns the walltime SIGTERM into exit 143 so the EXIT
+# trap still runs (a SIGKILL leaves no artifact, which reads as vanished). Append the same stamp
+# to the captured log first, after every command write has completed.
+mainboard_log="{{ state_dir }}/logs/${PBS_JOBID%%.*}.log"
+mainboard_exit() {
+  local status="$1"
+  printf 'exit=%s\n' "$status" >> "$mainboard_log"
+  printf 'exit=%s\n' "$status" > "{{ state_dir }}/logs/${PBS_JOBID%%.*}.exit"
+}
+trap 'mainboard_exit $?' EXIT
+trap 'exit 143' TERM
+exec >> "$mainboard_log" 2>&1
+{% include "body.sh.j2" %}

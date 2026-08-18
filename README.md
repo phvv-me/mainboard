@@ -1,78 +1,105 @@
-<div align="center">
+# mainboard
 
-[![mainboard banner](https://raw.githubusercontent.com/phvv-me/mainboard/main/docs/assets/banner.png)](https://phvv.me/mainboard)
+Run batch jobs anywhere without caring about system setup.
 
-[![CI](https://github.com/phvv-me/mainboard/actions/workflows/ci.yml/badge.svg)](https://github.com/phvv-me/mainboard/actions/workflows/ci.yml)
-[![Publish](https://github.com/phvv-me/mainboard/actions/workflows/publish.yml/badge.svg)](https://github.com/phvv-me/mainboard/actions/workflows/publish.yml)
-[![PyPI](https://img.shields.io/pypi/v/mainboard)](https://pypi.org/project/mainboard/)
-[![Python](https://img.shields.io/pypi/pyversions/mainboard)](https://pypi.org/project/mainboard/)
-[![Docs](https://img.shields.io/badge/docs-phvv.me%2Fmainboard-15803d)](https://phvv.me/mainboard)
-[![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/phvv-me/mainboard/actions/workflows/ci.yml)
-
-</div>
-
-## Installation
-
-```sh
-pip install mainboard         # CPU and Apple probing, pure Python
-pip install mainboard[cuda]   # adds NVIDIA telemetry via the CUDA Python bindings
-```
-
-Working in a [chefe](https://phvv.me/chefe) project? Add it to your manifest:
-
-```sh
-chefe add mainboard -l python
-```
-
-The base install is light and pure Python, so GPU-less Linux hosts like a Raspberry Pi pull nothing CUDA-related. The `cuda` extra installs the NVIDIA bindings on Linux for full GPU detection and telemetry, and provider detection degrades gracefully to no NVIDIA devices whenever the bindings or the hardware are absent.
-
-The root API uses the PEP 810 `__lazy_modules__` compatibility bridge. Python 3.14
-keeps the normal eager import behavior. Python 3.15 defers only the audited Mainboard
-modules until their exported names are first used. Mainboard does not enable global
-lazy imports. `GPU.all()` and `NPU.all()` explicitly load provider registration before
-probing, so lazy imports cannot hide hardware backends.
-
-## What it is
-
-mainboard tells Python what compute is on the current machine, without assuming the world is only CUDA. It models CPUs, GPUs, and NPUs as `Unit`s, keeps vendor-specific probing behind providers (Apple and NVIDIA today), and gives you the whole board in one call.
+One file, `mainboard.toml`, declares your dependencies, your environments,
+your container base images, and every machine you run on, from your laptop
+to a PBS supercomputer to a cloud GPU provider. One interface runs, submits,
+tracks, probes, and profiles across all of them.
 
 ```python
-from mainboard import Machine
+from mainboard import Board
 
-print(Machine().model_dump_json(indent=2))  # cpu, memory, gpus, npus, and the host environment
+board = Board()                            # finds mainboard.toml like git finds a repo
+board.run("python train.py")               # here, in the activated environment
+board.on("gold").run("nvidia-smi")         # any ssh box, same call
+job = board.on("miyabi-g").submit(         # a PBS cluster, inside an NGC container,
+    "python -m experiments.run",           # with queue policy checked before any ssh
+    walltime="06:00:00",
+)
+job.wait(); print(job.logs()); job.pull()
 ```
 
-## Usage
+The same surface as a CLI:
 
-```python
-machine = Machine()
-machine.cpu.snapshot()  # CPU identity and capacity
-machine.gpus[0].snapshot()  # per-GPU telemetry
-machine.environment  # user, group(s), and job scheduler on the host
-machine.model_dump_json()  # one-call JSON probe of the whole machine
+```console
+$ mainboard run --on gold -- nvidia-smi -L
+GPU 0: NVIDIA GB10 (UUID: GPU-6a5c...)
+$ mainboard facts --on gold | head -4
+{
+  "schema_version": 1,
+  "hostname": "gold",
+  "cpu_name": "10x Arm Cortex-A725 + 10x Arm Cortex-X925",
+$ mainboard submit --on miyabi-g --attempt 2 -- python -m experiments.run
+2231259
+$ mainboard monitor --json          # one durable pass, what a cron runs
+{"running": 1, "finished": [], "failed": [], "unreachable_hosts": [], "changed": false}
 ```
 
-The CLI renders a Rich schematic of the board:
+`monitor` is the sweep that makes a dispatched job's outcome survive the
+process that dispatched it. Each pass probes every job still owed an outcome,
+pulls back the results of the ones that just finished, records their verdicts
+in the study ledgers that own them, and reports only what changed, so a
+schedule of passes never announces the same job twice and a host that is down
+is one line in the report rather than a failed sweep.
 
-```sh
-mainboard
+## One file
+
+```toml
+[deps]
+python = ">=3.14"
+
+[python.deps]
+torch = ">=2.9"
+
+[containers.ngc]
+image = "nvcr.io/nvidia/pytorch:25.06-py3"   # fixed off-the-shelf image, never rebuilt
+                                             # your env lives on a bound host path inside it
+
+[hosts.gold]
+kind = "ssh"
+root = "/home/pedro/projects"
+
+[hosts.miyabi-g]
+kind = "pbs"
+container = "ngc"
+account = "xg25g007"
+modules = { singularity = "4.2.1" }
+
+[hosts.miyabi-g.queues.short-g]
+max-walltime = "07:59:59"       # the scheduler's real rejection boundary, enforced
+mem-ceiling-gb = 100            # before your job ever leaves the laptop
+
+[hosts.miyabi-g.defaults]
+queue = "debug-g"
+mem-gb = "min(100, attempt * 50)"   # retries escalate instead of dying twice
 ```
 
-## Timing spans
+Profiles inherit `[hosts.defaults]`, values interpolate (`{{ env('LOCALDIR') }}`,
+`{{ num_cpus() }}`), and queue policies are data the tool enforces at submit
+time with the error you wish the scheduler gave you.
 
-`span` is a dormant annotation that is safe to leave in application code. It contains no collection policy and performs no clock, memory, marker, device, or context variable work until a `Profiler` is active. The profiler decides what to collect through `Profiler.Feature` flags. The resulting `Profile` shows only evidence that was observed.
+## What it replaces
 
-```python
-from mainboard.profiling import Profiler, span
+- environment managers that cannot name a host
+- dispatch scripts that cannot solve an environment
+- container workflows that rebuild an image per dependency change
+- profilers that stop at one process on one machine
+- the prose wiki page about your cluster's queue limits
 
-with Profiler(features=Profiler.Feature.SPANS) as profiler:
-    with span("pipeline"):
-        with span("extract"):
-            ...
-        with span("embed"):
-            ...
+Under the facade: pixi-powered multi-ecosystem environments (conda plus PyPI
+and friends) that provision inside off-the-shelf containers via bind-mounted
+prefixes, an ssh/PBS/SLURM/pueue dispatch core with durable job records and
+verdict lifecycles, hardware probing (GPUs, cgroup memory caps, scratch,
+InfiniBand fabric) as a versioned wire format, and a profiling stack (spans,
+CUPTI, Perfetto merge manifests) that lands multiple machines on one queryable
+timeline. Experiment studies group many simultaneous jobs under one identity
+with content-addressed run ids and declared data needs.
 
-profiler.show()
-```
+## Status
 
-`Profiler.run("package.module")` profiles a module or script once. Python 3.15 sampling, span timing, process GPU telemetry, native markers, and GPU activity all feed the same result. A detected but unused GPU creates no GPU section. See [`docs/profiling.md`](docs/profiling.md) for feature costs, CLI usage, Tachyon requirements, and native activity behavior.
+0.1.0. Validated live on x86 and Grace hosts over ssh and pueue; PBS and
+container paths covered by the test suite (1332 tests, 100 percent branch
+coverage). The provider router, `board.on("auto")`, scoring hosts by fit,
+price, and time to result across private clusters and commercial GPU clouds,
+is under active development.
