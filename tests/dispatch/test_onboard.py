@@ -92,9 +92,13 @@ class FakeDispatcher:
     def __init__(self, cache: Cache) -> None:
         self.cache = cache
         self.mirrored: list[tuple[str, str]] = []
+        self.required: list[Sequence[str]] = []
 
-    def rsync_up(self, plan: ExecutionPlan, root: str) -> None:
+    def rsync_up(
+        self, plan: ExecutionPlan, root: str, *, required: Sequence[Sequence[str]] = ()
+    ) -> None:
         self.mirrored.append((plan.host, root))
+        self.required = list(required)
 
 
 def plan(**overrides: str | HostProfile) -> ExecutionPlan:
@@ -214,7 +218,7 @@ def test_onboarding_mirrors_installs_provisions_and_records_the_host(
     report = setup.run()
     assert dispatcher.mirrored == [("gold", "/repo")]
     assert shell.ran("uv tool install")
-    assert shell.ran("mainboard install default --resolve --profile gold")
+    assert shell.ran("mainboard install default --profile gold")
     assert shell.ran("test -f /repo/.mainboard/activate.sh")
     assert report.installer == "uv"
     assert report.activate == "/repo/.mainboard/activate.sh"
@@ -242,10 +246,34 @@ def test_onboarding_a_named_environment_verifies_that_environments_own_activatio
     shell = onboarded_shell()
     monkeypatch.setattr(onboard_module, "connection", lambda host: shell)
     dispatcher = FakeDispatcher(Cache(tmp_path / "db.sqlite"))
-    report = Onboarding(dispatcher, plan(env="serving"), root="/repo", env="serving").run()
-    assert shell.ran("mainboard install serving --resolve --profile gold")
+    report = Onboarding(dispatcher, plan(env="serving"), root="/repo").run()
+    assert shell.ran("mainboard install serving --profile gold")
     assert shell.ran("test -f /repo/.mainboard/activate-serving.sh")
     assert report.activate == "/repo/.mainboard/activate-serving.sh"
+
+
+def test_onboarding_ships_the_compiled_artifact_so_the_host_never_solves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host's own compiler must never sit in the lock's dependency path."""
+    shell = onboarded_shell()
+    monkeypatch.setattr(onboard_module, "connection", lambda host: shell)
+    artifact = (".mainboard/pixi.toml", ".mainboard/pixi.lock", ".mainboard/state.toml")
+    dispatcher = FakeDispatcher(Cache(tmp_path / "db.sqlite"))
+    Onboarding(dispatcher, plan(), root="/repo", artifact=artifact).run()
+    assert dispatcher.required == [artifact]
+    assert shell.ran("mainboard install default --profile gold")
+
+
+def test_onboarding_can_still_be_told_to_solve_on_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shell = onboarded_shell()
+    monkeypatch.setattr(onboard_module, "connection", lambda host: shell)
+    dispatcher = FakeDispatcher(Cache(tmp_path / "db.sqlite"))
+    Onboarding(dispatcher, plan(), root="/repo", resolve=True).run()
+    assert dispatcher.required == []
+    assert shell.ran("mainboard install default --resolve --profile gold")
 
 
 def test_onboarding_discovers_a_root_the_profile_never_declared(

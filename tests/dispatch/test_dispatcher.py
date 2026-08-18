@@ -403,7 +403,7 @@ def test_fetch_without_a_path_is_a_lookup_error(dispatcher: Dispatcher) -> None:
 
 
 def test_write_job_script_is_content_addressed(dispatcher: Dispatcher, workdir: Path) -> None:
-    spec = JobSpec(cmd="python -m foo", env_prefix="/repo/.mainboard/envs/default")
+    spec = JobSpec(cmd="python -m foo", plan=plan(), root="/repo")
     first = dispatcher.write_job_script(spec, pbs=False)
     assert first.startswith(".mainboard/dispatch/jobs/")
     again = dispatcher.write_job_script(spec, pbs=False)

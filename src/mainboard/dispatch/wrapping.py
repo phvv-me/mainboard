@@ -44,8 +44,8 @@ def wrap(
 ) -> str:
     """The activated shell line for `command`, staged as `cd`, `PATH`, modules, then env/container.
 
-    The env stage runs `command` straight after sourcing the plan's env prefix (falling back to a
-    PATH prepend when the prefix was never built), unless the plan is containerized, in which case
+    The env stage runs `command` straight after activating the plan's environment (refusing when
+    that environment was never provisioned), unless the plan is containerized, in which case
     `containerize` wraps `command` in the container runtime's own argv instead.
 
     plan: the resolved execution context (profile, env, container).
@@ -75,61 +75,73 @@ def wrap(
             )
         steps.append(shlex.join(containerize(["bash", "-c", command])))
     else:
-        steps.append(activation_stage(plan.prefix(root), root, plan.env))
+        steps.append(activation_stage(plan, root, optional=True))
         steps.append(command)
     return " && ".join(steps)
 
 
-def activation_stage(
-    prefix: str, root: str = "", env: str = "default", *, strict: bool = False
-) -> str:
-    """The shell stage that activates a provisioned workspace before a command runs.
+def activation_stage(plan: ExecutionPlan, root: str, *, optional: bool = False) -> str:
+    """The shell stage that activates `plan`'s environment before a command runs.
 
     The one activation both a wrapped line and a rendered job script use, so an interactive run
-    and a queued job never disagree about which interpreter they got. It sources the environment's
-    own generated activation when there is one and otherwise falls back to that environment
-    prefix's `bin/`. Only the default environment ever falls through to a script another
-    environment wrote, since sourcing one named environment's activation for another silently
-    hands the command the wrong interpreter, which is exactly what `--env serving` must never do.
-    `strict` refuses the silent fall-through when nothing exists at all, which is what a
-    dispatched job wants: a queued job that quietly ran the host's system python costs a whole
-    scheduler round trip to discover, while an interactive command may legitimately need nothing
-    activated at all.
+    and a queued job never disagree about which interpreter they got. It sources the
+    environment's own generated activation when there is one, falls back to that environment
+    prefix's `bin/`, and otherwise refuses, naming the one command that provisions it. Refusing
+    is the point: falling through to whatever interpreter the machine happens to ship is how a
+    command asking for `vserve` silently runs the system python, and a wrong interpreter costs
+    far more to discover than a command that will not start. Only the default environment may
+    also fall back to a script another tool wrote, since sourcing one named environment's
+    activation for another hands the command the wrong interpreter just as silently.
+
+    `optional` is the one concession, and it is deliberately not the default. An interactive
+    command in the default environment may legitimately need nothing activated at all, so
+    `wrap` asks for it and the stage lets such a command through on a bare PATH. A named
+    environment is never optional however the caller asks, because naming one is the user
+    stating which interpreter they want, and a dispatched job is never optional either, since a
+    queued run that quietly used the host's system python costs a whole scheduler round trip to
+    find out.
 
     REMOVE AT CHEFE ARCHIVE: the `.chefe/activate.sh` branch is transitional, for hosts chefe
     provisioned, and chefe only ever wrote one for the default environment. Once every host has
     been set up through `Board.install` and chefe is archived, that branch goes and the stage
     keeps the generated activation and the prefix.
 
-    prefix: the environment prefix on the machine the command runs on.
-    root: the workspace root there; empty when the caller knows only the prefix, which leaves
-        the workspace activation out of the chain entirely.
-    env: the environment being activated, naming which generated script to source.
-    strict: fail loudly when nothing can be activated, instead of running the command anyway.
+    plan: the resolved execution context naming the host and the environment to activate.
+    root: the workspace root on the machine the command runs on.
+    optional: let the command run on a bare PATH when nothing could be activated, honoured for
+        the default environment alone.
     """
-    scripts: list[str] = []
-    if root:
-        scripts.append(activation(root, env))
-        if env == "default":
-            scripts.append(f"{root}/.chefe/activate.sh")
-    prepend = f"export PATH={shlex.quote(prefix)}/bin:$PATH"
+    prefix = plan.prefix(root)
+    default = plan.env == "default"
+    scripts = [activation(root, plan.env)]
+    if default:
+        scripts.append(f"{root}/.chefe/activate.sh")
     branches = [(f"[ -f {shlex.quote(path)} ]", f"source {shlex.quote(path)}") for path in scripts]
-    if strict:
+    prepend = f"export PATH={shlex.quote(prefix)}/bin:$PATH"
+    closing = prepend
+    if not (optional and default):
         branches.append((f"[ -d {shlex.quote(prefix)}/bin ]", prepend))
-        message = (
-            f"mainboard: no environment at {prefix} on this host; "
-            "set the host up before dispatching"
-        )
-        closing = f"echo {shlex.quote(message)} >&2; exit 1"
-    else:
-        closing = prepend
-    if not branches:
-        return closing
+        closing = f"echo {shlex.quote(missing(plan, prefix))} >&2; exit 1"
     chain = "; ".join(
         f"{'if' if index == 0 else 'elif'} {test}; then {action}"
         for index, (test, action) in enumerate(branches)
     )
     return f"{chain}; else {closing}; fi"
+
+
+def missing(plan: ExecutionPlan, prefix: str) -> str:
+    """The refusal a machine with nothing to activate prints, naming the command that fixes it.
+
+    plan: the execution context whose environment could not be found.
+    prefix: the environment prefix that turned out not to exist.
+    """
+    tool = Project().name
+    where = "" if plan.host == "local" else f" on {plan.host}"
+    remote = "" if plan.host == "local" else f" --on {plan.host}"
+    return (
+        f"{tool} found no {plan.env} environment at {prefix}{where}. "
+        f"Run `{tool} install {plan.env}{remote}` to provision it."
+    )
 
 
 def argv(

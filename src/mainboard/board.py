@@ -214,38 +214,52 @@ class Board:
 
     def install(
         self,
-        env: str = "default",
+        env: str = "",
         *,
         resolve: bool = False,
         profile: str = "",
         watch: Watcher | None = None,
     ) -> HostSetup:
-        """Install `env` for this board's host, in place here or by onboarding it over ssh.
+        """Install an environment for this board's host, in place here or by onboarding over ssh.
 
         An unbound board installs on this machine. A board bound to a host alias runs the whole
         onboarding there instead, mirroring the workspace, installing the tool from that mirror,
         provisioning the environment with the host's own tool, and probing what it became.
 
-        env: the environment name, `default` for the root surface.
-        resolve: allow a fresh dependency solve, refused otherwise when stale. A host always
-            solves, since the mirror never ships the generated lock.
+        Which environment that is comes from the same resolver every other verb uses, so an
+        empty `env` means the host profile's declared choice rather than a hardcoded `default`.
+        Setting a host up therefore installs what the manifest already says that host runs, and
+        naming an environment stays the override it always was.
+
+        `resolve` means the same thing on both sides: this workspace may solve. A host is sent
+        the artifact this workspace already solved and installs from it, so onboarding never
+        puts a host's own compiler in the lock's dependency path.
+
+        env: the environment name, the host profile's own when empty.
+        resolve: allow a fresh dependency solve, refused otherwise when the lock cannot vouch
+            for what is on disk. For a host it means solving there instead of installing the
+            shipped artifact.
         profile: the declared host profile describing this machine, so the generated activation
             carries that host's module stack; this board's own host when empty.
         watch: announces each onboarding stage as it begins.
         """
-        if not self.local:
-            plan = self.plan(env=env, container="none")
-            return Onboarding(
-                self.dispatcher, plan, root=plan.profile.root, env=env, watch=watch
-            ).run()
+        plan = self.resolver.plan(profile or self.host, env=env, container="none")
         provisioner = Provisioner(self.root, self.manifest)
-        provisioner.provision(env, resolve=resolve)
-        described = self.resolver.plan(profile) if profile else self.plan()
-        activate = provisioner.activate(env, modules=described.profile.modules)
+        if not self.local:
+            return Onboarding(
+                self.dispatcher,
+                plan,
+                root=plan.profile.root,
+                artifact=provisioner.artifact,
+                resolve=resolve,
+                watch=watch,
+            ).run()
+        provisioner.provision(plan.env, resolve=resolve)
+        activate = provisioner.activate(plan.env, modules=plan.profile.modules)
         return HostSetup(
             host=self.host,
             root=str(self.root),
-            env=env,
+            env=plan.env,
             activate=str(activate),
             installer="in-place",
             tool=version(self.project.name),

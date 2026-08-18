@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from plumbum import local
 
-from ....core import MissionError
+from ....core import MissionError, Project
 from .engine import PixiEngine
 from .process import Process
 from .repair import EnvironmentAudit
@@ -75,7 +75,7 @@ class Pixi(Tool):
         """Run an environment verb and retain its streamed native output."""
         if not resolve and not self.lock.exists():
             raise MissionError(
-                "pixi.lock is missing. Run `Provisioner.provision(resolve=True)` on a "
+                f"pixi.lock is missing. Run `{Project().name} install --resolve` on a "
                 "solve-capable machine to create and verify the generated manifest/lock pair."
             )
         return self.within_cwd(
@@ -174,7 +174,6 @@ class Pixi(Tool):
             and "not up to date" in failure
         ):
             raise MissionError(
-                "the manifest drifted from pixi.lock. Run `Provisioner.provision(resolve=True)` "
-                "on a solve-capable machine and reship `.mainboard/pixi.toml` with "
-                "`.mainboard/pixi.lock`."
+                f"the manifest drifted from pixi.lock. Run `{Project().name} install --resolve` "
+                "on a solve-capable machine, which is also what a host is then sent."
             )

@@ -103,14 +103,14 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def install(
-        env: str = "default", *, on: str = "local", resolve: bool = False, profile: str = ""
+        env: str = "", *, on: str = "local", resolve: bool = False, profile: str = ""
     ) -> None:
         """Compile the manifest and install the environment, here or on a host.
 
         Targeting a host alias runs the whole onboarding there: mirror the workspace, install
         the tool from that mirror, provision the environment, and probe what the host became.
 
-        env: the environment name, `default` for the root surface.
+        env: the environment name, the target's declared profile choice when omitted.
         on: the host alias to install on, `local` for this machine.
         resolve: allow a fresh dependency solve when the lock is stale.
         profile: the declared host profile describing this machine, so the generated activation
@@ -123,21 +123,28 @@ def build(root: Path | None = None) -> App:
     def setup(
         host: str,
         *,
-        env: str = "default",
+        env: str = "",
+        resolve: bool = False,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
     ) -> None:
         """Onboard a host until it can run jobs, then show what it became.
 
+        The host is provisioned with the environment its declared profile names, so a host that
+        runs `serving` is set up for serving without repeating the name here. The lock this
+        workspace solved ships with the mirror and the host installs from it.
+
         host: the host alias to set up.
-        env: the environment name to provision there.
+        env: an environment name overriding the host profile's own.
+        resolve: let the host run its own dependency solve instead of installing the shipped
+            lock, which puts that host's compiler in the resolution path.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the setup record's fields.
         """
         with progress(f"setting up {host}") as stage:
-            report = board(host).install(env, watch=stage)
+            report = board(host).install(env, resolve=resolve, watch=stage)
         record(
             report.model_dump(),
             mode=mode_of(json_mode=json, agent=agent),

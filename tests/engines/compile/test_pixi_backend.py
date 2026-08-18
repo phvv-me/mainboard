@@ -45,7 +45,7 @@ def test_install_requires_a_lock_unless_resolution_was_requested(
     fp: FakeProcess, pixi: Pixi
 ) -> None:
     """A missing generated lock never turns an ordinary install into an implicit solve."""
-    with pytest.raises(MissionError, match=r"pixi.lock is missing.*resolve=True"):
+    with pytest.raises(MissionError, match=r"pixi.lock is missing.*install --resolve"):
         pixi.install("default")
     assert not fp.calls
 
@@ -81,7 +81,7 @@ def test_locked_environment_refuses_manifest_drift_with_actionable_error(
     fp.register(
         [fp.any()], returncode=1, stderr="the lock file is not up-to-date with the workspace\n"
     )
-    with pytest.raises(MissionError, match=r"manifest drifted.*resolve=True"):
+    with pytest.raises(MissionError, match=r"manifest drifted.*install --resolve"):
         pixi.install("default")
     assert len(fp.calls) == 1
     assert "--locked" in list(fp.calls[0])

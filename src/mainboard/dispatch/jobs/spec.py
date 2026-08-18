@@ -7,6 +7,7 @@ import shlex
 from jinja2 import Environment, PackageLoader
 from patos import FrozenModel
 
+from ...context.plan import ExecutionPlan
 from ..shared import state_dir
 from ..wrapping import activation_stage
 
@@ -32,11 +33,11 @@ class JobSpec(FrozenModel):
     killed at walltime HH:MM:SS` into the log so a triage view decodes the stop.
 
     cmd: the command to run (e.g. `python -m experiments.x.run --model X`).
-    env_prefix: the resolved env's prefix path on the host (`plan.prefix(root)`).
-    env: the environment name that prefix belongs to, so the script sources that environment's
-        own generated activation rather than whichever one was installed last.
+    plan: the resolved execution context, which names the host and the environment the script
+        activates. Carrying the plan rather than a prefix and an environment name separately is
+        what makes it impossible to render a script whose prefix and environment disagree.
     root: the workspace root on the host, so the script activates through the same generated
-        activation a wrapped command does; empty leaves the script with the prefix alone.
+        activation a wrapped command does.
     queue/select/gpus/account/mem_gb: PBS header values (ignored when rendering a bash wrapper).
     walltime: `HH:MM:SS` cap; empty means the bare `#PBS` requirement is unmet (a PBS render
         raises) or, on a schedulerless host, that the job runs uncapped.
@@ -49,9 +50,8 @@ class JobSpec(FrozenModel):
     """
 
     cmd: str
-    env_prefix: str
-    env: str = "default"
-    root: str = ""
+    plan: ExecutionPlan
+    root: str
     queue: str = ""
     walltime: str = ""
     select: int = 1
@@ -95,7 +95,7 @@ class JobSpec(FrozenModel):
             account=self.account,
             pythonpath=shlex.quote(self.pythonpath) if self.pythonpath else "",
             isolate_pythonpath=self.isolate_pythonpath,
-            activation=activation_stage(self.env_prefix, self.root, self.env, strict=True),
+            activation=activation_stage(self.plan, self.root),
             container_command=self.container_command,
             state_dir=state_dir(),
         )

@@ -10,6 +10,7 @@ from .backend import Pixi
 from .compiler import Compiler
 from .ecosystems import SecondStage
 from .generated import ActivationScript, GeneratedFiles
+from .state import SyncState
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping
@@ -55,6 +56,19 @@ class Provisioner:
         self.pixi = Pixi(self.out)
         self.stage = SecondStage(root, manifest, self.out, self.pixi)
         self.compiler = Compiler(root, manifest, self.out, self.pixi, self.stage)
+
+    @property
+    def artifact(self) -> tuple[str, ...]:
+        """The compiled dependency artifact a host installs from, workspace-relative.
+
+        The generated pixi manifest, the lock solved from it, and the state naming which
+        resolution that lock was solved from. Shipping the three together is what lets a host
+        install frozen instead of solving on its own toolchain, which is the whole point: a
+        solve reads dependency metadata, reading metadata builds source distributions, and a
+        host's compiler is the last thing that belongs in a lock's dependency path.
+        """
+        paths = (self.pixi.manifest, self.pixi.lock, SyncState.path(self.out))
+        return tuple(str(path.relative_to(self.root)) for path in paths)
 
     def activate(self, env: str = "default", *, modules: Mapping[str, str] = {}) -> Path:
         """Write ``env``'s generated activation script for this host and return its path.

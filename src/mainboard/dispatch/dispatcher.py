@@ -170,19 +170,20 @@ class Dispatcher:
         root: str,
         *,
         ssh: SshTransport | None = None,
-        required: Sequence[tuple[str, str]] = (),
+        required: Sequence[Sequence[str]] = (),
         extra: Sequence[str] = (),
     ) -> None:
         """Mirror the workspace to `plan.host`; git-ignored files and the denylist skipped.
 
         The workspace and nested `.gitignore` files are the primary send and delete boundary;
         `plan.profile.sync.protect` is the escape hatch for remote-only artifacts outside that
-        boundary. `required` names path pairs that must ship together despite being outside the
-        allowlist or git-ignored (a compiled manifest and its lock, say): each pair is required
-        to exist locally as a whole, and is punched through the denylist with its own include
-        filter. `extra` ships paths outside the sync allowlist that must still reach the host
-        (typically the staged job script). Fails fast when no include paths are declared or a
-        required pair is incomplete.
+        boundary. `required` names groups of paths that must ship together despite being
+        outside the allowlist or git-ignored (a compiled manifest with its lock and the state
+        naming what that lock was solved from, say): each group is required to exist locally as
+        a whole, and is punched through the denylist with its own include filter. `extra` ships
+        paths outside the sync allowlist that must still reach the host (typically the staged
+        job script). Fails fast when no include paths are declared or a required group is
+        incomplete.
         """
         policy = ssh or SshTransport()
         scope = plan.profile.sync
@@ -200,19 +201,22 @@ class Dispatcher:
             )
         if not include:
             raise LookupError(f"every sync include path for {plan.host!r} is missing locally")
-        incomplete = [pair for pair in required if not all(Path(path).is_file() for path in pair)]
+        incomplete = [
+            list(group) for group in required if not all(Path(path).is_file() for path in group)
+        ]
         if incomplete:
             raise LookupError(
-                f"required path pair(s) {incomplete} are incomplete; build them before dispatching"
+                f"required path group(s) {incomplete} are incomplete; build them before "
+                "dispatching"
             )
-        directories = dict.fromkeys(Path(path).parts[0] for pair in required for path in pair)
+        directories = dict.fromkeys(Path(path).parts[0] for group in required for path in group)
         include_filters = [
             *(f"/{directory}/" for directory in directories),
-            *(f"/{path}" for pair in required for path in pair),
+            *(f"/{path}" for group in required for path in group),
         ]
         remainder_filters = [f"/{directory}/***" for directory in directories]
         gitignore_files = self.sync.control_files(include)
-        required_paths = list(dict.fromkeys(path for pair in required for path in pair))
+        required_paths = list(dict.fromkeys(path for group in required for path in group))
         with SyncLock(plan.host, self.sync.root):
             try:
                 rsync(
@@ -274,8 +278,7 @@ class Dispatcher:
             container_command = shlex.join(containerize(["bash", "-c", cmd]))
         spec = JobSpec(
             cmd=cmd,
-            env_prefix=plan.prefix(root),
-            env=plan.env,
+            plan=plan,
             root=root,
             queue=resources.queue or "",
             walltime=resources.walltime or "",
@@ -311,7 +314,7 @@ class Dispatcher:
         script: str,
         args: Sequence[str],
         resources: Resources,
-        required: Sequence[tuple[str, str]] = (),
+        required: Sequence[Sequence[str]] = (),
         verify: str = "true",
         fetch: str | None = None,
         name: str = "",

@@ -170,8 +170,15 @@ def test_install_on_a_host_runs_the_onboarding(
     report = HostSetup(host="gold", root="/repo", installer="uv")
 
     class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, env, watch):
-            seen.update(host=plan.host, root=root, env=env, containerized=plan.containerized)
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch):
+            seen.update(
+                host=plan.host,
+                root=root,
+                env=plan.env,
+                artifact=tuple(artifact),
+                resolve=resolve,
+                containerized=plan.containerized,
+            )
 
         def run(self):
             return report
@@ -182,8 +189,32 @@ def test_install_on_a_host_runs_the_onboarding(
         "host": _MIYABI_G,
         "root": "/work/xg25g007/x10537/projects",
         "env": "serving",
+        "artifact": (
+            ".mainboard/pixi.toml",
+            ".mainboard/pixi.lock",
+            ".mainboard/state.toml",
+        ),
+        "resolve": False,
         "containerized": False,
     }
+
+
+def test_installing_a_host_provisions_the_environment_its_profile_names(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gold declares `env = "serving"`, so setting gold up must not fall back to default."""
+    seen: dict[str, object] = {}
+
+    class FakeOnboarding:
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch):
+            seen.update(env=plan.env)
+
+        def run(self):
+            return HostSetup(host="gold", root="/repo")
+
+    monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
+    board.on("gold").install()
+    assert seen == {"env": "serving"}
 
 
 def test_job_logs_and_kill_use_keyword_scheduler_calls(

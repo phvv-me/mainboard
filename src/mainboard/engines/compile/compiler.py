@@ -62,19 +62,24 @@ class Compiler:
     def install_locked(self, files: Writer, env: str, *, resolve: bool) -> None:
         """Install ``env`` and bless its lock, in the one order that keeps the state honest.
 
-        A stale flag refuses the install outright unless this machine may solve, and it is
-        cleared only after a solve returned without raising, so a failed install can never
-        leave a lock that nothing on disk vouches for looking fresh.
+        The refusal compares the lock's own recorded resolution against what is on disk right
+        now, so it is a fact about the pair rather than a flag a machine has to remember to
+        clear. A host that never solved can therefore install from a lock somebody else solved,
+        as long as the manifest and package metadata it received are the ones that lock came
+        from. Blessing happens only after a solve returned without raising, so a failed solve
+        never leaves a lock that nothing on disk vouches for looking fresh.
         """
         state = SyncState.load(self.out)
-        if state.resolution_stale and not resolve:
+        digest = self.resolution_digest()
+        if not resolve and self.pixi.lock.exists() and state.solved_from != digest:
             raise MissionError(
-                "pixi.lock no longer matches the resolution inputs. Run "
-                "`Provisioner.provision(resolve=True)` on a solve-capable machine."
+                f"pixi.lock was not solved from this manifest and package metadata. Run "
+                f"`{Project().name} install {env} --resolve` on a solve-capable machine, then "
+                "set this host up again."
             )
         self.pixi.install(env, resolve=resolve)
-        if state.resolution_stale:
-            self.__persist_state(files, state.model_copy(update={"resolution_stale": False}))
+        if resolve:
+            self.__persist_state(files, state.model_copy(update={"solved_from": digest}))
 
     def stale(self, env: str = "default") -> bool:
         """Whether ``env``'s generated env predates the current manifest content.
@@ -95,29 +100,47 @@ class Compiler:
         source_digest = self.digest()
         project = Project()
         compiled = PixiManifest.from_manifest(self.manifest, project_name=project.name).to_toml()
-        resolution_digest = self._resolution_digest()
         state = SyncState.load(self.out)
-        if self._resolution_drifted(state, compiled, resolution_digest=resolution_digest):
-            state = state.model_copy(update={"resolution_stale": self.pixi.lock.exists()})
         self._write_generated_files(files, compiled=compiled, env=env)
         # A crash anywhere above must leave the workspace stale, so the state snapshot only
-        # lands once every file compiled from this manifest is already on disk, and it lands
-        # as ONE atomic replace carrying digest, inputs, and stale flag together.
+        # lands once every file compiled from this manifest is already on disk. `solved_from`
+        # is carried through untouched: a compile changes what the lock would have to answer
+        # to, never what it already answered to, and only a solve may say otherwise.
         self.__persist_state(
-            files,
-            state.model_copy(
-                update={
-                    "envs": {**state.envs, env: source_digest},
-                    "resolution_inputs": resolution_digest,
-                }
-            ),
+            files, state.model_copy(update={"envs": {**state.envs, env: source_digest}})
         )
+
+    def resolution_digest(self) -> str:
+        """Hash everything a solve reads, so a lock can be checked against the tree it sits in.
+
+        The generated pixi manifest answers for the declared dependencies, and every local
+        Python project's own metadata answers for the path dependencies pixi resolves through
+        `pyproject.toml` rather than through the manifest. Tasks and activation are excluded on
+        both counts, since neither can change which versions resolve, and leaving activation in
+        would make the digest depend on where the workspace happens to live and so refuse every
+        host whose root differs from the machine that solved.
+
+        Reads the compiled manifest from disk, since that is the file pixi will resolve, and
+        every caller compiles before asking.
+        """
+        digest = hashlib.sha256()
+        compiled = self._resolution_manifest(self.pixi.manifest.read_text(encoding="utf-8"))
+        digest.update(json.dumps(compiled, sort_keys=True, separators=(",", ":")).encode())
+        for declared in self._local_python_projects():
+            project = self.root / declared / "pyproject.toml"
+            digest.update(declared.encode())
+            try:
+                digest.update(project.read_bytes())
+            except FileNotFoundError:
+                digest.update(b"\0")
+        return digest.hexdigest()
 
     @staticmethod
     def _resolution_manifest(text: str) -> dict[str, Toml]:
         """Return generated Pixi data that can affect dependency resolution."""
         document = tomllib.loads(text)
         document.pop("tasks", None)
+        document.pop("activation", None)
         return document
 
     def _local_python_projects(self) -> list[str]:
@@ -142,34 +165,6 @@ class Compiler:
                 if spec.is_path and isinstance(path := (spec.model_extra or {}).get("path"), str)
             }
         )
-
-    def _resolution_digest(self) -> str:
-        """Hash local Python project metadata that can change without changing the manifest."""
-        digest = hashlib.sha256()
-        for declared in self._local_python_projects():
-            project = self.root / declared / "pyproject.toml"
-            digest.update(declared.encode())
-            try:
-                digest.update(project.read_bytes())
-            except FileNotFoundError:
-                digest.update(b"\0")
-        return digest.hexdigest()
-
-    def _resolution_drifted(
-        self, state: SyncState, compiled: str, *, resolution_digest: str
-    ) -> bool:
-        """Whether ``compiled`` or its resolution inputs differ from what was generated last.
-
-        A generated file that is missing counts as drift, since nothing on disk can vouch for
-        the lock that is already there.
-        """
-        try:
-            existing = self.pixi.manifest.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            existing = compiled
-        if self._resolution_manifest(existing) != self._resolution_manifest(compiled):
-            return True
-        return state.resolution_inputs != resolution_digest
 
     def _write_generated_files(self, files: Writer, *, compiled: str, env: str) -> None:
         """Write the compiled pixi manifest, the dotenv loader, and the second-stage files.

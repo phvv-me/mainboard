@@ -204,17 +204,37 @@ def test_connection_does_not_retry_a_host_key_failure(monkeypatch: pytest.Monkey
     assert attempts["n"] == 1
 
 
-def test_activation_stage_without_a_root_is_the_bare_prefix_prepend() -> None:
-    assert activation_stage("/p") == "export PATH=/p/bin:$PATH"
-
-
-def test_activation_stage_can_refuse_a_host_with_nothing_to_activate() -> None:
-    stage = activation_stage("/p", "/repo", strict=True)
-    assert "elif [ -d /p/bin ]" in stage
+def test_activation_stage_falls_back_to_the_prefix_before_refusing() -> None:
+    stage = activation_stage(plan(), "/repo")
+    assert "elif [ -d /repo/.mainboard/.pixi/envs/default/bin ]" in stage
     assert stage.endswith("exit 1; fi")
 
 
 def test_activation_stage_offers_the_chefe_script_only_to_the_default_environment() -> None:
     """chefe only ever wrote one activation, so a named env sourcing it would get the wrong env."""
-    assert "/repo/.chefe/activate.sh" in activation_stage("/p", "/repo")
-    assert ".chefe" not in activation_stage("/p", "/repo", "serving")
+    assert "/repo/.chefe/activate.sh" in activation_stage(plan(), "/repo")
+    assert ".chefe" not in activation_stage(plan(env="serving"), "/repo")
+
+
+def test_activation_stage_refusal_names_the_command_that_provisions_the_environment() -> None:
+    """A silent wrong interpreter costs far more to find than a command that refuses to start."""
+    stage = activation_stage(plan(env="vserve"), "/repo")
+    assert "found no vserve environment at /repo/.mainboard/.pixi/envs/vserve on gold" in stage
+    assert "mainboard install vserve --on gold" in stage
+
+
+def test_activation_stage_refusal_on_this_machine_names_a_local_install() -> None:
+    stage = activation_stage(plan(host="local", env="vserve"), "/repo")
+    assert "mainboard install vserve`" in stage
+    assert "--on" not in stage
+
+
+def test_a_named_environment_is_never_optional_however_the_caller_asks() -> None:
+    """Naming an environment is the user stating which interpreter they want."""
+    assert "exit 1" in activation_stage(plan(env="vserve"), "/repo", optional=True)
+
+
+def test_wrap_refuses_a_named_environment_the_machine_never_provisioned() -> None:
+    line = wrap(plan(env="vserve"), "/repo", command="python -c 1")
+    assert "found no vserve environment" in line
+    assert "exit 1" in line

@@ -17,6 +17,8 @@ from .targets import Facts, find_root, probe_capabilities
 from .wrapping import activation, connection, wrap
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from ..context.plan import ExecutionPlan
     from .dispatcher import Dispatcher
     from .transport import Machine
@@ -202,10 +204,25 @@ class Onboarding:
     activation it now carries. Each step runs over the transports dispatch already owns, so
     onboarding stays one behavior of the dispatch subsystem rather than a second way in.
 
+    The environment provisioned is the plan's own, which is the host profile's declared choice
+    unless the caller overrode it. A host that declares `env = "serving"` is therefore set up
+    with serving without anyone repeating the name, and the environment the onboarding installs
+    can never drift from the one the plan's later commands activate.
+
+    The workstation solves, the host installs. `artifact` rides the mirror through the denylist
+    that otherwise keeps the generated directory local, and the host then installs from that
+    lock rather than solving again. Solving on the host means reading dependency metadata,
+    reading metadata means building source distributions, and that puts the host's own compiler
+    in the lock's dependency path, where one machine's toolchain decides whether an unrelated
+    platform's requirement can be read at all. `resolve` is the escape hatch for the rare host
+    that genuinely must solve for itself.
+
     dispatcher: the dispatch core whose mirror and state cache the onboarding uses.
     plan: the resolved execution context for the host, container-free by construction.
     root: the workspace root on the host, discovered on the host when empty.
-    env: the environment name to provision there.
+    artifact: the compiled manifest, lock and state that ship with the mirror so the host can
+        install frozen; empty leaves the host to solve.
+    resolve: let the host run its own dependency solve instead of installing from the artifact.
     watch: announces each stage as it begins.
     """
 
@@ -215,20 +232,23 @@ class Onboarding:
         plan: ExecutionPlan,
         *,
         root: str = "",
-        env: str = "default",
+        artifact: Sequence[str] = (),
+        resolve: bool = False,
         watch: Watcher | None = None,
     ) -> None:
         self.dispatcher = dispatcher
         self.plan = plan
         self.root = root
-        self.env = env
+        self.artifact = tuple(artifact)
+        self.resolve = resolve
+        self.env = plan.env
         self.watch = watch or _announce
 
     def run(self) -> HostSetup:
         """Onboard the host and return (and record) what it became.
 
-        The host solves its own lock, since the mirror never ships the generated directory: a
-        remote install is always a fresh resolve against the manifest that just landed.
+        The mirror carries the compiled artifact alongside the sources, so the install step
+        below has a lock this workspace already solved and never asks the host to solve one.
         """
         host = self.plan.host
         with connection(host) as remote:
@@ -237,7 +257,9 @@ class Onboarding:
             root = self.root or find_root(remote)
             shell = RemoteShell(remote, self.plan, root)
             self.watch(f"mirroring the workspace to {host}:{root}")
-            self.dispatcher.rsync_up(self.plan, root)
+            self.dispatcher.rsync_up(
+                self.plan, root, required=[self.artifact] if self.artifact else []
+            )
             self.watch(f"installing {_TOOL} on {host}")
             winner = self.bootstrap(shell)
             self.watch(f"provisioning {self.env} on {host}")
@@ -287,8 +309,9 @@ class Onboarding:
         host: the alias whose declared profile the host provisions itself as.
         root: the workspace root on the host.
         """
+        resolve = " --resolve" if self.resolve else ""
         shell.run(
-            f"{_TOOL} install {shlex.quote(self.env)} --resolve --profile {shlex.quote(host)}"
+            f"{_TOOL} install {shlex.quote(self.env)}{resolve} --profile {shlex.quote(host)}"
         )
         script = activation(root, self.env)
         if not shell.ok(f"test -f {shlex.quote(script)}"):
