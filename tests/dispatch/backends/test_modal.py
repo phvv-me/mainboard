@@ -120,3 +120,39 @@ def test_cancel_terminates_the_sandbox(fake_modal: FakeModal) -> None:
 def test_deliver_raises_a_not_yet_mission_error_naming_volumes() -> None:
     with pytest.raises(MissionError, match="Volume"):
         ModalBackend().deliver("sb-0", path="out/results.json")
+
+
+# --- standing ---
+
+
+def test_standing_reads_the_configured_token_pair_without_calling_out(
+    fake_modal: FakeModal,
+) -> None:
+    standing = ModalBackend().standing()
+    assert standing.keyed is True
+    assert standing.credit_usd is None
+    assert "credit unavailable" in standing.note
+    assert fake_modal.sandboxes == {}
+
+
+def test_standing_without_a_configured_token_names_the_command_that_mints_one(
+    fake_modal: FakeModal,
+) -> None:
+    fake_modal.config.config["token_id"] = ""
+    standing = ModalBackend().standing()
+    assert standing.keyed is False
+    assert "modal token new" in standing.note
+
+
+def test_standing_without_the_optional_extra_installed_says_how_to_install_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "modal", raising=False)
+
+    def broken_import(name: str) -> NoReturn:
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr("mainboard.dispatch.backends.modal.import_module", broken_import)
+    standing = ModalBackend().standing()
+    assert standing.keyed is False
+    assert "uv add modal" in standing.note

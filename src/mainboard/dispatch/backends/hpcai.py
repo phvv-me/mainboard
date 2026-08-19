@@ -1,6 +1,11 @@
 # `HpcAiBackend` runs a command on an HPC-AI (hpc-ai.com) instance through their REST API.
 # Auth is a console API key sent as X-API-Key on every call (verified live), and every
 # call refreshes it first when it has gone stale.
+#
+# Their published docs cover the instance and storage namespaces only, so `/balance` is an
+# undocumented endpoint the same key authenticates, verified live 2026-08-19: it answers 200
+# with the key and 401 without one, carrying `balance`, `availableBalance`,
+# `availableVoucherAmount` and `availableCreditAmount`.
 
 import json
 import os
@@ -10,7 +15,7 @@ from uuid import uuid4
 
 from ...core.errors import MissionError
 from ..schedulers.base import JobState
-from .base import ProviderBackend, http_transport, require_budget
+from .base import ProviderBackend, Standing, http_transport, require_budget
 
 if TYPE_CHECKING:
     from ...context.plan import ExecutionPlan
@@ -106,6 +111,22 @@ class HpcAiBackend(ProviderBackend):
             return JobState(handle=handle, verdict="vanished")
         status = entry.get("instanceRuntimeInfo", {}).get("status", "")
         return JobState(handle=handle, state=status, verdict=_VERDICTS.get(status, "unknown"))
+
+    def standing(self) -> Standing:
+        """The account balance HPC-AI reports, or the key that is missing.
+
+        `/balance` answers the same console key every other call here carries, and it is the one
+        surface of the three providers that publishes a number without a rental in hand. It
+        returns four figures, and the row takes `balance`, the pot that is left once vouchers and
+        monthly credits have been spent first, which is the order their billing doc states. The
+        provider quotes no price without an instance type in hand, so no rate rides along.
+        """
+        try:
+            api_key()
+        except MissionError as unset:
+            return Standing(note=str(unset))
+        payload = self._request("GET", path="/balance", body={})
+        return Standing(keyed=True, credit_usd=float(payload["balance"]))
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         require_budget(resources)

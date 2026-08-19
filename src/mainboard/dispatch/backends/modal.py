@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from ...core.errors import MissionError
 from ..jobs.spec import walltime_seconds
 from ..schedulers.base import JobState
-from .base import ProviderBackend, require_budget
+from .base import ProviderBackend, Standing, require_budget
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -57,6 +57,23 @@ class ModalBackend(ProviderBackend):
         exit_code = sandbox.poll()
         verdict = "running" if exit_code is None else ("ok" if exit_code == 0 else "failed")
         return JobState(handle=handle, exit_code=exit_code, verdict=verdict)
+
+    def standing(self) -> Standing:
+        """Whether a Modal token is configured here, and the plain fact that credit is unread.
+
+        The token pair is what `modal.Client` itself checks before its first call, resolved from
+        `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or the active profile in `~/.modal.toml`, so this
+        reads authentication without a round trip. Modal publishes what a workspace has *spent*
+        in a billing cycle (`Workspace.billing.summary`) and never what it has left, so the row
+        says so rather than dressing a spend figure up as a balance.
+        """
+        try:
+            config = _modal().config.config
+        except MissionError as absent:
+            return Standing(note=str(absent))
+        if not (config["token_id"] and config["token_secret"]):
+            return Standing(note="run `modal token new`, or set MODAL_TOKEN_ID/MODAL_TOKEN_SECRET")
+        return Standing(keyed=True, note="credit unavailable, modal publishes spend not balance")
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         require_budget(resources)

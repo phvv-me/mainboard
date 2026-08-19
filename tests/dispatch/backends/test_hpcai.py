@@ -129,6 +129,28 @@ def test_cancel_posts_stop_then_delete() -> None:
     ]
 
 
+def test_standing_reads_the_account_balance_under_the_same_console_key() -> None:
+    backend = authed_backend({"balance": 100, "availableVoucherAmount": 5})
+    standing = backend.standing()
+    assert standing.keyed is True
+    assert standing.credit_usd == pytest.approx(100.0)
+    assert standing.usd_hr is None
+    (request,) = backend.transport.calls
+    assert request.full_url == "https://www.hpc-ai.com/api/balance"
+    assert request.headers["X-api-key"] == "key-123"
+
+
+def test_standing_without_a_key_names_the_variable_and_never_calls_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HPCAI_API_KEY")
+    transport = FakeTransport()
+    standing = hpc_ai_backend(transport=transport).standing()
+    assert standing.keyed is False
+    assert "HPCAI_API_KEY" in standing.note
+    assert transport.calls == []
+
+
 def test_deliver_raises_naming_the_volume_path() -> None:
     backend = hpc_ai_backend(transport=FakeTransport())
     with pytest.raises(MissionError, match=r"/mnt/vol/h1"):

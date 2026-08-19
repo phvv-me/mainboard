@@ -191,6 +191,31 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
+    def compute(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
+        """List every compute path this workspace can reach, with prices and credit where cheap.
+
+        This machine first, then each declared host with whether it answers and whether it was
+        ever set up, then each provider backend with whether its credentials are present here,
+        what the account has left to spend, and a live rate where asking for one is cheap. Every
+        probe is bounded and runs beside the others, so the whole fleet answers in the time the
+        slowest one takes, and a host that is down or a provider with no key is a row rather than
+        a failure. No credential is ever printed, only whether one was found.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over name/kind/access/detail/usd_hr/credit_usd.
+        """
+        mode = mode_of(json_mode=json, agent=agent)
+        with progress("probing every compute path"):
+            paths = board("local").compute().paths()
+        rows(
+            [path.model_dump() for path in paths],
+            mode=mode,
+            fields=_fields(fields),
+            title="compute",
+        )
+
+    @app.command
     def monitor(
         *, watch: float = 0.0, json: bool = False, agent: bool = False, fields: str = ""
     ) -> None:

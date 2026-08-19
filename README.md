@@ -34,7 +34,19 @@ $ mainboard submit --on miyabi-g --attempt 2 -- python -m experiments.run
 2231259
 $ mainboard monitor --json          # one durable pass, what a cron runs
 {"running": 1, "finished": [], "failed": [], "unreachable_hosts": [], "changed": false}
+$ mainboard compute --agent         # every path this workspace can run on
+name      kind      access       detail                 usd_hr  credit_usd
+local     local     here         1x RTX 4090, 135 GB RAM
+gold      ssh       ready        1x GB10, 129 GB RAM
+miyabi-g  pbs       unreachable  ssh connect timed out
+vast      provider  keyed        1x RTX 4090 Sweden, SE  0.2978  99.9968
 ```
+
+`compute` answers what there is to run on before anything is dispatched: this
+machine, every declared host with whether it answers and whether it was set up,
+and every provider with whether its credentials are here and what the account
+has left. No credential is ever printed, only whether one was found.
+
 
 `monitor` is the sweep that makes a dispatched job's outcome survive the
 process that dispatched it. Each pass probes every job still owed an outcome,

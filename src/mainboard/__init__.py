@@ -1,4 +1,5 @@
 from .board import Board, Job
+from .compute import ComputePath, Survey
 from .context import ExecutionPlan, Resolver
 from .core import MissionError, Project
 from .core.shell import script, sh
@@ -19,6 +20,7 @@ from .profile.study import Study as ProfileStudy
 __all__ = [
     "Board",
     "Collection",
+    "ComputePath",
     "ExecutionPlan",
     "ExperimentStudy",
     "Fleet",
@@ -39,6 +41,7 @@ __all__ = [
     "Reach",
     "RepoFile",
     "Resolver",
+    "Survey",
     "gpu_busy",
     "load",
     "script",
@@ -50,6 +53,7 @@ __all__ = [
 # defer these subpackage imports for CLI startup.
 __lazy_modules__ = [
     "mainboard.board",
+    "mainboard.compute",
     "mainboard.context",
     "mainboard.dispatch",
     "mainboard.engines",

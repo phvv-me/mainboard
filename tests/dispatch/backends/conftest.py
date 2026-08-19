@@ -107,11 +107,17 @@ class FakeSandbox:
 
 
 class FakeModal(SimpleNamespace):
-    """A fully faked `modal` module: only the surface `ModalBackend` actually calls."""
+    """A fully faked `modal` module: only the surface `ModalBackend` actually calls.
+
+    `config.config` mirrors the real module's settings mapping, which is where the SDK itself
+    looks for the token pair before its first call; a test blanks an entry to stand for a
+    machine nobody ran `modal token new` on.
+    """
 
     def __init__(self) -> None:
         self.sandboxes: dict[str, FakeSandbox] = {}
         super().__init__(
+            config=SimpleNamespace(config={"token_id": "ak-1", "token_secret": "as-1"}),
             Image=SimpleNamespace(
                 from_registry=lambda ref: SimpleNamespace(kind="registry", ref=ref),
                 debian_slim=lambda: SimpleNamespace(kind="debian_slim"),

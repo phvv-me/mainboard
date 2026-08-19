@@ -9,6 +9,7 @@ from mainboard.dispatch.backends import (
     HpcAiBackend,
     ModalBackend,
     ProviderBackend,
+    Standing,
     VastBackend,
     base,
     http_transport,
@@ -70,19 +71,32 @@ def test_provider_backend_root_cannot_be_instantiated_directly() -> None:
 # --- require_budget ---
 
 
-def test_http_transport_hands_the_prepared_request_to_urllib(
+def test_http_transport_hands_the_prepared_request_to_urllib_under_a_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: list[Request] = []
+    seen: list[tuple[Request, float]] = []
 
-    def fake_urlopen(request: Request) -> SimpleNamespace:
-        seen.append(request)
+    def fake_urlopen(request: Request, *, timeout: float) -> SimpleNamespace:
+        seen.append((request, timeout))
         return SimpleNamespace(status=200, read=lambda: b"{}")
 
     monkeypatch.setattr(base, "urlopen", fake_urlopen)
     request = Request("https://example.test/probe")
     assert http_transport(request).read() == b"{}"
-    assert seen == [request]
+    seen_request, deadline = seen[0]
+    assert seen_request is request
+    assert 0 < deadline < 60
+
+
+# --- Standing ---
+
+
+def test_standing_rounds_money_and_leaves_an_absent_figure_absent() -> None:
+    priced = Standing(keyed=True, credit_usd=99.99680725539, usd_hr=0.285925925926)
+    assert priced.credit_usd == pytest.approx(99.9968)
+    assert priced.usd_hr == pytest.approx(0.2859)
+    assert Standing().credit_usd is None
+    assert Standing().usd_hr is None
 
 
 # --- require_budget ---

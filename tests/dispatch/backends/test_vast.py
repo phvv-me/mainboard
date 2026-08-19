@@ -355,6 +355,50 @@ def test_catalog_of_an_offer_without_geolocation_leaves_the_region_empty() -> No
     assert not vast_backend(offers).catalog()[0].region
 
 
+# --- standing ---
+
+
+def test_standing_reads_the_credit_and_prices_one_sample_card() -> None:
+    backend = vast_backend({"credit": 42.5}, {"offers": [offer(11, dph=0.31)]})
+    standing = backend.standing()
+    assert standing.keyed is True
+    assert standing.credit_usd == pytest.approx(42.5)
+    assert standing.usd_hr == pytest.approx(0.31)
+    assert standing.note == "1x RTX 4090 Texas, US"
+    account, search = backend.transport.calls
+    assert account.full_url == "https://console.vast.ai/api/v0/users/current/"
+    assert account.get_method() == "GET"
+    assert json.loads(search.data)["gpu_name"] == {"eq": "RTX 4090"}
+
+
+@pytest.mark.parametrize("where", ["", ", US"])
+def test_standing_leaves_credit_unset_when_the_account_reports_none(where: str) -> None:
+    """A machine whose city is unset must not print its country behind a stray comma."""
+    backend = vast_backend({}, {"offers": [offer(11, dph=0.4, geolocation=where)]})
+    standing = backend.standing()
+    assert standing.keyed is True
+    assert standing.credit_usd is None
+    assert standing.note == f"1x RTX 4090 {where.strip(' ,')}".strip()
+
+
+def test_standing_still_reports_credit_when_the_sample_card_is_unrentable() -> None:
+    standing = vast_backend({"credit": 3.0}, {"offers": []}).standing()
+    assert standing.credit_usd == pytest.approx(3.0)
+    assert standing.usd_hr is None
+    assert "no 1x RTX 4090" in standing.note
+
+
+def test_standing_without_a_key_names_the_variable_and_never_calls_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VAST_API_KEY")
+    backend = vast_backend()
+    standing = backend.standing()
+    assert standing.keyed is False
+    assert "VAST_API_KEY" in standing.note
+    assert backend.transport.calls == []
+
+
 # --- cancel / deliver ---
 
 

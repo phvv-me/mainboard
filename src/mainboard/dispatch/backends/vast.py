@@ -15,7 +15,7 @@ from ...core.errors import MissionError
 from ...costs.imports import from_vast
 from ..jobs.spec import walltime_seconds
 from ..schedulers.base import JobState
-from .base import ProviderBackend, http_transport, require_budget
+from .base import ProviderBackend, Standing, http_transport, require_budget
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -49,6 +49,9 @@ _LOG_POLL_SECONDS = 1.0
 # crashing, and never costs a log fetch.
 _LIVE_STATUSES = frozenset({"created", "loading", "running", "stopping"})
 _TERMINAL_STATUSES = frozenset({"exited", "stopped", "offline", "error"})
+# The card a price sample quotes. One card, always listed in volume, so the sample reads as a
+# real market rate rather than a quote for hardware nobody rents today.
+_SAMPLE_GPU = "RTX 4090"
 
 
 def exit_sentinel(log: str) -> int | None:
@@ -68,7 +71,7 @@ def exit_sentinel(log: str) -> int | None:
 
 
 def api_key() -> str:
-    """The Vast key from `VAST_API_KEY` or `VASTAI_API_KEY`, refusing with the setup hint when unset.
+    """The Vast key from `VAST_API_KEY` or `VASTAI_API_KEY`, refusing with a setup hint when unset.
 
     Console API keys authenticate the whole v0 namespace through the `Authorization: Bearer`
     header, which is what their own CLI sends, so no login flow or cookie exists here. Both
@@ -174,6 +177,36 @@ class VastBackend(ProviderBackend):
         except HTTPError, MissionError:
             return None
         return exit_sentinel(log)
+
+    def standing(self) -> Standing:
+        """The account's credit and one live rate for the sample card, or the key that is missing.
+
+        Vast is the provider that answers both halves cheaply: `/users/current` carries the
+        spendable `credit` for the authed user (its sibling `balance` is the invoicing figure,
+        which sits at zero on a prepaid account), and one narrow offer search prices the market
+        as it stands. Neither call happens until a key is found, so an unconfigured Vast row
+        costs nothing but the environment lookup.
+        """
+        try:
+            api_key()
+        except MissionError as unset:
+            return Standing(note=str(unset))
+        credit = self.request("GET", path="/users/current/").get("credit")
+        spendable = float(credit) if credit is not None else None
+        cheapest = next(iter(self.search(gpu_name=_SAMPLE_GPU, gpus=1, limit=1)), None)
+        if cheapest is None:
+            return Standing(
+                keyed=True, credit_usd=spendable, note=f"no 1x {_SAMPLE_GPU} offer right now"
+            )
+        # A Vast machine whose city is unset still carries its country as `, US`, so the
+        # separator is trimmed along with the whitespace rather than printed as a stray comma.
+        where = str(cheapest.get("geolocation") or "").strip(" ,")
+        return Standing(
+            keyed=True,
+            credit_usd=spendable,
+            usd_hr=self.rate(cheapest),
+            note=f"1x {_SAMPLE_GPU} {where}".strip(),
+        )
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         require_budget(resources)

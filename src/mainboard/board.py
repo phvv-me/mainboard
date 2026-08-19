@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, NoReturn, cast
 from plumbum import FG, ProcessExecutionError
 from plumbum import local as localhost
 
+from .compute import Survey
 from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
@@ -161,6 +162,14 @@ class Board:
         built = self.shared.setdefault("resolver", None) or Resolver(self.manifest)
         self.shared["resolver"] = built
         return cast("Resolver", built)
+
+    def compute(self) -> Survey:
+        """The survey of every compute path this workspace can reach, this machine included.
+
+        Host-independent like `monitor`, since one pass covers the whole fleet at once; a board
+        bound to a host hands back the same whole-workspace survey an unbound one does.
+        """
+        return Survey(self)
 
     def containerizer(
         self, plan: ExecutionPlan, root: str

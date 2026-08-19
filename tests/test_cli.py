@@ -3,8 +3,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board, Job, MissionError, Monitor
+from mainboard import Board, ComputePath, Job, MissionError, Monitor, Survey
 from mainboard.cli import build, main
+from mainboard.compute import Access
 from mainboard.dispatch import Handle
 from mainboard.dispatch.state import DownHost, Failed, Finished, MonitorReport
 
@@ -27,6 +28,22 @@ def _swept() -> MonitorReport:
         failed=[Failed(handle="2", target="gold", reason="exited 137 (out of memory)")],
         unreachable_hosts=[DownHost(host=_MIYABI_G, reason="daemon down")],
     )
+
+
+def _surveyed() -> list[ComputePath]:
+    """One row of every shape a compute table can hold, so a render covers each cell."""
+    return [
+        ComputePath(name="local", kind="local", access=Access.HERE, detail="1x RTX 4090, 64 GB"),
+        ComputePath(name=_MIYABI_G, kind="pbs", access=Access.UNREACHABLE, detail="timed out"),
+        ComputePath(
+            name="vast",
+            kind="provider",
+            access=Access.KEYED,
+            detail="1x RTX 4090 Texas, US",
+            usd_hr=0.31,
+            credit_usd=42.5,
+        ),
+    ]
 
 
 def test_plan_verb_prints_the_resolved_plan(
@@ -230,6 +247,61 @@ def test_submit_verb_agent_mode_prints_the_tabular_handle(
     text = capsys.readouterr().out
     assert text.splitlines()[0] == _FIELD_VALUE_HEADER
     assert "4242" in text
+
+
+def test_compute_verb_default_tables_every_path(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(Survey, "paths", lambda self: _surveyed())
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["compute"])
+    out = capsys.readouterr().out
+    assert "local" in out and "vast" in out
+    assert "unreachable" in out and "keyed" in out
+
+
+def test_compute_verb_json_mode_prices_and_credits_the_provider_rows(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(Survey, "paths", lambda self: _surveyed())
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["compute", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["name"] for row in payload] == ["local", _MIYABI_G, "vast"]
+    assert payload[0]["access"] == "here"
+    assert payload[2] == {
+        "name": "vast",
+        "kind": "provider",
+        "access": "keyed",
+        "detail": "1x RTX 4090 Texas, US",
+        "usd_hr": 0.31,
+        "credit_usd": 42.5,
+    }
+
+
+def test_compute_verb_agent_mode_projects_the_named_columns(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(Survey, "paths", lambda self: _surveyed())
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["compute", "--agent", "--fields", "name,credit_usd"])
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "name\tcredit_usd"
+    assert lines[3] == "vast\t42.5"
+
+
+def test_compute_verb_rejects_json_and_agent_before_probing_anything(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(self: Survey) -> list[ComputePath]:
+        raise AssertionError("the mode flags are checked before any probe runs")
+
+    monkeypatch.setattr(Survey, "paths", refuse)
+    with pytest.raises(MissionError, match="only one"):
+        build(workspace)(["compute", "--json", "--agent"])
 
 
 def test_monitor_verb_json_mode_prints_the_whole_report(

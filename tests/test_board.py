@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING, NoReturn
 import pytest
 from plumbum import local
 
-from mainboard import Board, Fleet, HostFacts, Job, MissionError
+from mainboard import Board, Fleet, HostFacts, Job, MissionError, Survey
 from mainboard.board import ProviderJob
 from mainboard.dispatch import Handle, HostSetup, Verdict
-from mainboard.dispatch.backends import ProviderBackend
+from mainboard.dispatch.backends import ProviderBackend, Standing
 from mainboard.dispatch.schedulers import JobState
 from mainboard.dispatch.state import RunRecord
 
@@ -357,6 +357,14 @@ def test_fleet_accessor_binds_this_board(board: Board) -> None:
     assert isinstance(fleet, Fleet)
 
 
+def test_compute_surveys_the_whole_workspace_whatever_host_the_board_is_bound_to(
+    board: Board,
+) -> None:
+    survey = board.on("gold").compute()
+    assert isinstance(survey, Survey)
+    assert survey.board.manifest is board.manifest
+
+
 class _FakeCloud(ProviderBackend):
     """A registered `fakecloud`-kind backend, module-level so it registers exactly once."""
 
@@ -371,6 +379,9 @@ class _FakeCloud(ProviderBackend):
 
     def logs(self, handle):
         return "cloud log"
+
+    def standing(self):
+        return Standing(keyed=True, note="a fake cloud is always paid up")
 
     def state(self, handle):
         return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
