@@ -48,12 +48,12 @@ jobs:
       - run: uv run pyrefly check
         if: matrix.os == 'ubuntu-latest'
         continue-on-error: true
-      # gated unit/property suite with coverage (POSIX + Apple paths); Windows can't run those
-      - run: uv run pytest -m "not integration" --cov=mainboard
+      # The whole suite is hermetic, so every runner runs all of it. The `integration` marker
+      # these steps used to split on matches nothing in this repository, and `-m integration`
+      # therefore selected zero tests and exited 5, which is a failure.
+      - run: uv run pytest
         if: matrix.os != 'windows-latest'
-      # Windows runs the hermetic suite as a portability guard, without the coverage gate
-      - run: uv run pytest -m "not integration" --no-cov
+      # Windows runs the same suite as a portability guard, without the coverage gate, since a
+      # few POSIX-only and Apple-only paths cannot execute there.
+      - run: uv run pytest --no-cov
         if: matrix.os == 'windows-latest'
-      # real probe against this runner's actual hardware (skipped on Windows: no full probe yet)
-      - run: uv run pytest -m integration --no-cov
-        if: matrix.os != 'windows-latest'

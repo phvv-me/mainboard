@@ -19,9 +19,9 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync
-      # the real probe on real NVIDIA hardware
-      - run: uv run pytest -m integration --no-cov
-      # and assert a GPU was actually detected on this box
+      # the hermetic suite first, so a real-hardware failure below is unambiguous
+      - run: uv run pytest --no-cov
+      # then assert a GPU was actually detected on this box
       - run: |
           uv run python - <<'PY'
           from mainboard import Machine

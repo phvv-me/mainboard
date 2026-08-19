@@ -23,13 +23,18 @@ def manifest_from() -> Callable[[str], Manifest]:
     return make
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def tool_paths(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
     """Stub a `pixi` executable on plumbum's PATH.
 
     Backend commands resolve without the real tool installed, and `pytest-subprocess`
     intercepts the actual invocation. Yields the tool's resolved absolute path, which is what
     plumbum runs and therefore what a fake registers.
+
+    Autouse, because `PixiEngine.command` falls back to bootstrapping pixi when the name is
+    absent from PATH. Without the stub these tests pass only on a machine that already has pixi
+    installed, and on one that does not the bootstrap runs the installer as an extra subprocess
+    that eats the registered fake before the call under test is ever made.
     """
     bindir = tmp_path_factory.mktemp("bin")
     executable = bindir / "pixi"
