@@ -68,15 +68,17 @@ def exit_sentinel(log: str) -> int | None:
 
 
 def api_key() -> str:
-    """The Vast key from `VAST_API_KEY`, refusing with the setup hint when unset.
+    """The Vast key from `VAST_API_KEY` or `VASTAI_API_KEY`, refusing with the setup hint when unset.
 
     Console API keys authenticate the whole v0 namespace through the `Authorization: Bearer`
-    header, which is what their own CLI sends, so no login flow or cookie exists here.
+    header, which is what their own CLI sends, so no login flow or cookie exists here. Both
+    spellings are accepted because gpuhunt reads `VASTAI_API_KEY` while Vast's CLI documents
+    `VAST_API_KEY`.
     """
-    key = os.environ.get("VAST_API_KEY", "")
+    key = os.environ.get("VAST_API_KEY", "") or os.environ.get("VASTAI_API_KEY", "")
     if not key:
         raise MissionError(
-            "set VAST_API_KEY in the workspace .env, an API key minted at "
+            "set VAST_API_KEY (or VASTAI_API_KEY) in the workspace .env, an API key minted at "
             "https://cloud.vast.ai/manage-keys/"
         )
     return key

@@ -56,9 +56,14 @@ def _key_env(monkeypatch: pytest.MonkeyPatch) -> None:
 # --- api_key ---
 
 
-def test_api_key_reads_the_env_and_refuses_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_api_key_reads_either_spelling_and_refuses_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert api_key() == "key-123"
     monkeypatch.delenv("VAST_API_KEY")
+    monkeypatch.setenv("VASTAI_API_KEY", "key-456")
+    assert api_key() == "key-456"
+    monkeypatch.delenv("VASTAI_API_KEY")
     with pytest.raises(MissionError, match="VAST_API_KEY"):
         api_key()
 
