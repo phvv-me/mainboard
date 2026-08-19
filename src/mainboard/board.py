@@ -84,29 +84,29 @@ class ProviderJob:
     the backend's own advice when that backend never had one.
     """
 
-    def __init__(self, backend: ProviderBackend, handle: str) -> None:
+    def __init__(self, backend: ProviderBackend, handle: Handle) -> None:
         """backend: the provider backend instance that submitted this run.
 
-        handle: the provider's opaque handle id.
+        handle: the dispatch handle carrying the provider's opaque run id.
         """
         self.backend = backend
         self.handle = handle
 
     def kill(self) -> None:
         """Cancel the run on the provider."""
-        self.backend.cancel(self.handle)
+        self.backend.cancel(self.handle.id)
 
     def logs(self) -> str:
         """The run's captured log so far, refusing when this provider keeps none."""
         if not isinstance(self.backend, LogSource):
-            raise MissionError(self.backend.refusal(LogSource, handle=self.handle))
-        return self.backend.logs(self.handle)
+            raise MissionError(self.backend.refusal(LogSource, handle=self.handle.id))
+        return self.backend.logs(self.handle.id)
 
     def pull(self, path: str) -> None:
         """Bring the run's output at `path` back to this machine, refusing when it cannot."""
         if not isinstance(self.backend, Delivery):
-            raise MissionError(self.backend.refusal(Delivery, handle=self.handle, path=path))
-        self.backend.deliver(self.handle, path=path)
+            raise MissionError(self.backend.refusal(Delivery, handle=self.handle.id, path=path))
+        self.backend.deliver(self.handle.id, path=path)
 
     def wait(
         self, *, interval: float = 15.0, poll: Callable[[float], None] = time.sleep
@@ -117,7 +117,7 @@ class ProviderJob:
         poll: the sleeper between polls, injectable for tests.
         """
         while True:
-            state = self.backend.state(self.handle)
+            state = self.backend.state(self.handle.id)
             if state.verdict in {"ok", "failed", "vanished", "unknown"}:
                 return Verdict(verdict=state.verdict, exit_code=state.exit_code)
             poll(interval)
@@ -385,12 +385,14 @@ class Board:
         walltime: str = "",
         mem_gb: int = 0,
         gpus: int = 0,
+        gpu_name: str = "",
+        max_usd: float = 0.0,
         nodes: int = 1,
         attempt: int = 1,
         fetch: str | None = None,
         env: str = "",
         container: str = "",
-    ) -> Job:
+    ) -> Job | ProviderJob:
         """Dispatch `command` as a job on this host and return it as a `Job`.
 
         Unset resources fall back to the host profile's declared defaults,
@@ -398,6 +400,8 @@ class Board:
         retry escalates instead of dying to the same ceiling twice.
 
         command: the command the generated job runs.
+        gpu_name: the GPU type a provider backend rents, ignored by the ssh family.
+        max_usd: the spend cap a provider backend refuses to submit without.
         attempt: the 1-based try number, feeding the default expressions.
         fetch: a results path recorded for `Job.pull`.
         """
@@ -409,12 +413,23 @@ class Board:
             walltime=walltime or defaults.walltime,
             mem_gb=memory,
             gpus=gpus or defaults.gpus,
+            gpu_name=gpu_name or defaults.gpu_name,
+            max_usd=max_usd or defaults.max_usd,
             nodes=nodes,
             account=plan.profile.account,
         )
         destination = route(plan.profile)
         if destination != "ssh-family":
-            return ProviderJob(destination(), destination().submit(plan, command, resources))
+            backend = destination()
+            return ProviderJob(
+                backend,
+                Handle(
+                    id=backend.submit(plan, command, resources),
+                    host=plan.host,
+                    root="",
+                    kind=plan.profile.kind,
+                ),
+            )
         root = self.remote_root()
         handle = self.dispatcher.run(
             plan,

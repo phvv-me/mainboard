@@ -2,10 +2,11 @@
 # Auth is a console API key sent as X-API-Key on every call (verified live), and every
 # call refreshes it first when it has gone stale.
 #
-# Their published docs cover the instance and storage namespaces only, so `/balance` is an
-# undocumented endpoint the same key authenticates, verified live 2026-08-19: it answers 200
-# with the key and 401 without one, carrying `balance`, `availableBalance`,
-# `availableVoucherAmount` and `availableCreditAmount`.
+# Their published docs cover the instance and storage namespaces only, so `/balance` and
+# `/resource/user/instance/list` are undocumented endpoints the same key authenticates, both
+# verified live 2026-08-19: `/balance` carries `balance`, `availableBalance`,
+# `availableVoucherAmount` and `availableCreditAmount`, and the resource listing is the priced,
+# stock-aware catalog the console itself reads to fill its launch form.
 
 import json
 import os
@@ -31,18 +32,31 @@ if TYPE_CHECKING:
     from ..schedulers.base import Resources
     from .base import Transport
 
-# The volume path every initScript mounts, and where its exit-code/output sentinels land.
-_VOLUME_PATH = "/mnt/vol"
-# instanceRuntimeInfo.status values this backend has seen mapped onto our verdict vocabulary.
-# A status outside this table (a new HPC-AI state) reads as "unknown" rather than crashing.
+# Where an initScript's exit-code and output sentinels land. The instance's own data disk, since
+# a rental with no `remoteStorages` entry has no mounted volume and one instance runs one command,
+# so a fixed pair of names needs no handle in it.
+_SENTINEL_DIR = "/root/dataDisk"
+_LOG_PATH = f"{_SENTINEL_DIR}/mainboard.log"
+_EXIT_PATH = f"{_SENTINEL_DIR}/mainboard.exit"
+# What one `/instance/list` page carries. The endpoint refuses a request without a pager, so the
+# page size is ours to pick and the walk below pages until the handle turns up.
+_PAGE_SIZE = 50
+# `instanceRuntimeInfo.status` mapped onto our verdict vocabulary, keyed in lower case since
+# HPC-AI spells its states in camel case (`Running`, `StartingFailed`). The set is the one their
+# list-instances doc publishes. A status outside this table (a new HPC-AI state) reads as
+# "unknown" rather than crashing.
 _VERDICTS = {
-    "pending": "running",
+    "initializing": "running",
+    "pullingimage": "running",
     "starting": "running",
+    "restarting": "running",
     "running": "running",
     "stopping": "running",
     "stopped": "ok",
-    "failed": "failed",
-    "error": "failed",
+    "archived": "ok",
+    "released": "vanished",
+    "startingfailed": "failed",
+    "initializationfailed": "failed",
 }
 
 
@@ -79,24 +93,23 @@ class HpcAiBackend(ProviderBackend, Account):
 
     HPC-AI reports instance-level status only (`instanceRuntimeInfo.status`), never a process
     exit code, so `submit` wraps the command in an initScript that writes its real exit code and
-    captured output to sentinel files on the instance's mounted volume; `state` reports whether
-    the instance itself is still up, and the sentinel files are the source of truth for the
-    command's own outcome.
+    captured output to sentinel files on the instance's data disk; `state` reports whether the
+    instance itself is still up, and the sentinel files are the source of truth for the command's
+    own outcome.
 
     Those sentinel files are also why this is the one backend that carries neither `LogSource`
-    nor `Delivery`: an instance's output never leaves its own mounted volume, so there is no
-    server-side log to fetch and nothing to deliver from here. Both gaps are declared in `lacks`
-    with the path to read by hand instead.
+    nor `Delivery`: an instance's output never leaves its own disk, so there is no server-side log
+    to fetch and nothing to deliver from here. Both gaps are declared in `lacks` with the path to
+    read by hand instead.
     """
 
     name = "hpc-ai"
 
     lacks = {
         Delivery: "hpc-ai backend cannot deliver {path!r} yet; download "
-        f"{_VOLUME_PATH}/{{handle}}.* from the instance's mounted volume by hand until that "
-        "path lands",
-        LogSource: f"hpc-ai backend has no server-side logs; tail {_VOLUME_PATH}/{{handle}}.log "
-        "on the instance's mounted volume instead",
+        f"{_SENTINEL_DIR}/mainboard.* from instance {{handle}} over ssh until that path lands",
+        LogSource: f"hpc-ai backend has no server-side logs; read {_LOG_PATH} on instance "
+        "{handle} over ssh instead",
     }
 
     def __init__(self, *, spot: bool = False, transport: Transport = http_transport) -> None:
@@ -107,18 +120,70 @@ class HpcAiBackend(ProviderBackend, Account):
         self.transport = transport
 
     def cancel(self, handle: str) -> None:
-        self._request("POST", path="/instance/stop", body={"name": handle})
-        self._request("POST", path="/instance/delete", body={"name": handle})
+        """Stop the instance, then destroy it, so a cancelled run stops billing rather than idle.
+
+        `/instance/terminate` is the destroy endpoint, verified live 2026-08-19. Their docs page
+        for it is titled "delete" and its own cURL example calls `/instance/terminate`; the
+        `/instance/delete` path the title implies answers 404.
+        """
+        self.request("POST", path="/instance/stop", body={"instanceId": handle})
+        self.request("POST", path="/instance/terminate", body={"instanceId": handle})
+
+    def catalog(self) -> list[dict]:
+        """Every rentable instance type, flattened to one row per type per region.
+
+        The console's own launch-form feed, which is the only place HPC-AI publishes a price, a
+        GPU name or a stock count. Rows carry `gpu`, `gpus`, `usd_hr`, `region`, `region_id`,
+        `instance_type_id` and `in_stock`, which is exactly what a `[hosts.<name>.vars]` table
+        needs, and are ordered cheapest first so the first in-stock row is the one to take.
+        """
+        payload = self.request("POST", path="/resource/user/instance/list", body={})
+        rows = [
+            {
+                "gpu": family.get("gpuName") or "",
+                "gpus": kind.get("gpuNum") or 0,
+                "usd_hr": _hourly(kind),
+                "region": region.get("regionName") or "",
+                "region_id": region.get("regionId") or "",
+                "instance_type_id": kind.get("instanceTypeId") or "",
+                "in_stock": kind.get("stockStatus") == "InStock",
+            }
+            for family in payload.get("instanceInfos") or []
+            for region in family.get("regionInfos") or []
+            for kind in region.get("instanceTypeInfos") or []
+        ]
+        return sorted(rows, key=lambda row: (not row["in_stock"], row["usd_hr"]))
+
+    def instance(self, handle: str) -> dict:
+        """`handle`'s listed instance row, empty once HPC-AI no longer lists it.
+
+        `/instance/list` refuses a request that carries no pager (it answers 500), and it pages,
+        so the walk asks for one page at a time and stops at the first page carrying the id or
+        once it has run past the total the pager reports.
+        """
+        page = 1
+        while True:
+            payload = self.request(
+                "POST",
+                path="/instance/list",
+                body={"pager": {"currentPage": page, "pageSize": _PAGE_SIZE}},
+            )
+            for item in payload.get("instances") or []:
+                if item.get("instanceMetadata", {}).get("instanceId") == handle:
+                    return item
+            total = int((payload.get("pager") or {}).get("totalEntries") or 0)
+            if page * _PAGE_SIZE >= total:
+                return {}
+            page += 1
 
     def state(self, handle: str) -> JobState:
-        payload = self._request("POST", path="/instance/list", body={})
-        entry = next(
-            (item for item in payload.get("instances", []) if item.get("name") == handle), None
-        )
-        if entry is None:
+        entry = self.instance(handle)
+        if not entry:
             return JobState(handle=handle, verdict="vanished")
-        status = entry.get("instanceRuntimeInfo", {}).get("status", "")
-        return JobState(handle=handle, state=status, verdict=_VERDICTS.get(status, "unknown"))
+        status = str(entry.get("instanceRuntimeInfo", {}).get("status") or "")
+        return JobState(
+            handle=handle, state=status, verdict=_VERDICTS.get(status.lower(), "unknown")
+        )
 
     def standing(self) -> Standing:
         """The account balance HPC-AI reports, or the key that is missing.
@@ -133,31 +198,43 @@ class HpcAiBackend(ProviderBackend, Account):
             api_key()
         except MissionError as unset:
             return Standing(note=str(unset))
-        payload = self._request("GET", path="/balance", body={})
+        payload = self.request("GET", path="/balance", body={})
         return Standing(keyed=True, credit_usd=float(payload["balance"]))
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+        """Create an instance whose initScript runs `command`, returning HPC-AI's instance id.
+
+        Every field their create endpoint calls required is sent, `billing` and `nodePorts`
+        included, since the validator rejects a body that omits one rather than defaulting it.
+        The returned handle is the provider's own `instanceId`, which is what `state`, `stop` and
+        `delete` address the rental by; the `name` is ours and is never an address.
+        """
         require_budget(resources)
-        handle = uuid4().hex
         init_script = (
-            f"{command} > {_VOLUME_PATH}/{handle}.log 2>&1\n"
-            f"echo $? > {_VOLUME_PATH}/{handle}.exit\n"
+            f"mkdir -p {_SENTINEL_DIR}\n{command} > {_LOG_PATH} 2>&1\necho $? > {_EXIT_PATH}\n"
         )
-        self._request(
+        payload = self.request(
             "POST",
             path="/instance/create",
             body={
-                "name": handle,
+                "name": f"mainboard-{uuid4().hex[:12]}",
                 "isSpotInstance": self.spot,
                 "instanceTypeId": _required_var(plan.profile, "instance-type-id"),
                 "imageId": _required_var(plan.profile, "image-id"),
                 "region": _required_var(plan.profile, "region"),
-                "instanceConfiguration": {"initScript": init_script},
+                "billing": {"chargeMode": "perHour", "duration": 1},
+                "remoteStorages": [],
+                "instanceConfiguration": {
+                    "enableCommonData": False,
+                    "enableDocker": False,
+                    "initScript": init_script,
+                },
+                "nodePorts": [],
             },
         )
-        return handle
+        return str(payload["instanceId"])
 
-    def _request(self, method: str, *, path: str, body: dict) -> dict:
+    def request(self, method: str, *, path: str, body: dict) -> dict:
         """An authenticated call to the instance API under the console API key.
 
         Every endpoint hangs off `https://www.hpc-ai.com/api`, spelled inline so the https root
@@ -171,3 +248,15 @@ class HpcAiBackend(ProviderBackend, Account):
             headers=headers,
         )
         return json.loads(self.transport(request).read())
+
+
+def _hourly(kind: dict) -> float:
+    """The on-demand hourly rate an instance-type row quotes, 0.0 when it publishes none.
+
+    A type carries one price entry per charge mode (`perHour`, `perDay`, the tide-priced
+    `tidePerHour`), and only the plain hourly one is comparable across types.
+    """
+    for price in kind.get("price") or []:
+        if price.get("chargeMode") == "perHour":
+            return float(price["price"])
+    return 0.0

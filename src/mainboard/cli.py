@@ -60,6 +60,8 @@ def build(root: Path | None = None) -> App:
         walltime: str = "",
         mem_gb: int = 0,
         gpus: int = 0,
+        gpu_name: str = "",
+        max_usd: float = 0.0,
         attempt: int = 1,
         fetch: str = "",
         env: str = "",
@@ -72,6 +74,8 @@ def build(root: Path | None = None) -> App:
 
         command: the command tokens, everything after `--`.
         on: the host alias the job targets.
+        gpu_name: the GPU type to rent, for a metered provider host.
+        max_usd: the spend cap a provider host refuses to submit without.
         attempt: the 1-based try number feeding expression defaults.
         fetch: a results path recorded for later `pull`.
         json: print the handle as canonical JSON instead of the bare id.
@@ -86,6 +90,8 @@ def build(root: Path | None = None) -> App:
                 walltime=walltime,
                 mem_gb=mem_gb,
                 gpus=gpus,
+                gpu_name=gpu_name,
+                max_usd=max_usd,
                 attempt=attempt,
                 fetch=fetch or None,
                 env=env,

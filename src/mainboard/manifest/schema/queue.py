@@ -36,12 +36,19 @@ class Defaults(Declared):
     `mem_gb` and `walltime` accept expressions over `attempt` (the 1-based
     retry number), evaluated at submit time, so a retried job escalates its
     request instead of dying to the same ceiling twice.
+
+    `gpu_name` and `max_usd` are what a metered provider host needs and an
+    owned one ignores: the GPU type to rent, and the spend cap every provider
+    backend refuses to submit without, declared once per host rather than
+    retyped on every submit.
     """
 
     queue: str = ""
     walltime: str = "00:30:00"
     mem_gb: str = ""
     gpus: int = Field(default=0, ge=0)
+    gpu_name: str = ""
+    max_usd: float = Field(default=0.0, ge=0.0)
 
 
 def _seconds(walltime: str) -> int:

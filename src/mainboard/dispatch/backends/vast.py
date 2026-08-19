@@ -99,14 +99,18 @@ def api_key() -> str:
 class VastBackend(ProviderBackend, Account, LogSource, Market):
     """Rent a Vast.ai machine for one command, the container's own lifetime being the job's.
 
-    Vast rents whole containers rather than running jobs, so `submit` picks the cheapest rentable
-    offer matching the request and creates the instance in `args` launch mode with the command as
-    its entrypoint. That is what keeps the rental honest: the container exits when the command
-    does, so `state` reports a real end instead of an idle machine billing forever, which is the
-    same lesson the Modal backend learned from its first live submit. Since Vast reports container
-    status and never a process exit code, the wrapper echoes an exit sentinel into the log, and
-    `state` reads it back through `logs` once the container is terminal, so a verdict describes
-    the command rather than the container that happened to stop cleanly around it.
+    Vast rents whole containers rather than running jobs, so `submit` picks a rentable offer
+    matching the request and creates the instance in `args` launch mode with the command as its
+    entrypoint. Since Vast reports container status and never a process exit code, the wrapper
+    echoes an exit sentinel into the log, and `state` reads it back through `logs` once the
+    container is terminal, so a verdict describes the command rather than the container that
+    happened to stop cleanly around it.
+
+    A finished command does not end the rental. Vast keeps an instance at its `intended_status`,
+    so it restarts the exited container and the command runs again, appending another sentinel
+    (verified live 2026-08-19, thirteen restarts in five minutes). `state` reading the last marker
+    is what keeps the verdict right through that, and `cancel` is what actually stops the meter,
+    so a caller that reaches a terminal verdict must still cancel.
 
     Stateless between calls: every method addresses an instance by the id `submit` returned.
 
@@ -221,7 +225,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         require_budget(resources)
-        offer = self.cheapest(
+        offer = self.pick(
             gpu_name=resources.gpu_name,
             gpus=max(resources.gpus, 1),
             max_usd_hr=self.hourly_cap(resources),
@@ -258,8 +262,15 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             spot=self.spot,
         )
 
-    def cheapest(self, *, gpu_name: str, gpus: int, max_usd_hr: float = 0.0) -> dict:
-        """The lowest-priced offer matching the request, refusing when the market has none.
+    def pick(self, *, gpu_name: str, gpus: int, max_usd_hr: float = 0.0) -> dict:
+        """The offer to rent: the most reliable machine the budget already allows.
+
+        Renting the lowest-priced listing is what put earlier rentals at the bottom of the
+        market, where the container is billed for and never starts, so price decides admission
+        here and nothing more. The search returns the cheapest page of what fits under the cap
+        the caller's own budget implies, and the pick is the highest measured host reliability on
+        that page, ties going to the cheaper machine, which lands mid-market rather than at
+        either end. Refuses when the market has no matching offer at all.
 
         gpu_name: the Vast GPU name the job needs, empty for any.
         gpus: the GPU count per machine.
@@ -271,7 +282,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             raise MissionError(
                 f"vast has no rentable {gpus}x {gpu_name or 'any'} offer{ceiling} right now"
             )
-        return offers[0]
+        return max(offers, key=lambda offer: (float(offer["reliability2"]), -self.rate(offer)))
 
     @staticmethod
     def hourly_cap(resources: Resources) -> float:

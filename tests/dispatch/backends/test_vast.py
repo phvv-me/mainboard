@@ -26,6 +26,7 @@ def offer(identifier: int, *, dph: float, bid: float = 0.1, **extra: float | int
     """One `/bundles` offer row, only the fields the backend and the catalog probe read."""
     row = {"id": identifier, "dph_total": dph, "min_bid": bid, "gpu_name": "RTX 4090"}
     row.update({"num_gpus": 1, "geolocation": "Texas, US", "rentable": True})
+    row.update({"reliability2": 0.99})
     row.update(extra)
     return row
 
@@ -114,22 +115,27 @@ def test_search_reads_an_empty_market_as_no_offers() -> None:
     assert vast_backend({}).search() == []
 
 
-# --- cheapest ---
+# --- pick ---
 
 
-def test_cheapest_picks_the_lowest_on_demand_rate() -> None:
-    assert vast_backend(_OFFERS).cheapest(gpu_name="RTX 4090", gpus=1)["id"] == 22
+def test_pick_takes_the_most_reliable_offer_rather_than_the_cheapest_one() -> None:
+    offers = {"offers": [offer(11, dph=0.5, reliability2=0.999), offer(22, dph=0.2)]}
+    assert vast_backend(offers).pick(gpu_name="RTX 4090", gpus=1)["id"] == 11
 
 
-def test_cheapest_ranks_by_the_bid_floor_when_renting_spot() -> None:
+def test_pick_breaks_a_reliability_tie_toward_the_cheaper_machine() -> None:
+    assert vast_backend(_OFFERS).pick(gpu_name="RTX 4090", gpus=1)["id"] == 22
+
+
+def test_pick_breaks_a_spot_tie_by_the_bid_floor_it_will_actually_pay() -> None:
     offers = {"offers": [offer(11, dph=0.5, bid=0.01), offer(22, dph=0.2, bid=0.09)]}
-    assert vast_backend(offers, spot=True).cheapest(gpu_name="", gpus=1)["id"] == 11
+    assert vast_backend(offers, spot=True).pick(gpu_name="", gpus=1)["id"] == 11
 
 
-def test_cheapest_refuses_when_the_market_is_empty_naming_the_ceiling() -> None:
+def test_pick_refuses_when_the_market_is_empty_naming_the_ceiling() -> None:
     backend = vast_backend({"offers": []})
     with pytest.raises(MissionError, match=r"1x H100 offer under \$2.00/hr"):
-        backend.cheapest(gpu_name="H100", gpus=1, max_usd_hr=2.0)
+        backend.pick(gpu_name="H100", gpus=1, max_usd_hr=2.0)
 
 
 # --- hourly_cap ---
@@ -156,7 +162,7 @@ def test_submit_refuses_before_any_network_call_when_budget_is_unset() -> None:
     assert backend.transport.calls == []
 
 
-def test_submit_rents_the_cheapest_offer_and_returns_the_new_contract_id() -> None:
+def test_submit_rents_the_picked_offer_and_returns_the_new_contract_id() -> None:
     backend = vast_backend(_OFFERS, _CREATED)
     handle = backend.submit(vast_plan(), "python train.py", Resources(max_usd=5.0, gpus=2))
     assert handle == "4242"

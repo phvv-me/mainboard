@@ -446,7 +446,7 @@ def test_provider_job_wait_logs_kill_and_pull_delegate_to_the_backend(
 
 def test_a_provider_job_refuses_a_capability_its_backend_never_had(board: Board) -> None:
     """The absence is discovered before the call, and answered with the backend's own advice."""
-    job = ProviderJob(BareBackend(), "bare-1")
+    job = ProviderJob(BareBackend(), Handle(id="bare-1", host="cloudbox", root="", kind="bare"))
     job.kill()
     assert job.wait(poll=lambda seconds: None).ok
     with pytest.raises(MissionError, match=r"bare backend keeps no logs; read bare-1\.log"):
