@@ -12,6 +12,7 @@ from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .deps import Dependencies
 from .dispatch import verdicts as vocabulary
 from .dispatch.backends.base import Delivery, LogSource, ProviderBackend, route
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
@@ -19,12 +20,14 @@ from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
 from .dispatch.schedulers import pick
 from .dispatch.schedulers.base import Resources
 from .dispatch.wrapping import connection, missing, wrap
+from .doctor import Doctor
 from .engines.compile.provisioner import Provisioner, task_line
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
 from .manifest.loading import load
 from .monitor import Monitor
 from .probe.snapshot import HostFacts
+from .scaffold import Scaffold
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -230,6 +233,22 @@ class Board:
         """
         return Survey(self)
 
+    def deps(self) -> Dependencies:
+        """The manifest's declared requirements, editable and re-solvable from here.
+
+        Host-independent like `monitor` and `compute`, since a dependency belongs to the
+        workspace rather than to whichever machine happens to install it.
+        """
+        return Dependencies(self)
+
+    def doctor(self) -> Doctor:
+        """One verdict over this workspace, composed from the probes each subsystem owns."""
+        return Doctor(self)
+
+    def scaffold(self) -> Scaffold:
+        """The project generator, rendering the workspace's own templates through copier."""
+        return Scaffold(self)
+
     def containerizer(
         self, plan: ExecutionPlan, root: str
     ) -> Callable[[list[str]], list[str]] | None:
@@ -257,6 +276,26 @@ class Board:
     def fleet(self) -> Fleet:
         """The many-jobs surface for simultaneous studies over this board."""
         return Fleet(self)
+
+    def line(self, command: str, *, env: str = "", container: str = "") -> str:
+        """The staged shell line this board's host would run `command` through.
+
+        The one place the staging is assembled, cd, PATH, modules, then the environment or the
+        container, so a caller that wants the command's output rather than its exit code runs
+        the very line `run` runs instead of restaging it a second way.
+
+        command: the shell command, or a declared task name and its arguments.
+        env: an environment name overriding the profile's choice.
+        container: a container override, `none` forcing bare.
+        """
+        plan = self.plan(env=env, container=container)
+        root = str(self.root) if self.local else self.remote_root()
+        return wrap(
+            plan,
+            root,
+            command=task_line(self.manifest, command, env=plan.env),
+            containerize=self.containerizer(plan, root),
+        )
 
     def job(self, handle: str | int, *, host: str = "") -> Run:
         """The dispatched run `handle`, rebuilt from the dispatch cache as whichever kind it is.
@@ -394,14 +433,7 @@ class Board:
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
         """
-        plan = self.plan(env=env, container=container)
-        root = str(self.root) if self.local else self.remote_root()
-        line = wrap(
-            plan,
-            root,
-            command=task_line(self.manifest, command, env=plan.env),
-            containerize=self.containerizer(plan, root),
-        )
+        line = self.line(command, env=env, container=container)
         if self.local:
             return _streamed(localhost["bash"]["-lc", line])
         with connection(self.host) as remote:

@@ -273,3 +273,35 @@ def test_has_editable_paths_finds_a_source_nested_inside_an_array(pixi: Pixi) ->
 def test_has_editable_paths_ignores_a_path_without_editable(pixi: Pixi) -> None:
     pixi.manifest.write_text('[dependencies.demo]\npath = "../demo"\n')
     assert pixi._has_editable_paths() is False  # ruff:ignore[private-member-access]  reason=unit-tests the lock-rule helper since=2026-08-17
+
+
+def test_the_lock_reading_is_empty_before_anything_has_been_solved(pixi: Pixi) -> None:
+    """A snapshot of what is not pinned yet is empty rather than an error."""
+    assert pixi.locked("default") == {}
+
+
+def test_the_lock_reading_names_every_pinned_package(fp: FakeProcess, pixi: Pixi) -> None:
+    """The frozen listing is read rather than the lock parsed, so pixi owns its own format."""
+    pixi.lock.write_text("version: 7\n")
+    fp.register([fp.any()], stdout='[{"name": "torch", "version": "2.9.1"}]')
+    assert pixi.locked("default") == {"torch": "2.9.1"}
+    assert "--frozen" in fp.calls[0]
+
+
+def test_a_lock_that_holds_no_such_environment_reads_as_nothing(
+    fp: FakeProcess, pixi: Pixi, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A before-and-after reading has to survive the before, when the env is not in the lock."""
+    pixi.lock.write_text("version: 7\n")
+    fp.register([fp.any()], returncode=1, stderr="unknown environment\n")
+    assert pixi.locked("ghost") == {}
+    assert capsys.readouterr().err == ""
+
+
+def test_update_moves_the_lock_and_reports_its_own_failure(fp: FakeProcess, pixi: Pixi) -> None:
+    """Refreshing inside the declared bounds is pixi's verb, and its failure is not swallowed."""
+    fp.register([fp.any()], stdout="lock updated\n")
+    assert pixi.update("default") is None
+    fp.register([fp.any()], returncode=1, stderr="could not update\n")
+    with pytest.raises(MissionError, match="pixi update"):
+        pixi.update("default")

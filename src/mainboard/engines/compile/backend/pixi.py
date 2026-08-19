@@ -1,8 +1,9 @@
+import json
 import os
 import tomllib
 from contextlib import contextmanager
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from plumbum import local
 
@@ -120,6 +121,24 @@ class Pixi(Tool):
         else:
             self.repair(env)
 
+    def locked(self, env: str) -> dict[str, str]:
+        """Every package the lock pins for ``env``, by name and version, without solving.
+
+        ``--frozen`` reads the lock exactly as it sits instead of checking it against the
+        manifest, which is what lets a caller take one reading before an edit and one after and
+        report only what the solve actually moved. An environment the lock does not carry
+        answers with nothing, since a snapshot of what is not there yet is empty rather than an
+        error.
+        """
+        if not self.lock.exists():
+            return {}
+        command = self.command["list", "--json", "--frozen", "-e", env, *self.scope()]
+        result = Process.capture(command)
+        if not result.succeeded:
+            return {}
+        packages = cast("list[dict[str, str]]", json.loads(result.stdout))
+        return {str(package["name"]): str(package["version"]) for package in packages}
+
     def ready(self, env: str) -> bool:
         """Whether pixi ever finished installing ``env``.
 
@@ -150,6 +169,16 @@ class Pixi(Tool):
 
     def scope(self) -> tuple[str, ...]:
         return ("--manifest-path", str(self.manifest))
+
+    def update(self, env: str) -> None:
+        """Move ``env``'s lock to the newest releases the manifest still allows.
+
+        The one verb that re-reads the indexes inside the declared bounds. `install` keeps
+        whatever the lock already pins as long as it satisfies the manifest, which is the right
+        default and the reason asking for newer releases has to be its own request.
+        """
+        if self.within_cwd(Process.stream, "update", "-e", env).returncode:
+            raise MissionError("`pixi update` failed (see its output above)")
 
     def shell_hook(self, env: str = "default", *, shell: str = "bash") -> str:
         """The activation script for ``env`` as a sourceable ``shell`` snippet.

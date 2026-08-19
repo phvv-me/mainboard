@@ -36,6 +36,19 @@ class Process:
         return command.popen(stdin=None, stdout=None, stderr=None).wait()
 
     @staticmethod
+    def capture(command: BaseCommand, *, timeout: float | None = None) -> CommandResult:
+        """Capture a query whose failure is itself an answer, under an optional deadline.
+
+        The shape a probe wants rather than the shape a step wants. A lock that holds no such
+        environment, or a tool this workspace never installed, is something the caller reports
+        as a finding, so nothing is replayed to the terminal and nothing is raised. ``timeout``
+        bounds a probe that would otherwise hang, and plumbum kills the child and raises
+        ``ProcessTimedOut`` when it expires, which the caller reports as its own finding too.
+        """
+        returncode, stdout, stderr = command.run(retcode=None, timeout=timeout)
+        return CommandResult(int(returncode), str(stdout), str(stderr))
+
+    @staticmethod
     def output(command: BaseCommand, operation: str) -> str:
         """Capture a query command, replaying its output before a user-facing failure."""
         returncode, stdout, stderr = command.run(retcode=None)

@@ -112,7 +112,9 @@ class Provisioner:
         """
         return [directory for directory in self.stage.binary_dirs(env) if directory.is_dir()]
 
-    def provision(self, env: str = "default", *, resolve: bool = False) -> None:
+    def provision(
+        self, env: str = "default", *, resolve: bool = False, refresh: bool = False
+    ) -> None:
         """Compile ``env``, then install it under one lock.
 
         Unlike :meth:`activated`, this always compiles rather than gating on `Compiler.stale`,
@@ -123,8 +125,15 @@ class Provisioner:
         compile, so two agents sharing this checkout never let one rewrite the manifest while
         the other is still solving against it. The second stage runs last, inside that same
         lock, because every manager it drives ships as a conda package pixi has just installed.
+
+        ``refresh`` asks the indexes for the newest releases the manifest still allows before
+        installing, which is a solve by definition and so implies ``resolve``. Without it a
+        provision keeps whatever the lock already pins, since satisfying the manifest and being
+        current are different questions and only the caller knows which one was asked.
         """
         with GeneratedFiles(directory=self.out).locked() as files:
             self.compiler.write(files, env)
-            self.compiler.install_locked(files, env, resolve=resolve)
+            if refresh:
+                self.pixi.update(env)
+            self.compiler.install_locked(files, env, resolve=resolve or refresh)
             self.stage.install(env)

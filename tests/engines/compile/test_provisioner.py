@@ -235,3 +235,20 @@ def test_activate_writes_the_script_with_per_host_modules(
     path = provisioner.activate(modules={"singularity": "4.2.1"})
 
     assert "module load singularity/4.2.1" in path.read_text()
+
+
+def test_a_refresh_asks_the_indexes_before_installing_and_blesses_the_result(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path, fp: FakeProcess
+) -> None:
+    """Satisfying the manifest and being current differ, so `update` runs before the install."""
+    manifest = manifest_from('[workspace]\nname = "w"\nplatforms = ["linux-64"]\n')
+    provisioner = Provisioner(tmp_path, manifest)
+    provisioner.out.mkdir()
+    provisioner.pixi.lock.write_text("version: 7\n")
+    for _ in range(3):
+        fp.register([fp.any()], stdout="lock updated\n")
+
+    provisioner.provision(refresh=True)
+
+    assert "update" in fp.calls[0]
+    assert SyncState.load(provisioner.out).solved_from

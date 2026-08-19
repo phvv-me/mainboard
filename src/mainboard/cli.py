@@ -10,10 +10,14 @@ from .board import Board
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .doctor import Verdict
 from .manifest.loading import load
 from .render import install_traceback, mode_of, progress, record, rows
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from .deps import Change
     from .dispatch.state import MonitorReport
 
 
@@ -106,6 +110,172 @@ def build(root: Path | None = None) -> App:
             fields=_fields(fields),
             title="handle",
         )
+
+    @app.command
+    def add(
+        spec: str,
+        *,
+        lang: Annotated[str, Parameter(name=["--lang", "-l"])] = "conda",
+        env: str = "",
+        dev: bool = False,
+        resolve: bool = True,
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Declare a dependency in the manifest and re-solve, showing what the lock did.
+
+        A bare name is pinned to whatever the ecosystem's index publishes right now, and a name
+        carrying its own constraint is written exactly as given. The table it lands in is the
+        one the flags name, and where the manifest already writes that kind of requirement in a
+        particular table, the edit joins it there.
+
+        spec: the requirement, a bare name or a name with the constraint it carries.
+        lang: the ecosystem whose resolver installs it, `conda` by default.
+        env: an environment name, the workspace-wide table when omitted.
+        dev: declare it as a development-only requirement.
+        resolve: re-solve after the edit, `--no-resolve` to stage several edits and solve once.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over name/where/before/after.
+        """
+        with progress(f"adding {spec}"):
+            changes = (
+                board("local").deps().add(spec, ecosystem=lang, env=env, dev=dev, resolve=resolve)
+            )
+        _changed(changes, json_mode=json, agent=agent, fields=fields, title="add")
+
+    @app.command
+    def remove(
+        name: str,
+        *,
+        lang: Annotated[str, Parameter(name=["--lang", "-l"])] = "",
+        env: str = "",
+        dev: bool = False,
+        resolve: bool = True,
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Drop a dependency from the manifest and re-solve, showing what the lock did.
+
+        With no flags the whole manifest is searched, so dropping a requirement never asks
+        which table it was written into. Flags narrow that search, which is also how a name
+        declared in more than one table is told apart.
+
+        name: the dependency to drop.
+        lang: narrow the search to one ecosystem's tables.
+        env: narrow the search to one environment's tables.
+        dev: narrow the search to development-only tables.
+        resolve: re-solve after the edit.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over name/where/before/after.
+        """
+        with progress(f"removing {name}"):
+            changes = (
+                board("local")
+                .deps()
+                .remove(name, ecosystem=lang, env=env, dev=dev, resolve=resolve)
+            )
+        _changed(changes, json_mode=json, agent=agent, fields=fields, title="remove")
+
+    @app.command
+    def upgrade(
+        name: str = "",
+        *,
+        lang: Annotated[str, Parameter(name=["--lang", "-l"])] = "",
+        env: str = "",
+        dev: bool = False,
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Move one dependency to its newest release, or the whole lock forward in its bounds.
+
+        Named, the constraint itself is rewritten to what the ecosystem publishes now, which is
+        the only way past a ceiling the manifest declares. Unnamed, the manifest is untouched
+        and the lock is re-solved against the indexes, moving every pin as far as the declared
+        constraints already allow.
+
+        name: the dependency to bump, every declared one inside its bounds when omitted.
+        lang: narrow the search to one ecosystem's tables.
+        env: narrow the search to one environment's tables.
+        dev: narrow the search to development-only tables.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over name/where/before/after.
+        """
+        with progress(f"upgrading {name or 'the lock'}"):
+            changes = board("local").deps().upgrade(name, ecosystem=lang, env=env, dev=dev)
+        _changed(changes, json_mode=json, agent=agent, fields=fields, title="upgrade")
+
+    @app.command
+    def new(
+        name: str,
+        *,
+        standalone: bool = False,
+        description: str = "",
+        dest: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Scaffold a research project from this workspace's template.
+
+        Every answer the template asks for comes from the name or from its own default, so a
+        project is one argument. The task rows the template generates are printed rather than
+        pasted, since the root manifest's task table is hand-curated and the same project has
+        to reach the type checker's search path beside it, and half of that edit landing on its
+        own is worse than none of it.
+
+        name: the project name, which becomes its slug, its package and its task prefix.
+        standalone: render the home that carries its own manifest instead of the monorepo one.
+        description: the one sentence the README and the task rows carry.
+        dest: where to render it, under `research/` beside its siblings when omitted.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over project/path/tasks/paste/snippet.
+        """
+        mode = mode_of(json_mode=json, agent=agent)
+        with progress(f"rendering {name}"):
+            made = (
+                board("local")
+                .scaffold()
+                .render(name, standalone=standalone, description=description, dest=dest)
+            )
+        payload = made.model_dump()
+        # The rows print whole and pasteable at a terminal, so repeating them wrapped inside a
+        # table cell would only make them harder to copy back out. A compact mode keeps the
+        # field, since a caller reading the record has nowhere else to get them.
+        if mode is None and made.snippet:
+            print(made.snippet)
+            payload.pop("snippet")
+        record(payload, mode=mode, fields=_fields(fields), title="new")
+
+    @app.command
+    def doctor(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+        """Say whether this workspace is fit to work in, and exit nonzero when it is not.
+
+        Four questions asked at once and bounded: does the manifest still say something
+        coherent, is what is installed the environment it describes, what compute answers right
+        now, and does the mathematics still hold. A section reports the one command that
+        repairs it, and only a genuinely broken workspace fails, so a sleeping host or a
+        provider nobody has a key for is a word rather than a nonzero exit.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over section/verdict/detail/fix.
+        """
+        with progress("examining the workspace"):
+            sections = board("local").doctor().sections()
+        rows(
+            [section.model_dump() for section in sections],
+            mode=mode_of(json_mode=json, agent=agent),
+            fields=_fields(fields),
+            title="doctor",
+        )
+        return 1 if any(section.verdict is Verdict.FAIL for section in sections) else 0
 
     @app.command
     def install(
@@ -364,6 +534,24 @@ def _exit_on_mission_error(error: MissionError) -> NoReturn:
     """Print `error` to stderr without a traceback, then exit 1."""
     print(error, file=sys.stderr)
     raise SystemExit(1) from None
+
+
+def _changed(
+    changes: Sequence[Change], *, json_mode: bool, agent: bool, fields: str, title: str
+) -> None:
+    """Print one edit's constraint move and every pin its solve moved, as one table.
+
+    Both are the same fact, something moved from one version to another somewhere, so they
+    render as one shape rather than two tables a reader has to align by eye. Where the move
+    happened is the column that tells them apart, a manifest table for the requirement and the
+    lock for everything the solve dragged with it.
+    """
+    rows(
+        [change.model_dump() for change in changes],
+        mode=mode_of(json_mode=json_mode, agent=agent),
+        fields=_fields(fields),
+        title=title,
+    )
 
 
 def _fields(raw: str) -> tuple[str, ...]:

@@ -18,6 +18,11 @@ def render_table(
 ) -> None:
     """Print `rows` as a rich table, one line per record, columns projected to `fields`.
 
+    Every cell is data rather than prose, so rich's console markup is off: a value in square
+    brackets is a manifest table heading like `[dev.python.deps]`, and rich reads that as a
+    style tag and renders the cell empty. Highlighting stays on, since colouring a version or a
+    path changes how a value looks and never whether it is shown.
+
     rows: the records to render, each a flat field-name to value mapping.
     fields: the column names to keep, every key from the first row when None.
     title: the table's heading, untitled when empty.
@@ -29,7 +34,7 @@ def render_table(
     for row in rows:
         cells = (row.get(column) for column in columns)
         table.add_row(*("" if cell is None else str(cell) for cell in cells))
-    Console().print(table)
+    Console(markup=False).print(table)
 
 
 @contextmanager

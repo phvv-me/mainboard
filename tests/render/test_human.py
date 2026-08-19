@@ -56,3 +56,11 @@ def test_install_traceback_installs_a_rich_excepthook() -> None:
 def test_progress_yields_a_stage_setter_the_block_can_call() -> None:
     with human.progress("working") as stage:
         stage("second stage")
+
+
+def test_a_cell_in_square_brackets_survives_the_render(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A manifest table heading is data, and rich would otherwise read it as a style tag."""
+    human.render_table([{"where": "[dev.python.deps]"}])
+    assert "[dev.python.deps]" in capsys.readouterr().out
