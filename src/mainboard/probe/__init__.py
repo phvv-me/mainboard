@@ -1,6 +1,8 @@
-from .enums import DiskKind, Scheduler, UnitKind, Vendor
+from .enums import CompilerKind, DiskKind, Scheduler, UnitKind, Vendor
 from .facts import (
     CgroupMemory,
+    Compiler,
+    Compilers,
     DriveInfo,
     Environment,
     Fabric,
@@ -25,6 +27,9 @@ __all__ = [
     "AppleNPU",
     "CgroupCap",
     "CgroupMemory",
+    "Compiler",
+    "CompilerKind",
+    "Compilers",
     "ComputeCapability",
     "DiskKind",
     "DriveInfo",

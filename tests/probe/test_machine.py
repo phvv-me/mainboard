@@ -1,6 +1,30 @@
+from typing import TYPE_CHECKING
+
 import pytest
+
 from mainboard import Machine
 from mainboard.probe import CPU, GPU, NPU, UnitKind, Vendor
+
+if TYPE_CHECKING:
+    from .conftest import FakeNvidiaApis
+
+
+def test_compilers_target_the_newest_cuda_device_on_the_host(nvidia_host: FakeNvidiaApis) -> None:
+    """`compilers` pairs the host CPU identity with the detected compute capability."""
+    machine = Machine()
+    compilers = machine.compilers
+    assert compilers.cuda_arch == "89"
+    assert compilers.arch == machine.host.arch
+    assert compilers.cpu == machine.host.cpu
+
+
+def test_compilers_refuse_a_host_with_no_cuda_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A machine whose GPUs are all non-CUDA has no architecture to target, so it raises."""
+    machine = Machine()
+    monkeypatch.setattr(type(machine), "gpus", (GPU(index=0),))
+    machine.__dict__.pop("compilers", None)
+    with pytest.raises(RuntimeError, match="No CUDA device"):
+        _ = machine.compilers
 
 
 def test_units_compose_cpu_gpus_and_npus(monkeypatch: pytest.MonkeyPatch) -> None:

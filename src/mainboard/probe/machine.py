@@ -1,22 +1,44 @@
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 from patos import Singleton
 
+from .facts.compilers import Compilers
 from .facts.environment import Environment
 from .host import Host
+from .providers.nvidia import NvidiaGPU
 from .units.cpu import CPU
 from .units.gpu import GPU
 from .units.npu import NPU
-from .units.unit import Unit
+
+if TYPE_CHECKING:
+    from .units.unit import Unit
 
 
 class Machine(Singleton):
     """Singleton facade for the host and hardware units.
 
-    Every subsystem is best-effort, a host with no accelerator, no scheduler, or no
-    cgroup cap still answers every property with an empty or zeroed value rather
-    than raising, so a caller never needs to guard a probe behind a try/except.
+    Every hardware subsystem is best-effort, a host with no accelerator, no scheduler, or
+    no cgroup cap still answers with an empty or zeroed value rather than raising, so a
+    caller never needs to guard a probe behind a try/except. `compilers` is the one
+    deliberate exception, since a native CUDA build has no answer to give when the host
+    carries no CUDA device to target.
     """
+
+    @cached_property
+    def compilers(self) -> Compilers:
+        """Host C++ and CUDA compilers targeting the newest CUDA device on this machine.
+
+        Raises `RuntimeError` when no CUDA device is present, because the compute
+        capability the build must target is read off the detected GPUs.
+        """
+        capabilities = [gpu.cuda_architecture for gpu in self.gpus if isinstance(gpu, NvidiaGPU)]
+        if not capabilities:
+            raise RuntimeError("No CUDA device detected, so compiler settings are unavailable.")
+        target = max(capabilities)
+        return Compilers(
+            arch=self.host.arch, cpu=self.host.cpu, cuda_arch=f"{target.major}{target.minor}"
+        )
 
     @cached_property
     def cpu(self) -> CPU:
