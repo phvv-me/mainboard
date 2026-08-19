@@ -1,9 +1,15 @@
-# The transport-free contract a provider backend implements, plus `route`, the typed
-# replacement for an `if kind == ...` chain deciding whether a host stays on the existing
-# ssh-family `Scheduler` path or resolves to a `ProviderBackend` registered by kind.
+# The contract a provider backend implements, plus `route`, the typed replacement for an
+# `if kind == ...` chain deciding whether a host stays on the existing ssh-family `Scheduler`
+# path or resolves to a `ProviderBackend` registered by kind.
+#
+# The contract is split the way the providers themselves are split. `ProviderBackend` carries
+# only the job lifecycle all of them truly have, launch a command, poll it, cancel it, and every
+# other verb is a `Capability` a backend opts into by inheriting it. A caller therefore asks
+# `isinstance(backend, LogSource)` before asking for a log, instead of calling and discovering
+# mid-sweep that this provider never had one.
 
 import abc
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
 from urllib.request import urlopen
 
 from patos import FrozenModel, Registry
@@ -12,10 +18,11 @@ from pydantic import field_validator
 from ...core.errors import MissionError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from urllib.request import Request
 
     from ...context.plan import ExecutionPlan
+    from ...costs.catalog import Offer
     from ...manifest.schema.host import HostProfile
     from ..schedulers.base import JobState, Resources
 
@@ -42,8 +49,8 @@ _TIMEOUT_S = 10.0
 class Standing(FrozenModel):
     """What a provider cheaply says about itself: whether we may use it, and at what price.
 
-    The account-side answer to the job-side `Backend` contract, and the only thing a compute
-    survey asks a provider for. It never carries a credential, only whether one was found.
+    The account-side answer to the job-side lifecycle, and the only thing a compute survey asks
+    a provider for. It never carries a credential, only whether one was found.
 
     keyed: whether this provider's credentials are present on this machine.
     credit_usd: the balance the provider reports, None when it exposes none, which is the
@@ -70,58 +77,21 @@ class Standing(FrozenModel):
         return None if value is None else round(value, 4)
 
 
-@runtime_checkable
-class Backend(Protocol):
-    """A provider backend: submit a command, poll it, fetch its output, no transport in sight.
+class Capability:
+    """One optional half of the backend contract, opted into by inheriting it.
 
-    Unlike `Scheduler`, no method takes a `remote`/`root`: a provider backend owns its own
-    transport (an HTTP session, an SDK client) end to end instead of running commands over an
-    ssh connection into a synced workspace.
+    A backend that can do the thing implements the contract and is found by `isinstance`. A
+    backend that cannot simply does not inherit it, and names it in `ProviderBackend.lacks`
+    with the line a refusal should carry, so the gap is a typed absence a caller can see before
+    it calls rather than a `MissionError` raised from inside a verb that was never real.
+
+    The root itself declares nothing. It exists so `lacks` can be keyed by a contract rather
+    than by a bare name, which is what keeps a declared gap and the class it names in step.
     """
 
-    def cancel(self, handle: str) -> None:
-        """Cancel `handle` on the provider."""
 
-    def deliver(self, handle: str, *, path: str) -> None:
-        """Fetch `handle`'s output at `path` back to the local filesystem."""
-
-    def logs(self, handle: str) -> str:
-        """`handle`'s captured log so far."""
-
-    def state(self, handle: str) -> JobState:
-        """Post-mortem `handle`: its state, exit code, and a verdict."""
-
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
-        """Launch `command` under `resources`; return the provider's opaque handle id."""
-
-
-class ProviderBackend(Registry, abc.ABC):
-    """Registry root for non-ssh provider backends, one concrete class per `HostProfile.kind`.
-
-    A concrete backend (`ModalBackend`, `HpcAiBackend`) enrolls here and implements every
-    `Backend` method; `route` is the lookup a caller uses instead of hand-rolling an
-    `if kind == "modal": ... elif kind == "hpc-ai": ...` chain.
-
-    One method reaches past the `Backend` job contract: `standing` answers for the account
-    rather than for a run, which is what lets a compute survey list every provider without
-    knowing one of them by name.
-    """
-
-    @abc.abstractmethod
-    def cancel(self, handle: str) -> None:
-        """Cancel `handle` on the provider."""
-
-    @abc.abstractmethod
-    def deliver(self, handle: str, *, path: str) -> None:
-        """Fetch `handle`'s output at `path` back to the local filesystem."""
-
-    @abc.abstractmethod
-    def logs(self, handle: str) -> str:
-        """`handle`'s captured log so far."""
-
-    @abc.abstractmethod
-    def state(self, handle: str) -> JobState:
-        """Post-mortem `handle`: its state, exit code, and a verdict."""
+class Account(Capability, abc.ABC):
+    """A provider that answers for its own account rather than for one run."""
 
     @abc.abstractmethod
     def standing(self) -> Standing:
@@ -133,9 +103,82 @@ class ProviderBackend(Registry, abc.ABC):
         an unconfigured provider free to list.
         """
 
+
+class Delivery(Capability):
+    """A provider that can bring a finished run's artifacts back to this machine."""
+
+    @abc.abstractmethod
+    def deliver(self, handle: str, *, path: str) -> None:
+        """Fetch `handle`'s output at `path` back to the local filesystem."""
+
+
+class LogSource(Capability):
+    """A provider that keeps a run's captured output and will hand it back."""
+
+    @abc.abstractmethod
+    def logs(self, handle: str) -> str:
+        """`handle`'s captured log so far."""
+
+
+class Market(Capability):
+    """A provider that quotes a live rentable market, priced offer by offer."""
+
+    @abc.abstractmethod
+    def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
+        """Live offers as catalog rows, the authed refresh of an imported price feed.
+
+        gpu_name: the provider's GPU name to narrow to, empty for the whole market.
+        gpus: the GPU count per machine, 0 for any.
+        limit: how many offers to bring back, 0 for the backend's own page size.
+        """
+
+
+class ProviderBackend(Registry, abc.ABC):
+    """Registry root for non-ssh provider backends, one concrete class per `HostProfile.kind`.
+
+    Unlike `Scheduler`, no method takes a `remote`/`root`: a provider backend owns its own
+    transport (an HTTP session, an SDK client) end to end instead of running commands over an
+    ssh connection into a synced workspace.
+
+    What lives here is the lifecycle every provider truly has, launch a command, poll it, cancel
+    it. Logs, artifact delivery, account standing and market pricing are `Capability` contracts a
+    backend inherits only when it can honor them, so nothing carries a method it would only ever
+    refuse. A new backend joins by subclassing this, implementing three methods, and adding
+    whichever capabilities it actually has; `route` is the lookup that finds it, so no caller
+    hand-rolls an `if kind == "modal": ... elif kind == "vast": ...` chain.
+    """
+
+    # What this backend cannot do, and the line to print instead, keyed by the contract it does
+    # not inherit. `{handle}` and `{path}` are filled in where the refusal is raised.
+    lacks: ClassVar[Mapping[type[Capability], str]] = {}
+
+    @abc.abstractmethod
+    def cancel(self, handle: str) -> None:
+        """Cancel `handle` on the provider."""
+
+    @abc.abstractmethod
+    def state(self, handle: str) -> JobState:
+        """Post-mortem `handle`: its state, exit code, and a verdict."""
+
     @abc.abstractmethod
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         """Launch `command` under `resources`; return the provider's opaque handle id."""
+
+    def refusal(self, capability: type[Capability], **facts: str) -> str:
+        """Why this backend cannot answer `capability`, and what to do about it instead.
+
+        The line a discovery site raises once `isinstance` has said no. A backend that declared
+        the gap in `lacks` supplies its own advice, since only it knows where its output really
+        lives, and `facts` fills the `{handle}` and `{path}` the advice names. One that declared
+        nothing gets a plain statement of the gap rather than a traceback.
+
+        capability: the contract this backend does not implement.
+        facts: the run's details the advice may name, `handle` and `path`.
+        """
+        advice = self.lacks.get(capability)
+        if advice is None:
+            return f"the {self.name} backend does not implement {capability.__name__}"
+        return advice.format(**facts)
 
 
 def http_transport(request: Request) -> HttpResponse:

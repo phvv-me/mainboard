@@ -7,13 +7,20 @@
 # field named for a credit, a balance, a remaining amount or a prepaid pot. The only account-side
 # reads are `WorkspaceBillingSummary` (per-cycle `metered_cost`, `billed_cost` and an
 # `adjustments` map whose `Credits` entry is credit *applied* in that cycle, never credit left)
-# and `EnvironmentList`/`EnvironmentGetBudget`, which carry a spend *cap* rather than a balance
-# and refuse with `PermissionDeniedError` on a workspace without the team feature that enables
-# environment budgets. There is no REST surface to fall back on either, since every path under
-# api.modal.com answers `application/grpc` whatever it is sent, and modal.com/api/* is a flat 404.
-# So the row derives a balance from a credit the workspace declares once in `MODAL_CREDIT_USD`,
-# minus what Modal says the current cycle has metered, and the note says out loud that the figure
-# is derived rather than reported.
+# and `EnvironmentList`/`EnvironmentGetBudget`, which carry a spend *cap* rather than a balance.
+# There is no REST surface to fall back on either, since every path under api.modal.com answers
+# `application/grpc` whatever it is sent, and modal.com/api/* is a flat 404.
+#
+# So the row asks in order of how much Modal itself vouches for the figure. A workspace that set
+# a cycle budget has the closest thing Modal keeps to a balance, and `modal.environments.
+# list_environments` carries the same four budget fields `EnvironmentGetBudget` answers
+# (`cycle_budget_dollars`, `effective_cycle_spend_limit`, `current_cycle_usage`,
+# `spend_limit_reached`) for one cheap call that needs no environment id, so that is the read
+# taken. A workspace without the team feature refuses it with `PermissionDeniedError`, and one
+# that simply never set a budget answers zero (verified live 2026-08-19), so both fall through
+# rather than costing a row. Failing that, the row derives a balance from a credit the workspace
+# declares once in `MODAL_CREDIT_USD` minus what Modal says the current cycle has metered, and
+# the note says out loud that the figure is derived rather than reported.
 
 import os
 from importlib import import_module
@@ -22,7 +29,7 @@ from typing import TYPE_CHECKING
 from ...core.errors import MissionError
 from ..jobs.spec import walltime_seconds
 from ..schedulers.base import JobState
-from .base import ProviderBackend, Standing, require_budget
+from .base import Account, Delivery, LogSource, ProviderBackend, Standing, require_budget
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -67,23 +74,26 @@ def declared_credit() -> float:
         ) from None
 
 
-class ModalBackend(ProviderBackend):
+class ModalBackend(ProviderBackend, Account, LogSource):
     """Run a command in a fresh Modal Sandbox and treat the sandbox's own lifetime as the job's.
 
     Stateless: every call reconnects to the sandbox by id (`modal.Sandbox.from_id`), so one
     instance serves every handle with no session to carry between calls.
+
+    A sandbox keeps its stdout, so logs are real here, but nothing it writes to disk outlives it
+    unless a Volume was mounted at create time, which is why `Delivery` is declared in `lacks`
+    rather than implemented.
     """
 
     name = "modal"
 
+    lacks = {
+        Delivery: "modal backend cannot deliver {path!r} yet; mount a modal Volume at submit "
+        "time and pull it by hand until that path lands",
+    }
+
     def cancel(self, handle: str) -> None:
         _modal().Sandbox.from_id(handle).terminate()
-
-    def deliver(self, handle: str, *, path: str) -> None:
-        raise MissionError(
-            f"modal backend cannot deliver {path!r} yet; mount a modal Volume at submit time "
-            "and pull it by hand until that path lands"
-        )
 
     def logs(self, handle: str) -> str:
         return str(_modal().Sandbox.from_id(handle).stdout.read())
@@ -95,18 +105,13 @@ class ModalBackend(ProviderBackend):
         return JobState(handle=handle, exit_code=exit_code, verdict=verdict)
 
     def standing(self) -> Standing:
-        """The declared credit less this cycle's metered spend, or whatever step is missing.
+        """What the workspace can still spend, by whichever of two routes can answer for it.
 
         The token pair is what `modal.Client` itself checks before its first call, resolved from
         `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or the active profile in `~/.modal.toml`, so an
-        unauthenticated machine costs no round trip. Once a token is found, the one account read
-        Modal offers is `Workspace.billing.summary`, whose `metered_cost` is the cost this
-        workspace has run up in the calendar-month cycle it names, before any credit or discount
-        is applied against it. Subtracting that from the declared credit is arithmetic we do, not
-        a balance Modal blessed, so the note carries both figures and the cycle they belong to
-        and a workspace that declares nothing still gets the spend rather than a blank. Every
-        Modal fault (a rate-limited summary is the common one) stays a note on a keyed row,
-        since a throttled read says nothing about whether the provider is usable.
+        unauthenticated machine costs no round trip. Past that the preference is for the figure
+        Modal itself keeps, a cycle budget, falling back on the one this workspace declares and
+        we do the arithmetic for.
         """
         try:
             modal = _modal()
@@ -115,6 +120,49 @@ class ModalBackend(ProviderBackend):
         config = modal.config.config
         if not (config["token_id"] and config["token_secret"]):
             return Standing(note="run `modal token new`, or set MODAL_TOKEN_ID/MODAL_TOKEN_SECRET")
+        return self.budgeted(modal) or self.derived(modal)
+
+    @staticmethod
+    def budgeted(modal: ModuleType) -> Standing | None:
+        """The cycle budget less what this cycle has used, None when the workspace keeps none.
+
+        The closest thing Modal holds to a balance, so it is asked first. The default environment
+        is preferred since that is where a sandbox lands when nothing names another. A workspace
+        that never set a budget answers zero and one without the team feature refuses the read
+        outright, and neither is a fault worth printing, so both come back None for the caller to
+        fall through on.
+
+        modal: the imported `modal` module, already known to carry credentials.
+        """
+        try:
+            environments = modal.environments.list_environments()
+        except modal.exception.Error:
+            return None
+        ordered = sorted(environments, key=lambda item: not item.default)
+        budget = next((item for item in ordered if item.cycle_budget_dollars), None)
+        if budget is None:
+            return None
+        return Standing(
+            keyed=True,
+            credit_usd=budget.cycle_budget_dollars - budget.current_cycle_usage,
+            note=f"budget, ${budget.cycle_budget_dollars:.2f} for {budget.name} less "
+            f"${budget.current_cycle_usage:.2f} used this cycle",
+        )
+
+    @staticmethod
+    def derived(modal: ModuleType) -> Standing:
+        """The declared credit less this cycle's metered spend, or whatever step is missing.
+
+        The one account read Modal offers is `Workspace.billing.summary`, whose `metered_cost` is
+        the cost this workspace has run up in the calendar-month cycle it names, before any credit
+        or discount is applied against it. Subtracting that from the declared credit is arithmetic
+        we do, not a balance Modal blessed, so the note carries both figures and the cycle they
+        belong to, and a workspace that declares nothing still gets the spend rather than a blank.
+        Every Modal fault (a rate-limited summary is the common one) stays a note on a keyed row,
+        since a throttled read says nothing about whether the provider is usable.
+
+        modal: the imported `modal` module, already known to carry credentials.
+        """
         declared = declared_credit()
         try:
             summary = modal.Workspace.from_context().billing.summary()

@@ -4,7 +4,7 @@ from time import sleep
 import pytest
 
 from mainboard import MissionError
-from mainboard.dispatch.backends import VastBackend
+from mainboard.dispatch.backends import Delivery, VastBackend
 from mainboard.dispatch.backends.base import http_transport
 from mainboard.dispatch.backends.vast import api_key, exit_sentinel
 from mainboard.dispatch.schedulers import Resources
@@ -50,7 +50,14 @@ _CREATED = {"success": True, "new_contract": 4242}
 
 @pytest.fixture(autouse=True)
 def _key_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exactly one Vast key spelling in the environment, whatever the machine already exports.
+
+    `api_key` reads either name, so a workspace `.env` carrying `VASTAI_API_KEY` used to keep the
+    no-key test finding a key it never set. The fallback spelling is cleared here so the suite
+    reads the same on a keyed machine as on a bare one.
+    """
     monkeypatch.setenv("VAST_API_KEY", "key-123")
+    monkeypatch.delenv("VASTAI_API_KEY", raising=False)
 
 
 # --- api_key ---
@@ -333,6 +340,14 @@ def test_logs_refuses_a_log_url_that_is_not_https() -> None:
 # --- catalog ---
 
 
+def test_catalog_asks_for_the_page_size_it_was_given_and_its_own_when_given_none() -> None:
+    asked = vast_backend(_OFFERS)
+    asked.catalog(limit=5)
+    defaulted = vast_backend(_OFFERS)
+    defaulted.catalog()
+    assert [bodies(asked)[0]["limit"], bodies(defaulted)[0]["limit"]] == [5, 32]
+
+
 def test_catalog_turns_a_live_search_into_priced_offer_rows() -> None:
     rows = vast_backend(_OFFERS).catalog(gpu_name="RTX 4090")
     assert [row.rate_usd_hr for row in rows] == [pytest.approx(0.2), pytest.approx(0.5)]
@@ -410,9 +425,13 @@ def test_cancel_deletes_the_instance() -> None:
     assert request.get_method() == "DELETE"
 
 
-def test_deliver_raises_naming_the_logs_verb_instead() -> None:
-    with pytest.raises(MissionError, match=r"logs 4242"):
-        vast_backend().deliver("4242", path="out/results.json")
+def test_the_declared_delivery_gap_points_at_the_logs_verb_instead() -> None:
+    advice = vast_backend().refusal(Delivery, handle="4242", path="out/results.json")
+    assert advice == (
+        "vast backend cannot deliver 'out/results.json' yet; a rented machine's disk dies with "
+        "the instance, so have the command upload its own results and read `logs 4242` "
+        "until that path lands"
+    )
 
 
 def test_defaults_are_the_shared_transport_and_a_real_sleep() -> None:

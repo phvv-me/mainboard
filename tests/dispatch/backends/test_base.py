@@ -5,8 +5,12 @@ import pytest
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import (
-    Backend,
+    Account,
+    Capability,
+    Delivery,
     HpcAiBackend,
+    LogSource,
+    Market,
     ModalBackend,
     ProviderBackend,
     Standing,
@@ -20,7 +24,7 @@ from mainboard.dispatch.schedulers import Resources
 from mainboard.manifest import HostProfile
 
 from ..conftest import profile
-from .conftest import FakeTransport, hpc_ai_backend, vast_backend
+from .conftest import BareBackend, FakeTransport, hpc_ai_backend, vast_backend
 
 # --- route ---
 
@@ -44,28 +48,56 @@ def test_route_raises_a_mission_error_naming_known_kinds_for_an_unregistered_kin
     assert "hpc-ai" in str(excinfo.value)
 
 
-# --- Backend protocol ---
-
-
-def test_modal_backend_satisfies_the_backend_protocol_structurally() -> None:
-    assert isinstance(ModalBackend(), Backend)
-
-
-def test_hpc_ai_backend_satisfies_the_backend_protocol_structurally() -> None:
-    assert isinstance(hpc_ai_backend(transport=FakeTransport()), Backend)
-
-
-def test_vast_backend_satisfies_the_backend_protocol_structurally() -> None:
-    assert isinstance(vast_backend(), Backend)
-
-
-def test_an_unrelated_object_does_not_satisfy_the_backend_protocol() -> None:
-    assert not isinstance(object(), Backend)
+# --- the core contract and its capabilities ---
 
 
 def test_provider_backend_root_cannot_be_instantiated_directly() -> None:
     with pytest.raises(TypeError):
         ProviderBackend()  # type: ignore[abstract]  reason=proving the abstract contract is enforced since=2026-08-17
+
+
+def test_every_backend_carries_the_job_lifecycle_and_nothing_it_cannot_honor() -> None:
+    """The capability map, asserted as a table so a new backend's shape is one line to read."""
+    carried = {
+        "modal": ModalBackend(),
+        "hpc-ai": hpc_ai_backend(transport=FakeTransport()),
+        "vast": vast_backend(),
+        "bare": BareBackend(),
+    }
+    assert {
+        name: sorted(
+            contract.__name__
+            for contract in (Account, Delivery, LogSource, Market)
+            if isinstance(backend, contract)
+        )
+        for name, backend in carried.items()
+    } == {
+        "modal": ["Account", "LogSource"],
+        "hpc-ai": ["Account"],
+        "vast": ["Account", "LogSource", "Market"],
+        "bare": [],
+    }
+
+
+@pytest.mark.parametrize("contract", [Account, Delivery, LogSource, Market])
+def test_every_capability_is_one_of_the_optional_halves_of_the_contract(
+    contract: type[Capability],
+) -> None:
+    assert issubclass(contract, Capability)
+    assert not issubclass(ProviderBackend, contract)
+
+
+# --- refusal ---
+
+
+def test_a_declared_gap_refuses_with_the_backends_own_advice() -> None:
+    assert BareBackend().refusal(LogSource, handle="bare-1") == (
+        "bare backend keeps no logs; read bare-1.log on the box instead"
+    )
+
+
+def test_an_undeclared_gap_refuses_by_naming_the_contract_it_never_implemented() -> None:
+    assert BareBackend().refusal(Delivery) == ("the bare backend does not implement Delivery")
 
 
 # --- require_budget ---

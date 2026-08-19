@@ -5,12 +5,12 @@ from typing import NoReturn
 import pytest
 
 from mainboard import MissionError
-from mainboard.dispatch.backends import ModalBackend
+from mainboard.dispatch.backends import Delivery, ModalBackend
 from mainboard.dispatch.backends.modal import declared_credit
 from mainboard.dispatch.schedulers import JobState, Resources
 from mainboard.manifest import Container
 
-from .conftest import FakeModal, ModalFault, plan
+from .conftest import FakeModal, ModalFault, environment, plan
 
 
 @pytest.fixture(autouse=True)
@@ -125,12 +125,59 @@ def test_cancel_terminates_the_sandbox(fake_modal: FakeModal) -> None:
     assert fake_modal.sandboxes[handle].terminated is True
 
 
-def test_deliver_raises_a_not_yet_mission_error_naming_volumes() -> None:
-    with pytest.raises(MissionError, match="Volume"):
-        ModalBackend().deliver("sb-0", path="out/results.json")
+def test_the_declared_delivery_gap_names_volumes_and_the_path_asked_for() -> None:
+    advice = ModalBackend().refusal(Delivery, handle="sb-0", path="out/results.json")
+    assert advice == (
+        "modal backend cannot deliver 'out/results.json' yet; mount a modal Volume at submit "
+        "time and pull it by hand until that path lands"
+    )
 
 
-# --- standing ---
+# --- standing, first preference: the cycle budget Modal itself keeps ---
+
+
+def test_standing_prefers_the_cycle_budget_less_what_the_cycle_has_used(
+    fake_modal: FakeModal,
+) -> None:
+    fake_modal.environments.items = [environment("main", default=True, budget=50.0, used=12.5)]
+    standing = ModalBackend().standing()
+    assert standing.keyed is True
+    assert standing.credit_usd == pytest.approx(37.5)
+    assert standing.note == "budget, $50.00 for main less $12.50 used this cycle"
+
+
+def test_standing_reads_the_default_environments_budget_ahead_of_any_other(
+    fake_modal: FakeModal,
+) -> None:
+    fake_modal.environments.items = [
+        environment("staging", budget=10.0, used=1.0),
+        environment("main", default=True, budget=50.0, used=12.5),
+    ]
+    assert ModalBackend().standing().note.endswith("for main less $12.50 used this cycle")
+
+
+def test_a_workspace_that_never_set_a_budget_falls_through_to_the_derivation(
+    fake_modal: FakeModal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zero budget is what an unbudgeted workspace really answers, not a zero balance."""
+    monkeypatch.setenv("MODAL_CREDIT_USD", "30")
+    assert ModalBackend().standing().note.startswith("derived,")
+
+
+def test_a_workspace_without_the_budget_feature_degrades_quietly_to_the_derivation(
+    fake_modal: FakeModal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MODAL_CREDIT_USD", "30")
+    fake_modal.environments.refusal = ModalFault(
+        "Environment budgets are not enabled for this workspace"
+    )
+    standing = ModalBackend().standing()
+    assert standing.keyed is True
+    assert standing.note.startswith("derived,")
+    assert "budget" not in standing.note
+
+
+# --- standing, second preference: the declared credit less the metered spend ---
 
 
 def test_declared_credit_reads_the_env_and_defaults_to_nothing_declared(

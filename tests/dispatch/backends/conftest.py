@@ -10,7 +10,8 @@ from urllib.error import HTTPError
 import pytest
 
 from mainboard import ExecutionPlan
-from mainboard.dispatch.backends import HpcAiBackend, VastBackend
+from mainboard.dispatch.backends import HpcAiBackend, LogSource, ProviderBackend, VastBackend
+from mainboard.dispatch.schedulers import JobState, Resources
 from mainboard.manifest import Container, HostProfile
 
 if TYPE_CHECKING:
@@ -21,6 +22,29 @@ if TYPE_CHECKING:
 
 type PlanField = str | HostProfile | Container | dict[str, str] | None
 type Reply = dict | str | HTTPError
+
+
+class BareBackend(ProviderBackend):
+    """A backend with the job lifecycle and not one capability beyond it.
+
+    The shape every discovery site has to handle. It declares where its logs would live and says
+    nothing at all about delivery, so this one double covers both halves of `refusal`, the advice
+    a backend wrote for itself and the plain statement of a gap it never described.
+    """
+
+    name = "bare"
+
+    lacks = {LogSource: "bare backend keeps no logs; read {handle}.log on the box instead"}
+
+    def cancel(self, handle: str) -> None:
+        self.cancelled = handle
+
+    def state(self, handle: str) -> JobState:
+        return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
+
+    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+        del plan, command, resources
+        return "bare-1"
 
 
 def hpc_ai_backend(*, transport: Transport, spot: bool = False) -> HpcAiBackend:
@@ -131,20 +155,49 @@ class FakeBilling:
         return self.reply
 
 
+class FakeEnvironments:
+    """A `modal.environments` double: one environment list a test reshapes, or a fault it queues.
+
+    Each item mirrors only the budget fields `standing` reads off a real `EnvironmentListItem`.
+    The default answers a zero budget, which is what a workspace that never set one really says.
+    """
+
+    def __init__(self) -> None:
+        self.refusal: Exception | None = None
+        self.items = [environment("main", default=True)]
+
+    def list_environments(self) -> list[SimpleNamespace]:
+        if self.refusal:
+            raise self.refusal
+        return self.items
+
+
+def environment(
+    name: str, *, default: bool = False, budget: float = 0.0, used: float = 0.0
+) -> SimpleNamespace:
+    """One `EnvironmentListItem` double, named, budgeted, and used to whatever a test needs."""
+    return SimpleNamespace(
+        name=name, default=default, cycle_budget_dollars=budget, current_cycle_usage=used
+    )
+
+
 class FakeModal(SimpleNamespace):
     """A fully faked `modal` module: only the surface `ModalBackend` actually calls.
 
     `config.config` mirrors the real module's settings mapping, which is where the SDK itself
     looks for the token pair before its first call; a test blanks an entry to stand for a
-    machine nobody ran `modal token new` on. `Workspace.from_context().billing` is the one
-    account read the SDK offers, reachable here through the same `billing` the test holds.
+    machine nobody ran `modal token new` on. `environments.list_environments` and
+    `Workspace.from_context().billing` are the two account reads the SDK offers, reachable here
+    through the same `environments` and `billing` the test holds.
     """
 
     def __init__(self) -> None:
         self.sandboxes: dict[str, FakeSandbox] = {}
         self.billing = FakeBilling()
+        self.environments = FakeEnvironments()
         super().__init__(
             config=SimpleNamespace(config={"token_id": "ak-1", "token_secret": "as-1"}),
+            environments=self.environments,
             exception=SimpleNamespace(Error=ModalFault),
             Workspace=SimpleNamespace(from_context=lambda: SimpleNamespace(billing=self.billing)),
             Image=SimpleNamespace(

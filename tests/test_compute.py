@@ -10,7 +10,7 @@ from mainboard.dispatch.backends import ProviderBackend, VastBackend
 from mainboard.dispatch.transport import HostUnreachable, SshTransport
 from mainboard.probe.snapshot import GpuFact
 
-from .dispatch.backends.conftest import not_found, vast_backend
+from .dispatch.backends.conftest import BareBackend, not_found, vast_backend
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -176,6 +176,13 @@ def test_a_provider_with_no_key_is_a_row_naming_the_variable_to_set(
     assert row.access is Access.UNKEYED
     assert row.credit_usd is None
     assert "VAST_API_KEY" in row.detail
+
+
+def test_a_provider_answering_for_no_account_is_listed_with_what_it_lacks(board: Board) -> None:
+    """A survey stays a listing, so a backend with no account notion is a row, not a raise."""
+    row = named(survey(board, providers=(BareBackend(),)).paths())["bare"]
+    assert row.access is Access.UNKEYED
+    assert row.detail == "the bare backend does not implement Account"
 
 
 def test_a_provider_that_will_not_answer_is_a_row_state_not_a_failure(

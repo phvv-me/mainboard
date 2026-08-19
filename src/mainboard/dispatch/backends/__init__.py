@@ -3,14 +3,29 @@
 # `HostProfile.kind`. Each REST backend reads its own key through its module's `api_key`, so the
 # one exported here stays HPC-AI's and `vast.api_key` is imported from its module by name.
 
-from .base import Backend, ProviderBackend, Standing, http_transport, require_budget, route
+from .base import (
+    Account,
+    Capability,
+    Delivery,
+    LogSource,
+    Market,
+    ProviderBackend,
+    Standing,
+    http_transport,
+    require_budget,
+    route,
+)
 from .hpcai import HpcAiBackend, api_key
 from .modal import ModalBackend
 from .vast import VastBackend
 
 __all__ = [
-    "Backend",
+    "Account",
+    "Capability",
+    "Delivery",
     "HpcAiBackend",
+    "LogSource",
+    "Market",
     "ModalBackend",
     "ProviderBackend",
     "Standing",

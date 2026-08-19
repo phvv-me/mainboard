@@ -7,9 +7,17 @@ from plumbum import local
 from mainboard import Board, Fleet, HostFacts, Job, MissionError, Survey
 from mainboard.board import ProviderJob
 from mainboard.dispatch import Handle, HostSetup, Verdict
-from mainboard.dispatch.backends import ProviderBackend, Standing
+from mainboard.dispatch.backends import (
+    Account,
+    Delivery,
+    LogSource,
+    ProviderBackend,
+    Standing,
+)
 from mainboard.dispatch.schedulers import JobState
 from mainboard.dispatch.state import RunRecord
+
+from .dispatch.backends.conftest import BareBackend
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -365,8 +373,11 @@ def test_compute_surveys_the_whole_workspace_whatever_host_the_board_is_bound_to
     assert survey.board.manifest is board.manifest
 
 
-class _FakeCloud(ProviderBackend):
-    """A registered `fakecloud`-kind backend, module-level so it registers exactly once."""
+class _FakeCloud(ProviderBackend, Account, Delivery, LogSource):
+    """A registered `fakecloud`-kind backend carrying every capability, so nothing is refused.
+
+    Module-level so it registers exactly once.
+    """
 
     name = "fakecloud"
     submitted: list[str] = []
@@ -431,6 +442,17 @@ def test_provider_job_wait_logs_kill_and_pull_delegate_to_the_backend(
     assert verdict.ok and job.logs() == "cloud log"
     job.kill()
     job.pull("results/")
+
+
+def test_a_provider_job_refuses_a_capability_its_backend_never_had(board: Board) -> None:
+    """The absence is discovered before the call, and answered with the backend's own advice."""
+    job = ProviderJob(BareBackend(), "bare-1")
+    job.kill()
+    assert job.wait(poll=lambda seconds: None).ok
+    with pytest.raises(MissionError, match=r"bare backend keeps no logs; read bare-1\.log"):
+        job.logs()
+    with pytest.raises(MissionError, match="does not implement Delivery"):
+        job.pull("results/")
 
 
 def test_job_state_is_a_non_blocking_probe(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:

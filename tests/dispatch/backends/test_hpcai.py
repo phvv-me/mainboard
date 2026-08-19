@@ -3,7 +3,13 @@ import json
 import pytest
 
 from mainboard import MissionError
-from mainboard.dispatch.backends import HpcAiBackend, api_key, http_transport
+from mainboard.dispatch.backends import (
+    Delivery,
+    HpcAiBackend,
+    LogSource,
+    api_key,
+    http_transport,
+)
 from mainboard.dispatch.schedulers import Resources
 from mainboard.manifest import HostProfile
 
@@ -113,10 +119,12 @@ def test_state_maps_instance_runtime_status_onto_a_verdict(status: str, *, verdi
 # --- logs / cancel / deliver ---
 
 
-def test_logs_raises_naming_the_volume_tail_path() -> None:
-    backend = hpc_ai_backend(transport=FakeTransport())
-    with pytest.raises(MissionError, match=r"/mnt/vol/h1\.log"):
-        backend.logs("h1")
+def test_the_declared_log_gap_names_the_volume_tail_path() -> None:
+    advice = hpc_ai_backend(transport=FakeTransport()).refusal(LogSource, handle="h1")
+    assert advice == (
+        "hpc-ai backend has no server-side logs; tail /mnt/vol/h1.log on the instance's "
+        "mounted volume instead"
+    )
 
 
 def test_cancel_posts_stop_then_delete() -> None:
@@ -151,10 +159,13 @@ def test_standing_without_a_key_names_the_variable_and_never_calls_out(
     assert transport.calls == []
 
 
-def test_deliver_raises_naming_the_volume_path() -> None:
+def test_the_declared_delivery_gap_names_the_volume_path_and_the_path_asked_for() -> None:
     backend = hpc_ai_backend(transport=FakeTransport())
-    with pytest.raises(MissionError, match=r"/mnt/vol/h1"):
-        backend.deliver("h1", path="out/results.json")
+    advice = backend.refusal(Delivery, handle="h1", path="out/results.json")
+    assert advice == (
+        "hpc-ai backend cannot deliver 'out/results.json' yet; download /mnt/vol/h1.* from the "
+        "instance's mounted volume by hand until that path lands"
+    )
 
 
 def test_default_transport_is_the_shared_seam() -> None:

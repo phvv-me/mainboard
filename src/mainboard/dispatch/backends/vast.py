@@ -15,7 +15,16 @@ from ...core.errors import MissionError
 from ...costs.imports import from_vast
 from ..jobs.spec import walltime_seconds
 from ..schedulers.base import JobState
-from .base import ProviderBackend, Standing, http_transport, require_budget
+from .base import (
+    Account,
+    Delivery,
+    LogSource,
+    Market,
+    ProviderBackend,
+    Standing,
+    http_transport,
+    require_budget,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -87,7 +96,7 @@ def api_key() -> str:
     return key
 
 
-class VastBackend(ProviderBackend):
+class VastBackend(ProviderBackend, Account, LogSource, Market):
     """Rent a Vast.ai machine for one command, the container's own lifetime being the job's.
 
     Vast rents whole containers rather than running jobs, so `submit` picks the cheapest rentable
@@ -100,9 +109,18 @@ class VastBackend(ProviderBackend):
     the command rather than the container that happened to stop cleanly around it.
 
     Stateless between calls: every method addresses an instance by the id `submit` returned.
+
+    It is the one backend that quotes a market, since renting is what it does, and the one that
+    cannot deliver an artifact, since the disk it wrote to is destroyed with the rental.
     """
 
     name = "vast"
+
+    lacks = {
+        Delivery: "vast backend cannot deliver {path!r} yet; a rented machine's disk dies with "
+        "the instance, so have the command upload its own results and read `logs {handle}` "
+        "until that path lands",
+    }
 
     def __init__(
         self,
@@ -124,13 +142,6 @@ class VastBackend(ProviderBackend):
 
     def cancel(self, handle: str) -> None:
         self.request("DELETE", path=f"/instances/{handle}/")
-
-    def deliver(self, handle: str, *, path: str) -> None:
-        raise MissionError(
-            f"vast backend cannot deliver {path!r} yet; a rented machine's disk dies with the "
-            f"instance, so have the command upload its own results and read `logs {handle}` "
-            "until that path lands"
-        )
 
     def logs(self, handle: str) -> str:
         payload = self.request(
@@ -235,16 +246,17 @@ class VastBackend(ProviderBackend):
         payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
         return str(payload["new_contract"])
 
-    def catalog(
-        self, *, gpu_name: str = "", gpus: int = 0, limit: int = _SEARCH_LIMIT
-    ) -> list[Offer]:
+    def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
         """A live offer search as catalog rows, the authed refresh of the imported price feed.
 
         gpu_name: the Vast GPU name to narrow to, empty for the whole market.
         gpus: the GPU count per machine, 0 for any.
-        limit: how many offers to bring back.
+        limit: how many offers to bring back, 0 for this backend's own page size.
         """
-        return from_vast(self.search(gpu_name=gpu_name, gpus=gpus, limit=limit), spot=self.spot)
+        return from_vast(
+            self.search(gpu_name=gpu_name, gpus=gpus, limit=limit or _SEARCH_LIMIT),
+            spot=self.spot,
+        )
 
     def cheapest(self, *, gpu_name: str, gpus: int, max_usd_hr: float = 0.0) -> dict:
         """The lowest-priced offer matching the request, refusing when the market has none.

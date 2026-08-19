@@ -15,7 +15,15 @@ from uuid import uuid4
 
 from ...core.errors import MissionError
 from ..schedulers.base import JobState
-from .base import ProviderBackend, Standing, http_transport, require_budget
+from .base import (
+    Account,
+    Delivery,
+    LogSource,
+    ProviderBackend,
+    Standing,
+    http_transport,
+    require_budget,
+)
 
 if TYPE_CHECKING:
     from ...context.plan import ExecutionPlan
@@ -66,7 +74,7 @@ def _required_var(profile: HostProfile, key: str) -> str:
         ) from None
 
 
-class HpcAiBackend(ProviderBackend):
+class HpcAiBackend(ProviderBackend, Account):
     """Run a command on an HPC-AI instance, its own REST API standing in for a scheduler.
 
     HPC-AI reports instance-level status only (`instanceRuntimeInfo.status`), never a process
@@ -74,9 +82,22 @@ class HpcAiBackend(ProviderBackend):
     captured output to sentinel files on the instance's mounted volume; `state` reports whether
     the instance itself is still up, and the sentinel files are the source of truth for the
     command's own outcome.
+
+    Those sentinel files are also why this is the one backend that carries neither `LogSource`
+    nor `Delivery`: an instance's output never leaves its own mounted volume, so there is no
+    server-side log to fetch and nothing to deliver from here. Both gaps are declared in `lacks`
+    with the path to read by hand instead.
     """
 
     name = "hpc-ai"
+
+    lacks = {
+        Delivery: "hpc-ai backend cannot deliver {path!r} yet; download "
+        f"{_VOLUME_PATH}/{{handle}}.* from the instance's mounted volume by hand until that "
+        "path lands",
+        LogSource: f"hpc-ai backend has no server-side logs; tail {_VOLUME_PATH}/{{handle}}.log "
+        "on the instance's mounted volume instead",
+    }
 
     def __init__(self, *, spot: bool = False, transport: Transport = http_transport) -> None:
         """spot: whether created instances are spot (cost-optimized, preemptible).
@@ -88,19 +109,6 @@ class HpcAiBackend(ProviderBackend):
     def cancel(self, handle: str) -> None:
         self._request("POST", path="/instance/stop", body={"name": handle})
         self._request("POST", path="/instance/delete", body={"name": handle})
-
-    def deliver(self, handle: str, *, path: str) -> None:
-        raise MissionError(
-            f"hpc-ai backend cannot deliver {path!r} yet; download "
-            f"{_VOLUME_PATH}/{handle}.* from the instance's mounted volume by hand until that "
-            "path lands"
-        )
-
-    def logs(self, handle: str) -> str:
-        raise MissionError(
-            f"hpc-ai backend has no server-side logs; tail {_VOLUME_PATH}/{handle}.log on the "
-            "instance's mounted volume instead"
-        )
 
     def state(self, handle: str) -> JobState:
         payload = self._request("POST", path="/instance/list", body={})

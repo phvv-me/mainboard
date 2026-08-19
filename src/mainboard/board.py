@@ -12,7 +12,7 @@ from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
-from .dispatch.backends.base import ProviderBackend, route
+from .dispatch.backends.base import Delivery, LogSource, ProviderBackend, route
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
 from .dispatch.schedulers import pick
@@ -77,7 +77,12 @@ class Job:
 
 
 class ProviderJob:
-    """One provider-dispatched run, the transport-free twin of `Job`."""
+    """One provider-dispatched run, the transport-free twin of `Job`.
+
+    Only the lifecycle is guaranteed here, since only the lifecycle is on every backend. Logs and
+    artifact delivery are capabilities, so each is asked for by contract first and refuses with
+    the backend's own advice when that backend never had one.
+    """
 
     def __init__(self, backend: ProviderBackend, handle: str) -> None:
         """backend: the provider backend instance that submitted this run.
@@ -92,11 +97,15 @@ class ProviderJob:
         self.backend.cancel(self.handle)
 
     def logs(self) -> str:
-        """The run's captured log so far."""
+        """The run's captured log so far, refusing when this provider keeps none."""
+        if not isinstance(self.backend, LogSource):
+            raise MissionError(self.backend.refusal(LogSource, handle=self.handle))
         return self.backend.logs(self.handle)
 
     def pull(self, path: str) -> None:
-        """Bring the run's output at `path` back to this machine."""
+        """Bring the run's output at `path` back to this machine, refusing when it cannot."""
+        if not isinstance(self.backend, Delivery):
+            raise MissionError(self.backend.refusal(Delivery, handle=self.handle, path=path))
         self.backend.deliver(self.handle, path=path)
 
     def wait(

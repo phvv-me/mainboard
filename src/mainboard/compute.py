@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from .core.errors import MissionError
-from .dispatch.backends.base import ProviderBackend, route
+from .dispatch.backends.base import Account, ProviderBackend, route
 from .dispatch.transport import HostUnreachable, SshTransport
 from .probe.snapshot import HostFacts
 
@@ -190,8 +190,19 @@ class Survey:
     def provider(self, backend: ProviderBackend) -> ComputePath:
         """One provider backend: whether its credentials are here, and what it says they buy.
 
+        Answering for an account is a capability rather than part of every backend, so one that
+        never had the notion is listed with what it lacks instead of being asked and made to
+        raise. That is the whole point of discovering the contract here: a survey stays a listing.
+
         backend: the registered backend to ask, which answers for its own account.
         """
+        if not isinstance(backend, Account):
+            return ComputePath(
+                name=backend.name,
+                kind=_PROVIDER,
+                access=Access.UNKEYED,
+                detail=backend.refusal(Account),
+            )
         try:
             standing = backend.standing()
         except _PROBE_FAULTS as fault:
