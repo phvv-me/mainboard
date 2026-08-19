@@ -120,6 +120,18 @@ def build(root: Path | None = None) -> App:
             board(on).install(env, resolve=resolve, profile=profile, watch=stage)
 
     @app.command
+    def shell(env: str = "") -> NoReturn:
+        """Open an interactive shell with this workspace's environment already activated.
+
+        The daily way in, and the one verb that works from a terminal where nothing is
+        activated yet. This process becomes the shell, so quitting it returns to the terminal
+        that asked.
+
+        env: the environment name, the profile's declared choice when omitted.
+        """
+        board("local").shell(env)
+
+    @app.command
     def setup(
         host: str,
         *,

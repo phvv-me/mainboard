@@ -1,7 +1,8 @@
+import os
 import time
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NoReturn, cast
 
 from plumbum import FG, ProcessExecutionError
 from plumbum import local as localhost
@@ -15,7 +16,7 @@ from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
 from .dispatch.schedulers import pick
 from .dispatch.schedulers.base import Resources
-from .dispatch.wrapping import connection, wrap
+from .dispatch.wrapping import connection, missing, wrap
 from .engines.compile.provisioner import Provisioner, task_line
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
@@ -323,6 +324,39 @@ class Board:
             return _streamed(localhost["bash"]["-lc", line])
         with connection(self.host) as remote:
             return _streamed(remote["bash"]["-lc", line])
+
+    def shell(
+        self, env: str = "", *, replace: Callable[[str, list[str]], NoReturn] = os.execv
+    ) -> NoReturn:
+        """Hand this terminal to an interactive shell inside the workspace environment.
+
+        pixi already owns interactive activation, so the shell is `pixi shell` pointed at the
+        generated workspace rather than a second activation written here. This process is
+        replaced instead of wrapped, so the shell owns the terminal and every signal reaching
+        it, and leaving the shell lands back where the user started rather than in a parent
+        this tool left waiting. An environment nothing provisioned is refused the way a wrapped
+        command is, naming the one command that fixes it, since a shell on whatever interpreter
+        the machine happens to ship is exactly what the staging exists to prevent.
+
+        The shell enters frozen, so opening one reads the lock and never rewrites it. Left to
+        itself pixi treats entering an environment as a reason to bring the lock up to date
+        with the manifest, which turns the everyday way into a workspace into an implicit solve
+        nobody asked for, and this tool has one deliberate door for that, `install --resolve`.
+
+        env: the environment name, the host profile's own when empty.
+        replace: the process-replacing exec, injectable so a test can read the argv it built.
+        """
+        if not self.local:
+            raise MissionError(
+                f"a shell runs on this machine only. Ssh to {self.host} and run "
+                f"`{self.project.name} shell` there."
+            )
+        plan = self.plan(env=env, container="none")
+        pixi = Provisioner(self.root, self.manifest).pixi
+        if not pixi.ready(plan.env):
+            raise MissionError(missing(plan, plan.prefix(str(self.root))))
+        binary = str(pixi.command.executable)
+        replace(binary, [binary, "shell", *pixi.scope(), "--frozen", "-e", plan.env])
 
     def submit(
         self,

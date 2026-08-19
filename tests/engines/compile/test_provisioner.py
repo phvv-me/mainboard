@@ -188,7 +188,7 @@ def test_task_line_hands_a_workspace_task_to_pixi_in_the_generated_workspace(
     """The manifest path is relative because a wrapped command already changed into the root."""
     manifest = manifest_from('[workspace]\nname = "w"\n[tasks]\nlint = "ruff check"\n')
     assert task_line(manifest, "lint --fix", env="default") == (
-        "pixi run --manifest-path .mainboard/pixi.toml -e default lint --fix"
+        "pixi run --manifest-path .mainboard/pixi.toml --frozen -e default lint --fix"
     )
 
 

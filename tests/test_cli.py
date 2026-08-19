@@ -176,6 +176,26 @@ def test_run_verb_still_documents_itself_before_the_delimiter(
     assert "container" in capsys.readouterr().out
 
 
+def test_shell_verb_opens_the_named_environment_on_this_machine(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(Board, "shell", lambda self, env: seen.append((self.host, env)))
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["shell", "--env", "serving"])
+    assert seen == [("local", "serving")]
+
+
+def test_shell_verb_defaults_to_the_profiles_environment(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(Board, "shell", lambda self, env: seen.append((self.host, env)))
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["shell"])
+    assert seen == [("local", "")]
+
+
 def test_submit_verb_prints_the_handle(
     workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

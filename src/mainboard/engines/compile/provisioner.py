@@ -37,7 +37,10 @@ def task_line(manifest: Manifest, command: str, *, env: str) -> str:
     if command.partition(" ")[0] not in declared:
         return command
     generated = f"{Project().out_dir}/{Pixi.filename}"
-    return f"pixi run --manifest-path {generated} -e {env} {command}"
+    # Frozen, or every task invocation could silently re-solve and rewrite the lock, which
+    # on a remote host would overwrite the pair the workstation shipped. Locks change only
+    # through an explicit resolve.
+    return f"pixi run --manifest-path {generated} --frozen -e {env} {command}"
 
 
 class Provisioner:

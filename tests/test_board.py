@@ -1,6 +1,8 @@
-from typing import TYPE_CHECKING
+import os
+from typing import TYPE_CHECKING, NoReturn
 
 import pytest
+from plumbum import local
 
 from mainboard import Board, Fleet, HostFacts, Job, MissionError
 from mainboard.board import ProviderJob
@@ -10,14 +12,37 @@ from mainboard.dispatch.schedulers import JobState
 from mainboard.dispatch.state import RunRecord
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 _MIYABI_G = "miyabi-g"
 
 
+class Replaced(Exception):
+    """What the injected exec seam raises, standing in for this process being replaced."""
+
+
 @pytest.fixture
 def board(workspace: Path) -> Board:
     return Board(workspace)
+
+
+@pytest.fixture
+def provisioned(board: Board, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """A finished `default` installation and a stub `pixi` on PATH, yielding the binary's path.
+
+    pixi stamps the fingerprint only once an install completes, so writing it is what makes
+    the workspace look provisioned, and the stub is what a shell would have been replaced by.
+    """
+    fingerprint = board.root / ".mainboard" / ".pixi" / "envs" / "default" / "conda-meta"
+    fingerprint.mkdir(parents=True)
+    (fingerprint / ".pixi-environment-fingerprint").write_text("installed\n")
+    bindir = tmp_path_factory.mktemp("bin")
+    binary = bindir / "pixi"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    with local.env(PATH=f"{bindir}{os.pathsep}{local.env['PATH']}"):
+        yield str(binary)
 
 
 def test_on_binds_the_host_and_shares_the_loaded_manifest(board: Board) -> None:
@@ -50,7 +75,7 @@ def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
     board.run("pytest --quiet")
 
     assert staged == [
-        "pixi run --manifest-path .mainboard/pixi.toml -e default test --quiet",
+        "pixi run --manifest-path .mainboard/pixi.toml --frozen -e default test --quiet",
         "pytest --quiet",
     ]
 
@@ -215,6 +240,35 @@ def test_installing_a_host_provisions_the_environment_its_profile_names(
     monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
     board.on("gold").install()
     assert seen == {"env": "serving"}
+
+
+def test_shell_replaces_this_process_with_a_frozen_pixi_shell(
+    board: Board, provisioned: str
+) -> None:
+    """The terminal goes to `pixi shell`, pinned to the workspace and forbidden to solve."""
+    seen: list[tuple[str, list[str]]] = []
+
+    def replace(path: str, argv: list[str]) -> NoReturn:
+        seen.append((path, argv))
+        raise Replaced
+
+    with pytest.raises(Replaced):
+        board.shell(replace=replace)
+
+    manifest = str(board.root / ".mainboard" / "pixi.toml")
+    argv = [provisioned, "shell", "--manifest-path", manifest, "--frozen", "-e", "default"]
+    assert seen == [(provisioned, argv)]
+
+
+def test_shell_refuses_an_environment_nothing_provisioned(board: Board) -> None:
+    """A shell on the system interpreter is the failure the refusal exists to prevent."""
+    with pytest.raises(MissionError, match="Run `mainboard install serving`"):
+        board.shell("serving")
+
+
+def test_shell_refuses_on_a_bound_host(board: Board) -> None:
+    with pytest.raises(MissionError, match="this machine only"):
+        board.on("gold").shell()
 
 
 def test_job_logs_and_kill_use_keyword_scheduler_calls(
