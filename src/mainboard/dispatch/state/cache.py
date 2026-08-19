@@ -18,10 +18,12 @@ if TYPE_CHECKING:
 class RunRecord(FrozenModel):
     """One dispatched job's provenance, the `runs` table row payload.
 
-    handle: the scheduler's job handle (the dispatch-wide run id).
+    handle: the scheduler's job handle, or a provider's own run id (the dispatch-wide run id).
     target: the alias the job was dispatched to.
-    kind: the target's scheduler kind at submit time (`ssh` / `pbs` / `slurm` / `local`).
-    script: the job script path on the host.
+    kind: the target's kind at submit time, a scheduler's (`ssh` / `pbs` / `slurm` / `local`) or
+        a provider's (`vast` / `hpc-ai` / `modal`), which is what a later pass routes on.
+    script: the job script path on the host, or the command itself for a provider run, which
+        has no script because the provider took the command directly.
     args: the script arguments, shell-quoted and space-joined.
     git_sha: the short HEAD sha the workspace was at when dispatched.
     dirty: 1 when the working tree had uncommitted changes, else 0.

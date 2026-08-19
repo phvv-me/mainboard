@@ -1,5 +1,6 @@
 import sys
 from decimal import Decimal
+from pathlib import Path
 from typing import NoReturn
 
 import pytest
@@ -125,6 +126,14 @@ def test_cancel_terminates_the_sandbox(fake_modal: FakeModal) -> None:
     assert fake_modal.sandboxes[handle].terminated is True
 
 
+def test_cancel_treats_a_sandbox_modal_already_forgot_as_terminated(
+    fake_modal: FakeModal,
+) -> None:
+    """A sweep cancels every run it settles, so the same sandbox is cancelled more than once."""
+    ModalBackend().cancel("sb-gone")
+    assert fake_modal.sandboxes == {}
+
+
 def test_the_declared_delivery_gap_names_volumes_and_the_path_asked_for() -> None:
     advice = ModalBackend().refusal(Delivery, handle="sb-0", path="out/results.json")
     assert advice == (
@@ -186,6 +195,15 @@ def test_declared_credit_reads_the_env_and_defaults_to_nothing_declared(
     assert declared_credit() == pytest.approx(0.0)
     monkeypatch.setenv("MODAL_CREDIT_USD", "30.50")
     assert declared_credit() == pytest.approx(30.5)
+
+
+def test_declared_credit_reads_a_figure_only_the_workspace_env_carries(
+    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The declaration lives beside the provider keys, so it is loaded the same way they are."""
+    monkeypatch.chdir(workspace)
+    (workspace / ".env").write_text("MODAL_CREDIT_USD=30\n")
+    assert declared_credit() == pytest.approx(30.0)
 
 
 def test_declared_credit_refuses_a_value_that_is_not_a_dollar_amount(

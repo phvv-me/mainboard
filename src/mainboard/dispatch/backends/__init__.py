@@ -6,6 +6,7 @@
 from .base import (
     Account,
     Capability,
+    Credentials,
     Delivery,
     LogSource,
     Market,
@@ -22,6 +23,7 @@ from .vast import VastBackend
 __all__ = [
     "Account",
     "Capability",
+    "Credentials",
     "Delivery",
     "HpcAiBackend",
     "LogSource",
@@ -34,4 +36,5 @@ __all__ = [
     "http_transport",
     "require_budget",
     "route",
+    "Credentials",
 ]

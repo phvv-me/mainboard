@@ -10,7 +10,9 @@
 
 import json
 import os
+from contextlib import suppress
 from typing import TYPE_CHECKING
+from urllib.error import HTTPError
 from urllib.request import Request
 from uuid import uuid4
 
@@ -18,6 +20,7 @@ from ...core.errors import MissionError
 from ..schedulers.base import JobState
 from .base import (
     Account,
+    Credentials,
     Delivery,
     LogSource,
     ProviderBackend,
@@ -64,8 +67,11 @@ def api_key() -> str:
     """The HPC-AI key from `HPCAI_API_KEY`, refusing with the setup hint when unset.
 
     Console API keys authenticate the instance namespace through the `X-API-Key`
-    header (verified live 2026-08-18), so no login flow or cookie JWT exists here.
+    header (verified live 2026-08-18), so no login flow or cookie JWT exists here. The workspace
+    `.env` the refusal names is merged in first, so the hint below is advice this same function
+    then acts on rather than a chore left to whoever reads it.
     """
+    Credentials().load()
     key = os.environ.get("HPCAI_API_KEY", "")
     if not key:
         raise MissionError(
@@ -125,9 +131,20 @@ class HpcAiBackend(ProviderBackend, Account):
         `/instance/terminate` is the destroy endpoint, verified live 2026-08-19. Their docs page
         for it is titled "delete" and its own cURL example calls `/instance/terminate`; the
         `/instance/delete` path the title implies answers 404.
+
+        Both halves tolerate an instance that is already down, since every run the durable sweep
+        settles is cancelled and the same run can be settled twice, by a pass killed before it
+        advanced its cursor or by someone who ended the rental by hand. Stopping is preparation
+        rather than the point, so its refusal never blocks the terminate that ends the billing,
+        and a terminate the provider answers with a 404 has reached the state it was asked for.
         """
-        self.request("POST", path="/instance/stop", body={"instanceId": handle})
-        self.request("POST", path="/instance/terminate", body={"instanceId": handle})
+        with suppress(HTTPError):
+            self.request("POST", path="/instance/stop", body={"instanceId": handle})
+        try:
+            self.request("POST", path="/instance/terminate", body={"instanceId": handle})
+        except HTTPError as error:
+            if error.status != 404:
+                raise
 
     def catalog(self) -> list[dict]:
         """Every rentable instance type, flattened to one row per type per region.

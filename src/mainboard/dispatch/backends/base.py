@@ -9,13 +9,17 @@
 # mid-sweep that this provider never had one.
 
 import abc
+import os
+from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
 from urllib.request import urlopen
 
-from patos import FrozenModel, Registry
+from patos import FrozenModel, Registry, Singleton
 from pydantic import field_validator
 
 from ...core.errors import MissionError
+from ...core.project import Project
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -23,7 +27,6 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
-    from ...manifest.schema.host import HostProfile
     from ..schedulers.base import JobState, Resources
 
     class HttpResponse(Protocol):
@@ -44,6 +47,77 @@ _SSH_FAMILY_KINDS = frozenset({"auto", "local", "pbs", "slurm", "ssh"})
 # than a wedged command. Generous enough for a cold offer search, short enough that a survey of
 # the whole fleet still finishes while someone is looking at it.
 _TIMEOUT_S = 10.0
+
+# Where a workspace keeps the provider credentials every refusal here tells someone to set.
+_ENV_FILE = ".env"
+
+
+class Credentials(Singleton):
+    """The workspace `.env`, merged into this process's environment once, on first use.
+
+    Every refusal a backend raises names a variable to set in the workspace `.env`, and nothing
+    else in the tool ever read that file, so a survey called a provider unkeyed on a machine
+    whose keys were sitting at the workspace root. This is the seam every backend crosses before
+    it looks a key up, so honoring the promise here honors it for all of them at once.
+
+    What the environment already holds always wins, so an exported key keeps its value and a
+    stale line in the file can never shadow a deliberate one. The file is read as data and never
+    as shell, meaning a line is `NAME=value`, blanks and `#` comments are skipped, one matching
+    pair of surrounding quotes comes off, and nothing is expanded, substituted or executed. No
+    value is ever logged or returned, only the names that were defined.
+
+    One shared instance, since merging a file into the environment is a thing that happens once
+    per process however many backends ask for it.
+    """
+
+    def __init__(self) -> None:
+        self.project = Project()
+        self.loaded = False
+        self.lock = Lock()
+
+    def load(self) -> tuple[str, ...]:
+        """Define what the workspace `.env` declares and this environment lacks, by name.
+
+        Empty on every call after the first, on a machine standing outside a workspace, and in a
+        workspace that keeps no `.env`, which are three ways of saying this call added nothing. A
+        workspace is found the way every other verb finds one, by walking up from the current
+        directory to the manifest.
+
+        The whole merge is one critical section rather than a flag flipped up front, because a
+        compute survey probes every provider at once. Marking the file read before it has been
+        read would let the second provider find nothing while the first is still merging, which
+        is a keyed account reported as unkeyed for no reason but timing (seen live 2026-08-19).
+        """
+        with self.lock:
+            if self.loaded:
+                return ()
+            self.loaded = True
+            return self.merged()
+
+    def merged(self) -> tuple[str, ...]:
+        """Read the workspace `.env` and define what it declares, returning only the names."""
+        try:
+            text = (self.project.find_root(Path.cwd()) / _ENV_FILE).read_text(encoding="utf-8")
+        except OSError:
+            return ()
+        defined: list[str] = []
+        for line in text.splitlines():
+            entry = line.strip().removeprefix("export ").strip()
+            if not entry or entry.startswith("#"):
+                continue
+            name, assigned, value = entry.partition("=")
+            name = name.strip()
+            if not name or not assigned or name in os.environ:
+                continue
+            os.environ[name] = self.unquoted(value.strip())
+            defined.append(name)
+        return tuple(defined)
+
+    @staticmethod
+    def unquoted(value: str) -> str:
+        """`value` with one matching pair of surrounding quotes off, the way a `.env` writes it."""
+        paired = len(value) > 1 and value[0] == value[-1] and value[0] in "\"'"
+        return value[1:-1] if paired else value
 
 
 class Standing(FrozenModel):
@@ -204,21 +278,23 @@ def require_budget(resources: Resources) -> None:
         raise MissionError("provider dispatch needs an explicit max-usd budget")
 
 
-def route(profile: HostProfile) -> Literal["ssh-family"] | type[ProviderBackend]:
-    """Whether `profile` runs the ssh-family `Scheduler` path or a `ProviderBackend` class.
+def route(kind: str) -> Literal["ssh-family"] | type[ProviderBackend]:
+    """Whether `kind` runs the ssh-family `Scheduler` path or a `ProviderBackend` class.
 
     `ssh`, `pbs`, `slurm` and `local` stay on the existing scheduler dispatch. Any other kind
-    resolves a `ProviderBackend` registered under `profile.kind`, raising a `MissionError`
-    naming the known provider kinds when none matches.
+    resolves a `ProviderBackend` registered under it, raising a `MissionError` naming the known
+    provider kinds when none matches.
 
-    profile: the resolved host profile whose `kind` selects the path.
+    The kind rather than the profile it came from, since a dispatched run is rebuilt from what
+    the dispatch cache recorded at submit time and there is no profile left to pass by then.
+
+    kind: the scheduler or provider kind selecting the path.
     """
-    if profile.kind in _SSH_FAMILY_KINDS:
+    if kind in _SSH_FAMILY_KINDS:
         return "ssh-family"
     try:
-        return ProviderBackend.find(profile.kind)
+        return ProviderBackend.find(kind)
     except KeyError:
         raise MissionError(
-            f"no provider backend for kind {profile.kind!r}; known kinds are "
-            f"{ProviderBackend.names()}"
+            f"no provider backend for kind {kind!r}; known kinds are {ProviderBackend.names()}"
         ) from None

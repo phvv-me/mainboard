@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -13,7 +15,10 @@ from mainboard.dispatch.backends import (
 from mainboard.dispatch.schedulers import Resources
 from mainboard.manifest import HostProfile
 
-from .conftest import FakeTransport, hpc_ai_backend, plan
+from .conftest import FakeTransport, Reply, hpc_ai_backend, plan, refused
+
+# The API root every refusal a test queues is attributed to.
+_API = "https://www.hpc-ai.com/api/instance/stop"
 
 
 def hpc_ai_plan(vars: dict[str, str] | None = None):
@@ -25,7 +30,7 @@ def hpc_ai_plan(vars: dict[str, str] | None = None):
     )
 
 
-def authed_backend(*responses: dict) -> HpcAiBackend:
+def authed_backend(*responses: Reply) -> HpcAiBackend:
     """An `HpcAiBackend` over a queued-response transport, key auth from the env fixture."""
     return hpc_ai_backend(transport=FakeTransport(*responses))
 
@@ -91,6 +96,16 @@ def test_api_key_reads_the_env_and_refuses_when_unset(monkeypatch: pytest.Monkey
     monkeypatch.delenv("HPCAI_API_KEY")
     with pytest.raises(MissionError, match="HPCAI_API_KEY"):
         api_key()
+
+
+def test_api_key_finds_a_key_only_the_workspace_env_declares(
+    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal tells someone to set the key in the workspace `.env`, so reading it is ours."""
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("HPCAI_API_KEY")
+    (workspace / ".env").write_text("HPCAI_API_KEY=from-the-workspace\n")
+    assert api_key() == "from-the-workspace"
 
 
 # --- submit ---
@@ -292,6 +307,25 @@ def test_cancel_stops_then_terminates_the_instance_by_id() -> None:
         "https://www.hpc-ai.com/api/instance/terminate",
     ]
     assert bodies(backend) == [{"instanceId": "notebook-42"}] * 2
+
+
+def test_cancel_terminates_even_when_the_instance_is_already_stopped() -> None:
+    """Stopping is preparation, so its refusal never blocks the call that ends the billing."""
+    backend = authed_backend(refused(400, _API), {})
+    backend.cancel("notebook-42")
+    urls = [request.full_url for request in backend.transport.calls]
+    assert urls[-1] == "https://www.hpc-ai.com/api/instance/terminate"
+
+
+def test_cancel_treats_an_instance_hpc_ai_already_forgot_as_terminated() -> None:
+    """A sweep cancels every run it settles, so the same instance is cancelled more than once."""
+    authed_backend(refused(400, _API), refused(404, _API)).cancel("notebook-42")
+
+
+def test_cancel_still_raises_when_the_terminate_itself_is_refused() -> None:
+    backend = authed_backend({}, refused(401, _API))
+    with pytest.raises(HTTPError):
+        backend.cancel("notebook-42")
 
 
 def test_standing_reads_the_account_balance_under_the_same_console_key() -> None:

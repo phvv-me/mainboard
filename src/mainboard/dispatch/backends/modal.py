@@ -23,13 +23,22 @@
 # the note says out loud that the figure is derived rather than reported.
 
 import os
+from contextlib import suppress
 from importlib import import_module
 from typing import TYPE_CHECKING
 
 from ...core.errors import MissionError
 from ..jobs.spec import walltime_seconds
 from ..schedulers.base import JobState
-from .base import Account, Delivery, LogSource, ProviderBackend, Standing, require_budget
+from .base import (
+    Account,
+    Credentials,
+    Delivery,
+    LogSource,
+    ProviderBackend,
+    Standing,
+    require_budget,
+)
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -61,8 +70,10 @@ def declared_credit() -> float:
     Modal reports what a cycle has cost and never what the account has left, so the starting
     figure has to come from the person who bought the credit. It is a plain number rather than a
     secret, and it lives beside the provider keys in the workspace `.env` because that is the one
-    file every provider's account-side settings already share.
+    file every provider's account-side settings already share, which is also why the file is
+    merged into the environment here before the lookup.
     """
+    Credentials().load()
     declared = os.environ.get(_CREDIT_VAR, "")
     if not declared:
         return 0.0
@@ -93,7 +104,14 @@ class ModalBackend(ProviderBackend, Account, LogSource):
     }
 
     def cancel(self, handle: str) -> None:
-        _modal().Sandbox.from_id(handle).terminate()
+        """Terminate the sandbox, tolerating one Modal has already forgotten.
+
+        Every run the durable sweep settles is cancelled, and the same run can be settled twice,
+        so a sandbox that is no longer addressable is the state this asks for rather than a fault.
+        """
+        modal = _modal()
+        with suppress(modal.exception.NotFoundError):
+            modal.Sandbox.from_id(handle).terminate()
 
     def logs(self, handle: str) -> str:
         return str(_modal().Sandbox.from_id(handle).stdout.read())
@@ -112,7 +130,12 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         unauthenticated machine costs no round trip. Past that the preference is for the figure
         Modal itself keeps, a cycle budget, falling back on the one this workspace declares and
         we do the arithmetic for.
+
+        The workspace `.env` is merged in before the SDK is imported at all, since Modal reads
+        that pair out of the environment as its own module loads and would never see a token
+        this workspace declared but nothing had exported yet.
         """
+        Credentials().load()
         try:
             modal = _modal()
         except MissionError as absent:

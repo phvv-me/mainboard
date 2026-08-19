@@ -10,14 +10,16 @@ tracks, probes, and profiles across all of them.
 ```python
 from mainboard import Board
 
-board = Board()                            # finds mainboard.toml like git finds a repo
-board.run("python train.py")               # here, in the activated environment
-board.on("gold").run("nvidia-smi")         # any ssh box, same call
-job = board.on("miyabi-g").submit(         # a PBS cluster, inside an NGC container,
-    "python -m experiments.run",           # with queue policy checked before any ssh
+board = Board()  # finds mainboard.toml like git finds a repo
+board.run("python train.py")  # here, in the activated environment
+board.on("gold").run("nvidia-smi")  # any ssh box, same call
+job = board.on("miyabi-g").submit(  # a PBS cluster, inside an NGC container,
+    "python -m experiments.run",  # with queue policy checked before any ssh
     walltime="06:00:00",
 )
-job.wait(); print(job.logs()); job.pull()
+job.wait()
+print(job.logs())
+job.pull()
 ```
 
 The same surface as a CLI:

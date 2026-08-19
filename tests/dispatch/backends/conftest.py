@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -10,7 +11,13 @@ from urllib.error import HTTPError
 import pytest
 
 from mainboard import ExecutionPlan
-from mainboard.dispatch.backends import HpcAiBackend, LogSource, ProviderBackend, VastBackend
+from mainboard.dispatch.backends import (
+    Credentials,
+    HpcAiBackend,
+    LogSource,
+    ProviderBackend,
+    VastBackend,
+)
 from mainboard.dispatch.schedulers import JobState, Resources
 from mainboard.manifest import Container, HostProfile
 
@@ -45,6 +52,23 @@ class BareBackend(ProviderBackend):
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         del plan, command, resources
         return "bare-1"
+
+
+@pytest.fixture
+def unsealed() -> Iterator[None]:
+    """Unseal the shared credential loader for one test, then put the environment back.
+
+    The suite seals the loader so no test reads the developer's own `.env`, and a test about the
+    loader itself has to undo that. Loading writes straight into `os.environ` rather than
+    through monkeypatch, so the whole environment is snapshotted here and restored on the way
+    out, and the loader is sealed again behind it.
+    """
+    before = dict(os.environ)
+    Credentials().loaded = False
+    yield
+    os.environ.clear()
+    os.environ.update(before)
+    Credentials().loaded = True
 
 
 def hpc_ai_backend(*, transport: Transport, spot: bool = False) -> HpcAiBackend:
@@ -90,9 +114,14 @@ class FakeTransport:
         return SimpleNamespace(status=200, read=lambda: body)
 
 
+def refused(status: int, url: str = "https://console.vast.ai/api/v0/instances/7/") -> HTTPError:
+    """The fault urllib raises for `status`, queued on the fake transport as a provider refusal."""
+    return HTTPError(url, status, "Refused", Message(), None)
+
+
 def not_found(url: str = "https://console.vast.ai/api/v0/instances/7/") -> HTTPError:
     """A 404 the fake transport raises, the way urllib reports a gone instance or log."""
-    return HTTPError(url, 404, "Not Found", Message(), None)
+    return refused(404, url)
 
 
 def vast_backend(*responses: Reply, spot: bool = False) -> VastBackend:
@@ -134,6 +163,10 @@ class FakeSandbox:
 
 class ModalFault(Exception):
     """A `modal.exception.Error` stand-in, the root every fault the real SDK raises inherits."""
+
+
+class ModalMissing(ModalFault):
+    """A `modal.exception.NotFoundError` stand-in, what `Sandbox.from_id` raises for a gone id."""
 
 
 class FakeBilling:
@@ -198,7 +231,7 @@ class FakeModal(SimpleNamespace):
         super().__init__(
             config=SimpleNamespace(config={"token_id": "ak-1", "token_secret": "as-1"}),
             environments=self.environments,
-            exception=SimpleNamespace(Error=ModalFault),
+            exception=SimpleNamespace(Error=ModalFault, NotFoundError=ModalMissing),
             Workspace=SimpleNamespace(from_context=lambda: SimpleNamespace(billing=self.billing)),
             Image=SimpleNamespace(
                 from_registry=lambda ref: SimpleNamespace(kind="registry", ref=ref),
@@ -211,9 +244,20 @@ class FakeModal(SimpleNamespace):
                 create=lambda *entrypoint, **kwargs: FakeSandbox(
                     self.sandboxes, *entrypoint, **kwargs
                 ),
-                from_id=lambda handle: self.sandboxes[handle],
+                from_id=self.sandbox,
             ),
         )
+
+    def sandbox(self, handle: str) -> FakeSandbox:
+        """The sandbox `handle` names, refusing an id this workspace never created.
+
+        The real `Sandbox.from_id` raises `NotFoundError` for a sandbox Modal has forgotten,
+        which is exactly what a second cancel of the same run walks into.
+        """
+        try:
+            return self.sandboxes[handle]
+        except KeyError:
+            raise ModalMissing(f"no sandbox {handle}") from None
 
 
 @pytest.fixture

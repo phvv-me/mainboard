@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 from urllib.request import Request
 
@@ -7,6 +10,7 @@ from mainboard import MissionError
 from mainboard.dispatch.backends import (
     Account,
     Capability,
+    Credentials,
     Delivery,
     HpcAiBackend,
     LogSource,
@@ -23,26 +27,133 @@ from mainboard.dispatch.backends import (
 from mainboard.dispatch.schedulers import Resources
 from mainboard.manifest import HostProfile
 
-from ..conftest import profile
 from .conftest import BareBackend, FakeTransport, hpc_ai_backend, vast_backend
+
+# --- credentials ---
+
+
+class Blocking:
+    """A workspace locator that holds the merge open until a test lets it finish.
+
+    Standing in for `Project` is what makes the critical section observable, since a thread can
+    only be caught inside `load` while `load` is still busy.
+    """
+
+    def __init__(self, root: Path, reading: Event, may_finish: Event) -> None:
+        self.root = root
+        self.reading = reading
+        self.may_finish = may_finish
+
+    def find_root(self, start: Path) -> Path:
+        del start
+        self.reading.set()
+        self.may_finish.wait(timeout=5)
+        return self.root
+
+
+def test_the_workspace_env_defines_only_what_the_environment_lacks(
+    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file read as data, with comments, blanks and junk skipped and quotes taken off.
+
+    The one rule that matters beyond parsing is that the environment wins, so a key someone
+    exported deliberately is never replaced by a line in a file they may have forgotten.
+    """
+    monkeypatch.chdir(workspace)
+    (workspace / ".env").write_text(
+        "# provider keys\n"
+        "\n"
+        "export VAST_API_KEY=from-the-file\n"
+        "HPCAI_API_KEY='already exported'\n"
+        "MODAL_CREDIT_USD = 30\n"
+        "a line that declares nothing\n"
+        "=headless\n"
+    )
+    monkeypatch.delenv("VAST_API_KEY", raising=False)
+    monkeypatch.delenv("MODAL_CREDIT_USD", raising=False)
+    monkeypatch.setenv("HPCAI_API_KEY", "kept")
+    assert Credentials().load() == ("VAST_API_KEY", "MODAL_CREDIT_USD")
+    assert os.environ["VAST_API_KEY"] == "from-the-file"
+    assert os.environ["MODAL_CREDIT_USD"] == "30"
+    assert os.environ["HPCAI_API_KEY"] == "kept"
+
+
+def test_the_workspace_env_is_read_once_however_many_backends_ask(
+    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("VAST_API_KEY", raising=False)
+    (workspace / ".env").write_text("VAST_API_KEY=first\n")
+    assert Credentials().load() == ("VAST_API_KEY",)
+    (workspace / ".env").write_text("VAST_API_KEY=second\n")
+    assert Credentials().load() == ()
+    assert os.environ["VAST_API_KEY"] == "first"
+
+
+def test_a_workspace_with_no_env_file_defines_nothing(
+    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(workspace)
+    assert Credentials().load() == ()
+
+
+def test_a_second_backend_asking_at_once_waits_for_the_whole_merge(
+    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A compute survey probes every provider at once, from a pool this loader does not own.
+
+    A flag flipped before the file was read would let the second provider look its key up while
+    the first is still merging, and report a paid account as unkeyed for no reason but timing.
+    """
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("VAST_API_KEY", raising=False)
+    (workspace / ".env").write_text("VAST_API_KEY=one\n")
+    credentials = Credentials()
+    reading, may_finish = Event(), Event()
+    monkeypatch.setattr(credentials, "project", Blocking(workspace, reading, may_finish))
+    seen: list[str | None] = []
+
+    def second() -> None:
+        credentials.load()
+        seen.append(os.environ.get("VAST_API_KEY"))
+
+    first, other = Thread(target=credentials.load), Thread(target=second)
+    first.start()
+    reading.wait(timeout=5)
+    other.start()
+    other.join(timeout=0.1)
+    assert other.is_alive()  # waiting on the merge rather than reporting an empty environment
+    may_finish.set()
+    first.join(timeout=5)
+    other.join(timeout=5)
+    assert seen == ["one"]
+
+
+def test_a_machine_standing_outside_a_workspace_defines_nothing(
+    unsealed: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No manifest above the cwd is a plain empty answer, not the refusal `find_root` raises."""
+    monkeypatch.chdir(tmp_path)
+    assert Credentials().load() == ()
+
 
 # --- route ---
 
 
 @pytest.mark.parametrize("kind", ["ssh", "pbs", "slurm", "local"])
 def test_route_keeps_ssh_family_kinds_on_the_scheduler_path(kind: str) -> None:
-    assert route(profile(kind=kind)) == "ssh-family"
+    assert route(kind) == "ssh-family"
 
 
 def test_route_resolves_a_registered_provider_backend_by_kind() -> None:
-    assert route(profile(kind="modal")) is ModalBackend
-    assert route(profile(kind="hpc-ai")) is HpcAiBackend
-    assert route(profile(kind="vast")) is VastBackend
+    assert route("modal") is ModalBackend
+    assert route("hpc-ai") is HpcAiBackend
+    assert route("vast") is VastBackend
 
 
 def test_route_raises_a_mission_error_naming_known_kinds_for_an_unregistered_kind() -> None:
     with pytest.raises(MissionError) as excinfo:
-        route(profile(kind="ec2"))
+        route("ec2")
     assert "ec2" in str(excinfo.value)
     assert "modal" in str(excinfo.value)
     assert "hpc-ai" in str(excinfo.value)
@@ -144,4 +255,4 @@ def test_require_budget_passes_when_max_usd_is_set() -> None:
 
 
 def test_route_keeps_auto_on_the_ssh_family() -> None:
-    assert route(HostProfile()) == "ssh-family"
+    assert route(HostProfile().kind) == "ssh-family"

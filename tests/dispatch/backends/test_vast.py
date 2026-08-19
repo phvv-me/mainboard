@@ -1,5 +1,7 @@
 import json
+from pathlib import Path
 from time import sleep
+from urllib.error import HTTPError
 
 import pytest
 
@@ -10,7 +12,7 @@ from mainboard.dispatch.backends.vast import api_key, exit_sentinel
 from mainboard.dispatch.schedulers import Resources
 from mainboard.manifest import Container, HostProfile
 
-from .conftest import not_found, plan, vast_backend
+from .conftest import not_found, plan, refused, vast_backend
 
 
 def vast_plan(**overrides: Container | HostProfile):
@@ -74,6 +76,16 @@ def test_api_key_reads_either_spelling_and_refuses_when_unset(
     monkeypatch.delenv("VASTAI_API_KEY")
     with pytest.raises(MissionError, match="VAST_API_KEY"):
         api_key()
+
+
+def test_api_key_finds_a_key_only_the_workspace_env_declares(
+    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal tells someone to set the key in the workspace `.env`, so reading it is ours."""
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("VAST_API_KEY")
+    (workspace / ".env").write_text("VAST_API_KEY=from-the-workspace\n")
+    assert api_key() == "from-the-workspace"
 
 
 # --- search ---
@@ -429,6 +441,19 @@ def test_cancel_deletes_the_instance() -> None:
     (request,) = backend.transport.calls
     assert request.full_url == "https://console.vast.ai/api/v0/instances/4242/"
     assert request.get_method() == "DELETE"
+
+
+def test_cancel_treats_an_instance_vast_already_forgot_as_ended() -> None:
+    """A sweep cancels every run it settles, so the same rental is cancelled more than once."""
+    backend = vast_backend(not_found("https://console.vast.ai/api/v0/instances/4242/"))
+    backend.cancel("4242")
+    assert [request.get_method() for request in backend.transport.calls] == ["DELETE"]
+
+
+def test_cancel_still_raises_a_refusal_that_is_not_a_gone_instance() -> None:
+    backend = vast_backend(refused(401))
+    with pytest.raises(HTTPError):
+        backend.cancel("4242")
 
 
 def test_the_declared_delivery_gap_points_at_the_logs_verb_instead() -> None:

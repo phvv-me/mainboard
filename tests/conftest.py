@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from mainboard import Project
+from mainboard.dispatch.backends import Credentials
 
 MANIFEST = Project().manifest
 
@@ -68,6 +69,19 @@ mem-gb = "min(100, attempt * 50)"
 [tasks]
 test = { run = "pytest", dir = "packages/lab-core" }
 """
+
+
+@pytest.fixture(autouse=True)
+def sealed_credentials() -> None:
+    """Keep the developer's own workspace `.env` out of every test.
+
+    The credential loader merges that file into the process environment the first time a backend
+    looks a key up, so a suite running inside a real workspace would inherit whatever keys the
+    machine holds and a test that clears one would watch it come straight back. Marking the
+    shared loader spent before each test makes the whole suite read the same on a keyed machine
+    as on a bare one, and the loader's own tests unseal it onto a workspace they built.
+    """
+    Credentials().loaded = True
 
 
 @pytest.fixture

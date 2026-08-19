@@ -1,20 +1,27 @@
+import logging
 from itertools import islice
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 from plumbum.commands.processes import ProcessExecutionError
 
-from mainboard import Board
+from mainboard import Board, Job
+from mainboard.dispatch.backends import HpcAiBackend, VastBackend
 from mainboard.dispatch.schedulers import HostUnreachable, JobState
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.experiments import StudyLedger
 from mainboard.experiments.identity import study_label
 
+from .dispatch.backends.conftest import FakeTransport, refused
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+    from urllib.request import Request
 
     from mainboard.dispatch import Handle
+
+    from .dispatch.backends.conftest import Reply
 
 _HOST = "miyabi-g"
 _STUDY = "ec15c1b1e073"
@@ -27,10 +34,63 @@ def board(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Board:
     return Board(workspace)
 
 
+class Rented(VastBackend):
+    """Vast's own backend under a test-only kind, so a sweep drives its real cancel path.
+
+    The sweep builds its backend out of the registry rather than out of the test, so the queued
+    replies and the calls that answered them live on the class, the one channel the two share.
+    """
+
+    name = "vast-rental"
+    replies: ClassVar[list[Reply]] = []
+    calls: ClassVar[list[Request]] = []
+
+    def __init__(self) -> None:
+        transport = FakeTransport(*Rented.replies)
+        Rented.calls = transport.calls
+        super().__init__(transport=transport, sleeper=lambda _: None)
+
+
+class Instance(HpcAiBackend):
+    """HPC-AI's own backend under a test-only kind, sharing its queue the same way."""
+
+    name = "hpc-ai-rental"
+    replies: ClassVar[list[Reply]] = []
+    calls: ClassVar[list[Request]] = []
+
+    def __init__(self) -> None:
+        transport = FakeTransport(*Instance.replies)
+        Instance.calls = transport.calls
+        super().__init__(transport=transport)
+
+
+def rented(status: str = "exited", *, exit_code: int = 0) -> list[Reply]:
+    """The replies one Vast post-mortem takes, the instance row, its log url, and the log."""
+    return [
+        {"instances": {"id": 7, "actual_status": status}},
+        {"result_url": "https://s3.example/logs/7.log"},
+        f"training done\nmainboard-exit:{exit_code}\n",
+    ]
+
+
+def listed(handle: str, status: str) -> Reply:
+    """The one `/instance/list` page HPC-AI answers for `handle`, at `status`."""
+    return {
+        "instances": [
+            {
+                "instanceMetadata": {"instanceId": handle},
+                "instanceRuntimeInfo": {"status": status},
+            }
+        ],
+        "pager": {"currentPage": 1, "pageSize": 50, "totalEntries": 1},
+    }
+
+
 def seed(
     handle: str,
     *,
     target: str = _HOST,
+    kind: str = "pbs",
     name: str = "",
     fetch_path: str | None = None,
     verdict: str | None = None,
@@ -40,7 +100,7 @@ def seed(
     run = RunRecord(
         handle=handle,
         target=target,
-        kind="pbs",
+        kind=kind,
         script="job.sh",
         args="",
         git_sha="abc1234",
@@ -198,6 +258,86 @@ def test_a_host_the_manifest_can_no_longer_resolve_is_reported_not_raised(board:
     [host] = board.monitor().once().unreachable_hosts
     assert host.host == "gold"
     assert "root" in host.reason
+
+
+# --- releasing what a settled run still holds ---
+
+
+def test_a_finished_vast_rental_is_settled_and_then_cancelled(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Vast restarts the exited container until someone cancels, so the sweep is what cancels."""
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    seed("13", target="rented", kind=Rented.name)
+    Rented.replies = [*rented(), {"success": True}]
+    report = board.monitor().once()
+    assert [item.handle for item in report.finished] == ["13"]
+    assert Rented.calls[-1].get_method() == "DELETE"
+    assert Rented.calls[-1].full_url == "https://console.vast.ai/api/v0/instances/13/"
+    assert board.dispatcher.cache.run("13").reported == "ok"
+
+
+def test_a_finished_hpc_ai_instance_is_settled_and_then_terminated(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An HPC-AI instance runs until it is terminated, whatever its command already did."""
+    monkeypatch.setenv("HPCAI_API_KEY", "key-123")
+    seed("14", target="rented", kind=Instance.name)
+    Instance.replies = [listed("14", "Stopped"), {}, {}]
+    report = board.monitor().once()
+    assert [item.handle for item in report.finished] == ["14"]
+    assert [call.full_url for call in Instance.calls[-2:]] == [
+        "https://www.hpc-ai.com/api/instance/stop",
+        "https://www.hpc-ai.com/api/instance/terminate",
+    ]
+
+
+def test_a_finished_scheduler_job_is_never_cancelled(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queue stops charging when the job ends, so a finished pueue job needs no kill."""
+    seed("15")
+    probing(board, monkeypatch, finishing())
+    killed: list[str] = []
+    monkeypatch.setattr(Job, "kill", lambda self: killed.append(self.handle.id))
+    assert [item.handle for item in board.monitor().once().finished] == ["15"]
+    assert killed == []
+
+
+def test_a_provider_that_refuses_the_cancel_is_a_warning_not_a_failed_sweep(
+    board: Board, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One rental this pass could not end must not cost every other job its outcome."""
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    seed("16", target="rented", kind=Rented.name)
+    Rented.replies = [*rented(exit_code=1), refused(500)]
+    caplog.set_level(logging.WARNING)
+    report = board.monitor().once()
+    assert [item.handle for item in report.failed] == ["16"]
+    assert "could not release 16" in caplog.text
+    assert board.dispatcher.cache.run("16").reported == "failed"
+
+
+def test_a_provider_that_cannot_deliver_still_settles_and_ends_the_rental(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rented disk dies with the instance, so the missing artifact is a note, not a stop."""
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    seed("17", target="rented", kind=Rented.name, fetch_path="results/run")
+    Rented.replies = [*rented(), {"success": True}]
+    [item] = board.monitor().once().finished
+    assert item.pulled_path is None
+    assert Rented.calls[-1].get_method() == "DELETE"
+
+
+def test_a_provider_api_that_refuses_the_probe_is_reported_as_a_down_target(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    seed("18", target="rented", kind=Rented.name)
+    Rented.replies = [refused(503)]
+    [target] = board.monitor().once().unreachable_hosts
+    assert target.host == "rented" and "503" in target.reason
 
 
 def test_watch_repeats_the_pass_at_the_given_interval(

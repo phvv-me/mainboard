@@ -151,7 +151,7 @@ class Survey:
         probes.extend(
             partial(self.machine, alias, profile, setups.get(alias))
             for alias, profile in sorted(self.board.manifest.profiles().items())
-            if route(profile) == "ssh-family"
+            if route(profile.kind) == "ssh-family"
         )
         probes.extend(partial(self.provider, backend) for backend in self.providers)
         with ThreadPoolExecutor(max_workers=len(probes)) as pool:

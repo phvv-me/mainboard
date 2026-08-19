@@ -52,9 +52,12 @@ class Handle(FrozenModel):
     id: the scheduler's job handle (PBS job id, pueue task id, SLURM job id, the local run id),
         always text: pueue hands out small integers and a caller who read one back as a number
         would otherwise fail validation deep inside a status poll.
-    host: the ssh alias the job runs on.
-    root: the workspace root on that host.
-    kind: the scheduler kind used at submit time (`pbs` / `slurm` / `ssh` / `local`).
+    host: the ssh alias the job runs on, or the declared alias of the provider host it was
+        rented for.
+    root: the workspace root on that host, empty for a provider that syncs no workspace.
+    kind: the kind used at submit time, a scheduler's (`pbs` / `slurm` / `ssh` / `local`) or a
+        provider's (`vast` / `hpc-ai` / `modal`), which is what routes a later probe back to
+        whichever of the two answered for this run.
     fetch_path: the results path recorded at submit time, pulled back by `Dispatcher.fetch`.
     """
 
@@ -368,6 +371,48 @@ class Dispatcher:
             "%s -> %s on %s (%s%s)", prepared, handle, plan.host, sha, "+dirty" if dirty else ""
         )
         return handle
+
+    def track(
+        self,
+        handle: str,
+        *,
+        host: str,
+        kind: str,
+        command: str,
+        name: str = "",
+        fetch: str | None = None,
+    ) -> Handle:
+        """Record a provider-dispatched run in the shared cache and return its `Handle`.
+
+        A provider backend owns its own transport, so none of the shipping, verifying and
+        scheduling `submit` does applies to it, but the run still has to land in the same cache
+        every other dispatch does or no later process can settle it. That matters more here than
+        for a queue, since an untracked rental keeps billing after its command ends and being
+        tracked is what lets the durable sweep end it.
+
+        handle: the provider's own opaque run id.
+        host: the alias the run was dispatched to.
+        kind: the provider kind, which is how a later pass finds the backend again.
+        command: the command the run was launched with, kept as its provenance.
+        name: a human label for the run, a study's label when a study owns it.
+        fetch: a results path recorded for a later pull.
+        """
+        self.cache.record(
+            RunRecord(
+                handle=handle,
+                target=host,
+                kind=kind,
+                script=command,
+                args="",
+                git_sha=git("rev-parse", "--short", "HEAD"),
+                dirty=int(bool(git("status", "--porcelain"))),
+                submitted_at=now(),
+                fetch_path=fetch,
+                name=name,
+            )
+        )
+        logger.info("%s -> %s on %s (%s)", command, handle, host, kind)
+        return Handle(id=handle, host=host, root="", kind=kind, fetch_path=fetch)
 
     def write_job_script(self, spec: JobSpec, *, pbs: bool, gpu_in_select: bool = True) -> str:
         """Render `spec`, write it under `{STATE_DIR}/jobs/`, return its path.

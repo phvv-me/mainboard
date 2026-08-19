@@ -17,6 +17,7 @@ from ..jobs.spec import walltime_seconds
 from ..schedulers.base import JobState
 from .base import (
     Account,
+    Credentials,
     Delivery,
     LogSource,
     Market,
@@ -85,8 +86,10 @@ def api_key() -> str:
     Console API keys authenticate the whole v0 namespace through the `Authorization: Bearer`
     header, which is what their own CLI sends, so no login flow or cookie exists here. Both
     spellings are accepted because gpuhunt reads `VASTAI_API_KEY` while Vast's CLI documents
-    `VAST_API_KEY`.
+    `VAST_API_KEY`. The workspace `.env` the refusal names is merged in first, so the hint below
+    is advice this same function then acts on rather than a chore left to whoever reads it.
     """
+    Credentials().load()
     key = os.environ.get("VAST_API_KEY", "") or os.environ.get("VASTAI_API_KEY", "")
     if not key:
         raise MissionError(
@@ -145,7 +148,18 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         self.sleeper = sleeper
 
     def cancel(self, handle: str) -> None:
-        self.request("DELETE", path=f"/instances/{handle}/")
+        """Destroy the rental, tolerating an instance Vast has already forgotten.
+
+        The call that actually stops the meter, since a finished command leaves the rental up.
+        It is asked more than once by design, by a sweep that settles the same run twice and by
+        anyone who already destroyed the instance in the console, so the 404 a gone instance
+        answers is this method's own destination rather than a fault to raise from.
+        """
+        try:
+            self.request("DELETE", path=f"/instances/{handle}/")
+        except HTTPError as error:
+            if error.status != 404:
+                raise
 
     def logs(self, handle: str) -> str:
         payload = self.request(

@@ -12,6 +12,7 @@ from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .dispatch import verdicts as vocabulary
 from .dispatch.backends.base import Delivery, LogSource, ProviderBackend, route
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
@@ -58,9 +59,26 @@ class Job:
             scheduler = pick(self.board.plan().profile)
             return scheduler.logs(remote, self.handle.root, handle=self.handle.id)
 
+    def poll(self) -> JobState:
+        """The job's state now, raising `HostUnreachable` when its host will not answer.
+
+        The unabsorbed read a durable sweep wants, since a sweep has to say which host went
+        quiet rather than quietly try again, and `state` is this same probe with the blip
+        absorbed for a caller polling on its own cadence.
+        """
+        return self.board.dispatcher.state(self.handle)
+
     def pull(self) -> None:
         """Bring the job's recorded results path back to this machine."""
         self.board.dispatcher.fetch(self.handle)
+
+    def release(self) -> None:
+        """Let go of whatever a settled job still holds, which for a scheduler is nothing.
+
+        A queue stops charging when the job ends, so a finished pueue or PBS job needs no kill
+        and never gets one. The verb exists because a provider-backed run keeps billing until it
+        is cancelled, and a sweep settling either kind says the same thing to both.
+        """
 
     def state(self) -> JobState | None:
         """One non-blocking probe of the job's current scheduler state.
@@ -102,25 +120,57 @@ class ProviderJob:
             raise MissionError(self.backend.refusal(LogSource, handle=self.handle.id))
         return self.backend.logs(self.handle.id)
 
-    def pull(self, path: str) -> None:
-        """Bring the run's output at `path` back to this machine, refusing when it cannot."""
+    def poll(self) -> JobState:
+        """The run's state now, as the provider reports it."""
+        return self.backend.state(self.handle.id)
+
+    def pull(self) -> None:
+        """Bring the run's recorded results path back, refusing when this provider cannot.
+
+        The same no-argument verb the scheduler side carries, reading the path off the handle
+        the dispatch recorded, so one sweep pulls either kind of run without asking which it has.
+        """
+        path = self.handle.fetch_path
+        if not path:
+            raise LookupError(f"handle {self.handle.id!r} has no fetch path to pull")
         if not isinstance(self.backend, Delivery):
             raise MissionError(self.backend.refusal(Delivery, handle=self.handle.id, path=path))
         self.backend.deliver(self.handle.id, path=path)
 
+    def release(self) -> None:
+        """End the rental, which is the only thing that stops a provider charging for it.
+
+        A finished command does not end a provider run. Vast holds the instance at its intended
+        status and restarts the exited container until someone cancels (thirteen re-runs in five
+        minutes, verified live 2026-08-19), and an HPC-AI instance keeps running until it is
+        terminated, so a settled verdict has to be followed by this or the meter never stops.
+        """
+        self.backend.cancel(self.handle.id)
+
     def wait(
         self, *, interval: float = 15.0, poll: Callable[[float], None] = time.sleep
     ) -> Verdict:
-        """Poll the provider until the run is terminal and return its verdict.
+        """Poll the provider until the run is terminal, end the rental, and return its verdict.
+
+        The rental is released before the verdict is handed back, since a caller that blocked on
+        this run is the last thing standing between a finished command and an instance that
+        bills until someone notices.
 
         interval: seconds between provider state polls.
         poll: the sleeper between polls, injectable for tests.
         """
         while True:
             state = self.backend.state(self.handle.id)
-            if state.verdict in {"ok", "failed", "vanished", "unknown"}:
+            if state.verdict in vocabulary.TERMINAL:
+                self.release()
                 return Verdict(verdict=state.verdict, exit_code=state.exit_code)
             poll(interval)
+
+
+# A dispatched run, whichever of the two worlds took it. Both shapes answer `poll`, `pull` and
+# `release` the same way, which is what lets one durable sweep settle a queued job and a rented
+# instance without asking which it is holding.
+type Run = Job | ProviderJob
 
 
 class Board:
@@ -208,17 +258,31 @@ class Board:
         """The many-jobs surface for simultaneous studies over this board."""
         return Fleet(self)
 
-    def job(self, handle: str | int, *, host: str = "") -> Job:
-        """The dispatched job `handle`, rebuilt from the dispatch cache.
+    def job(self, handle: str | int, *, host: str = "") -> Run:
+        """The dispatched run `handle`, rebuilt from the dispatch cache as whichever kind it is.
 
         A fresh process addresses an already-running job the same way the process that
         submitted it did, without reassembling a `Handle` from the run registry and the host
-        profile by hand.
+        profile by hand. The kind the cache recorded decides which world it comes back from, a
+        scheduler job bound to its host's workspace or a provider run bound to its backend, so a
+        rental outlives the process that started it exactly as a queued job does.
 
-        handle: the scheduler handle the job was dispatched under.
+        handle: the scheduler handle or provider run id the job was dispatched under.
         host: the alias to disambiguate a handle recorded on several hosts.
         """
         record = self.dispatcher.cache.run(str(handle), host or None)
+        destination = route(record.kind)
+        if destination != "ssh-family":
+            return ProviderJob(
+                destination(),
+                Handle(
+                    id=record.handle,
+                    host=record.target,
+                    root="",
+                    kind=record.kind,
+                    fetch_path=record.fetch_path,
+                ),
+            )
         bound = self.on(record.target)
         return Job(
             bound,
@@ -392,12 +456,17 @@ class Board:
         fetch: str | None = None,
         env: str = "",
         container: str = "",
-    ) -> Job | ProviderJob:
-        """Dispatch `command` as a job on this host and return it as a `Job`.
+    ) -> Run:
+        """Dispatch `command` as a job on this host and return it as a run.
 
         Unset resources fall back to the host profile's declared defaults,
         with expression-valued defaults evaluated against `attempt` so a
         retry escalates instead of dying to the same ceiling twice.
+
+        A provider host is dispatched through its backend rather than over ssh, and the run it
+        hands back is recorded in the same dispatch cache a queued job lands in. That record is
+        what lets the durable sweep settle the run and end the rental, so a provider job nobody
+        stays to watch stops costing money when its command does.
 
         command: the command the generated job runs.
         gpu_name: the GPU type a provider backend rents, ignored by the ssh family.
@@ -418,16 +487,18 @@ class Board:
             nodes=nodes,
             account=plan.profile.account,
         )
-        destination = route(plan.profile)
+        destination = route(plan.profile.kind)
         if destination != "ssh-family":
             backend = destination()
             return ProviderJob(
                 backend,
-                Handle(
-                    id=backend.submit(plan, command, resources),
+                self.dispatcher.track(
+                    backend.submit(plan, command, resources),
                     host=plan.host,
-                    root="",
                     kind=plan.profile.kind,
+                    command=command,
+                    name=name,
+                    fetch=fetch,
                 ),
             )
         root = self.remote_root()

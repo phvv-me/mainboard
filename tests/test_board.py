@@ -31,7 +31,9 @@ class Replaced(Exception):
 
 
 @pytest.fixture
-def board(workspace: Path) -> Board:
+def board(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Board:
+    """A board over the fixture manifest, its dispatch cache isolated inside the workspace."""
+    monkeypatch.chdir(workspace)
     return Board(workspace)
 
 
@@ -381,9 +383,10 @@ class _FakeCloud(ProviderBackend, Account, Delivery, LogSource):
 
     name = "fakecloud"
     submitted: list[str] = []
+    cancelled: list[str] = []
 
     def cancel(self, handle):
-        return None
+        _FakeCloud.cancelled.append(handle)
 
     def deliver(self, handle, *, path):
         return None
@@ -402,9 +405,12 @@ class _FakeCloud(ProviderBackend, Account, Delivery, LogSource):
         return "cloud-1"
 
 
-def _submit_to_fakecloud(board: Board, monkeypatch: pytest.MonkeyPatch) -> ProviderJob:
+def _submit_to_fakecloud(
+    board: Board, monkeypatch: pytest.MonkeyPatch, *, fetch: str | None = None
+) -> ProviderJob:
     """A submitted `ProviderJob` routed to the shared `fakecloud`-kind backend."""
     _FakeCloud.submitted = []
+    _FakeCloud.cancelled = []
     manifest = board.manifest.model_copy(
         update={
             "hosts": {
@@ -417,7 +423,7 @@ def _submit_to_fakecloud(board: Board, monkeypatch: pytest.MonkeyPatch) -> Provi
     )
     monkeypatch.setitem(board.shared, "manifest", manifest)
     monkeypatch.setitem(board.shared, "resolver", None)
-    return board.on("cloudbox").submit("python train.py", mem_gb=8)
+    return board.on("cloudbox").submit("python train.py", mem_gb=8, fetch=fetch)
 
 
 def test_submit_routes_provider_kinds_to_the_backend(
@@ -431,7 +437,7 @@ def test_submit_routes_provider_kinds_to_the_backend(
 def test_provider_job_wait_logs_kill_and_pull_delegate_to_the_backend(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    job = _submit_to_fakecloud(board, monkeypatch)
+    job = _submit_to_fakecloud(board, monkeypatch, fetch="results/")
     states = iter(["running", "ok"])
 
     def flipping(handle):
@@ -441,18 +447,56 @@ def test_provider_job_wait_logs_kill_and_pull_delegate_to_the_backend(
     verdict = job.wait(poll=lambda seconds: None)
     assert verdict.ok and job.logs() == "cloud log"
     job.kill()
-    job.pull("results/")
+    job.pull()
+
+
+def test_a_provider_submit_is_recorded_in_the_same_cache_a_queued_job_lands_in(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the record no later process could settle the run, and the rental would bill on."""
+    job = _submit_to_fakecloud(board, monkeypatch, fetch="results/run")
+    record = board.dispatcher.cache.run(job.handle.id)
+    assert (record.target, record.kind) == ("cloudbox", "fakecloud")
+    assert (record.script, record.fetch_path) == ("python train.py", "results/run")
+    assert record.verdict is None
+
+
+def test_job_rebuilds_a_provider_run_as_the_kind_the_cache_recorded(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh process addresses a rental the way the process that rented it did."""
+    submitted = _submit_to_fakecloud(board, monkeypatch, fetch="results/run")
+    rebuilt = board.job(submitted.handle.id)
+    assert isinstance(rebuilt, ProviderJob)
+    assert rebuilt.handle == submitted.handle
+    assert rebuilt.backend.name == "fakecloud"
+
+
+def test_a_provider_job_that_finishes_a_wait_has_its_rental_ended(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A caller that blocked on the run is the last thing between it and an idle meter."""
+    job = _submit_to_fakecloud(board, monkeypatch)
+    assert job.wait(poll=lambda seconds: None).ok
+    assert job.backend.cancelled == [job.handle.id]
 
 
 def test_a_provider_job_refuses_a_capability_its_backend_never_had(board: Board) -> None:
     """The absence is discovered before the call, and answered with the backend's own advice."""
-    job = ProviderJob(BareBackend(), Handle(id="bare-1", host="cloudbox", root="", kind="bare"))
+    handle = Handle(id="bare-1", host="cloudbox", root="", kind="bare", fetch_path="results/")
+    job = ProviderJob(BareBackend(), handle)
     job.kill()
     assert job.wait(poll=lambda seconds: None).ok
     with pytest.raises(MissionError, match=r"bare backend keeps no logs; read bare-1\.log"):
         job.logs()
     with pytest.raises(MissionError, match="does not implement Delivery"):
-        job.pull("results/")
+        job.pull()
+
+
+def test_a_provider_job_with_no_recorded_results_path_has_nothing_to_pull(board: Board) -> None:
+    job = ProviderJob(BareBackend(), Handle(id="bare-1", host="cloudbox", root="", kind="bare"))
+    with pytest.raises(LookupError, match="no fetch path"):
+        job.pull()
 
 
 def test_job_state_is_a_non_blocking_probe(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
