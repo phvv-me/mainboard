@@ -1,5 +1,7 @@
 import json
 import sys
+from datetime import UTC, datetime
+from decimal import Decimal
 from email.message import Message
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -106,18 +108,45 @@ class FakeSandbox:
         self.terminated = True
 
 
+class ModalFault(Exception):
+    """A `modal.exception.Error` stand-in, the root every fault the real SDK raises inherits."""
+
+
+class FakeBilling:
+    """A `Workspace.billing` double: one summary a test can reshape, or one fault it can queue.
+
+    The summary mirrors only what `standing` reads of the real dataclass, a `Decimal` metered cost
+    and the cycle start it belongs to, since those two are what the derived balance is built from.
+    """
+
+    def __init__(self) -> None:
+        self.refusal: Exception | None = None
+        self.reply = SimpleNamespace(
+            metered_cost=Decimal("1.25"), start=datetime(2026, 8, 1, tzinfo=UTC)
+        )
+
+    def summary(self) -> SimpleNamespace:
+        if self.refusal:
+            raise self.refusal
+        return self.reply
+
+
 class FakeModal(SimpleNamespace):
     """A fully faked `modal` module: only the surface `ModalBackend` actually calls.
 
     `config.config` mirrors the real module's settings mapping, which is where the SDK itself
     looks for the token pair before its first call; a test blanks an entry to stand for a
-    machine nobody ran `modal token new` on.
+    machine nobody ran `modal token new` on. `Workspace.from_context().billing` is the one
+    account read the SDK offers, reachable here through the same `billing` the test holds.
     """
 
     def __init__(self) -> None:
         self.sandboxes: dict[str, FakeSandbox] = {}
+        self.billing = FakeBilling()
         super().__init__(
             config=SimpleNamespace(config={"token_id": "ak-1", "token_secret": "as-1"}),
+            exception=SimpleNamespace(Error=ModalFault),
+            Workspace=SimpleNamespace(from_context=lambda: SimpleNamespace(billing=self.billing)),
             Image=SimpleNamespace(
                 from_registry=lambda ref: SimpleNamespace(kind="registry", ref=ref),
                 debian_slim=lambda: SimpleNamespace(kind="debian_slim"),

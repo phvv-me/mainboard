@@ -1,14 +1,22 @@
 import sys
+from decimal import Decimal
 from typing import NoReturn
 
 import pytest
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import ModalBackend
+from mainboard.dispatch.backends.modal import declared_credit
 from mainboard.dispatch.schedulers import JobState, Resources
 from mainboard.manifest import Container
 
-from .conftest import FakeModal, plan
+from .conftest import FakeModal, ModalFault, plan
+
+
+@pytest.fixture(autouse=True)
+def _credit_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MODAL_CREDIT_USD", raising=False)
+
 
 # --- the lazy `modal` import seam ---
 
@@ -125,14 +133,52 @@ def test_deliver_raises_a_not_yet_mission_error_naming_volumes() -> None:
 # --- standing ---
 
 
-def test_standing_reads_the_configured_token_pair_without_calling_out(
+def test_declared_credit_reads_the_env_and_defaults_to_nothing_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert declared_credit() == pytest.approx(0.0)
+    monkeypatch.setenv("MODAL_CREDIT_USD", "30.50")
+    assert declared_credit() == pytest.approx(30.5)
+
+
+def test_declared_credit_refuses_a_value_that_is_not_a_dollar_amount(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MODAL_CREDIT_USD", "thirty bucks")
+    with pytest.raises(MissionError, match="MODAL_CREDIT_USD"):
+        declared_credit()
+
+
+def test_standing_derives_the_balance_from_the_declaration_less_this_cycles_spend(
+    fake_modal: FakeModal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MODAL_CREDIT_USD", "30")
+    fake_modal.billing.reply.metered_cost = Decimal("4.75")
+    standing = ModalBackend().standing()
+    assert standing.keyed is True
+    assert standing.credit_usd == pytest.approx(25.25)
+    assert standing.note == "derived, $30.00 declared less $4.75 metered in 2026-08"
+    assert fake_modal.sandboxes == {}
+
+
+def test_standing_without_a_declaration_reports_the_spend_and_names_the_variable(
     fake_modal: FakeModal,
 ) -> None:
     standing = ModalBackend().standing()
     assert standing.keyed is True
     assert standing.credit_usd is None
-    assert "credit unavailable" in standing.note
-    assert fake_modal.sandboxes == {}
+    assert standing.note == "$1.25 metered in 2026-08, set MODAL_CREDIT_USD to derive a balance"
+
+
+def test_standing_keeps_the_row_keyed_when_modal_refuses_the_billing_summary(
+    fake_modal: FakeModal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MODAL_CREDIT_USD", "30")
+    fake_modal.billing.refusal = ModalFault("Rate limit exceeded")
+    standing = ModalBackend().standing()
+    assert standing.keyed is True
+    assert standing.credit_usd is None
+    assert "Rate limit exceeded" in standing.note
 
 
 def test_standing_without_a_configured_token_names_the_command_that_mints_one(
