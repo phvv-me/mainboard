@@ -7,15 +7,22 @@ on:
 
 jobs:
   test:
-    # Each OS is a distinct real hardware setup the probe runs against:
-    #   ubuntu-latest  -> x86_64 Linux (no accelerator)
-    #   macos-latest   -> Apple Silicon (real Apple GPU + NPU)
-    #   windows-latest -> x86_64 Windows (env probe via whoami; full hardware probe pending)
-    runs-on: ${{ matrix.os }}
+    # Linux only, because that is where this suite actually runs today.
+    #
+    # The matrix used to name macOS and Windows on the theory that each is a distinct real
+    # hardware setup worth probing, but the bootstrap failed before pytest on every leg, so
+    # nobody saw that neither one can run it. `tests/conftest.py` imports `fcntl`, which does
+    # not exist on Windows, so collection dies before the first test. On macOS the workspace
+    # snapshot asserts `linux-arm64` against a host that reports `macos-arm64`, and one submit
+    # test wants a container runtime no macOS runner has.
+    #
+    # Restoring them is real work on the suite, not on this file: make the snapshot read the
+    # host platform, skip the container test where no runtime exists, and put the POSIX-only
+    # imports behind a guard. The `runs-on` list comes back the day those pass.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         # One interpreter, because `requires-python` is `>=3.14` and uv refuses anything below
         # it. A second entry here does not widen support, it only fails at bootstrap.
         python: ["3.14"]
@@ -33,9 +40,6 @@ jobs:
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      # Type checking is OS-agnostic source analysis, so run it once on Linux. The Windows runner
-      # lacks stubs for the Unix-only modules (grp, os.getgid) the POSIX identity path references.
-      #
       # Reporting, not gating, and deliberately so. The bootstrap this file replaced failed before
       # any check ran, so neither checker has ever executed here, and the first honest run found 28
       # mypy and 21 pyrefly errors across the fused source. Several are third-party stub gaps and
@@ -43,17 +47,10 @@ jobs:
       # down in its own pass. The output stays in every run, and these two lose the flag the day
       # they read zero.
       - run: uv run mypy src
-        if: matrix.os == 'ubuntu-latest'
         continue-on-error: true
       - run: uv run pyrefly check
-        if: matrix.os == 'ubuntu-latest'
         continue-on-error: true
-      # The whole suite is hermetic, so every runner runs all of it. The `integration` marker
-      # these steps used to split on matches nothing in this repository, and `-m integration`
-      # therefore selected zero tests and exited 5, which is a failure.
+      # The suite is hermetic and runs in full. The `integration` marker this step used to split
+      # on matches nothing in this repository, and `-m integration` therefore selected zero tests
+      # and exited 5, which is a failure.
       - run: uv run pytest
-        if: matrix.os != 'windows-latest'
-      # Windows runs the same suite as a portability guard, without the coverage gate, since a
-      # few POSIX-only and Apple-only paths cannot execute there.
-      - run: uv run pytest --no-cov
-        if: matrix.os == 'windows-latest'
