@@ -1,9 +1,12 @@
 import inspect
+import json
 import types
 import typing
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
+
+from pydantic import JsonValue
 
 from ..core.project import Project
 from .experiment import Experiment
@@ -15,6 +18,12 @@ if TYPE_CHECKING:
 
     from .gates import Gate, GateVerdict
     from .lane import Lane
+
+# The whole published contract between a trial and anything reading its output: one JSON line
+# under this key, printed by whatever drives the trial. A reader parses the line instead of
+# importing mainboard, which is what lets a proof-bookkeeping tool such as atpx turn a claim's
+# run into evidence carrying the trial's content-addressed identity and its full gate sweep.
+RECEIPT = "mainboard_receipt"
 
 
 class Declarations(TypedDict, total=False):
@@ -39,8 +48,29 @@ class TrialOutcome:
     gate_evidence: every declared gate's verdict, in declaration order.
     """
 
+    verdict: ClassVar[GateStatus]
+
     run_id: str
     gate_evidence: tuple[GateVerdict, ...]
+
+    def receipt(self) -> str:
+        """This trial as its one `RECEIPT` JSON line, for whatever drives the trial to print.
+
+        Identity, the outcome word, the rendered gate sweep, and then whatever else the
+        outcome kind carries as its own fields. A new kind declares a `verdict` and its
+        fields, and its receipt follows without a renderer here ever being edited.
+        """
+        shared = {"run_id", "gate_evidence"}
+        payload: dict[str, JsonValue] = {
+            "run_id": self.run_id,
+            "outcome": str(self.verdict),
+            "gates": [
+                {"status": str(verdict.status), "reason": verdict.reason}
+                for verdict in self.gate_evidence
+            ],
+            **{name: value for name, value in asdict(self).items() if name not in shared},
+        }
+        return json.dumps({RECEIPT: payload})
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +79,8 @@ class TrialResult(TrialOutcome):
 
     metrics: the named metrics `measure` returned.
     """
+
+    verdict: ClassVar[GateStatus] = GateStatus.PASSED
 
     metrics: dict[str, float]
 
@@ -60,6 +92,8 @@ class BlockedTrial(TrialOutcome):
     reason: the blocking gate's own reason.
     """
 
+    verdict: ClassVar[GateStatus] = GateStatus.BLOCKED
+
     reason: str
 
 
@@ -69,6 +103,8 @@ class FailedTrial(TrialOutcome):
 
     reason: the failing gate's own reason.
     """
+
+    verdict: ClassVar[GateStatus] = GateStatus.FAILED
 
     reason: str
 
