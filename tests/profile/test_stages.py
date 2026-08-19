@@ -76,7 +76,7 @@ def _profile_with_region() -> Profile:
 
 def test_stage_profile_str_appends_deep_report_when_traced() -> None:
     """When a trace is present, `__str__` appends the region and trace reports."""
-    sample = BenchSample(label="r", mean_us=1.0, min_us=1.0, runs=1)
+    sample = BenchSample(label="r", samples=(1.0,))
     result = StageProfile(samples=(sample,), profile=_profile_with_region())
     text = str(result)
     assert "stage" in text and "Spans" in text
@@ -84,7 +84,7 @@ def test_stage_profile_str_appends_deep_report_when_traced() -> None:
 
 def test_stage_profile_show_renders_deep_report(capsys: pytest.CaptureFixture[str]) -> None:
     """`show` prints the plain-text profile view when a trace is present."""
-    sample = BenchSample(label="r", mean_us=1.0, min_us=1.0, runs=1)
+    sample = BenchSample(label="r", samples=(1.0,))
     StageProfile(samples=(sample,), profile=_profile_with_region()).show()
     assert "r" in capsys.readouterr().out
 

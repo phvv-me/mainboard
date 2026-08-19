@@ -2,17 +2,36 @@
 
 import time
 from collections.abc import Callable, Mapping
+from statistics import fmean
 
 from patos import FrozenModel
 
 
 class BenchSample(FrozenModel):
-    """Timing of one callable: ``mean_us``/``min_us`` per call over ``runs`` iterations."""
+    """Timing of one callable: every per-iteration time in ``samples``, plus its aggregates.
+
+    samples: microseconds for each timed iteration, in the order they ran, so a caller that
+        needs the per-run rows reads them here instead of driving one-iteration benchmarks.
+        ``mean_us``, ``min_us`` and ``runs`` are read off this one record.
+    """
 
     label: str
-    mean_us: float
-    min_us: float
-    runs: int
+    samples: tuple[float, ...]
+
+    @property
+    def runs(self) -> int:
+        """How many timed iterations were recorded."""
+        return len(self.samples)
+
+    @property
+    def mean_us(self) -> float:
+        """Mean microseconds per call over the timed iterations."""
+        return fmean(self.samples)
+
+    @property
+    def min_us(self) -> float:
+        """Fastest microsecond time over the timed iterations."""
+        return min(self.samples)
 
 
 def _noop() -> None:
@@ -37,15 +56,13 @@ def benchmark[T, S](
     for _ in range(warmup):
         fn()
     barrier()
-    best, total = float("inf"), 0.0
+    samples: list[float] = []
     for _ in range(iters):
         start = time.perf_counter()
         fn()
         barrier()
-        elapsed = time.perf_counter() - start
-        best = min(best, elapsed)
-        total += elapsed
-    return BenchSample(label=label, mean_us=total / iters * 1e6, min_us=best * 1e6, runs=iters)
+        samples.append((time.perf_counter() - start) * 1e6)
+    return BenchSample(label=label, samples=tuple(samples))
 
 
 def compare[T, S](

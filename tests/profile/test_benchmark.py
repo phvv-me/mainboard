@@ -1,8 +1,12 @@
+from statistics import fmean
+
 import pytest
+
 from mainboard.profile import BenchSample, benchmark, compare
 
 
-def test_benchmark_reports_mean_and_min_over_runs() -> None:
+def test_benchmark_keeps_every_run_and_derives_its_aggregates() -> None:
+    """One call yields the per-iteration rows, and mean/min/runs are read off those rows."""
     calls = {"n": 0}
 
     def work() -> None:
@@ -11,9 +15,10 @@ def test_benchmark_reports_mean_and_min_over_runs() -> None:
     sample = benchmark(work, label="work", iters=5, warmup=2)
     assert isinstance(sample, BenchSample)
     assert sample.label == "work"
+    assert len(sample.samples) == 5
     assert sample.runs == 5
-    assert sample.mean_us >= 0.0
-    assert sample.min_us <= sample.mean_us
+    assert sample.mean_us == fmean(sample.samples)
+    assert sample.min_us == min(sample.samples)
     assert calls["n"] == 7  # warmup 2 + iters 5
 
 
