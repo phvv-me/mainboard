@@ -13,7 +13,9 @@ def fleet(monkeypatch: pytest.MonkeyPatch) -> list[_Gpu]:
     gpus: list[_Gpu] = []
     monkeypatch.setattr(gating.Machine, "gpus", property(lambda self: tuple(gpus)))
     monkeypatch.setattr(
-        gating, "device_busy", lambda gpu, *, util_threshold, memory_threshold_pct: bool(gpu and gpu.busy)
+        gating,
+        "device_busy",
+        lambda gpu, *, util_threshold, memory_threshold_pct: bool(gpu and gpu.busy),
     )
     return gpus
 

@@ -1,4 +1,5 @@
 import pytest
+
 from mainboard.probe import AppleGPU, UnitKind, Vendor
 from mainboard.probe.providers.apple import gpu as apple_gpu_mod
 

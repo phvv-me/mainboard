@@ -90,7 +90,7 @@ class ProfileReport(FrozenModel):
         peak_bandwidth_gbps: float,
         supported: int | None = None,
         requested: int | None = None,
-    ) -> "ProfileReport":
+    ) -> ProfileReport:
         """Distill a :class:`Profile` into a bottleneck verdict.
 
         peak_bandwidth_gbps: device peak, to score copy bandwidth (0 disables the score).

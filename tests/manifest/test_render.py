@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+
 from mainboard import MissionError
 from mainboard.manifest.render.interpolate import Interpolator
 

@@ -15,7 +15,7 @@ dependencies = [
     "filelock>=3.13",
     "jinja2>=3.1",
     "packaging>=24.0",
-    "patos>=0.0.12",
+    "patos>=0.0.13",
     "plumbum>=1.8",
     "pathspec>=0.12",
     "psutil>=6.0",
@@ -33,12 +33,25 @@ modal = ["modal>=1.0"]
 mainboard = "mainboard.cli:main"
 
 [dependency-groups]
+# uv installs this group by default, so `uv sync` alone builds the whole gate. Every tool the
+# gate runs belongs here, including the linters, since a checkout of this repository is all CI
+# gets and nothing outside it supplies them.
 dev = [
     "hypothesis>=6.100",
+    "mypy>=1.11",
+    "pyrefly>=1",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "pytest-subprocess>=1.5",
+    "ruff>=0.15",
 ]
+
+# Without this table pyrefly walks upward looking for one and adopts whatever manifest it finds,
+# which inside a monorepo checkout means scanning the whole tree. Naming the package's own source
+# and interpreter keeps the gate reading the same files in every checkout.
+[tool.pyrefly]
+project-includes = ["src/**/*.py"]
+python-version = "3.14"
 
 [tool.pytest.ini_options]
 addopts = "-q -ra --strict-markers --cov=mainboard --cov-branch"
@@ -55,13 +68,26 @@ fail_under = 100
 show_missing = true
 exclude_also = ["if TYPE_CHECKING:"]
 
-[tool.uv.sources]
-patos = { path = "../patos", editable = true }
-
+# The lint rules are spelled out here rather than extended from a parent manifest. This
+# repository is checked out on its own by CI and by anyone who clones it, so a path reaching
+# above its root resolves to nothing and takes ruff down with it.
 [tool.ruff]
-extend = "../../pyproject.toml"
+line-length = 99
 target-version = "py314"
+
+# The README's example block aligns its trailing comments into a column on purpose, and ruff
+# formats fenced Python inside markdown, so the prose stays out of the formatter's reach.
+[tool.ruff.format]
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 preview = true
-extend-select = ["PLW1514"]
+# The same set patos, chefe and lote select, so one habit covers every house package, plus the
+# encoding rule this one adds because it reads and writes manifests on three operating systems.
+select = ["E", "F", "I", "UP", "B", "SIM", "PLW1514"]
+
+[tool.ruff.lint.per-file-ignores]
+# A test double stands in for the object under test, so a plain class carrying exactly the
+# attributes a probe reads is the point. A dataclass would add ordering and equality the
+# stand-in is never asked for.
+"tests/**" = ["B903"]

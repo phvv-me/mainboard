@@ -4,6 +4,7 @@ import time
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
+
 from mainboard import Profiler, span
 from mainboard.profile import Profile, annotate, spans
 

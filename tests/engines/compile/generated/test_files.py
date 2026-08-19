@@ -1,7 +1,6 @@
 from typing import TYPE_CHECKING
 
-from mainboard.engines.compile.generated import GeneratedFiles
-from mainboard.engines.compile.generated import Writer
+from mainboard.engines.compile.generated import GeneratedFiles, Writer
 
 if TYPE_CHECKING:
     from pathlib import Path

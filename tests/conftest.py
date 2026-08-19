@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+
 from mainboard import Project
 
 MANIFEST = Project().manifest

@@ -1,4 +1,5 @@
 import pytest
+
 from mainboard.profile import Activity, CallbackSession, TraceCollector, Tracer, Vendor
 
 

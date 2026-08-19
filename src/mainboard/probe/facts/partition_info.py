@@ -61,7 +61,7 @@ class PartitionInfo(FrozenModel):
         """Disk usage from `statvfs`, or None if the mount is inaccessible."""
         try:
             return psutil.disk_usage(self.mountpoint)
-        except (PermissionError, OSError):
+        except PermissionError, OSError:
             return None
 
     @property
@@ -82,7 +82,7 @@ class PartitionInfo(FrozenModel):
         return self.used_bytes / self.total_bytes * 100
 
     @classmethod
-    def all(cls) -> tuple["PartitionInfo", ...]:
+    def all(cls) -> tuple[PartitionInfo, ...]:
         """Return all mounted physical partitions."""
         return tuple(
             cls(device=p.device, mountpoint=p.mountpoint, fstype=p.fstype, opts=p.opts)

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+
 from mainboard.probe import shell
 from mainboard.probe.shell import sysfs as sysfs_mod
 

@@ -29,7 +29,7 @@ class AppleNPU(NPU):
         return Memory.system(scope="unified", unified=True)
 
     @classmethod
-    def all(cls) -> tuple["AppleNPU", ...]:
+    def all(cls) -> tuple[AppleNPU, ...]:
         """Return the local Apple Neural Engine when present."""
         return (cls(),) if cls.is_available() else ()
 

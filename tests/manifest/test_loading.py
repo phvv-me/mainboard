@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+
 from mainboard import Manifest, MissionError, load
 from mainboard.manifest import EnvMode, Guardrail
 

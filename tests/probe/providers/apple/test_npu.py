@@ -1,4 +1,5 @@
 import pytest
+
 from mainboard.probe import AppleNPU, UnitKind, Vendor
 from mainboard.probe.providers.apple import npu as apple_npu_mod
 

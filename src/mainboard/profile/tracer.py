@@ -43,7 +43,7 @@ class Tracer(Registry):
     label: ClassVar[str] = "none"
 
     @classmethod
-    def detect(cls, *, present: frozenset[str] = frozenset()) -> "Tracer":
+    def detect(cls, *, present: frozenset[str] = frozenset()) -> Tracer:
         """The best available tracer: one matching a vendor in `present`, else any, else no-op.
 
         present: vendors of GPUs actually on this host (`DeviceProbe.vendor` values), so

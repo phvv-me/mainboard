@@ -2,6 +2,7 @@ import types
 from typing import Any
 
 import pytest
+
 from mainboard.profile.providers import amd_tracer
 
 

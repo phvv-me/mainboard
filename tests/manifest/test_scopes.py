@@ -1,6 +1,7 @@
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+
 from mainboard import Manifest, MissionError
 from mainboard.manifest import Env, Header, Scope, Spec, Toolchain
 

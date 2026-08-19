@@ -82,7 +82,7 @@ class DeviceTimeline(FrozenModel):
         *,
         top_gaps: int = 10,
         min_gap_ns: int = 10_000,
-    ) -> "DeviceTimeline":
+    ) -> DeviceTimeline:
         """Build the timeline from observed activity.
 
         top_gaps: how many idle windows to retain, longest first.

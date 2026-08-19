@@ -93,7 +93,7 @@ class Host:
         """Current CPU frequency in MHz, or `None` if the platform cannot report it."""
         try:
             freq = psutil.cpu_freq()
-        except (AttributeError, NotImplementedError, OSError):
+        except AttributeError, NotImplementedError, OSError:
             return None
         # pyrefly: ignore  reason=bundled psutil stub types this call as list[scpufreq] since=2026-08-16
         return freq.current if freq else None

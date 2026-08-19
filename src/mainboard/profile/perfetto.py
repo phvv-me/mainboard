@@ -20,7 +20,7 @@ def _meta(name: str, tid: int, label: str) -> TraceEvent:
     return {"ph": "M", "name": name, "pid": 0, "tid": tid, "args": {"name": label}}
 
 
-def _origin_ns(profile: "Profile") -> int:
+def _origin_ns(profile: Profile) -> int:
     """Earliest device timestamp, so the exported timeline starts at zero."""
     starts = [w.start_ns for w in profile.windows]
     starts += [k.start_ns for k in profile.kernels] + [m.start_ns for m in profile.memcpys]
@@ -42,7 +42,7 @@ def _span(
     }
 
 
-def write_trace(profile: "Profile", path: str | PathLike[str]) -> None:
+def write_trace(profile: Profile, path: str | PathLike[str]) -> None:
     """Write ``profile`` as a Chrome/Perfetto trace JSON to ``path``."""
     events: list[TraceEvent] = [
         {
@@ -117,4 +117,6 @@ def write_trace(profile: "Profile", path: str | PathLike[str]) -> None:
                 }
             )
             clock += summary.wall_ms * _NS_PER_US
-    Path(path).write_text(json.dumps({"traceEvents": events, "displayTimeUnit": "ns"}), encoding="utf-8")
+    Path(path).write_text(
+        json.dumps({"traceEvents": events, "displayTimeUnit": "ns"}), encoding="utf-8"
+    )

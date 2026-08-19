@@ -25,6 +25,6 @@ class Environment(FrozenModel):
     scheduler: Scheduler = Scheduler.NONE
 
     @classmethod
-    def probe(cls) -> "Environment":
+    def probe(cls) -> Environment:
         """Detect the job scheduler on PATH."""
         return cls(scheduler=detect_scheduler())

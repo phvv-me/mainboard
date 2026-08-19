@@ -1,8 +1,9 @@
 # Grid-shape parsing, wave math, and the rendered launch-efficiency report.
 
+from rich.console import Console
+
 from mainboard.profile import EfficiencyReport, KernelEfficiency, KernelTrace
 from mainboard.profile.efficiency import grid_blocks, readable
-from rich.console import Console
 
 
 def _kernel(name: str, ns: int, **shape: str | int) -> KernelTrace:

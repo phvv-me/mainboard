@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+
 from mainboard import MissionError
 from mainboard.profile import MergeManifest, TraceSource
 
@@ -10,13 +11,13 @@ if TYPE_CHECKING:
     from mainboard.profile.protocols import Json
 
 
-def _dict(value: "Json") -> dict[str, "Json"]:
+def _dict(value: Json) -> dict[str, Json]:
     """Narrow one `Json` value to a dict, for asserting into a nested render() result."""
     assert isinstance(value, dict)
     return value
 
 
-def _list(value: "Json") -> list["Json"]:
+def _list(value: Json) -> list[Json]:
     """Narrow one `Json` value to a list, for asserting into a nested render() result."""
     assert isinstance(value, list)
     return value

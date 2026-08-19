@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 _tracer: Tracer | None = None
 _tool_id = sys.monitoring.PROFILER_ID
-_codes: tuple["CodeType", ...] = ()
-_frames: ContextVar[list["SpanToken"] | None] = ContextVar("mainboard_auto_spans", default=None)
+_codes: tuple[CodeType, ...] = ()
+_frames: ContextVar[list[SpanToken] | None] = ContextVar("mainboard_auto_spans", default=None)
 
 
 class ReturnedValue(Protocol):
@@ -40,7 +40,7 @@ def callbacks(domains: tuple[str, ...] = ("runtime", "driver")) -> CallbackSessi
     return tracer().callbacks(domains)
 
 
-def frames() -> list["SpanToken"]:
+def frames() -> list[SpanToken]:
     """Return the current task's automatic span stack."""
     stack = _frames.get()
     if stack is None:
@@ -49,18 +49,18 @@ def frames() -> list["SpanToken"]:
     return stack
 
 
-def enabled_codes() -> tuple["CodeType", ...]:
+def enabled_codes() -> tuple[CodeType, ...]:
     """Return the code objects currently selected for local PEP 669 monitoring."""
     return _codes
 
 
-def on_start(code: "CodeType", offset: int) -> None:
+def on_start(code: CodeType, offset: int) -> None:
     """Open a span for one code object selected through local monitoring."""
     del offset
     _frames.set([*frames(), start(code.co_qualname)])
 
 
-def on_return(code: "CodeType", offset: int, retval: ReturnedValue) -> None:
+def on_return(code: CodeType, offset: int, retval: ReturnedValue) -> None:
     """Close the automatic span paired with a return event."""
     del code, offset, retval
     stack = frames()
@@ -69,13 +69,13 @@ def on_return(code: "CodeType", offset: int, retval: ReturnedValue) -> None:
         _frames.set(stack[:-1])
 
 
-def on_unwind(code: "CodeType", offset: int, exc: BaseException) -> None:
+def on_unwind(code: CodeType, offset: int, exc: BaseException) -> None:
     """Close the automatic span paired with an exceptional unwind."""
     if code in _codes:
         on_return(code, offset, exc)
 
 
-def enable_auto(codes: "Iterable[CodeType]") -> None:
+def enable_auto(codes: Iterable[CodeType]) -> None:
     """Enable PEP 669 events only on explicit code objects.
 
     Local events avoid a Python predicate callback on every function in the process.

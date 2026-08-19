@@ -49,7 +49,7 @@ class RegionSummary(FrozenModel):
     @classmethod
     def from_snaps(
         cls, name: str, wall_ms: float, snaps: Sequence[ProcessReading]
-    ) -> "RegionSummary":
+    ) -> RegionSummary:
         """Aggregate the snapshots sampled during a region into one summary."""
         if not snaps:
             return cls(name=name, wall_ms=wall_ms)
@@ -83,7 +83,7 @@ class RegionStat(FrozenModel):
     max_power_w: float
 
     @classmethod
-    def aggregate(cls, summaries: Sequence[RegionSummary]) -> "list[RegionStat]":
+    def aggregate(cls, summaries: Sequence[RegionSummary]) -> list[RegionStat]:
         """Collapse per-occurrence summaries into per-name stats, slowest total first."""
         groups: defaultdict[str, list[RegionSummary]] = defaultdict(list)
         for summary in summaries:

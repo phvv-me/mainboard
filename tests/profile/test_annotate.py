@@ -3,6 +3,7 @@ import threading
 import types
 
 import pytest
+
 from mainboard import Profiler
 from mainboard.profile import Tracer, annotate
 

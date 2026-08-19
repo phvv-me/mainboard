@@ -112,7 +112,7 @@ class KernelTrace(FrozenModel):
         return product
 
     @classmethod
-    def from_activity(cls, act: KernelActivity) -> "KernelTrace":
+    def from_activity(cls, act: KernelActivity) -> KernelTrace:
         """Build from a CUPTI CONCURRENT_KERNEL activity (snake_case attributes)."""
         return cls(
             name=act.name,
@@ -149,7 +149,7 @@ class MemcpyTrace(FrozenModel):
         return self.end_ns - self.start_ns
 
     @classmethod
-    def from_activity(cls, act: MemcpyActivity) -> "MemcpyTrace":
+    def from_activity(cls, act: MemcpyActivity) -> MemcpyTrace:
         """Build from a CUPTI MEMCPY activity (snake_case attributes)."""
         return cls(
             kind=_MEMCPY_KIND.get(int(act.copy_kind), f"kind_{act.copy_kind}"),
@@ -194,7 +194,7 @@ class TraceCollector:
     device-clock timestamps so the profiler bins them into regions afterwards.
     """
 
-    def __enter__(self) -> "TraceCollector":
+    def __enter__(self) -> TraceCollector:
         return self
 
     def __exit__(
@@ -237,7 +237,7 @@ class CallbackSession:
     how often" without buffering. Use as a context manager; read :meth:`counts` after.
     """
 
-    def __enter__(self) -> "CallbackSession":
+    def __enter__(self) -> CallbackSession:
         return self
 
     def __exit__(
@@ -294,7 +294,7 @@ class BottleneckReport(FrozenModel):
         kernels: Sequence[KernelTrace],
         memcpys: Sequence[MemcpyTrace],
         top: int = 10,
-    ) -> "BottleneckReport":
+    ) -> BottleneckReport:
         """Bin kernels into region windows by start timestamp and rank the hot spots."""
         total_kernel = sum(k.duration_ns for k in kernels)
         total_memcpy = sum(m.duration_ns for m in memcpys)

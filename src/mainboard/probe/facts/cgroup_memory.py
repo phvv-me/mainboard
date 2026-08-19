@@ -78,7 +78,7 @@ class CgroupMemory(FrozenModel):
         return min(caps) if caps else None
 
     @classmethod
-    def probe(cls) -> "CgroupMemory":
+    def probe(cls) -> CgroupMemory:
         """Read the enforced cap from the cgroup tree, falling back to host RAM when uncapped."""
         if (limit := cls.enforced_limit()) is not None:
             return cls(limit_bytes=limit, capped=True)

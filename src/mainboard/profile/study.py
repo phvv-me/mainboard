@@ -70,7 +70,7 @@ class Study[P: Point]:
         *,
         collection: Collection | None = None,
         gpus: Sequence[DeviceProbe] = (),
-    ) -> "Study[P]":
+    ) -> Study[P]:
         """Build a study over `points`, all measured the same way."""
         return cls(collection=collection or Collection(), points=tuple(points), gpus=gpus)
 

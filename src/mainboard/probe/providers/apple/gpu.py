@@ -34,7 +34,7 @@ class AppleGPU(GPU):
         return Memory.system(scope="unified", unified=True)
 
     @classmethod
-    def all(cls) -> tuple["AppleGPU", ...]:
+    def all(cls) -> tuple[AppleGPU, ...]:
         """Return the local Apple Silicon GPU when present."""
         return (cls(index=0),) if cls.is_available() else ()
 

@@ -66,7 +66,7 @@ class HostFacts(FrozenOpenModel):
     fabric: tuple[FabricPort, ...] = ()
 
     @classmethod
-    def collected(cls) -> "HostFacts":
+    def collected(cls) -> HostFacts:
         """Probe the current host into one serializable snapshot."""
         machine = Machine()
         host = machine.host

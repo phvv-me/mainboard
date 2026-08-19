@@ -45,7 +45,7 @@ class Meter:
         self.start_ns = 0
         self.elapsed_s = 0.0
 
-    def __enter__(self) -> "Meter":
+    def __enter__(self) -> Meter:
         self.start_ns = time.perf_counter_ns()
         self.sample()
         return self

@@ -1,4 +1,5 @@
 import pytest
+
 from mainboard.probe import Memory
 from mainboard.probe.facts import memory as memory_mod
 

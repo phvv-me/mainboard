@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+
 from mainboard.probe import DiskKind, DriveInfo, PartitionInfo
 from mainboard.probe.facts import drive_info as drive_info_mod
 

@@ -4,6 +4,7 @@ import time
 from collections.abc import Sequence
 
 import pytest
+
 from mainboard import Collection, Profiler, Reach, span
 from mainboard.profile import Activity, BottleneckReport, Feature, Tracer, annotate
 

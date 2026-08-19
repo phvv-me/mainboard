@@ -31,7 +31,7 @@ class Diagnosis(FrozenModel):
         headroom_pct: float = 5.0,
         util_floor: int = 25,
         host_growth_gb: float = 4.0,
-    ) -> "Diagnosis":
+    ) -> Diagnosis:
         """Diagnose a finished trial against a live device, in one call.
 
         The framework path: snapshot `gpu` and read its capacity straight from it, so a
@@ -64,7 +64,7 @@ class Diagnosis(FrozenModel):
         headroom_pct: float = 5.0,
         util_floor: int = 25,
         host_growth_gb: float = 4.0,
-    ) -> "Diagnosis":
+    ) -> Diagnosis:
         """Diagnose a finished trial from its meter and a final device snapshot.
 
         meter: the closed :class:`Meter`, read for ``peak_gpu_gb`` and ``host_delta_gb``.
