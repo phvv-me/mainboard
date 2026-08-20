@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board
+from mainboard import Board, MissionError
 from mainboard.cli import build
 from mainboard.deps import Change, Dependencies
 from mainboard.doctor import Doctor, Section, Verdict
@@ -132,6 +132,29 @@ def test_new_carries_the_snippet_as_a_field_in_the_compact_modes(
         build(workspace)(["new", "p", "--json"])
     printed = json.loads(capsys.readouterr().out)
     assert printed["snippet"] == _ROWS
+
+
+def test_new_hands_the_template_questions_through_as_a_table(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--answer` is repeatable, since a template asks more questions than a flag each."""
+    given: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        Scaffold,
+        "render",
+        lambda self, name, **asked: (
+            given.append(dict(asked["answers"])) or Scaffolded(project="p", path="/p")
+        ),
+    )
+    with pytest.raises(SystemExit, match="0"):
+        build(workspace)(["new", "p", "--answer", "home=standalone", "--answer", "paper=draft"])
+    assert given == [{"home": "standalone", "paper": "draft"}]
+
+
+def test_new_refuses_an_answer_written_without_its_value(workspace: Path) -> None:
+    """A bare word is a question nobody answered, and guessing what it meant helps no one."""
+    with pytest.raises(MissionError, match="question=value"):
+        build(workspace)(["new", "p", "--answer", "home"])
 
 
 def test_doctor_exits_nonzero_only_when_something_is_actually_broken(

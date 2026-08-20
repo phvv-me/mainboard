@@ -214,25 +214,29 @@ def build(root: Path | None = None) -> App:
     def new(
         name: str,
         *,
-        standalone: bool = False,
+        template: str = "",
         description: str = "",
         dest: str = "",
+        answer: tuple[str, ...] = (),
         json: bool = False,
         agent: bool = False,
         fields: str = "",
     ) -> None:
-        """Scaffold a research project from this workspace's template.
+        """Scaffold a project from one of this workspace's declared templates.
 
-        Every answer the template asks for comes from the name or from its own default, so a
-        project is one argument. The task rows the template generates are printed rather than
-        pasted, since the root manifest's task table is hand-curated and the same project has
-        to reach the type checker's search path beside it, and half of that edit landing on its
-        own is worse than none of it.
+        Which templates exist is the manifest's `[templates]` table, and the first declared one
+        is what this renders when none is named. Every answer a template asks for comes from
+        the name, from what the workspace already declared, or from the template's own default,
+        so a project stays one argument while `--answer` covers the rest. The task rows a
+        template generates are printed rather than pasted, since the root manifest's task table
+        is hand-curated and the same project has to reach the type checker's search path beside
+        it, and half of that edit landing on its own is worse than none of it.
 
         name: the project name, which becomes its slug, its package and its task prefix.
-        standalone: render the home that carries its own manifest instead of the monorepo one.
+        template: the template to render, a declared name or any location copier accepts.
         description: the one sentence the README and the task rows carry.
-        dest: where to render it, under `research/` beside its siblings when omitted.
+        dest: where to render it, under the template's own declared home when omitted.
+        answer: a further `question=value` for the template, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over project/path/tasks/paste/snippet.
@@ -242,7 +246,13 @@ def build(root: Path | None = None) -> App:
             made = (
                 board("local")
                 .scaffold()
-                .render(name, standalone=standalone, description=description, dest=dest)
+                .render(
+                    name,
+                    template=template,
+                    description=description,
+                    dest=dest,
+                    answers=_answers(answer),
+                )
             )
         payload = made.model_dump()
         # The rows print whole and pasteable at a terminal, so repeating them wrapped inside a
@@ -557,6 +567,14 @@ def _changed(
 def _fields(raw: str) -> tuple[str, ...]:
     """`raw`'s comma-separated field names, trimmed and blank entries dropped."""
     return tuple(part.strip() for part in raw.split(",") if part.strip()) if raw else ()
+
+
+def _answers(given: tuple[str, ...]) -> dict[str, str]:
+    """The `question=value` pairs a caller passed, refusing one written without its value."""
+    split = [pair.partition("=") for pair in given]
+    if bare := [pair for pair, separator, _ in split if not separator]:
+        raise MissionError(f"answers are written question=value, not {bare[0]!r}")
+    return {question: answer for question, _, answer in split}
 
 
 def _present(report: MonitorReport, *, mode: str | None, fields: tuple[str, ...]) -> None:

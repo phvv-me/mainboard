@@ -68,6 +68,18 @@ mem-gb = "min(100, attempt * 50)"
 
 [tasks]
 test = { run = "pytest", dir = "packages/lab-core" }
+
+[gates]
+lint = "ruff check ."
+
+[gates.proofs]
+run = "prove doctor"
+report = "result.breakages"
+install = "mainboard add prove -l python"
+
+[templates]
+study = { path = "templates/study", into = "studies", answers = { home = "monorepo" } }
+tool = "templates/tool"
 """
 
 

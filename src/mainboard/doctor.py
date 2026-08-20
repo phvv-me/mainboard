@@ -1,12 +1,12 @@
 # The verdict behind `mainboard doctor`: is this workspace fit to work in right now. Nothing
 # here probes anything of its own. Each section asks the subsystem that already owns the
-# question, the manifest loader, the compile state and the wheel audit, the compute survey and
-# the proof workbench, and turns its answer into one line with the command that repairs it.
+# question, the manifest loader, the compile state and the wheel audit, the compute survey, and
+# every verification gate the workspace declares, then turns its answer into one line with the
+# command that repairs it.
 
-import json
-import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum, auto
+from functools import partial
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -27,17 +27,6 @@ if TYPE_CHECKING:
 
 # The tool this workspace answers to, so no message below spells the binary's name.
 _TOOL = Project().name
-
-# The proof workbench, its root marker, and the verb that reports on it. mainboard knows only
-# that much of it: a config naming a workspace, a doctor verb, an exit status, and a list of
-# breakages. Everything inside that report belongs to the workbench.
-_MATH = "atpx"
-_MATH_CONFIG = f"{_MATH}.toml"
-_MATH_VERB = f"{_MATH} doctor"
-
-# The math probe's deadline. It reads files and settles nothing, so an answer takes seconds and
-# anything past this is a workbench that has gone looking at the network or hung.
-_MATH_TIMEOUT = 90.0
 
 # The compute paths that are usable as they stand, so a survey row outside this set is
 # something the report has to say a word about.
@@ -70,11 +59,14 @@ class Section(FrozenModel):
 class Doctor:
     """One verdict over the workspace, composed from the probes each subsystem already owns.
 
-    The sections answer the four questions asked before starting work: does the manifest still
-    say something coherent, is the environment on this disk the one it describes, what compute
-    can be reached, and does the mathematics still hold. Every probe is bounded and they run
-    together, so the whole report takes as long as its slowest single question, and a section
-    that cannot answer says so rather than taking the report down with it.
+    The sections answer the questions asked before starting work: does the manifest still say
+    something coherent, is the environment on this disk the one it describes, what compute can
+    be reached, and does every gate this workspace declares still come back clean. A gate is a
+    command in the manifest, so which further questions get asked is the workspace's decision
+    rather than this package's, and a tool joins the report by being declared instead of by
+    being known here. Every probe is bounded and they run together, so the whole report takes as
+    long as its slowest single question, and a section that cannot answer says so rather than
+    taking the report down with it.
     """
 
     def __init__(
@@ -82,33 +74,36 @@ class Doctor:
         board: Board,
         *,
         survey: Survey | None = None,
-        math: Callable[[str], tuple[int, str]] | None = None,
+        probe: Callable[[str, float], tuple[int, str]] | None = None,
     ) -> None:
         """board: the workspace being examined.
 
         survey: the fleet probe, the workspace's own when None.
-        math: runs the workbench's verb and answers with its exit status and output, the
-            workspace runner when None.
+        probe: runs a declared gate's command under its deadline and answers with its exit
+            status and output, the workspace runner when None.
         """
         self.board = board
         self.given = survey
-        self.math_probe = math or self.through_runner
+        self.probe = probe or self.through_runner
 
     def sections(self) -> list[Section]:
         """Every section, the manifest first because everything after it reads the manifest.
 
         A manifest that will not load is the whole report, since an environment digest, a host
-        roster and a task list are all things that manifest was going to supply, and inventing
-        verdicts for them from a file nobody could parse would say nothing true.
+        roster, a task list and the gate roster itself are all things that manifest was going to
+        supply, and inventing verdicts for them from a file nobody could parse would say nothing
+        true.
         """
         manifest = self.manifest()
         if manifest.verdict is Verdict.FAIL:
             return [manifest]
-        probes: list[Callable[[], Section]] = [self.environment, self.fleet]
-        if self.mathematical():
-            probes.append(self.math)
-        with ThreadPoolExecutor(max_workers=len(probes)) as pool:
-            return [manifest, *pool.map(lambda probe: probe(), probes)]
+        asked: list[Callable[[], Section]] = [
+            self.environment,
+            self.fleet,
+            *(partial(self.gate, name) for name in self.board.manifest.gates),
+        ]
+        with ThreadPoolExecutor(max_workers=len(asked)) as pool:
+            return [manifest, *pool.map(lambda question: question(), asked)]
 
     def manifest(self) -> Section:
         """Whether the workspace manifest still parses, interpolates and validates."""
@@ -221,72 +216,71 @@ class Doctor:
             fix=f"{_TOOL} setup {cold[0]}" if cold else f"{_TOOL} compute",
         )
 
-    def math(self) -> Section:
-        """The proof workbench's own verdict on every blueprint this workspace holds.
+    def gate(self, name: str) -> Section:
+        """One declared verification gate's own verdict on this workspace.
 
-        mainboard reads two things out of that report, the exit status and the list of
-        breakages, both of which the workbench documents as its contract. What counts as a
-        breakage is the workbench's judgment and stays there, so a claim that failed and a link
-        that points at nothing arrive here already named and are passed on as written.
+        Four findings, and the order they are told apart in is the order they mean different
+        things. A clean exit is the gate saying so. A gate that named where its failures live
+        and printed them is broken, in the words it chose, since what counts as a failure is its
+        judgment and stays there. A gate that promised a report and produced none never ran at
+        all, usually because nothing installed it, which is a word rather than a broken
+        workspace. Anything else is a plain command that exited nonzero, and its last line is
+        where such a command puts its complaint.
+
+        name: the `[gates.<name>]` table this section reports on.
         """
+        gate = self.board.manifest.gates[name]
+        repair = f"{_TOOL} run -- {gate.run}"
         try:
-            status, output = self.math_probe(_MATH_VERB)
+            status, output = self.probe(gate.run, gate.timeout)
         except ProcessTimedOut:
             return Section(
-                section="math",
+                section=name,
                 verdict=Verdict.WARN,
-                detail=f"`{_MATH_VERB}` did not answer within {_MATH_TIMEOUT:.0f}s",
-                fix=f"{_TOOL} run -- {_MATH_VERB}",
+                detail=f"`{gate.run}` did not answer within {gate.timeout:.0f}s",
+                fix=repair,
             )
-        if status and not (breakages := _breakages(output)):
+        if not status:
             return Section(
-                section="math",
-                verdict=Verdict.WARN,
-                detail=f"`{_MATH_VERB}` exited {status} without a report, is it installed",
-                fix=f"{_TOOL} add {_MATH} -l python",
+                section=name, verdict=Verdict.PASS, detail=f"`{gate.run}` reports nothing broken"
             )
-        if status:
+        if breakages := gate.breakages(output):
             return Section(
-                section="math",
+                section=name,
                 verdict=Verdict.FAIL,
                 detail=f"{len(breakages)} breakages: {', '.join(breakages)}",
-                fix=f"{_TOOL} run -- {_MATH_VERB}",
+                fix=repair,
             )
-        return Section(section="math", verdict=Verdict.PASS, detail="every claim settled")
+        if gate.report:
+            return Section(
+                section=name,
+                verdict=Verdict.WARN,
+                detail=f"`{gate.run}` exited {status} without a report, is it installed",
+                fix=gate.install or repair,
+            )
+        return Section(
+            section=name,
+            verdict=Verdict.FAIL,
+            detail=_complaint(output) or f"`{gate.run}` exited {status}",
+            fix=repair,
+        )
 
-    def mathematical(self) -> bool:
-        """Whether this workspace roots a proof workbench worth reporting on."""
-        try:
-            config = (self.board.root / _MATH_CONFIG).read_text(encoding="utf-8")
-        except OSError:
-            return False
-        return "workspace" in tomllib.loads(config)
-
-    def through_runner(self, command: str) -> tuple[int, str]:
+    def through_runner(self, command: str, timeout: float) -> tuple[int, str]:
         """Run `command` through this workspace's own runner, bounded, and capture what it said.
 
-        The same staged line `run` uses, so the workbench is reached through the environment
-        this workspace installed rather than through whatever interpreter happens to be on PATH
-        when the report is asked for.
+        The same staged line `run` uses, so a gate is reached through the environment this
+        workspace installed rather than through whatever interpreter happens to be on PATH when
+        the report is asked for.
+
+        command: the gate's command line.
+        timeout: the gate's own deadline in seconds.
         """
         staged = self.board.line(command, container="none")
-        result = Process.capture(localhost["bash"]["-lc", staged], timeout=_MATH_TIMEOUT)
+        result = Process.capture(localhost["bash"]["-lc", staged], timeout=timeout)
         return result.returncode, result.stdout
 
 
-def _breakages(output: str) -> list[str]:
-    """The breakages a workbench certificate reports, empty when the output carries none.
-
-    A tool that is not installed, or one that died before it could stamp anything, leaves
-    output no certificate can be read out of, and that is the difference between a workspace
-    whose mathematics is broken and one whose workbench never ran.
-    """
-    start = output.find("{")
-    if start < 0:
-        return []
-    try:
-        certificate = json.loads(output[start:])
-    except json.JSONDecodeError:
-        return []
-    found = certificate.get("result", {}).get("breakages", [])
-    return [str(breakage) for breakage in found] if isinstance(found, list) else []
+def _complaint(output: str) -> str:
+    """The last thing a command said, which is where a command line tool puts its complaint."""
+    spoken = [line.strip() for line in output.splitlines() if line.strip()]
+    return spoken[-1] if spoken else ""

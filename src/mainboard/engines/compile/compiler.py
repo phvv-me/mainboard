@@ -54,8 +54,14 @@ class Compiler:
         self.stage = stage
 
     def digest(self) -> str:
-        """A content hash of the manifest, the key that decides whether a compile is current."""
-        payload = self.manifest.model_dump(mode="json", round_trip=True)
+        """A content hash of the manifest, the key that decides whether a compile is current.
+
+        Over what a compile actually reads, so the tables that only configure a verb are left
+        out and editing one never makes an installed environment look stale.
+        """
+        payload = self.manifest.model_dump(
+            mode="json", round_trip=True, exclude=set(self.manifest.uncompiled)
+        )
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(canonical).hexdigest()
 

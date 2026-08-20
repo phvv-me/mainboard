@@ -20,10 +20,12 @@ if TYPE_CHECKING:
     from .lane import Lane
 
 # The whole published contract between a trial and anything reading its output: one JSON line
-# under this key, printed by whatever drives the trial. A reader parses the line instead of
-# importing mainboard, which is what lets a proof-bookkeeping tool such as atpx turn a claim's
-# run into evidence carrying the trial's content-addressed identity and its full gate sweep.
-RECEIPT = "mainboard_receipt"
+# under this key, printed by whatever drives the trial. The key names the shape rather than the
+# harness that stamped it, so any experiment framework earns the same reading by printing the
+# same line, and a reader parses it instead of importing this package. That is what lets a
+# proof-bookkeeping tool turn a claim's run into evidence carrying the trial's
+# content-addressed identity and its full gate sweep without knowing what ran it.
+RECEIPT = "trial_receipt"
 
 
 class Declarations(TypedDict, total=False):
@@ -56,14 +58,17 @@ class TrialOutcome:
     def receipt(self) -> str:
         """This trial as its one `RECEIPT` JSON line, for whatever drives the trial to print.
 
-        Identity, the outcome word, the rendered gate sweep, and then whatever else the
-        outcome kind carries as its own fields. A new kind declares a `verdict` and its
-        fields, and its receipt follows without a renderer here ever being edited.
+        Identity, the outcome word, the harness that stamped it, the rendered gate sweep, and
+        then whatever else the outcome kind carries as its own fields. A new kind declares a
+        `verdict` and its fields, and its receipt follows without a renderer here ever being
+        edited. `producer` is provenance for a reader keeping it, never a thing a reader has to
+        branch on, since the point of the line is that every producer's reads the same.
         """
         shared = {"run_id", "gate_evidence"}
         payload: dict[str, JsonValue] = {
             "run_id": self.run_id,
             "outcome": str(self.verdict),
+            "producer": Project().name,
             "gates": [
                 {"status": str(verdict.status), "reason": verdict.reason}
                 for verdict in self.gate_evidence

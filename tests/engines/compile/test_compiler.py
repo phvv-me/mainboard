@@ -41,6 +41,19 @@ def test_digest_is_stable_for_equal_manifests_and_differs_for_different_ones(
     assert _compiler(tmp_path, pixi, one).digest() != _compiler(tmp_path, pixi, different).digest()
 
 
+def test_digest_ignores_the_tables_a_compile_never_reads(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path, pixi: Pixi
+) -> None:
+    """Naming a doctor gate or a project template must not make every environment stale."""
+    bare = manifest_from('[workspace]\nname = "w"\n')
+    configured = manifest_from(
+        '[workspace]\nname = "w"\n[gates]\nlint = "ruff check ."\n[templates]\nx = "t/x"\n'
+    )
+    assert (
+        _compiler(tmp_path, pixi, bare).digest() == _compiler(tmp_path, pixi, configured).digest()
+    )
+
+
 def test_stale_is_false_when_nothing_has_been_compiled_yet(
     manifest_from: Callable[[str], Manifest], tmp_path: Path, pixi: Pixi
 ) -> None:

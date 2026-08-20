@@ -1,10 +1,14 @@
+from typing import ClassVar
+
 from pydantic import model_validator
 
 from ...core.errors import MissionError
 from .container import Container
 from .environment import Env, Task
+from .gate import Gate
 from .host import HostProfile
 from .scope import Scope
+from .template import Template
 from .workspace import Header
 
 _DEFAULTS_KEY = "defaults"
@@ -18,7 +22,17 @@ class Manifest(Scope):
     the top level exactly as before, with `[vars]` feeding interpolation,
     `[containers.*]` declaring base images, and `[hosts.*]` carrying per-host
     execution profiles that inherit `[hosts.defaults]`.
+
+    Two tables carry no dependency at all and exist so a workspace can hand its
+    own decisions to the verbs that would otherwise have to guess them:
+    `[gates.*]` names the commands `doctor` asks for a verdict, and
+    `[templates.*]` names the project templates `new` renders.
     """
+
+    # The tables no compile reads. `[gates]` is what `doctor` asks and `[templates]` is what
+    # `new` renders, so neither reaches a generated file and editing one must not make every
+    # installed environment stale.
+    uncompiled: ClassVar[frozenset[str]] = frozenset({"gates", "templates"})
 
     workspace: Header
     vars: dict[str, str] = {}
@@ -28,6 +42,8 @@ class Manifest(Scope):
     envs: dict[str, Env] = {}
     env: dict[str, str] = {}
     tasks: dict[str, Task] = {}
+    gates: dict[str, Gate] = {}
+    templates: dict[str, Template] = {}
     containers: dict[str, Container] = {}
     hosts: dict[str, HostProfile] = {}
 

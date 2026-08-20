@@ -14,14 +14,23 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
-_ATPX = "atpx.toml"
 _FINGERPRINT = ".pixi-environment-fingerprint"
 
-# A workbench certificate as the tool stamps one, cut down to the two fields mainboard reads.
+# The two gates the fixture workspace declares: one that reports where its failures live, and one
+# plain command that speaks nothing but its exit status.
+_REPORTING = "proofs"
+_BARE = "lint"
+
+# A gate's own report as a tool stamps one, cut down to the one field the manifest points at.
 _BROKEN = json.dumps(
     {"result": {"breakages": [".: failing_claims", "research/x: stale_claims"]}, "exit_status": 1}
 )
 _SETTLED = json.dumps({"result": {"breakages": []}, "exit_status": 0})
+
+
+def answering(status: int, output: str) -> Callable[[str, float], tuple[int, str]]:
+    """A gate probe answering every command with one fixed exit status and output."""
+    return lambda command, timeout: (status, output)
 
 
 class FixedSurvey(Survey):
@@ -197,87 +206,92 @@ def test_a_fleet_only_missing_credentials_points_at_the_survey(workspace: Path) 
     assert Doctor(board, survey=FixedSurvey(board, [row])).fleet().fix == "mainboard compute"
 
 
-def test_a_workbench_reporting_breakages_fails_with_them_named(workspace: Path) -> None:
-    """The findings are the workbench's own judgment and are passed on as written."""
-    found = Doctor(Board(workspace), math=lambda command: (1, _BROKEN)).math()
+def test_a_gate_reporting_breakages_fails_with_them_named(workspace: Path) -> None:
+    """The findings are the gate's own judgment and are passed on as written."""
+    found = Doctor(Board(workspace), probe=answering(1, _BROKEN)).gate(_REPORTING)
     assert found.verdict is Verdict.FAIL
     assert found.detail == "2 breakages: .: failing_claims, research/x: stale_claims"
-    assert found.fix == "mainboard run -- atpx doctor"
+    assert found.fix == "mainboard run -- prove doctor"
 
 
-def test_a_workbench_with_nothing_to_report_passes(workspace: Path) -> None:
-    """A clean exit is the workbench saying every claim it holds is settled."""
-    found = Doctor(Board(workspace), math=lambda command: (0, _SETTLED)).math()
+def test_a_gate_with_nothing_to_report_passes(workspace: Path) -> None:
+    """A clean exit is the gate saying everything it watches is settled."""
+    found = Doctor(Board(workspace), probe=answering(0, _SETTLED)).gate(_REPORTING)
     assert found.verdict is Verdict.PASS
+    assert found.detail == "`prove doctor` reports nothing broken"
 
 
-def test_a_workbench_that_never_ran_is_a_word_not_a_failure(workspace: Path) -> None:
-    """A tool nobody installed cannot say the mathematics is broken."""
-    probe = Doctor(Board(workspace), math=lambda command: (127, "atpx: command not found\n"))
-    found = probe.math()
+def test_a_gate_that_never_ran_is_a_word_not_a_failure(workspace: Path) -> None:
+    """A tool nobody installed cannot say this workspace is broken, and the fix installs it."""
+    probe = answering(127, "prove: command not found\n")
+    found = Doctor(Board(workspace), probe=probe).gate(_REPORTING)
     assert found.verdict is Verdict.WARN
     assert "exited 127 without a report" in found.detail
-    assert found.fix == "mainboard add atpx -l python"
+    assert found.fix == "mainboard add prove -l python"
 
 
-def test_a_workbench_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
+def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
     """The probe is bounded, and hitting that bound is reported rather than waited out."""
 
-    def hang(command: str) -> tuple[int, str]:
-        raise ProcessTimedOut("expired", ["atpx"])
+    def hang(command: str, timeout: float) -> tuple[int, str]:
+        raise ProcessTimedOut("expired", ["prove"])
 
-    found = Doctor(Board(workspace), math=hang).math()
+    found = Doctor(Board(workspace), probe=hang).gate(_REPORTING)
     assert found.verdict is Verdict.WARN
     assert "did not answer within 90s" in found.detail
 
 
 @pytest.mark.parametrize(
-    ("config", "expected"),
-    [
-        (None, False),
-        ("[models]\nprover = 'x'\n", False),
-        ("[workspace]\nblueprints = 'm'\n", True),
-    ],
+    "output",
+    ["", "prove: not found", "{not json", '{"result": 3}', '{"result": {"breakages": 3}}'],
 )
-def test_a_math_section_appears_only_for_a_workspace_that_roots_one(
-    workspace: Path, config: str | None, expected: bool
+def test_output_carrying_no_readable_report_is_a_gate_that_never_ran(
+    workspace: Path, output: str
 ) -> None:
-    """A config naming no workspace roots no blueprints, so there is nothing to report on."""
-    if config is not None:
-        (workspace / _ATPX).write_text(config)
-    assert Doctor(Board(workspace)).mathematical() is expected
+    """Failing without a report and failing with one are different findings."""
+    found = Doctor(Board(workspace), probe=answering(1, output)).gate(_REPORTING)
+    assert found.verdict is Verdict.WARN
 
 
-def test_the_sections_cover_the_workspace_and_its_mathematics(workspace: Path) -> None:
-    """The four questions asked before starting work, in the order they are asked."""
-    (workspace / _ATPX).write_text("[workspace]\nblueprints = 'math'\n")
+def test_a_gate_speaking_only_exit_status_fails_on_its_last_line(workspace: Path) -> None:
+    """A plain command reports by exiting nonzero, and its complaint is where it printed it."""
+    found = Doctor(Board(workspace), probe=answering(1, "checking\nfound 3 errors\n")).gate(_BARE)
+    assert found.verdict is Verdict.FAIL
+    assert found.detail == "found 3 errors"
+    assert found.fix == "mainboard run -- ruff check ."
+
+
+def test_a_silent_gate_that_fails_is_still_named_by_its_exit_status(workspace: Path) -> None:
+    """A command that says nothing still has to leave a line a reader can act on."""
+    found = Doctor(Board(workspace), probe=answering(2, "  \n")).gate(_BARE)
+    assert found.detail == "`ruff check .` exited 2"
+
+
+def test_the_sections_cover_the_workspace_and_every_gate_it_declares(workspace: Path) -> None:
+    """The questions asked before starting work, in the order they are asked."""
     board = Board(workspace)
-    doctor = Doctor(board, survey=FixedSurvey(board, []), math=lambda command: (0, _SETTLED))
+    doctor = Doctor(board, survey=FixedSurvey(board, []), probe=answering(0, _SETTLED))
     sections = doctor.sections()
-    assert [found.section for found in sections] == ["manifest", "environment", "fleet", "math"]
-    assert section(sections, "math").verdict is Verdict.PASS
+    assert [found.section for found in sections] == [
+        "manifest",
+        "environment",
+        "fleet",
+        _BARE,
+        _REPORTING,
+    ]
+    assert section(sections, _REPORTING).verdict is Verdict.PASS
 
 
-def test_a_workspace_rooting_no_blueprints_reports_only_the_three(workspace: Path) -> None:
-    """A section about mathematics nobody keeps here would be a line that says nothing."""
+def test_a_workspace_declaring_no_gates_reports_only_the_three(workspace: Path) -> None:
+    """A section about a question nobody asked here would be a line that says nothing."""
+    (workspace / "mainboard.toml").write_text('[workspace]\nname = "bare"\n')
     board = Board(workspace)
     sections = Doctor(board, survey=FixedSurvey(board, [])).sections()
     assert [found.section for found in sections] == ["manifest", "environment", "fleet"]
 
 
 def test_the_runner_bounds_the_probe_it_stages(workspace: Path) -> None:
-    """The workbench is reached through this workspace's own staged line, under a deadline."""
-    status, output = Doctor(Board(workspace)).through_runner("echo settled")
+    """A gate is reached through this workspace's own staged line, under its own deadline."""
+    status, output = Doctor(Board(workspace)).through_runner("echo settled", 30.0)
     assert status == 0
     assert "settled" in output
-
-
-@pytest.mark.parametrize(
-    "output", ["", "atpx: not found", "{not json", '{"result": {"breakages": 3}}']
-)
-def test_output_carrying_no_readable_certificate_reports_no_breakages(
-    workspace: Path, output: str
-) -> None:
-    """Failing without a report and failing with one are different findings."""
-    found = Doctor(Board(workspace), math=lambda command: (1, output)).math()
-    assert found.verdict is Verdict.WARN
