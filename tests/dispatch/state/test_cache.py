@@ -1,154 +1,95 @@
-from typing import TYPE_CHECKING
+import gc
+import sqlite3
 
 import pytest
 
-from mainboard.dispatch import HostSetup
-from mainboard.dispatch.shared import now
-from mainboard.dispatch.state import Cache, RunRecord
+from mainboard.dispatch import HostSetup, now
 
-if TYPE_CHECKING:
-    from pathlib import Path
+from ..conftest import cache, run_record
 
 
-def make_run(handle: str, *, target: str = "gold", submitted_at: str = "t0") -> RunRecord:
-    return RunRecord(
-        handle=handle,
-        target=target,
-        kind="ssh",
-        script="job.sh",
-        args="",
-        git_sha="abc1234",
-        dirty=0,
-        submitted_at=submitted_at,
-    )
+def test_a_cache_nobody_holds_any_more_closes_the_database_it_opened() -> None:
+    """A short-lived cache is the collector's to close, not a caller's to remember."""
+    store = cache()
+    connection = store.connection
+    del store
+    gc.collect()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
 
 
-def test_now_returns_an_iso_string() -> None:
-    stamp = now()
-    assert "T" in stamp
+def test_a_run_round_trips_through_the_registry_and_upserts_by_its_identity() -> None:
+    """`(target, handle, submitted_at)` is the identity, so a rewrite replaces the row."""
+    store = cache()
+    store.record(run_record("H1"))
+    store.record(run_record("H1").model_copy(update={"name": "renamed"}))
+    store.record(run_record("H2", submitted_at="t1"))
+    assert [run.handle for run in store.recent(10)] == ["H2", "H1"]
+    assert store.run("H1").name == "renamed"
+    assert "T" in now()
 
 
-def test_record_and_recent_round_trip(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.record(make_run("H1"))
-    [run] = cache.recent(10)
-    assert run.handle == "H1"
-
-
-def test_record_upserts_by_target_handle_submitted_at(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.record(make_run("H1"))
-    cache.record(make_run("H1").model_copy(update={"name": "renamed"}))
-    [run] = cache.recent(10)
-    assert run.name == "renamed"
-
-
-def test_resolve_memoizes_the_scheduler_outcome(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    run = make_run("H1")
-    cache.record(run)
-    stored = cache.resolve(run, "F", 0, "ok")
-    assert cache.run("H1").verdict == "ok"
-    assert cache.run("H1").exit_code == 0
+def test_resolve_memoizes_the_outcome_and_report_builds_on_that_same_write() -> None:
+    """A sweep advancing its cursor must not clobber the verdict `resolve` just stored."""
+    store = cache()
+    run = run_record("H1")
+    store.record(run)
+    stored = store.resolve(run, "F", 0, "ok")
     assert (stored.verdict, stored.state, stored.exit_code) == ("ok", "F", 0)
+    store.report(stored, "ok")
+    settled = store.run("H1")
+    assert (settled.verdict, settled.exit_code, settled.reported) == ("ok", 0, "ok")
 
 
-def test_reporting_the_record_resolve_returned_keeps_both_writes(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    run = make_run("H1")
-    cache.record(run)
-    cache.report(cache.resolve(run, "F", 0, "ok"), "ok")
-    assert (cache.run("H1").verdict, cache.run("H1").reported) == ("ok", "ok")
+def test_tracked_holds_a_run_until_its_terminal_verdict_has_been_reported() -> None:
+    """The job whose dispatching agent died is exactly the one no sweep may ever drop."""
+    store = cache()
+    older = run_record("H1", submitted_at="t0")
+    store.record(older)
+    store.record(run_record("H2", submitted_at="t1"))
+    assert [run.handle for run in store.tracked()] == ["H2", "H1"]
+    running = store.resolve(older, "R", None, "running")
+    finished = store.resolve(running, "F", 0, "ok")
+    assert "H1" in [run.handle for run in store.tracked()]
+    store.report(finished, "ok")
+    assert [run.handle for run in store.tracked()] == ["H2"]
 
 
-def test_tracked_holds_a_run_until_its_terminal_verdict_is_reported(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    run = make_run("H1")
-    cache.record(run)
-    assert [tracked.handle for tracked in cache.tracked()] == ["H1"]
-    running = cache.resolve(run, "R", None, "running")
-    assert [tracked.handle for tracked in cache.tracked()] == ["H1"]
-    finished = cache.resolve(running, "F", 0, "ok")
-    assert [tracked.handle for tracked in cache.tracked()] == ["H1"]
-    cache.report(finished, "ok")
-    assert cache.tracked() == []
-
-
-def test_tracked_orders_newest_first(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.record(make_run("H1", submitted_at="2024-01-01T00:00:00"))
-    cache.record(make_run("H2", submitted_at="2024-01-02T00:00:00"))
-    assert [run.handle for run in cache.tracked()] == ["H2", "H1"]
-
-
-def test_report_records_the_monitor_cursor(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    run = make_run("H1")
-    cache.record(run)
-    cache.report(run, "ok")
-    assert cache.run("H1").reported == "ok"
-
-
-def test_recent_orders_newest_first(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.record(make_run("H1", submitted_at="2024-01-01T00:00:00"))
-    cache.record(make_run("H2", submitted_at="2024-01-02T00:00:00"))
-    runs = cache.recent(10)
-    assert [run.handle for run in runs] == ["H2", "H1"]
-
-
-def test_run_narrows_to_a_target_when_given(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.record(make_run("H1", target="gold", submitted_at="t0"))
-    cache.record(make_run("H1", target="crimson", submitted_at="t1"))
-    assert cache.run("H1", target="gold").target == "gold"
-
-
-def test_run_without_a_target_returns_the_newest_row(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.record(make_run("H1", target="gold", submitted_at="t0"))
-    cache.record(make_run("H1", target="gold", submitted_at="t1"))
-    assert cache.run("H1").submitted_at == "t1"
-
-
-def test_run_raises_for_an_unrecorded_handle(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    with pytest.raises(LookupError, match="no recorded run"):
-        cache.run("ghost")
-
-
-def test_run_raises_for_an_unrecorded_handle_on_a_specific_target(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    with pytest.raises(LookupError, match="on 'gold'"):
-        cache.run("ghost", target="gold")
-
-
-def test_run_is_ambiguous_across_multiple_targets_without_one_given(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.record(make_run("H1", target="gold", submitted_at="t0"))
-    cache.record(make_run("H1", target="crimson", submitted_at="t1"))
+def test_run_resolves_the_newest_row_and_refuses_a_handle_recorded_on_two_targets() -> None:
+    store = cache()
+    store.record(run_record("H1", target="gold", submitted_at="t0"))
+    store.record(run_record("H1", target="gold", submitted_at="t1"))
+    assert store.run("H1").submitted_at == "t1"
+    store.record(run_record("H1", target="crimson", submitted_at="t2"))
+    assert store.run("H1", target="gold").submitted_at == "t1"
     with pytest.raises(LookupError, match="recorded on crimson, gold"):
-        cache.run("H1")
+        store.run("H1")
+    with pytest.raises(LookupError, match="no recorded run 'ghost'"):
+        store.run("ghost")
+    with pytest.raises(LookupError, match="on 'gold'"):
+        store.run("ghost", target="gold")
 
 
-def test_save_host_stamps_and_upserts_by_alias(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    stamped = cache.save_host(HostSetup(host="gold", root="/repo", installer="uv"))
+def test_a_host_is_stamped_when_it_was_onboarded_and_upserts_by_alias() -> None:
+    store = cache()
+    stamped = store.save_host(HostSetup(host="gold", root="/repo", installer="uv"))
     assert stamped.onboarded_at
-    cache.save_host(HostSetup(host="gold", root="/elsewhere", installer="pip"))
-    [record] = cache.hosts()
-    assert record.root == "/elsewhere"
-    assert record.installer == "pip"
-
-
-def test_hosts_are_listed_most_recently_onboarded_first(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.save_host(HostSetup(host="gold", root="/repo"))
-    cache.save_host(HostSetup(host="crimson", root="/repo"))
-    assert [record.host for record in cache.hosts()] == ["crimson", "gold"]
-
-
-def test_host_raises_for_a_machine_never_set_up(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
+    store.save_host(HostSetup(host="gold", root="/elsewhere", installer="pip"))
+    store.save_host(HostSetup(host="crimson", root="/repo"))
+    assert [record.host for record in store.hosts()] == ["crimson", "gold"]
+    assert (store.host("gold").root, store.host("gold").installer) == ("/elsewhere", "pip")
     with pytest.raises(LookupError, match="has never been set up"):
-        cache.host("ghost")
+        store.host("ghost")
+
+
+def test_a_mirror_moves_the_watermark_a_later_transfer_measures_against() -> None:
+    """Until a mirror lands the onboarding is the last one, and a host nobody set up has none."""
+    store = cache()
+    onboarded = store.save_host(HostSetup(host="gold", root="/repo"))
+    assert onboarded.mirrored_at == onboarded.onboarded_at
+    store.mark_synced("gold")
+    mirrored = store.host("gold")
+    assert mirrored.synced_at > mirrored.onboarded_at
+    assert mirrored.mirrored_at == mirrored.synced_at
+    store.mark_synced("ghost")
+    assert [record.host for record in store.hosts()] == ["gold"]

@@ -1,8 +1,10 @@
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 from patos import IllegalTransition
 
 from mainboard.dispatch import VERDICTS
-from mainboard.dispatch.verdicts import (
+from mainboard.dispatch.vocabulary import (
     FAILED,
     OK,
     QUEUED,
@@ -14,54 +16,37 @@ from mainboard.dispatch.verdicts import (
     tracker,
 )
 
+_WORDS = st.sampled_from(sorted(VERDICTS))
 
-def test_verdicts_table_matches_the_declared_shape() -> None:
+
+def test_the_table_declares_exactly_the_lifecycle_dispatch_promises() -> None:
     assert VERDICTS[QUEUED] == {RUNNING, VANISHED}
     assert VERDICTS[RUNNING] == {OK, FAILED, VANISHED, TIMEOUT}
-    for terminal in (OK, FAILED, VANISHED, UNKNOWN, TIMEOUT):
-        assert VERDICTS[terminal] == set()
-
-
-def test_terminal_is_every_verdict_no_move_can_leave() -> None:
     assert {OK, FAILED, VANISHED, UNKNOWN, TIMEOUT} == TERMINAL
     assert QUEUED not in TERMINAL and RUNNING not in TERMINAL
-
-
-def test_tracker_starts_at_queued_by_default() -> None:
     assert tracker().current == QUEUED
 
 
-def test_tracker_follows_the_ordinary_lifecycle() -> None:
-    machine = tracker()
-    assert machine.to(RUNNING) == RUNNING
-    assert machine.to(OK) == OK
-    assert machine.is_terminal()
+@given(start=_WORDS, target=_WORDS)
+@example(start=QUEUED, target=RUNNING)
+@example(start=QUEUED, target=VANISHED)
+@example(start=RUNNING, target=TIMEOUT)
+@example(start=QUEUED, target=OK)
+@example(start=OK, target=RUNNING)
+@example(start=FAILED, target=RUNNING)
+def test_only_a_declared_move_is_allowed_and_every_other_one_raises(
+    start: str, target: str
+) -> None:
+    """A settled terminal sliding back to `running` is the regression the table exists to stop.
 
-
-def test_a_queued_job_may_vanish_directly() -> None:
-    machine = tracker()
-    assert machine.to(VANISHED) == VANISHED
-
-
-@pytest.mark.parametrize("terminal", [OK, FAILED, VANISHED, TIMEOUT])
-def test_running_may_settle_into_any_terminal(terminal: str) -> None:
-    machine = tracker(RUNNING)
-    assert machine.to(terminal) == terminal
-
-
-def test_a_regression_from_finished_back_to_running_is_illegal() -> None:
-    machine = tracker(OK)
+    start: the verdict the tracker was built at.
+    target: the verdict a scheduler then reported.
+    """
+    machine = tracker(start)
+    if target in VERDICTS[start]:
+        assert machine.to(target) == target
+        assert machine.is_terminal() == (not VERDICTS[target])
+        return
     with pytest.raises(IllegalTransition):
-        machine.to(RUNNING)
-
-
-def test_a_regression_from_failed_back_to_running_is_illegal() -> None:
-    machine = tracker(FAILED)
-    with pytest.raises(IllegalTransition):
-        machine.to(RUNNING)
-
-
-def test_queued_cannot_jump_straight_to_a_terminal_other_than_vanished() -> None:
-    machine = tracker(QUEUED)
-    with pytest.raises(IllegalTransition):
-        machine.to(OK)
+        machine.to(target)
+    assert machine.current == start

@@ -1,0 +1,92 @@
+# The compile pipeline's whole surface in one manifest: every dependency-table shape, every
+# task shape, every location that has to be rerooted out of the generated directory, a
+# workspace floor an environment raises, and the tables the compiler must never read.
+[workspace]
+name = "kitchen"
+version = "2.1.0"
+channels = ["conda-forge", "nvidia"]
+platforms = ["linux-64", "linux-aarch64"]
+dotenv = false
+scripts = ["scripts/site.sh", "/opt/global.sh"]
+
+[system]
+cuda = "12.0"
+
+[env]
+LAB_HOME = "/srv/lab"
+
+[deps]
+python = ">=3.14"
+# A dependency literally named `path` keeps its version, since only a `path` carried as a
+# dependency source is a location.
+path = "*"
+
+[python.deps]
+torch = ">=2.9"
+lab-core = { path = "packages/lab-core", editable = true }
+vendored = { path = "/opt/vendored", editable = true }
+pinned = { version = ">=1", git = "https://example.com/repo" }
+
+[python]
+index-strategy = "unsafe-best-match"
+no-build-isolation = ["fastsafetensors"]
+# `indexes` configures something other than pixi's solve, so it must not be forwarded.
+indexes = { nvidia = "https://pypi.nvidia.com" }
+
+[python.dependency-overrides]
+sqlalchemy = { path = "packages/sqlalchemy" }
+cuda-core = ">=1.1.1, <2"
+
+[dev.deps]
+ruff = "*"
+
+# A platform overlay restating a constrained dependency without constraining it. A pixi target
+# dependency replaces rather than narrows, so the floor has to arrive already carried.
+[on.linux.deps]
+libgcc = "*"
+python = "*"
+
+# Node rides in the manifest untranslated, mainboard hands pixi conda and Python only.
+[nodejs.deps]
+prettier = ">=3"
+
+[tasks]
+build = "make"
+test = { run = "pytest", dir = "packages/lab-core", depends = ["build"] }
+site = { run = "sphinx", dir = "/opt/docs" }
+all = { depends = ["build", "test"] }
+
+[envs.serving]
+channels = ["nvidia"]
+platforms = ["linux-64"]
+system = { cuda = "13.0" }
+
+[envs.serving.python]
+deps = { vllm = ">=0.6" }
+dev = { "pytest-benchmark" = "*" }
+index-strategy = "unsafe-best-match"
+
+[envs.serving.on.linux.deps]
+cuda-toolkit = "*"
+
+# The same restatement on the pypi side of an environment overlay.
+[envs.serving.on.linux.python.deps]
+vllm = "*"
+
+# An overlay declaring no dependency is left out of the feature's `[target]` entirely.
+[envs.serving.on.osx]
+
+[envs.serving.tasks]
+serve = "vllm serve"
+
+[envs.isolated]
+no-default = true
+
+[hosts.gold]
+kind = "ssh"
+
+[containers.ngc]
+image = "nvcr.io/nvidia/pytorch:25.06-py3"
+
+[gates]
+lint = "ruff check ."

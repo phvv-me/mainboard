@@ -1,21 +1,49 @@
 import os
 import tomllib
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 import pytest
 from plumbum import local
 
 from mainboard import Manifest
+from mainboard.engines.compile import Ecosystem, SecondStage
 from mainboard.engines.compile.backend import Pixi
+from mainboard.engines.compile.compiler import Compiler
+from mainboard.engines.compile.generated import GeneratedFiles, Writer
+from mainboard.manifest import Toolchain
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
-    from pathlib import Path
+
+    from mainboard.manifest.schema.spec import Json
+
+
+class Bind(Protocol):
+    """Binds one ecosystem implementation to a table body, in the fixture workspace."""
+
+    def __call__[E: Ecosystem](self, kind: type[E], body: dict[str, Json]) -> E: ...
+
+
+class Record(Protocol):
+    """Writes one `dist-info` into a site-packages tree the way an installer leaves it."""
+
+    def __call__(
+        self,
+        site_packages: Path,
+        name: str,
+        *,
+        installer: str = ...,
+        roots: str = ...,
+        url: str = ...,
+        editable: bool = ...,
+        files: list[str] | None = ...,
+    ) -> Path: ...
 
 
 @pytest.fixture
 def manifest_from() -> Callable[[str], Manifest]:
-    """A factory: `manifest_from(text)` parses and validates inline TOML into a `Manifest`."""
+    """A factory where `manifest_from(text)` validates inline TOML into a `Manifest`."""
 
     def make(text: str) -> Manifest:
         return Manifest.model_validate(tomllib.loads(text))
@@ -61,6 +89,13 @@ def pixi(tmp_path: Path) -> Pixi:
 
 
 @pytest.fixture
+def files(pixi: Pixi) -> Iterator[Writer]:
+    """The generated-file writer for the fixture workspace, its sync lock held for the test."""
+    with GeneratedFiles(directory=pixi.manifest.parent).locked() as writer:
+        yield writer
+
+
+@pytest.fixture
 def stub_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[str], str]]:
     """A factory placing a fake executable on plumbum's PATH, returning its resolved path.
 
@@ -78,3 +113,90 @@ def stub_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[
 
     with local.env(PATH=f"{bindir}{os.pathsep}{local.env['PATH']}"):
         yield install
+
+
+@pytest.fixture
+def bind(tmp_path: Path, pixi: Pixi) -> Bind:
+    """A factory binding one ecosystem implementation to the table body a test declares."""
+
+    def make[E: Ecosystem](kind: type[E], body: dict[str, Json]) -> E:
+        return kind(
+            Toolchain.model_validate(body),
+            env="default",
+            project="w",
+            workspace=tmp_path,
+            out=pixi.manifest.parent,
+            pixi=pixi,
+        )
+
+    return make
+
+
+@pytest.fixture
+def stage_from(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path, pixi: Pixi
+) -> Callable[[str], SecondStage]:
+    """A factory where `stage_from(text)` builds the second stage of an inline manifest."""
+
+    def make(text: str) -> SecondStage:
+        return SecondStage(tmp_path, manifest_from(text), pixi.manifest.parent, pixi)
+
+    return make
+
+
+@pytest.fixture
+def compiler_from(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path, pixi: Pixi
+) -> Callable[[str], Compiler]:
+    """A factory where `compiler_from(text)` builds the compiler of an inline manifest."""
+
+    def make(text: str) -> Compiler:
+        manifest = manifest_from(text)
+        out = pixi.manifest.parent
+        return Compiler(tmp_path, manifest, out, pixi, SecondStage(tmp_path, manifest, out, pixi))
+
+    return make
+
+
+@pytest.fixture
+def record() -> Record:
+    """A factory writing one `dist-info` the way an installer leaves it behind.
+
+    Returns the import root the distribution declares, which is the path a damaged package is
+    missing and a fake reinstall puts back.
+
+    site_packages: the tree the record is written into.
+    name: the distribution name, which is also what a repair reinstalls it by.
+    installer: the manager claiming the record, `uv-pixi` for everything pixi installs.
+    roots: the `top_level.txt` import roots, the file left out entirely when empty.
+    url: where the install came from, its PEP 610 record left out entirely when empty.
+    editable: whether that PEP 610 record marks the install as editable.
+    files: the `RECORD` paths relative to site-packages, the file left out when `None`.
+    """
+
+    def write(
+        site_packages: Path,
+        name: str,
+        *,
+        installer: str = "uv-pixi",
+        roots: str = "",
+        url: str = "",
+        editable: bool = False,
+        files: list[str] | None = None,
+    ) -> Path:
+        metadata = site_packages / f"{name}-1.0.dist-info"
+        metadata.mkdir()
+        metadata.joinpath("METADATA").write_text(f"Name: {name}\nVersion: 1.0\n")
+        metadata.joinpath("INSTALLER").write_text(installer)
+        if roots:
+            metadata.joinpath("top_level.txt").write_text(roots)
+        if url:
+            editability = str(editable).lower()
+            metadata.joinpath("direct_url.json").write_text(
+                f'{{"url": "{url}", "dir_info": {{"editable": {editability}}}}}'
+            )
+        if files is not None:
+            metadata.joinpath("RECORD").write_text("".join(f"{path},,\n" for path in files))
+        return site_packages / name.replace("-", "_")
+
+    return write

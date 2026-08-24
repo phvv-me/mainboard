@@ -1,35 +1,39 @@
-from collections.abc import Callable
+import pytest
 
 from mainboard.engines import Podman
 from mainboard.manifest import Container
 
 
-def test_is_available_uses_plain_which(which: Callable[..., None]) -> None:
-    which()
-    assert not Podman.is_available()
-    which("podman")
-    assert Podman.is_available()
-
-
-def test_command_uses_the_cdi_device_flag_for_gpu() -> None:
-    container = Container(image="img")
-    argv = Podman.command(container, prefix_bind="p:p", argv=["run"])
-    assert argv[:5] == ["podman", "run", "--rm", "--device", "nvidia.com/gpu=all"]
-    assert argv[-1] == "run"
-
-
-def test_command_without_gpu_has_no_device_flag() -> None:
-    container = Container(image="img", gpus=False)
-    argv = Podman.command(container, prefix_bind="p:p", argv=["run"])
-    assert argv == [
-        "podman",
-        "run",
-        "--rm",
-        "-v",
-        "p:p",
-        "img",
-        "env",
-        "-u",
-        "PIP_CONSTRAINT",
-        "run",
-    ]
+@pytest.mark.parametrize(
+    ("container", "argv"),
+    [
+        pytest.param(
+            Container(image="img"),
+            [
+                "podman",
+                "run",
+                "--rm",
+                "--device",
+                "nvidia.com/gpu=all",
+                "-v",
+                "p:p",
+                "img",
+                "env",
+                "-u",
+                "PIP_CONSTRAINT",
+                "run",
+            ],
+            id="a-gpu-reaches-podman-through-the-container-device-interface",
+        ),
+        pytest.param(
+            Container(image="img", gpus=False),
+            ["podman", "run", "--rm", "-v", "p:p", "img", "env", "-u", "PIP_CONSTRAINT", "run"],
+            id="no-gpu-carries-no-device-flag",
+        ),
+    ],
+)
+def test_the_run_argv_swaps_dockers_gpu_flag_for_the_cdi_device(
+    container: Container, argv: list[str]
+) -> None:
+    """Podman has no `--gpus`, and NVIDIA's own guidance for it is the device interface."""
+    assert Podman.command(container, prefix_bind="p:p", argv=["run"]) == argv

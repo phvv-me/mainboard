@@ -1,10 +1,15 @@
 import os
+from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from threading import Event, Thread
+from time import sleep
 from types import SimpleNamespace
 from urllib.request import Request
 
 import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import (
@@ -24,12 +29,16 @@ from mainboard.dispatch.backends import (
     require_budget,
     route,
 )
-from mainboard.dispatch.schedulers import Resources
+from mainboard.dispatch.backends import api_key as hpc_ai_key
+from mainboard.dispatch.backends.modal import declared_credit
+from mainboard.dispatch.backends.vast import api_key as vast_key
+from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import HostProfile
 
 from .conftest import BareBackend, FakeTransport, hpc_ai_backend, vast_backend
 
-# --- credentials ---
+# Money as a provider really quotes it, from a free rental up to a balance nobody has.
+_MONEY = st.floats(min_value=0.0, max_value=1e5, allow_nan=False, allow_infinity=False)
 
 
 class Blocking:
@@ -51,23 +60,26 @@ class Blocking:
         return self.root
 
 
-def test_the_workspace_env_defines_only_what_the_environment_lacks(
+def test_the_workspace_env_defines_only_what_the_environment_lacks_and_is_read_once(
     unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A file read as data, with comments, blanks and junk skipped and quotes taken off.
 
     The one rule that matters beyond parsing is that the environment wins, so a key someone
-    exported deliberately is never replaced by a line in a file they may have forgotten.
+    exported deliberately is never replaced by a line in a file they may have forgotten. The
+    second load proves the merge happens once however many backends ask, which is what keeps a
+    rewritten file from overwriting a value a provider is already holding.
     """
     monkeypatch.chdir(workspace)
     (workspace / ".env").write_text(
-        "# provider keys\n"
-        "\n"
-        "export VAST_API_KEY=from-the-file\n"
-        "HPCAI_API_KEY='already exported'\n"
-        "MODAL_CREDIT_USD = 30\n"
-        "a line that declares nothing\n"
-        "=headless\n"
+        """# provider keys
+
+export VAST_API_KEY=from-the-file
+HPCAI_API_KEY='already exported'
+MODAL_CREDIT_USD = 30
+a line that declares nothing
+=headless
+"""
     )
     monkeypatch.delenv("VAST_API_KEY", raising=False)
     monkeypatch.delenv("MODAL_CREDIT_USD", raising=False)
@@ -76,24 +88,19 @@ def test_the_workspace_env_defines_only_what_the_environment_lacks(
     assert os.environ["VAST_API_KEY"] == "from-the-file"
     assert os.environ["MODAL_CREDIT_USD"] == "30"
     assert os.environ["HPCAI_API_KEY"] == "kept"
-
-
-def test_the_workspace_env_is_read_once_however_many_backends_ask(
-    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.delenv("VAST_API_KEY", raising=False)
-    (workspace / ".env").write_text("VAST_API_KEY=first\n")
-    assert Credentials().load() == ("VAST_API_KEY",)
     (workspace / ".env").write_text("VAST_API_KEY=second\n")
     assert Credentials().load() == ()
-    assert os.environ["VAST_API_KEY"] == "first"
+    assert os.environ["VAST_API_KEY"] == "from-the-file"
 
 
-def test_a_workspace_with_no_env_file_defines_nothing(
+def test_neither_a_workspace_without_an_env_file_nor_a_machine_outside_one_defines_anything(
     unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Both are one plain empty answer rather than the refusal `find_root` raises."""
     monkeypatch.chdir(workspace)
+    assert Credentials().load() == ()
+    Credentials().loaded = False
+    monkeypatch.chdir(workspace.parent)
     assert Credentials().load() == ()
 
 
@@ -121,7 +128,7 @@ def test_a_second_backend_asking_at_once_waits_for_the_whole_merge(
     first.start()
     reading.wait(timeout=5)
     other.start()
-    other.join(timeout=0.1)
+    other.join(timeout=0.03)
     assert other.is_alive()  # waiting on the merge rather than reporting an empty environment
     may_finish.set()
     first.join(timeout=5)
@@ -129,26 +136,47 @@ def test_a_second_backend_asking_at_once_waits_for_the_whole_merge(
     assert seen == ["one"]
 
 
-def test_a_machine_standing_outside_a_workspace_defines_nothing(
-    unsealed: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("reader", "variable", "declared", "expected"),
+    [
+        pytest.param(vast_key, "VAST_API_KEY", "from-the-env", "from-the-env", id="vast"),
+        pytest.param(hpc_ai_key, "HPCAI_API_KEY", "from-the-env", "from-the-env", id="hpc-ai"),
+        pytest.param(declared_credit, "MODAL_CREDIT_USD", "30", 30.0, id="modal"),
+    ],
+)
+def test_a_providers_own_reader_finds_what_only_the_workspace_env_declares(
+    reader: Callable[[], str | float],
+    variable: str,
+    declared: str,
+    expected: str | float,
+    unsealed: None,
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No manifest above the cwd is a plain empty answer, not the refusal `find_root` raises."""
-    monkeypatch.chdir(tmp_path)
-    assert Credentials().load() == ()
+    """Each refusal tells someone to write that file, so reading it is ours and not their chore."""
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv(variable, raising=False)
+    (workspace / ".env").write_text(f"{variable}={declared}\n")
+    assert reader() == expected
 
 
-# --- route ---
-
-
-@pytest.mark.parametrize("kind", ["ssh", "pbs", "slurm", "local"])
-def test_route_keeps_ssh_family_kinds_on_the_scheduler_path(kind: str) -> None:
-    assert route(kind) == "ssh-family"
-
-
-def test_route_resolves_a_registered_provider_backend_by_kind() -> None:
-    assert route("modal") is ModalBackend
-    assert route("hpc-ai") is HpcAiBackend
-    assert route("vast") is VastBackend
+@pytest.mark.parametrize(
+    ("kind", "path"),
+    [
+        pytest.param("ssh", "ssh-family", id="ssh"),
+        pytest.param("pbs", "ssh-family", id="pbs"),
+        pytest.param("slurm", "ssh-family", id="slurm"),
+        pytest.param("local", "ssh-family", id="local"),
+        pytest.param(HostProfile().kind, "ssh-family", id="an-unprobed-host-left-on-auto"),
+        pytest.param("modal", ModalBackend, id="modal"),
+        pytest.param("hpc-ai", HpcAiBackend, id="hpc-ai"),
+        pytest.param("vast", VastBackend, id="vast"),
+    ],
+)
+def test_route_sends_each_kind_down_the_path_that_can_run_it(
+    kind: str, path: str | type[ProviderBackend]
+) -> None:
+    assert route(kind) == path
 
 
 def test_route_raises_a_mission_error_naming_known_kinds_for_an_unregistered_kind() -> None:
@@ -159,16 +187,15 @@ def test_route_raises_a_mission_error_naming_known_kinds_for_an_unregistered_kin
     assert "hpc-ai" in str(excinfo.value)
 
 
-# --- the core contract and its capabilities ---
-
-
-def test_provider_backend_root_cannot_be_instantiated_directly() -> None:
-    with pytest.raises(TypeError):
-        ProviderBackend()  # type: ignore[abstract]  reason=proving the abstract contract is enforced since=2026-08-17
-
-
 def test_every_backend_carries_the_job_lifecycle_and_nothing_it_cannot_honor() -> None:
-    """The capability map, asserted as a table so a new backend's shape is one line to read."""
+    """The capability map, asserted as a table so a new backend's shape is one line to read.
+
+    Every contract is an optional half a backend opts into, so the lifecycle root carries none of
+    them and a caller finds the real ones by `isinstance` instead of calling and being refused.
+    """
+    contracts = (Account, Delivery, LogSource, Market)
+    assert all(issubclass(contract, Capability) for contract in contracts)
+    assert not any(issubclass(ProviderBackend, contract) for contract in contracts)
     carried = {
         "modal": ModalBackend(),
         "hpc-ai": hpc_ai_backend(transport=FakeTransport()),
@@ -176,11 +203,7 @@ def test_every_backend_carries_the_job_lifecycle_and_nothing_it_cannot_honor() -
         "bare": BareBackend(),
     }
     assert {
-        name: sorted(
-            contract.__name__
-            for contract in (Account, Delivery, LogSource, Market)
-            if isinstance(backend, contract)
-        )
+        name: sorted(contract.__name__ for contract in contracts if isinstance(backend, contract))
         for name, backend in carried.items()
     } == {
         "modal": ["Account", "LogSource"],
@@ -190,33 +213,34 @@ def test_every_backend_carries_the_job_lifecycle_and_nothing_it_cannot_honor() -
     }
 
 
-@pytest.mark.parametrize("contract", [Account, Delivery, LogSource, Market])
-def test_every_capability_is_one_of_the_optional_halves_of_the_contract(
-    contract: type[Capability],
+@pytest.mark.parametrize(
+    ("capability", "line"),
+    [
+        pytest.param(
+            LogSource,
+            "bare backend keeps no logs; read bare-1.log on the box instead",
+            id="a-gap-the-backend-wrote-its-own-advice-for",
+        ),
+        pytest.param(
+            Delivery,
+            "the bare backend does not implement Delivery",
+            id="a-gap-it-never-described",
+        ),
+    ],
+)
+def test_a_refusal_carries_the_backends_own_advice_or_a_plain_statement_of_the_gap(
+    capability: type[Capability], line: str
 ) -> None:
-    assert issubclass(contract, Capability)
-    assert not issubclass(ProviderBackend, contract)
+    assert BareBackend().refusal(capability, handle="bare-1") == line
 
 
-# --- refusal ---
-
-
-def test_a_declared_gap_refuses_with_the_backends_own_advice() -> None:
-    assert BareBackend().refusal(LogSource, handle="bare-1") == (
-        "bare backend keeps no logs; read bare-1.log on the box instead"
-    )
-
-
-def test_an_undeclared_gap_refuses_by_naming_the_contract_it_never_implemented() -> None:
-    assert BareBackend().refusal(Delivery) == ("the bare backend does not implement Delivery")
-
-
-# --- require_budget ---
-
-
-def test_http_transport_hands_the_prepared_request_to_urllib_under_a_deadline(
+def test_the_audited_url_open_is_what_every_rest_backend_takes_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """One seam reaches urllib, under the package's own deadline since urllib itself has none."""
+    assert VastBackend().transport is http_transport
+    assert HpcAiBackend().transport is http_transport
+    assert VastBackend().sleeper is sleep
     seen: list[tuple[Request, float]] = []
 
     def fake_urlopen(request: Request, *, timeout: float) -> SimpleNamespace:
@@ -231,28 +255,27 @@ def test_http_transport_hands_the_prepared_request_to_urllib_under_a_deadline(
     assert 0 < deadline < 60
 
 
-# --- Standing ---
+# Ten rather than the profile's thirty, because the whole rule is one `round` call and building
+# a validated model is the most expensive thing this file does under coverage. The two figures
+# below are the live ones the rule was written for, so they run whatever the sample draws.
+@settings(max_examples=10)
+@given(figure=_MONEY)
+@example(figure=99.99680725539)
+@example(figure=0.285925925926)
+def test_standing_quotes_money_at_the_precision_money_has(figure: float) -> None:
+    """Four places rather than two, so two real hourly rates never read as the same price, and a
+    figure the provider publishes none of stays absent rather than becoming a zero."""
+    priced = Standing(keyed=True, credit_usd=figure, usd_hr=None)
+    assert priced.credit_usd == pytest.approx(figure, abs=1e-4)
+    assert priced.credit_usd == round(priced.credit_usd, 4)
+    assert priced.usd_hr is None
 
 
-def test_standing_rounds_money_and_leaves_an_absent_figure_absent() -> None:
-    priced = Standing(keyed=True, credit_usd=99.99680725539, usd_hr=0.285925925926)
-    assert priced.credit_usd == pytest.approx(99.9968)
-    assert priced.usd_hr == pytest.approx(0.2859)
-    assert Standing().credit_usd is None
-    assert Standing().usd_hr is None
-
-
-# --- require_budget ---
-
-
-def test_require_budget_raises_when_max_usd_is_unset() -> None:
-    with pytest.raises(MissionError, match="max-usd"):
-        require_budget(Resources())
-
-
-def test_require_budget_passes_when_max_usd_is_set() -> None:
-    require_budget(Resources(max_usd=1.0))
-
-
-def test_route_keeps_auto_on_the_ssh_family() -> None:
-    assert route(HostProfile().kind) == "ssh-family"
+@given(cap=_MONEY)
+@example(cap=0.0)
+@example(cap=5.0)
+def test_require_budget_refuses_a_submission_nobody_capped(cap: float) -> None:
+    """Every provider bills someone, so an uncapped submit is refused before any network call."""
+    refuses = pytest.raises(MissionError, match="max-usd") if not cap else nullcontext()
+    with refuses:
+        require_budget(Resources(max_usd=cap))

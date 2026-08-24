@@ -28,6 +28,36 @@ def columns_of(rows: Sequence[Row], fields: Sequence[str] | None) -> list[str]:
     return list(rows[0].keys()) if rows else []
 
 
+def totals(
+    rows: Sequence[Mapping[str, Node]],
+    *,
+    columns: Sequence[str],
+    summing: Sequence[str],
+    label: str = "total",
+) -> dict[str, Cell]:
+    """One closing row adding up `summing`'s columns, for a table a reader has to budget from.
+
+    The row keeps the table's own shape, so it renders, projects and encodes exactly like every
+    other row rather than needing a second pass to print.
+
+    rows: the rows being added up.
+    columns: the table's column order, the first of which carries `label`.
+    summing: the columns to add; every other one comes back empty.
+    label: what the first column says on the closing row.
+    """
+    return {
+        column: label
+        if at == 0
+        else (sum(_number(row.get(column)) for row in rows) if column in summing else "")
+        for at, column in enumerate(columns)
+    }
+
+
+def _number(value: Node) -> float:
+    """`value` as a number for summing, zero for a cell holding anything else."""
+    return value if isinstance(value, int | float) and not isinstance(value, bool) else 0
+
+
 def pairs_of(row: Row, *, fields: Sequence[str] | None) -> list[dict[str, Cell]]:
     """`row`'s items as one field/value row per key, narrow and legible for a wide entity.
 

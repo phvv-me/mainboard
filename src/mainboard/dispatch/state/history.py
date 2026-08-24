@@ -3,6 +3,7 @@
 
 import os
 import time
+import weakref
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -52,6 +53,10 @@ class History:
         self.path = path or db_file()
         self.enabled = os.environ.get("MAINBOARD_NO_HISTORY") != "1"
         self.connection = connect(self.path) if self.enabled else None
+        if self.connection is not None:
+            # Closing is the collector's job here for the same reason it is on the cache: a
+            # short-lived log has no caller left to remember it opened a database.
+            weakref.finalize(self, self.connection.close)
 
     def recent(self, limit: int = 20) -> list[HistoryEvent]:
         """The last `limit` recorded events, oldest-to-newest, or [] if none."""

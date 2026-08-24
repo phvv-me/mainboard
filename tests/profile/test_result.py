@@ -1,148 +1,138 @@
 import json
 from pathlib import Path
 
-from mainboard.profile import (
-    ActivityRecord,
-    KernelTrace,
-    MemcpyTrace,
-    Profile,
-    ProfileDiff,
-    RegionStat,
-    RegionSummary,
-    RegionWindow,
-    perfetto,
-)
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
+from mainboard.profile import Profile, ProfileDiff, RegionStat, RegionSummary, perfetto
 from mainboard.profile.result import _region_text
 
-
-def _traced_profile() -> Profile:
-    """A profile with two regions and kernels/memcpys binned across their windows."""
-    return Profile(
-        device="dev",
-        summaries=(
-            RegionSummary(name="encode", wall_ms=2.0, avg_util_pct=50.0, avg_power_w=100.0),
-            RegionSummary(name="decode", wall_ms=1.0),
-        ),
-        windows=(
-            RegionWindow(name="encode", start_ns=0, end_ns=1000, wall_ns=2_000_000),
-            RegionWindow(name="decode", start_ns=1000, end_ns=2000, wall_ns=1_000_000),
-        ),
-        kernels=(
-            KernelTrace(name="gemm", start_ns=0, end_ns=600, grid="8x1x1", block="256x1x1"),
-            KernelTrace(name="gemm", start_ns=1000, end_ns=1400),
-            KernelTrace(name="relu", start_ns=600, end_ns=700),
-        ),
-        memcpys=(MemcpyTrace(kind="HtoD", start_ns=0, end_ns=100, bytes_moved=4096),),
-        activities=(
-            ActivityRecord(kind="runtime", name="cudaLaunchKernel", start_ns=0, end_ns=5),
-        ),
-    )
+from .conftest import traced_profile
 
 
-def test_profile_efficiency_reads_launch_shape_off_the_kernel_traces() -> None:
-    """`Profile.efficiency` is a thin verb over `EfficiencyReport.build`."""
-    report = _traced_profile().efficiency(sm_count=2)
-    assert {row.name for row in report.rows} == {"gemm", "relu"}
-    assert report.sm_count == 2
-
-
-def test_profile_timeline_reads_busy_and_idle_off_the_kernel_traces() -> None:
-    """`Profile.timeline` is a thin verb over `DeviceTimeline.from_traces`."""
-    timeline = _traced_profile().timeline()
-    assert timeline.busy_ns > 0
-    assert timeline.activities == 4  # 3 kernels + 1 memcpy
-
-
-def test_profile_stats_and_bottlenecks() -> None:
-    """Stats collapse per name; bottlenecks are the slowest by total wall time."""
-    profile = _traced_profile()
-    stats = profile.stats()
-    assert {s.name for s in stats} == {"encode", "decode"}
+def test_the_profile_verbs_read_their_reports_off_the_evidence_it_holds() -> None:
+    """`efficiency`, `timeline`, `stats` and `bottlenecks` are thin verbs over the traces."""
+    profile = traced_profile()
+    assert {row.name for row in profile.efficiency(sm_count=2).rows} == {"gemm", "relu"}
+    assert profile.efficiency(sm_count=2).sm_count == 2
+    assert profile.timeline().busy_ns > 0
+    assert profile.timeline().activities == 4  # 3 kernels + 1 memcpy
+    assert {stat.name for stat in profile.stats()} == {"encode", "decode"}
     assert profile.bottlenecks(top=1)[0].name == "encode"
 
 
-def test_profile_diff_ranks_regressions(tmp_path: Path) -> None:
-    """A diff matches regions by name and ranks by absolute change; round-trips on disk."""
-    base = Profile(summaries=(RegionSummary(name="r", wall_ms=2.0),))
-    cur = Profile(
-        summaries=(RegionSummary(name="r", wall_ms=1.0), RegionSummary(name="new", wall_ms=5.0))
+def test_a_diff_matches_regions_by_name_and_survives_a_round_trip(tmp_path: Path) -> None:
+    """Regions are matched by name and ranked by absolute change, and a profile reloads.
+
+    A region present in only one of the two profiles has no speedup to report rather than
+    a division by zero, and the host and device labels of both sides travel with the diff.
+    """
+    base = Profile(host="a", device="cuda:0", summaries=(RegionSummary(name="r", wall_ms=2.0),))
+    current = Profile(
+        host="b",
+        device="cuda:1",
+        summaries=(RegionSummary(name="r", wall_ms=1.0), RegionSummary(name="new", wall_ms=5.0)),
     )
-    diff = cur.diff(base)
+    diff = current.diff(base)
     assert isinstance(diff, ProfileDiff)
-    speedup = next(row for row in diff.rows if row.name == "r").speedup
-    assert speedup == 2.0  # 2ms -> 1ms
+    assert [row.delta_ms for row in diff.rows] == sorted(
+        (row.delta_ms for row in diff.rows), key=abs, reverse=True
+    )
+    assert next(row for row in diff.rows if row.name == "r").speedup == 2.0  # 2ms -> 1ms
+    assert next(row for row in diff.rows if row.name == "new").speedup == 0.0
+    assert (diff.baseline_host, diff.current_host) == ("a", "b")
+    assert (diff.baseline_device, diff.current_device) == ("cuda:0", "cuda:1")
+
     path = tmp_path / "p.json"
-    cur.save(path)
+    current.save(path)
     assert Profile.load(path).stats()[0].name == "new"
 
 
-def test_profile_diff_carries_host_and_device_labels() -> None:
-    base = Profile(host="a", device="cuda:0")
-    cur = Profile(host="b", device="cuda:1")
-    diff = cur.diff(base)
-    assert diff.baseline_host == "a"
-    assert diff.current_host == "b"
-    assert diff.baseline_device == "cuda:0"
-    assert diff.current_device == "cuda:1"
+@pytest.mark.parametrize(
+    ("profile", "present", "absent"),
+    [
+        (Profile(), ("No profiling data collected.",), ("Spans", "GPU activity")),
+        (traced_profile(), ("Spans", "encode", "GPU activity", "3 kernels"), ("Capture limit",)),
+        (
+            Profile(dropped_activities=3),
+            ("Capture limit", "oldest GPU activities dropped"),
+            ("oldest spans dropped",),
+        ),
+        (
+            Profile(summaries=(RegionSummary(name="r", wall_ms=1.0),), dropped_spans=2),
+            ("Spans", "oldest spans dropped"),
+            ("oldest GPU activities dropped",),
+        ),
+    ],
+    ids=["nothing_collected", "spans_and_gpu_activity", "activities_dropped", "spans_dropped"],
+)
+def test_the_report_carries_only_the_evidence_sections_it_has(
+    profile: Profile, present: tuple[str, ...], absent: tuple[str, ...]
+) -> None:
+    """A section appears only when its evidence does, and an empty run says so plainly."""
+    text = profile.report()
+    assert str(profile) == text
+    assert all(fragment in text for fragment in present)
+    assert not any(fragment in text for fragment in absent)
+    assert _region_text([]) == "No regions recorded."
 
 
-def test_profile_report_and_str_are_plain_text() -> None:
-    """`report`/`__str__` give a per-region table; an empty profile says so."""
-    assert "encode" in _traced_profile().report()
-    assert str(_traced_profile()) == _traced_profile().report()
-    assert "No profiling data" in Profile().report()
+# Two region names over a short list is a small space, so a trimmed budget covers it and keeps
+# the suite's wall time where it was.
+@settings(max_examples=15)
+@given(
+    regions=st.lists(
+        st.tuples(
+            st.sampled_from(["encode", "decode"]),
+            st.floats(min_value=0.0, max_value=1e4, allow_nan=False, allow_infinity=False),
+        ),
+        max_size=6,
+    )
+)
+def test_per_name_stats_collapse_every_call_of_a_region_into_one_row(
+    regions: list[tuple[str, float]],
+) -> None:
+    """A region called many times is one row with its call count, not one row per call."""
+    summaries = [RegionSummary(name=name, wall_ms=wall) for name, wall in regions]
+    stats = RegionStat.aggregate(summaries)
+
+    assert {stat.name for stat in stats} == {name for name, _ in regions}
+    assert sum(stat.calls for stat in stats) == len(regions)
+    assert [stat.total_ms for stat in stats] == sorted(
+        (stat.total_ms for stat in stats), reverse=True
+    )
+    for stat in stats:
+        walls = [wall for name, wall in regions if name == stat.name]
+        assert stat.calls == len(walls)
+        assert stat.total_ms == sum(walls)
+        assert stat.avg_ms == sum(walls) / len(walls)
 
 
-def test_profile_perfetto_export(tmp_path: Path) -> None:
+def test_the_perfetto_export_lays_one_track_out_per_activity_class(tmp_path: Path) -> None:
     """`Profile.perfetto` writes loadable Chrome trace JSON with all four tracks."""
     path = tmp_path / "trace.json"
-    _traced_profile().perfetto(path)
-    data = json.loads(path.read_text())
-    names = {e["name"] for e in data["traceEvents"]}
-    assert {"gemm", "relu", "HtoD", "cudaLaunchKernel"} <= names
+    traced_profile().perfetto(path)
+    events = json.loads(path.read_text())["traceEvents"]
+    assert {"gemm", "relu", "HtoD", "cudaLaunchKernel", "encode"} <= {e["name"] for e in events}
+    assert {1, 2, 3, 4} <= {e["tid"] for e in events}
 
 
-def test_perfetto_lays_untraced_regions_sequentially(tmp_path: Path) -> None:
-    """Without device windows, regions are placed sequentially by wall time."""
+def test_the_perfetto_export_lays_untraced_regions_out_sequentially(tmp_path: Path) -> None:
+    """Without device windows, regions are placed one after another by wall time.
+
+    A profile with nothing in it at all still writes a valid, event-less trace rather than
+    failing to find an origin timestamp.
+    """
     profile = Profile(
         summaries=(RegionSummary(name="a", wall_ms=1.0), RegionSummary(name="b", wall_ms=2.0))
     )
     path = tmp_path / "t.json"
     perfetto.write_trace(profile, path)
     spans = [e for e in json.loads(path.read_text())["traceEvents"] if e["ph"] == "X"]
-    assert [s["name"] for s in spans] == ["a", "b"]
+    assert [span["name"] for span in spans] == ["a", "b"]
     assert spans[1]["ts"] > spans[0]["ts"]  # b starts after a
 
-
-def test_perfetto_origin_is_zero_with_no_events(tmp_path: Path) -> None:
-    """An empty profile still writes a valid (event-less span) trace."""
-    path = tmp_path / "e.json"
-    perfetto.write_trace(Profile(), path)
-    assert "traceEvents" in json.loads(path.read_text())
-
-
-def test_region_stat_aggregate_collapses_calls() -> None:
-    """Repeated occurrences of a name collapse into one stat with the call count."""
-    rows = (RegionSummary(name="r", wall_ms=1.0), RegionSummary(name="r", wall_ms=3.0))
-    stat = RegionStat.aggregate(rows)[0]
-    assert stat.calls == 2
-    assert stat.total_ms == 4.0
-    assert stat.avg_ms == 2.0
-
-
-def test_report_lists_gpu_activity_section_only_when_kernels_present() -> None:
-    """The plain-text report grows a `GPU activity` section only when kernels were traced."""
-    assert "GPU activity" not in Profile().report()
-    assert "GPU activity" in _traced_profile().report()
-
-
-def test_report_lists_dropped_activities_even_without_dropped_spans() -> None:
-    """The capture-limit note covers dropped activities independently of dropped spans."""
-    report = Profile(dropped_activities=3).report()
-    assert "oldest GPU activities dropped" in report
-    assert "oldest spans dropped" not in report
-
-
-def test_region_text_reports_emptiness_for_no_stats() -> None:
-    """The plain-text region table says so rather than emitting a blank header."""
-    assert _region_text([]) == "No regions recorded."
+    empty = tmp_path / "e.json"
+    perfetto.write_trace(Profile(), empty)
+    assert json.loads(empty.read_text())["traceEvents"]

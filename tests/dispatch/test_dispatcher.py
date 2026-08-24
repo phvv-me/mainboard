@@ -5,34 +5,26 @@ from typing import TYPE_CHECKING
 import pytest
 from plumbum.commands.processes import ProcessExecutionError
 
-from mainboard import ExecutionPlan, MissionError
-from mainboard.dispatch import Dispatcher, Handle, Verdict
+from mainboard import MissionError
+from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, Verdict
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import schedulers as schedulers_module
 from mainboard.dispatch.jobs import JobSpec
-from mainboard.dispatch.schedulers import HostUnreachable, JobState, Resources
-from mainboard.dispatch.schedulers.base import POLL_SECONDS
-from mainboard.dispatch.state import RunRecord
+from mainboard.dispatch.schedulers import HostUnreachable
+from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
-from .conftest import FakeRemote, RecordingScheduler
+from .conftest import RecordingScheduler, cache, machine_with, plan, run_record
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from mainboard.dispatch.transport import Machine
 
-type PlanField = str | HostProfile | Container | dict[str, str] | None
-
-
-def plan(**overrides: PlanField) -> ExecutionPlan:
-    fields: dict[str, PlanField] = {
-        "host": "gold",
-        "profile": HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}),
-        "env": "default",
-    }
-    fields.update(overrides)
-    return ExecutionPlan.model_validate(fields)
+_CONTAINERIZED = {
+    "profile": HostProfile(kind="ssh", root="/repo", container="ngc", sync={"include": ["src"]}),
+    "container": Container(image="nvcr.io/nvidia/pytorch:25.06-py3"),
+}
 
 
 class _StubStrategy:
@@ -48,56 +40,73 @@ class _StubStrategy:
 
 @pytest.fixture
 def backend(monkeypatch: pytest.MonkeyPatch) -> RecordingScheduler:
-    """Pin the dispatch seams: pick/SCHEDULERS -> a recording backend, connection -> a fake remote."""  # ruff:ignore[line-too-long]  reason=descriptive fixture docstring since=2026-08-16
-    sched = RecordingScheduler()
-    monkeypatch.setattr(dispatch_module, "pick", lambda profile: sched)
-    monkeypatch.setattr(schedulers_module, "SCHEDULERS", _StubStrategy(sched))
-    monkeypatch.setattr(dispatch_module, "connection", lambda host: FakeRemote())
+    """Pin the backend, the connection, git and the clock, every seam a dispatch reaches."""
+    scheduler = RecordingScheduler()
+    monkeypatch.setattr(dispatch_module, "pick", lambda profile: scheduler)
+    monkeypatch.setattr(schedulers_module, "SCHEDULERS", _StubStrategy(scheduler))
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
     monkeypatch.setattr(
-        dispatch_module, "git", lambda *a: "abc1234" if a[0] == "rev-parse" else ""
+        dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else ""
     )
-    return sched
+    monkeypatch.setattr(dispatch_module, "sleep", lambda seconds: None)
+    return scheduler
 
 
 @pytest.fixture
 def dispatcher(workdir: Path, backend: RecordingScheduler) -> Dispatcher:
+    """A dispatcher whose mirror only records what it was asked to ship, on `instance.shipped`."""
     del backend
-    instance = Dispatcher(cache=dispatch_module.Cache(workdir / "db.sqlite"))
-    instance.rsync_up = lambda *a, **k: None  # type: ignore[method-assign]  reason=test double stands in for the bound method since=2026-08-16
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    instance.shipped: list[tuple[str, ...]] = []
+    instance.rsync_up = lambda execution, root, **kwargs: instance.shipped.append(
+        tuple(kwargs.get("extra", ()))
+    )
     return instance
 
 
-# --- Handle / Verdict ---
-
-
-def test_verdict_projects_to_ok_and_exit_code() -> None:
-    assert Verdict(verdict="ok", exit_code=0).ok is True
-    assert Verdict(verdict="ok").code == 0
-    assert Verdict(verdict="failed", exit_code=1).ok is False
-    assert Verdict(verdict="failed").code == 1
-    assert Verdict(verdict="vanished").code == 3
-
-
-def test_handle_carries_host_root_and_kind() -> None:
-    handle = Handle(id="H1", host="gold", root="/repo", kind="ssh", fetch_path="out/")
-    assert handle.fetch_path == "out/"
-
-
-# --- run ---
-
-
-def test_run_dispatches_and_returns_a_handle(
-    dispatcher: Dispatcher, backend: RecordingScheduler
+@pytest.mark.parametrize(
+    ("verdict", "exit_code", "code", "ok"),
+    [
+        ("ok", 0, 0, True),
+        ("failed", 1, 1, False),
+        ("running", None, 2, False),
+        ("vanished", None, 3, False),
+        ("unknown", None, 3, False),
+    ],
+)
+def test_a_verdict_projects_onto_the_process_exit_code_a_caller_branches_on(
+    verdict: str, exit_code: int | None, code: int, ok: bool
 ) -> None:
+    projected = Verdict(verdict=verdict, exit_code=exit_code)
+    assert (projected.code, projected.ok) == (code, ok)
+
+
+def test_a_numeric_scheduler_id_is_stored_as_text_wherever_a_handle_travels() -> None:
+    """pueue hands out small integers, and a caller reading one back as a number fails deep."""
+    handle = Handle(id=42, host="gold", root="/repo", kind="ssh", fetch_path="out/")
+    assert (handle.id, handle.fetch_path) == ("42", "out/")
+    assert JobState(handle=42, verdict="running").handle == "42"
+
+
+def test_run_renders_a_job_script_ships_it_and_hands_back_a_pollable_handle(
+    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
+) -> None:
+    resources = Resources(gpus=4, walltime="01:00:00", queue="gen-S", mem_gb=240)
     handle = dispatcher.run(
-        plan(), "python -m foo --shard 3", root="/repo", resources=Resources(gpus=1), fetch="out/"
+        plan(), "python -m foo --shard 3", root="/repo", resources=resources, fetch="out/"
     )
-    assert isinstance(handle, Handle)
-    assert handle.id == "H1"
-    assert handle.host == "gold"
-    assert handle.fetch_path == "out/"
-    [(_root, script, _args)] = [v for k, v in backend.calls if k == "submit"]
+    assert (handle.id, handle.host, handle.kind, handle.fetch_path) == (
+        "H1",
+        "gold",
+        "ssh",
+        "out/",
+    )
+    [(_root, script, args)] = [call for name, call in backend.calls if name == "submit"]
     assert script.startswith(".mainboard/dispatch/jobs/")
+    assert args == ()
+    assert dispatcher.shipped == [(script,)]
+    assert (workdir / script).is_file()
+    assert backend.submit_resources == resources
 
 
 def test_run_renders_the_job_script_against_the_plans_own_environment(
@@ -111,468 +120,294 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
     assert "/repo/.mainboard/.pixi/envs/serving/bin" in text
 
 
-def test_run_ships_the_generated_script_as_an_extra_path(
-    workdir: Path, backend: RecordingScheduler
-) -> None:
-    shipped: list[tuple[str, ...]] = []
-    instance = Dispatcher()
-    instance.rsync_up = lambda p, root, **k: shipped.append(tuple(k.get("extra", ())))  # type: ignore[method-assign]  reason=test double stands in for the bound method since=2026-08-16
-    handle = instance.run(plan(), "python -m foo", root="/repo", resources=Resources())
-    [(generated,)] = shipped
-    assert generated.startswith(".mainboard/dispatch/jobs/")
-    [(_root, script, _args)] = [v for k, v in backend.calls if k == "submit"]
-    assert script == generated
-    assert handle.id == "H1"
-
-
-def test_run_threads_resources_to_the_backend(
+def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
     dispatcher: Dispatcher, backend: RecordingScheduler
 ) -> None:
-    resources = Resources(gpus=4, walltime="01:00:00", queue="gen-S", mem_gb=240)
-    dispatcher.run(plan(), "python -m foo", root="/repo", resources=resources)
-    sent = backend.submit_resources
-    assert sent.gpus == 4
-    assert sent.walltime == "01:00:00"
-    assert sent.queue == "gen-S"
-    assert sent.mem_gb == 240
-
-
-def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
-    workdir: Path, backend: RecordingScheduler
-) -> None:
-    """No manifest-declared default and no caller-resolved walltime is a clear error, never a
-    silently-injected site constant."""
-    instance = Dispatcher()
-    called: list[tuple[ExecutionPlan | str, ...]] = []
-    instance.rsync_up = lambda *a, **k: called.append(a)  # type: ignore[method-assign]  reason=test double stands in for the bound method since=2026-08-16
-    pbs_plan = plan(profile=HostProfile(kind="pbs", root="/repo", sync={"include": ["src"]}))
+    """No declared default and no resolved walltime is a clear error, never a site constant."""
+    pbs = plan(profile=HostProfile(kind="pbs", root="/repo", sync={"include": ["src"]}))
     with pytest.raises(ValueError, match="explicit walltime"):
-        instance.run(pbs_plan, "python -m foo", root="/repo", resources=Resources())
-    assert called == []
+        dispatcher.run(pbs, "python -m foo", root="/repo", resources=Resources())
+    assert dispatcher.shipped == []
     assert backend.calls == []
 
 
-def test_run_containerized_without_a_builder_raises_before_rendering(workdir: Path) -> None:
-    instance = Dispatcher()
-    host = HostProfile(kind="ssh", root="/repo", container="ngc", sync={"include": ["src"]})
-    container_plan = plan(
-        profile=host, container=Container(image="nvcr.io/nvidia/pytorch:25.06-py3")
-    )
-    with pytest.raises(LookupError, match="no container argv builder"):
-        instance.run(container_plan, "python -m foo", root="/repo", resources=Resources())
-
-
-def test_run_containerized_wraps_the_command_via_the_injected_builder(
+def test_run_containerized_wraps_the_command_via_the_builder_or_refuses_without_one(
     dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
-    host = HostProfile(kind="ssh", root="/repo", container="ngc", sync={"include": ["src"]})
-    container_plan = plan(
-        profile=host, container=Container(image="nvcr.io/nvidia/pytorch:25.06-py3")
-    )
+    containerized = plan(**_CONTAINERIZED)
+    with pytest.raises(LookupError, match="no container argv builder"):
+        dispatcher.run(containerized, "python -m foo", root="/repo", resources=Resources())
     dispatcher.run(
-        container_plan,
+        containerized,
         "python -m foo",
         root="/repo",
         resources=Resources(),
         containerize=lambda inner: ["apptainer", "exec", "image.sif", *inner],
     )
-    [(_root, script, _args)] = [v for k, v in backend.calls if k == "submit"]
+    [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
     text = (workdir / script).read_text()
     assert text.splitlines()[-1] == "apptainer exec image.sif bash -c 'python -m foo'"
 
 
-# --- submit ---
-
-
-def test_submit_calls_admission_before_any_ssh(workdir: Path, backend: RecordingScheduler) -> None:
+def test_submit_admits_the_request_before_a_single_ssh_connection(
+    dispatcher: Dispatcher, backend: RecordingScheduler
+) -> None:
     host = HostProfile(
         kind="ssh",
         root="/repo",
         sync={"include": ["src"]},
         queues={"short-g": QueuePolicy(max_walltime="00:10:00")},
     )
-    instance = Dispatcher()
-    touched: list[str] = []
-    instance.rsync_up = lambda *a, **k: touched.append("rsync")  # type: ignore[method-assign]  reason=test double stands in for the bound method since=2026-08-16
     with pytest.raises(MissionError, match="exceeds the 'short-g' ceiling"):
-        instance.submit(
+        dispatcher.submit(
             plan(profile=host),
             "/repo",
             script="job.sh",
             args=(),
             resources=Resources(queue="short-g", walltime="08:00:00"),
         )
-    assert touched == []
+    assert dispatcher.shipped == []
     assert backend.calls == []
 
 
-def test_submit_records_the_run_with_git_provenance(
-    dispatcher: Dispatcher, backend: RecordingScheduler
-) -> None:
-    handle = dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
-    run = dispatcher.cache.recent(10)[0]
-    assert run.handle == handle
-    assert run.target == "gold"
-    assert run.git_sha == "abc1234"
-    assert run.dirty == 0
-
-
-def test_submit_dirty_tree_is_recorded(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(("porcelain", "dirty"), [("", 0), ("M x.py", 1)])
+def test_submit_records_the_run_with_the_git_provenance_it_was_dispatched_from(
+    dispatcher: Dispatcher,
+    backend: RecordingScheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    porcelain: str,
+    dirty: int,
 ) -> None:
     monkeypatch.setattr(
-        dispatch_module, "git", lambda *a: "abc1234" if a[0] == "rev-parse" else "M x.py"
+        dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else porcelain
     )
-    dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
+    handle = dispatcher.submit(
+        plan(), "/repo", script="train.sh", args=("--x", "1"), resources=Resources()
+    )
     [run] = dispatcher.cache.recent(10)
-    assert run.dirty == 1
+    assert (run.handle, run.target, run.git_sha, run.dirty) == (handle, "gold", "abc1234", dirty)
+    assert run.args == "--x 1"
 
 
-def test_submit_verify_failure_aborts_before_the_scheduler(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        dispatch_module,
-        "connection",
-        lambda host: FakeRemote(healthy=False, stderr="ModuleNotFoundError"),
-    )
-    with pytest.raises(SystemExit, match="environment on 'gold' is broken"):
-        dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
-    assert backend.calls == []
-
-
-def test_submit_scheduler_rejection_names_the_host(
-    dispatcher: Dispatcher, backend: RecordingScheduler
-) -> None:
-    def reject(
-        remote: Machine, root: str, *, script: str, args: Sequence[str], resources: Resources
-    ) -> str:
-        raise SystemExit("no PBS queue resolved")
-
-    backend.submit = reject  # type: ignore[method-assign]  reason=test double stands in for the bound method since=2026-08-16
-    with pytest.raises(SystemExit, match="submission to host 'gold' failed"):
-        dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
-
-
-# --- await_many ---
-
-
-def test_await_many_blocks_until_each_handle_is_terminal(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(dispatch_module, "sleep", lambda s: None)
-    backend.state_result = JobState(handle="H1", state="F", exit_code=0, verdict="ok")
-    handle = Handle(id="H1", host="gold", root="/repo", kind="ssh")
-    verdicts = dispatcher.await_many([handle])
-    assert verdicts[handle].ok
-    assert verdicts[handle].exit_code == 0
-
-
-def test_await_many_polls_running_handles_until_they_finish(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(dispatch_module, "sleep", lambda s: None)
-    running = JobState(handle="H1", state="R", verdict="running")
-    done = JobState(handle="H1", state="F", exit_code=0, verdict="ok")
-    states = iter([running, running, done])
-    backend.state = lambda remote, root, handle: next(states)  # type: ignore[method-assign]  reason=test double stands in for the bound method since=2026-08-16
-    handle = Handle(id="H1", host="gold", root="/repo", kind="ssh")
-    verdicts = dispatcher.await_many([handle])
-    assert verdicts[handle].verdict == "ok"
-
-
-def test_await_many_retries_a_transient_blip(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(dispatch_module, "sleep", lambda s: None)
-    calls = {"n": 0}
-
-    def state(remote: Machine, root: str, *, handle: str) -> JobState:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise HostUnreachable("blip")
-        return JobState(handle="H1", state="F", exit_code=0, verdict="ok")
-
-    backend.state = state  # type: ignore[method-assign]  reason=test double stands in for the bound method since=2026-08-16
-    handle = Handle(id="H1", host="gold", root="/repo", kind="ssh")
-    verdicts = dispatcher.await_many([handle])
-    assert verdicts[handle].ok
-    assert calls["n"] == 2
-
-
-def test_await_many_carries_the_failure_reason(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(dispatch_module, "sleep", lambda s: None)
-    backend.state_result = JobState(handle="H1", state="F", exit_code=137, verdict="failed")
-    monkeypatch.setattr(dispatch_module, "read_log", lambda remote, root, handle: "warming up\n")
-    handle = Handle(id="H1", host="gold", root="/repo", kind="ssh")
-    verdict = dispatcher.await_many([handle])[handle]
-    assert verdict.verdict == "failed"
-    assert "memory" in verdict.reason
-
-
-def test_await_many_persists_a_terminal_verdict_to_the_cache(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(dispatch_module, "sleep", lambda s: None)
-    dispatcher.cache.record(
-        RunRecord(
-            handle="H1",
-            target="gold",
-            kind="ssh",
-            script="a.sh",
-            args="",
-            git_sha="x",
-            dirty=0,
-            submitted_at="t0",
-        )
-    )
-    backend.state_result = JobState(handle="H1", state="F", exit_code=0, verdict="ok")
-    dispatcher.await_many([Handle(id="H1", host="gold", root="/repo", kind="ssh")])
-    assert dispatcher.cache.run("H1").verdict == "ok"
-
-
-def test_await_many_tolerates_an_unrecorded_handle(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(dispatch_module, "sleep", lambda s: None)
-    backend.state_result = JobState(handle="H1", state="F", exit_code=0, verdict="ok")
-    handle = Handle(id="H1", host="gold", root="/repo", kind="ssh")
-    assert dispatcher.await_many([handle])[handle].ok
-
-
-def test_await_many_default_interval_is_poll_seconds() -> None:
-    assert inspect.signature(Dispatcher.await_many).parameters["interval"].default == POLL_SECONDS
-
-
-# --- probe / state ---
-
-
-def test_probe_absorbs_an_unreachable_host_while_state_names_it(
-    dispatcher: Dispatcher, backend: RecordingScheduler
-) -> None:
-    def down(remote: Machine, root: str, *, handle: str) -> JobState:
-        raise HostUnreachable("ssh connect to 'gold' failed: connection timed out")
-
-    backend.state = down  # type: ignore[method-assign]  reason=test double stands in for the bound method since=2026-08-18
-    handle = Handle(id="H1", host="gold", root="/repo", kind="ssh")
-    assert dispatcher.probe(handle) is None
-    with pytest.raises(HostUnreachable, match="timed out"):
-        dispatcher.state(handle)
-
-
-# --- fetch / fetch_path ---
-
-
-def test_fetch_pulls_the_recorded_path_back(
-    monkeypatch: pytest.MonkeyPatch, dispatcher: Dispatcher
-) -> None:
-    calls: list[tuple[str | Sequence[str], str]] = []
-    monkeypatch.setattr(
-        dispatch_module, "rsync", lambda sources, dest, *a, **k: calls.append((sources, dest))
-    )
-    dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh", fetch_path="out/"))
-    [(sources, dest)] = calls
-    assert sources == ["gold:/repo/out"]
-    assert dest == "./"
-
-
-def test_fetch_of_a_single_file_lands_in_its_parent(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch, dispatcher: Dispatcher
-) -> None:
-    calls: list[tuple[str | Sequence[str], str]] = []
-    monkeypatch.setattr(
-        dispatch_module, "rsync", lambda sources, dest, *a, **k: calls.append((sources, dest))
-    )
-    dispatcher.fetch(
-        Handle(id="H1", host="gold", root="/repo", kind="ssh", fetch_path="a/b/c.json")
-    )
-    assert (workdir / "a/b").is_dir()
-    [(sources, dest)] = calls
-    assert sources == ["gold:/repo/a/b/c.json"]
-    assert dest == "a/b/"
-
-
-def test_fetch_without_a_path_is_a_lookup_error(dispatcher: Dispatcher) -> None:
-    with pytest.raises(LookupError, match="no fetch path"):
-        dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh"))
-
-
-# --- write_job_script ---
-
-
-def test_write_job_script_is_content_addressed(dispatcher: Dispatcher, workdir: Path) -> None:
-    spec = JobSpec(cmd="python -m foo", plan=plan(), root="/repo")
-    first = dispatcher.write_job_script(spec, pbs=False)
-    assert first.startswith(".mainboard/dispatch/jobs/")
-    again = dispatcher.write_job_script(spec, pbs=False)
-    assert again == first
-
-
-# --- _prepare_script ---
-
-
-def test_prepare_script_leaves_a_bare_name_unchanged(dispatcher: Dispatcher) -> None:
-    prepared, staged = dispatcher._prepare_script("job")  # ruff:ignore[private-member-access]  reason=unit-tests the module-private helper since=2026-08-16
-    assert prepared == "job"
-    assert staged == ()
-
-
-def test_prepare_script_stages_an_explicit_existing_path(
-    dispatcher: Dispatcher, workdir: Path
-) -> None:
-    external = workdir.parent / "external.sh"
-    external.write_text("#!/bin/bash\necho hi\n")
-    prepared, staged = dispatcher._prepare_script(str(external))  # ruff:ignore[private-member-access]  reason=unit-tests the module-private helper since=2026-08-16
-    assert prepared.startswith(".mainboard/dispatch/jobs/")
-    assert staged == (prepared,)
-    assert (workdir / prepared).read_text() == external.read_text()
-
-
-def test_prepare_script_rejects_a_missing_explicit_path(
-    dispatcher: Dispatcher, workdir: Path
-) -> None:
-    with pytest.raises(FileNotFoundError, match="cannot be shipped to the host"):
-        dispatcher._prepare_script("./missing/job.sh")  # ruff:ignore[private-member-access]  reason=unit-tests the module-private helper since=2026-08-16
-
-
-# --- rsync_up ---
-
-
-def test_rsync_up_fails_fast_on_empty_include(workdir: Path) -> None:
-    instance = Dispatcher()
-    host = HostProfile(kind="ssh", root="/repo", sync={"include": []})
-    with pytest.raises(LookupError, match="nothing to sync"):
-        instance.rsync_up(plan(profile=host), "/repo")
-
-
-def test_rsync_up_drops_stale_include_paths_with_one_warning(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (workdir / "src").mkdir()
-    host = HostProfile(kind="ssh", root="/repo", sync={"include": ["src", "packages/meteng"]})
-    instance = Dispatcher()
-    captured: dict[str, str | Sequence[str]] = {}
-    monkeypatch.setattr(
-        dispatch_module,
-        "rsync",
-        lambda sources, dest, flags, **k: captured.update(sources=sources),
-    )
-    warned: list[tuple[str, tuple[int | str, ...]]] = []
-    monkeypatch.setattr(dispatch_module.logger, "warning", lambda msg, *a: warned.append((msg, a)))
-    instance.rsync_up(plan(profile=host), "/repo")
-    assert captured["sources"][0] == "src"
-    [(message, args)] = warned
-    assert "stale sync include" in message
-    assert args[0] == 1
-    assert args[1] == "packages/meteng"
-
-
-def test_rsync_up_with_every_include_missing_is_a_lookup_error(workdir: Path) -> None:
-    host = HostProfile(kind="ssh", root="/repo", sync={"include": ["gone"]})
-    instance = Dispatcher()
-    with pytest.raises(LookupError, match="missing locally"):
-        instance.rsync_up(plan(profile=host), "/repo")
-
-
-def test_rsync_up_rejects_an_incomplete_required_pair(workdir: Path) -> None:
-    (workdir / "src").mkdir()
-    envdir = workdir / ".mainboard/envs/default"
-    envdir.mkdir(parents=True)
-    (envdir / "pixi.toml").write_text("x")
-    host = HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]})
-    instance = Dispatcher()
-    with pytest.raises(LookupError, match="incomplete"):
-        instance.rsync_up(
-            plan(profile=host),
-            "/repo",
-            required=[(".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")],
-        )
-
-
-def test_rsync_up_punches_through_the_denylist_for_a_required_pair(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (workdir / "src").mkdir()
-    envdir = workdir / ".mainboard/envs/default"
-    envdir.mkdir(parents=True)
-    (envdir / "pixi.toml").write_text("x")
-    (envdir / "pixi.lock").write_text("y")
-    host = HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]})
-    instance = Dispatcher()
-    captured: dict[str, str | Sequence[str] | bool] = {}
-    monkeypatch.setattr(
-        dispatch_module,
-        "rsync",
-        lambda sources, dest, flags, **k: captured.update(sources=sources, **k),
-    )
-    instance.rsync_up(
-        plan(profile=host),
-        "/repo",
-        required=[(".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")],
-    )
-    assert ".mainboard/envs/default/pixi.toml" in captured["sources"]
-    assert "/.mainboard/" in captured["include"]
-    assert "/.mainboard/***" in captured["exclude"]
-    assert captured["allow_vanished"] is False
-
-
-def test_rsync_up_preserves_an_ordinary_mirror_error(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (workdir / "src").mkdir()
-    host = HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]})
-    instance = Dispatcher()
-    failure = ProcessExecutionError(["rsync"], 23, "", "partial transfer")
-
-    def fail(*a, **k) -> None:
-        raise failure
-
-    monkeypatch.setattr(dispatch_module, "rsync", fail)
-    with pytest.raises(ProcessExecutionError) as caught:
-        instance.rsync_up(plan(profile=host), "/repo")
-    assert caught.value is failure
-
-
-def test_rsync_up_wraps_a_failed_required_transfer(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (workdir / "src").mkdir()
-    host = HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]})
-    instance = Dispatcher()
-
-    def fail(*a, **k) -> None:
-        raise ProcessExecutionError(["rsync"], 12, "", "connection reset")
-
-    monkeypatch.setattr(dispatch_module, "rsync", fail)
-    with pytest.raises(RuntimeError, match="submission aborted before scheduler dispatch"):
-        instance.rsync_up(
-            plan(profile=host), "/repo", extra=(".mainboard/dispatch/jobs/job-x.sh",)
-        )
-
-
-# --- git ---
-
-
-def test_git_strips_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_git_reports_a_local_commands_stripped_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         dispatch_module.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": " abc \n"})()
     )
     assert dispatch_module.git("rev-parse", "HEAD") == "abc"
 
 
-# --- de-hardcoded defaults ---
+def test_submit_refuses_a_broken_environment_and_names_the_host_a_scheduler_rejected(
+    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken remote env becomes one plain sentence instead of a traceback inside a job log."""
+
+    def reject(
+        remote: Machine, root: str, *, script: str, args: Sequence[str], resources: Resources
+    ) -> str:
+        raise SystemExit("no PBS queue resolved")
+
+    backend.submit = reject
+    with pytest.raises(SystemExit, match="submission to host 'gold' failed"):
+        dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
+    monkeypatch.setattr(
+        dispatch_module,
+        "connection",
+        lambda host: machine_with(rules=[("true", 1, "ModuleNotFoundError: no torch")]),
+    )
+    with pytest.raises(SystemExit, match="environment on 'gold' is broken: ModuleNotFoundError"):
+        dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
 
 
-def test_manifest_owns_the_walltime_default_not_dispatch_code() -> None:
+def test_await_many_polls_every_handle_until_terminal_and_persists_what_it_learned(
+    dispatcher: Dispatcher, backend: RecordingScheduler
+) -> None:
+    """A transient blip is not a verdict, so that handle is simply retried on the next tick."""
+    assert inspect.signature(Dispatcher.await_many).parameters["interval"].default == POLL_SECONDS
+    probes = {"n": 0}
+    states = [
+        HostUnreachable("blip"),
+        JobState(handle="H1", state="R", verdict="running"),
+        JobState(handle="H1", state="F", exit_code=0, verdict="ok"),
+    ]
+
+    def answer(remote: Machine, root: str, *, handle: str) -> JobState:
+        probes["n"] += 1
+        reply = states[min(probes["n"] - 1, len(states) - 1)]
+        if isinstance(reply, HostUnreachable):
+            raise reply
+        return reply
+
+    backend.state = answer
+    dispatcher.cache.record(run_record("H1"))
+    settled = Handle(id="H1", host="gold", root="/repo", kind="ssh")
+    assert dispatcher.await_many([settled])[settled].ok
+    assert probes["n"] == 3
+    assert dispatcher.cache.run("H1").verdict == "ok"
+    del backend.state
+    backend.state_result = JobState(handle="H2", state="F", exit_code=137, verdict="failed")
+    unrecorded = Handle(id="H2", host="gold", root="/repo", kind="ssh")
+    verdict = dispatcher.await_many([unrecorded])[unrecorded]
+    assert (verdict.verdict, verdict.exit_code) == ("failed", 137)
+    assert "memory" in verdict.reason
+
+
+def test_probe_absorbs_an_unreachable_host_while_state_names_it(
+    dispatcher: Dispatcher, backend: RecordingScheduler
+) -> None:
+    """A caller polling on its own cadence must not record a state the host never reported."""
+
+    def down(remote: Machine, root: str, *, handle: str) -> JobState:
+        raise HostUnreachable("ssh connect to 'gold' failed: connection timed out")
+
+    backend.state = down
+    handle = Handle(id="H1", host="gold", root="/repo", kind="ssh")
+    assert dispatcher.probe(handle) is None
+    with pytest.raises(HostUnreachable, match="timed out"):
+        dispatcher.state(handle)
+
+
+def test_states_asks_the_host_once_and_only_re_asks_what_the_listing_missed(
+    dispatcher: Dispatcher, backend: RecordingScheduler
+) -> None:
+    """One listing for the whole host, then one further question per handle it did not cover.
+
+    A dispatch cache that has been accumulating for months holds a thousand runs on one box, so
+    the listing is what keeps a sweep to a single round trip. What the listing does not span (a
+    `squeue` that only sees live jobs, a PBS server that purged its history) is where the job's
+    real ending is, and that is worth one question each rather than a guess.
+    """
+    backend.state_result = JobState(handle="H1", state="F", exit_code=0, verdict="ok")
+    listed = [Handle(id=name, host="gold", root="/repo", kind="ssh") for name in ("H1", "H2")]
+    resolved = dispatcher.states([*listed, listed[0]])
+    assert sorted(resolved) == ["H1", "H2"]
+    assert backend.calls == [("states", ("/repo", ("H1", "H2"))), ("state", ("/repo", "H2"))]
+    assert dispatcher.states([]) == {}
+
+
+@pytest.mark.parametrize(
+    ("fetch_path", "source", "dest"),
+    [("out/", "gold:/repo/out", ""), ("a/b/c.json", "gold:/repo/a/b/c.json", "a/b")],
+)
+def test_fetch_pulls_the_recorded_path_back_into_its_own_parent_directory(
+    dispatcher: Dispatcher,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fetch_path: str,
+    source: str,
+    dest: str,
+) -> None:
+    """The results land under the workspace, wherever the command that pulls them was typed."""
+    pulled: list[tuple[str | Sequence[str], str]] = []
+    monkeypatch.setattr(
+        dispatch_module, "rsync", lambda sources, target, *a, **k: pulled.append((sources, target))
+    )
+    dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh", fetch_path=fetch_path))
+    landing = workdir / dest
+    assert pulled == [([source], f"{landing}/")]
+    assert landing.is_dir()
+    with pytest.raises(LookupError, match="no fetch path"):
+        dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh"))
+
+
+def test_a_rendered_and_a_staged_script_are_both_content_addressed(
+    dispatcher: Dispatcher, workdir: Path
+) -> None:
+    """Repeated runs reuse the file instead of growing the jobs directory unboundedly."""
+    spec = JobSpec(cmd="python -m foo", plan=plan(), root="/repo")
+    rendered = dispatcher.write_job_script(spec, pbs=False)
+    assert rendered.startswith(".mainboard/dispatch/jobs/")
+    assert dispatcher.write_job_script(spec, pbs=False) == rendered
+    assert dispatcher._prepare_script("job") == ("job", ())  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
+    external = workdir.parent / "external.sh"
+    external.write_text("#!/bin/bash\necho hi\n")
+    prepared, staged = dispatcher._prepare_script(str(external))  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
+    assert staged == (prepared,)
+    assert (workdir / prepared).read_text() == external.read_text()
+    with pytest.raises(FileNotFoundError, match="cannot be shipped to the host"):
+        dispatcher._prepare_script("./missing/job.sh")  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
+
+
+def test_rsync_up_refuses_an_undeclared_include_and_warns_about_a_stale_one(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    instance = Dispatcher()
+    empty = HostProfile(kind="ssh", root="/repo", sync={"include": []})
+    with pytest.raises(LookupError, match="nothing to sync"):
+        instance.rsync_up(plan(profile=empty), "/repo")
+    gone = HostProfile(kind="ssh", root="/repo", sync={"include": ["gone"]})
+    with pytest.raises(LookupError, match="missing locally"):
+        instance.rsync_up(plan(profile=gone), "/repo")
+    (workdir / "src").mkdir()
+    partly = HostProfile(kind="ssh", root="/repo", sync={"include": ["src", "packages/meteng"]})
+    sent: dict[str, str | Sequence[str]] = {}
+    monkeypatch.setattr(
+        dispatch_module, "rsync", lambda sources, dest, flags, **k: sent.update(sources=sources)
+    )
+    warned: list[tuple[str, tuple[int | str, ...]]] = []
+    monkeypatch.setattr(dispatch_module.logger, "warning", lambda msg, *a: warned.append((msg, a)))
+    instance.rsync_up(plan(profile=partly), "/repo")
+    assert sent["sources"][0] == "src"
+    [(message, args)] = warned
+    assert "stale sync include" in message
+    assert args[:2] == (1, "packages/meteng")
+
+
+def test_rsync_up_punches_a_required_group_through_the_denylist_or_refuses_an_incomplete_one(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The compiled artifact must ride the mirror whole, since a half lock installs nothing."""
+    (workdir / "src").mkdir()
+    envdir = workdir / ".mainboard/envs/default"
+    envdir.mkdir(parents=True)
+    (envdir / "pixi.toml").write_text("x")
+    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
+    with pytest.raises(LookupError, match="incomplete"):
+        instance.rsync_up(host, "/repo", required=[group])
+    (envdir / "pixi.lock").write_text("y")
+    sent: dict[str, str | Sequence[str] | bool] = {}
+    monkeypatch.setattr(
+        dispatch_module,
+        "rsync",
+        lambda sources, dest, flags, **k: sent.update(sources=sources, **k),
+    )
+    instance.rsync_up(host, "/repo", required=[group])
+    assert ".mainboard/envs/default/pixi.toml" in sent["sources"]
+    assert "/.mainboard/" in sent["include"]
+    assert "/.mainboard/***" in sent["exclude"]
+    assert sent["allow_vanished"] is False
+
+
+@pytest.mark.parametrize(
+    ("extra", "raised", "detail"),
+    [
+        ((), ProcessExecutionError, "exit code: 23"),
+        ((".mainboard/dispatch/jobs/job-x.sh",), RuntimeError, "submission aborted"),
+    ],
+)
+def test_rsync_up_preserves_an_ordinary_mirror_error_but_wraps_a_failed_required_transfer(
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    extra: tuple[str, ...],
+    raised: type[BaseException],
+    detail: str,
+) -> None:
+    (workdir / "src").mkdir()
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+
+    def fail(*a, **k) -> None:
+        raise ProcessExecutionError(["rsync"], 23, "", "connection reset")
+
+    monkeypatch.setattr(dispatch_module, "rsync", fail)
+    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
+    with pytest.raises(raised, match=detail):
+        instance.rsync_up(host, "/repo", extra=extra)
+
+
+def test_the_manifest_owns_the_walltime_default_never_the_dispatch_code() -> None:
     """The `00:30:00` fallback lives on the manifest schema's `Defaults`, never in dispatch."""
     assert Defaults().walltime == "00:30:00"
     source = Path(dispatch_module.__file__).read_text(encoding="utf-8")
     assert "debug-g" not in source
     assert "00:30:00" not in source
-
-
-def test_handles_accept_a_numeric_scheduler_id_and_store_text() -> None:
-    assert Handle(id=42, host="gold", root="/repo", kind="ssh").id == "42"
-    assert JobState(handle=42, verdict="running").handle == "42"

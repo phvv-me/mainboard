@@ -1,18 +1,56 @@
-import json
-from pathlib import Path
-from time import sleep
+from contextlib import nullcontext
 from urllib.error import HTTPError
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import Delivery, VastBackend
-from mainboard.dispatch.backends.base import http_transport
 from mainboard.dispatch.backends.vast import api_key, exit_sentinel
-from mainboard.dispatch.schedulers import Resources
+from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
-from .conftest import not_found, plan, refused, vast_backend
+from ...strategies import WORDS
+from .conftest import Naps, Reply, not_found, plan, refused, vast_backend
+
+# The v0 root their own CLI defaults to, which every request a test reads back hangs off.
+_ROOT = "https://console.vast.ai/api/v0"
+# The marker the onstart wrapper echoes after the command, carrying its real exit code.
+_MARKER = "mainboard-exit:"
+
+# The four constant filters their console applies to every search, plus this backend's own page
+# size and storage figure. Every narrowing a caller asks for is added on top of exactly this.
+_BASE_QUERY = {
+    "verified": {"eq": True},
+    "external": {"eq": False},
+    "rentable": {"eq": True},
+    "rented": {"eq": False},
+    "type": "on-demand",
+    "order": [["dph_total", "asc"]],
+    "allocated_storage": 16.0,
+    "limit": 32,
+}
+
+# `actual_status` values that mean the container has not finished, plus one Vast has not invented
+# yet and a row carrying no status at all, both of which must read as unknown rather than crash.
+_LIVE = {
+    "created": "running",
+    "loading": "running",
+    "running": "running",
+    "stopping": "running",
+    "mystery": "unknown",
+    "": "unknown",
+}
+
+# The statuses their own docs call terminal, keyed with the exit status the wrapper echoed, since
+# a container status says only that the container stopped and never how the command ended.
+_TERMINAL = {
+    ("exited", 0): "ok",
+    ("stopped", 3): "failed",
+    ("offline", 137): "failed",
+    ("error", 1): "failed",
+}
 
 
 def vast_plan(**overrides: Container | HostProfile):
@@ -42,12 +80,10 @@ def terminal_backend(status: str, *, log: str) -> VastBackend:
     )
 
 
-def bodies(backend: VastBackend) -> list[dict]:
-    """The JSON body of every request the backend's fake transport recorded."""
-    return [json.loads(call.data) for call in backend.transport.calls]
-
-
 _OFFERS = {"offers": [offer(11, dph=0.5), offer(22, dph=0.2, bid=0.05)]}
+# Two offers whose on-demand and bid orderings disagree, so a spot search that forgot to re-rank
+# would hand back the on-demand order and be caught.
+_MIXED = {"offers": [offer(11, dph=0.5, bid=0.01), offer(22, dph=0.2, bid=0.09)]}
 _CREATED = {"success": True, "new_contract": 4242}
 
 
@@ -63,12 +99,10 @@ def _key_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("VASTAI_API_KEY", raising=False)
 
 
-# --- api_key ---
-
-
 def test_api_key_reads_either_spelling_and_refuses_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """gpuhunt reads `VASTAI_API_KEY` while Vast's own CLI documents `VAST_API_KEY`."""
     assert api_key() == "key-123"
     monkeypatch.delenv("VAST_API_KEY")
     monkeypatch.setenv("VASTAI_API_KEY", "key-456")
@@ -78,352 +112,390 @@ def test_api_key_reads_either_spelling_and_refuses_when_unset(
         api_key()
 
 
-def test_api_key_finds_a_key_only_the_workspace_env_declares(
-    unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("spot", "narrowing", "extra", "ranked"),
+    [
+        pytest.param(False, {}, {}, [22, 11], id="the-whole-market-on-demand"),
+        pytest.param(
+            False,
+            {"gpu_name": "RTX_4090", "gpus": 2, "max_usd_hr": 0.4, "limit": 5},
+            {
+                "gpu_name": {"eq": "RTX 4090"},
+                "num_gpus": {"eq": 2},
+                "dph_total": {"lte": 0.4},
+                "limit": 5,
+            },
+            [22, 11],
+            id="one-card-a-count-and-a-ceiling-with-underscores-read-as-spaces",
+        ),
+        pytest.param(True, {}, {"type": "bid"}, [11, 22], id="the-whole-market-at-the-bid-floor"),
+    ],
+)
+def test_search_posts_the_consoles_own_filters_and_ranks_by_what_a_rental_will_pay(
+    spot: bool, narrowing: dict, extra: dict, ranked: list[int]
 ) -> None:
-    """The refusal tells someone to set the key in the workspace `.env`, so reading it is ours."""
-    monkeypatch.chdir(workspace)
-    monkeypatch.delenv("VAST_API_KEY")
-    (workspace / ".env").write_text("VAST_API_KEY=from-the-workspace\n")
-    assert api_key() == "from-the-workspace"
-
-
-# --- search ---
-
-
-def test_search_posts_the_console_default_filters_and_an_authed_bearer_header() -> None:
-    backend = vast_backend(_OFFERS)
-    assert len(backend.search()) == 2
+    """The four constant filters keep unverified hosts, resold capacity and already-rented
+    machines out. Vast ranks by the on-demand total whichever mode is asked for, so a spot search
+    is re-ranked here by the bid floor it will actually pay."""
+    backend = vast_backend(_MIXED, spot=spot)
+    assert [row["id"] for row in backend.search(**narrowing)] == ranked
     (request,) = backend.transport.calls
-    assert request.full_url == "https://console.vast.ai/api/v0/bundles/"
+    assert request.full_url == f"{_ROOT}/bundles/"
     assert request.get_header("Authorization") == "Bearer key-123"
-    body = json.loads(request.data)
-    assert body["verified"] == {"eq": True}
-    assert body["rentable"] == {"eq": True}
-    assert body["rented"] == {"eq": False}
-    assert body["external"] == {"eq": False}
-    assert body["type"] == "on-demand"
-    assert body["order"] == [["dph_total", "asc"]]
-    assert "gpu_name" not in body and "num_gpus" not in body and "dph_total" not in body
-
-
-def test_search_narrows_by_gpu_count_and_price_reading_underscores_as_spaces() -> None:
-    backend = vast_backend(_OFFERS)
-    backend.search(gpu_name="RTX_4090", gpus=2, max_usd_hr=0.4, limit=5)
-    (body,) = bodies(backend)
-    assert body["gpu_name"] == {"eq": "RTX 4090"}
-    assert body["num_gpus"] == {"eq": 2}
-    assert body["dph_total"] == {"lte": 0.4}
-    assert body["limit"] == 5
-
-
-def test_search_asks_for_bid_pricing_and_re_ranks_by_the_bid_floor_when_renting_spot() -> None:
-    backend = vast_backend(_OFFERS, spot=True)
-    assert [row["id"] for row in backend.search()] == [22, 11]
-    assert bodies(backend)[0]["type"] == "bid"
-
-
-def test_search_reads_an_empty_market_as_no_offers() -> None:
-    assert vast_backend({}).search() == []
-
-
-# --- pick ---
-
-
-def test_pick_takes_the_most_reliable_offer_rather_than_the_cheapest_one() -> None:
-    offers = {"offers": [offer(11, dph=0.5, reliability2=0.999), offer(22, dph=0.2)]}
-    assert vast_backend(offers).pick(gpu_name="RTX 4090", gpus=1)["id"] == 11
-
-
-def test_pick_breaks_a_reliability_tie_toward_the_cheaper_machine() -> None:
-    assert vast_backend(_OFFERS).pick(gpu_name="RTX 4090", gpus=1)["id"] == 22
-
-
-def test_pick_breaks_a_spot_tie_by_the_bid_floor_it_will_actually_pay() -> None:
-    offers = {"offers": [offer(11, dph=0.5, bid=0.01), offer(22, dph=0.2, bid=0.09)]}
-    assert vast_backend(offers, spot=True).pick(gpu_name="", gpus=1)["id"] == 11
-
-
-def test_pick_refuses_when_the_market_is_empty_naming_the_ceiling() -> None:
-    backend = vast_backend({"offers": []})
-    with pytest.raises(MissionError, match=r"1x H100 offer under \$2.00/hr"):
-        backend.pick(gpu_name="H100", gpus=1, max_usd_hr=2.0)
-
-
-# --- hourly_cap ---
+    assert backend.transport.bodies == [_BASE_QUERY | extra]
 
 
 @pytest.mark.parametrize(
-    ("walltime", "cap"),
-    [("00:30:00", 8.0), ("01:00:00", 4.0), (None, 0.0), ("00:00:00", 0.0)],
+    ("offers", "spot", "rented"),
+    [
+        pytest.param(
+            [offer(11, dph=0.5, reliability2=0.999), offer(22, dph=0.2)],
+            False,
+            11,
+            id="the-most-reliable-machine-rather-than-the-cheapest-one",
+        ),
+        pytest.param(
+            [offer(11, dph=0.5), offer(22, dph=0.2)],
+            False,
+            22,
+            id="a-reliability-tie-broken-toward-the-cheaper-machine",
+        ),
+        pytest.param(
+            [offer(11, dph=0.5, bid=0.01), offer(22, dph=0.2, bid=0.09)],
+            True,
+            11,
+            id="a-spot-tie-broken-by-the-bid-floor-it-will-really-pay",
+        ),
+    ],
 )
-def test_hourly_cap_turns_a_budget_and_a_walltime_into_a_rate_ceiling(
-    walltime: str | None, *, cap: float
+def test_pick_rents_the_most_reliable_machine_the_budget_already_allows(
+    offers: list[dict], spot: bool, rented: int
 ) -> None:
-    resources = Resources(max_usd=4.0, walltime=walltime)
-    assert VastBackend.hourly_cap(resources) == pytest.approx(cap)
+    """Renting the lowest-priced listing put earlier rentals at the bottom of the market, where
+    the container is billed for and never starts, so price decides admission and nothing more."""
+    backend = vast_backend({"offers": offers}, spot=spot)
+    assert backend.pick(gpu_name="RTX 4090", gpus=1)["id"] == rented
 
 
-# --- submit ---
+@pytest.mark.parametrize(
+    ("gpu_name", "max_usd_hr", "refusal"),
+    [
+        pytest.param(
+            "H100",
+            2.0,
+            r"no rentable 1x H100 offer under \$2\.00/hr right now",
+            id="a-ceiling-the-market-has-nothing-under",
+        ),
+        pytest.param(
+            "", 0.0, "no rentable 1x any offer right now", id="a-market-with-nothing-in-it"
+        ),
+    ],
+)
+def test_pick_refuses_when_the_market_has_no_matching_offer(
+    gpu_name: str, max_usd_hr: float, refusal: str
+) -> None:
+    with pytest.raises(MissionError, match=refusal):
+        vast_backend({}).pick(gpu_name=gpu_name, gpus=1, max_usd_hr=max_usd_hr)
 
 
-def test_submit_refuses_before_any_network_call_when_budget_is_unset() -> None:
+@given(
+    hours=st.integers(min_value=1, max_value=24),
+    minutes=st.integers(min_value=0, max_value=59),
+    budget=st.floats(min_value=0.01, max_value=1e4, allow_nan=False, allow_infinity=False),
+)
+def test_the_hourly_cap_spends_exactly_the_budget_over_the_walltime_a_job_declares(
+    hours: int, minutes: int, budget: float
+) -> None:
+    """A spend cap only bounds an hourly rental once the job also says how long it may run, so a
+    walltime-less request searches the whole market and leans on `max_usd` alone."""
+    capped = Resources(max_usd=budget, walltime=f"{hours:02d}:{minutes:02d}:00")
+    assert VastBackend.hourly_cap(capped) * (hours + minutes / 60) == pytest.approx(budget)
+    assert VastBackend.hourly_cap(Resources(max_usd=budget)) == 0.0
+    assert VastBackend.hourly_cap(Resources(max_usd=budget, walltime="00:00:00")) == 0.0
+
+
+def test_submit_refuses_before_any_network_call_when_the_budget_is_unset() -> None:
     backend = vast_backend()
     with pytest.raises(MissionError, match="max-usd"):
         backend.submit(vast_plan(), "echo hi", Resources())
     assert backend.transport.calls == []
 
 
-def test_submit_rents_the_picked_offer_and_returns_the_new_contract_id() -> None:
+def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_contract() -> None:
+    """`args` launch mode runs the image as it is, with `onstart` as the entrypoint and `args` as
+    its argv, which is how the official CLI spells a one-shot container. Vast reports container
+    status and never a process exit code, so the wrapper echoes the real one into the log, and
+    the rent fails outright rather than parking a stopped instance we would owe storage on."""
     backend = vast_backend(_OFFERS, _CREATED)
     handle = backend.submit(vast_plan(), "python train.py", Resources(max_usd=5.0, gpus=2))
     assert handle == "4242"
-    search, create = backend.transport.calls
-    assert json.loads(search.data)["num_gpus"] == {"eq": 2}
-    assert create.full_url == "https://console.vast.ai/api/v0/asks/22/"
-    assert create.get_method() == "PUT"
-    body = json.loads(create.data)
-    assert (body["client_id"], body["runtype"], body["onstart"]) == ("me", "args", "bash")
-    assert body["image"] == "vastai/base-image:cuda-12.9.2-auto"
-    assert body["label"] == "mainboard-provider-host"
-    assert body["cancel_unavail"] is True
-    assert body["disk"] == pytest.approx(16.0)
-    assert "price" not in body
+    assert backend.transport.urls == [f"{_ROOT}/bundles/", f"{_ROOT}/asks/22/"]
+    assert backend.transport.calls[1].get_method() == "PUT"
+    search, create = backend.transport.bodies
+    assert search["num_gpus"] == {"eq": 2}
+    assert create == {
+        "client_id": "me",
+        "image": "vastai/base-image:cuda-12.9.2-auto",
+        "disk": 16.0,
+        "label": "mainboard-provider-host",
+        "runtype": "args",
+        "onstart": "bash",
+        "args": ["-c", "python train.py\nstatus=$?\necho mainboard-exit:$status\nexit $status\n"],
+        "cancel_unavail": True,
+    }
 
 
-def test_submit_wraps_the_command_with_an_exit_sentinel_as_the_container_entrypoint() -> None:
-    backend = vast_backend(_OFFERS, _CREATED)
-    backend.submit(vast_plan(), "python train.py", Resources(max_usd=5.0))
-    flag, script = bodies(backend)[1]["args"]
-    assert flag == "-c"
-    assert script.startswith("python train.py\n")
-    assert "echo mainboard-exit:$status" in script
-    assert script.endswith("exit $status\n")
-
-
-def test_submit_rents_a_single_gpu_when_the_request_names_no_count() -> None:
-    backend = vast_backend(_OFFERS, _CREATED)
-    backend.submit(vast_plan(), "echo hi", Resources(max_usd=1.0))
-    assert bodies(backend)[0]["num_gpus"] == {"eq": 1}
-
-
-def test_submit_bids_the_offer_floor_when_renting_spot() -> None:
+def test_submit_narrows_the_search_and_the_rental_to_what_the_request_asks_for() -> None:
+    """A request naming no GPU count still rents one machine's worth, a walltime turns the spend
+    cap into the hourly ceiling the search filters on, a spot rental bids the offer's own floor,
+    and a containerized plan rents under its own image rather than Vast's base one."""
     backend = vast_backend(_OFFERS, _CREATED, spot=True)
-    backend.submit(vast_plan(), "echo hi", Resources(max_usd=1.0))
-    assert bodies(backend)[1]["price"] == pytest.approx(0.05)
-
-
-def test_submit_caps_the_hourly_rate_when_the_job_declares_a_walltime() -> None:
-    backend = vast_backend(_OFFERS, _CREATED)
-    backend.submit(vast_plan(), "echo hi", Resources(max_usd=1.0, walltime="02:00:00"))
-    assert bodies(backend)[0]["dph_total"] == {"lte": pytest.approx(0.5)}
-
-
-def test_submit_rents_under_the_plan_container_image_when_the_plan_is_containerized() -> None:
-    backend = vast_backend(_OFFERS, _CREATED)
     backend.submit(
         vast_plan(container=Container(image="pytorch/pytorch:latest")),
         "echo hi",
-        Resources(max_usd=1.0),
+        Resources(max_usd=1.0, walltime="02:00:00"),
     )
-    assert bodies(backend)[1]["image"] == "pytorch/pytorch:latest"
+    search, create = backend.transport.bodies
+    assert search["num_gpus"] == {"eq": 1}
+    assert search["dph_total"] == {"lte": pytest.approx(0.5)}
+    assert search["type"] == "bid"
+    assert create["price"] == pytest.approx(0.05)
+    assert create["image"] == "pytorch/pytorch:latest"
 
 
-# --- state ---
+def test_state_of_a_container_that_has_not_finished_costs_no_log_fetch() -> None:
+    """A live status, and one Vast adds later, are both answered from the instance row alone."""
+    read = {}
+    for status in _LIVE:
+        backend = vast_backend({"instances": {"id": 7, "actual_status": status}})
+        state = backend.state("7")
+        read[status] = (state.state, state.verdict, state.exit_code)
+        assert backend.transport.urls == [f"{_ROOT}/instances/7/?owner=me"]
+    assert read == {status: (status, verdict, None) for status, verdict in _LIVE.items()}
 
 
-@pytest.mark.parametrize("status", ["created", "loading", "running", "stopping", "mystery"])
-def test_state_of_a_container_that_has_not_finished_costs_no_log_fetch(status: str) -> None:
-    """A live (or unrecognized) status is answered from the instance row alone."""
-    backend = vast_backend({"instances": {"id": 7, "actual_status": status}})
-    state = backend.state("7")
-    assert state.state == status
-    assert state.verdict == ("unknown" if status == "mystery" else "running")
-    assert state.exit_code is None
-    (request,) = backend.transport.calls
-    assert request.full_url == "https://console.vast.ai/api/v0/instances/7/?owner=me"
+def test_state_of_a_terminal_container_reports_the_process_exit_code() -> None:
+    """The verdict comes from the marker the onstart wrapper echoed after the command, so it
+    describes the command rather than the container that happened to stop cleanly around it."""
+    read = {}
+    for status, code in _TERMINAL:
+        backend = terminal_backend(status, log=f"training done\n{_MARKER}{code}\n")
+        state = backend.state("7")
+        read[status, code] = (state.state, state.exit_code, state.verdict)
+        assert backend.transport.urls == [
+            f"{_ROOT}/instances/7/?owner=me",
+            f"{_ROOT}/instances/request_logs/7/",
+            "https://s3.example/logs/7.log",
+        ]
+    assert read == {key: (key[0], key[1], verdict) for key, verdict in _TERMINAL.items()}
 
 
 @pytest.mark.parametrize(
-    ("status", "code", "verdict"),
-    [("exited", 0, "ok"), ("stopped", 3, "failed"), ("offline", 137, "failed")],
+    "replies",
+    [
+        pytest.param(
+            ({"result_url": "https://s3.example/logs/7.log"}, "killed mid-epoch\n"),
+            id="a-container-killed-before-the-wrapper-spoke",
+        ),
+        pytest.param(
+            ({"success": False, "msg": "instance not running"},),
+            id="a-log-upload-vast-refused",
+        ),
+        pytest.param((not_found(),), id="a-log-upload-that-is-already-gone"),
+    ],
 )
-def test_state_of_a_terminal_container_reports_the_process_exit_code(
-    status: str, *, code: int, verdict: str
+def test_state_stays_unknown_when_the_log_cannot_say_how_the_command_ended(
+    replies: tuple[Reply, ...],
 ) -> None:
-    backend = terminal_backend(status, log=f"training done\nmainboard-exit:{code}\n")
+    """An unknown verdict is honest where reading a clean container stop as a clean run is not."""
+    backend = vast_backend({"instances": {"id": 7, "actual_status": "exited"}}, *replies)
     state = backend.state("7")
-    assert (state.state, state.exit_code, state.verdict) == (status, code, verdict)
-    instance, ask, fetch = backend.transport.calls
-    assert instance.full_url == "https://console.vast.ai/api/v0/instances/7/?owner=me"
-    assert ask.full_url == "https://console.vast.ai/api/v0/instances/request_logs/7/"
-    assert fetch.full_url == "https://s3.example/logs/7.log"
+    assert (state.state, state.exit_code, state.verdict) == ("exited", None, "unknown")
 
 
-def test_state_stays_unknown_when_the_log_carries_no_sentinel() -> None:
-    """A container killed before the wrapper spoke never says how the command ended."""
-    state = terminal_backend("exited", log="killed mid-epoch\n").state("7")
-    assert (state.exit_code, state.verdict) == (None, "unknown")
+@pytest.mark.parametrize(
+    ("reply", "verdict"),
+    [
+        pytest.param({"instances": None}, "vanished", id="an-instance-row-vast-nulled"),
+        pytest.param(not_found(), "vanished", id="an-instance-vast-has-already-forgotten"),
+        pytest.param(refused(401), None, id="a-refusal-that-is-not-a-missing-instance"),
+    ],
+)
+def test_state_reads_a_gone_instance_as_vanished_and_re_raises_anything_else(
+    reply: Reply, verdict: str | None
+) -> None:
+    """A destroyed instance answers either a null row or a 404 depending on how long ago it went,
+    and a post-mortem reads both the same way."""
+    backend = vast_backend(reply)
+    if verdict is None:
+        with pytest.raises(HTTPError, match="401"):
+            backend.state("7")
+    else:
+        assert backend.state("7").verdict == verdict
 
 
-def test_state_stays_unknown_when_vast_refuses_the_log() -> None:
+@given(
+    codes=st.lists(st.integers(min_value=-1, max_value=255), min_size=1, max_size=3),
+    chatter=st.lists(WORDS, max_size=3),
+)
+def test_exit_sentinel_reads_the_last_status_the_wrapper_echoed(
+    codes: list[int], chatter: list[str]
+) -> None:
+    """The last marker wins, since a container Vast restarted appends its own line below the
+    first and the command ran again (thirteen restarts in five minutes, verified live)."""
+    lines = [*chatter, *(f"{_MARKER}{code}" for code in codes)]
+    assert exit_sentinel("\n".join(lines) + "\n") == codes[-1]
+
+
+@pytest.mark.parametrize(
+    ("log", "status"),
+    [
+        pytest.param(
+            f"{_MARKER}1\n{_MARKER}truncated", 1, id="a-marker-carrying-no-number-at-all"
+        ),
+        pytest.param("nothing to see here\n", None, id="a-log-without-any-marker"),
+    ],
+)
+def test_exit_sentinel_skips_what_it_cannot_read_as_a_status(log: str, status: int | None) -> None:
+    assert exit_sentinel(log) == status
+
+
+def test_logs_requests_an_upload_then_polls_for_it_without_the_api_key() -> None:
+    """`request_logs` answers before the log reaches storage, so the first fetches come back 404
+    until it lands, and the url is storage's own signed link rather than ours."""
+    naps = Naps()
     backend = vast_backend(
-        {"instances": {"id": 7, "actual_status": "exited"}},
-        {"success": False, "msg": "instance not running"},
-    )
-    state = backend.state("7")
-    assert (state.exit_code, state.verdict) == (None, "unknown")
-
-
-def test_state_stays_unknown_when_the_log_upload_is_already_gone() -> None:
-    backend = vast_backend({"instances": {"id": 7, "actual_status": "exited"}}, not_found())
-    assert backend.state("7").verdict == "unknown"
-
-
-def test_state_is_vanished_when_the_row_is_null() -> None:
-    assert vast_backend({"instances": None}).state("7").verdict == "vanished"
-
-
-def test_state_is_vanished_when_the_instance_is_already_gone() -> None:
-    assert vast_backend(not_found()).state("7").verdict == "vanished"
-
-
-def test_state_re_raises_a_refusal_that_is_not_a_missing_instance() -> None:
-    backend = vast_backend(not_found())
-    backend.transport.responses = [
-        type(not_found())("https://console.vast.ai/api/v0/instances/7/", 401, "no", {}, None)
-    ]
-    with pytest.raises(OSError, match="401"):
-        backend.state("7")
-
-
-# --- exit_sentinel ---
-
-
-def test_exit_sentinel_reads_the_status_the_wrapper_echoed() -> None:
-    assert exit_sentinel("epoch 3\nmainboard-exit:0\n") == 0
-
-
-def test_exit_sentinel_takes_the_last_marker_a_restarted_container_left() -> None:
-    assert exit_sentinel("mainboard-exit:0\nrestarted\nmainboard-exit:2\n") == 2
-
-
-def test_exit_sentinel_skips_a_marker_carrying_no_number() -> None:
-    assert exit_sentinel("mainboard-exit:1\nmainboard-exit:truncated") == 1
-
-
-def test_exit_sentinel_of_a_log_without_any_marker_is_none() -> None:
-    assert exit_sentinel("nothing to see here\n") is None
-
-
-# --- logs ---
-
-
-def test_logs_requests_an_upload_then_fetches_it_without_the_api_key() -> None:
-    backend = vast_backend({"result_url": "https://s3.example/logs/7.log"}, "hello from vast\n")
-    assert backend.logs("7") == "hello from vast\n"
-    ask, fetch = backend.transport.calls
-    assert ask.full_url == "https://console.vast.ai/api/v0/instances/request_logs/7/"
-    assert ask.get_method() == "PUT"
-    assert json.loads(ask.data)["tail"] == "2000"
-    assert fetch.full_url == "https://s3.example/logs/7.log"
-    assert fetch.get_header("Authorization") is None
-
-
-def test_logs_waits_out_an_upload_still_in_flight() -> None:
-    backend = vast_backend(
-        {"result_url": "https://s3.example/logs/7.log"}, not_found(), "landed at last"
+        {"result_url": "https://s3.example/logs/7.log"}, not_found(), "landed at last", naps=naps
     )
     assert backend.logs("7") == "landed at last"
+    ask, first, second = backend.transport.calls
+    assert ask.full_url == f"{_ROOT}/instances/request_logs/7/"
+    assert ask.get_method() == "PUT"
+    assert backend.transport.bodies == [{"tail": "2000"}]
+    assert first.full_url == second.full_url == "https://s3.example/logs/7.log"
+    assert second.get_header("Authorization") is None
+    assert naps.waited == [1.0]
 
 
-def test_logs_hands_the_url_over_when_the_upload_never_lands() -> None:
-    backend = vast_backend({"result_url": "https://s3.example/logs/7.log"}, *[not_found()] * 20)
-    with pytest.raises(MissionError, match=r"https://s3\.example/logs/7\.log"):
+@pytest.mark.parametrize(
+    ("replies", "refusal", "polls"),
+    [
+        pytest.param(
+            ({"success": False, "msg": "instance not running"},),
+            "instance not running",
+            0,
+            id="an-upload-vast-refused-outright",
+        ),
+        pytest.param(
+            ({"result_url": "http://s3.example/logs/7.log"},),
+            "non-https",
+            0,
+            id="a-log-url-that-is-not-https",
+        ),
+        pytest.param(
+            ({"result_url": "https://s3.example/logs/7.log"}, *[not_found()] * 20),
+            r"fetch https://s3\.example/logs/7\.log directly",
+            20,
+            id="an-upload-that-never-lands",
+        ),
+    ],
+)
+def test_logs_hands_the_url_over_when_it_cannot_bring_the_log_back_itself(
+    replies: tuple[Reply, ...], refusal: str, polls: int
+) -> None:
+    """The poll is bounded, so a log in flight costs a fixed wait and never a wedged sweep."""
+    naps = Naps()
+    backend = vast_backend(*replies, naps=naps)
+    with pytest.raises(MissionError, match=refusal):
         backend.logs("7")
+    assert naps.waited == [1.0] * polls
 
 
-def test_logs_raises_when_vast_refuses_to_upload_at_all() -> None:
-    backend = vast_backend({"success": False, "msg": "instance not running"})
-    with pytest.raises(MissionError, match="instance not running"):
-        backend.logs("7")
-
-
-def test_logs_refuses_a_log_url_that_is_not_https() -> None:
-    backend = vast_backend({"result_url": "http://s3.example/logs/7.log"})
-    with pytest.raises(MissionError, match="non-https"):
-        backend.logs("7")
-
-
-# --- catalog ---
-
-
-def test_catalog_asks_for_the_page_size_it_was_given_and_its_own_when_given_none() -> None:
-    asked = vast_backend(_OFFERS)
-    asked.catalog(limit=5)
-    defaulted = vast_backend(_OFFERS)
-    defaulted.catalog()
-    assert [bodies(asked)[0]["limit"], bodies(defaulted)[0]["limit"]] == [5, 32]
-
-
-def test_catalog_turns_a_live_search_into_priced_offer_rows() -> None:
-    rows = vast_backend(_OFFERS).catalog(gpu_name="RTX 4090")
-    assert [row.rate_usd_hr for row in rows] == [pytest.approx(0.2), pytest.approx(0.5)]
+@pytest.mark.parametrize(
+    ("spot", "limit", "asked", "rates"),
+    [
+        pytest.param(False, 0, 32, [0.2, 0.5], id="this-backends-own-page-size-on-demand"),
+        pytest.param(
+            True, 5, 5, [0.05, 0.1], id="a-page-size-the-caller-asked-for-at-the-bid-floor"
+        ),
+    ],
+)
+def test_catalog_turns_a_live_search_into_priced_offer_rows(
+    spot: bool, limit: int, asked: int, rates: list[float]
+) -> None:
+    """The authed refresh of the imported price feed, priced by the mode that rents the machine."""
+    backend = vast_backend(_OFFERS, spot=spot)
+    rows = backend.catalog(gpu_name="RTX 4090", limit=limit)
+    assert [row.rate_usd_hr for row in rows] == [pytest.approx(rate) for rate in rates]
     assert {row.provider for row in rows} == {"vast"}
-    assert rows[0].gpu == "RTX 4090"
-    assert rows[0].region == "Texas, US"
+    assert {row.spot for row in rows} == {spot}
+    assert (rows[0].gpu, rows[0].region, rows[0].source) == (
+        "RTX 4090",
+        "Texas, US",
+        "probed:vast",
+    )
     assert rows[0].available is True
-    assert rows[0].source == "probed:vast"
-    assert not rows[0].spot
+    assert backend.transport.bodies[0]["limit"] == asked
 
 
-def test_catalog_prices_the_bid_floor_when_the_backend_rents_spot() -> None:
-    rows = vast_backend(_OFFERS, spot=True).catalog()
-    assert rows[0].spot is True
-    assert [row.rate_usd_hr for row in rows] == [pytest.approx(0.05), pytest.approx(0.1)]
-
-
-def test_catalog_of_an_offer_without_geolocation_leaves_the_region_empty() -> None:
-    offers = {"offers": [offer(11, dph=0.5, geolocation="")]}
-    assert not vast_backend(offers).catalog()[0].region
-
-
-# --- standing ---
-
-
-def test_standing_reads_the_credit_and_prices_one_sample_card() -> None:
-    backend = vast_backend({"credit": 42.5}, {"offers": [offer(11, dph=0.31)]})
+@pytest.mark.parametrize(
+    ("account", "offers", "credit", "usd_hr", "note"),
+    [
+        pytest.param(
+            {"credit": 42.5},
+            [offer(11, dph=0.31)],
+            42.5,
+            0.31,
+            "1x RTX 4090 Texas, US",
+            id="a-credited-account-and-a-live-sample-offer",
+        ),
+        pytest.param(
+            {"credit": 3.0},
+            [],
+            3.0,
+            None,
+            "no 1x RTX 4090 offer right now",
+            id="a-sample-card-nobody-is-renting",
+        ),
+        pytest.param(
+            {},
+            [offer(11, dph=0.4, geolocation="")],
+            None,
+            0.4,
+            "1x RTX 4090",
+            id="an-account-that-reports-no-credit-on-a-machine-with-no-location",
+        ),
+        pytest.param(
+            {},
+            [offer(11, dph=0.4, geolocation=", US")],
+            None,
+            0.4,
+            "1x RTX 4090 US",
+            id="a-machine-whose-city-is-unset",
+        ),
+    ],
+)
+def test_standing_reads_the_credit_and_prices_one_sample_card(
+    account: dict, offers: list[dict], credit: float | None, usd_hr: float | None, note: str
+) -> None:
+    """`credit` is the spendable figure on a prepaid account, where its sibling `balance` is the
+    invoicing one and sits at zero, and a machine whose city is unset carries its country as
+    `, US`, so the separator is trimmed rather than printed as a stray comma."""
+    backend = vast_backend(account, {"offers": offers})
     standing = backend.standing()
     assert standing.keyed is True
-    assert standing.credit_usd == pytest.approx(42.5)
-    assert standing.usd_hr == pytest.approx(0.31)
-    assert standing.note == "1x RTX 4090 Texas, US"
-    account, search = backend.transport.calls
-    assert account.full_url == "https://console.vast.ai/api/v0/users/current/"
-    assert account.get_method() == "GET"
-    assert json.loads(search.data)["gpu_name"] == {"eq": "RTX 4090"}
-
-
-@pytest.mark.parametrize("where", ["", ", US"])
-def test_standing_leaves_credit_unset_when_the_account_reports_none(where: str) -> None:
-    """A machine whose city is unset must not print its country behind a stray comma."""
-    backend = vast_backend({}, {"offers": [offer(11, dph=0.4, geolocation=where)]})
-    standing = backend.standing()
-    assert standing.keyed is True
-    assert standing.credit_usd is None
-    assert standing.note == f"1x RTX 4090 {where.strip(' ,')}".strip()
-
-
-def test_standing_still_reports_credit_when_the_sample_card_is_unrentable() -> None:
-    standing = vast_backend({"credit": 3.0}, {"offers": []}).standing()
-    assert standing.credit_usd == pytest.approx(3.0)
-    assert standing.usd_hr is None
-    assert "no 1x RTX 4090" in standing.note
+    assert standing.credit_usd == (None if credit is None else pytest.approx(credit))
+    assert standing.usd_hr == (None if usd_hr is None else pytest.approx(usd_hr))
+    assert standing.note == note
+    assert backend.transport.urls == [f"{_ROOT}/users/current/", f"{_ROOT}/bundles/"]
+    assert backend.transport.calls[0].get_method() == "GET"
+    assert backend.transport.bodies[1]["gpu_name"] == {"eq": "RTX 4090"}
 
 
 def test_standing_without_a_key_names_the_variable_and_never_calls_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An unconfigured Vast row costs nothing but the environment lookup."""
     monkeypatch.delenv("VAST_API_KEY")
     backend = vast_backend()
     standing = backend.standing()
@@ -432,40 +504,37 @@ def test_standing_without_a_key_names_the_variable_and_never_calls_out(
     assert backend.transport.calls == []
 
 
-# --- cancel / deliver ---
-
-
-def test_cancel_deletes_the_instance() -> None:
-    backend = vast_backend({"success": True})
-    backend.cancel("4242")
+@pytest.mark.parametrize(
+    ("reply", "refuses"),
+    [
+        pytest.param({"success": True}, False, id="a-rental-whose-meter-is-still-running"),
+        pytest.param(
+            not_found(f"{_ROOT}/instances/4242/"),
+            False,
+            id="an-instance-vast-has-already-forgotten",
+        ),
+        pytest.param(refused(401), True, id="a-refusal-that-is-not-a-gone-instance"),
+    ],
+)
+def test_cancel_destroys_the_rental_and_treats_one_vast_already_forgot_as_ended(
+    reply: Reply, refuses: bool
+) -> None:
+    """A finished command leaves the rental up, so this is the call that stops the meter, and it
+    is asked more than once by design, by a sweep that settles the same run twice and by anyone
+    who already destroyed the instance in the console."""
+    backend = vast_backend(reply)
+    with pytest.raises(HTTPError) if refuses else nullcontext():
+        backend.cancel("4242")
     (request,) = backend.transport.calls
-    assert request.full_url == "https://console.vast.ai/api/v0/instances/4242/"
+    assert request.full_url == f"{_ROOT}/instances/4242/"
     assert request.get_method() == "DELETE"
 
 
-def test_cancel_treats_an_instance_vast_already_forgot_as_ended() -> None:
-    """A sweep cancels every run it settles, so the same rental is cancelled more than once."""
-    backend = vast_backend(not_found("https://console.vast.ai/api/v0/instances/4242/"))
-    backend.cancel("4242")
-    assert [request.get_method() for request in backend.transport.calls] == ["DELETE"]
-
-
-def test_cancel_still_raises_a_refusal_that_is_not_a_gone_instance() -> None:
-    backend = vast_backend(refused(401))
-    with pytest.raises(HTTPError):
-        backend.cancel("4242")
-
-
 def test_the_declared_delivery_gap_points_at_the_logs_verb_instead() -> None:
+    """A rented machine's disk dies with the instance, so there is nothing to deliver from here."""
     advice = vast_backend().refusal(Delivery, handle="4242", path="out/results.json")
     assert advice == (
         "vast backend cannot deliver 'out/results.json' yet; a rented machine's disk dies with "
         "the instance, so have the command upload its own results and read `logs 4242` "
         "until that path lands"
     )
-
-
-def test_defaults_are_the_shared_transport_and_a_real_sleep() -> None:
-    backend = VastBackend()
-    assert backend.transport is http_transport
-    assert backend.sleeper is sleep

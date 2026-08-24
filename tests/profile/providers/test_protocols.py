@@ -1,10 +1,7 @@
-"""These Protocols pin an untyped vendor binding's surface; nothing calls them directly.
-
-Importing each module is what "covers" a Protocol's stub method definitions (the `def`
-statement itself runs at class-body execution time), so this file exists purely to
-exercise the import, matching the convention already used by the top-level
-`mainboard.profile.protocols` module.
-"""
+# These Protocols pin an untyped vendor binding's surface and nothing calls them directly.
+# Importing each module is what covers a Protocol's stub method definitions, since the `def`
+# statement itself runs at class-body execution time, so this file exists purely to exercise the
+# import, matching the convention the top-level `mainboard.profile.protocols` module already uses.
 
 from mainboard.profile.providers.amd.protocols import Roctx
 from mainboard.profile.providers.apple.protocols import IntervalToken, Signposter, SignpostModule

@@ -46,6 +46,19 @@ def labelled_study(label: str) -> str:
     return label.removeprefix("study:").split("/", maxsplit=1)[0]
 
 
+def labelled_trial(label: str) -> str:
+    """The trial name inside a dispatch `label`, empty when the label names no trial.
+
+    The companion `labelled_study` reads, so a reporting join keys on the study and a per-trial
+    record keys on the trial without either one re-parsing the label shape.
+
+    label: a dispatched run's free-text name.
+    """
+    if not labelled_study(label):
+        return ""
+    return label.removeprefix("study:").partition("/")[2]
+
+
 def study_id(
     *, experiment: str, config_space: Mapping[str, object], git_sha: str
 ) -> tuple[str, str]:

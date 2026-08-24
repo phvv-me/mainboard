@@ -1,60 +1,111 @@
-from typing import NoReturn
+from typing import NoReturn, Protocol
 
 import pytest
 
 from mainboard import Machine
-from mainboard.probe import GPU, Memory, NvidiaGPU, Vendor
+from mainboard.probe import GPU, NvidiaGPU, Vendor
 from mainboard.probe.providers.nvidia import apis as nvidia_apis_module
 
-from ...conftest import FakeError, FakeNvidiaApis, raise_unsupported
+from ...conftest import (
+    FakeNvidiaApis,
+    FakeSensorlessDevice,
+    InstallNvidiaStack,
+    raise_unsupported,
+)
+
+_GIB = 1024**3
 
 
-def test_nvidia_detects_and_describes_devices(nvidia_host: FakeNvidiaApis) -> None:
-    """The NVIDIA provider reads identity, capability, and memory from the fakes."""
+class Setup(Protocol):
+    """Wire one CUDA/NVML stack shape into place before the assertion under test."""
+
+    def __call__(self, install: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch) -> None: ...
+
+
+def sensorless_cuda_core(install: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The optional layer loaded but this device has no memory sensor to read."""
+    install()
+    monkeypatch.setattr(NvidiaGPU, "system_device", FakeSensorlessDevice())
+
+
+def unsupported_nvml_memory(install: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No optional layer at all, and NVML refuses the memory query underneath it."""
+    apis = install(has_cuda_core=False)
+    monkeypatch.setattr(apis.nvml, "device_get_memory_info_v2", raise_unsupported)
+
+
+def no_visible_device(install: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bindings load and answer with a device count of zero."""
+    install(device_count=0)
+
+
+def unimportable_bindings(install: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A base install without the `[cuda]` extra, where the import itself fails."""
+
+    def absent() -> NoReturn:
+        raise ModuleNotFoundError("no cuda")
+
+    nvidia_apis_module.nvidia_apis.cache_clear()
+    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", absent)
+
+
+@pytest.mark.parametrize(
+    ("has_cuda_core", "source"),
+    [
+        pytest.param(True, "cuda-core-system", id="cuda-core"),
+        pytest.param(False, "nvml", id="nvml"),
+    ],
+)
+def test_a_visible_device_reports_the_same_identity_through_either_layer(
+    has_cuda_core: bool, source: str, install_nvidia_stack: InstallNvidiaStack
+) -> None:
+    """Identity, capability and capacity read the same whether the optional `cuda.core` layer
+    loaded or the provider fell back to `cuda.bindings` (runtime plus NVML) alone."""
+    apis = install_nvidia_stack(has_cuda_core=has_cuda_core)
+    assert apis.has_cuda_core is has_cuda_core
     assert NvidiaGPU.is_available() is True
     gpus = NvidiaGPU.all()
     assert len(gpus) == 2
+
     gpu = gpus[0]
-    assert gpu.vendor == Vendor.NVIDIA
+    assert gpu.apis is nvidia_apis_module.nvidia_apis()  # a per-instance view of the cached stack
+    assert gpu.vendor is Vendor.NVIDIA
     assert gpu.label == "NVIDIA GeForce RTX 4090"
     assert gpu.uuid == "GPU-deadbeef"
     assert str(gpu.cuda_architecture) == "8.9"
     assert gpu.architecture == "Ada"
     assert gpu.arch_key == "sm_89"
-    assert gpu.memory.total_bytes == 24 * 1024**3
     assert gpu.driver_version == (13, 1)
+    assert gpu.pci_bus_id == "0000:00:00.0"
+    memory = gpu.memory
+    assert (memory.total_bytes, memory.used_bytes, memory.free_bytes) == (
+        24 * _GIB,
+        6 * _GIB,
+        18 * _GIB,
+    )
+    assert memory.source == source
+    assert gpu.coherent is False  # a discrete card reports neither coherence attribute
+    assert memory.unified is False
 
 
-def test_nvidia_discrete_gpu_is_not_coherent(nvidia_host: FakeNvidiaApis) -> None:
-    """A discrete card reports neither coherence attribute, so its memory is not unified."""
-    gpu = NvidiaGPU(index=0)
-    assert gpu.coherent is False
-    assert gpu.memory.unified is False
-
-
-def test_nvidia_coherent_pool_sets_unified(nvidia_coherent_host: FakeNvidiaApis) -> None:
-    """A device reporting both coherence attributes flags its memory as unified."""
+@pytest.mark.parametrize("has_cuda_core", [True, False], ids=["cuda-core", "nvml"])
+def test_a_coherent_grace_hopper_pool_flags_its_memory_as_unified(
+    has_cuda_core: bool, install_nvidia_stack: InstallNvidiaStack
+) -> None:
+    """A device reporting both pageable and concurrent-managed access sits on a coherent fabric
+    where host RAM is a peer NUMA node of HBM, and the flag flows through either memory tier."""
+    install_nvidia_stack(has_cuda_core=has_cuda_core, coherent=True)
     gpu = NvidiaGPU(index=0)
     assert gpu.coherent is True
     assert gpu.memory.unified is True
 
 
-def test_nvidia_coherent_pool_sets_unified_without_cuda_core(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The unified flag flows through the NVML-only memory path too (no `cuda.core`)."""
-    apis = FakeNvidiaApis(has_cuda_core=False, coherent=True)
-    nvidia_apis_module.nvidia_apis.cache_clear()
-    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
-    assert NvidiaGPU(index=0).memory.unified is True
-
-
-def test_nvidia_coherence_probe_degrades_when_attribute_query_absent(
+def test_a_binding_without_the_attribute_query_degrades_to_not_coherent(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A binding without `cudaDeviceGetAttribute` degrades to not-coherent, not a crash."""
+    """An older binding with no `cudaDeviceGetAttribute` answers not-coherent, never a crash."""
 
-    def absent(*args) -> NoReturn:
+    def absent(attr: int, index: int) -> NoReturn:
         raise AttributeError("module 'cuda.bindings.runtime' has no cudaDeviceGetAttribute")
 
     monkeypatch.setattr(nvidia_host.runtime, "cudaDeviceGetAttribute", absent)
@@ -63,42 +114,44 @@ def test_nvidia_coherence_probe_degrades_when_attribute_query_absent(
     assert gpu.memory.unified is False
 
 
-def test_nvidia_memory_cuda_core_path(nvidia_host: FakeNvidiaApis) -> None:
-    """Tier one: `cuda.core.system.Device.memory_info` when the optional layer loaded."""
-    mem = NvidiaGPU(index=0).memory
-    assert (mem.total_bytes, mem.used_bytes, mem.free_bytes) == (
-        24 * 1024**3,
-        6 * 1024**3,
-        18 * 1024**3,
+@pytest.mark.parametrize(
+    "setup",
+    [
+        pytest.param(sensorless_cuda_core, id="cuda-core-sensorless"),
+        pytest.param(unsupported_nvml_memory, id="nvml-unsupported"),
+    ],
+)
+def test_the_memory_ladder_ends_at_the_cuda_runtime_reading(
+    setup: Setup, install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whichever tier refuses first, `cudaMemGetInfo` is the last resort and its free/total pair
+    becomes the reading, with the current device restored around the query."""
+    setup(install_nvidia_stack, monkeypatch)
+    memory = NvidiaGPU(index=0).memory
+    assert memory.source == "cuda-runtime"
+    assert (memory.total_bytes, memory.used_bytes, memory.free_bytes) == (
+        24 * _GIB,
+        16 * _GIB,
+        8 * _GIB,
     )
-    assert mem.source == "cuda-core-system"
 
 
-def test_nvidia_snapshot_free_survives_json(nvidia_host: FakeNvidiaApis) -> None:
-    """The live NVIDIA reading is JSON round-trippable through `Memory`."""
-
-    mem = NvidiaGPU(index=0).memory
-    assert Memory.model_validate_json(mem.model_dump_json()) == mem
-
-
-def test_nvidia_nvml_only_paths(nvidia_host_no_cuda_core: FakeNvidiaApis) -> None:
-    """Tier two: with `cuda.core` absent, identity, capability, and memory read through
-    `cuda.bindings` (runtime + NVML) alone."""
-    assert nvidia_host_no_cuda_core.has_cuda_core is False
-    assert NvidiaGPU.is_available() is True
-    gpu = NvidiaGPU(index=0)
-    assert gpu.label == "NVIDIA GeForce RTX 4090"
-    assert gpu.uuid == "GPU-deadbeef"
-    assert str(gpu.cuda_architecture) == "8.9"
-    assert gpu.architecture == "Ada"  # from the compute-capability table (cc 8.9)
-    mem = gpu.memory
-    assert (mem.total_bytes, mem.used_bytes, mem.source) == (24 * 1024**3, 6 * 1024**3, "nvml")
-
-
-def test_nvidia_pci_bus_id_error_raises(
+def test_a_failing_runtime_memory_query_raises_rather_than_reporting_zero_capacity(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failing `cudaDeviceGetPCIBusId` surfaces as a clear runtime error."""
+    """The last tier has nothing to fall back on, and a host with no current device to restore
+    still runs the query, so a failure surfaces instead of a zeroed reading."""
+    monkeypatch.setattr(nvidia_host.runtime, "cudaGetDevice", lambda: (99, 0))
+    monkeypatch.setattr(nvidia_host.runtime, "cudaMemGetInfo", lambda: (99, 0, 0))
+    monkeypatch.setattr(NvidiaGPU, "system_device", FakeSensorlessDevice())
+    with pytest.raises(RuntimeError, match="cudaMemGetInfo"):
+        _ = NvidiaGPU(index=0).memory
+
+
+def test_a_failing_pci_bus_id_query_raises(
+    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bus ID is how a visible index is resolved to a device, so a failure is fatal."""
     monkeypatch.setattr(
         nvidia_host.runtime, "cudaDeviceGetPCIBusId", lambda length, index: (99, b"")
     )
@@ -106,89 +159,59 @@ def test_nvidia_pci_bus_id_error_raises(
         _ = NvidiaGPU(index=0).pci_bus_id
 
 
-def test_nvidia_nvml_memory_unsupported_falls_back_to_runtime(
-    nvidia_host_no_cuda_core: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("has_cuda_core", "refuse", "expected"),
+    [
+        pytest.param(True, False, (61, 37), id="cuda-core"),
+        pytest.param(False, False, (48, 22), id="nvml"),
+        pytest.param(False, True, (0, 0), id="both-refuse"),
+    ],
+)
+def test_utilization_takes_the_first_layer_that_answers(
+    has_cuda_core: bool,
+    refuse: bool,
+    expected: tuple[int, int],
+    install_nvidia_stack: InstallNvidiaStack,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Tier three: NVML memory raising drops to the CUDA-runtime `cudaMemGetInfo` reading."""
-    monkeypatch.setattr(
-        nvidia_host_no_cuda_core.nvml, "device_get_memory_info_v2", raise_unsupported
-    )
-    mem = NvidiaGPU(index=0).memory
-    assert mem.source == "cuda-runtime"
-    assert mem.total_bytes == 24 * 1024**3
+    """The counters are optional hardware, so an unanswered read degrades to an empty pair."""
+    apis = install_nvidia_stack(has_cuda_core=has_cuda_core)
+    if refuse:
+        monkeypatch.setattr(apis.nvml, "device_get_utilization_rates", raise_unsupported)
+    reading = NvidiaGPU(index=0).utilization
+    assert (reading.gpu_pct, reading.memory_pct) == expected
 
 
-def test_nvidia_runtime_memory_error_raises(
-    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+def test_system_api_refuses_when_the_optional_layer_never_loaded(
+    install_nvidia_stack: InstallNvidiaStack,
 ) -> None:
-    """A `cudaMemGetInfo` failure during the runtime fallback raises."""
-
-    class Unsupported:
-        NotSupportedError = FakeError
-
-        @property
-        def memory_info(self) -> NoReturn:
-            raise self.NotSupportedError
-
-    monkeypatch.setattr(nvidia_host.runtime, "cudaGetDevice", lambda: (99, 0))
-    monkeypatch.setattr(nvidia_host.runtime, "cudaMemGetInfo", lambda: (99, 0, 0))
-    gpu = NvidiaGPU(index=0)
-    monkeypatch.setattr(type(gpu), "system_device", Unsupported())
-    with pytest.raises(RuntimeError, match="cudaMemGetInfo"):
-        _ = gpu.memory
+    """`system_api` names the missing layer rather than handing back a `None` to call into."""
+    install_nvidia_stack(has_cuda_core=False)
+    with pytest.raises(RuntimeError, match="is unavailable"):
+        _ = NvidiaGPU(index=0).system_api
 
 
-def test_nvidia_falls_back_to_runtime_when_cuda_core_memory_unsupported(
-    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "setup",
+    [
+        pytest.param(no_visible_device, id="zero-devices"),
+        pytest.param(unimportable_bindings, id="bindings-absent"),
+    ],
+)
+def test_a_host_with_no_cuda_device_reports_nothing_instead_of_raising(
+    setup: Setup, install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A `cuda.core` device that cannot report memory falls to the runtime tier."""
-
-    class Unsupported:
-        NotSupportedError = FakeError
-
-        @property
-        def memory_info(self) -> NoReturn:
-            raise self.NotSupportedError
-
-    gpu = NvidiaGPU(index=0)
-    monkeypatch.setattr(type(gpu), "system_device", Unsupported())
-    mem = gpu.memory
-    assert mem.total_bytes == 24 * 1024**3
-    assert mem.used_bytes == 24 * 1024**3 - 8 * 1024**3
-    assert mem.source == "cuda-runtime"
-
-
-def test_nvidia_apis_property_is_cached_per_instance(nvidia_host: FakeNvidiaApis) -> None:
-    """`GPU.apis` is a `cached_property` that reads the process-wide cached stack."""
-    gpu = NvidiaGPU(index=0)
-    assert gpu.apis is nvidia_apis_module.nvidia_apis()
-
-
-def test_nvidia_unavailable_when_no_devices(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A zero device count makes the provider report unavailable and empty."""
-    nvidia_apis_module.nvidia_apis.cache_clear()
-    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: FakeNvidiaApis(device_count=0))
+    """Whether the count is zero or the bindings are missing entirely, detection stays quiet."""
+    setup(install_nvidia_stack, monkeypatch)
     assert NvidiaGPU.is_available() is False
     assert NvidiaGPU.all() == ()
 
 
-def test_nvidia_unavailable_when_imports_fail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing CUDA modules make `is_available` return False without raising."""
-
-    def boom() -> NoReturn:
-        raise ModuleNotFoundError("no cuda")
-
-    nvidia_apis_module.nvidia_apis.cache_clear()
-    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", boom)
-    assert NvidiaGPU.is_available() is False
-
-
-def test_machine_degrades_without_cuda_bindings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A base install without the `[cuda]` extra reports no NVIDIA devices.
-
-    Simulates the bindings being absent at the import seam itself (the real
-    `NvidiaApis` constructor runs and fails to import `cuda.bindings.runtime`),
-    so `GPU.all` and `Machine` detection degrade instead of raising."""
+def test_a_base_install_without_the_cuda_extra_degrades_at_the_import_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real `NvidiaApis` constructor runs here and fails to import `cuda.bindings.runtime`,
+    so the whole fan-out through `GPU.all` and `Machine` has to survive the missing extra."""
 
     def absent(name: str) -> NoReturn:
         raise ModuleNotFoundError(f"No module named {name!r}")
@@ -196,37 +219,5 @@ def test_machine_degrades_without_cuda_bindings(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(nvidia_apis_module, "import_module", absent)
     nvidia_apis_module.nvidia_apis.cache_clear()
     assert NvidiaGPU.is_available() is False
-    assert NvidiaGPU.all() == ()
     assert all(gpu.vendor is not Vendor.NVIDIA for gpu in GPU.all())
     assert all(gpu.vendor is not Vendor.NVIDIA for gpu in Machine().gpus)
-
-
-def test_system_api_raises_when_cuda_core_unavailable(
-    nvidia_host_no_cuda_core: FakeNvidiaApis,
-) -> None:
-    """`system_api` refuses rather than returning `None` when `cuda.core` never loaded."""
-    with pytest.raises(RuntimeError, match="is unavailable"):
-        _ = NvidiaGPU(index=0).system_api
-
-
-def test_utilization_reads_through_cuda_core(nvidia_host: FakeNvidiaApis) -> None:
-    assert nvidia_host.has_cuda_core is True
-    reading = NvidiaGPU(index=0).utilization
-    assert (reading.gpu_pct, reading.memory_pct) == (61, 37)
-
-
-def test_utilization_falls_back_to_nvml(nvidia_host_no_cuda_core: FakeNvidiaApis) -> None:
-    assert nvidia_host_no_cuda_core.has_cuda_core is False
-    reading = NvidiaGPU(index=0).utilization
-    assert (reading.gpu_pct, reading.memory_pct) == (48, 22)
-
-
-def test_utilization_degrades_to_empty_when_both_layers_refuse(
-    nvidia_host_no_cuda_core: FakeNvidiaApis,
-) -> None:
-    def refuse(handle: str) -> object:
-        raise FakeError("counters unavailable")
-
-    nvidia_host_no_cuda_core.nvml.device_get_utilization_rates = refuse
-    reading = NvidiaGPU(index=0).utilization
-    assert (reading.gpu_pct, reading.memory_pct) == (0, 0)

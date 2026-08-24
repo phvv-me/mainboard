@@ -2,13 +2,14 @@
 # submitted_at)` since a scheduler handle alone is not an identity (pueue reissues small
 # integer ids after a daemon restart), and its `hosts` table, one onboarding record per alias.
 
+import weakref
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from .. import verdicts as vocabulary
 from ..onboard import HostSetup
 from ..shared import db_file, now
+from ..vocabulary import TERMINAL
 from .storage import connect
 
 if TYPE_CHECKING:
@@ -35,7 +36,7 @@ class RunRecord(FrozenModel):
         never change) is read straight from the cache instead of re-probed over ssh. `None`
         means never resolved; a terminal verdict here is trusted without touching the host.
     exit_code: the process exit status, when the scheduler reported one.
-    verdict: one of the `verdicts` vocabulary.
+    verdict: one of the shared `vocabulary` verdicts.
     reported: the verdict a durable monitor last surfaced for this run, the change cursor that
         keeps a periodic sweep reporting only jobs newly terminal since the last check. `None`
         means never reported, so the first sweep that finds it terminal announces it.
@@ -63,6 +64,10 @@ class Cache:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or db_file()
         self.connection = connect(self.path)
+        # A cache outlives no process it was built in, so closing is the collector's job rather
+        # than a caller's. Without this the connection is only reclaimed by interpreter exit,
+        # which every short-lived cache in a suite reports as an unclosed database.
+        weakref.finalize(self, self.connection.close)
 
     def host(self, alias: str) -> HostSetup:
         """`alias`'s recorded onboarding, raising when the host was never set up."""
@@ -94,6 +99,22 @@ class Cache:
             (stamped.host, stamped.model_dump_json(), stamped.onboarded_at),
         )
         return stamped
+
+    def mark_synced(self, alias: str) -> None:
+        """Record that the workspace has just been mirrored to `alias`.
+
+        The watermark a later transfer set measures its delta against. A host no onboarding
+        ever recorded has nothing to stamp, and stays that way, since a host whose mirror this
+        store has never seen has no delta to compute either.
+        """
+        try:
+            setup = self.host(alias)
+        except LookupError:
+            return
+        self.connection.execute(
+            "UPDATE hosts SET facts = ? WHERE alias = ?",
+            (setup.model_copy(update={"synced_at": now()}).model_dump_json(), alias),
+        )
 
     def recent(self, limit: int = 20) -> list[RunRecord]:
         """The most recent dispatched runs, newest first."""
@@ -139,11 +160,7 @@ class Cache:
             "SELECT data FROM runs ORDER BY submitted_at DESC"
         ).fetchall()
         runs = [RunRecord.model_validate_json(row["data"]) for row in rows]
-        return [
-            run
-            for run in runs
-            if run.verdict not in vocabulary.TERMINAL or run.reported != run.verdict
-        ]
+        return [run for run in runs if run.verdict not in TERMINAL or run.reported != run.verdict]
 
     def run(self, handle: str, target: str | None = None) -> RunRecord:
         """The most recent run dispatched as `handle`, optionally narrowed to `target`.

@@ -29,18 +29,18 @@ class Scope(FlexModel):
         for name, spec in self.deps.items():
             deps[name] = spec.merged(deps[name]) if name in deps else spec
         chains = over.toolchains()
-        merged_chains: dict[str, object] = {
-            name: chain.model_dump(exclude_defaults=True) for name, chain in chains.items()
-        }
+        merged_chains: dict[str, Toolchain] = dict(chains)
         for name, chain in self.toolchains().items():
-            landed = chain.merged(chains[name]) if name in chains else chain
-            merged_chains[name] = landed.model_dump(exclude_defaults=True)
+            merged_chains[name] = chain.merged(chains[name]) if name in chains else chain
+        landed = {
+            name: chain.model_dump(exclude_defaults=True) for name, chain in merged_chains.items()
+        }
         plain = {
             key: value
             for key, value in {**(over.model_extra or {}), **(self.model_extra or {})}.items()
             if key not in merged_chains
         }
-        return type(self).model_validate({"deps": deps, **merged_chains, **plain})
+        return type(self).model_validate({"deps": deps, **landed, **plain})
 
     def path_deps(self) -> dict[str, Spec]:
         """Every local path requirement across conda and all ecosystems."""

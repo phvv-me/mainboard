@@ -1,117 +1,130 @@
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
-from mainboard.dispatch.schedulers import Resources, Slurm, build_sbatch_flags, slurm_verdict
+from mainboard.dispatch.schedulers import Slurm, build_sbatch_flags, slurm_verdict
 from mainboard.dispatch.schedulers.slurm import (
     SLURM_LIVE,
     SlurmJob,
     SlurmState,
     build_sacct_command,
-    build_sinfo_command,
     build_squeue_command,
     parse_exit_code,
     parse_sacct_output,
-    parse_sinfo_output,
     parse_slurm_state,
     parse_squeue_output,
 )
+from mainboard.dispatch.vocabulary import Resources
 
+from ...strategies import WORDS
 from ..conftest import machine_with
 
-# --- parse_slurm_state / parse_exit_code ---
-
-
-def test_parse_slurm_state_strips_a_cancelled_by_suffix() -> None:
-    assert parse_slurm_state("CANCELLED by 1000") is SlurmState.CANCELLED
-    assert parse_slurm_state("running") is SlurmState.RUNNING
-    assert parse_slurm_state("mystery-state") == "mystery-state"
+_WALLTIMES = st.one_of(st.none(), st.sampled_from(["00:10:00", "06:00:00"]))
+_ROWS = st.lists(
+    st.tuples(st.integers(min_value=1, max_value=9999).map(str), WORDS, WORDS),
+    max_size=4,
+)
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
-    [("0:0", 0), ("1:0", 1), ("0:9", 9), ("", None), ("garbage", None)],
+    ("token", "expected"),
+    [
+        ("CANCELLED by 1000", SlurmState.CANCELLED),
+        ("running", SlurmState.RUNNING),
+        ("  COMPLETED ", SlurmState.COMPLETED),
+        ("mystery-state", "mystery-state"),
+    ],
 )
-def test_parse_exit_code(value: str, expected: int | None) -> None:
-    assert parse_exit_code(value) == expected
+def test_a_slurm_state_token_parses_to_its_member_or_stays_verbatim(
+    token: str, expected: SlurmState | str
+) -> None:
+    """`sacct` appends a node reason to `CANCELLED`, which must not hide the state itself."""
+    assert parse_slurm_state(token) == expected
+    assert {
+        SlurmState.PENDING,
+        SlurmState.RUNNING,
+        SlurmState.SUSPENDED,
+        SlurmState.COMPLETING,
+    } == SLURM_LIVE
 
 
-# --- squeue ---
+@pytest.mark.parametrize(
+    ("field", "expected"), [("0:0", 0), ("1:0", 1), ("0:9", 9), ("", None), ("garbage", None)]
+)
+def test_an_sacct_exit_field_reports_the_return_code_or_the_signal_that_killed_it(
+    field: str, expected: int | None
+) -> None:
+    assert parse_exit_code(field) == expected
 
 
-def test_build_squeue_command_with_and_without_me() -> None:
+@given(
+    resources=st.builds(
+        Resources,
+        gpus=st.integers(min_value=0, max_value=8),
+        walltime=_WALLTIMES,
+        queue=st.one_of(st.none(), WORDS),
+        account=WORDS | st.just(""),
+        mem_gb=st.one_of(st.none(), st.integers(min_value=1, max_value=512)),
+    )
+)
+@example(resources=Resources())
+@example(resources=Resources(gpus=2, walltime="01:00:00", queue="gpu", account="proj", mem_gb=32))
+def test_only_a_set_resource_becomes_an_sbatch_flag(resources: Resources) -> None:
+    """A CPU-only job must carry no `--gpus`, since a cluster without GPU GRES rejects one."""
+    flags = build_sbatch_flags(resources, "job.sh")
+    assert flags[0] == "sbatch"
+    assert flags[1] == "--output=.mainboard/dispatch/logs/%j.log"
+    assert flags[-1] == "job.sh"
+    optional = {flag.split("=", 1)[0]: flag.split("=", 1)[1] for flag in flags[2:-1]}
+    assert optional.get("--gpus") == (str(resources.gpus) if resources.gpus else None)
+    assert optional.get("--time") == resources.walltime
+    assert optional.get("--partition") == resources.queue
+    assert optional.get("--account") == (resources.account or None)
+    assert optional.get("--mem") == (f"{resources.mem_gb}G" if resources.mem_gb else None)
+
+
+@given(rows=_ROWS)
+@example(rows=[("123", "train", "gpu")])
+@example(rows=[])
+def test_a_squeue_row_round_trips_through_the_format_the_command_asks_for(
+    rows: list[tuple[str, str, str]],
+) -> None:
+    """The parser reads back exactly the `%i|%j|%T|%P|%M` layout the built command requests."""
     assert build_squeue_command(me=True)[-1] == "--me"
     assert build_squeue_command(me=False) == [
         "squeue",
         "--noheader",
-        f"--format={build_squeue_command()[2].split('=', 1)[1]}",
+        "--format=%i|%j|%T|%P|%M",
+    ]
+    rendered = "\n".join(f"{i}|{name}|RUNNING|{part}|00:05:00" for i, name, part in rows)
+    parsed = parse_squeue_output(f"{rendered}\n\nbad|row\n")
+    assert parsed == [
+        SlurmJob(
+            job_id=i,
+            name=name,
+            state=SlurmState.RUNNING,
+            partition=part,
+            elapsed="00:05:00",
+        )
+        for i, name, part in rows
     ]
 
 
-def test_parse_squeue_output_reads_pipe_delimited_rows() -> None:
-    output = "123|train|RUNNING|gpu|00:05:00\n\nbad|row\n"
-    [job] = parse_squeue_output(output)
-    assert job == SlurmJob(
-        job_id="123", name="train", state=SlurmState.RUNNING, partition="gpu", elapsed="00:05:00"
-    )
-
-
-# --- sacct ---
-
-
-def test_build_sacct_command_shape() -> None:
-    command = build_sacct_command("123")
-    assert command[:3] == ["sacct", "--jobs", "123"]
-
-
-def test_parse_sacct_output_keeps_only_the_top_level_row() -> None:
-    output = "123.batch|COMPLETED|0:0\n123|COMPLETED|0:0\n"
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("123.batch|COMPLETED|0:0\n123|COMPLETED|0:0\n", 0),
+        ("", None),
+        ("\n123|only-two-fields\n", None),
+        ("999|COMPLETED|0:0\n", None),
+    ],
+)
+def test_an_sacct_listing_yields_only_the_top_level_row_of_the_job_asked_for(
+    output: str, expected: int | None
+) -> None:
+    assert build_sacct_command("123")[:3] == ["sacct", "--jobs", "123"]
     job = parse_sacct_output(output, job_id="123")
-    assert job is not None
-    assert job.state is SlurmState.COMPLETED
-    assert job.exit_code == 0
-
-
-def test_parse_sacct_output_returns_none_when_the_job_is_gone() -> None:
-    assert parse_sacct_output("", job_id="123") is None
-
-
-def test_parse_sacct_output_skips_blank_and_short_lines() -> None:
-    assert parse_sacct_output("\n123|only-two-fields\n", job_id="123") is None
-
-
-# --- sinfo ---
-
-
-def test_build_sinfo_command_shape() -> None:
-    assert build_sinfo_command() == ["sinfo", "--noheader", "--format=%P"]
-
-
-def test_parse_sinfo_output_strips_default_marker_and_dedupes() -> None:
-    output = "gpu*\ncpu\ngpu*\n"
-    assert parse_sinfo_output(output) == ["gpu", "cpu"]
-
-
-# --- build_sbatch_flags ---
-
-
-def test_build_sbatch_flags_only_set_fields() -> None:
-    flags = build_sbatch_flags(Resources(), "job.sh")
-    assert flags[0] == "sbatch"
-    assert flags[-1] == "job.sh"
-    assert not any(f.startswith("--gpus") for f in flags)
-
-
-def test_build_sbatch_flags_includes_every_set_field() -> None:
-    flags = build_sbatch_flags(
-        Resources(gpus=2, walltime="01:00:00", queue="gpu", account="proj", mem_gb=32), "job.sh"
-    )
-    assert "--gpus=2" in flags
-    assert "--time=01:00:00" in flags
-    assert "--partition=gpu" in flags
-    assert "--account=proj" in flags
-    assert "--mem=32G" in flags
-
-
-# --- slurm_verdict ---
+    assert (job.exit_code if job else None) == expected
 
 
 @pytest.mark.parametrize(
@@ -126,99 +139,55 @@ def test_build_sbatch_flags_includes_every_set_field() -> None:
         (SlurmState.CANCELLED, None, "failed"),
     ],
 )
-def test_slurm_verdict(state: SlurmState | None, exit_code: int | None, verdict: str) -> None:
+def test_slurm_verdict_reads_one_word_out_of_a_state_and_an_exit_code(
+    state: SlurmState | None, exit_code: int | None, verdict: str
+) -> None:
     assert slurm_verdict(state, exit_code) == verdict
 
 
-def test_slurm_live_covers_every_non_terminal_state() -> None:
-    assert {
-        SlurmState.PENDING,
-        SlurmState.RUNNING,
-        SlurmState.SUSPENDED,
-        SlurmState.COMPLETING,
-    } == SLURM_LIVE
-
-
-# --- Slurm backend ---
-
-
-def test_submit_returns_the_job_id() -> None:
-    remote = machine_with("Submitted batch job 456\n")
-    handle = Slurm().submit(remote, "/repo", script="job.sh", args=(), resources=Resources(gpus=1))
-    assert handle == "456"
-
-
-def test_submit_raises_system_exit_when_sbatch_rejects() -> None:
-    remote = machine_with("sbatch: error: invalid partition\n")
-    with pytest.raises(SystemExit, match="sbatch failed"):
+@pytest.mark.parametrize(
+    ("printed", "handle", "refusal"),
+    [
+        ("Submitted batch job 456\n", "456", ""),
+        ("456\n", "456", ""),
+        ("sbatch: error: invalid partition\n", "", "sbatch failed"),
+        ("", "", "no output"),
+    ],
+)
+def test_submitting_returns_the_job_id_sbatch_printed_or_refuses_with_its_output(
+    printed: str, handle: str, refusal: str
+) -> None:
+    remote = machine_with(printed)
+    if not refusal:
+        assert (
+            Slurm().submit(remote, "/repo", script="job.sh", args=(), resources=Resources(gpus=1))
+            == handle
+        )
+        return
+    with pytest.raises(SystemExit, match=refusal):
         Slurm().submit(remote, "/repo", script="job.sh", args=(), resources=Resources())
 
 
-def test_submit_raises_system_exit_with_no_output_at_all() -> None:
-    remote = machine_with("")
-    with pytest.raises(SystemExit, match="no output"):
-        Slurm().submit(remote, "/repo", script="job.sh", args=(), resources=Resources())
+def test_every_backend_operation_rides_one_login_shell_command() -> None:
+    backend = Slurm()
+    listing = machine_with("42|train|RUNNING|gpu|00:01:00\n")
+    batched = backend.states(listing, "/repo", ["42"])
+    assert (batched["42"].handle, batched["42"].verdict) == ("42", "running")
+    assert backend.logs(machine_with("output\n"), "/repo", handle="42") == "output\n"
+    assert backend.state(machine_with("42|COMPLETED|0:0\n"), "/repo", handle="42").verdict == "ok"
+    gone = backend.state(machine_with(""), "/repo", handle="42")
+    assert (gone.verdict, gone.state) == ("vanished", None)
+    cancelled = machine_with("")
+    backend.cancel(cancelled, "/repo", handle="42")
+    assert cancelled.calls[-1] == ["bash", "-lc", "scancel 42"]
 
 
-def test_jobs_lists_the_current_users_squeue_rows() -> None:
-    remote = machine_with("42|train|RUNNING|gpu|00:01:00\n")
-    [state] = Slurm().jobs(remote, "/repo")
-    assert state.handle == "42"
-    assert state.verdict == "running"
-
-
-def test_logs_reads_the_state_dir_log_file() -> None:
-    remote = machine_with("output\n")
-    assert Slurm().logs(remote, "/repo", handle="42") == "output\n"
-
-
-def test_state_reads_sacct() -> None:
-    remote = machine_with("42|COMPLETED|0:0\n")
-    state = Slurm().state(remote, "/repo", handle="42")
-    assert state.verdict == "ok"
-
-
-def test_state_when_sacct_has_nothing_reads_as_vanished() -> None:
-    remote = machine_with("")
-    state = Slurm().state(remote, "/repo", handle="42")
-    assert state.verdict == "vanished"
-    assert state.state is None
-
-
-def test_states_delegates_to_jobs() -> None:
-    remote = machine_with("42|train|RUNNING|gpu|00:01:00\n")
-    states = Slurm().states(remote, "/repo", ["42"])
-    assert "42" in states
-
-
-def test_wait_polls_state_until_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    remote = machine_with("42|COMPLETED|0:0\n")
-    monkeypatch.setattr(
-        "mainboard.dispatch.schedulers.slurm.poll_until_done", lambda probe: probe()
+def test_an_interactive_allocation_reuses_the_batch_flags_and_can_carry_a_command() -> None:
+    """`srun` takes the command to run on the allocated node, so a probe rides one allocation."""
+    resources = Resources(queue="gpu", walltime="01:00:00", gpus=1)
+    assert Slurm().interactive(env="default", command=(), resources=resources) == (
+        "srun --pty --gpus=1 --time=01:00:00 --partition=gpu bash -l"
     )
-    assert Slurm().wait(remote, "/repo", handle="42").verdict == "ok"
-
-
-def test_stream_drains_the_log_until_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    remote = machine_with("42|COMPLETED|0:0\n")
-    monkeypatch.setattr(
-        "mainboard.dispatch.schedulers.slurm.stream_until_done", lambda probe, drain: probe()
+    assert Slurm().interactive(env="default", command=("pwd",), resources=Resources()) == (
+        "srun --pty pwd"
     )
-    assert Slurm().stream(remote, "/repo", handle="42").verdict == "ok"
-
-
-def test_cancel_calls_scancel() -> None:
-    remote = machine_with("")
-    Slurm().cancel(remote, "/repo", handle="42")
-    assert remote.calls[-1] == ["bash", "-lc", "scancel 42"]
-
-
-def test_revive_is_unsupported_for_a_site_managed_scheduler() -> None:
-    remote = machine_with()
-    with pytest.raises(SystemExit, match="site-managed"):
-        Slurm().revive(remote, "/repo")
-
-
-def test_queues_lists_partitions() -> None:
-    remote = machine_with("gpu*\ncpu\n")
-    assert Slurm().queues(remote, "/repo") == ["gpu", "cpu"]

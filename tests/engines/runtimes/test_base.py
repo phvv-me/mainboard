@@ -3,49 +3,62 @@ from collections.abc import Callable
 import pytest
 
 from mainboard import MissionError
-from mainboard.engines import ContainerRuntime, Docker, Podman
+from mainboard.engines import Apptainer, ContainerRuntime, Docker, Podman
 from mainboard.engines.runtimes import resolve
-from mainboard.manifest import Container, Guardrail
 
 
-def test_resolve_auto_picks_the_first_available_runtime(which: Callable[..., None]) -> None:
-    which("podman")
-    assert resolve("auto") is Podman
-
-
-def test_resolve_explicit_name_ignores_availability(which: Callable[..., None]) -> None:
-    which()
-    assert resolve("docker") is Docker
-
-
-def test_resolve_unknown_name_lists_known_runtimes(which: Callable[..., None]) -> None:
-    which()
-    with pytest.raises(
-        MissionError, match=r"known runtimes are \['apptainer', 'docker', 'podman'\]"
-    ):
-        resolve("bogus")
-
-
-def test_resolve_auto_with_nothing_installed_lists_known_runtimes(
+@pytest.mark.parametrize(
+    ("installed", "declared", "runtime"),
+    [
+        pytest.param(
+            ("podman",), "auto", Podman, id="auto-picks-the-first-runtime-this-host-exposes"
+        ),
+        pytest.param((), "docker", Docker, id="an-explicit-name-ignores-availability"),
+    ],
+)
+def test_resolve_names_the_runtime_a_manifest_asks_for(
+    installed: tuple[str, ...],
+    declared: str,
+    runtime: type[ContainerRuntime],
     which: Callable[..., None],
 ) -> None:
+    which(*installed)
+    assert resolve(declared) is runtime
+
+
+@pytest.mark.parametrize(
+    ("declared", "refusal"),
+    [
+        pytest.param(
+            "bogus",
+            r"known runtimes are \['apptainer', 'docker', 'podman'\]",
+            id="a-name-nobody-declared",
+        ),
+        pytest.param(
+            "auto", "no container runtime available for 'auto'", id="a-host-running-none-of-them"
+        ),
+    ],
+)
+def test_resolve_refuses_with_the_declared_roster(
+    declared: str, refusal: str, which: Callable[..., None]
+) -> None:
     which()
-    with pytest.raises(MissionError, match="no container runtime available for 'auto'"):
-        resolve("auto")
+    with pytest.raises(MissionError, match=refusal):
+        resolve(declared)
 
 
-def test_env_flags_pairs_each_passthrough_variable() -> None:
-    assert ContainerRuntime.env_flags(["A", "B"]) == ["--env", "A", "--env", "B"]
-    assert ContainerRuntime.env_flags([]) == []
-
-
-def test_guarded_argv_wraps_only_when_the_guardrail_is_declared() -> None:
-    guarded = Container(image="x", guardrails=[Guardrail.UNSET_PIP_CONSTRAINT])
-    unguarded = Container(image="x", guardrails=[Guardrail.PIN_SYSTEM_PACKAGES])
-    assert ContainerRuntime.guarded_argv(guarded, ["run"]) == [
-        "env",
-        "-u",
-        "PIP_CONSTRAINT",
-        "run",
-    ]
-    assert ContainerRuntime.guarded_argv(unguarded, ["run"]) == ["run"]
+@pytest.mark.parametrize(
+    "runtime",
+    [
+        pytest.param(Docker, id="docker"),
+        pytest.param(Podman, id="podman"),
+        pytest.param(Apptainer, id="apptainer"),
+    ],
+)
+def test_availability_is_whether_the_binary_is_on_path(
+    runtime: type[ContainerRuntime], which: Callable[..., None]
+) -> None:
+    which()
+    assert not runtime.is_available()
+    which(runtime.binary)
+    assert runtime.is_available()

@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from mainboard import HostFacts, Machine
 from mainboard.probe import (
@@ -14,14 +17,27 @@ from mainboard.probe import (
     Scratch,
 )
 
-if TYPE_CHECKING:
-    import pytest
-
 _GIB = 1024**3
 
 
-def test_collected_builds_facts_from_the_machine(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`collected` reads hostname, CPU, memory, cgroup, scratch, scheduler, and GPUs."""
+def test_collected_reads_every_probe_into_one_wire_portable_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """This is what a dispatcher on another machine parses to size a job, so the cgroup ceiling,
+    the scratch tier and each GPU's dispatch key all land on it. A GPU whose architecture is
+    still unknown reports no key at all rather than the literal word."""
+
+    class NamedGPU(GPU):
+        """A GPU whose provider filled in a real architecture, unlike the unnamed base."""
+
+        @property
+        def arch_key(self) -> str:
+            return "sm_90"
+
+        @property
+        def label(self) -> str:
+            return "NVIDIA GH200"
+
     machine = Machine()
     monkeypatch.setattr(
         type(machine.host), "cgroup_memory", CgroupMemory(limit_bytes=100 * _GIB, capped=True)
@@ -33,69 +49,54 @@ def test_collected_builds_facts_from_the_machine(monkeypatch: pytest.MonkeyPatch
     )
     monkeypatch.setattr(type(machine.host), "memory", Memory(total_bytes=200 * _GIB))
     monkeypatch.setattr(type(machine), "environment", Environment(scheduler=Scheduler.PBS))
-    monkeypatch.setattr(type(machine), "gpus", (GPU(index=0),))
+    monkeypatch.setattr(type(machine), "gpus", (GPU(index=0), NamedGPU(index=1)))
     monkeypatch.setattr(Fabric, "probe", classmethod(lambda cls: ()))
 
     facts = HostFacts.collected()
     assert facts.schema_version == 1
-    assert facts.cgroup.limit_bytes == 100 * _GIB
-    assert facts.cgroup.capped is True
-    assert facts.scratch.path == "/local"
+    assert (facts.cgroup.limit_bytes, facts.cgroup.capped) == (100 * _GIB, True)
+    assert (facts.scratch.path, facts.scratch.source) == ("/local", "LOCALDIR")
     assert facts.scratch.free_bytes == 50 * _GIB
-    assert facts.scratch.source == "LOCALDIR"
     assert facts.memory_total_bytes == 200 * _GIB
+    assert facts.cpu_name == machine.cpu.label
+    assert facts.cpu_logical_cores == machine.host.logical_cpus
     assert facts.scheduler is Scheduler.PBS
-    assert len(facts.gpus) == 1
-    assert facts.gpus[0].arch_key is None  # the base GPU's arch is "unknown"
+    assert [(gpu.name, gpu.arch_key) for gpu in facts.gpus] == [
+        ("unknown", None),
+        ("NVIDIA GH200", "sm_90"),
+    ]
 
 
-def test_collected_scratch_path_is_none_when_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An unavailable scratch tier serializes its path as `None`, not the string "None"."""
-    machine = Machine()
-    monkeypatch.setattr(type(machine.host), "scratch", Scratch())
+def test_an_unavailable_scratch_tier_serializes_its_path_as_null(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host with nowhere writable has no scratch path, and the reader on the far end has to
+    see a JSON null there rather than the string `None` a plain conversion would have written."""
+    monkeypatch.setattr(type(Machine().host), "scratch", Scratch())
     facts = HostFacts.collected()
     assert facts.scratch.path is None
+    assert json.loads(facts.model_dump_json())["scratch"]["path"] is None
 
 
-def test_collected_reports_a_known_arch_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A GPU with a real architecture surfaces its `arch_key` on the fact."""
-
-    class NamedGPU(GPU):
-        @property
-        def arch_key(self) -> str:
-            return "sm_90"
-
-        @property
-        def label(self) -> str:
-            return "Test GPU"
-
-    machine = Machine()
-    monkeypatch.setattr(type(machine), "gpus", (NamedGPU(index=0),))
-    facts = HostFacts.collected()
-    assert facts.gpus[0].name == "Test GPU"
-    assert facts.gpus[0].arch_key == "sm_90"
+# Building a whole nested snapshot per example is the expensive part, and a round trip either
+# holds for every shape or fails on the first, so a small budget buys the same confidence.
+@settings(max_examples=15)
+@given(facts=st.from_type(HostFacts))
+def test_a_snapshot_round_trips_through_json_unchanged(facts: HostFacts) -> None:
+    """The whole point of the model is crossing a wire, so dumping and validating it back has to
+    reproduce an equal snapshot for any host it could describe, nested GPUs and ports included."""
+    assert HostFacts.model_validate_json(facts.model_dump_json()) == facts
 
 
-def test_round_trips_through_json() -> None:
-    """`model_dump_json`/`model_validate_json` reproduce an equal `HostFacts`."""
-    facts = HostFacts(
-        hostname="gold",
-        cpu_name="AMD EPYC",
-        cpu_logical_cores=64,
-        memory_total_bytes=512 * _GIB,
-        scheduler=Scheduler.SLURM,
-        fabric=(FabricPort(device="mlx5_0", port=1, link_layer="InfiniBand"),),
+def test_a_payload_from_a_newer_writer_still_parses() -> None:
+    """Adding a field does not bump the schema version, so an older reader has to tolerate a key
+    it has never heard of instead of failing to parse the whole snapshot."""
+    payload = json.loads(
+        HostFacts(hostname="gold", fabric=(FabricPort(device="mlx5_0", port=1),)).model_dump_json()
     )
-    restored = HostFacts.model_validate_json(facts.model_dump_json())
-    assert restored == facts
+    payload["a_field_this_reader_has_never_heard_of"] = "some-value"
 
-
-def test_open_model_tolerates_unknown_fields_from_a_newer_writer() -> None:
-    """A payload with an extra field (a newer writer) still parses, dropping the unknown key."""
-    payload = HostFacts(hostname="future-host").model_dump_json()
-
-    data = json.loads(payload)
-    data["a_field_this_reader_has_never_heard_of"] = "some-value"
-    restored = HostFacts.model_validate_json(json.dumps(data))
-    assert restored.hostname == "future-host"
+    restored = HostFacts.model_validate_json(json.dumps(payload))
+    assert restored.hostname == "gold"
+    assert restored.fabric == (FabricPort(device="mlx5_0", port=1),)
     assert not hasattr(restored, "a_field_this_reader_has_never_heard_of")

@@ -8,7 +8,8 @@ available, this is the bare fallback.
 from typing import TYPE_CHECKING
 
 from ..shared import logger
-from .base import JobState, Resources, read_log
+from ..vocabulary import JobState, Resources
+from .base import read_log, workspace_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -25,33 +26,23 @@ class Local:
         del remote, root
         logger.info("local backend has no queue; cannot cancel %s", handle)
 
-    def jobs(self, remote: Machine, root: str) -> list[JobState]:
-        del remote, root
-        return []
+    def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
+        return workspace_session(env=env, command=command, resources=resources)
 
     def logs(self, remote: Machine, root: str, *, handle: str) -> str:
-
         return read_log(remote, root, handle=handle)
-
-    def queues(self, remote: Machine, root: str) -> list[str]:
-        del remote, root
-        return []
-
-    def revive(self, remote: Machine, root: str) -> list[str]:
-        del remote, root
-        raise SystemExit("the local backend runs bare bash; there is no daemon to revive")
 
     def state(self, remote: Machine, root: str, *, handle: str) -> JobState:
         del remote, root
         return JobState(handle=handle, state=None, exit_code=None, verdict="vanished")
 
     def states(self, remote: Machine, root: str, handles: Sequence[str]) -> dict[str, JobState]:
-        del remote, root, handles
-        return {}
+        """Every requested handle, vanished, since a queue that keeps nothing remembers nothing.
 
-    def stream(self, remote: Machine, root: str, *, handle: str) -> JobState:
-        # `submit` already relayed the job's output in the foreground; nothing to follow.
-        return self.wait(remote, root, handle=handle)
+        Answered here rather than left absent so a caller batching a whole host's handles never
+        falls back to a per-handle probe that would reach the same conclusion one job at a time.
+        """
+        return {handle: self.state(remote, root, handle=handle) for handle in handles}
 
     def submit(
         self,
@@ -65,9 +56,3 @@ class Local:
         del root, resources
         remote["bash"][[script, *args]]()
         return script
-
-    def wait(self, remote: Machine, root: str, *, handle: str) -> JobState:
-        del remote, root
-        # `submit` ran the job to completion in the foreground and raised on a non-zero exit, so
-        # a handle that reaches here finished fine; there is nothing to poll.
-        return JobState(handle=handle, state="done", exit_code=0, verdict="ok")

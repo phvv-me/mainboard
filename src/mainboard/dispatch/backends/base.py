@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
-    from ..schedulers.base import JobState, Resources
+    from ..vocabulary import JobState, Resources
 
     class HttpResponse(Protocol):
         """The subset of `http.client.HTTPResponse` a transport callable must return."""

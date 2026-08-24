@@ -26,6 +26,22 @@ def read_sys(path: Path) -> str | None:
     return None
 
 
+def capacity_bytes(device_dir: Path) -> int:
+    """One block device's capacity in bytes from its sysfs `size` file, 0 when it cannot be read.
+
+    sysfs reports capacity in 512-byte sectors. A pseudo-file that is missing, empty, or holds
+    something no kernel wrote (a placeholder, a truncated read) is no capacity rather than a
+    crash, which is the same tolerance every other reader here already promises.
+
+    device_dir: the device's own directory, e.g. `SYS_BLOCK / "nvme0n1"`.
+    """
+    sectors = read_sys(device_dir / "size")
+    try:
+        return int(sectors) * 512 if sectors else 0
+    except ValueError:
+        return 0
+
+
 class DriveInfo(FrozenModel):
     """One physical block device detected in `SYS_BLOCK`.
 
@@ -70,9 +86,8 @@ class DriveInfo(FrozenModel):
 
     @cached_property
     def size_bytes(self) -> int:
-        """Total device capacity in bytes."""
-        size = read_sys(SYS_BLOCK / self.name / "size")
-        return int(size) * 512 if size else 0
+        """Total device capacity in bytes, 0 when sysfs reports none this reader can use."""
+        return capacity_bytes(SYS_BLOCK / self.name)
 
     @property
     def size_gb(self) -> float:

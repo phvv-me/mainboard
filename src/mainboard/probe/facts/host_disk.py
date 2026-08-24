@@ -26,8 +26,7 @@ class HostDisk(FrozenModel):
             DriveInfo(name=dev_dir.name)
             for dev_dir in dev_dirs
             if not any(dev_dir.name.startswith(pfx) for pfx in drive_info_mod.SKIP_PREFIXES)
-            and (size := drive_info_mod.read_sys(dev_dir / "size"))
-            and int(size) * 512 > 0
+            and drive_info_mod.capacity_bytes(dev_dir) > 0
         )
 
     @property

@@ -10,7 +10,7 @@ from patos import StrFlag
 from plumbum import CommandNotFound, local
 from plumbum.commands.processes import ProcessExecutionError
 
-from .shared import logger, state_dir
+from .shared import logger, state_dir, state_path
 from .transport import HostUnreachable, is_transport_failure
 
 if TYPE_CHECKING:
@@ -123,6 +123,7 @@ def rsync(
     extra: Sequence[str] = (),
     allow_vanished: bool = True,
     host: str = "",
+    cwd: Path | None = None,
 ) -> str:
     """Run `rsync` locally (it connects to remote hosts itself); return its stdout.
 
@@ -139,6 +140,9 @@ def rsync(
     extra: raw flags for anything not covered above.
     allow_vanished: accept rsync code 24 for ordinary changing mirrors. Required job-script
         transfers disable this so submission cannot continue after a partial sync.
+    cwd: the directory relative source paths are read from, this process's own when None. A
+        workspace mirror passes its root, since `--relative` rebuilds each source path under the
+        destination and a path read from a subdirectory would name a different file or none.
     """
     paths = [*([sources] if isinstance(sources, str) else sources), dest]
     mirror = Rsync.DELETE in [*flags] and any(":" in path for path in paths)
@@ -155,6 +159,8 @@ def rsync(
         extra=extra,
     )
     command = local[binary(mirror=mirror)][args]
+    if cwd is not None:
+        command = command.with_cwd(cwd)
     try:
         output = str(command())
     except ProcessExecutionError as error:
@@ -204,12 +210,14 @@ class SyncLock:
     """Serialize destructive mirrors to one target across local dispatch processes.
 
     target: SSH alias whose remote tree is being mirrored.
-    root: local workspace root that owns the generated state directory.
+    root: local workspace root that owns the generated state directory, discovered upward from
+        the current directory when None, so two processes started in different subdirectories
+        still queue behind the same lock file.
     """
 
     def __init__(self, target: str, root: Path | None = None) -> None:
         digest = hashlib.blake2s(target.encode(), digest_size=8).hexdigest()
-        self.path = (root or Path.cwd()) / state_dir() / "locks" / f"sync-{digest}.lock"
+        self.path = state_path(root) / "locks" / f"sync-{digest}.lock"
         self.file: TextIO | None = None
 
     def __enter__(self) -> Self:

@@ -17,7 +17,7 @@ from .dispatch.transport import HostUnreachable, SshTransport
 from .probe.snapshot import HostFacts
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from .board import Board
     from .dispatch.onboard import HostSetup
@@ -138,18 +138,31 @@ class Survey:
             else list(providers)
         )
 
-    def paths(self) -> list[ComputePath]:
+    def onboarded(self) -> dict[str, HostSetup]:
+        """What onboarding recorded for each alias, read from the dispatch cache, keyed by alias.
+
+        Its own verb because reading it is thread-bound: the cache is one SQLite connection and
+        only the thread that opened it may use it. A caller that will hand this survey to a pool
+        reads the records first, on the thread that owns the cache, and passes them to `paths`.
+        """
+        return {setup.host: setup for setup in self.board.dispatcher.cache.hosts()}
+
+    def paths(self, setups: Mapping[str, HostSetup] | None = None) -> list[ComputePath]:
         """Every compute path, probed in parallel, this machine first.
 
-        The onboarding records are read here, on this thread, and handed to each host probe,
-        since the dispatch cache is one SQLite connection and the pool below is not its owner.
-        A declared host whose kind routes to a provider is left to that provider's own row,
-        so a rented machine is listed once rather than probed as if it were an ssh box.
+        The onboarding records are read on this thread and handed to each host probe, since the
+        dispatch cache is one SQLite connection and the pool below is not its owner. A caller
+        that is itself inside a pool has already read them on the owning thread and passes them
+        in, which is the same discipline one level up. A declared host whose kind routes to a
+        provider is left to that provider's own row, so a rented machine is listed once rather
+        than probed as if it were an ssh box.
+
+        setups: the onboarding records by alias, read from the dispatch cache here when None.
         """
-        setups = {setup.host: setup for setup in self.board.dispatcher.cache.hosts()}
+        recorded = self.onboarded() if setups is None else setups
         probes: list[Callable[[], ComputePath]] = [self.here]
         probes.extend(
-            partial(self.machine, alias, profile, setups.get(alias))
+            partial(self.machine, alias, profile, recorded.get(alias))
             for alias, profile in sorted(self.board.manifest.profiles().items())
             if route(profile.kind) == "ssh-family"
         )

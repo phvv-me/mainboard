@@ -43,8 +43,18 @@ class ManifestText:
         return isinstance(table, dict) and name in table
 
     def drop(self, path: tuple[str, ...], name: str) -> None:
-        """Remove `name` from the table at `path`."""
+        """Remove `name` from the table at `path`, and any table the removal left empty.
+
+        The mirror of `put`, which writes a table the manifest never had. Adding a requirement
+        to a new ecosystem and then dropping it again therefore leaves the file exactly as it
+        was, instead of an empty `[rust.deps]` heading declaring nothing.
+        """
         del self.table(path)[name]
+        at = path
+        while at and not self.table(at):
+            parent = self.document if len(at) == 1 else self.table(at[:-1])
+            del parent[at[-1]]
+            at = at[:-1]
 
     def put(self, path: tuple[str, ...], name: str, spec: str) -> None:
         """Declare `name` as `spec` in the table at `path`, creating the table when absent.

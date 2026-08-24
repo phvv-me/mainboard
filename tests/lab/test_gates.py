@@ -4,111 +4,84 @@ import pytest
 
 from mainboard import HfDataset, wait_for_idle
 from mainboard.lab import Idle, Offline, Parity, Receipt, Run
-from mainboard.lab.experiment import DeclaredExperiment
-from mainboard.lab.gates import GateStatus, is_offline_declared, is_parity_assumed
+from mainboard.lab.gates import (
+    Gate,
+    GateStatus,
+    GateVerdict,
+    is_offline_declared,
+    is_parity_assumed,
+)
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Callable
 
 
-@pytest.fixture
-def context(tmp_path: Path) -> Run:
-    return Run(model_id="gpt2", config=DeclaredExperiment(), artifact_dir=tmp_path)
+def met() -> bool:
+    """A probe reporting its precondition already holds."""
+    return True
 
 
-def raise_boom() -> NoReturn:
+def unmet() -> bool:
+    """A probe cleanly reporting its precondition does not hold yet."""
+    return False
+
+
+def broken() -> NoReturn:
+    """A probe whose own check breaks rather than answering."""
     raise RuntimeError("boom")
 
 
-def test_idle_check_passes_when_wait_reports_idle(context: Run) -> None:
-    verdict = Idle(seconds=1.0, wait=lambda **kw: True).check(context)
-    assert verdict.status == GateStatus.PASSED
-    assert not verdict.reason
+def idle_gate(answer: Callable[[], bool]) -> Gate:
+    """An idle gate whose wait defers to `answer`."""
+    return Idle(seconds=2.5, wait=lambda **_: answer())
 
 
-def test_idle_check_blocks_when_wait_times_out(context: Run) -> None:
-    verdict = Idle(seconds=2.5, wait=lambda **kw: False).check(context)
-    assert verdict.status == GateStatus.BLOCKED
-    assert "2.5" in verdict.reason
+def parity_gate(answer: Callable[[], bool]) -> Gate:
+    """A parity gate whose comparison probe defers to `answer`."""
+    return Parity(oracle="reference", probe=lambda oracle, context: answer())
 
 
-def test_idle_check_fails_when_wait_raises(context: Run) -> None:
-    verdict = Idle(seconds=1.0, wait=lambda **kw: raise_boom()).check(context)
-    assert verdict.status == GateStatus.FAILED
-    assert verdict.reason == "boom"
+def offline_gate(answer: Callable[[], bool]) -> Gate:
+    """An offline gate whose declaration probe is `answer` itself."""
+    return Offline(probe=answer)
 
 
-def test_idle_defaults_to_mainboard_wait_for_idle() -> None:
-    assert Idle(seconds=1.0).wait is wait_for_idle
-
-
-def test_is_parity_assumed_is_permissive(context: Run) -> None:
-    assert is_parity_assumed("oracle", context) is True
-
-
-def test_parity_check_passes_with_default_probe(context: Run) -> None:
-    verdict = Parity(oracle="reference").check(context)
-    assert verdict.status == GateStatus.PASSED
-
-
-def test_parity_check_blocks_when_probe_reports_mismatch(context: Run) -> None:
-    verdict = Parity(oracle="reference", probe=lambda oracle, ctx: False).check(context)
-    assert verdict.status == GateStatus.BLOCKED
-    assert "reference" in verdict.reason
-
-
-def test_parity_check_fails_when_probe_raises(context: Run) -> None:
-    verdict = Parity(oracle="reference", probe=lambda oracle, ctx: raise_boom()).check(context)
-    assert verdict.status == GateStatus.FAILED
-    assert verdict.reason == "boom"
-
-
-def test_is_offline_declared_reads_the_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    assert is_offline_declared() is True
-    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
-    assert is_offline_declared() is False
-
-
-def test_offline_check_passes_when_probe_reports_offline(context: Run) -> None:
-    verdict = Offline(probe=lambda: True).check(context)
-    assert verdict.status == GateStatus.PASSED
-
-
-def test_offline_check_blocks_when_probe_reports_online(context: Run) -> None:
-    verdict = Offline(probe=lambda: False).check(context)
-    assert verdict.status == GateStatus.BLOCKED
-
-
-def test_offline_check_fails_when_probe_raises(context: Run) -> None:
-    verdict = Offline(probe=raise_boom).check(context)
-    assert verdict.status == GateStatus.FAILED
-    assert verdict.reason == "boom"
-
-
-def test_receipt_check_passes_when_nothing_is_declared(context: Run) -> None:
-    verdict = Receipt(dataset="org/data@main").check(context)
-    assert verdict.status == GateStatus.PASSED
-
-
-def test_receipt_check_blocks_when_declared_dataset_is_missing(context: Run) -> None:
-    gate = Receipt(dataset="org/data@main", needs=(HfDataset(repo="org/data"),), staged=tuple)
-    verdict = gate.check(context)
-    assert verdict.status == GateStatus.BLOCKED
-    assert "org/data@main" in verdict.reason
-
-
-def test_receipt_check_passes_when_declared_dataset_is_staged(context: Run) -> None:
-    gate = Receipt(
+def receipt_gate(answer: Callable[[], bool]) -> Gate:
+    """A receipt gate whose staging lookup reports the declared dataset when `answer` says so."""
+    return Receipt(
         dataset="org/data@main",
         needs=(HfDataset(repo="org/data"),),
-        staged=lambda: ("org/data@main",),
+        staged=lambda: ("org/data@main",) if answer() else (),
     )
-    verdict = gate.check(context)
-    assert verdict.status == GateStatus.PASSED
 
 
-def test_receipt_check_fails_when_staged_lookup_raises(context: Run) -> None:
-    verdict = Receipt(dataset="org/data@main", staged=raise_boom).check(context)
-    assert verdict.status == GateStatus.FAILED
-    assert verdict.reason == "boom"
+@pytest.mark.parametrize(
+    ("build", "blocked"),
+    [
+        pytest.param(idle_gate, "GPU still busy after 2.5s", id="idle"),
+        pytest.param(parity_gate, "parity with 'reference' not established", id="parity"),
+        pytest.param(offline_gate, "offline mode is not declared", id="offline"),
+        pytest.param(receipt_gate, "org/data@main is not staged yet", id="receipt"),
+    ],
+)
+def test_every_gate_translates_its_own_probe_into_the_shared_three_way_verdict(
+    context: Run, build: Callable[[Callable[[], bool]], Gate], blocked: str
+) -> None:
+    assert build(met).check(context) == GateVerdict(status=GateStatus.PASSED)
+    assert build(unmet).check(context) == GateVerdict(status=GateStatus.BLOCKED, reason=blocked)
+    assert build(broken).check(context) == GateVerdict(status=GateStatus.FAILED, reason="boom")
+
+
+def test_the_hardware_free_defaults_assume_parity_stage_nothing_and_read_offline_off_the_env(
+    context: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert Idle(seconds=1.0).wait is wait_for_idle
+    assert Parity(oracle="reference").probe is is_parity_assumed
+    assert is_parity_assumed("reference", context) is True
+    assert Parity(oracle="reference").check(context).status is GateStatus.PASSED
+    assert Receipt(dataset="org/data@main").check(context).status is GateStatus.PASSED
+    assert Offline().probe is is_offline_declared
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert is_offline_declared() is True
+    monkeypatch.delenv("HF_HUB_OFFLINE")
+    assert is_offline_declared() is False

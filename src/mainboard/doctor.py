@@ -21,9 +21,10 @@ from .engines.compile.provisioner import Provisioner
 from .engines.compile.state import SyncState
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from .board import Board
+    from .dispatch.onboard import HostSetup
 
 # The tool this workspace answers to, so no message below spells the binary's name.
 _TOOL = Project().name
@@ -83,7 +84,7 @@ class Doctor:
             status and output, the workspace runner when None.
         """
         self.board = board
-        self.given = survey
+        self.survey = survey or Survey(board)
         self.probe = probe or self.through_runner
 
     def sections(self) -> list[Section]:
@@ -93,13 +94,20 @@ class Doctor:
         roster, a task list and the gate roster itself are all things that manifest was going to
         supply, and inventing verdicts for them from a file nobody could parse would say nothing
         true.
+
+        Everything durable the pool will need is read here first, on this thread. The dispatch
+        cache is one SQLite connection that only its opening thread may use, so a fleet probe
+        that reached for the onboarding records from inside the pool would open that connection
+        there and leave the interpreter closing it from here at exit. The shared subsystems are
+        built here for the same reason, which is also why building them is locked.
         """
         manifest = self.manifest()
         if manifest.verdict is Verdict.FAIL:
             return [manifest]
+        setups = self.survey.onboarded()
         asked: list[Callable[[], Section]] = [
             self.environment,
-            self.fleet,
+            partial(self.fleet, setups),
             *(partial(self.gate, name) for name in self.board.manifest.gates),
         ]
         with ThreadPoolExecutor(max_workers=len(asked)) as pool:
@@ -184,14 +192,17 @@ class Doctor:
             detail=f"{len(installed)} environments provisioned, fresh and whole",
         )
 
-    def fleet(self) -> Section:
+    def fleet(self, setups: Mapping[str, HostSetup] | None = None) -> Section:
         """What compute this workspace can reach, and what stands between it and the rest.
 
         Nothing here fails. A host that is asleep and a provider nobody has a key for are both
         facts about the world rather than about this workspace, and calling them broken would
         make the exit status mean the network instead of the code.
+
+        setups: the onboarding records, read on the cache's own thread when this section runs
+            inside the report's pool; the survey reads them itself when None.
         """
-        paths = (self.given or Survey(self.board)).paths()
+        paths = self.survey.paths(setups)
         ready = [path for path in paths if path.access in _USABLE]
         cold = [path.name for path in paths if path.access is Access.REACHABLE]
         down = [path.name for path in paths if path.access is Access.UNREACHABLE]

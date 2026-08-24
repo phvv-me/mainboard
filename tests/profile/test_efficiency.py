@@ -1,131 +1,142 @@
 # Grid-shape parsing, wave math, and the rendered launch-efficiency report.
 
-from rich.console import Console
+import math
 
-from mainboard.profile import EfficiencyReport, KernelEfficiency, KernelTrace
+import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
+
+from mainboard.profile import EfficiencyReport, KernelEfficiency
 from mainboard.profile.efficiency import grid_blocks, readable
 
+from ..strategies import WORDS
+from .conftest import kernel, render
 
-def _kernel(name: str, ns: int, **shape: str | int) -> KernelTrace:
-    """A `KernelTrace` of `name` lasting `ns` nanoseconds from t=0."""
-    return KernelTrace(name=name, start_ns=0, end_ns=ns, **shape)  # pyrefly: ignore  reason=dynamic **shape kwargs lose field-precise typing since=2026-08-16
+_ONE_ROW = (
+    KernelEfficiency(
+        name="k",
+        calls=1,
+        total_ms=1000.0,
+        blocks=1,
+        block_threads=1,
+        registers=0,
+        waves=1.0,
+        tail_waste_pct=0.0,
+    ),
+)
 
 
-def render(report: EfficiencyReport) -> str:
-    """Render a report to plain text for content assertions."""
-    console = Console(no_color=True, width=120, record=True)
-    console.print(report)
-    return console.export_text()
+# The pinned examples below carry the branches, so the random budget only needs to add breadth
+# and is trimmed from the shared default.
+@settings(max_examples=10)
+@given(dims=st.lists(st.integers(min_value=1, max_value=999), min_size=1, max_size=3))
+@example(dims=[110, 1, 1])  # the CUPTI spelling
+def test_grid_blocks_multiplies_out_every_extent_it_can_read(dims: list[int]) -> None:
+    """A launch shape is the product of its dimensions, however the backend spells it.
 
-
-def test_grid_blocks_parses_cupti_and_alternate_spellings() -> None:
-    assert grid_blocks("110x1x1") == 110
-    assert grid_blocks("(8, 2, 1)") == 16
+    Parenthesised and comma-separated spellings are accepted too, so a backend that
+    formats differently does not silently report zero, and a shape with no digits at all
+    reads as zero rather than as the empty product.
+    """
+    total = math.prod(dims)
+    assert grid_blocks("x".join(str(dim) for dim in dims)) == total
+    assert grid_blocks(f"({', '.join(str(dim) for dim in dims)})") == total
     assert grid_blocks("") == 0
     assert grid_blocks("garbage") == 0
 
 
-def test_readable_trims_mangled_names_and_passes_plain_ones_through() -> None:
-    assert readable("relu_kernel") == "relu_kernel"
-    # Itanium mangling: each `<length><identifier>` segment, so "5numba" is "numba".
+# The pinned examples below carry the branches, so the random budget only needs to add breadth
+# and is trimmed from the shared default.
+@settings(max_examples=10)
+@given(name=WORDS)
+def test_readable_trims_mangled_names_and_passes_plain_ones_through(name: str) -> None:
+    """A plain symbol survives untouched, and an Itanium-mangled one keeps its first three parts.
+
+    numba appends a long content hash to every symbol, so the tail of a mangled name is
+    noise, while a name that mangles into nothing at all is returned as it came.
+    """
+    assert readable(name) == name
+    # Itanium mangling writes each part as `<length><identifier>`, so `5numba` is `numba`.
     assert readable("_ZN5numba5tests3jitE") == "numba.tests.jit"
     assert readable("_ZN") == "_ZN"
 
 
-def test_aggregate_discards_zero_duration_kernels_and_ranks_by_total_time() -> None:
+# The pinned examples below carry the branches, so the random budget only needs to add breadth
+# and is trimmed from the shared default.
+@settings(max_examples=15)
+@given(
+    launches=st.lists(
+        st.tuples(
+            st.sampled_from(["gemm", "relu"]),
+            st.integers(min_value=0, max_value=5_000),
+            st.integers(min_value=1, max_value=8),
+        ),
+        max_size=6,
+    ),
+    sm_count=st.integers(min_value=1, max_value=4),
+)
+@example(launches=[("gemm", 100, 3), ("gemm", 100, 3), ("relu", 500, 4)], sm_count=2)
+@example(launches=[("stalled", 0, 1)], sm_count=2)  # a kernel that never ran is not a row
+def test_kernels_rank_by_total_time_and_carry_their_wave_quantisation(
+    launches: list[tuple[str, int, int]], sm_count: int
+) -> None:
+    """Rows rank slowest first, and each one's waves and tail follow from its grid.
+
+    A whole number of waves leaves no tail at all, and a fractional one wastes a share of
+    the run strictly under a full wave. Kernels with no measured duration are dropped
+    rather than ranked, so a launch that never ran cannot lead the table.
+    """
     kernels = [
-        _kernel("gemm", 100, grid="3x1x1", block="256x1x1", registers=32),
-        _kernel("gemm", 100, grid="3x1x1", block="256x1x1", registers=32),
-        _kernel("relu", 500, grid="4x1x1", block="128x1x1", registers=16),
-        KernelTrace(name="stalled", start_ns=10, end_ns=10),
+        kernel(name, ns, grid=f"{blocks}x1x1", block="256x1x1") for name, ns, blocks in launches
     ]
-    rows = KernelEfficiency.aggregate(kernels, sm_count=2)
-    assert [row.name for row in rows] == ["relu", "gemm"]
+    rows = KernelEfficiency.aggregate(kernels, sm_count=sm_count)
+    ran = [launch for launch in launches if launch[1] > 0]
 
-    relu, gemm = rows
-    assert relu.calls == 1
-    assert relu.waves == 2.0
-    assert relu.tail_waste_pct == 0.0
-
-    assert gemm.calls == 2
-    assert gemm.block_threads == 256
-    assert gemm.registers == 32
-    assert gemm.waves == 1.5
-    assert gemm.tail_waste_pct == 25.0
+    assert [row.total_ms for row in rows] == sorted((row.total_ms for row in rows), reverse=True)
+    assert sum(row.calls for row in rows) == len(ran)
+    assert {row.name for row in rows} == {name for name, _, _ in ran}
+    for row in rows:
+        assert row.waves == row.blocks / sm_count
+        assert row.block_threads == 256
+        assert 0.0 <= row.tail_waste_pct < 100.0
+        assert (row.tail_waste_pct == 0.0) is float(row.waves).is_integer()
 
 
-def test_report_build_ranks_and_truncates_to_top() -> None:
-    kernels = [
-        _kernel("a", 100, grid="1x1x1"),
-        _kernel("b", 300, grid="1x1x1"),
-        _kernel("c", 200, grid="1x1x1"),
-    ]
+def test_the_report_keeps_only_the_hottest_rows() -> None:
+    """`build` ranks by total device time and truncates to `top`."""
+    kernels = [kernel(name, ns, grid="1x1x1") for name, ns in (("a", 100), ("b", 300), ("c", 200))]
     report = EfficiencyReport.build(kernels, sm_count=1, top=2)
     assert [row.name for row in report.rows] == ["b", "c"]
     assert report.sm_count == 1
 
 
-def test_achieved_bandwidth_is_zero_without_a_payload_or_any_device_time() -> None:
-    empty = EfficiencyReport(bytes_moved=10**9)
-    assert empty.achieved_gbs == 0.0
+@pytest.mark.parametrize(
+    ("report", "achieved_gbs", "utilisation_pct"),
+    [
+        (EfficiencyReport(bytes_moved=10**9), 0.0, 0.0),
+        (EfficiencyReport(rows=_ONE_ROW, bytes_moved=0, peak_bandwidth_gbs=2.0), 0.0, 0.0),
+        (EfficiencyReport(rows=_ONE_ROW, bytes_moved=10**9, peak_bandwidth_gbs=0.0), 1.0, 0.0),
+        (EfficiencyReport(rows=_ONE_ROW, bytes_moved=10**9, peak_bandwidth_gbs=2.0), 1.0, 50.0),
+    ],
+    ids=["no_device_time", "no_payload", "no_known_peak", "a_second_of_a_gigabyte"],
+)
+def test_achieved_bandwidth_is_the_payload_over_the_device_time(
+    report: EfficiencyReport, achieved_gbs: float, utilisation_pct: float
+) -> None:
+    """Bandwidth needs both a payload and some device time, and a score needs a known peak."""
+    assert report.achieved_gbs == achieved_gbs
+    assert report.bandwidth_utilisation_pct == utilisation_pct
 
-    row = KernelEfficiency(
-        name="k",
-        calls=1,
-        total_ms=1000.0,
-        blocks=1,
-        block_threads=1,
-        registers=0,
-        waves=1.0,
-        tail_waste_pct=0.0,
+
+@pytest.mark.parametrize("bytes_moved", [10**6, 0], ids=["with_a_payload", "without_a_payload"])
+def test_the_rendered_report_summarises_bandwidth_only_when_a_payload_is_known(
+    bytes_moved: int,
+) -> None:
+    """The table always lists the kernels, and the title scores bandwidth when it can."""
+    kernels = [kernel("relu_kernel", 100, grid="2x1x1", block="128x1x1")]
+    report = EfficiencyReport.build(
+        kernels, sm_count=1, peak_bandwidth_gbs=2.0, bytes_moved=bytes_moved
     )
-    no_payload = EfficiencyReport(rows=(row,), bytes_moved=0)
-    assert no_payload.achieved_gbs == 0.0
-
-
-def test_achieved_bandwidth_and_utilisation_from_a_known_payload() -> None:
-    row = KernelEfficiency(
-        name="k",
-        calls=1,
-        total_ms=1000.0,
-        blocks=1,
-        block_threads=1,
-        registers=0,
-        waves=1.0,
-        tail_waste_pct=0.0,
-    )
-    report = EfficiencyReport(rows=(row,), bytes_moved=10**9, peak_bandwidth_gbs=2.0)
-    assert report.total_ms == 1000.0
-    assert report.achieved_gbs == 1.0
-    assert report.bandwidth_utilisation_pct == 50.0
-
-
-def test_utilisation_is_zero_without_a_known_device_peak() -> None:
-    row = KernelEfficiency(
-        name="k",
-        calls=1,
-        total_ms=1000.0,
-        blocks=1,
-        block_threads=1,
-        registers=0,
-        waves=1.0,
-        tail_waste_pct=0.0,
-    )
-    report = EfficiencyReport(rows=(row,), bytes_moved=10**9, peak_bandwidth_gbs=0.0)
-    assert report.bandwidth_utilisation_pct == 0.0
-
-
-def test_rich_render_includes_the_bandwidth_summary_when_a_payload_is_known() -> None:
-    kernels = [_kernel("relu_kernel", 100, grid="2x1x1", block="128x1x1")]
-    report = EfficiencyReport.build(kernels, sm_count=1, peak_bandwidth_gbs=2.0, bytes_moved=10**6)
     text = render(report)
     assert "relu_kernel" in text
-    assert "GB/s achieved" in text
-
-
-def test_rich_render_omits_the_bandwidth_summary_without_a_payload() -> None:
-    kernels = [_kernel("relu_kernel", 100, grid="2x1x1", block="128x1x1")]
-    report = EfficiencyReport.build(kernels, sm_count=1)
-    text = render(report)
-    assert "relu_kernel" in text
-    assert "GB/s achieved" not in text
+    assert ("GB/s achieved" in text) is bool(bytes_moved)

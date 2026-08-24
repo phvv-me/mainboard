@@ -41,9 +41,15 @@ class Defaults(Declared):
     owned one ignores: the GPU type to rent, and the spend cap every provider
     backend refuses to submit without, declared once per host rather than
     retyped on every submit.
+
+    `interact_queue` is the one queue name a batch default cannot stand in for.
+    A site that routes interactive allocations somewhere else entirely (Miyabi
+    sends them to the parent `interact-g` router while every batch job goes to
+    a leaf) declares it here once, and `interact` uses it instead of `queue`.
     """
 
     queue: str = ""
+    interact_queue: str = ""
     walltime: str = "00:30:00"
     mem_gb: str = ""
     gpus: int = Field(default=0, ge=0)

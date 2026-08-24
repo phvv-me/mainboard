@@ -1,17 +1,19 @@
-from datetime import UTC, datetime
+from datetime import UTC
 from typing import TYPE_CHECKING
 
-from mainboard.observe import Frame, Kind, Spool
+import pytest
+
+from mainboard.observe import Kind, Spool
 from mainboard.observe.agentmain import Args, main, parse_args, wrap
+
+from .conftest import AT, ended, line
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from datetime import datetime
     from pathlib import Path
 
-    import pytest
     from pytest_subprocess import FakeProcess
-
-_AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _ticking(start: datetime, step: float) -> Iterator[datetime]:
@@ -22,108 +24,105 @@ def _ticking(start: datetime, step: float) -> Iterator[datetime]:
         moment = moment.fromtimestamp(moment.timestamp() + step, tz=UTC)
 
 
-def test_parse_args_defaults_to_a_bare_wrap_with_no_child() -> None:
-    assert parse_args([]) == Args(root="", job="", follow=False, from_offset=0, child=())
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        ([], Args(root="", job="", follow=False, from_offset=0, child=())),
+        (
+            ["--root", "/spool", "--job", "job1", "--follow", "--from-offset", "42", "--", "hi"],
+            Args(root="/spool", job="job1", follow=True, from_offset=42, child=("hi",)),
+        ),
+        (
+            ["--mystery", "--root", "/spool"],
+            Args(root="/spool", job="", follow=False, from_offset=0, child=()),
+        ),
+    ],
+)
+def test_parse_args_reads_every_flag_and_ignores_what_it_does_not_know(
+    argv: list[str], expected: Args
+) -> None:
+    """Everything after a literal `--` is the wrapped child, and nothing before it has to be."""
+    assert parse_args(argv) == expected
 
 
-def test_parse_args_reads_every_flag_and_the_child_argv() -> None:
-    args = parse_args(
-        [
-            "--root",
-            "/spool",
-            "--job",
-            "job1",
-            "--follow",
-            "--from-offset",
-            "42",
-            "--",
-            "echo",
-            "hi",
-        ]
-    )
-    assert args == Args(
-        root="/spool", job="job1", follow=True, from_offset=42, child=("echo", "hi")
-    )
+@pytest.mark.parametrize(
+    ("argv", "stdout", "code", "step", "interval", "kinds"),
+    [
+        (
+            ["echo", "hi"],
+            ["line one", "line two"],
+            0,
+            0.0,
+            1000.0,
+            [Kind.started, Kind.line, Kind.line, Kind.ended],
+        ),
+        (
+            ["stream"],
+            ["a", "b"],
+            0,
+            10.0,
+            5.0,
+            [Kind.started, Kind.line, Kind.sample, Kind.line, Kind.sample, Kind.ended],
+        ),
+        (["false"], [], 7, 0.0, 1000.0, [Kind.started, Kind.ended]),
+    ],
+)
+def test_wrap_spools_the_childs_output_its_rss_samples_and_its_exit_code(
+    tmp_path: Path,
+    fake_process: FakeProcess,
+    argv: list[str],
+    stdout: list[str],
+    code: int,
+    step: float,
+    interval: float,
+    kinds: list[Kind],
+) -> None:
+    """A sample lands only once the interval has really elapsed between two output lines."""
+    fake_process.register(argv, stdout=stdout, returncode=code)
+    clock = _ticking(AT, step)
+    with Spool(tmp_path, "job1") as spool:
+        returned = wrap(
+            spool,
+            argv,
+            sample_interval=interval,
+            now=lambda: next(clock),
+            rss=lambda pid: 12345,
+        )
+        frames = spool.frames_from(0)
+        status = spool.status()
+    assert returned == code
+    assert [frame.kind for frame in frames] == kinds
+    assert [frame.payload.get("text") for frame in frames if frame.kind is Kind.line] == stdout
+    assert all(frame.payload["rss"] == 12345 for frame in frames if frame.kind is Kind.sample)
+    assert frames[-1].payload["exit_code"] == code
+    assert status is not None
+    assert status["state"] == "ended"
 
 
-def test_parse_args_ignores_an_unrecognized_flag() -> None:
-    assert parse_args(["--mystery", "--root", "/spool"]) == Args(
-        root="/spool", job="", follow=False, from_offset=0, child=()
-    )
-
-
-def test_wrap_spools_output_lines_started_and_ended(
+def test_main_wraps_a_child_and_returns_its_exit_code(
     tmp_path: Path, fake_process: FakeProcess
 ) -> None:
-    fake_process.register(["echo", "hi"], stdout=["line one", "line two"], returncode=0)
-    clock = _ticking(_AT, 0.0)
-    spool = Spool(tmp_path, "job1")
-    code = wrap(
-        spool,
-        ["echo", "hi"],
-        sample_interval=1000.0,
-        now=lambda: next(clock),
-        rss=lambda pid: 0,
-    )
-    frames = spool.frames_from(0)
-    spool.close()
-    assert code == 0
-    assert [frame.kind for frame in frames] == [Kind.started, Kind.line, Kind.line, Kind.ended]
-    assert [frame.payload.get("text") for frame in frames if frame.kind is Kind.line] == [
-        "line one",
-        "line two",
-    ]
-    assert frames[-1].payload["exit_code"] == 0
-
-
-def test_wrap_records_a_nonzero_exit_code(tmp_path: Path, fake_process: FakeProcess) -> None:
-    fake_process.register(["false"], stdout=[], returncode=7)
-    spool = Spool(tmp_path, "job1")
-    code = wrap(spool, ["false"], now=lambda: _AT, rss=lambda pid: 0)
-    frames = spool.frames_from(0)
-    spool.close()
-    assert code == 7
-    assert frames[-1].payload["exit_code"] == 7
-
-
-def test_wrap_samples_rss_and_heartbeats_once_the_interval_elapses(
-    tmp_path: Path, fake_process: FakeProcess
-) -> None:
-    fake_process.register(["stream"], stdout=["a", "b", "c"], returncode=0)
-    clock = _ticking(_AT, 10.0)
-    spool = Spool(tmp_path, "job1")
-    wrap(spool, ["stream"], sample_interval=5.0, now=lambda: next(clock), rss=lambda pid: 12345)
-    samples = [frame for frame in spool.frames_from(0) if frame.kind is Kind.sample]
-    status = spool.status()
-    spool.close()
-    assert samples
-    assert all(sample.payload["rss"] == 12345 for sample in samples)
-    assert status is not None and status["state"] == "ended"
-
-
-def test_main_wrap_mode_runs_the_child_and_returns_its_exit_code(
-    tmp_path: Path, fake_process: FakeProcess
-) -> None:
+    """The wrap-and-run half of the entry point, spool opened and closed around the child."""
     fake_process.register(["echo", "hi"], stdout=["line one"], returncode=0)
-    code = main(["--root", str(tmp_path), "--job", "job1", "--", "echo", "hi"])
-    assert code == 0
-    reader = Spool(tmp_path, "job1")
-    frames = reader.frames_from(0)
-    reader.close()
-    assert [frame.kind for frame in frames] == [Kind.started, Kind.line, Kind.ended]
+    assert main(["--root", str(tmp_path), "--job", "job1", "--", "echo", "hi"]) == 0
+    with Spool(tmp_path, "job1") as reader:
+        assert [frame.kind for frame in reader.frames_from(0)] == [
+            Kind.started,
+            Kind.line,
+            Kind.ended,
+        ]
 
 
-def test_main_follow_mode_replays_and_prints_ndjson(
+def test_main_follow_mode_replays_the_spool_as_ndjson(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    writer = Spool(tmp_path, "job1")
-    writer.append(Frame(job="job1", kind=Kind.line, at=_AT, payload={"text": "a"}))
-    writer.append(Frame(job="job1", kind=Kind.ended, at=_AT, payload={"exit_code": 0}))
-    writer.heartbeat("ended")
-    writer.close()
+    """The read half, which is what a `StreamChannel` reads on the other end of an ssh exec."""
+    with Spool(tmp_path, "job1") as writer:
+        writer.append(line(text="a"))
+        writer.append(ended())
+        writer.heartbeat("ended")
 
-    code = main(["--root", str(tmp_path), "--job", "job1", "--follow", "--from-offset", "0"])
+    assert main(["--root", str(tmp_path), "--job", "job1", "--follow", "--from-offset", "0"]) == 0
     printed = capsys.readouterr().out
-    assert code == 0
     assert printed.count("\n") == 2
     assert '"kind":"ended"' in printed

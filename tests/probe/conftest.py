@@ -41,7 +41,7 @@ def isolate_unit_registries() -> Iterator[None]:
     appends it to the global GPU/NPU root list and a leaked subclass would leak
     into every later test's `GPU.all()`/`NPU.all()`."""
 
-    # `registry()` returns the nearest root's live list; snapshot a copy, restore in place.
+    # `registry()` returns the nearest root's live list, so snapshot a copy and restore in place.
     saved_gpu = list(GPU.registry())
     saved_npu = list(NPU.registry())
     yield
@@ -231,28 +231,40 @@ class FakeNvidiaApis:
         return self.cuda_device_type is not None
 
 
-@pytest.fixture
-def nvidia_host(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNvidiaApis]:
-    """Replace the cached CUDA/NVML stack with deterministic fakes."""
-    apis = FakeNvidiaApis()
-    nvidia_apis_module.nvidia_apis.cache_clear()
-    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
-    yield apis
+class FakeSensorlessDevice:
+    """A `cuda.core` device whose memory sensor refuses, the shape a device without it reports."""
+
+    memory_info = property(raise_unsupported)
+
+
+class InstallNvidiaStack(Protocol):
+    """Install a fake CUDA/NVML stack for this test and hand it back."""
+
+    def __call__(
+        self, *, device_count: int = 2, has_cuda_core: bool = True, coherent: bool = False
+    ) -> FakeNvidiaApis: ...
 
 
 @pytest.fixture
-def nvidia_host_no_cuda_core(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNvidiaApis]:
-    """A CUDA stack without the optional `cuda.core` layer, exercising NVML-only paths."""
-    apis = FakeNvidiaApis(has_cuda_core=False)
-    nvidia_apis_module.nvidia_apis.cache_clear()
-    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
-    yield apis
+def install_nvidia_stack(monkeypatch: pytest.MonkeyPatch) -> InstallNvidiaStack:
+    """Build the fake CUDA/NVML stack a test asks for and put it behind the cached accessor.
+
+    The three axes are the ones the provider branches on, how many devices are visible, whether
+    the optional `cuda.core` layer loaded, and whether the device reports a coherent pool.
+    """
+
+    def install(
+        *, device_count: int = 2, has_cuda_core: bool = True, coherent: bool = False
+    ) -> FakeNvidiaApis:
+        apis = FakeNvidiaApis(device_count, has_cuda_core=has_cuda_core, coherent=coherent)
+        nvidia_apis_module.nvidia_apis.cache_clear()
+        monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
+        return apis
+
+    return install
 
 
 @pytest.fixture
-def nvidia_coherent_host(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeNvidiaApis]:
-    """A CUDA stack whose device reports the Grace-Hopper coherent-pool attributes."""
-    apis = FakeNvidiaApis(coherent=True)
-    nvidia_apis_module.nvidia_apis.cache_clear()
-    monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
-    yield apis
+def nvidia_host(install_nvidia_stack: InstallNvidiaStack) -> FakeNvidiaApis:
+    """The default fake stack, two discrete devices with the optional `cuda.core` layer."""
+    return install_nvidia_stack()

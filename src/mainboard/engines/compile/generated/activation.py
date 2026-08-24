@@ -1,24 +1,36 @@
 import os
 import shlex
+from functools import cache
 from typing import TYPE_CHECKING
-
-from jinja2 import Environment as Jinja
-from jinja2 import PackageLoader
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-# Shell templates ship as package data so they stay diffable and shellcheck-able. Autoescaping
-# is a jinja2 default meant for HTML/XML output, but this template renders bash, where escaping
-# `&` `<` `>` into HTML entities would corrupt the script, so it is off on purpose.
-_TEMPLATES = Jinja(
-    loader=PackageLoader("mainboard.engines.compile"),
-    autoescape=False,  # ruff:ignore[jinja2-autoescape-false]
-    keep_trailing_newline=True,
-    trim_blocks=True,
-    lstrip_blocks=True,
-)
+    from jinja2 import Environment
+
+
+@cache
+def _templates() -> Environment:
+    """The shell templates shipped as package data, loaded on the first render.
+
+    They ship as data so they stay diffable and shellcheck-able. Autoescaping is a jinja2 default
+    meant for HTML/XML output, but this template renders bash, where escaping `&` `<` `>` into
+    HTML entities would corrupt the script, so it is off on purpose.
+
+    Built here rather than at import because jinja2 is 6 ms of a cold start that this package's
+    console entry point pays on every command, and only an install writes an activation.
+    """
+    from jinja2 import Environment, PackageLoader
+
+    return Environment(
+        loader=PackageLoader("mainboard.engines.compile"),
+        autoescape=False,  # ruff:ignore[jinja2-autoescape-false]
+        keep_trailing_newline=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+
 
 # Where Lmod / environment-modules drops its shell init. The first that exists wins, and on a
 # host without modules (a laptop, gold) none exist and module setup degrades to a harmless no-op.
@@ -73,14 +85,18 @@ class ActivationScript:
         purges whatever stack the surrounding job had loaded.
         """
         specs = shlex.join(f"{name}/{version}" for name, version in modules.items())
-        return _TEMPLATES.get_template("activate.sh.j2").render(
-            module_init=module_init_snippet(),
-            modules=specs,
-            hook=self.hook.strip(),
-            binaries=os.pathsep.join(shlex.quote(str(path)) for path in self.binaries),
+        return (
+            _templates()
+            .get_template("activate.sh.j2")
+            .render(
+                module_init=module_init_snippet(),
+                modules=specs,
+                hook=self.hook.strip(),
+                binaries=os.pathsep.join(shlex.quote(str(path)) for path in self.binaries),
+            )
         )
 
     def write(self, modules: Mapping[str, str]) -> Path:
         """Write the `activate.sh` loading ``modules`` to :attr:`path` and return it."""
-        self.path.write_text(self.render(modules))
+        self.path.write_text(self.render(modules), encoding="utf-8")
         return self.path

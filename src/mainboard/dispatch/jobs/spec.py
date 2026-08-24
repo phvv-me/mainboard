@@ -3,23 +3,37 @@
 # templates under `templates/`.
 
 import shlex
+from functools import cache
+from typing import TYPE_CHECKING
 
-from jinja2 import Environment, PackageLoader
 from patos import FrozenModel
 
 from ...context.plan import ExecutionPlan
 from ..shared import state_dir
 from ..wrapping import activation_stage
 
-# The job script templates shipped with the package. `trim_blocks`/`lstrip_blocks` make the
-# `{% %}` control lines vanish from the rendered shell text; `keep_trailing_newline` keeps the
-# scripts newline-terminated like any shell file.
-_TEMPLATES = Environment(  # ruff:ignore[jinja2-autoescape-false]  reason=renders shell scripts, not HTML; autoescape would corrupt them since=2026-08-16
-    loader=PackageLoader(__package__, "templates"),
-    keep_trailing_newline=True,
-    trim_blocks=True,
-    lstrip_blocks=True,
-)
+if TYPE_CHECKING:
+    from jinja2 import Environment
+
+
+@cache
+def _templates() -> Environment:
+    """The job script templates shipped with the package, loaded on the first render.
+
+    `trim_blocks`/`lstrip_blocks` make the `{% %}` control lines vanish from the rendered shell
+    text; `keep_trailing_newline` keeps the scripts newline-terminated like any shell file.
+
+    Built here rather than at import because jinja2 is 6 ms of a cold start that this package's
+    console entry point pays on every command, and only a dispatch renders a job script.
+    """
+    from jinja2 import Environment, PackageLoader
+
+    return Environment(  # ruff:ignore[jinja2-autoescape-false]  reason=renders shell scripts, not HTML; autoescape would corrupt them since=2026-08-16
+        loader=PackageLoader("mainboard.dispatch.jobs", "templates"),
+        keep_trailing_newline=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
 
 
 class JobSpec(FrozenModel):
@@ -47,6 +61,10 @@ class JobSpec(FrozenModel):
         caller that deliberately relies on it.
     container_command: a preformatted shell command that already wraps the inner `cmd` in a
         container runtime invocation; when set, the body runs this instead of a bare `bash -c`.
+    sampler: a preformatted shell line the script runs before the command, for a host that
+        watches itself while the job runs. Opaque text here on purpose, since a job script is
+        the one place that decision can be carried onto a machine that is not this one, and
+        rendering it is not the same as knowing what it says.
     """
 
     cmd: str
@@ -61,6 +79,7 @@ class JobSpec(FrozenModel):
     pythonpath: str = ""
     isolate_pythonpath: bool = True
     container_command: str = ""
+    sampler: str = ""
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
         """The job script text: a full PBS script when `pbs`, else a bash wrapper.
@@ -82,7 +101,7 @@ class JobSpec(FrozenModel):
                 "a PBS job needs an explicit walltime; resolve one from the host's queue "
                 "defaults before rendering"
             )
-        template = _TEMPLATES.get_template("pbs_job.sh.j2" if pbs else "bash_job.sh.j2")
+        template = _templates().get_template("pbs_job.sh.j2" if pbs else "bash_job.sh.j2")
         ngpus = f":ngpus={self.gpus}" if self.gpus and gpu_in_select else ""
         mem = f":mem={self.mem_gb}gb" if self.mem_gb else ""
         chunk = f"select={self.select}{ngpus}{mem}"
@@ -97,6 +116,7 @@ class JobSpec(FrozenModel):
             isolate_pythonpath=self.isolate_pythonpath,
             activation=activation_stage(self.plan, self.root),
             container_command=self.container_command,
+            sampler=self.sampler,
             state_dir=state_dir(),
         )
 

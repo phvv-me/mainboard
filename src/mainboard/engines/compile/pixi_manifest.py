@@ -103,19 +103,43 @@ def spec_toml(spec: Spec) -> Toml:
     return {**named, **extra}
 
 
-def dependency_tables(scope: Scope) -> dict[str, Toml]:
+def layered(declared: dict[str, Spec], over: dict[str, Spec]) -> dict[str, Spec]:
+    """Each requirement layered over the one it shadows, the way `Spec.merged` layers a scope.
+
+    A pixi `[target]` dependency replaces its scope's own rather than narrowing it, so an
+    overlay entry has to arrive already carrying whatever the scope said about that package.
+    Otherwise `python = "*"` beside a declared `python = ">=3.14.6,<3.15"` reads as "python is
+    present on this platform too" and compiles to "any python at all here", which is how a floor
+    a workspace states once stops reaching one platform and lets that target's solve drift onto
+    an interpreter nobody asked for.
+
+    declared: the overlay's own requirements.
+    over: the requirements it shadows, empty for a scope that overlays nothing.
+    """
+    return {
+        name: spec.merged(over[name]) if name in over else spec for name, spec in declared.items()
+    }
+
+
+def dependency_tables(scope: Scope, *, over: Scope | None = None) -> dict[str, Toml]:
     """Compile one scope's conda and Python dependencies into Pixi dependency tables.
 
     Only the `python` ecosystem is understood beyond conda deps, mainboard's own
     simplification, python+conda through pixi for now, every other declared ecosystem table
     (`nodejs`, `rust`, ...) rides in the manifest but is not yet translated.
+
+    over: the scope this one overlays, when it compiles into a `[target]` table rather than
+        standing on its own. See `layered` for why an overlay must not be compiled bare.
     """
-    dependencies = {name: spec_toml(spec) for name, spec in scope.deps.items()}
+    shadowed = over.deps if over else {}
+    dependencies = {name: spec_toml(spec) for name, spec in layered(scope.deps, shadowed).items()}
     tables: dict[str, Toml] = {"dependencies": dependencies} if dependencies else {}
     python: Toolchain | None = scope.toolchains().get("python")
     if python and python.all_deps():
+        inherited: Toolchain | None = over.toolchains().get("python") if over else None
+        requirements = layered(python.all_deps(), inherited.all_deps() if inherited else {})
         tables["pypi-dependencies"] = {
-            name: spec_toml(spec) for name, spec in python.all_deps().items()
+            name: spec_toml(spec) for name, spec in requirements.items()
         }
     return tables
 
@@ -210,7 +234,7 @@ class PixiManifest(FrozenModel):
         target = {
             platform: tables
             for platform, scope in env.on.items()
-            if (tables := dependency_tables(scope))
+            if (tables := dependency_tables(scope, over=env))
         }
         if target:
             body["target"] = target
@@ -289,7 +313,7 @@ class PixiManifest(FrozenModel):
             "activation": cls.activation_table(m),
             **dependency_tables(m),
             **({_PYPI_OPTIONS: options} if (options := pypi_options(m)) else {}),
-            "target": {plat: dependency_tables(scope) for plat, scope in m.on.items()},
+            "target": {plat: dependency_tables(scope, over=m) for plat, scope in m.on.items()},
             "feature": feature,
             "environments": environments,
             "tasks": {name: cls.task(spec) for name, spec in m.tasks.items()},

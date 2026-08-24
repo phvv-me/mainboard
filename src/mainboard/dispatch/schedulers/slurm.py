@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 from patos import Model
 
 from ..shared import state_dir
-from .base import JobState, Resources, drain_log, poll_until_done, read_log, stream_until_done
+from ..vocabulary import JobState, Resources
+from .base import read_log
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -143,27 +144,12 @@ def parse_sacct_output(output: str, *, job_id: str) -> SlurmJob | None:
     return None
 
 
-def build_sinfo_command() -> list[str]:
-    """Build a `sinfo` command listing one partition name per line."""
-    return ["sinfo", "--noheader", "--format=%P"]
-
-
-def parse_sinfo_output(output: str) -> list[str]:
-    """Partition names from `build_sinfo_command` output, default marker stripped, deduplicated."""
-    partitions: list[str] = []
-    for line in output.splitlines():
-        name = line.strip().removesuffix("*")
-        if name and name not in partitions:
-            partitions.append(name)
-    return partitions
-
-
-def build_sbatch_flags(resources: Resources, script: str) -> list[str]:
-    """Render `resources` as `sbatch` flags, including the output sink and the script itself.
+def build_resource_flags(resources: Resources) -> list[str]:
+    """Render `resources` as the allocation flags `sbatch` and `srun` both take.
 
     `gpus` is only emitted when set, so CPU-only jobs run on clusters without GPU GRES.
     """
-    flags: list[str] = ["sbatch", f"--output={_LOG_TEMPLATE}"]
+    flags: list[str] = []
     if resources.gpus:
         flags.append(f"--gpus={resources.gpus}")
     if resources.walltime is not None:
@@ -174,8 +160,12 @@ def build_sbatch_flags(resources: Resources, script: str) -> list[str]:
         flags.append(f"--account={resources.account}")
     if resources.mem_gb is not None:
         flags.append(f"--mem={resources.mem_gb}G")
-    flags.append(script)
     return flags
+
+
+def build_sbatch_flags(resources: Resources, script: str) -> list[str]:
+    """Render `resources` as `sbatch` flags, including the output sink and the script itself."""
+    return ["sbatch", f"--output={_LOG_TEMPLATE}", *build_resource_flags(resources), script]
 
 
 def _extract_job_id(output: str) -> str:
@@ -205,29 +195,19 @@ class Slurm:
         del root
         remote["bash"][["-lc", f"scancel {shlex.quote(handle)}"]](retcode=None)
 
-    def jobs(self, remote: Machine, root: str) -> list[JobState]:
-        del root
-        output = self.__cluster_command(remote, build_squeue_command(me=True))
-        return [
-            JobState(
-                handle=job.job_id,
-                label=job.name,
-                state=str(job.state),
-                verdict=slurm_verdict(job.state, None),
-            )
-            for job in parse_squeue_output(output)
-        ]
+    def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
+        """An interactive SLURM allocation, `srun --pty` under the batch allocation flags.
+
+        Unlike PBS, `srun` takes the command to run on the allocated node, so a probe rides the
+        same allocation an empty command hands a login shell. The environment is activated from
+        inside the session, since nothing this side of `srun` runs on the allocated node.
+        """
+        del env
+        shell = ["bash", "-l"]
+        return shlex.join(["srun", "--pty", *build_resource_flags(resources), *(command or shell)])
 
     def logs(self, remote: Machine, root: str, *, handle: str) -> str:
         return read_log(remote, root, handle=handle)
-
-    def queues(self, remote: Machine, root: str) -> list[str]:
-        del root
-        return parse_sinfo_output(self.__cluster_command(remote, build_sinfo_command()))
-
-    def revive(self, remote: Machine, root: str) -> list[str]:
-        del remote, root
-        raise SystemExit("a SLURM scheduler is site-managed; there is no daemon to revive")
 
     def state(self, remote: Machine, root: str, *, handle: str) -> JobState:
         del root
@@ -243,14 +223,24 @@ class Slurm:
         )
 
     def states(self, remote: Machine, root: str, handles: Sequence[str]) -> dict[str, JobState]:
-        del handles
-        return {job.handle: job for job in self.jobs(remote, root)}
+        """Every job `squeue` still lists for this user, keyed by handle.
 
-    def stream(self, remote: Machine, root: str, *, handle: str) -> JobState:
-        return stream_until_done(
-            lambda: self.state(remote, root, handle=handle),
-            lambda offset: drain_log(remote, root, handle=handle, offset=offset),
-        )
+        One listing covers the whole cluster's live jobs, so a caller holding many handles on
+        this host pays a single round trip. A handle `squeue` no longer carries is left absent,
+        since only `sacct` knows how a finished job ended, and the caller falls back to the
+        per-handle `state` for it.
+        """
+        del root, handles
+        output = self.__cluster_command(remote, build_squeue_command(me=True))
+        return {
+            job.job_id: JobState(
+                handle=job.job_id,
+                label=job.name,
+                state=str(job.state),
+                verdict=slurm_verdict(job.state, None),
+            )
+            for job in parse_squeue_output(output)
+        }
 
     def submit(
         self,
@@ -270,9 +260,6 @@ class Slurm:
                 f"sbatch failed (rc={retcode}): {(err or out).strip()[-400:] or '(no output)'}"
             )
         return handle
-
-    def wait(self, remote: Machine, root: str, *, handle: str) -> JobState:
-        return poll_until_done(lambda: self.state(remote, root, handle=handle))
 
     def __cluster_command(self, remote: Machine, command: list[str]) -> str:
         """Run a built `squeue`/`sacct`/`sinfo` argv under a login shell, returning its stdout."""

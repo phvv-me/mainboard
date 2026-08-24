@@ -10,6 +10,7 @@ from .schema.scope import Scope
 from .schema.spec import Spec
 from .schema.template import Template
 from .schema.toolchain import Toolchain
+from .schema.tracking import Tracking, TrackingMode
 from .schema.workspace import Header
 
 __all__ = [
@@ -29,5 +30,7 @@ __all__ = [
     "Sync",
     "Template",
     "Toolchain",
+    "Tracking",
+    "TrackingMode",
     "load",
 ]

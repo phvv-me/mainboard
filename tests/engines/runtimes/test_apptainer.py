@@ -1,68 +1,84 @@
 from collections.abc import Callable
 
+import pytest
+
 from mainboard.engines import Apptainer
 from mainboard.manifest import Container, Guardrail
 
-
-def test_is_available_accepts_either_apptainer_or_singularity(which: Callable[..., None]) -> None:
-    which()
-    assert not Apptainer.is_available()
-    which("singularity")
-    assert Apptainer.is_available()
-    which("apptainer")
-    assert Apptainer.is_available()
+_IMAGE = "nvcr.io/nvidia/pytorch:25.06-py3"
 
 
-def test_launcher_prefers_apptainer_over_the_singularity_alias(
+@pytest.mark.parametrize(
+    ("installed", "available", "launcher"),
+    [
+        pytest.param((), False, "apptainer", id="a-host-shipping-neither"),
+        pytest.param(("singularity",), True, "singularity", id="only-the-legacy-alias"),
+        pytest.param(("apptainer",), True, "apptainer", id="only-the-maintained-successor"),
+        pytest.param(
+            ("apptainer", "singularity"), True, "apptainer", id="both-prefers-the-successor"
+        ),
+    ],
+)
+def test_either_apptainer_or_its_singularity_alias_makes_a_host_usable(
+    installed: tuple[str, ...],
+    launcher: str,
     which: Callable[..., None],
+    *,
+    available: bool,
 ) -> None:
-    which()
-    assert Apptainer.launcher() == "apptainer"
-    which("singularity")
-    assert Apptainer.launcher() == "singularity"
-    which("apptainer", "singularity")
-    assert Apptainer.launcher() == "apptainer"
+    """Apptainer is the maintained successor of Singularity and stays command-line compatible
+    with it, so a host that only ships the legacy binary is still usable."""
+    which(*installed)
+    assert Apptainer.is_available() is available
+    assert Apptainer.launcher() == launcher
 
 
-def test_command_with_gpu_binds_workdir_passthrough_and_guardrail(
-    which: Callable[..., None],
+@pytest.mark.parametrize(
+    ("container", "argv"),
+    [
+        pytest.param(
+            Container(
+                image=_IMAGE,
+                binds=["/scratch"],
+                workdir="/workspace",
+                passthrough=["HF_TOKEN"],
+                guardrails=[Guardrail.UNSET_PIP_CONSTRAINT],
+            ),
+            [
+                "apptainer",
+                "exec",
+                "--nv",
+                "--bind",
+                "/scratch",
+                "--bind",
+                "/host/prefix:/prefix",
+                "--pwd",
+                "/workspace",
+                "--env",
+                "HF_TOKEN",
+                _IMAGE,
+                "env",
+                "-u",
+                "PIP_CONSTRAINT",
+                "python",
+                "run.py",
+            ],
+            id="gpu-binds-workdir-passthrough-and-a-guardrail",
+        ),
+        pytest.param(
+            Container(image=_IMAGE, gpus=False, guardrails=[]),
+            ["apptainer", "exec", "--bind", "/host/prefix:/prefix", _IMAGE, "python", "run.py"],
+            id="nothing-declared-beyond-the-image",
+        ),
+    ],
+)
+def test_the_launcher_argv_wraps_the_command_in_what_the_container_declared(
+    container: Container, argv: list[str], which: Callable[..., None]
 ) -> None:
+    """No runtime flag can unset a variable baked into the image, so `UNSET_PIP_CONSTRAINT` is
+    enforced by wrapping the exec'd command in a plain `env -u`."""
     which()
-    container = Container(
-        image="nvcr.io/nvidia/pytorch:25.06-py3",
-        binds=["/scratch"],
-        workdir="/workspace",
-        passthrough=["HF_TOKEN"],
-        guardrails=[Guardrail.UNSET_PIP_CONSTRAINT],
+    assert (
+        Apptainer.command(container, prefix_bind="/host/prefix:/prefix", argv=["python", "run.py"])
+        == argv
     )
-    argv = Apptainer.command(
-        container, prefix_bind="/host/prefix:/prefix", argv=["python", "run.py"]
-    )
-    assert argv == [
-        "apptainer",
-        "exec",
-        "--nv",
-        "--bind",
-        "/scratch",
-        "--bind",
-        "/host/prefix:/prefix",
-        "--pwd",
-        "/workspace",
-        "--env",
-        "HF_TOKEN",
-        "nvcr.io/nvidia/pytorch:25.06-py3",
-        "env",
-        "-u",
-        "PIP_CONSTRAINT",
-        "python",
-        "run.py",
-    ]
-
-
-def test_command_without_gpu_workdir_passthrough_or_guardrails(
-    which: Callable[..., None],
-) -> None:
-    which()
-    container = Container(image="x", gpus=False, guardrails=[])
-    argv = Apptainer.command(container, prefix_bind="p:p", argv=["echo", "hi"])
-    assert argv == ["apptainer", "exec", "--bind", "p:p", "x", "echo", "hi"]

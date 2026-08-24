@@ -3,6 +3,20 @@ import pytest
 from mainboard.profile import Activity, CallbackSession, TraceCollector, Tracer, Vendor
 
 
+class SupportingTracer(Tracer):
+    """A tracer reporting a fixed KERNEL|MEMCPY support set, to exercise `resolve`."""
+
+    def supported(self) -> Activity:
+        return Activity.KERNEL | Activity.MEMCPY
+
+
+class FullTracer(Tracer):
+    """A tracer that supports every activity kind, so `ALL` needs no adaptation."""
+
+    def supported(self) -> Activity:
+        return Activity.ALL
+
+
 def test_tracer_base_is_an_unavailable_noop() -> None:
     """The base tracer annotates nothing, supports nothing, and is never available."""
     tracer = Tracer()
@@ -10,54 +24,51 @@ def test_tracer_base_is_an_unavailable_noop() -> None:
     tracer.push("x")
     tracer.pop()
     tracer.mark("x")
+    tracer.start("x")()
     assert tracer.supported() == Activity(0)
     assert isinstance(tracer.timestamp(), int)
     assert isinstance(tracer.collect(), TraceCollector)
     assert isinstance(tracer.callbacks(), CallbackSession)
 
 
-def test_tracer_resolve_passes_through_when_unsupported() -> None:
-    """With no device support, resolve trusts the caller rather than dropping kinds."""
-    assert Tracer().resolve(Activity.KERNEL) == Activity.KERNEL
+@pytest.mark.parametrize(
+    ("tracer", "kinds", "expected"),
+    [
+        (Tracer(), Activity.KERNEL, Activity.KERNEL),
+        (SupportingTracer(), Activity.ALL, Activity.KERNEL | Activity.MEMCPY),
+        (FullTracer(), Activity.ALL, Activity.ALL),
+        (SupportingTracer(), Activity.KERNEL, Activity.KERNEL),
+    ],
+    ids=["no_support_trusts_the_caller", "all_adapts_down", "all_when_nothing_drops", "explicit"],
+)
+def test_tracer_resolve_adapts_all_and_passes_explicit_kinds_through(
+    tracer: Tracer, kinds: Activity, expected: Activity
+) -> None:
+    """`ALL` means whatever the device offers, and a supported explicit request is kept.
 
-
-class _SupportingTracer(Tracer):
-    """A tracer reporting a fixed support set, to exercise `resolve`."""
-
-    def supported(self) -> Activity:
-        return Activity.KERNEL | Activity.MEMCPY
-
-
-def test_tracer_resolve_adapts_all_to_supported() -> None:
-    """`Activity.ALL` adapts down to exactly what the device supports."""
-    assert _SupportingTracer().resolve(Activity.ALL) == (Activity.KERNEL | Activity.MEMCPY)
-
-
-def test_tracer_resolve_all_with_full_support() -> None:
-    class FullTracer(Tracer):
-        def supported(self) -> Activity:
-            return Activity.ALL
-
-    assert FullTracer().resolve(Activity.ALL) is Activity.ALL
+    A backend reporting no support at all is not second-guessed, since the no-op base has
+    no deep trace to reconcile against.
+    """
+    assert tracer.resolve(kinds) == expected
 
 
 def test_tracer_resolve_fails_fast_on_explicit_unsupported_kind() -> None:
     """An explicit unsupported kind is an error, not a silent omission."""
     with pytest.raises(ValueError, match="not supported"):
-        _SupportingTracer().resolve(Activity.MEMORY)
+        SupportingTracer().resolve(Activity.MEMORY)
 
 
-def test_tracer_detect_with_no_backend_available_is_the_no_op_base(
+def test_tracer_detect_prefers_a_matching_vendor_then_anything_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`detect` returns the no-op base when no backend library is available."""
-    monkeypatch.setattr(Tracer, "registry", classmethod(lambda cls: [Tracer]))
-    assert type(Tracer.detect()) is Tracer
+    """Detection prefers a backend for a vendor on this host, and falls back to the no-op base.
 
+    An annotation library remains useful even when its vendor is not in `present`, so an
+    available backend is still chosen over annotating nothing. Both stand-ins are declared
+    inside the test because a `Tracer` subclass registers itself for the life of the
+    process, and one that claims to be available would then be detected by every other test.
+    """
 
-def test_tracer_detect_prefers_a_backend_matching_present_vendor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     class MatchingTracer(Tracer):
         vendor = Vendor.NVIDIA
 
@@ -65,19 +76,16 @@ def test_tracer_detect_prefers_a_backend_matching_present_vendor(
         def is_available(cls) -> bool:
             return True
 
-    monkeypatch.setattr(Tracer, "registry", classmethod(lambda cls: [MatchingTracer]))
-    assert isinstance(Tracer.detect(present=frozenset({"nvidia"})), MatchingTracer)
-
-
-def test_tracer_detect_uses_available_backend_without_matching_vendor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An annotation library remains useful even when its vendor is not in `present`."""
-
     class AvailableTracer(Tracer):
         @classmethod
         def is_available(cls) -> bool:
             return True
 
-    monkeypatch.setattr(Tracer, "registry", classmethod(lambda cls: [AvailableTracer]))
-    assert isinstance(Tracer.detect(present=frozenset()), AvailableTracer)
+    cases = [
+        ([Tracer], frozenset[str](), Tracer),
+        ([MatchingTracer], frozenset({"nvidia"}), MatchingTracer),
+        ([AvailableTracer], frozenset({"nvidia"}), AvailableTracer),
+    ]
+    for registered, present, expected in cases:
+        monkeypatch.setattr(Tracer, "registry", classmethod(lambda cls, found=registered: found))
+        assert type(Tracer.detect(present=present)) is expected

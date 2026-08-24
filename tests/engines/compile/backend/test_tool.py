@@ -20,6 +20,13 @@ class _EchoTool(Tool):
     name = "echo"
 
 
+class _Unavailable(_EchoTool):
+    """A tool whose guard says this workspace has no business running it."""
+
+    def available(self) -> bool:
+        return False
+
+
 def test_flags_convert_keyword_options_to_cli_args() -> None:
     assert Tool.flags(resolve=True, feature="serving", skip=False, empty="", extra=None) == [
         "--resolve",
@@ -28,20 +35,17 @@ def test_flags_convert_keyword_options_to_cli_args() -> None:
     ]
 
 
-def test_command_raises_without_a_declared_name() -> None:
-    with pytest.raises(MissionError, match="names no command"):
-        _ = Tool().command
-
-
-def test_command_resolves_the_declared_binary() -> None:
-    assert str(_EchoTool().command) == _ECHO
-
-
-def test_scope_and_cwd_default_to_nothing() -> None:
+def test_a_tool_names_the_binary_it_runs_and_pins_nothing_by_default() -> None:
+    """A backend running through another tool names no binary, so the name is required at the
+    one boundary that needs it rather than of every subclass."""
     tool = _EchoTool()
+    assert str(tool.command) == _ECHO
     assert tool.scope() == ()
     assert tool.cwd() is None
     assert tool.available() is True
+
+    with pytest.raises(MissionError, match="names no command"):
+        _ = Tool().command
 
 
 def test_within_cwd_runs_in_the_declared_directory(tmp_path: Path) -> None:
@@ -54,34 +58,23 @@ def test_within_cwd_runs_in_the_declared_directory(tmp_path: Path) -> None:
     assert seen == [str(tmp_path)]
 
 
-def test_call_is_a_noop_when_unavailable(fp: FakeProcess) -> None:
-    class _Unavailable(_EchoTool):
-        def available(self) -> bool:
-            return False
+def test_a_failed_run_raises_or_preserves_its_code_depending_on_who_asked(
+    fp: FakeProcess,
+) -> None:
+    """Raising keeps a failed install from being reported as green, while a transparent
+    passthrough has to exit with whatever the wrapped command exited."""
+    fp.register([_ECHO, "hi"], returncode=0)
+    assert _EchoTool()("hi") is None
 
-    _Unavailable()("hi")
-    assert not fp.calls
-
-
-def test_call_raises_on_failure(fp: FakeProcess) -> None:
     fp.register([_ECHO, "hi"], returncode=1)
     with pytest.raises(MissionError, match="`echo hi` failed"):
         _EchoTool()("hi")
 
-
-def test_call_succeeds_silently(fp: FakeProcess) -> None:
-    fp.register([_ECHO, "hi"], returncode=0)
-    assert _EchoTool()("hi") is None
-
-
-def test_exit_code_is_zero_when_unavailable() -> None:
-    class _Unavailable(_EchoTool):
-        def available(self) -> bool:
-            return False
-
-    assert _Unavailable().exit_code("hi") == 0
-
-
-def test_exit_code_preserves_the_real_code(fp: FakeProcess) -> None:
     fp.register([_ECHO, "hi"], returncode=9)
     assert _EchoTool().exit_code("hi") == 9
+
+
+def test_an_unavailable_tool_runs_nothing_and_reports_success(fp: FakeProcess) -> None:
+    _Unavailable()("hi")
+    assert _Unavailable().exit_code("hi") == 0
+    assert not fp.calls

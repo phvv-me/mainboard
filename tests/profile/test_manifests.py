@@ -17,85 +17,103 @@ def _dict(value: Json) -> dict[str, Json]:
     return value
 
 
-def _list(value: Json) -> list[Json]:
-    """Narrow one `Json` value to a list, for asserting into a nested render() result."""
-    assert isinstance(value, list)
-    return value
+def _body(manifest: MergeManifest) -> dict[str, Json]:
+    """The `perfetto_manifest` body of a rendered document."""
+    return _dict(manifest.render()["perfetto_manifest"])
 
 
-def test_trace_source_renders_path_and_machine() -> None:
-    source = TraceSource(path="/traces/host.perfetto-trace", machine_name="gold")
-    assert source.render() == {
-        "path": "/traces/host.perfetto-trace",
-        "machine": {"name": "gold"},
-    }
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            TraceSource(path="/traces/host.perfetto-trace", machine_name="gold"),
+            {"path": "/traces/host.perfetto-trace", "machine": {"name": "gold"}},
+        ),
+        (
+            TraceSource(
+                path="/traces/gpu.perfetto-trace",
+                machine_name="gold-gpu",
+                clock="BOOTTIME",
+                sync_to_path="/traces/host.perfetto-trace",
+            ),
+            {
+                "path": "/traces/gpu.perfetto-trace",
+                "machine": {"name": "gold-gpu"},
+                "clocks": {
+                    "sync_to": {"file": "/traces/host.perfetto-trace", "clock": "BOOTTIME"}
+                },
+            },
+        ),
+        (
+            TraceSource(
+                path="/traces/a.perfetto-trace",
+                machine_name="a",
+                clock="BOOTTIME",
+                sync_to_path="/traces/b.perfetto-trace",
+                offset_ns=500,
+            ),
+            {
+                "path": "/traces/a.perfetto-trace",
+                "machine": {"name": "a"},
+                "clocks": {
+                    "sync_to": {"file": "/traces/b.perfetto-trace", "clock": "BOOTTIME"},
+                    "offset_ns": 500,
+                },
+            },
+        ),
+    ],
+    ids=["already_on_the_reference_clock", "aligned_to_another_trace", "aligned_with_a_skew"],
+)
+def test_a_source_renders_its_path_machine_and_clock_alignment(
+    source: TraceSource, expected: dict[str, Json]
+) -> None:
+    """Clock alignment appears only when stated, and a zero skew is left out entirely."""
+    assert source.render() == expected
 
 
-def test_trace_source_renders_clock_sync_when_given() -> None:
-    source = TraceSource(
-        path="/traces/gpu.perfetto-trace",
-        machine_name="gold-gpu",
-        clock="BOOTTIME",
-        sync_to_path="/traces/host.perfetto-trace",
-    )
-    rendered = source.render()
-    assert rendered["clocks"] == {
-        "sync_to": {"file": "/traces/host.perfetto-trace", "clock": "BOOTTIME"}
-    }
+@pytest.mark.parametrize(
+    ("manifest", "files", "attributes"),
+    [
+        (MergeManifest(), [], None),
+        (
+            MergeManifest(
+                sources=(TraceSource(path="/traces/a.perfetto-trace", machine_name="a"),)
+            ),
+            [{"path": "/traces/a.perfetto-trace", "machine": {"name": "a"}}],
+            None,
+        ),
+        (
+            MergeManifest(
+                sources=(TraceSource(path="/traces/a.perfetto-trace", machine_name="a"),),
+                attributes={"job": "run-42"},
+            ),
+            [{"path": "/traces/a.perfetto-trace", "machine": {"name": "a"}}],
+            {"job": "run-42"},
+        ),
+    ],
+    ids=["no_sources", "one_source", "labelled_merge"],
+)
+def test_the_manifest_renders_the_version_one_shape(
+    manifest: MergeManifest, files: list[Json], attributes: dict[str, str] | None
+) -> None:
+    """Every document states version one and its files, and labels only when it has some."""
+    body = _body(manifest)
+    assert body["version"] == 1
+    assert body["files"] == files
+    assert body.get("attributes") == attributes
 
 
-def test_trace_source_renders_offset_ns_only_when_nonzero() -> None:
-    source = TraceSource(
-        path="/traces/a.perfetto-trace",
-        machine_name="a",
-        clock="BOOTTIME",
-        sync_to_path="/traces/b.perfetto-trace",
-        offset_ns=500,
-    )
-    assert _dict(source.render()["clocks"])["offset_ns"] == 500
+def test_a_chrome_json_source_must_name_what_it_synchronizes_against() -> None:
+    """Chrome trace events carry no clock metadata, so a `.json` source cannot self-align.
 
-    zero_offset = TraceSource(
-        path="/traces/a.perfetto-trace",
-        machine_name="a",
-        clock="BOOTTIME",
-        sync_to_path="/traces/b.perfetto-trace",
-    )
-    assert "offset_ns" not in _dict(zero_offset.render()["clocks"])
-
-
-def test_merge_manifest_renders_version_one_shape() -> None:
-    manifest = MergeManifest(
-        sources=(TraceSource(path="/traces/a.perfetto-trace", machine_name="a"),)
-    )
-    rendered = _dict(manifest.render()["perfetto_manifest"])
-    assert rendered["version"] == 1
-    assert rendered["files"] == [{"path": "/traces/a.perfetto-trace", "machine": {"name": "a"}}]
-    assert "attributes" not in rendered
-
-
-def test_merge_manifest_includes_attributes_when_given() -> None:
-    manifest = MergeManifest(
-        sources=(TraceSource(path="/traces/a.perfetto-trace", machine_name="a"),),
-        attributes={"job": "run-42"},
-    )
-    rendered = _dict(manifest.render()["perfetto_manifest"])
-    assert rendered["attributes"] == {"job": "run-42"}
-
-
-def test_merge_manifest_empty_sources_renders_an_empty_file_list() -> None:
-    manifest = MergeManifest()
-    rendered = _dict(manifest.render()["perfetto_manifest"])
-    assert rendered["files"] == []
-
-
-def test_chrome_json_source_without_sync_to_path_raises() -> None:
-    manifest = MergeManifest(sources=(TraceSource(path="/traces/trace.json", machine_name="a"),))
+    Failing fast here beats merging onto an arbitrary, unstated reference clock, and the
+    same source is accepted the moment it says which trace it aligns to.
+    """
+    alone = MergeManifest(sources=(TraceSource(path="/traces/trace.json", machine_name="a"),))
     with pytest.raises(MissionError, match="cannot self-align"):
-        manifest.render()
+        alone.render()
 
-
-def test_chrome_json_source_with_sync_to_path_is_accepted() -> None:
-    manifest = MergeManifest(
+    aligned = MergeManifest(
         sources=(
             TraceSource(path="/traces/host.perfetto-trace", machine_name="host"),
             TraceSource(
@@ -106,15 +124,16 @@ def test_chrome_json_source_with_sync_to_path_is_accepted() -> None:
             ),
         )
     )
-    rendered = _dict(manifest.render()["perfetto_manifest"])
-    assert len(_list(rendered["files"])) == 2
+    files = _body(aligned)["files"]
+    assert isinstance(files, list)
+    assert len(files) == 2
 
 
 def test_write_dumps_json_to_path(tmp_path: Path) -> None:
+    """`write` puts the rendered document on disk as JSON."""
     path = tmp_path / "manifest.json"
     manifest = MergeManifest(
         sources=(TraceSource(path="/traces/a.perfetto-trace", machine_name="a"),)
     )
     manifest.write(path)
-    data = json.loads(path.read_text())
-    assert data["perfetto_manifest"]["version"] == 1
+    assert json.loads(path.read_text())["perfetto_manifest"]["version"] == 1

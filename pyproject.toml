@@ -28,6 +28,9 @@ dependencies = [
 [project.optional-dependencies]
 cuda = ["cuda-bindings>=13.0", "cuda-core>=1.1"]
 modal = ["modal>=1.0"]
+# The tracking sink imports this lazily and refuses cleanly without it, so tracking is on by
+# default and the package still installs on a machine that never wanted the service.
+wandb = ["wandb>=0.28"]
 
 [project.scripts]
 mainboard = "mainboard.cli:main"
@@ -45,6 +48,18 @@ dev = [
     "pytest-subprocess>=1.5",
     "ruff>=0.15",
 ]
+
+# The contextual lane reads a hosted model, so it names one rather than inheriting the default
+# `codex` backend this workspace retired. DeepSeek V4 Pro carries a one-million-token window,
+# which is what lets a whole package's evidence ride in one pack instead of many.
+[tool.mcmr.contextual]
+backend = "openrouter"
+model = "deepseek/deepseek-v4-pro-0813"
+reasoning_effort = "medium"
+timeout_seconds = 1800
+candidate_budget = 768
+prompt_token_budget = 640000
+max_output_tokens = 384000
 
 # Without this table pyrefly walks upward looking for one and adopts whatever manifest it finds,
 # which inside a monorepo checkout means scanning the whole tree. Naming the package's own source

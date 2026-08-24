@@ -1,67 +1,55 @@
+from types import ModuleType
+
 import pytest
 
 from mainboard.probe.providers.nvidia import apis as nvidia_apis_module
 
-from ...conftest import FakeNvidiaApis, FakeNvml, FakeRuntime, FakeSystem
+from ...conftest import FakeError, FakeNvidiaApis, FakeNvml, FakeRuntime, FakeSystem
+
+# What a faked `import_module` hands back, one stand-in per layer the real stack imports.
+type Loaded = FakeRuntime | FakeNvml | FakeSystem | ModuleType
 
 
-def test_text_decodes_bytes_and_passes_through_str() -> None:
-    """`text` decodes NVML/CUDA byte strings and leaves plain strings untouched."""
-    assert nvidia_apis_module.text(b"NVIDIA") == "NVIDIA"
-    assert nvidia_apis_module.text("NVIDIA") == "NVIDIA"
+@pytest.mark.parametrize(
+    ("nvml_name", "has_cuda_core"),
+    [
+        pytest.param("cuda.bindings._nvml", True, id="private-nvml"),
+        pytest.param("cuda.bindings.nvml", True, id="public-nvml"),
+        pytest.param("cuda.bindings._nvml", False, id="no-cuda-core"),
+    ],
+)
+def test_the_stack_binds_whichever_nvml_and_optional_layer_the_host_offers(
+    nvml_name: str, has_cuda_core: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`cuda.bindings` is required and either NVML spelling satisfies it, while `cuda.core` is
+    optional and its compiled extensions can fail to load behind another library's `libstdc++`,
+    so an `ImportError` there leaves the stack usable with the optional layer switched off."""
+    stack = FakeNvidiaApis()
+    core = ModuleType("cuda.core")
+    core.Device = stack.cuda_device_type
+    modules = {"cuda.bindings.runtime": stack.runtime, nvml_name: stack.nvml}
+    if has_cuda_core:
+        modules |= {"cuda.core.system": stack.system, "cuda.core": core}
 
-
-def test_apis_tolerates_missing_cuda_core(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A failing `cuda.core` import leaves `NvidiaApis` usable with `has_cuda_core` False."""
-    fake_nvml = FakeNvidiaApis().nvml
-    modules = {
-        "cuda.bindings.runtime": FakeNvidiaApis().runtime,
-        "cuda.bindings.nvml": fake_nvml,
-    }
-
-    def loader(name: str) -> FakeRuntime | FakeNvml:
+    def loader(name: str) -> Loaded:
         if name in modules:
             return modules[name]
-        if name in ("cuda.core", "cuda.core.system"):
+        if name.startswith("cuda.core"):
             raise ImportError("CXXABI_1.3.15 not found")
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(nvidia_apis_module, "import_module", loader)
     apis = nvidia_apis_module.NvidiaApis()
-    assert apis.has_cuda_core is False
-    assert apis.system is None
-    assert apis.nvml is fake_nvml
+    assert apis.runtime is stack.runtime
+    assert apis.nvml is stack.nvml
+    assert apis.has_cuda_core is has_cuda_core
+    assert (apis.system is stack.system) is has_cuda_core
+    assert set(apis.nvml_errors) == {FakeError}  # every error type the binding exposes
 
 
-@pytest.mark.parametrize("nvml_module", ["cuda.bindings._nvml", "cuda.bindings.nvml"])
-def test_apis_wires_module_surface_via_either_nvml(
-    nvml_module: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`NvidiaApis` wires runtime/system/core/nvml handles from `import_module`, taking
-    the public `nvml` binding only when the private `_nvml` module is absent."""
-    fake_nvml = FakeNvidiaApis().nvml
-    fake_device = FakeNvidiaApis().cuda_device_type
-    modules = {
-        "cuda.bindings.runtime": FakeNvidiaApis().runtime,
-        "cuda.core.system": FakeNvidiaApis().system,
-        nvml_module: fake_nvml,
-        "cuda.core": type("Core", (), {"Device": fake_device}),
-    }
-
-    def loader(name: str) -> FakeRuntime | FakeSystem | FakeNvml | type:
-        if name not in modules:
-            raise ModuleNotFoundError(name)
-        return modules[name]
-
-    monkeypatch.setattr(nvidia_apis_module, "import_module", loader)
-    apis = nvidia_apis_module.NvidiaApis()
-    assert apis.cuda_device_type is fake_device
-    assert apis.nvml is fake_nvml
-    assert apis.has_cuda_core is True
-
-
-def test_apis_cache_returns_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`nvidia_apis` caches a single `NvidiaApis` per process."""
+def test_the_stack_is_imported_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loading NVML is expensive and every GPU instance reads the same handles, so the accessor
+    caches one stack rather than re-importing per device."""
     built: list[int] = []
 
     class Marker:
@@ -70,8 +58,23 @@ def test_apis_cache_returns_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
 
     nvidia_apis_module.nvidia_apis.cache_clear()
     monkeypatch.setattr(nvidia_apis_module, "NvidiaApis", Marker)
-    first = nvidia_apis_module.nvidia_apis()
-    second = nvidia_apis_module.nvidia_apis()
-    assert first is second
+    assert nvidia_apis_module.nvidia_apis() is nvidia_apis_module.nvidia_apis()
     assert built == [1]
-    nvidia_apis_module.nvidia_apis.cache_clear()
+
+
+def test_a_binding_that_names_no_error_types_suppresses_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The suppression set is collected from whatever the binding actually exposes, so a stripped
+    NVML module yields an empty tuple instead of an `AttributeError` while it is built."""
+    stack = FakeNvidiaApis()
+
+    def loader(name: str) -> Loaded:
+        if name == "cuda.bindings.runtime":
+            return stack.runtime
+        if name.startswith("cuda.bindings"):
+            return ModuleType("nvml")
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(nvidia_apis_module, "import_module", loader)
+    assert nvidia_apis_module.NvidiaApis().nvml_errors == ()

@@ -3,19 +3,37 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard import Board, MissionError
-from mainboard.deps import Dependencies, Index, ManifestText
+from mainboard.deps import Change, Dependencies, Index, ManifestText
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from mainboard import Manifest
-    from mainboard.deps import Change
 
 # What the fake lock reports before and after a solve, so a diff has one arrival, one departure
 # and one move to report and nothing else.
 _BEFORE = {"torch": "2.9.0", "numpy": "2.4.6", "leaving": "1.0"}
 _AFTER = {"torch": "2.9.1", "numpy": "2.4.6", "tqdm": "4.70.0"}
+
+# One requirement of every shape the addressing has to write: an explicit range, a replacement
+# of a requirement already there, npm's own `@` separator, a scoped npm name whose leading `@`
+# is part of the name, and an ecosystem the manifest has no table for yet.
+_WRITES = [
+    ("tqdm>=4.70.0, <5", "tqdm", "python", True, "[dev.python.deps]", "absent", ">=4.70.0, <5"),
+    ("torch>=3.0", "torch", "python", False, "[python.deps]", ">=2.9", ">=3.0"),
+    ("vitest@^3", "vitest", "nodejs", True, "[nodejs.dev]", "absent", "^3"),
+    (
+        "@puppeteer/browsers>=4",
+        "@puppeteer/browsers",
+        "nodejs",
+        True,
+        "[nodejs.dev]",
+        ">=3, <4",
+        ">=4",
+    ),
+    ("serde>=1", "serde", "rust", False, "[rust.deps]", "absent", ">=1"),
+]
 
 
 class FakePixi:
@@ -83,16 +101,48 @@ def moved(changes: list[Change], name: str) -> Change:
     return next(change for change in changes if change.name == name)
 
 
-def test_add_writes_the_constraint_it_was_given(deps: Dependencies) -> None:
+@pytest.mark.parametrize(("spec", "name", "ecosystem", "dev", "where", "before", "after"), _WRITES)
+def test_add_writes_the_requirement_it_was_given_where_its_neighbours_already_are(
+    deps: Dependencies,
+    spec: str,
+    name: str,
+    ecosystem: str,
+    dev: bool,
+    where: str,
+    before: str,
+    after: str,
+) -> None:
     """A spec carrying its own range is written exactly as the caller wrote it."""
-    changes = deps.add("tqdm>=4.70.0, <5", ecosystem="python", dev=True, resolve=False)
-    assert moved(changes, "tqdm").model_dump() == {
-        "name": "tqdm",
-        "where": "[dev.python.deps]",
-        "before": "absent",
-        "after": ">=4.70.0, <5",
-    }
-    assert constraint(deps, "[dev.python.deps]", "tqdm") == ">=4.70.0, <5"
+    changes = deps.add(spec, ecosystem=ecosystem, dev=dev, resolve=False)
+    assert changes == [Change(name=name, where=where, before=before, after=after)]
+    assert constraint(deps, where, name) == after
+
+
+@pytest.mark.parametrize(
+    ("spec", "name", "ecosystem", "env", "dev", "where"),
+    [
+        ("tqdm>=4", "tqdm", "python", "", False, "[python.deps]"),
+        ("ray>=2", "ray", "python", "serving", False, "[envs.serving.python.deps]"),
+        ("protozero>=1", "protozero", "conda", "", True, "[dev.deps]"),
+    ],
+)
+def test_adding_a_requirement_and_removing_it_restores_the_manifest(
+    deps: Dependencies,
+    spec: str,
+    name: str,
+    ecosystem: str,
+    env: str,
+    dev: bool,
+    where: str,
+) -> None:
+    """The two verbs are one inverse pair, and dropping never asks where it was written."""
+    before = deps.path.read_text(encoding="utf-8")
+    deps.add(spec, ecosystem=ecosystem, env=env, dev=dev, resolve=False)
+    dropped = moved(deps.remove(name, resolve=False), name)
+    assert dropped.where == where
+    assert dropped.before == spec.removeprefix(name)
+    assert dropped.after == "absent"
+    assert deps.path.read_text(encoding="utf-8") == before
 
 
 def test_add_pins_a_bare_name_to_what_the_index_publishes(
@@ -104,64 +154,34 @@ def test_add_pins_a_bare_name_to_what_the_index_publishes(
     assert moved(changes, "tqdm").after == ">=4.70.0, <5"
 
 
-def test_add_reports_the_constraint_it_replaced(deps: Dependencies) -> None:
-    """Overwriting an existing requirement shows both sides, which is the point of the verb."""
-    changes = deps.add("torch>=3.0", ecosystem="python", resolve=False)
-    assert moved(changes, "torch").before == ">=2.9"
-    assert moved(changes, "torch").after == ">=3.0"
-
-
-def test_add_lands_where_the_manifest_already_writes_that_kind_of_requirement(
-    deps: Dependencies,
-) -> None:
-    """`[nodejs.dev]` is already there, so a dev entry joins it rather than starting a rival."""
-    changes = deps.add("vitest@^3", ecosystem="nodejs", dev=True, resolve=False)
-    assert moved(changes, "vitest").where == "[nodejs.dev]"
-
-
 def test_add_refuses_an_environment_the_manifest_never_declared(deps: Dependencies) -> None:
     """The refusal comes from the schema, roster and all, before anything is written."""
     with pytest.raises(MissionError, match="no environment 'ghost'"):
         deps.add("tqdm", env="ghost", resolve=False)
 
 
-def test_remove_finds_the_table_without_being_told_which(deps: Dependencies) -> None:
-    """Dropping a requirement never asks the caller to remember where it was written."""
-    changes = deps.remove("vite", resolve=False)
-    assert moved(changes, "vite").model_dump() == {
-        "name": "vite",
-        "where": "[envs.serving.nodejs.dev]",
-        "before": ">=7",
-        "after": "absent",
-    }
-
-
+@pytest.mark.parametrize(
+    ("ecosystem", "match"),
+    [
+        ("", r"nothing declares 'ghost'. Searched .*\[deps\]"),
+        ("go", "Searched no table"),
+    ],
+)
 def test_remove_refuses_a_name_nothing_declares_and_names_what_it_searched(
-    deps: Dependencies,
+    deps: Dependencies, ecosystem: str, match: str
 ) -> None:
     """The refusal is actionable because it says where it already looked."""
-    with pytest.raises(MissionError, match=r"nothing declares 'ghost'. Searched .*\[deps\]"):
-        deps.remove("ghost", resolve=False)
+    with pytest.raises(MissionError, match=match):
+        deps.remove("ghost", ecosystem=ecosystem, resolve=False)
 
 
-def test_remove_refuses_a_name_declared_in_more_than_one_table(deps: Dependencies) -> None:
+def test_a_name_declared_in_more_than_one_table_has_to_be_named(deps: Dependencies) -> None:
     """Guessing which one was meant is how the wrong requirement gets dropped silently."""
     deps.add("torch>=1", ecosystem="python", env="serving", resolve=False)
     with pytest.raises(MissionError, match=r"declared in .*Name one with --lang"):
         deps.remove("torch", resolve=False)
-
-
-def test_a_narrowing_flag_tells_two_declarations_apart(deps: Dependencies) -> None:
-    """Naming the environment is what makes an ambiguous name unambiguous again."""
-    deps.add("torch>=1", ecosystem="python", env="serving", resolve=False)
     changes = deps.remove("torch", ecosystem="python", env="serving", resolve=False)
     assert moved(changes, "torch").where == "[envs.serving.python.deps]"
-
-
-def test_a_search_narrowed_to_nothing_says_so(deps: Dependencies) -> None:
-    """A flag combination reaching no declared table reports no table rather than an empty list."""
-    with pytest.raises(MissionError, match="Searched no table"):
-        deps.remove("ghost", ecosystem="go", resolve=False)
 
 
 def test_upgrade_moves_one_constraint_to_the_newest_release(
@@ -186,11 +206,11 @@ def test_a_bare_upgrade_leaves_the_manifest_alone_and_refreshes_the_lock(
     assert {change.where for change in changes} == {"pixi.lock"}
 
 
-def test_a_solve_reports_every_pin_it_moved_and_nothing_it_left(
+def test_a_solve_reports_every_pin_it_moved_in_the_environment_it_was_aimed_at(
     deps: Dependencies, solved: list[tuple[str, bool, bool]]
 ) -> None:
     """Adding one requirement and learning it dragged others is exactly what this reports."""
-    changes = deps.add("tqdm>=4", ecosystem="python", dev=True)
+    changes = deps.add("ray>=2", ecosystem="python", env="serving")
     locked = {
         change.name: (change.before, change.after)
         for change in changes
@@ -202,13 +222,6 @@ def test_a_solve_reports_every_pin_it_moved_and_nothing_it_left(
         "leaving": ("1.0", "absent"),
     }
     assert "numpy" not in locked
-
-
-def test_an_edit_targeting_an_environment_resolves_that_environment(
-    deps: Dependencies, solved: list[tuple[str, bool, bool]]
-) -> None:
-    """A requirement declared for one environment is solved against that environment."""
-    deps.add("ray>=2", ecosystem="python", env="serving")
     assert solved == [("serving", True, False)]
 
 

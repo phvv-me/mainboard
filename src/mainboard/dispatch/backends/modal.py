@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 
 from ...core.errors import MissionError
 from ..jobs.spec import walltime_seconds
-from ..schedulers.base import JobState
+from ..vocabulary import JobState
 from .base import (
     Account,
     Credentials,
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from ...context.plan import ExecutionPlan
-    from ..schedulers.base import Resources
+    from ..vocabulary import Resources
 
 # The Modal app every sandbox is created under; sandboxes are one-shot jobs, so a single shared
 # app is enough (Modal itself scopes billing and the dashboard view by app, not by sandbox).

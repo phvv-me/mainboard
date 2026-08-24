@@ -1,31 +1,44 @@
 from statistics import fmean
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from mainboard.profile import BenchSample, benchmark, compare
 
 
-def test_benchmark_keeps_every_run_and_derives_its_aggregates() -> None:
-    """One call yields the per-iteration rows, and mean/min/runs are read off those rows."""
-    calls = {"n": 0}
+# Every example times a real loop, so the budget is trimmed from the shared default to keep
+# the suite's sub-second inner loop.
+@settings(max_examples=10)
+@given(
+    iters=st.integers(min_value=1, max_value=6),
+    warmup=st.integers(min_value=0, max_value=4),
+    barrier=st.booleans(),
+)
+def test_benchmark_keeps_every_run_and_derives_its_aggregates(
+    iters: int, warmup: int, barrier: bool
+) -> None:
+    """One call yields the per-iteration rows, and mean/min/runs are read off those rows.
 
-    def work() -> None:
-        calls["n"] += 1
-
-    sample = benchmark(work, label="work", iters=5, warmup=2)
+    The sync barrier, when given, fires once after the warmup and once after every timed
+    run, so async device work lands inside the sample rather than after it.
+    """
+    calls: list[int] = []
+    synced: list[int] = []
+    sample = benchmark(
+        lambda: calls.append(1),
+        label="work",
+        iters=iters,
+        warmup=warmup,
+        sync=(lambda: synced.append(1)) if barrier else None,
+    )
     assert isinstance(sample, BenchSample)
     assert sample.label == "work"
-    assert len(sample.samples) == 5
-    assert sample.runs == 5
+    assert sample.runs == len(sample.samples) == iters
     assert sample.mean_us == fmean(sample.samples)
     assert sample.min_us == min(sample.samples)
-    assert calls["n"] == 7  # warmup 2 + iters 5
-
-
-def test_benchmark_calls_sync_after_warmup_and_every_run() -> None:
-    synced: list[int] = []
-    benchmark(lambda: None, iters=3, warmup=1, sync=lambda: synced.append(1))
-    assert len(synced) == 4  # one post-warmup call + one per timed iter
+    assert len(calls) == warmup + iters
+    assert len(synced) == (1 + iters if barrier else 0)
 
 
 def test_compare_tabulates_fastest_first(capsys: pytest.CaptureFixture[str]) -> None:

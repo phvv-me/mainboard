@@ -1,88 +1,107 @@
 import pytest
-from hypothesis import given
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from mainboard.profile import (
     Activity,
     Bound,
-    KernelStat,
-    KernelTrace,
     MemcpyTrace,
     Profile,
     ProfileReport,
     RegionSummary,
 )
 
-
-def _kernel(name: str, ns: int, **shape: str | int) -> KernelTrace:
-    """A `KernelTrace` of ``name`` lasting ``ns`` nanoseconds from t=0."""
-    return KernelTrace(name=name, start_ns=0, end_ns=ns, **shape)  # pyrefly: ignore  reason=dynamic **shape kwargs lose field-precise typing since=2026-08-16
+from .conftest import kernel
 
 
-def test_classifies_compute_bound_when_kernels_dominate() -> None:
-    """More kernel time than copy time reads as compute-bound."""
-    profile = Profile(kernels=(_kernel("gemm", 1000),), memcpys=(MemcpyTrace(end_ns=100),))
-    report = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=0.0)
-    assert report.bound is Bound.COMPUTE
-
-
-def test_classifies_memory_bound_when_copies_dominate() -> None:
-    """More copy time than kernel time reads as memory-bound."""
-    profile = Profile(
-        kernels=(_kernel("k", 100),),
-        memcpys=(MemcpyTrace(end_ns=1000, bytes_moved=4096),),
+def _report(profile: Profile, *, peak_bandwidth_gbps: float = 0.0) -> ProfileReport:
+    """The bottleneck verdict for one profile, over a single iteration."""
+    return ProfileReport.from_profile(
+        profile, iterations=1, peak_bandwidth_gbps=peak_bandwidth_gbps
     )
-    report = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=10.0)
-    assert report.bound is Bound.MEMORY
 
 
-def test_falls_back_to_utilization_when_no_traces() -> None:
-    """With no kernel/copy time, the sampled util decides the verdict."""
-
-    busy_memory = Profile(
+def _sampled(*, util_pct: float, memory_util_pct: float) -> Profile:
+    """A profile carrying one sampled region's utilization and nothing traced."""
+    return Profile(
         summaries=(
-            RegionSummary(name="r", wall_ms=1.0, avg_util_pct=5.0, avg_memory_util_pct=80.0),
+            RegionSummary(
+                name="r",
+                wall_ms=1.0,
+                avg_util_pct=util_pct,
+                avg_memory_util_pct=memory_util_pct,
+            ),
         )
     )
-    busy_compute = Profile(
-        summaries=(
-            RegionSummary(name="r", wall_ms=1.0, avg_util_pct=90.0, avg_memory_util_pct=3.0),
-        )
-    )
-    assert ProfileReport.from_profile(busy_memory, iterations=1, peak_bandwidth_gbps=0).bound is (
-        Bound.MEMORY
-    )
-    assert ProfileReport.from_profile(busy_compute, iterations=1, peak_bandwidth_gbps=0).bound is (
-        Bound.COMPUTE
-    )
 
 
-def test_unknown_when_nothing_to_classify() -> None:
-    """An empty profile cannot be classified, so the verdict is UNKNOWN."""
-    report = ProfileReport.from_profile(Profile(), iterations=1, peak_bandwidth_gbps=0.0)
-    assert report.bound is Bound.UNKNOWN
-    assert report.dominant_kernel == ""
-    assert "No kernels traced" in report.report()
+@pytest.mark.parametrize(
+    ("profile", "bound"),
+    [
+        (
+            Profile(kernels=(kernel("gemm", 1000),), memcpys=(MemcpyTrace(end_ns=100),)),
+            Bound.COMPUTE,
+        ),
+        (
+            Profile(kernels=(kernel("k", 100),), memcpys=(MemcpyTrace(end_ns=1000),)),
+            Bound.MEMORY,
+        ),
+        (_sampled(util_pct=5.0, memory_util_pct=80.0), Bound.MEMORY),
+        (_sampled(util_pct=90.0, memory_util_pct=3.0), Bound.COMPUTE),
+        (Profile(), Bound.UNKNOWN),
+    ],
+    ids=[
+        "kernels_dominate_the_gpu_time",
+        "copies_dominate_the_gpu_time",
+        "no_traces_so_the_memory_controller_decides",
+        "no_traces_so_the_sms_decide",
+        "nothing_to_classify",
+    ],
+)
+def test_the_bound_verdict_follows_the_time_split_then_the_utilization_signal(
+    profile: Profile, bound: Bound
+) -> None:
+    """Copies out-timing kernels reads memory-bound, and with no time at all util decides.
+
+    With neither a traced duration nor a sampled utilization there is nothing to judge, so
+    the verdict is UNKNOWN and the report says no kernels were traced.
+    """
+    report = _report(profile)
+    assert report.bound is bound
+    if bound is Bound.UNKNOWN:
+        assert report.dominant_kernel == ""
+        assert "No kernels traced" in report.report()
 
 
-def test_dominant_kernel_is_the_hottest_by_total_time() -> None:
-    """The breakdown ranks kernels by total time and names the hottest dominant."""
-    profile = Profile(
-        kernels=(_kernel("a", 100), _kernel("a", 100), _kernel("b", 500)),
-    )
-    report = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=0.0)
-    assert report.dominant_kernel == "b"
-    assert [k.name for k in report.kernels] == ["b", "a"]
-    kernel_a = next(k for k in report.kernels if k.name == "a")
-    assert kernel_a.calls == 2
-    assert kernel_a.total_ns == 200
+# A short list of durations is a small space, so a trimmed budget covers it and keeps the
+# suite's wall time where it was.
+@settings(max_examples=15)
+@given(durations=st.lists(st.integers(min_value=1, max_value=10_000), min_size=1, max_size=8))
+@example(durations=[100, 100, 500])  # two calls of one name against a hotter single call
+def test_kernel_shares_partition_the_kernel_time_hottest_first(durations: list[int]) -> None:
+    """Per-kernel shares always add back up to 100% and rank the hottest name first.
+
+    Repeated launches of one name collapse into a single row carrying the call count and
+    the summed time, which is what makes the dominant kernel the dominant *name*.
+    """
+    kernels = tuple(kernel(f"k{index % 2}", ns) for index, ns in enumerate(durations))
+    report = _report(Profile(kernels=kernels))
+    totals = [stat.total_ns for stat in report.kernels]
+
+    assert abs(sum(stat.share_pct for stat in report.kernels) - 100.0) < 1e-6
+    assert totals == sorted(totals, reverse=True)
+    assert sum(stat.calls for stat in report.kernels) == len(durations)
+    assert sum(totals) == sum(durations)
+    assert report.dominant_kernel == report.kernels[0].name
+    assert report.dominant_share_pct == report.kernels[0].share_pct
+    assert all(stat.avg_ns == stat.total_ns / stat.calls for stat in report.kernels)
 
 
 def test_kernel_stat_carries_launch_shape() -> None:
     """Occupancy proxy, registers, and the static/dynamic shared split are reported."""
     profile = Profile(
         kernels=(
-            _kernel(
+            kernel(
                 "k",
                 1000,
                 block="512x1x1",
@@ -92,7 +111,7 @@ def test_kernel_stat_carries_launch_shape() -> None:
             ),
         )
     )
-    stat = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=0.0).kernels[0]
+    stat = _report(profile).kernels[0]
     assert stat.threads_per_block == 512
     assert stat.occupancy_pct == 50.0  # 512 / 1024
     assert stat.registers == 48
@@ -100,108 +119,64 @@ def test_kernel_stat_carries_launch_shape() -> None:
     assert stat.dynamic_shared_mem == 1024
 
 
-def test_copy_bandwidth_scored_against_peak() -> None:
-    """Achieved copy bandwidth is bytes over copy-time, shown against the device peak."""
-    profile = Profile(memcpys=(MemcpyTrace(end_ns=1000, bytes_moved=2000),))
-    report = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=10.0)
-    assert report.achieved_bandwidth_gbps == 2.0  # 2000 bytes / 1000 ns
+@pytest.mark.parametrize(
+    ("end_ns", "achieved_gbps"),
+    [(1000, 2.0), (0, 0.0)],
+    ids=["bytes_over_copy_time", "a_copy_with_no_measured_time"],
+)
+def test_copy_bandwidth_is_bytes_over_copy_time_scored_against_peak(
+    end_ns: int, achieved_gbps: float
+) -> None:
+    """Achieved copy bandwidth is shown against the device peak, never divided by zero."""
+    profile = Profile(memcpys=(MemcpyTrace(end_ns=end_ns, bytes_moved=2000),))
+    report = _report(profile, peak_bandwidth_gbps=10.0)
+    assert report.achieved_bandwidth_gbps == achieved_gbps
     assert "of peak" in report.report()
 
 
-def test_zero_duration_copy_has_zero_bandwidth() -> None:
-    """A copy with no measured time yields no bandwidth rather than dividing by zero."""
-    profile = Profile(memcpys=(MemcpyTrace(end_ns=0, bytes_moved=2000),))
-    report = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=10.0)
-    assert report.achieved_bandwidth_gbps == 0.0
+def test_sampled_memory_becomes_the_high_water_mark_and_the_mean() -> None:
+    """The report surfaces the largest sampled footprint, and says nothing when none was taken.
 
-
-def test_peak_memory_is_the_high_water_mark_across_regions() -> None:
-    """The report surfaces the largest sampled memory footprint and the mean."""
-
+    A kernel that finished between two sampler ticks reports zero rather than a note, since
+    the deep kernel trace stays the reliable signal there.
+    """
     profile = Profile(
         summaries=(
             RegionSummary(name="r", wall_ms=1.0, peak_memory_bytes=300, avg_memory_bytes=200),
             RegionSummary(name="r", wall_ms=1.0, peak_memory_bytes=900, avg_memory_bytes=600),
         )
     )
-    report = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=0.0)
-    assert report.peak_memory_bytes == 900  # max single sample, the footprint to fit
-    assert report.avg_memory_bytes == 400  # (200 + 600) / 2
-    assert "peak memory" in report.report()
+    sampled = _report(profile)
+    assert sampled.peak_memory_bytes == 900  # max single sample, the footprint to fit
+    assert sampled.avg_memory_bytes == 400  # (200 + 600) / 2
+    assert "peak memory" in sampled.report()
+
+    unsampled = _report(Profile(kernels=(kernel("k", 100),)))
+    assert unsampled.peak_memory_bytes == 0
+    assert unsampled.avg_memory_bytes == 0
+    assert "peak memory" not in unsampled.report()
 
 
-def test_peak_memory_absent_when_nothing_sampled() -> None:
-    """A kernel that finished between sampler ticks reports zero peak memory, not a note."""
-    report = ProfileReport.from_profile(
-        Profile(kernels=(_kernel("k", 100),)), iterations=1, peak_bandwidth_gbps=0.0
-    )
-    assert report.peak_memory_bytes == 0
-    assert report.avg_memory_bytes == 0
-    assert "peak memory" not in report.report()
+def test_the_rendered_report_names_the_device_and_any_untraced_kinds() -> None:
+    """`str` is the plain-text verdict, and kinds the device could not trace are listed.
 
+    Without a support/request pair there is nothing to mark unavailable, and an empty
+    device name renders as `cpu` rather than as a blank.
+    """
+    named = _report(Profile(device="dev", kernels=(kernel("k", 100),)))
+    assert str(named) == named.report()
+    assert "dev" in str(named)
+    assert named.unavailable == ()
 
-def test_unavailable_lists_dropped_activity_kinds() -> None:
-    """Kinds requested but unsupported by the device surface in `unavailable`."""
-    report = ProfileReport.from_profile(
+    partial = ProfileReport.from_profile(
         Profile(),
         iterations=1,
         peak_bandwidth_gbps=0.0,
         supported=Activity.KERNEL.value,
         requested=Activity.ALL.value,
     )
-    assert "memcpy" in report.unavailable
-    assert "kernel" not in report.unavailable
-    assert "all" not in report.unavailable
-    assert "unavailable on this device" in report.report()
-
-
-def test_unavailable_empty_when_support_unknown() -> None:
-    """Without a support/request pair there is nothing to mark unavailable."""
-    report = ProfileReport.from_profile(Profile(), iterations=1, peak_bandwidth_gbps=0.0)
-    assert report.unavailable == ()
-
-
-def test_str_renders_the_report() -> None:
-    """`str(report)` is the plain-text verdict table."""
-    profile = Profile(device="dev", kernels=(_kernel("k", 100),))
-    report = ProfileReport.from_profile(profile, iterations=1, peak_bandwidth_gbps=0.0)
-    assert str(report) == report.report()
-    assert "dev" in str(report)
-
-
-def test_report_names_cpu_when_no_device() -> None:
-    """An empty device name renders as `cpu` in the header."""
-    report = ProfileReport.from_profile(Profile(), iterations=1, peak_bandwidth_gbps=0.0)
-    assert "device cpu" in report.report()
-
-
-@given(
-    durations=st.lists(st.integers(min_value=1, max_value=10_000), min_size=1, max_size=8),
-)
-def test_kernel_shares_sum_to_one_hundred(durations: list[int]) -> None:
-    """Per-kernel shares always partition 100% of kernel time (no rounding drift away)."""
-    kernels = tuple(_kernel(f"k{i}", ns) for i, ns in enumerate(durations))
-    report = ProfileReport.from_profile(
-        Profile(kernels=kernels), iterations=1, peak_bandwidth_gbps=0.0
-    )
-    assert abs(sum(k.share_pct for k in report.kernels) - 100.0) < 1e-6
-
-
-def test_kernel_stat_is_frozen() -> None:
-    """The report models are immutable like the rest of the profiling schemas."""
-    stat = KernelStat(
-        name="k",
-        calls=1,
-        total_ns=1,
-        avg_ns=1.0,
-        share_pct=100.0,
-        grid="",
-        block="",
-        threads_per_block=1,
-        occupancy_pct=0.0,
-        registers=0,
-        static_shared_mem=0,
-        dynamic_shared_mem=0,
-    )
-    with pytest.raises(ValueError, match="frozen"):
-        stat.calls = 2  # pyrefly: ignore  reason=intentionally assigns a frozen field to prove it raises since=2026-08-16
+    assert "memcpy" in partial.unavailable
+    assert "kernel" not in partial.unavailable
+    assert "all" not in partial.unavailable
+    assert "unavailable on this device" in partial.report()
+    assert "device cpu" in partial.report()

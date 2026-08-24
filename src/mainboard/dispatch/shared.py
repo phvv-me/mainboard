@@ -33,7 +33,9 @@ def state_dir() -> str:
     """The subdirectory every dispatch artifact (sqlite state, job scripts, logs) lives under.
 
     One subdirectory of the workspace's generated tree, so `.mainboard/` never mixes dispatch
-    state with the manifest compiler's own output.
+    state with the manifest compiler's own output. Workspace-relative on purpose: the same
+    string names the directory here and on a host, which is what lets a job script write its
+    log where a later poll already knows to look.
     """
     return f"{Project().out_dir}/dispatch"
 
@@ -43,9 +45,32 @@ def state_dir() -> str:
 STATE_DIR = state_dir()
 
 
-def db_file() -> Path:
+def workspace(start: Path | None = None) -> Path:
+    """The workspace `start` belongs to, found upward by its manifest the way `Board` finds it.
+
+    Dispatch state belongs to the workspace, not to whichever directory a command was typed in.
+    Rooting it here is what keeps one database under the workspace root instead of an empty
+    second one per subdirectory, which is the difference between a cron sweep that settles every
+    job and one that finds none. A directory under no workspace at all keeps its own state, so a
+    scratch tree stays self-contained rather than raising.
+
+    start: the directory the search begins in, the current one when None.
+    """
+    here = start or Path.cwd()
+    try:
+        return Project().find_root(here)
+    except FileNotFoundError:
+        return here
+
+
+def state_path(root: Path | None = None) -> Path:
+    """The dispatch state directory as a real path, under `root` or the discovered workspace."""
+    return (root or workspace()) / state_dir()
+
+
+def db_file(root: Path | None = None) -> Path:
     """The shared dispatch SQLite file, holding both the run registry and command history."""
-    return Path(state_dir()) / "db.sqlite"
+    return state_path(root) / "db.sqlite"
 
 
 # One logger for the whole subsystem; every module imports this instead of calling

@@ -20,15 +20,10 @@ if TYPE_CHECKING:
         ((), Scheduler.NONE),
     ],
 )
-def test_scheduler_priority(
+def test_the_scheduler_is_the_first_launcher_on_path_with_clusters_outranking_pueue(
     present: Sequence[str], expected: Scheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The scheduler is read from PATH, cluster schedulers winning over pueue."""
+    """A login node often carries pueue alongside the real scheduler, and a job belongs to the
+    cluster there, so `sbatch` then `qsub` are looked for first and a bare host reports none."""
     monkeypatch.setattr(env_mod.shutil, "which", lambda name: name if name in present else None)
-    assert env_mod.detect_scheduler() == expected
-
-
-def test_probe_reads_the_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`probe` builds an `Environment` from the detected scheduler."""
-    monkeypatch.setattr(env_mod, "detect_scheduler", lambda: Scheduler.SLURM)
-    assert Environment.probe().scheduler is Scheduler.SLURM
+    assert Environment.probe().scheduler is expected

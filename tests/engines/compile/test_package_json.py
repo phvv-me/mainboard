@@ -4,45 +4,53 @@ import pytest
 
 from mainboard import MissionError
 from mainboard.engines.compile.package_json import PackageJson
-from mainboard.manifest.schema.spec import Spec
+from mainboard.manifest.schema.spec import Json, Spec
 
 
-def test_a_compiled_manifest_carries_the_fields_npm_reads() -> None:
-    compiled = PackageJson.compiled(
-        name="w-npm",
-        deps={"prettier": Spec.model_validate(">=3")},
-        dev={"eslint": Spec.model_validate("^10")},
-        fields={"type": "module"},
-    )
-    body = json.loads(compiled.to_json())
-    assert body == {
-        "name": "w-npm",
-        "private": True,
-        "dependencies": {"prettier": ">=3"},
-        "type": "module",
-        "devDependencies": {"eslint": "^10"},
-    }
-
-
-def test_a_manifest_without_dev_requirements_declares_no_dev_table() -> None:
-    compiled = PackageJson.compiled(
-        name="w-npm", deps={"prettier": Spec.model_validate("*")}, dev={}, fields={}
-    )
-    assert "devDependencies" not in json.loads(compiled.to_json())
-
-
-def test_declared_fields_win_over_the_generated_ones_they_name() -> None:
+@pytest.mark.parametrize(
+    ("deps", "dev", "fields", "body"),
+    [
+        pytest.param(
+            {"prettier": ">=3"},
+            {"eslint": "^10"},
+            {"type": "module"},
+            {
+                "name": "w-npm",
+                "private": True,
+                "dependencies": {"prettier": ">=3"},
+                "type": "module",
+                "devDependencies": {"eslint": "^10"},
+            },
+            id="every-field-npm-reads",
+        ),
+        pytest.param(
+            {"prettier": "*"},
+            {},
+            {},
+            {"name": "w-npm", "private": True, "dependencies": {"prettier": "*"}},
+            id="no-dev-requirements-declares-no-dev-table",
+        ),
+        pytest.param(
+            {},
+            {},
+            {"private": False, "version": "1.2.3"},
+            {"name": "w-npm", "private": False, "dependencies": {}, "version": "1.2.3"},
+            id="declared-fields-win-over-the-generated-ones-they-name",
+        ),
+    ],
+)
+def test_a_compiled_manifest_carries_what_the_node_manager_installs_from(
+    deps: dict[str, str], dev: dict[str, str], fields: dict[str, Json], body: dict[str, Json]
+) -> None:
     """`[nodejs.package]` is the escape hatch, so it is merged last and overrides."""
     compiled = PackageJson.compiled(
-        name="w-npm", deps={}, dev={}, fields={"private": False, "version": "1.2.3"}
+        name="w-npm",
+        deps={name: Spec.model_validate(spec) for name, spec in deps.items()},
+        dev={name: Spec.model_validate(spec) for name, spec in dev.items()},
+        fields=fields,
     )
-    body = json.loads(compiled.to_json())
-    assert body["private"] is False
-    assert body["version"] == "1.2.3"
-
-
-def test_the_rendered_text_is_indented_json_ending_in_a_newline() -> None:
-    text = PackageJson.compiled(name="w-npm", deps={}, dev={}, fields={}).to_json()
+    text = compiled.to_json()
+    assert json.loads(text) == body
     assert text.startswith('{\n  "name"')
     assert text.endswith("\n")
 

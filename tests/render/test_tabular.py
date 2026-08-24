@@ -1,14 +1,31 @@
 import json
+from typing import TYPE_CHECKING
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from mainboard.render import tabular
 
+from ..strategies import TEXT
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from mainboard.render.values import Row
+
 _HOSTS = ("gold", "miyabi-g", "miyabi-debug", "crimson", "local")
 _STATES = ("queued", "running", "ok", "failed", "vanished")
 _NAMES = ("train-run", "eval-sweep", "compress-30b", "tokenizer-bench", "exp.run", "")
+
+# Every row carries the same four columns, since a header written once is the whole point of
+# the format and a row missing a column is a projection rather than a round trip.
+_ROWS = st.lists(
+    st.dictionaries(
+        st.sampled_from(["handle", "host", "name", "state"]), TEXT, min_size=4, max_size=4
+    ),
+    max_size=6,
+)
 
 
 def _jobs(count: int) -> list[dict[str, str]]:
@@ -25,75 +42,37 @@ def _jobs(count: int) -> list[dict[str, str]]:
     ]
 
 
-def test_encode_writes_a_header_then_one_line_per_row() -> None:
-    text = tabular.encode([{"a": "1", "b": "2"}, {"a": "3", "b": "4"}])
-    assert text == "a\tb\n1\t2\n3\t4"
-
-
-def test_encode_projects_to_the_given_fields_in_order() -> None:
-    text = tabular.encode([{"a": "1", "b": "2", "c": "3"}], fields=["c", "a"])
-    assert text == "c\ta\n3\t1"
-
-
-def test_encode_renders_a_missing_field_as_an_empty_cell() -> None:
-    text = tabular.encode([{"a": "1"}], fields=["a", "b"])
-    assert text == "a\tb\n1\t"
-
-
-def test_encode_renders_none_as_an_empty_cell() -> None:
-    text = tabular.encode([{"a": None}])
-    assert text == "a\n"
+@given(rows=_ROWS)
+@example(rows=[{"a": "one\ttwo"}, {"a": "one\ntwo"}, {"a": '"quoted'}, {"a": ""}])
+def test_decoding_an_encoding_returns_the_rows_that_went_in(rows: list[dict[str, str]]) -> None:
+    """The escape rule closes on itself, so a tab, a newline and a leading quote all survive."""
+    assert tabular.decode(tabular.encode(rows)) == rows
 
 
 @pytest.mark.parametrize(
-    ("cell", "encoded"),
+    ("rows", "fields", "expected"),
     [
-        ("one\ttwo", 'a\n"one\\ttwo"'),
-        ("one\ntwo", 'a\n"one\\ntwo"'),
+        ([{"a": "1", "b": "2"}, {"a": "3", "b": "4"}], None, "a\tb\n1\t2\n3\t4"),
+        ([{"a": "1", "b": "2", "c": "3"}], ["c", "a"], "c\ta\n3\t1"),
+        ([{"a": "1"}], ["a", "b"], "a\tb\n1\t"),
+        ([{"a": None}], None, "a\n"),
+        ([], None, ""),
+        ([{"a": "one\ttwo"}], None, 'a\n"one\\ttwo"'),
         # A plain leading quote would otherwise be indistinguishable from an escaped cell on
         # decode, so it JSON-encodes too.
-        ('"quoted', 'a\n"\\"quoted"'),
+        ([{"a": '"quoted'}], None, 'a\n"\\"quoted"'),
     ],
 )
-def test_encode_json_encodes_a_cell_needing_escape(*, cell: str, encoded: str) -> None:
-    assert tabular.encode([{"a": cell}]) == encoded
+def test_an_encoding_is_a_header_line_then_one_tab_separated_line_per_row(
+    rows: Sequence[Row], fields: Sequence[str] | None, expected: str
+) -> None:
+    """Columns are written once, a missing or absent value is an empty cell, order is the ask."""
+    assert tabular.encode(rows, fields=fields) == expected
 
 
-def test_encode_on_no_rows_and_no_fields_is_empty() -> None:
-    assert not tabular.encode([])
-
-
-def test_decode_reverses_a_plain_encoding() -> None:
-    rows = [{"a": "1", "b": "2"}, {"a": "3", "b": "4"}]
-    assert tabular.decode(tabular.encode(rows)) == rows
-
-
-def test_decode_reverses_an_escaped_cell() -> None:
-    rows = [{"a": "one\ttwo\nthree"}]
-    assert tabular.decode(tabular.encode(rows)) == rows
-
-
-def test_decode_of_the_empty_text_is_no_rows() -> None:
-    assert tabular.decode("") == []
-
-
-def test_decode_of_a_header_only_encoding_is_no_rows() -> None:
+def test_a_header_only_encoding_decodes_to_no_rows() -> None:
+    """Naming columns for an empty result set still says what the columns were."""
     assert tabular.decode(tabular.encode([], fields=["a", "b"])) == []
-
-
-@given(
-    st.lists(
-        st.dictionaries(
-            st.sampled_from(["handle", "host", "name", "state"]),
-            st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=20),
-            min_size=4,
-            max_size=4,
-        ),
-        max_size=10,
-    )
-)
-def test_decode_of_encode_round_trips_any_row_set(rows: list[dict[str, str]]) -> None:
-    assert tabular.decode(tabular.encode(rows)) == rows
 
 
 def test_tabular_is_smaller_than_canonical_json_on_a_realistic_jobs_payload() -> None:

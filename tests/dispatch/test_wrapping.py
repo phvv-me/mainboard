@@ -2,239 +2,157 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from mainboard import ExecutionPlan
 from mainboard.dispatch import HostUnreachable, SshTransport
 from mainboard.dispatch import wrapping as wrapping_module
 from mainboard.dispatch.wrapping import activation, activation_stage, argv, connection, wrap
 from mainboard.manifest import Container, HostProfile
 
-type PlanField = str | HostProfile | Container | dict[str, str] | None
+from .conftest import plan
 
-# Mirrors wrapping.py's own private per-user install dirs; kept as a literal here rather than
+# Mirrors wrapping.py's own private per-user install dirs, kept as a literal here rather than
 # imported so a new bin dir demands a deliberate test update, not silent inherited coverage.
 _USER_BINS = ("$HOME/.local/bin", "$HOME/.pixi/bin", "$HOME/.cargo/bin")
+_CONTAINER = Container(image="nvcr.io/nvidia/pytorch:25.06-py3")
 
 
-def plan(**overrides: PlanField) -> ExecutionPlan:
-    fields: dict[str, PlanField] = {"host": "gold", "profile": HostProfile(), "env": "default"}
-    fields.update(overrides)
-    return ExecutionPlan.model_validate(fields)
+class _FakeMachine:
+    """The only parts of an `SshMachine` that `_open` reaches for, its PATH and its cwd."""
+
+    def __init__(self) -> None:
+        self.env = type("Env", (), {"path": []})()
+        self.cwd = PurePosixPath("/home/user")
 
 
-# --- wrap() ---
-
-
-def test_wrap_stages_cd_path_and_bare_activation() -> None:
-    line = wrap(plan(), "/repo", command="python -m foo")
-    steps = line.split(" && ")
+def test_wrap_stages_cd_then_path_then_modules_before_the_environment() -> None:
+    steps = wrap(plan(), "/repo", command="python -m foo").split(" && ")
     assert steps[0] == "cd /repo"
     assert steps[1] == f"export PATH={':'.join(_USER_BINS)}:$PATH"
     assert "if [ -f /repo/.mainboard/activate.sh ]" in steps[2]
+    assert "export PATH=/repo/.mainboard/.pixi/envs/default/bin:$PATH" in steps[2]
     assert steps[-1] == "python -m foo"
-
-
-def test_wrap_falls_back_to_a_path_prepend_when_activate_sh_is_absent() -> None:
-    line = wrap(plan(), "/repo", command="python -m foo")
-    assert "export PATH=/repo/.mainboard/.pixi/envs/default/bin:$PATH" in line
-
-
-def test_wrap_loads_declared_modules_with_and_without_a_pinned_version() -> None:
-    host = HostProfile(modules={"cuda": "13.0", "gcc": ""})
-    line = wrap(plan(profile=host), "/repo", command="run")
-    assert "module purge" in line
-    assert "module load cuda/13.0" in line
-    assert "module load gcc" in line
-    assert "module load gcc/" not in line
-
-
-def test_wrap_without_activation_stops_after_the_staging() -> None:
-    line = wrap(plan(), "/repo", command="uv tool install .", activate=False)
-    steps = line.split(" && ")
-    assert steps[0] == "cd /repo"
-    assert steps[-1] == "uv tool install ."
-    assert "activate.sh" not in line
-
-
-def test_wrap_without_activation_still_loads_the_declared_modules() -> None:
-    host = HostProfile(modules={"cuda": "13.0"})
-    line = wrap(plan(profile=host), "/repo", command="uv --version", activate=False)
-    assert "module load cuda/13.0" in line
-
-
-def test_wrap_without_activation_never_enters_the_container() -> None:
-    host = HostProfile(container="ngc")
-    container = Container(image="nvcr.io/nvidia/pytorch:25.06-py3")
-    line = wrap(
-        plan(profile=host, container=container), "/repo", command="uv --version", activate=False
+    assert "module" not in " && ".join(steps)
+    moduled = wrap(
+        plan(profile=HostProfile(modules={"cuda": "13.0", "gcc": ""})), "/repo", command="run"
     )
-    assert line.endswith("uv --version")
+    assert "module purge" in moduled
+    assert "module load cuda/13.0" in moduled
+    assert "module load gcc" in moduled
+    assert "module load gcc/" not in moduled
 
 
-def test_activation_names_the_workspace_script() -> None:
-    assert activation("/repo") == "/repo/.mainboard/activate.sh"
-    assert activation("/repo", "serving") == "/repo/.mainboard/activate-serving.sh"
-
-
-def test_wrap_sources_the_requested_environments_own_activation() -> None:
-    """`--env serving` must never reach the default environment's script or prefix."""
-    line = wrap(plan(env="serving"), "/repo", command="python -c 'import sys'")
-    assert "if [ -f /repo/.mainboard/activate-serving.sh ]" in line
-    assert "/repo/.mainboard/activate.sh" not in line
-    assert "export PATH=/repo/.mainboard/.pixi/envs/serving/bin:$PATH" in line
-    assert "envs/default" not in line
-
-
-def test_wrap_skips_module_stage_when_none_declared() -> None:
-    line = wrap(plan(), "/repo", command="run")
-    assert "module" not in line
-
-
-def test_wrap_containerized_without_a_builder_raises() -> None:
-    host = HostProfile(container="ngc")
-    container = Container(image="nvcr.io/nvidia/pytorch:25.06-py3")
-    with pytest.raises(LookupError, match="no container argv builder"):
-        wrap(plan(profile=host, container=container), "/repo", command="python -m foo")
-
-
-def test_wrap_containerized_delegates_to_the_injected_builder() -> None:
-    host = HostProfile(container="ngc")
-    container = Container(image="nvcr.io/nvidia/pytorch:25.06-py3")
-
-    def containerize(inner: list[str]) -> list[str]:
-        return ["apptainer", "exec", "image.sif", *inner]
-
+def test_wrap_without_activation_stops_at_the_footing_an_unprovisioned_host_offers() -> None:
+    """An onboarding stands on `cd`, PATH and modules while the host has no environment yet."""
+    host = HostProfile(modules={"cuda": "13.0"}, container="ngc")
     line = wrap(
-        plan(profile=host, container=container),
+        plan(profile=host, container=_CONTAINER),
+        "/repo",
+        command="uv tool install .",
+        activate=False,
+    )
+    assert line.split(" && ")[0] == "cd /repo"
+    assert "module load cuda/13.0" in line
+    assert "activate.sh" not in line
+    assert line.endswith("uv tool install .")
+
+
+def test_wrap_containerized_delegates_to_the_injected_builder_or_refuses_without_one() -> None:
+    containerized = plan(profile=HostProfile(container="ngc"), container=_CONTAINER)
+    with pytest.raises(LookupError, match="no container argv builder"):
+        wrap(containerized, "/repo", command="python -m foo")
+    line = wrap(
+        containerized,
         "/repo",
         command="python -m foo",
-        containerize=containerize,
+        containerize=lambda inner: ["apptainer", "exec", "image.sif", *inner],
     )
     assert "apptainer exec image.sif bash -c 'python -m foo'" in line
     assert "activate.sh" not in line
 
 
-# --- argv() ---
-
-
-def test_argv_uses_login_shell_by_default() -> None:
-    assert argv(plan(), "/repo", command="run")[:2] == ["bash", "-lc"]
-
-
-def test_argv_uses_plain_shell_when_login_is_false() -> None:
-    assert argv(plan(), "/repo", command="run", login=False)[:2] == ["bash", "-c"]
-
-
-# --- connection() / _open() ---
-
-
-class _FakeMachine:
-    def __init__(self) -> None:
-
-        self.env = type("Env", (), {"path": []})()
-        self.cwd = PurePosixPath("/home/user")
-
-
-def test_open_warms_the_host_and_prepends_user_bins(monkeypatch: pytest.MonkeyPatch) -> None:
-    warmed: list[str] = []
-    machine = _FakeMachine()
-
-    monkeypatch.setattr(SshTransport, "warm", lambda self, host: warmed.append(host))
-    monkeypatch.setattr(SshTransport, "machine", lambda self, host: machine)
-    result = wrapping_module._open("gold", SshTransport())  # ruff:ignore[private-member-access]  reason=unit-tests the module-private connection opener since=2026-08-16
-    assert warmed == ["gold"]
-    assert result is machine
-    expected = [f"/home/user/{b.removeprefix('$HOME/')}" for b in _USER_BINS]
-    assert [str(path) for path in machine.env.path] == expected
-
-
-def test_connection_returns_on_the_first_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-
-    def fake_open(host: str, ssh: SshTransport) -> str:
-        calls.append(host)
-        return "SESSION"
-
-    monkeypatch.setattr(wrapping_module, "_open", fake_open)
-    assert connection("gold") == "SESSION"
-    assert calls == ["gold"]
-
-
-def test_connection_retries_a_transient_blip_then_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(wrapping_module, "_CONNECT_ATTEMPTS", 3)
-    monkeypatch.setattr(wrapping_module, "_CONNECT_BACKOFF", 0.0)
-    attempts = {"n": 0}
-
-    def flaky(host: str, ssh: SshTransport) -> str:
-        attempts["n"] += 1
-        if attempts["n"] < 2:
-            raise HostUnreachable("blip")
-        return "SESSION"
-
-    monkeypatch.setattr(wrapping_module, "_open", flaky)
-    assert connection("gold") == "SESSION"
-    assert attempts["n"] == 2
-
-
-def test_connection_gives_up_after_the_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(wrapping_module, "_CONNECT_ATTEMPTS", 2)
-    monkeypatch.setattr(wrapping_module, "_CONNECT_BACKOFF", 0.0)
-
-    def always_down(host: str, ssh: SshTransport) -> str:
-        raise HostUnreachable("still down")
-
-    monkeypatch.setattr(wrapping_module, "_open", always_down)
-    with pytest.raises(HostUnreachable, match="still down"):
-        connection("gold")
-
-
-def test_connection_does_not_retry_a_host_key_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(wrapping_module, "_CONNECT_ATTEMPTS", 5)
-    monkeypatch.setattr(wrapping_module, "_CONNECT_BACKOFF", 0.0)
-    attempts = {"n": 0}
-
-    def bad_key(host: str, ssh: SshTransport) -> str:
-        attempts["n"] += 1
-        raise ConnectionError("host key verification failed")
-
-    monkeypatch.setattr(wrapping_module, "_open", bad_key)
-    with pytest.raises(ConnectionError):
-        connection("gold")
-    assert attempts["n"] == 1
-
-
-def test_activation_stage_falls_back_to_the_prefix_before_refusing() -> None:
-    stage = activation_stage(plan(), "/repo")
-    assert "elif [ -d /repo/.mainboard/.pixi/envs/default/bin ]" in stage
-    assert stage.endswith("exit 1; fi")
-
-
-def test_activation_stage_offers_the_chefe_script_only_to_the_default_environment() -> None:
-    """chefe only ever wrote one activation, so a named env sourcing it would get the wrong env."""
-    assert "/repo/.chefe/activate.sh" in activation_stage(plan(), "/repo")
-    assert ".chefe" not in activation_stage(plan(env="serving"), "/repo")
-
-
-def test_activation_stage_refusal_names_the_command_that_provisions_the_environment() -> None:
+def test_the_activation_stage_tries_the_named_script_then_the_prefix_then_refuses() -> None:
     """A silent wrong interpreter costs far more to find than a command that refuses to start."""
-    stage = activation_stage(plan(env="vserve"), "/repo")
-    assert "found no vserve environment at /repo/.mainboard/.pixi/envs/vserve on gold" in stage
-    assert "mainboard install vserve --on gold" in stage
+    assert activation("/repo") == "/repo/.mainboard/activate.sh"
+    assert activation("/repo", "serving") == "/repo/.mainboard/activate-serving.sh"
+    default = activation_stage(plan(), "/repo")
+    assert "/repo/.chefe/activate.sh" in default
+    assert "elif [ -d /repo/.mainboard/.pixi/envs/default/bin ]" in default
+    assert default.endswith("exit 1; fi")
+    serving = activation_stage(plan(env="serving"), "/repo")
+    assert "if [ -f /repo/.mainboard/activate-serving.sh ]" in serving
+    assert ".chefe" not in serving
+    assert "envs/default" not in serving
 
 
-def test_activation_stage_refusal_on_this_machine_names_a_local_install() -> None:
-    stage = activation_stage(plan(host="local", env="vserve"), "/repo")
-    assert "mainboard install vserve`" in stage
-    assert "--on" not in stage
+def test_the_refusal_names_the_command_that_provisions_the_environment_where_it_ran() -> None:
+    remote = activation_stage(plan(env="vserve"), "/repo")
+    assert "found no vserve environment at /repo/.mainboard/.pixi/envs/vserve on gold" in remote
+    assert "mainboard install vserve --on gold" in remote
+    here = activation_stage(plan(host="local", env="vserve"), "/repo")
+    assert "mainboard install vserve`" in here
+    assert "--on" not in here
 
 
 def test_a_named_environment_is_never_optional_however_the_caller_asks() -> None:
     """Naming an environment is the user stating which interpreter they want."""
     assert "exit 1" in activation_stage(plan(env="vserve"), "/repo", optional=True)
+    assert "found no vserve environment" in wrap(
+        plan(env="vserve"), "/repo", command="python -c 1"
+    )
 
 
-def test_wrap_refuses_a_named_environment_the_machine_never_provisioned() -> None:
-    line = wrap(plan(env="vserve"), "/repo", command="python -c 1")
-    assert "found no vserve environment" in line
-    assert "exit 1" in line
+@pytest.mark.parametrize(("login", "flag"), [(True, "-lc"), (False, "-c")])
+def test_argv_wraps_the_staged_line_in_a_login_or_a_plain_bash(login: bool, flag: str) -> None:
+    built = argv(plan(), "/repo", command="run", login=login)
+    assert built[:2] == ["bash", flag]
+    assert built[2] == wrap(plan(), "/repo", command="run")
+
+
+def test_open_warms_the_host_before_plumbum_and_prepends_the_user_install_dirs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The warm-up rides a robust one-shot channel so an expired ControlMaster relogs there."""
+    warmed: list[str] = []
+    machine = _FakeMachine()
+    monkeypatch.setattr(SshTransport, "warm", lambda self, host: warmed.append(host))
+    monkeypatch.setattr(SshTransport, "machine", lambda self, host: machine)
+    assert wrapping_module._open("gold", SshTransport()) is machine  # ruff:ignore[private-member-access]  reason=unit-tests the module-private connection opener since=2026-08-16
+    assert warmed == ["gold"]
+    assert [str(path) for path in machine.env.path] == [
+        f"/home/user/{bindir.removeprefix('$HOME/')}" for bindir in _USER_BINS
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failures", "error", "attempts", "raised"),
+    [
+        (0, HostUnreachable("blip"), 1, None),
+        (1, HostUnreachable("blip"), 2, None),
+        (9, HostUnreachable("still down"), 3, HostUnreachable),
+        (9, ConnectionError("host key verification failed"), 1, ConnectionError),
+    ],
+)
+def test_connection_rides_out_a_transient_blip_but_never_retries_a_host_key_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    failures: int,
+    error: BaseException,
+    attempts: int,
+    raised: type[BaseException] | None,
+) -> None:
+    """A rotated host key is not transient, so retrying it only delays the real diagnosis."""
+    monkeypatch.setattr(wrapping_module, "_CONNECT_ATTEMPTS", 3)
+    monkeypatch.setattr(wrapping_module, "_CONNECT_BACKOFF", 0.0)
+    tried: list[str] = []
+
+    def opening(host: str, ssh: SshTransport) -> str:
+        tried.append(host)
+        if len(tried) <= failures:
+            raise error
+        return "SESSION"
+
+    monkeypatch.setattr(wrapping_module, "_open", opening)
+    if raised is None:
+        assert connection("gold") == "SESSION"
+    else:
+        with pytest.raises(raised):
+            connection("gold")
+    assert len(tried) == attempts

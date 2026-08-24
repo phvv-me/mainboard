@@ -1,75 +1,69 @@
 from pathlib import Path
 
 import pytest
+import tomlkit
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from mainboard import Manifest, MissionError, load
-from mainboard.manifest import EnvMode, Guardrail
+from mainboard.manifest import EnvMode, Guardrail, Header, HostProfile, Spec
 
 from ..conftest import MANIFEST
+from ..strategies import PATHS, SPECS, WORDS
+
+# A manifest built from its own schema, over the tables a round trip can compare field by field.
+# Every alphabet is tame on purpose, since a `{{` in a generated value would render at load and
+# the identity under test is the one a workspace with no templates already relies on.
+_MANIFESTS = st.builds(
+    Manifest,
+    workspace=st.builds(Header, name=WORDS, platforms=st.lists(WORDS, max_size=2, unique=True)),
+    vars=st.dictionaries(WORDS, WORDS, max_size=3),
+    deps=st.dictionaries(WORDS, st.builds(Spec, version=SPECS), max_size=3),
+    hosts=st.dictionaries(WORDS, st.builds(HostProfile, kind=WORDS, scratch=PATHS), max_size=2),
+)
 
 
-def test_load_renders_and_validates_the_full_fixture(workspace: Path) -> None:
-    manifest = load(workspace / MANIFEST)
-    assert isinstance(manifest, Manifest)
-    assert manifest.workspace.name == "lab"
-    assert manifest.vars["scratch"] == "/scratch/lab"
-    assert manifest.containers["ngc"].binds == ["/scratch/lab"]
-    assert manifest.envs["serving"].system == {"cuda": "13.0"}
-
-
-def test_vars_render_in_declaration_order_and_reach_later_tables(workspace: Path) -> None:
-    manifest = load(workspace / MANIFEST)
-    assert manifest.vars["station"].startswith(("linux-", "macos-"))
-
-
-def test_submit_time_expressions_pass_through_unrendered(workspace: Path) -> None:
-    manifest = load(workspace / MANIFEST)
-    assert manifest.profile("miyabi-g").defaults.mem_gb == "min(100, attempt * 50)"
-
-
-def test_missing_manifest_and_bad_toml_fail_with_named_errors(tmp_path: Path) -> None:
-    with pytest.raises(MissionError, match="no manifest"):
-        load(tmp_path / MANIFEST)
-    (tmp_path / MANIFEST).write_text("workspace = [broken")
-    with pytest.raises(MissionError, match="not valid TOML"):
-        load(tmp_path / MANIFEST)
-
-
-def test_toml_1_1_syntax_parses(tmp_path: Path) -> None:
-    (tmp_path / MANIFEST).write_text(
-        """[workspace]
-name = "lab"
-
-[containers.ngc]
-image = "nvcr.io/nvidia/pytorch:25.06-py3"
-binds = [
-    "/scratch:/scratch",
-]
-runtime = "apptainer"
-"""
-    )
-    manifest = load(tmp_path / MANIFEST)
-    assert manifest.containers["ngc"].runtime == "apptainer"
-
-
-def test_template_failures_name_their_spot(tmp_path: Path) -> None:
-    (tmp_path / MANIFEST).write_text(
-        '[workspace]\nname = "lab"\n\n[vars]\nbroken = "{{ nope }}"\n'
-    )
-    with pytest.raises(MissionError, match=r"vars\.broken"):
-        load(tmp_path / MANIFEST)
-
-
-def test_schema_failures_point_at_the_file(tmp_path: Path) -> None:
-    (tmp_path / MANIFEST).write_text('[workspace]\nname = "lab"\n\n[hosts.gold]\nkind = 3\n')
-    with pytest.raises(MissionError, match="failed validation"):
-        load(tmp_path / MANIFEST)
-
-
-def test_container_defaults_carry_both_guardrails(workspace: Path) -> None:
-    container = load(workspace / MANIFEST).containers["ngc"]
-    assert container.env_mode is EnvMode.VENV_SYSTEM_SITE
-    assert set(container.guardrails) == {
+def test_load_renders_and_validates_the_full_fixture(loaded: Manifest) -> None:
+    """One pass through tomllib, the `{{ }}` rendering, and the schema, in that order."""
+    assert loaded.workspace.name == "lab"
+    assert loaded.vars["scratch"] == "/scratch/lab"
+    assert loaded.vars["station"].startswith(("linux-", "macos-"))
+    assert loaded.containers["ngc"].binds == ["/scratch/lab"]
+    assert loaded.containers["ngc"].env_mode is EnvMode.VENV_SYSTEM_SITE
+    assert set(loaded.containers["ngc"].guardrails) == {
         Guardrail.UNSET_PIP_CONSTRAINT,
         Guardrail.PIN_SYSTEM_PACKAGES,
     }
+    assert loaded.envs["serving"].system == {"cuda": "13.0"}
+    assert loaded.profile("miyabi-g").defaults.mem_gb == "min(100, attempt * 50)"
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (None, "no manifest"),
+        ("workspace = [broken", "not valid TOML"),
+        ('[workspace]\nname = "lab"\n\n[vars]\nbroken = "{{ nope }}"\n', r"vars\.broken"),
+        ('[workspace]\nname = "lab"\n\n[hosts.gold]\nkind = 3\n', "failed validation"),
+    ],
+)
+def test_a_manifest_that_cannot_be_read_names_what_went_wrong(
+    tmp_path: Path, body: str | None, match: str
+) -> None:
+    """A missing file, broken TOML, a template error and a schema error each name their spot."""
+    path = tmp_path / MANIFEST
+    if body is not None:
+        path.write_text(body, encoding="utf-8")
+    with pytest.raises(MissionError, match=match):
+        load(path)
+
+
+@settings(max_examples=15)
+@given(manifest=_MANIFESTS)
+def test_a_manifest_dumped_to_toml_loads_back_as_the_same_model(
+    tmp_path: Path, manifest: Manifest
+) -> None:
+    """Every example writes and reloads a file, so the budget stays small on purpose."""
+    path = tmp_path / MANIFEST
+    path.write_text(tomlkit.dumps(manifest.model_dump(exclude_defaults=True)), encoding="utf-8")
+    assert load(path) == manifest

@@ -90,7 +90,7 @@ class Pixi(Tool):
     def _has_editable_paths(self) -> bool:
         """Whether the generated manifest carries a mutable editable Python source."""
         try:
-            manifest = tomllib.loads(self.manifest.read_text())
+            manifest = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return False
 

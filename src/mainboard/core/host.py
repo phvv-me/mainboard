@@ -3,6 +3,17 @@ import platform
 _UNIX_FAMILIES = frozenset({"linux", "osx"})
 
 
+def platform_family(platform_name: str) -> str:
+    """The operating-system half of a pixi platform string: `linux-aarch64` -> `linux`.
+
+    The one place the family is read out of a platform name, so an overlay key and a virtual
+    package floor always agree about which machines a platform stands for.
+
+    platform_name: a pixi platform string such as `osx-arm64`, or a bare family such as `linux`.
+    """
+    return platform_name.split("-", maxsplit=1)[0]
+
+
 def platform_selectors(platform_name: str) -> tuple[str, ...]:
     """The `[on.*]` overlay keys covering `platform_name`, most specific first.
 
@@ -12,7 +23,7 @@ def platform_selectors(platform_name: str) -> tuple[str, ...]:
 
     platform_name: a pixi platform string such as `linux-aarch64`.
     """
-    family = platform_name.split("-", maxsplit=1)[0]
+    family = platform_family(platform_name)
     selectors = (platform_name,) if family == platform_name else (platform_name, family)
     return (*selectors, "unix") if family in _UNIX_FAMILIES else selectors
 

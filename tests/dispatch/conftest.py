@@ -1,20 +1,28 @@
-import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from plumbum import local
 
-from mainboard.dispatch.schedulers import JobState, Resources
-from mainboard.manifest import HostProfile
+from mainboard import ExecutionPlan
+from mainboard.dispatch.state import Cache, RunRecord
+from mainboard.dispatch.vocabulary import JobState, Resources
+from mainboard.manifest import Container, HostProfile
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
-    from pathlib import Path
+    from collections.abc import Sequence
     from types import TracebackType
 
     from mainboard.dispatch.transport import Machine
 
-type FieldValue = str | int | float | bool | None | dict[str, "FieldValue"] | list["FieldValue"]
+type FieldValue = str | HostProfile | Container | dict[str, str] | None
+
+# One `(marker, retcode, output)` rule: when `marker` appears in the argv, the command answers
+# `retcode` with `output` on stdout for a clean exit and on stderr otherwise.
+type Rule = tuple[str, int, str]
+
+# One `(marker, error)` pair: when `marker` appears in the argv, the command raises instead of
+# answering, the way a client whose daemon refused its control socket does.
+type Fault = tuple[str, BaseException]
 
 
 @pytest.fixture
@@ -24,95 +32,57 @@ def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-@pytest.fixture
-def stub_bin(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
-    """Stub scheduler/transport executables on PATH so plumbum's `local["cmd"]` resolves."""
-    bindir = tmp_path_factory.mktemp("bin")
-    paths: dict[str, str] = {}
-    for tool in (
-        "qstat",
-        "qsub",
-        "qdel",
-        "sacct",
-        "squeue",
-        "sbatch",
-        "scancel",
-        "pueue",
-        "rsync",
-    ):
-        executable = bindir / tool
-        executable.write_text("#!/bin/sh\n")
-        executable.chmod(0o755)
-        paths[tool] = str(executable)
-    with local.env(PATH=f"{bindir}{os.pathsep}{local.env['PATH']}"):
-        yield paths
-
-
 class RecordingCommand:
-    """A plumbum-command stand-in that records its argv and replays a canned stdout.
+    """A plumbum-command stand-in that records its argv and replays a canned answer.
 
-    `remote["bash"][["-lc", cmd]]` indexes a command then binds args; calling it (or
-    `.run(retcode=None)`) runs it. This double records every bound argv into a shared list and
-    returns the queued stdout for the matching call, so a scheduler test asserts the exact
-    command string built without any real process or ssh.
+    `remote["bash"][["-lc", cmd]]` indexes a command then binds args, and calling it (or
+    `.run(retcode=None)`) runs it. Every bound argv lands in the machine's shared call log and
+    the machine decides the answer, so a scheduler test asserts the exact command string built
+    without any real process or ssh.
     """
 
-    def __init__(self, name: str, calls: list[list[str]], outputs: list[str]) -> None:
+    def __init__(self, name: str, machine: RecordingMachine) -> None:
         self.name = name
-        self.calls = calls
-        self.outputs = outputs
+        self.machine = machine
         self.bound: list[str] = []
 
     def __call__(self, *_, **__) -> str:
-        self.calls.append([self.name, *self.bound])
-        return self.outputs.pop(0) if self.outputs else ""
+        return self.machine.answer([self.name, *self.bound])[1]
 
     def __getitem__(self, args: str | list[str] | tuple[str, ...]) -> RecordingCommand:
         extra = list(args) if isinstance(args, list | tuple) else [args]
-        child = RecordingCommand(self.name, self.calls, self.outputs)
+        child = RecordingCommand(self.name, self.machine)
         child.bound = [*self.bound, *(str(a) for a in extra)]
         return child
 
     def run(self, *_, **__) -> tuple[int, str, str]:
-        return (0, self.__call__(), "")
+        retcode, output = self.machine.answer([self.name, *self.bound])
+        return (retcode, output, "") if retcode == 0 else (retcode, "", output)
 
 
 class RecordingMachine:
-    """A fake plumbum machine: `machine["cmd"]` yields a `RecordingCommand`."""
+    """A fake plumbum machine, and the connection a `wrapping.connection()` double hands back.
 
-    def __init__(self, outputs: list[str] | None = None) -> None:
-        self.calls: list[list[str]] = []
-        self.outputs = list(outputs or [])
-
-    def __getitem__(self, name: str) -> RecordingCommand:
-        return RecordingCommand(name, self.calls, self.outputs)
-
-
-def machine_with(*outputs: str) -> RecordingMachine:
-    """A recording machine queued with these stdout strings, one per command call."""
-    return RecordingMachine(list(outputs))
-
-
-@pytest.fixture
-def remote() -> RecordingMachine:
-    """A recording fake `SshMachine`/`local` for scheduler command-construction tests."""
-    return RecordingMachine()
-
-
-class FakeRemote:
-    """A context-manager stand-in for what `wrapping.connection()` returns.
-
-    `with connection(name) as remote:` only needs `__enter__`/`__exit__`; a scheduler double
-    ignores the remote entirely. `remote["bash"][[...]].run(retcode=None)` (the dispatch
-    preflight's `verify` check) defaults to a clean exit; a test exercising a broken host passes
-    `healthy=False` (and optionally `stderr`) instead.
+    Three knobs answer every shape the dispatch subsystem asks for. `outputs` is the queue a
+    probe reads, one entry per call with the last entry answering every call after it, so a
+    snapshot a backend re-reads inside one operation stays the same. `rules` answer ahead of the
+    queue whenever their marker appears in the argv, which is how a host shell says yes to
+    `command -v uv` and no to `command -v curl`. `faults` raise instead of answering.
     """
 
-    def __init__(self, *, healthy: bool = True, stderr: str = "") -> None:
-        self.healthy = healthy
-        self.stderr = stderr
+    def __init__(
+        self,
+        outputs: Sequence[str] = (),
+        *,
+        rules: Sequence[Rule] = (),
+        faults: Sequence[Fault] = (),
+    ) -> None:
+        self.calls: list[list[str]] = []
+        self.outputs = list(outputs)
+        self.rules = list(rules)
+        self.faults = list(faults)
 
-    def __enter__(self) -> FakeRemote:
+    def __enter__(self) -> RecordingMachine:
         return self
 
     def __exit__(
@@ -123,22 +93,50 @@ class FakeRemote:
     ) -> bool:
         return False
 
-    def __getitem__(self, _name: str) -> _RemoteCommand:
-        return _RemoteCommand(self.healthy, self.stderr)
+    def __getitem__(self, name: str) -> RecordingCommand:
+        return RecordingCommand(name, self)
+
+    @property
+    def lines(self) -> list[str]:
+        """The trailing argument of every recorded call, the shell line each command carried."""
+        return [argv[-1] for argv in self.calls if argv]
+
+    def answer(self, argv: list[str]) -> tuple[int, str]:
+        """The scripted `(retcode, output)` for `argv`, recording it as run.
+
+        argv: the full command line, its binary first.
+        """
+        self.calls.append(argv)
+        joined = " ".join(argv)
+        for marker, error in self.faults:
+            if marker in joined:
+                raise error
+        for marker, retcode, output in self.rules:
+            if marker in joined:
+                return retcode, output
+        if len(self.outputs) > 1:
+            return 0, self.outputs.pop(0)
+        return 0, self.outputs[0] if self.outputs else ""
+
+    def ran(self, marker: str) -> bool:
+        """Whether any command run so far carried `marker`."""
+        return any(marker in " ".join(argv) for argv in self.calls)
 
 
-class _RemoteCommand:
-    """A minimal plumbum-command double for `remote["bash"][[...]].run(retcode=None)`."""
+def machine_with(
+    *outputs: str, rules: Sequence[Rule] = (), faults: Sequence[Fault] = ()
+) -> RecordingMachine:
+    """A recording machine queued with these stdout strings, one per command call.
 
-    def __init__(self, healthy: bool, stderr: str) -> None:
-        self.healthy = healthy
-        self.stderr = stderr
+    The double stands in for the `Machine` union everywhere dispatch runs a command. Nothing
+    type checks this suite (pyrefly reads `src/**` alone), so it is handed over as itself rather
+    than cast, which keeps its call log readable at every assertion.
 
-    def __getitem__(self, _args: str | list[str] | tuple[str, ...]) -> _RemoteCommand:
-        return self
-
-    def run(self, *_, **__) -> tuple[int, str, str]:
-        return (0, "", "") if self.healthy else (1, "", self.stderr)
+    outputs: stdout replayed in order, the last entry answering every later call.
+    rules: `(marker, retcode, output)` answers matched against the argv ahead of the queue.
+    faults: `(marker, error)` pairs raised instead of answering.
+    """
+    return RecordingMachine(outputs, rules=rules, faults=faults)
 
 
 class RecordingScheduler:
@@ -147,6 +145,7 @@ class RecordingScheduler:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[str | tuple[str, ...], ...]]] = []
         self.submit_handle = "H1"
+        self.submit_resources = Resources()
         self.state_result = JobState(handle="H1", state="F", exit_code=0, verdict="ok")
         self.queue_list: list[str] = []
         self.revive_cleared: list[str] = []
@@ -200,8 +199,36 @@ class RecordingScheduler:
         return self.state_result
 
 
-def profile(**overrides: FieldValue) -> HostProfile:
-    """A `HostProfile` for dispatch tests, defaulting to an ssh host with a sync allowlist."""
-    fields: dict[str, FieldValue] = {"kind": "ssh", "root": "/repo", "sync": {"include": ["src"]}}
+def plan(**overrides: FieldValue) -> ExecutionPlan:
+    """An `ExecutionPlan` for gold's default environment, overridden field by field."""
+    fields: dict[str, FieldValue] = {
+        "host": "gold",
+        "profile": HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}),
+        "env": "default",
+    }
     fields.update(overrides)
-    return HostProfile.model_validate(fields)
+    return ExecutionPlan.model_validate(fields)
+
+
+def cache() -> Cache:
+    """A dispatch state cache in a private in-memory database.
+
+    Every table the file-backed store creates is created here too, so a test reads and writes
+    exactly what production does without paying the WAL journal's fsync once per test, which is
+    what made this slice the slowest in the suite.
+    """
+    return Cache(Path(":memory:"))
+
+
+def run_record(handle: str, *, target: str = "gold", submitted_at: str = "t0") -> RunRecord:
+    """One dispatched run's provenance row, the unit the registry stores and reconciles."""
+    return RunRecord(
+        handle=handle,
+        target=target,
+        kind="ssh",
+        script="job.sh",
+        args="",
+        git_sha="abc1234",
+        dirty=0,
+        submitted_at=submitted_at,
+    )

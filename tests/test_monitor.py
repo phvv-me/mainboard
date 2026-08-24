@@ -6,17 +6,18 @@ import pytest
 from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import Board, Job
+from mainboard.dispatch import SshTransport
 from mainboard.dispatch.backends import HpcAiBackend, VastBackend
-from mainboard.dispatch.schedulers import HostUnreachable, JobState
+from mainboard.dispatch.schedulers import HostUnreachable
 from mainboard.dispatch.state import Cache, RunRecord
+from mainboard.dispatch.vocabulary import JobState
 from mainboard.experiments import StudyLedger
 from mainboard.experiments.identity import study_label
 
 from .dispatch.backends.conftest import FakeTransport, refused
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-    from pathlib import Path
+    from collections.abc import Callable, Sequence
     from urllib.request import Request
 
     from mainboard.dispatch import Handle
@@ -25,13 +26,7 @@ if TYPE_CHECKING:
 
 _HOST = "miyabi-g"
 _STUDY = "ec15c1b1e073"
-
-
-@pytest.fixture
-def board(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Board:
-    """A real board over the fixture manifest, its dispatch cache isolated in the workspace."""
-    monkeypatch.chdir(workspace)
-    return Board(workspace)
+_VAST_INSTANCE = "https://console.vast.ai/api/v0/instances/13/"
 
 
 class Rented(VastBackend):
@@ -115,16 +110,23 @@ def seed(
     return run
 
 
-def probing(board: Board, monkeypatch: pytest.MonkeyPatch, answer: Callable[[Handle], JobState]):
-    """Pin the board's scheduler probe to `answer`, returning the handles it was asked about."""
-    asked: list[str] = []
+def probing(
+    board: Board, monkeypatch: pytest.MonkeyPatch, answer: Callable[[Handle], JobState]
+) -> list[list[str]]:
+    """Pin the board's batched scheduler probe to `answer`, one entry per round trip it made.
 
-    def state(handle: Handle) -> JobState:
-        asked.append(handle.id)
-        return answer(handle)
+    The seam is the batched probe rather than the single one, since a sweep asks each host once
+    about every handle it still owes an answer on. What the returned list therefore says is both
+    which handles were probed and how many times the host was actually reached for them.
+    """
+    trips: list[list[str]] = []
 
-    monkeypatch.setattr(board.dispatcher, "state", state)
-    return asked
+    def states(handles: Sequence[Handle]) -> dict[str, JobState]:
+        trips.append([handle.id for handle in handles])
+        return {handle.id: answer(handle) for handle in handles}
+
+    monkeypatch.setattr(board.dispatcher, "states", states)
+    return trips
 
 
 def finishing(verdict: str = "ok", exit_code: int | None = 0) -> Callable[[Handle], JobState]:
@@ -132,13 +134,6 @@ def finishing(verdict: str = "ok", exit_code: int | None = 0) -> Callable[[Handl
     return lambda handle: JobState(
         handle=handle.id, state="F", exit_code=exit_code, verdict=verdict
     )
-
-
-def test_a_cache_with_nothing_tracked_reports_no_change(board: Board) -> None:
-    report = board.monitor().once()
-    assert report.running == 0
-    assert not report.changed
-    assert report.finished == [] and report.failed == [] and report.unreachable_hosts == []
 
 
 def test_a_still_running_job_is_counted_and_its_state_memoized(
@@ -158,7 +153,7 @@ def test_a_finished_job_is_pulled_reported_and_announced_once(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seed("2", fetch_path="results/run")
-    asked = probing(board, monkeypatch, finishing())
+    trips = probing(board, monkeypatch, finishing())
     pulled: list[str] = []
     monkeypatch.setattr(board.dispatcher, "fetch", lambda handle, **kw: pulled.append(handle.id))
     report = board.monitor().once()
@@ -169,31 +164,33 @@ def test_a_finished_job_is_pulled_reported_and_announced_once(
     assert board.dispatcher.cache.run("2").reported == "ok"
     again = board.monitor().once()
     assert not again.changed and again.running == 0
-    assert asked == ["2"]  # the settled run is never probed a second time
+    assert trips == [["2"]]  # the settled run is never probed a second time
 
 
-def test_a_finished_job_without_a_results_path_pulls_nothing(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "fetch_path",
+    [None, "results/run"],
+    ids=[
+        "a run that recorded no results path pulls nothing",
+        "a pull that fails leaves the job finished without a path",
+    ],
+)
+def test_a_finished_job_reports_only_the_results_it_could_actually_bring_back(
+    board: Board, monkeypatch: pytest.MonkeyPatch, fetch_path: str | None
 ) -> None:
-    seed("3")
-    probing(board, monkeypatch, finishing())
-    [item] = board.monitor().once().finished
-    assert item.pulled_path is None
-
-
-def test_a_pull_that_fails_leaves_the_job_finished_without_a_path(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seed("4", fetch_path="results/run")
+    """One missing artifact is a warning in the log, never a sweep that dies holding every other
+    job's outcome, so the verdict still lands whatever the transfer did.
+    """
+    seed("3", fetch_path=fetch_path)
     probing(board, monkeypatch, finishing())
 
-    def explode(handle: Handle, **kw: object) -> None:
+    def explode(handle: Handle, **kw: SshTransport | None) -> None:
         raise ProcessExecutionError(["rsync"], 23, "", "no such file")
 
     monkeypatch.setattr(board.dispatcher, "fetch", explode)
     [item] = board.monitor().once().finished
     assert item.pulled_path is None
-    assert board.dispatcher.cache.run("4").reported == "ok"
+    assert board.dispatcher.cache.run("3").reported == "ok"
 
 
 def test_a_failed_job_carries_a_network_free_reason(
@@ -206,23 +203,29 @@ def test_a_failed_job_carries_a_network_free_reason(
     assert "memory" in report.failed[0].reason
 
 
-def test_a_terminal_verdict_already_cached_is_harvested_without_probing(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("reported", "changed"),
+    [
+        (None, True),
+        ("ok", False),
+    ],
+    ids=[
+        "a cached terminal verdict is harvested without probing",
+        "a settled run the sweep already reported is not tracked again",
+    ],
+)
+def test_a_verdict_the_cache_already_holds_costs_no_probe(
+    board: Board, monkeypatch: pytest.MonkeyPatch, reported: str | None, changed: bool
 ) -> None:
-    seed("6", verdict="ok")
-    asked = probing(board, monkeypatch, finishing())
+    """A terminal verdict can never change, which is also what keeps a finished job the queue has
+    already forgotten from reading back as vanished.
+    """
+    seed("6", verdict="ok", reported=reported)
+    trips = probing(board, monkeypatch, finishing())
     report = board.monitor().once()
-    assert [item.handle for item in report.finished] == ["6"]
-    assert asked == []
-
-
-def test_a_settled_run_the_sweep_already_reported_is_not_tracked_again(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seed("7", verdict="ok", reported="ok")
-    asked = probing(board, monkeypatch, finishing())
-    report = board.monitor().once()
-    assert not report.changed and asked == []
+    assert report.changed is changed
+    assert [item.handle for item in report.finished] == (["6"] if changed else [])
+    assert trips == []
 
 
 def test_a_finished_trial_settles_the_study_that_owns_it(
@@ -243,13 +246,13 @@ def test_a_down_host_is_reported_once_and_its_jobs_left_for_the_next_pass(
     def unreachable(handle: Handle) -> JobState:
         raise HostUnreachable("ssh connect to 'miyabi-g' failed: connection timed out")
 
-    asked = probing(board, monkeypatch, unreachable)
+    trips = probing(board, monkeypatch, unreachable)
     report = board.monitor().once()
     assert [(host.host, "timed out" in host.reason) for host in report.unreachable_hosts] == [
         (_HOST, True)
     ]
     assert report.running == 0 and not report.changed
-    assert len(asked) == 1  # the second job on the same host costs no further probe
+    assert trips == [["10", "9"]]  # one round trip carried both jobs on the host, newest first
     assert len(board.dispatcher.cache.tracked()) == 2
 
 
@@ -260,36 +263,60 @@ def test_a_host_the_manifest_can_no_longer_resolve_is_reported_not_raised(board:
     assert "root" in host.reason
 
 
-# --- releasing what a settled run still holds ---
-
-
-def test_a_finished_vast_rental_is_settled_and_then_cancelled(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+def test_a_target_that_will_not_answer_is_asked_once_whatever_kinds_its_runs_carry(
+    board: Board,
 ) -> None:
-    """Vast restarts the exited container until someone cancels, so the sweep is what cancels."""
+    """A host redeclared under another scheduler leaves older runs carrying the older kind.
+
+    Which scheduler answers for a run is the kind it was dispatched under, so those runs are two
+    groups on one target. The target is still one machine, so the second group is not reached for
+    once the first has said the machine is not there.
+    """
+    seed("19", target="gold", kind="pbs")
+    seed("20", target="gold", kind="ssh")
+    report = board.monitor().once()
+    assert [(host.host, "root" in host.reason) for host in report.unreachable_hosts] == [
+        ("gold", True)
+    ]
+    assert len(board.dispatcher.cache.tracked()) == 2
+
+
+@pytest.mark.parametrize(
+    ("backend", "replies", "ended"),
+    [
+        (Rented, [*rented(), {"success": True}], [_VAST_INSTANCE]),
+        (
+            Instance,
+            [listed("13", "Stopped"), {}, {}],
+            [
+                "https://www.hpc-ai.com/api/instance/stop",
+                "https://www.hpc-ai.com/api/instance/terminate",
+            ],
+        ),
+    ],
+    ids=[
+        "vast restarts the exited container until someone cancels",
+        "an hpc-ai instance runs until it is terminated, whatever its command did",
+    ],
+)
+def test_a_finished_rental_is_settled_and_then_ended(
+    board: Board,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: type[Rented] | type[Instance],
+    replies: list[Reply],
+    ended: list[str],
+) -> None:
+    """A finished command does not end a provider run, so a terminal verdict here is followed by
+    the cancel the scheduler path deliberately never makes.
+    """
     monkeypatch.setenv("VAST_API_KEY", "key-123")
-    seed("13", target="rented", kind=Rented.name)
-    Rented.replies = [*rented(), {"success": True}]
+    monkeypatch.setenv("HPCAI_API_KEY", "key-123")
+    seed("13", target="rented", kind=backend.name)
+    backend.replies = replies
     report = board.monitor().once()
     assert [item.handle for item in report.finished] == ["13"]
-    assert Rented.calls[-1].get_method() == "DELETE"
-    assert Rented.calls[-1].full_url == "https://console.vast.ai/api/v0/instances/13/"
+    assert [call.full_url for call in backend.calls[-len(ended) :]] == ended
     assert board.dispatcher.cache.run("13").reported == "ok"
-
-
-def test_a_finished_hpc_ai_instance_is_settled_and_then_terminated(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An HPC-AI instance runs until it is terminated, whatever its command already did."""
-    monkeypatch.setenv("HPCAI_API_KEY", "key-123")
-    seed("14", target="rented", kind=Instance.name)
-    Instance.replies = [listed("14", "Stopped"), {}, {}]
-    report = board.monitor().once()
-    assert [item.handle for item in report.finished] == ["14"]
-    assert [call.full_url for call in Instance.calls[-2:]] == [
-        "https://www.hpc-ai.com/api/instance/stop",
-        "https://www.hpc-ai.com/api/instance/terminate",
-    ]
 
 
 def test_a_finished_scheduler_job_is_never_cancelled(

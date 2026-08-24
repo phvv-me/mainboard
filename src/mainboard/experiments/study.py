@@ -154,7 +154,7 @@ class StudyLedger:
     def append(self, event: StudyEvent) -> None:
         """Append one event line, creating the ledger's directory on first use."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a") as opened:
+        with self.path.open("a", encoding="utf-8") as opened:
             opened.write(event.model_dump_json() + "\n")
 
     def created(self, study: Study) -> None:
@@ -165,7 +165,7 @@ class StudyLedger:
         """Every recorded event, oldest first, or `[]` when nothing has been appended yet."""
         if not self.path.is_file():
             return []
-        lines = self.path.read_text().splitlines()
+        lines = self.path.read_text(encoding="utf-8").splitlines()
         return [StudyEvent.model_validate_json(line) for line in lines if line]
 
     def progress(self) -> Progress:

@@ -8,11 +8,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pytest_subprocess import FakeProcess
+    from pytest_subprocess.fake_popen import FakePopen
 
 # What the fixture workspace declares: the first template, which is the default, renders under
-# its own home, and the second declares none and lands at the workspace root.
+# its own home, and the second declares none and lands at the workspace root. The third is on
+# disk without being declared at all, the shape a one-off render names by path.
 _FIRST = "templates/study"
 _SECOND = "templates/tool"
+_UNDECLARED = "elsewhere/oneoff"
 _HOME = "studies"
 
 _TASKS = "mainboard.tasks.toml"
@@ -21,8 +24,8 @@ _ROWS = 'sc-baseline = { run = "python -m experiments.baseline.run execute" }\n'
 
 @pytest.fixture
 def templates(workspace: Path) -> None:
-    """Both declared templates, enough of each to be recognised as one."""
-    for declared in (_FIRST, _SECOND):
+    """Every template on this disk, declared or not, enough of each to be recognised as one."""
+    for declared in (_FIRST, _SECOND, _UNDECLARED):
         directory = workspace / declared
         directory.mkdir(parents=True)
         (directory / "copier.yml").write_text("_subdirectory: template\n")
@@ -31,7 +34,7 @@ def templates(workspace: Path) -> None:
 def rendering(fp: FakeProcess, destination: Path, *, tasks: bool = True) -> None:
     """Stand in for copier, laying down what a real render leaves behind."""
 
-    def render(process: object) -> None:
+    def render(process: FakePopen) -> None:
         destination.mkdir(parents=True)
         (destination / "README.md").write_text("rendered\n")
         if tasks:
@@ -43,112 +46,123 @@ def rendering(fp: FakeProcess, destination: Path, *, tasks: bool = True) -> None
 def test_a_project_lands_under_its_templates_home_with_its_rows_read_back(
     workspace: Path, templates: None, fp: FakeProcess
 ) -> None:
-    """The first declared template is the default, and where it renders is its own to say."""
+    """The first declared template is the default, and where it renders is its own to say. The
+    task rows it writes are read back for the caller to paste, since the root manifest is a
+    hand-curated file and half of that edit landing on its own is worse than none of it.
+    """
     rendering(fp, workspace / _HOME / "scratch-probe")
     made = Board(workspace).scaffold().render("Scratch Probe")
     assert made.project == "scratch-probe"
     assert made.path == str(workspace / _HOME / "scratch-probe")
+    assert made.tasks == str(workspace / _HOME / "scratch-probe" / _TASKS)
     assert made.snippet == _ROWS
     assert made.paste == f"{workspace / 'mainboard.toml'} [tasks]"
     assert _FIRST in " ".join(fp.calls[0])
 
 
-def test_the_answers_come_from_the_name_and_from_what_the_workspace_declared(
-    workspace: Path, templates: None, fp: FakeProcess
+@pytest.mark.parametrize(
+    ("template", "source", "landing"),
+    [
+        ("", _FIRST, f"{_HOME}/probe"),
+        ("tool", _SECOND, "probe"),
+        (_FIRST, _FIRST, f"{_HOME}/probe"),
+        (_UNDECLARED, _UNDECLARED, "probe"),
+        ("gh:owner/templates.git", "gh:owner/templates.git", "probe"),
+    ],
+    ids=[
+        "the workspace's first declared template is the default",
+        "naming a template is naming its home too",
+        "spelling out a declared template's own path is naming that template",
+        "a path nobody declared is a template too",
+        "a template to fetch reaches the engine exactly as written",
+    ],
+)
+def test_where_a_template_resolves_from_decides_where_the_project_lands(
+    workspace: Path, templates: None, fp: FakeProcess, template: str, source: str, landing: str
 ) -> None:
-    """One argument stands in for the questionnaire, which is the point of the verb."""
-    rendering(fp, workspace / _HOME / "scratch-probe")
-    Board(workspace).scaffold().render("Scratch Probe")
+    """Resolving a remote template is the engine's job, so only a path on this disk is checked."""
+    destination = workspace / landing
+    rendering(fp, destination, tasks=False)
+    made = Board(workspace).scaffold().render("probe", template=template)
+    assert made.path == str(destination)
+    assert source in " ".join(fp.calls[0])
+
+
+@pytest.mark.parametrize(
+    ("given", "landing", "tasks", "present", "absent"),
+    [
+        (
+            {},
+            f"{_HOME}/scratch-probe",
+            True,
+            ("project_name=Scratch Probe", "description=Scratch Probe", "home=monorepo"),
+            (),
+        ),
+        (
+            {
+                "dest": "apart",
+                "description": "Measures one thing well.",
+                "answers": {"home": "standalone", "first_paper": "d"},
+            },
+            "apart",
+            False,
+            (
+                "description=Measures one thing well.",
+                "home=standalone",
+                "first_paper=d",
+            ),
+            ("home=monorepo",),
+        ),
+    ],
+    ids=[
+        "one argument stands in for the questionnaire",
+        "the manifest settles what is always the same and a caller settles the rest",
+    ],
+)
+def test_the_answers_come_from_the_name_the_workspace_and_the_caller(
+    workspace: Path,
+    templates: None,
+    fp: FakeProcess,
+    given: dict[str, str | dict[str, str]],
+    landing: str,
+    tasks: bool,
+    present: tuple[str, ...],
+    absent: tuple[str, ...],
+) -> None:
+    rendering(fp, workspace / landing, tasks=tasks)
+    made = Board(workspace).scaffold().render("Scratch Probe", **given)
     staged = " ".join(fp.calls[0])
-    assert "project_name=Scratch Probe" in staged
-    assert "description=Scratch Probe" in staged
-    assert "home=monorepo" in staged
     assert "--defaults" in staged
+    assert all(answer in staged for answer in present)
+    assert not any(answer in staged for answer in absent)
+    assert (made.snippet == _ROWS) is tasks
+    assert (made.paste != "") is tasks
 
 
-def test_an_answer_given_overrides_the_one_the_manifest_declares(
-    workspace: Path, templates: None, fp: FakeProcess
+@pytest.mark.parametrize(
+    ("declared", "occupied", "refusal"),
+    [
+        (True, True, "already exists"),
+        (False, False, f"no project template at .*{_FIRST}"),
+        (False, False, "declares no templates"),
+    ],
+    ids=[
+        "a generator that can overwrite a project is one nobody runs twice",
+        "a missing template names the path, since that is usually a wrong root",
+        "nothing to render is a fact about the manifest",
+    ],
+)
+def test_a_render_that_cannot_happen_says_which_thing_is_in_the_way(
+    workspace: Path, declared: bool, occupied: bool, refusal: str
 ) -> None:
-    """The manifest settles what is always the same; a caller settles the rest."""
-    rendering(fp, workspace / "elsewhere", tasks=False)
-    made = (
-        Board(workspace)
-        .scaffold()
-        .render("probe", dest="elsewhere", answers={"home": "standalone", "first_paper": "d"})
-    )
-    staged = " ".join(fp.calls[0])
-    assert "home=standalone" in staged and "home=monorepo" not in staged
-    assert "first_paper=d" in staged
-    assert made.snippet == "" and made.paste == ""
-
-
-def test_a_named_template_declaring_no_home_renders_at_the_workspace_root(
-    workspace: Path, templates: None, fp: FakeProcess
-) -> None:
-    """Naming a template is naming everything about it, its home included."""
-    rendering(fp, workspace / "probe", tasks=False)
-    made = Board(workspace).scaffold().render("probe", template="tool")
-    assert made.path == str(workspace / "probe")
-    assert _SECOND in " ".join(fp.calls[0])
-
-
-def test_a_declared_templates_own_path_still_gets_what_the_workspace_declared(
-    workspace: Path, templates: None, fp: FakeProcess
-) -> None:
-    """Spelling out the directory is naming the same template, home and answers included."""
-    rendering(fp, workspace / _HOME / "probe")
-    made = Board(workspace).scaffold().render("probe", template=_FIRST)
-    assert made.path == str(workspace / _HOME / "probe")
-    assert "home=monorepo" in " ".join(fp.calls[0])
-
-
-def test_a_template_nobody_declared_is_rendered_from_the_path_given(
-    workspace: Path, fp: FakeProcess
-) -> None:
-    """A path is a template too, which is what keeps a one-off render one command."""
-    oneoff = workspace / "elsewhere/oneoff"
-    oneoff.mkdir(parents=True)
-    (oneoff / "copier.yml").write_text("_subdirectory: template\n")
-    rendering(fp, workspace / "probe", tasks=False)
-    Board(workspace).scaffold().render("probe", template="elsewhere/oneoff")
-    assert str(oneoff) in " ".join(fp.calls[0])
-
-
-def test_a_template_to_fetch_reaches_the_engine_exactly_as_written(
-    workspace: Path, fp: FakeProcess
-) -> None:
-    """Resolving a remote template is the engine's job, so nothing here checks a local path."""
-    rendering(fp, workspace / "probe", tasks=False)
-    Board(workspace).scaffold().render("probe", template="gh:owner/templates.git")
-    assert "gh:owner/templates.git" in " ".join(fp.calls[0])
-
-
-def test_a_description_given_is_the_description_carried(
-    workspace: Path, templates: None, fp: FakeProcess
-) -> None:
-    """The one sentence a README and every task row repeat is worth saying once."""
-    rendering(fp, workspace / _HOME / "probe")
-    Board(workspace).scaffold().render("probe", description="Measures one thing well.")
-    assert "description=Measures one thing well." in " ".join(fp.calls[0])
-
-
-def test_rendering_over_an_existing_directory_is_refused(workspace: Path, templates: None) -> None:
-    """A generator that can overwrite a project is a generator nobody runs twice."""
-    (workspace / _HOME / "probe").mkdir(parents=True)
-    with pytest.raises(MissionError, match="already exists"):
-        Board(workspace).scaffold().render("probe")
-
-
-def test_a_workspace_declaring_no_templates_says_so(workspace: Path) -> None:
-    """Nothing to render is a fact about the manifest, so the refusal points back at it."""
-    (workspace / "mainboard.toml").write_text('[workspace]\nname = "bare"\n')
-    with pytest.raises(MissionError, match="declares no templates"):
-        Board(workspace).scaffold().render("probe")
-
-
-def test_a_declared_template_that_is_not_one_says_where_it_looked(workspace: Path) -> None:
-    """The refusal names the path, since a missing template is usually a wrong root."""
-    with pytest.raises(MissionError, match=f"no project template at .*{_FIRST}"):
+    if declared:
+        (workspace / _FIRST).mkdir(parents=True)
+        (workspace / _FIRST / "copier.yml").write_text("_subdirectory: template\n")
+    if occupied:
+        (workspace / _HOME / "probe").mkdir(parents=True)
+    if "declares no templates" in refusal:
+        (workspace / "mainboard.toml").write_text('[workspace]\nname = "bare"\n')
+    with pytest.raises(MissionError, match=refusal):
         Board(workspace).scaffold().render("probe")
 
 

@@ -18,7 +18,7 @@ from mainboard.dispatch.backends import (
     ProviderBackend,
     VastBackend,
 )
-from mainboard.dispatch.schedulers import JobState, Resources
+from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Container, HostProfile
 
 if TYPE_CHECKING:
@@ -113,6 +113,34 @@ class FakeTransport:
         body = reply.encode() if isinstance(reply, str) else json.dumps(reply).encode()
         return SimpleNamespace(status=200, read=lambda: body)
 
+    @property
+    def bodies(self) -> list[dict]:
+        """The JSON body of every recorded request that carried one, in the order they went out.
+
+        A signed storage fetch carries no body at all, so it is left out rather than read as an
+        empty one, which keeps the list lined up with the API calls a backend really made.
+        """
+        return [json.loads(call.data) for call in self.calls if call.data]
+
+    @property
+    def urls(self) -> list[str]:
+        """The full url of every recorded request, in the order the backend asked for them."""
+        return [call.full_url for call in self.calls]
+
+
+class Naps:
+    """A sleeper that records how long it was asked to wait and never really waits.
+
+    A log poll retries on a schedule, so a test has to prove the wait was driven without paying
+    for it in wall time.
+    """
+
+    def __init__(self) -> None:
+        self.waited: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.waited.append(seconds)
+
 
 def refused(status: int, url: str = "https://console.vast.ai/api/v0/instances/7/") -> HTTPError:
     """The fault urllib raises for `status`, queued on the fake transport as a provider refusal."""
@@ -124,9 +152,14 @@ def not_found(url: str = "https://console.vast.ai/api/v0/instances/7/") -> HTTPE
     return refused(404, url)
 
 
-def vast_backend(*responses: Reply, spot: bool = False) -> VastBackend:
-    """A `VastBackend` over a queued-response transport, its log poll never really sleeping."""
-    return VastBackend(spot=spot, transport=FakeTransport(*responses), sleeper=lambda _: None)
+def vast_backend(*responses: Reply, spot: bool = False, naps: Naps | None = None) -> VastBackend:
+    """A `VastBackend` over a queued-response transport, its log poll never really sleeping.
+
+    responses: the replies the transport hands back, one per call, in order.
+    spot: whether the backend rents interruptible capacity and prices by the bid floor.
+    naps: the sleeper to record the log poll's waits on, a fresh silent one when none is given.
+    """
+    return VastBackend(spot=spot, transport=FakeTransport(*responses), sleeper=naps or Naps())
 
 
 class FakeSandbox:
@@ -218,7 +251,7 @@ class FakeModal(SimpleNamespace):
     """A fully faked `modal` module: only the surface `ModalBackend` actually calls.
 
     `config.config` mirrors the real module's settings mapping, which is where the SDK itself
-    looks for the token pair before its first call; a test blanks an entry to stand for a
+    looks for the token pair before its first call, and a test blanks an entry to stand for a
     machine nobody ran `modal token new` on. `environments.list_environments` and
     `Workspace.from_context().billing` are the two account reads the SDK offers, reachable here
     through the same `environments` and `billing` the test holds.

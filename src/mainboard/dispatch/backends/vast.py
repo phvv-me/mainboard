@@ -14,7 +14,7 @@ from urllib.request import Request
 from ...core.errors import MissionError
 from ...costs.imports import from_vast
 from ..jobs.spec import walltime_seconds
-from ..schedulers.base import JobState
+from ..vocabulary import JobState
 from .base import (
     Account,
     Credentials,
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
-    from ..schedulers.base import Resources
+    from ..vocabulary import Resources
     from .base import Transport
 
 # The image an uncontainerized plan rents under: Vast's own base image, whose `-auto` tag resolves

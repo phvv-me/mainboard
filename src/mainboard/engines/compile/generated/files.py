@@ -5,13 +5,14 @@ from contextlib import contextmanager
 from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING
 
-from filelock import FileLock
 from patos import FrozenModel
 
 from .writer import Writer
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+    from filelock import FileLock
 
 # One FileLock instance per generated directory, shared across every in-process acquisition.
 # filelock is reentrant per INSTANCE, so a caller may open a transaction (stale-check plus
@@ -32,7 +33,13 @@ class GeneratedFiles(FrozenModel):
 
         The :class:`Writer` exists only for the body of this context, so holding the lock is
         not a convention a caller can forget but the only way to reach a write at all.
+
+        filelock is imported here rather than at the top of the file because it drags asyncio in
+        behind it, 13 ms of a cold start this package's entry point pays on every command, and
+        the only commands that write a generated file are the ones that reach this line.
         """
+        from filelock import FileLock
+
         self.directory.mkdir(exist_ok=True)
         key = self.directory.resolve()
         lock = _LOCKS.setdefault(key, FileLock(key / ".sync.lock"))

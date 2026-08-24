@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board
 from mainboard.cli import build
 from mainboard.dispatch import HostSetup
 from mainboard.dispatch.state import Cache, RunRecord
@@ -11,179 +10,40 @@ from mainboard.dispatch.state import Cache, RunRecord
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from .conftest import Relayed
+
 _FIELD_VALUE_HEADER = "field\tvalue"
 
+# One run as the jobs table projects it, the row every case below is a variation on.
+_ROW = {
+    "state": "ok",
+    "host": "gold",
+    "name": "train",
+    "handle": "H1",
+    "submitted_at": "2026-08-01T00:00:00",
+}
 
-def _seed_run(
-    *,
-    handle: str = "H1",
-    target: str = "gold",
-    name: str = "train",
-    state: str = "ok",
-    submitted_at: str = "2026-08-01T00:00:00",
-) -> None:
+
+def seed_run(handle: str = "H1", submitted_at: str = "2026-08-01T00:00:00") -> None:
+    """Record one dispatched run in the shared cache, the way a submit would have."""
     Cache().record(
         RunRecord(
             handle=handle,
-            target=target,
+            target="gold",
             kind="ssh",
             script="job.sh",
             args="",
             git_sha="abc1234",
             dirty=0,
             submitted_at=submitted_at,
-            name=name,
-            state=state,
+            name="train",
+            state="ok",
         )
     )
 
 
-def test_facts_verb_prints_host_facts_json(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["facts", "--json"])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] >= 1
-
-
-def test_facts_verb_default_is_a_rich_table(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["facts"])
-    out = capsys.readouterr().out
-    assert "hostname" in out
-    assert "facts" in out
-
-
-def test_facts_verb_agent_mode_is_tabular(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["facts", "--agent"])
-    text = capsys.readouterr().out
-    assert text.splitlines()[0] == _FIELD_VALUE_HEADER
-    assert "hostname" in text
-
-
-def test_facts_verb_fields_projection_in_json_mode(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["facts", "--json", "--fields", "hostname,schema_version"])
-    payload = json.loads(capsys.readouterr().out)
-    assert set(payload) == {"hostname", "schema_version"}
-
-
-def test_install_verb_delegates_to_the_board(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[tuple[str, str, bool, str]] = []
-
-    def fake_install(self, env="default", *, resolve=False, profile="", watch=None):
-        seen.append((self.host, env, resolve, profile))
-        return HostSetup(host=self.host, root="/repo")
-
-    monkeypatch.setattr(Board, "install", fake_install)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["install", "serving", "--resolve", "--profile", "gold"])
-    assert seen == [("local", "serving", True, "gold")]
-
-
-def test_install_verb_targets_a_host_alias(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[str] = []
-
-    def fake_install(self, env="default", *, resolve=False, profile="", watch=None):
-        seen.append(self.host)
-        return HostSetup(host=self.host, root="/repo")
-
-    monkeypatch.setattr(Board, "install", fake_install)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["install", "--on", "gold"])
-    assert seen == ["gold"]
-
-
-def test_jobs_verb_default_is_a_rich_table(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    _seed_run()
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["jobs"])
-    out = capsys.readouterr().out
-    assert "H1" in out
-    assert "gold" in out
-    assert "jobs" in out
-
-
-def test_jobs_verb_json_mode_lists_the_projected_fields(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    _seed_run()
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["jobs", "--json"])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == [
-        {
-            "state": "ok",
-            "host": "gold",
-            "name": "train",
-            "handle": "H1",
-            "submitted_at": "2026-08-01T00:00:00",
-        }
-    ]
-
-
-def test_jobs_verb_agent_mode_is_tabular(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    _seed_run()
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["jobs", "--agent"])
-    text = capsys.readouterr().out.strip()
-    lines = text.splitlines()
-    assert lines[0] == "state\thost\tname\thandle\tsubmitted_at"
-    assert "H1" in lines[1]
-
-
-def test_jobs_verb_fields_projection(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    _seed_run()
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["jobs", "--json", "--fields", "handle,state"])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == [{"handle": "H1", "state": "ok"}]
-
-
-def test_jobs_verb_with_no_recorded_runs_prints_nothing_alarming(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["jobs"])
-    assert "H1" not in capsys.readouterr().out
-
-
-def test_jobs_verb_respects_the_limit(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    _seed_run(handle="H1", submitted_at="2026-08-01T00:00:00")
-    _seed_run(handle="H2", submitted_at="2026-08-02T00:00:00")
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["jobs", "--json", "--limit", "1"])
-    payload = json.loads(capsys.readouterr().out)
-    assert [row["handle"] for row in payload] == ["H2"]
-
-
-def _fake_setup(host: str = "gold") -> HostSetup:
+def onboarded(host: str = "gold") -> HostSetup:
+    """What onboarding recorded for a host, the row the hosts table reads back."""
     return HostSetup(
         host=host,
         root="/repo",
@@ -196,49 +56,110 @@ def _fake_setup(host: str = "gold") -> HostSetup:
     )
 
 
-def test_setup_verb_onboards_the_host_and_prints_the_record(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("flags", "fragments"),
+    [
+        (["--json", "--fields", "hostname,schema_version"], ()),
+        ([], ("hostname", "facts")),
+        (["--agent"], (_FIELD_VALUE_HEADER, "hostname")),
+    ],
+    ids=["a projection over the probed fields", "the default rich table", "the compact record"],
+)
+def test_the_facts_verb_prints_this_machines_own_probe(
+    depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], fragments: tuple[str, ...]
 ) -> None:
-    seen: list[tuple[str, str]] = []
-
-    def fake_install(self, env="default", *, resolve=False, profile="", watch=None):
-        seen.append((self.host, env))
-        watch("probing")
-        return _fake_setup(self.host)
-
-    monkeypatch.setattr(Board, "install", fake_install)
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["setup", "gold", "--env", "serving", "--json"])
-    payload = json.loads(capsys.readouterr().out)
-    assert seen == [("gold", "serving")]
-    assert payload["installer"] == "uv"
-    assert payload["activate"].endswith(".mainboard/activate.sh")
-
-
-def test_setup_verb_default_is_a_rich_table(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        Board,
-        "install",
-        lambda self, env="default", *, resolve=False, profile="", watch=None: _fake_setup(
-            self.host
-        ),
-    )
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["setup", "gold"])
+        build(depot)(["facts", *flags])
     out = capsys.readouterr().out
-    assert "setup" in out
-    assert "gold" in out
+    if not fragments:
+        payload = json.loads(out)
+        assert set(payload) == {"hostname", "schema_version"}
+        assert payload["schema_version"] >= 1
+        return
+    assert all(fragment in out for fragment in fragments)
 
 
-def test_hosts_verb_lists_the_recorded_onboardings(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("flags", "fragments"),
+    [
+        (["--json"], ()),
+        ([], ("setup", "gold")),
+    ],
+    ids=["the record as json", "the default rich table"],
+)
+def test_the_setup_verb_shows_what_the_host_became(
+    depot: Path,
+    relayed: list[Relayed],
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    fragments: tuple[str, ...],
 ) -> None:
-    monkeypatch.chdir(workspace)
-    Cache().save_host(_fake_setup())
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["hosts", "--json"])
+        build(depot)(["setup", "gold", *flags])
+    out = capsys.readouterr().out
+    if not fragments:
+        assert json.loads(out)["installer"] == "uv"
+        return
+    assert all(fragment in out for fragment in fragments)
+
+
+@pytest.mark.parametrize(
+    ("seeded", "flags", "expected"),
+    [
+        (["H1"], [], [_ROW]),
+        (["H1"], ["--fields", "handle,state"], [{"handle": "H1", "state": "ok"}]),
+        (
+            ["H1", "H2"],
+            ["--limit", "1"],
+            [{**_ROW, "handle": "H2", "submitted_at": "2026-08-02T00:00:00"}],
+        ),
+        ([], [], []),
+    ],
+    ids=[
+        "every projected field of one run",
+        "a projection over two of them",
+        "the newest run only, under the limit",
+        "a cache nobody has dispatched from yet",
+    ],
+)
+def test_the_jobs_verb_lists_recent_runs_newest_first(
+    depot: Path,
+    capsys: pytest.CaptureFixture[str],
+    seeded: list[str],
+    flags: list[str],
+    expected: list[dict[str, str]],
+) -> None:
+    for index, handle in enumerate(seeded):
+        seed_run(handle, submitted_at=f"2026-08-0{index + 1}T00:00:00")
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["jobs", "--json", *flags])
+    assert json.loads(capsys.readouterr().out) == expected
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ([], ("H1", "gold", "jobs")),
+        (["--agent"], ("state\thost\tname\thandle\tsubmitted_at", "H1")),
+    ],
+    ids=["the default rich table", "the compact table"],
+)
+def test_the_jobs_verb_tables_what_it_listed(
+    depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], expected: tuple[str, ...]
+) -> None:
+    seed_run()
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["jobs", *flags])
+    out = capsys.readouterr().out
+    assert all(fragment in out for fragment in expected)
+
+
+def test_the_hosts_verb_lists_the_recorded_onboardings(
+    depot: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    Cache().save_host(onboarded())
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["hosts", "--json"])
     [payload] = json.loads(capsys.readouterr().out)
     assert payload["host"] == "gold"
     assert payload["installer"] == "uv"

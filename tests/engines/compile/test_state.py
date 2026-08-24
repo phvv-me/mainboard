@@ -1,35 +1,47 @@
-from typing import TYPE_CHECKING
+from pathlib import Path
+
+import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from mainboard.engines.compile.state import SyncState
 
-if TYPE_CHECKING:
-    from pathlib import Path
+from ...strategies import WORDS
 
 
-def test_load_is_empty_and_stale_everywhere_when_no_file_exists(tmp_path: Path) -> None:
-    state = SyncState.load(tmp_path)
-    assert state == SyncState()
-    assert state.envs == {}
-    assert not state.solved_from
-
-
-def test_load_is_empty_when_the_file_is_not_valid_toml(tmp_path: Path) -> None:
-    SyncState.path(tmp_path).write_text("not [ valid toml")
+@pytest.mark.parametrize(
+    "written",
+    [
+        pytest.param(None, id="no-file-at-all"),
+        pytest.param("not [ valid toml", id="a-file-that-is-not-valid-toml"),
+        pytest.param(
+            'solved_from = ""\nenvs = "not-a-table"\n', id="an-envs-key-of-the-wrong-shape"
+        ),
+    ],
+)
+def test_an_unreadable_state_reads_as_stale_everywhere(
+    written: str | None, tmp_path: Path
+) -> None:
+    """Empty is the safe direction, since the next write recomputes every digest anyway."""
+    if written is not None:
+        SyncState.path(tmp_path).write_text(written)
     assert SyncState.load(tmp_path) == SyncState()
 
 
-def test_load_falls_back_to_empty_envs_when_the_table_has_the_wrong_shape(tmp_path: Path) -> None:
-    SyncState.path(tmp_path).write_text('solved_from = ""\nenvs = "not-a-table"\n')
-    assert SyncState.load(tmp_path).envs == {}
-
-
-def test_render_and_load_round_trip_every_field(tmp_path: Path) -> None:
-    state = SyncState(envs={"default": "abc123", "serving": "def456"}, solved_from="feedface")
-    SyncState.path(tmp_path).write_text(state.render())
-    assert SyncState.load(tmp_path) == state
-
-
-def test_render_sorts_envs_for_a_deterministic_file(tmp_path: Path) -> None:
-    state = SyncState(envs={"z-env": "1", "a-env": "2"})
+# Ten examples rather than the profile's thirty, since this suite is the fast gate and the
+# round trip writes a file per example. The out-of-order pair is pinned by `@example` below.
+@settings(max_examples=10)
+@given(envs=st.dictionaries(WORDS, WORDS, max_size=4), solved_from=st.one_of(st.just(""), WORDS))
+@example(envs={"z-env": "1", "a-env": "2"}, solved_from="feedface")
+def test_a_state_survives_the_file_it_renders_in_a_deterministic_order(
+    envs: dict[str, str], solved_from: str, tmp_path: Path
+) -> None:
+    """One atomic replace has to carry every field back, and sorting keeps the file diffable."""
+    state = SyncState(envs=envs, solved_from=solved_from)
     text = state.render()
-    assert text.index('a-env = "2"') < text.index('z-env = "1"')
+    SyncState.path(tmp_path).write_text(text)
+    assert SyncState.load(tmp_path) == state
+    lines = text.splitlines()
+    assert lines[lines.index("[envs]") + 1 :] == [
+        f'{name} = "{envs[name]}"' for name in sorted(envs)
+    ]

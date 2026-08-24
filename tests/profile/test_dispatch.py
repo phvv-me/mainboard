@@ -1,21 +1,24 @@
+import pytest
+
 from mainboard.profile import arch_config
 
 from .conftest import FakeGPU
 
-
-def test_arch_config_selects_the_entry_for_this_gpu() -> None:
-    """`arch_config` returns the table value keyed on the given GPU's arch."""
-    gpu = FakeGPU(arch_key="sm_90")
-    table = {"sm_89": ("ada", 32), "sm_90": ("hopper", 64)}
-    assert arch_config(table, default=("cpu", 8), gpu=gpu) == ("hopper", 64)
+_TABLE = {"sm_89": ("ada", 32), "sm_90": ("hopper", 64)}
+_DEFAULT = ("cpu", 8)
 
 
-def test_arch_config_falls_back_when_arch_absent() -> None:
-    """An arch not in the table yields the default rather than raising."""
-    gpu = FakeGPU(arch_key="sm_90")
-    assert arch_config({"sm_121": 16}, default=99, gpu=gpu) == 99
-
-
-def test_arch_config_defaults_when_no_gpu() -> None:
-    """On a CPU-only host (no GPU) `arch_config` returns the default."""
-    assert arch_config({"sm_90": 1}, default=-1, gpu=None) == -1
+@pytest.mark.parametrize(
+    ("gpu", "expected"),
+    [
+        (FakeGPU(arch_key="sm_90"), ("hopper", 64)),
+        (FakeGPU(arch_key="sm_121"), _DEFAULT),
+        (None, _DEFAULT),
+    ],
+    ids=["known_arch", "unknown_arch", "cpu_only_host"],
+)
+def test_arch_config_selects_this_gpus_entry_or_the_usable_default(
+    gpu: FakeGPU | None, expected: tuple[str, int]
+) -> None:
+    """A known arch picks its own config, and anything else still yields a usable one."""
+    assert arch_config(_TABLE, default=_DEFAULT, gpu=gpu) == expected

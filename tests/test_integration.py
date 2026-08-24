@@ -44,15 +44,13 @@ def test_the_whole_promise_composes(workspace: Path, monkeypatch: pytest.MonkeyP
     assert "python -m experiments.run" in line
 
 
-def test_bare_hosts_skip_the_container_stage(workspace: Path) -> None:
+def test_a_plan_carries_its_container_stage_or_refuses_to_be_wrapped_without_one(
+    workspace: Path,
+) -> None:
+    """A bare host skips the stage entirely, and a containerized one will not go without it."""
     manifest = load(workspace / MANIFEST)
-    plan = Resolver(manifest).plan("gold")
-    line = wrap(plan, "/home/pedro/projects", command="nvidia-smi")
+    line = wrap(Resolver(manifest).plan("gold"), "/home/pedro/projects", command="nvidia-smi")
     assert "apptainer" not in line and "docker" not in line
     assert "nvidia-smi" in line
-
-
-def test_containerized_plans_demand_a_builder(workspace: Path) -> None:
-    plan = Resolver(load(workspace / MANIFEST)).plan("miyabi-g")
     with pytest.raises(LookupError, match="containerized"):
-        wrap(plan, "/work/projects", command="true")
+        wrap(Resolver(manifest).plan("miyabi-g"), "/work/projects", command="true")

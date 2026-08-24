@@ -7,16 +7,11 @@ from typing import TYPE_CHECKING
 
 from patos import Model
 
+from ...core.errors import MissionError
+from ...core.project import Project
 from ..shared import state_dir
-from .base import (
-    JobState,
-    Resources,
-    drain_log,
-    login_run,
-    poll_until_done,
-    read_log,
-    stream_until_done,
-)
+from ..vocabulary import JobState, Resources
+from .base import login_run, read_log
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -73,86 +68,6 @@ class JobInfo(Model):
     state: PbsState | str
     queue: str
     exit_status: int | None = None  # set only for a finished job, else None
-
-
-def parse_qstat_output(output: str) -> list[JobInfo]:
-    """Parse `qstat` / `qstat -a` output across PBS variants.
-
-    Supports both the standard PBS layout (`Job ID  Username Queue ...`) and a wide vendor
-    variant (`JOB_ID JOB_NAME STATUS PROJECT QUEUE START_DATE ELAPSE TOKEN NODE MIG`). The latter
-    has a two-token START_DATE column, so naive whitespace splitting needs care.
-    """
-    jobs: list[JobInfo] = []
-    lines = output.splitlines()
-    header_index = -1
-    wide_format = False
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith(("Job ID", "Job id", "Job")):
-            header_index = index
-            wide_format = False
-            break
-        if stripped.startswith("JOB_ID"):
-            header_index = index
-            wide_format = True
-            break
-    if header_index == -1:
-        return jobs
-    body_start = header_index + 1
-    if body_start < len(lines) and lines[body_start].lstrip().startswith("---"):
-        body_start += 1
-    for line in lines[body_start:]:
-        parts = line.split()
-        if not wide_format:
-            if len(parts) < 5:
-                continue
-            job_id, name, _user, state, queue = (
-                parts[:5] if len(parts) < 6 else (parts[0], parts[1], parts[2], parts[4], parts[5])
-            )
-            jobs.append(
-                JobInfo(job_id=job_id, name=name, state=parse_job_state(state), queue=queue)
-            )
-            continue
-        if len(parts) < 8:
-            continue
-        job_id, name, status, _project, queue = parts[:5]
-        jobs.append(JobInfo(job_id=job_id, name=name, state=parse_job_state(status), queue=queue))
-    return jobs
-
-
-def parse_qstat_queues(output: str) -> list[str]:
-    """Queue names from `qstat -q` output (the scheduler's own node classes).
-
-    The table body sits between the dashed header rule and the indented totals footer; each body
-    row starts flush-left with its queue name, so anything indented (the footer's dashes and
-    totals) is skipped.
-    """
-    queues: list[str] = []
-    body = False
-    for line in output.splitlines():
-        if line.startswith("-"):
-            body = True
-            continue
-        if body and line[:1].strip():
-            queues.append(line.split()[0])
-    return queues
-
-
-def parse_rsc_queues(output: str) -> list[str]:
-    """Submittable queue names from `qstat --rsc` (a wrapper dialect some clusters run).
-
-    The listing is a tree where routing queues sit flush-left without a status and their leaves
-    carry `[ENABLE, START]` behind tree glyphs; only rows with an enabled status are real
-    submission targets, so the parser strips the glyphs and keeps the first token of every
-    ENABLE row.
-    """
-    queues: list[str] = []
-    for line in output.splitlines():
-        if "[ENABLE" not in line:
-            continue
-        name = line.replace("|--", " ").replace("`--", " ").split()[0]
-        queues.append(name)
-    return queues
 
 
 def parse_qstat_full(output: str) -> list[JobInfo]:
@@ -247,33 +162,24 @@ class Pbs:
         del root
         remote["bash"][["-lc", f"qdel {shlex.quote(handle)}"]](retcode=None)
 
-    def jobs(self, remote: Machine, root: str) -> list[JobState]:
-        del root
-        output = remote["bash"][["-lc", "qstat"]](retcode=None)
-        return [
-            JobState(
-                handle=job.job_id,
-                label=job.name or None,
-                state=str(job.state),
-                verdict=pbs_verdict(str(job.state), None),
+    def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
+        """An interactive PBS allocation, `qsub -I` under the same flags a batch submit renders.
+
+        PBS hands the terminal a login shell on the node it allocates and takes no command to
+        run there, so a command asked for here is refused rather than quietly run on the login
+        node the allocation was requested from. The environment is likewise activated from
+        inside the session, since nothing this side of `qsub` runs on the allocated node.
+        """
+        del env
+        if command:
+            raise MissionError(
+                "a PBS interactive session hands over a terminal and runs no command of its "
+                f"own. Run `{Project().name} submit` to dispatch one as a job."
             )
-            for job in parse_qstat_output(output)
-        ]
+        return shlex.join(["qsub", "-I", *build_qsub_flags(resources)])
 
     def logs(self, remote: Machine, root: str, *, handle: str) -> str:
-
         return read_log(remote, root, handle=handle)
-
-    def queues(self, remote: Machine, root: str) -> list[str]:
-        del root
-        output = remote["bash"][["-lc", "qstat -q"]](retcode=None)
-        if standard := parse_qstat_queues(output):
-            return standard
-        return parse_rsc_queues(remote["bash"][["-lc", "qstat --rsc"]](retcode=None))
-
-    def revive(self, remote: Machine, root: str) -> list[str]:
-        del remote, root
-        raise SystemExit("a PBS scheduler is site-managed; there is no daemon to revive")
 
     def state(self, remote: Machine, root: str, *, handle: str) -> JobState:
         found = self.states(remote, root, [handle]).get(handle)
@@ -287,12 +193,6 @@ class Pbs:
         if missing := [h for h in handles if h not in found]:
             found |= self.__query(remote, "qstat -f -H", missing)
         return found
-
-    def stream(self, remote: Machine, root: str, *, handle: str) -> JobState:
-        return stream_until_done(
-            lambda: self.state(remote, root, handle=handle),
-            lambda offset: drain_log(remote, root, handle=handle, offset=offset),
-        )
 
     def submit(
         self,
@@ -311,9 +211,6 @@ class Pbs:
         if not handle[:1].isdigit():
             raise SystemExit(f"qsub failed (rc={retcode}): {(err or out).strip()[-400:]}")
         return _extract_job_id(handle)
-
-    def wait(self, remote: Machine, root: str, *, handle: str) -> JobState:
-        return poll_until_done(lambda: self.state(remote, root, handle=handle))
 
     @staticmethod
     def __job_state(handle: str, job: JobInfo) -> JobState:

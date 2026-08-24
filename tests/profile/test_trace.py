@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import pytest
+
 from mainboard.profile import (
     Activity,
     ActivityRecord,
@@ -12,26 +14,32 @@ from mainboard.profile import (
     TraceCollector,
 )
 
+from .conftest import kernel, traced_profile
+
 
 @dataclass
-class _FakeKernelActivity:
+class FakeKernelActivity:
+    """A CUPTI CONCURRENT_KERNEL record as the buffer hands it over."""
+
     name: str
     start: int
     end: int
     kind: int = 10
-    grid_x: int = 1
+    grid_x: int = 8
     grid_y: int = 1
     grid_z: int = 1
     block_x: int = 128
-    block_y: int = 1
+    block_y: int = 2
     block_z: int = 1
-    static_shared_memory: int = 0
-    dynamic_shared_memory: int = 0
-    registers_per_thread: int = 0
+    static_shared_memory: int = 512
+    dynamic_shared_memory: int = 256
+    registers_per_thread: int = 40
 
 
 @dataclass
-class _FakeMemcpyActivity:
+class FakeMemcpyActivity:
+    """A CUPTI MEMCPY record as the buffer hands it over."""
+
     copy_kind: int
     start: int
     end: int
@@ -39,112 +47,109 @@ class _FakeMemcpyActivity:
     bytes: int = 0
 
 
-def _traced_profile() -> Profile:
-    """A profile with two regions and kernels/memcpys binned across their windows."""
-    return Profile(
-        device="dev",
-        windows=(
-            RegionWindow(name="encode", start_ns=0, end_ns=1000, wall_ns=2_000_000),
-            RegionWindow(name="decode", start_ns=1000, end_ns=2000, wall_ns=1_000_000),
-        ),
-        kernels=(
-            KernelTrace(name="gemm", start_ns=0, end_ns=600, grid="8x1x1", block="256x1x1"),
-            KernelTrace(name="gemm", start_ns=1000, end_ns=1400),
-            KernelTrace(name="relu", start_ns=600, end_ns=700),
-        ),
-        memcpys=(MemcpyTrace(kind="HtoD", start_ns=0, end_ns=100, bytes_moved=4096),),
-        activities=(
-            ActivityRecord(kind="runtime", name="cudaLaunchKernel", start_ns=0, end_ns=5),
-        ),
-    )
+@pytest.mark.parametrize(
+    ("kinds", "label"),
+    [
+        (Activity.KERNEL, "kernel"),
+        (Activity.KERNEL | Activity.MEMCPY, "default"),
+        (Activity(0), "activity"),
+    ],
+    ids=["one_flag", "a_named_combination", "no_flag_at_all"],
+)
+def test_activity_labels_a_named_flag_by_name_and_anything_else_generically(
+    kinds: Activity, label: str
+) -> None:
+    """A flag with a name labels by it, and a combination that has none reads `activity`."""
+    assert kinds.label == label
 
 
-def test_activity_label_falls_back_for_compound_flags() -> None:
-    """A single flag labels by name; a compound flag has no name, so labels `activity`."""
-    assert Activity.KERNEL.label == "kernel"
-    assert (Activity.KERNEL | Activity.MEMCPY).label == "default"
-    assert Activity(0).label == "activity"
-
-
-def test_memcpy_trace_from_activity_maps_kind_and_bandwidth() -> None:
-    """A CUPTI MEMCPY record maps copy_kind to a label and yields a bandwidth."""
-    act = _FakeMemcpyActivity(copy_kind=1, start=0, end=1000, bytes=2000)
-    trace = MemcpyTrace.from_activity(act)
-    assert trace.kind == "HtoD"
-    assert trace.bandwidth_gbps == 2.0
-    blank = _FakeMemcpyActivity(copy_kind=99, start=0, end=0)
-    unknown = MemcpyTrace.from_activity(blank)
-    assert unknown.kind == "kind_99"
-    assert unknown.bandwidth_gbps == 0.0  # zero duration
-
-
-def test_kernel_trace_from_activity_reads_launch_shape() -> None:
-    """A CUPTI CONCURRENT_KERNEL record fills the launch shape from snake_case attrs."""
-    act = _FakeKernelActivity(
-        name="k",
-        start=0,
-        end=1000,
-        grid_x=8,
-        grid_y=1,
-        grid_z=1,
-        block_x=128,
-        block_y=2,
-        block_z=1,
-        static_shared_memory=512,
-        dynamic_shared_memory=256,
-        registers_per_thread=40,
-    )
-    trace = KernelTrace.from_activity(act)
+def test_a_cupti_kernel_record_becomes_a_typed_trace() -> None:
+    """The launch shape is read straight off the snake_case activity attributes."""
+    trace = KernelTrace.from_activity(FakeKernelActivity(name="k", start=0, end=1000))
     assert trace.grid == "8x1x1"
     assert trace.block == "128x2x1"
-    assert trace.shared_mem == 768
+    assert trace.shared_mem == 768  # 512 static + 256 dynamic
+    assert trace.registers == 40
     assert trace.duration_us == 1.0
+    assert trace.occupancy_pct == 25.0  # 256 threads over the 1024 hardware max
 
 
-def test_activity_record_duration() -> None:
-    """A generic activity record reports its span."""
+@pytest.mark.parametrize(
+    ("copy_kind", "end", "moved", "label", "bandwidth_gbps"),
+    [(1, 1000, 2000, "HtoD", 2.0), (99, 0, 0, "kind_99", 0.0)],
+    ids=["a_known_direction", "an_unknown_direction_with_no_measured_time"],
+)
+def test_a_cupti_memcpy_record_maps_its_direction_and_yields_a_bandwidth(
+    copy_kind: int, end: int, moved: int, label: str, bandwidth_gbps: float
+) -> None:
+    """A direction code outside the table keeps its number rather than reading as unknown."""
+    trace = MemcpyTrace.from_activity(
+        FakeMemcpyActivity(copy_kind=copy_kind, start=0, end=end, bytes=moved)
+    )
+    assert trace.kind == label
+    assert trace.bandwidth_gbps == bandwidth_gbps
+    assert trace.duration_ns == end
+
+
+@pytest.mark.parametrize(
+    ("block", "threads"),
+    [("", 1), ("16xNx2", 32), ("256x1x1", 256)],
+    ids=["no_shape_at_all", "a_dimension_that_is_not_a_number", "the_cupti_spelling"],
+)
+def test_threads_per_block_degrades_to_the_dimensions_it_can_parse(
+    block: str, threads: int
+) -> None:
+    """A malformed block string still yields a product rather than raising on a bad dim."""
+    assert KernelTrace(block=block).threads_per_block == threads
     assert ActivityRecord(start_ns=10, end_ns=60).duration_ns == 50
 
 
-def test_bottleneck_report_splits_compute_and_copy() -> None:
-    """The deep report splits GPU time into compute vs copy and ranks hot spots."""
-    report = _traced_profile().trace_report()
+def test_the_deep_report_splits_compute_from_copy_and_ranks_the_hot_spots() -> None:
+    """GPU time divides into compute and copy, and both rankings lead with the hottest.
+
+    An empty profile yields zero totals and empty rankings rather than dividing by zero.
+    """
+    report = traced_profile().trace_report()
     assert isinstance(report, BottleneckReport)
     assert report.compute_pct > report.memcpy_pct
+    assert report.compute_pct + report.memcpy_pct == pytest.approx(100.0)
     assert report.hot_kernels[0].name == "gemm"
     assert report.hot_regions[0].name in {"encode", "decode"}
+    assert sum(region.kernel_count for region in report.hot_regions) == 3
+
+    empty = Profile().trace_report()
+    assert empty.total_kernel_ns == 0
+    assert empty.hot_kernels == ()
 
 
-def test_bottleneck_report_attributes_kernel_outside_any_window() -> None:
-    """A kernel landing in no region window is labeled rather than dropped."""
-    profile = Profile(
-        windows=(RegionWindow(name="r", start_ns=0, end_ns=10, wall_ns=10),),
-        kernels=(KernelTrace(name="stray", start_ns=100, end_ns=200),),
-    )
-    report = profile.trace_report()
-    assert report.hot_regions[0].name == "(outside regions)"
-
-
-def test_bottleneck_report_empty_profile() -> None:
-    """No traces yields zero totals and empty rankings without dividing by zero."""
-    report = Profile().trace_report()
-    assert report.total_kernel_ns == 0
-    assert report.hot_kernels == ()
-
-
-def test_hot_region_uses_the_narrowest_window() -> None:
-    profile = Profile(
-        windows=(
-            RegionWindow(name="inner", start_ns=100, end_ns=300, wall_ns=200),
-            RegionWindow(name="outer", start_ns=0, end_ns=1000, wall_ns=1000),
+@pytest.mark.parametrize(
+    ("windows", "attributed"),
+    [
+        ((RegionWindow(name="r", start_ns=0, end_ns=10, wall_ns=10),), "(outside regions)"),
+        (
+            (
+                RegionWindow(name="inner", start_ns=100, end_ns=300, wall_ns=200),
+                RegionWindow(name="outer", start_ns=0, end_ns=1000, wall_ns=1000),
+            ),
+            "inner",
         ),
-        kernels=(KernelTrace(name="k", start_ns=150, end_ns=200),),
-    )
-    assert profile.trace_report().hot_regions[0].name == "inner"
+    ],
+    ids=["a_kernel_in_no_window", "nested_windows"],
+)
+def test_a_kernel_is_attributed_to_the_narrowest_window_that_contains_it(
+    windows: tuple[RegionWindow, ...], attributed: str
+) -> None:
+    """Nested regions share the outer's window, so the tightest enclosing one wins.
+
+    A kernel inside no window at all is labeled rather than dropped, so unattributed GPU
+    time stays visible instead of silently blank.
+    """
+    profile = Profile(windows=windows, kernels=(kernel("k", 50, start_ns=150),))
+    assert profile.trace_report().hot_regions[0].name == attributed
 
 
-def test_trace_collector_base_is_a_noop_context() -> None:
-    """The base collector is an empty, safe no-op context manager."""
+def test_the_base_collector_and_callback_session_are_safe_noops() -> None:
+    """Without a vendor backend both contexts open, collect nothing, and close cleanly."""
     with TraceCollector() as collector:
         collector.flush()
         collector.reset()
@@ -152,21 +157,5 @@ def test_trace_collector_base_is_a_noop_context() -> None:
     assert collector.memcpys() == []
     assert collector.activities() == []
     assert collector.dropped() == 0
-
-
-def test_callback_session_base_counts_nothing() -> None:
-    """The base callback session is a no-op that observes no calls."""
-    with CallbackSession():
-        pass
-
-
-def test_kernel_trace_threads_per_block_ignores_nonnumeric() -> None:
-    """A malformed block string degrades to the numeric dims it can parse."""
-    assert KernelTrace(block="").threads_per_block == 1
-    assert KernelTrace(block="16xNx2").threads_per_block == 32  # N -> 1
-
-
-def test_kernel_trace_shared_mem_is_the_sum() -> None:
-    """`shared_mem` stays the static+dynamic total for backward-compatible reads."""
-    kernel = KernelTrace(static_shared_mem=100, dynamic_shared_mem=40)
-    assert kernel.shared_mem == 140
+    with CallbackSession() as session:
+        assert session.counts() == {}

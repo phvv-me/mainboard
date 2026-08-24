@@ -23,13 +23,15 @@ _SEARCH = {
 
 
 @pytest.fixture
-def answers(monkeypatch: pytest.MonkeyPatch) -> Callable[[Json], list[str]]:
-    """Serve one JSON body to every index request, collecting the urls that asked."""
+def answers(monkeypatch: pytest.MonkeyPatch) -> Callable[[Json | OSError], list[str]]:
+    """Serve one JSON body, or one refusal, to every index request, collecting the urls asked."""
     asked: list[str] = []
 
-    def install(body: Json) -> list[str]:
+    def install(body: Json | OSError) -> list[str]:
         def opened(request: Request, timeout: float = 0.0) -> io.BytesIO:
             asked.append(request.full_url)
+            if isinstance(body, OSError):
+                raise body
             return io.BytesIO(json.dumps(body).encode())
 
         monkeypatch.setattr("urllib.request.urlopen", opened)
@@ -39,30 +41,26 @@ def answers(monkeypatch: pytest.MonkeyPatch) -> Callable[[Json], list[str]]:
 
 
 @pytest.mark.parametrize(
-    ("version", "expected"),
+    ("ecosystem", "version", "expected"),
     [
-        ("1.2.3", ">=1.2.3, <2"),
-        ("0.1.0", ">=0.1.0, <0.2"),
-        ("0.0.5", ">=0.0.5, <0.0.6"),
-        ("0.0.0", ">=0.0.0, <0.0.1"),
+        ("python", "1.2.3", ">=1.2.3, <2"),
+        ("python", "0.1.0", ">=0.1.0, <0.2"),
+        ("python", "0.0.5", ">=0.0.5, <0.0.6"),
+        ("python", "0.0.0", ">=0.0.0, <0.0.1"),
+        # A release the version grammar cannot read gets a floor and no ceiling, since a wider
+        # pin still resolves and a refusal does not.
+        ("conda", "nightly", ">=nightly"),
+        # npm separates comparators by space and Go resolves one version, so neither reads the
+        # comma-separated range conda and Python both take.
+        ("nodejs", "1.2.3", "^1.2.3"),
+        ("go", "1.2.3", "1.2.3"),
     ],
 )
-def test_a_pin_carries_the_release_and_the_compatible_ceiling_above_it(
-    version: str, expected: str
+def test_each_ecosystem_writes_the_pin_its_own_resolver_reads(
+    ecosystem: str, version: str, expected: str
 ) -> None:
     """pixi's own semver pinning, which is the shape the manifest already writes."""
-    assert Index.of("python").pin(version) == expected
-
-
-def test_a_release_the_version_grammar_cannot_read_gets_a_floor_and_no_ceiling() -> None:
-    """A wider pin still resolves, and refusing to write one would not."""
-    assert Index.of("conda").pin("nightly") == ">=nightly"
-
-
-def test_npm_and_go_write_the_pin_their_own_resolvers_read() -> None:
-    """A comma-separated range is invalid npm and no range at all is resolvable by Go."""
-    assert Index.of("nodejs").pin("1.2.3") == "^1.2.3"
-    assert Index.of("go").pin("1.2.3") == "1.2.3"
+    assert Index.of(ecosystem).pin(version) == expected
 
 
 def test_an_ecosystem_with_no_index_refuses_with_the_roster() -> None:
@@ -90,7 +88,7 @@ def test_a_failing_conda_search_reaches_the_caller_as_a_refusal(fp: FakeProcess)
 
 
 def test_python_reads_the_declared_index_before_falling_back_to_pypi(
-    answers: Callable[[Json], list[str]],
+    answers: Callable[[Json | OSError], list[str]],
 ) -> None:
     """A workspace pointing at a mirror is asked about the mirror, not about PyPI."""
     asked = answers({"versions": ["4.69.1", "4.70.0", "not-a-version"]})
@@ -103,7 +101,7 @@ def test_python_reads_the_declared_index_before_falling_back_to_pypi(
 
 
 def test_npm_rust_and_go_each_read_their_own_registry_document(
-    answers: Callable[[Json], list[str]],
+    answers: Callable[[Json | OSError], list[str]],
 ) -> None:
     """Three registries, three shapes, one answer each."""
     answers({"dist-tags": {"latest": "1.49.0"}})
@@ -115,23 +113,17 @@ def test_npm_rust_and_go_each_read_their_own_registry_document(
     assert asked[-1].endswith("/github.com/x/y/@latest")
 
 
-def test_an_index_that_will_not_answer_says_so_with_its_url(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("served", "match"),
+    [
+        (URLError("connection refused"), r"pypi\.org/simple/ghost/ would not answer"),
+        ({"versions": []}, r"publishes no readable release of 'ghost'"),
+    ],
+)
+def test_an_index_that_cannot_answer_refuses_by_name(
+    answers: Callable[[Json | OSError], list[str]], served: Json | OSError, match: str
 ) -> None:
-    """A registry that is down is reported as a registry, not as a stack trace."""
-
-    def refuse(request: Request, timeout: float = 0.0) -> None:
-        raise URLError("connection refused")
-
-    monkeypatch.setattr("urllib.request.urlopen", refuse)
-    with pytest.raises(MissionError, match=r"pypi.org/simple/tqdm/ would not answer"):
-        Index.of("python").latest("tqdm")
-
-
-def test_an_index_publishing_nothing_readable_refuses_by_name(
-    answers: Callable[[Json], list[str]],
-) -> None:
-    """An empty listing is a fact about the name, and the refusal says which name."""
-    answers({"versions": []})
-    with pytest.raises(MissionError, match=r"publishes no readable release of 'ghost'"):
+    """A registry that is down and one that lists nothing are both facts, not stack traces."""
+    answers(served)
+    with pytest.raises(MissionError, match=match):
         Index.of("python").latest("ghost")

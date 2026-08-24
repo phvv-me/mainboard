@@ -5,20 +5,18 @@ import pytest
 from mainboard import Project
 
 
-def test_every_name_derives_from_the_package() -> None:
+def test_every_name_derives_from_the_package_and_every_environment_gets_its_own_script() -> None:
+    """Renaming the tool is renaming the module, so nothing here spells the name literally."""
     project = Project()
     assert project.manifest == f"{project.name}.toml"
     assert project.out_dir == f".{project.name}"
     assert project.plugin_group == f"{project.name}.providers"
-
-
-def test_activation_gives_every_environment_but_the_default_its_own_script() -> None:
-    project = Project()
     assert project.activation() == f"{project.out_dir}/activate.sh"
     assert project.activation("serving") == f"{project.out_dir}/activate-serving.sh"
 
 
 def test_find_root_walks_up_and_refuses_a_rootless_tree(tmp_path: Path) -> None:
+    """A workspace is found from anywhere inside it, and its absence is said out loud."""
     project = Project()
     (tmp_path / project.manifest).write_text("")
     nested = tmp_path / "a" / "b"

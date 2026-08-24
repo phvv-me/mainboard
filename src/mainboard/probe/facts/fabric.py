@@ -1,3 +1,4 @@
+import re
 from contextlib import suppress
 from pathlib import Path
 
@@ -33,6 +34,19 @@ class FabricPort(FrozenModel):
     link_layer: str = ""
 
 
+def device_order(device_dir: Path) -> tuple[str | int, ...]:
+    """A sort key reading a device name's digits as numbers, so `mlx5_2` precedes `mlx5_10`.
+
+    Splitting on digit runs alternates text and number, and the split always starts with text,
+    so two names compare field by field with matching kinds throughout.
+
+    device_dir: the HCA device directory being ordered.
+    """
+    return tuple(
+        int(part) if part.isdigit() else part for part in re.split(r"(\d+)", device_dir.name)
+    )
+
+
 class Fabric:
     """InfiniBand and RoCE fabric ports detected in sysfs."""
 
@@ -54,7 +68,7 @@ class Fabric:
         root: the `infiniband` class directory to scan, a test feeds a fake tmp tree here.
         """
         try:
-            device_dirs = sorted(root.iterdir())
+            device_dirs = sorted(root.iterdir(), key=device_order)
         except OSError:
             return ()
         return tuple(

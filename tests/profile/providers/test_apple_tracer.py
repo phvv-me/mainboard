@@ -1,14 +1,20 @@
 import types
-from typing import Any
 
 import pytest
 
 from mainboard.profile.providers import apple_tracer
 
 
-def test_signpost_tracer_intervals(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The signpost backend opens/closes intervals via a (name, token) stack."""
-    calls: list[tuple[str, Any]] = []
+def test_the_signpost_backend_pairs_intervals_and_needs_darwin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Push and pop keep a (name, token) stack, and `start` closes the interval it opened.
+
+    Popping an empty stack is ignored, and the backend is unavailable both without the
+    `os_signpost` package and on any platform other than Darwin, since Instruments is the
+    only thing that reads these signposts.
+    """
+    calls: list[tuple[str, str]] = []
 
     class FakeSignposter:
         def __init__(self, subsystem: str) -> None:
@@ -38,15 +44,18 @@ def test_signpost_tracer_intervals(monkeypatch: pytest.MonkeyPatch) -> None:
     finish_second = tracer.start("second")
     finish_first()
     finish_second()
-    assert ("begin", "a") in calls and ("event", "e") in calls
+    assert calls == [
+        ("init", "me.phvv.mainboard"),
+        ("begin", "a"),
+        ("event", "e"),
+        ("end", "tok:a"),
+        ("begin", "first"),
+        ("begin", "second"),
+        ("end", "tok:first"),  # each closer ends its own interval, not the newest one
+        ("end", "tok:second"),
+    ]
 
-
-def test_signpost_unavailable_without_the_library(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(apple_tracer, "_signpost", None)
-    assert apple_tracer.SignpostTracer.is_available() is False
-
-
-def test_signpost_unavailable_off_darwin(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(apple_tracer, "_signpost", types.SimpleNamespace(Signposter=object))
     monkeypatch.setattr(apple_tracer.platform, "system", lambda: "Linux")
+    assert apple_tracer.SignpostTracer.is_available() is False
+    monkeypatch.setattr(apple_tracer, "_signpost", None)
     assert apple_tracer.SignpostTracer.is_available() is False

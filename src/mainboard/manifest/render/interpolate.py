@@ -2,16 +2,32 @@ import os
 import platform
 import sys
 from collections.abc import Callable, Mapping
+from functools import cache
 from typing import TYPE_CHECKING
 
-from jinja2 import StrictUndefined
-from jinja2.sandbox import SandboxedEnvironment
 from plumbum import local
 
 from ...core.errors import MissionError
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from jinja2.sandbox import SandboxedEnvironment
+
+
+@cache
+def _engine() -> SandboxedEnvironment:
+    """The sandboxed template engine, built the first time a manifest actually carries a template.
+
+    Most manifests carry none, and jinja2 is 6 ms of a cold start that this package's console
+    entry point pays on every command, so the import waits for a string with `{{` or `{%` in it
+    rather than for a manifest being loaded at all.
+    """
+    from jinja2 import StrictUndefined
+    from jinja2.sandbox import SandboxedEnvironment
+
+    return SandboxedEnvironment(undefined=StrictUndefined)
+
 
 _EXEC_TIMEOUT = 20.0
 
@@ -33,7 +49,6 @@ class Interpolator:
     def __init__(self, root: Path) -> None:
         """root: the directory holding the manifest, exposed as `config_root`."""
         self.root = root
-        self.engine = SandboxedEnvironment(undefined=StrictUndefined)
         self.globals: Scope = {
             "config_root": str(root),
             "env": _env,
@@ -58,7 +73,7 @@ class Interpolator:
         if "{{" not in text and "{%" not in text:
             return text
         try:
-            return self.engine.from_string(text).render(scope)
+            return _engine().from_string(text).render(scope)
         except Exception as error:
             raise MissionError(f"template at {at} failed: {error}") from error
 

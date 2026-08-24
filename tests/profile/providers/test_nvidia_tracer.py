@@ -1,11 +1,9 @@
-"""The NVIDIA NVTX + CUPTI Activity backend, driven by a fake `cupti` module.
-
-CUPTI is single-subscriber and GPU-only, so here the whole `cupti.cupti` surface is a
-fake: activity kinds enable/disable in memory, buffers are delivered synchronously, and
-the device sync is a counter. This exercises the collector lifecycle, the buffer-routing
-callback, device-support probing (including a kind that raises `NotImplementedError`,
-like `MEMORY` on GB10), and the callback-API call counter — none needing real hardware.
-"""
+# The NVIDIA NVTX and CUPTI Activity backend, driven by a fake `cupti` module. CUPTI is
+# single-subscriber and GPU-only, so here the whole `cupti.cupti` surface is a fake where activity
+# kinds enable and disable in memory, buffers are delivered synchronously, and the device sync is a
+# counter. That covers the collector lifecycle, the buffer-routing callback, device-support probing
+# (including a kind that raises `NotImplementedError`, like `MEMORY` on GB10) and the callback-API
+# call counter, none of it needing real hardware.
 
 import types
 from typing import TYPE_CHECKING
@@ -149,23 +147,25 @@ def _runtime_activity(cbid: int = 7) -> RawActivity:
     )
 
 
-def test_supported_drops_kinds_that_raise_not_implemented(fake_cupti: FakeCupti) -> None:
-    """A kind whose `activity_enable` raises is excluded from the supported set."""
+def test_supported_drops_kinds_that_raise_not_implemented_and_caches_the_rest(
+    fake_cupti: FakeCupti,
+) -> None:
+    """A kind whose `activity_enable` raises is excluded, and the probe runs only once."""
     fake_cupti.unsupported = (FakeActivityKind.MEMORY,)
-    tracer = nv.NvtxTracer()
-    supported = tracer.supported()
+    supported = nv.NvtxTracer().supported()
     assert Activity.KERNEL in supported
     assert Activity.MEMORY not in supported  # GB10-style: MEMORY unavailable
+    assert nv._supported() is supported  # noqa: SLF001  reason=asserts the module-private cache since=2026-08-16
 
 
-def test_supported_is_cached(fake_cupti: FakeCupti) -> None:
-    """Device-support probing happens once and is reused."""
-    del fake_cupti
-    assert nv._supported() == nv._supported()  # noqa: SLF001  reason=unit-tests the module-private cache since=2026-08-16
+def test_collector_lifecycle_collects_routes_and_then_drops_its_records(
+    fake_cupti: FakeCupti,
+) -> None:
+    """A collector enables kinds, a completed buffer routes typed records, `reset` clears them.
 
-
-def test_collector_lifecycle_collects_and_routes_records(fake_cupti: FakeCupti) -> None:
-    """A collector enables kinds, and a completed buffer routes typed records to it."""
+    A kind that was never enabled is ignored by the router, and leaving the context drains
+    the buffer and disables every native kind the capture turned on.
+    """
     with nv.CuptiCollector(Activity.KERNEL | Activity.MEMCPY) as collector:
         fake_cupti.completed([_kernel_activity(), _memcpy_activity(), _runtime_activity()])
         collector.flush()
@@ -173,12 +173,21 @@ def test_collector_lifecycle_collects_and_routes_records(fake_cupti: FakeCupti) 
         assert collector.memcpys()[0].bytes_moved == 2048
         # RUNTIME wasn't enabled here, so its record is ignored by the router
         assert collector.activities() == []
+        collector.reset()
+        assert collector.kernels() == []
     assert fake_cupti.flushes > 0  # stop drained the buffer
     assert fake_cupti.enabled == set()  # every activity kind was disabled at capture end
 
 
-def test_collector_routes_generic_activity_when_kind_enabled(fake_cupti: FakeCupti) -> None:
-    """An enabled non-kernel/memcpy kind becomes a generic record with a resolved name."""
+def test_a_generic_activity_resolves_its_name_after_the_callback_returns(
+    fake_cupti: FakeCupti,
+) -> None:
+    """An enabled non-kernel/memcpy kind becomes a generic record with a resolved name.
+
+    Name resolution is deferred past the buffer callback, so a record that carries its own
+    name keeps it, one that carries only a callback id looks the name up, and one with
+    neither falls back to its kind label.
+    """
     with nv.CuptiCollector(Activity.RUNTIME) as collector:
         fake_cupti.completed([_runtime_activity(cbid=7)])
         collector.flush()
@@ -186,10 +195,36 @@ def test_collector_routes_generic_activity_when_kind_enabled(fake_cupti: FakeCup
         assert record.kind == "runtime"
         assert record.name == "cb_7"  # resolved via cbid since the activity had no name
 
+    named = nv.RawGeneric(
+        kind_id=FakeActivityKind.RUNTIME,
+        kind="runtime",
+        name="explicit",
+        cbid=1,
+        start_ns=0,
+        end_ns=1,
+        correlation_id=0,
+    )
+    anonymous = nv.RawGeneric(
+        kind_id=FakeActivityKind.MEMSET,
+        kind="memset",
+        name=None,
+        cbid=None,
+        start_ns=0,
+        end_ns=1,
+        correlation_id=0,
+    )
+    assert nv.CuptiCollector.activity_name(named) == "explicit"
+    assert nv.CuptiCollector.activity_name(anonymous) == "memset"
 
-def test_buffer_completed_ignores_records_with_no_active_collector(fake_cupti: FakeCupti) -> None:
-    """A completed buffer with no live collector is silently dropped."""
+
+def test_the_buffer_callbacks_offer_a_sized_buffer_and_tolerate_no_collector(
+    fake_cupti: FakeCupti,
+) -> None:
+    """CUPTI is handed a sized, empty buffer, and a buffer completed with nobody listening
+    is dropped rather than raising."""
     del fake_cupti
+    size, count = nv._on_buffer_requested()  # noqa: SLF001  reason=unit-tests the CUPTI buffer-size callback since=2026-08-16
+    assert size > 0 and count == 0
     nv._on_buffer_completed([_kernel_activity()])  # noqa: SLF001  reason=no active collector -> no error since=2026-08-16
 
 
@@ -219,8 +254,12 @@ def test_failed_collector_start_disables_every_enabled_kind(
     assert fake_cupti.enabled == set()
 
 
-def test_stop_cleans_up_even_when_active_slot_was_lost(fake_cupti: FakeCupti) -> None:
-    """Cleanup disables native kinds even if external state lost the active slot."""
+def test_stop_cleans_up_even_when_the_active_slot_was_lost(fake_cupti: FakeCupti) -> None:
+    """Cleanup disables native kinds even if external state lost the active slot.
+
+    A collector that was never entered is not on the stack at all, so stopping it pops
+    nothing rather than taking somebody else's slot.
+    """
     collector = nv.CuptiCollector(Activity.KERNEL)
     collector.enabled_kinds = (FakeActivityKind.CONCURRENT_KERNEL,)
     collector.running = True
@@ -229,53 +268,12 @@ def test_stop_cleans_up_even_when_active_slot_was_lost(fake_cupti: FakeCupti) ->
     assert collector.running is False
     assert fake_cupti.enabled == set()
 
-
-def test_collector_reset_drops_records(fake_cupti: FakeCupti) -> None:
-    """`reset` flushes in-flight records then clears everything collected so far."""
-    with nv.CuptiCollector(Activity.KERNEL) as collector:
-        fake_cupti.completed([_kernel_activity()])
-        collector.flush()
-        assert collector.kernels()
-        collector.reset()
-        assert collector.kernels() == []
-
-
-def test_buffer_requested_returns_size_and_count() -> None:
-    """The buffer-request callback offers a sized buffer with no pre-filled count."""
-    size, count = nv._on_buffer_requested()  # noqa: SLF001  reason=unit-tests the CUPTI buffer-size callback since=2026-08-16
-    assert size > 0 and count == 0
-
-
-def test_deferred_activity_name_prefers_explicit_name(fake_cupti: FakeCupti) -> None:
-    """Model conversion resolves names only after the buffer callback returns."""
-    del fake_cupti
-    record = nv.RawGeneric(
-        kind_id=FakeActivityKind.RUNTIME,
-        kind="runtime",
-        name="explicit",
-        cbid=1,
-        start_ns=0,
-        end_ns=1,
-        correlation_id=0,
-    )
-    assert nv.CuptiCollector.activity_name(record) == "explicit"
-
-
-def test_deferred_activity_name_falls_back_to_kind(fake_cupti: FakeCupti) -> None:
-    del fake_cupti
-    record = nv.RawGeneric(
-        kind_id=FakeActivityKind.MEMSET,
-        kind="memset",
-        name=None,
-        cbid=None,
-        start_ns=0,
-        end_ns=1,
-        correlation_id=0,
-    )
-    assert nv.CuptiCollector.activity_name(record) == "memset"
+    nv.CuptiCollector(Activity.KERNEL).stop()  # never entered, so not running
+    assert nv._active == []  # noqa: SLF001  reason=asserts the module-private active-collector stack since=2026-08-16
 
 
 def test_raw_activity_buffer_is_bounded() -> None:
+    """Past its record cap the capture buffer overwrites the oldest and counts the loss."""
     collector = nv.CuptiCollector(max_records=1)
     record = nv.RawMemcpy(copy_kind=1, start_ns=0, end_ns=1, bytes_moved=1, correlation_id=0)
     collector.append(record)
@@ -285,14 +283,13 @@ def test_raw_activity_buffer_is_bounded() -> None:
     assert collector.dropped() == 1
 
 
-def test_sync_is_a_noop_without_runtime(fake_cupti: FakeCupti) -> None:
-    """`_sync` does nothing when the CUDA runtime binding is absent."""
-    del fake_cupti
-    nv._sync()  # noqa: SLF001  reason=cuda_runtime is None in the fixture -> no error since=2026-08-16
+def test_the_device_sync_runs_only_when_the_runtime_binding_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_sync` drains the device when the CUDA runtime is loaded, and is a no-op without it."""
+    monkeypatch.setattr(nv, "cuda_runtime", None)
+    nv._sync()  # noqa: SLF001  reason=unit-tests the module-private device-sync helper since=2026-08-16
 
-
-def test_sync_calls_runtime_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`_sync` synchronizes the device when the runtime binding is present."""
     synced: list[int] = []
     monkeypatch.setattr(
         nv, "cuda_runtime", types.SimpleNamespace(cudaDeviceSynchronize=lambda: synced.append(1))
@@ -301,8 +298,15 @@ def test_sync_calls_runtime_when_present(monkeypatch: pytest.MonkeyPatch) -> Non
     assert synced == [1]
 
 
-def test_nvtx_tracer_annotation_forwards_to_nvtx(monkeypatch: pytest.MonkeyPatch) -> None:
-    """NVTX push/pop/mark forward to the nvtx library when it is present."""
+def test_annotation_goes_to_nvtx_while_the_deep_trace_goes_to_cupti(
+    fake_cupti: FakeCupti, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NVTX carries push/pop/mark, and CUPTI backs the collector, the sessions and the clock.
+
+    `start` opens an overlap-safe process range, so each closer ends the range it opened
+    rather than whichever one happens to be on top.
+    """
+    del fake_cupti
     events: list[tuple[str, str | None | tuple[int, int]]] = []
     fake_nvtx = types.SimpleNamespace(
         push_range=lambda name: events.append(("push", name)),
@@ -330,12 +334,9 @@ def test_nvtx_tracer_annotation_forwards_to_nvtx(monkeypatch: pytest.MonkeyPatch
         ("end", (4, 0)),
         ("end", (5, 0)),
     ]
-
-
-def test_nvtx_tracer_timestamp_uses_cupti(fake_cupti: FakeCupti) -> None:
-    """The device clock comes from CUPTI when available."""
-    del fake_cupti
-    assert nv.NvtxTracer().timestamp() == 123
+    assert isinstance(tracer.open(Activity.KERNEL), nv.CuptiCollector)
+    assert isinstance(tracer.callbacks(), nv.CuptiCallbackSession)
+    assert tracer.timestamp() == 123
 
 
 def test_nvtx_tracer_degrades_without_libraries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -354,8 +355,12 @@ def test_nvtx_tracer_degrades_without_libraries(monkeypatch: pytest.MonkeyPatch)
     assert isinstance(tracer.timestamp(), int)
 
 
-def test_callback_session_counts_api_calls(fake_cupti: FakeCupti) -> None:
-    """The callback session counts an API function name once per ENTER callback."""
+def test_the_callback_session_counts_one_api_call_per_enter(fake_cupti: FakeCupti) -> None:
+    """A function name is counted once per ENTER callback and never on the way out.
+
+    A domain the CUPTI enum does not carry is skipped rather than subscribed to, and
+    stopping twice is safe since the second stop has no subscriber left to release.
+    """
     with nv.CuptiCallbackSession(("runtime", "driver", "bogus")) as session:
         enter = types.SimpleNamespace(
             callback_site=FakeApiCallbackSite.API_ENTER, function_name="cudaMalloc"
@@ -368,28 +373,4 @@ def test_callback_session_counts_api_calls(fake_cupti: FakeCupti) -> None:
         fake_cupti.callback(None, None, 0, exit_site)  # EXIT is not counted
     assert session.counts() == {"cudaMalloc": 2}
     assert fake_cupti.subscribed == []  # stop unsubscribed
-
-
-def test_nvtx_tracer_open_and_callbacks_use_cupti(fake_cupti: FakeCupti) -> None:
-    """With CUPTI present, the tracer builds CUPTI-backed collectors and sessions."""
-    del fake_cupti
-    tracer = nv.NvtxTracer()
-    assert isinstance(tracer.open(Activity.KERNEL), nv.CuptiCollector)
-    assert isinstance(tracer.callbacks(), nv.CuptiCallbackSession)
-
-
-def test_collector_stop_is_safe_when_not_the_active_one(fake_cupti: FakeCupti) -> None:
-    """Stopping a collector that is not on top of the active stack leaves the stack alone."""
-    del fake_cupti
-    collector = nv.CuptiCollector(Activity.KERNEL)
-    collector.stop()  # never entered, so not active -> just flushes, pops nothing
-    assert nv._active == []  # noqa: SLF001  reason=asserts the module-private active-collector stack since=2026-08-16
-
-
-def test_callback_session_stop_is_idempotent(fake_cupti: FakeCupti) -> None:
-    """Stopping a callback session twice is safe: the second stop is a no-op."""
-    del fake_cupti
-    session = nv.CuptiCallbackSession(("runtime",))
-    session.__enter__()
-    session.stop()
     session.stop()  # subscriber already cleared -> no-op

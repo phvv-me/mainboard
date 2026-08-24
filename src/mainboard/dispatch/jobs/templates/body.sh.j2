@@ -6,6 +6,12 @@ export PYTHONPATH={{ pythonpath }}
 # happened to export is dropped here on purpose rather than inherited without anyone deciding.
 unset PYTHONPATH
 {% endif %}
+{% if sampler %}
+# This host watches itself while the job runs, publishing into the job's own receipts. It is
+# backgrounded, its output goes nowhere so it can never land in the captured log, and it ends
+# with this script rather than outliving it.
+{{ sampler }}
+{% endif %}
 {% if container_command %}
 {{ container_command }}
 {% else %}

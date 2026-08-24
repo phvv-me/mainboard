@@ -2,20 +2,34 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+from pydantic import JsonValue
+
 from mainboard import Project
 from mainboard.lab import Experiment, Lane, Run
 from mainboard.lab.board_surface import (
     RECEIPT,
     BlockedTrial,
     FailedTrial,
+    TrialOutcome,
     TrialResult,
     runnable,
 )
 from mainboard.lab.gates import Gate, GateStatus, GateVerdict
 
+# The one gate entry every mixed sweep below renders first, kept here so each expected receipt
+# spells out only the gate that decides its outcome.
+_PASSED_GATE = {"status": "passed", "reason": ""}
+
 
 @dataclass(frozen=True, slots=True)
 class FixedGate(Gate):
+    """A gate answering a predetermined verdict, so the sweep around it is what gets measured.
+
+    outcome: the status this gate always reports.
+    reason: the explanation it carries alongside.
+    """
+
     outcome: GateStatus
     reason: str = ""
 
@@ -24,106 +38,127 @@ class FixedGate(Gate):
 
 
 class NoGates(Experiment):
+    """A trial with no preconditions at all."""
+
     def measure(self, run: Run, lane: Lane | None = None) -> dict[str, float]:
         return {"score": 1.0}
 
 
-class MixedPassAndBlock(Experiment):
+class MixedPassAndBlock(NoGates):
+    """A trial whose sweep clears one gate and is withheld by the next."""
+
     gates = (FixedGate(GateStatus.PASSED), FixedGate(GateStatus.BLOCKED, reason="wait"))
 
-    def measure(self, run: Run, lane: Lane | None = None) -> dict[str, float]:
-        return {"score": 1.0}
 
+class MixedPassAndFail(NoGates):
+    """A trial whose sweep clears one gate and breaks on the next."""
 
-class MixedPassAndFail(Experiment):
     gates = (FixedGate(GateStatus.PASSED), FixedGate(GateStatus.FAILED, reason="broke"))
 
-    def measure(self, run: Run, lane: Lane | None = None) -> dict[str, float]:
-        return {"score": 1.0}
 
+class BlockedOutranksFailed(NoGates):
+    """A trial blocked by one gate and failed by another, the precedence case."""
 
-class BlockedOutranksFailed(Experiment):
     gates = (
         FixedGate(GateStatus.BLOCKED, reason="wait"),
         FixedGate(GateStatus.FAILED, reason="broke"),
     )
 
-    def measure(self, run: Run, lane: Lane | None = None) -> dict[str, float]:
-        return {"score": 1.0}
+
+@pytest.mark.parametrize(
+    ("declared", "outcome_kind", "reason", "swept"),
+    [
+        pytest.param(NoGates, TrialResult, "", (), id="no-gates-runs-to-completion"),
+        pytest.param(
+            MixedPassAndBlock,
+            BlockedTrial,
+            "wait",
+            (GateStatus.PASSED, GateStatus.BLOCKED),
+            id="a-blocked-gate-withholds-it",
+        ),
+        pytest.param(
+            MixedPassAndFail,
+            FailedTrial,
+            "broke",
+            (GateStatus.PASSED, GateStatus.FAILED),
+            id="a-broken-gate-fails-it",
+        ),
+        pytest.param(
+            BlockedOutranksFailed,
+            BlockedTrial,
+            "wait",
+            (GateStatus.BLOCKED, GateStatus.FAILED),
+            id="a-block-outranks-a-failure",
+        ),
+    ],
+)
+def test_runnable_sweeps_every_declared_gate_before_reporting_the_trials_outcome(
+    declared: type[Experiment],
+    outcome_kind: type[TrialOutcome],
+    reason: str,
+    swept: tuple[GateStatus, ...],
+) -> None:
+    outcome = runnable(declared, "gpt2", declared())
+    assert isinstance(outcome, outcome_kind)
+    assert outcome.run_id == declared().run_id(model="gpt2")
+    assert tuple(verdict.status for verdict in outcome.gate_evidence) == swept
+    assert getattr(outcome, "reason", "") == reason
 
 
-def test_runnable_returns_trial_result_when_no_gates_are_declared() -> None:
-    outcome = runnable(NoGates, "gpt2", NoGates())
-    assert isinstance(outcome, TrialResult)
-    assert outcome.metrics == {"score": 1.0}
-    assert outcome.gate_evidence == ()
-
-
-def test_runnable_returns_blocked_trial_and_keeps_every_gates_evidence() -> None:
-    outcome = runnable(MixedPassAndBlock, "gpt2", MixedPassAndBlock())
-    assert isinstance(outcome, BlockedTrial)
-    assert outcome.reason == "wait"
-    assert [verdict.status for verdict in outcome.gate_evidence] == [
-        GateStatus.PASSED,
-        GateStatus.BLOCKED,
-    ]
-
-
-def test_runnable_returns_failed_trial_when_no_gate_is_blocked() -> None:
-    outcome = runnable(MixedPassAndFail, "gpt2", MixedPassAndFail())
-    assert isinstance(outcome, FailedTrial)
-    assert outcome.reason == "broke"
-
-
-def test_runnable_blocked_outranks_failed() -> None:
-    outcome = runnable(BlockedOutranksFailed, "gpt2", BlockedOutranksFailed())
-    assert isinstance(outcome, BlockedTrial)
-    assert outcome.reason == "wait"
-
-
-def test_runnable_builds_the_artifact_dir_under_the_project_runs_path() -> None:
-    captured: dict[str, Path] = {}
+def test_runnable_builds_the_artifact_dir_under_the_projects_runs_path() -> None:
+    captured: list[Path] = []
 
     class Capturing(Experiment):
+        """An experiment that reports back the artifact dir its trial was handed."""
+
         def measure(self, run: Run, lane: Lane | None = None) -> dict[str, float]:
-            captured["artifact_dir"] = run.artifact_dir
+            captured.append(run.artifact_dir)
             return {}
 
-    instance = Capturing()
-    outcome = runnable(Capturing, "gpt2", instance)
-    assert captured["artifact_dir"] == Path(Project().out_dir) / "runs" / outcome.run_id
+    outcome = runnable(Capturing, "gpt2", Capturing())
+    assert captured == [Path(Project().out_dir) / "runs" / outcome.run_id]
 
 
-def test_a_completed_trials_receipt_carries_its_identity_gates_and_metrics() -> None:
-    outcome = runnable(MixedPassAndBlock, "gpt2", MixedPassAndBlock())
-    passed = TrialResult(
-        run_id=outcome.run_id, gate_evidence=outcome.gate_evidence, metrics={"score": 1.0}
-    )
-    record = json.loads(passed.receipt())[RECEIPT]
-    assert record["run_id"] == outcome.run_id
-    assert record["outcome"] == "passed"
-    assert record["metrics"] == {"score": 1.0}
-    assert record["gates"] == [
-        {"status": "passed", "reason": ""},
-        {"status": "blocked", "reason": "wait"},
-    ]
-
-
-def test_a_withheld_trials_receipt_names_its_blocking_reason() -> None:
-    outcome = runnable(MixedPassAndBlock, "gpt2", MixedPassAndBlock())
-    record = json.loads(outcome.receipt())[RECEIPT]
-    assert record["outcome"] == "blocked" and record["reason"] == "wait"
-    assert "metrics" not in record
-
-
-def test_a_broken_trials_receipt_names_its_failing_reason() -> None:
-    outcome = runnable(MixedPassAndFail, "gpt2", MixedPassAndFail())
-    record = json.loads(outcome.receipt())[RECEIPT]
-    assert record["outcome"] == "failed" and record["reason"] == "broke"
-
-
-def test_every_receipt_is_one_parseable_line_under_the_published_key() -> None:
-    outcome = runnable(NoGates, "gpt2", NoGates())
+@pytest.mark.parametrize(
+    ("declared", "word", "gates", "own", "absent"),
+    [
+        pytest.param(
+            NoGates, "passed", [], {"metrics": {"score": 1.0}}, "reason", id="a-completed-trial"
+        ),
+        pytest.param(
+            MixedPassAndBlock,
+            "blocked",
+            [_PASSED_GATE, {"status": "blocked", "reason": "wait"}],
+            {"reason": "wait"},
+            "metrics",
+            id="a-withheld-trial",
+        ),
+        pytest.param(
+            MixedPassAndFail,
+            "failed",
+            [_PASSED_GATE, {"status": "failed", "reason": "broke"}],
+            {"reason": "broke"},
+            "metrics",
+            id="a-broken-trial",
+        ),
+    ],
+)
+def test_every_outcome_renders_one_receipt_line_under_the_one_published_key(
+    declared: type[Experiment],
+    word: str,
+    gates: list[dict[str, str]],
+    own: dict[str, JsonValue],
+    absent: str,
+) -> None:
+    outcome = runnable(declared, "gpt2", declared())
     line = outcome.receipt()
     assert "\n" not in line
     assert set(json.loads(line)) == {RECEIPT}
+    record = json.loads(line)[RECEIPT]
+    assert record["run_id"] == outcome.run_id
+    assert record["outcome"] == word
+    assert record["producer"] == Project().name
+    assert record["gates"] == gates
+    assert absent not in record
+    for field, value in own.items():
+        assert record[field] == value

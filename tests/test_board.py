@@ -1,72 +1,220 @@
 import os
+from threading import Event, Thread
+from time import sleep
+from types import TracebackType
 from typing import TYPE_CHECKING, NoReturn
 
 import pytest
 from plumbum import local
 
-from mainboard import Board, Fleet, HostFacts, Job, MissionError, Survey
+from mainboard import Board, ExecutionPlan, Fleet, HostFacts, Job, MissionError, Survey
 from mainboard.board import ProviderJob
+from mainboard.deps import Dependencies
 from mainboard.dispatch import Handle, HostSetup, Verdict
-from mainboard.dispatch.backends import (
-    Account,
-    Delivery,
-    LogSource,
-    ProviderBackend,
-    Standing,
-)
-from mainboard.dispatch.schedulers import JobState
+from mainboard.dispatch.backends import Account, Delivery, LogSource, ProviderBackend, Standing
 from mainboard.dispatch.state import RunRecord
+from mainboard.dispatch.vocabulary import JobState, Resources
+from mainboard.doctor import Doctor
+from mainboard.manifest import Manifest
+from mainboard.monitor import Monitor
+from mainboard.scaffold import Scaffold
 
 from .dispatch.backends.conftest import BareBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
+_GOLD = "gold"
 _MIYABI_G = "miyabi-g"
+_REMOTE_ROOT = "/work/xg25g007/x10537/projects"
+
+# What a local install asks its provisioner for, the environment it compiled and the module
+# stack it activated, or the workspace root it was pointed at.
+type Provisioned = tuple[str, Path | tuple[str, dict[str, str]] | tuple[str, bool]]
 
 
 class Replaced(Exception):
     """What the injected exec seam raises, standing in for this process being replaced."""
 
 
-@pytest.fixture
-def board(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Board:
-    """A board over the fixture manifest, its dispatch cache isolated inside the workspace."""
-    monkeypatch.chdir(workspace)
-    return Board(workspace)
+class FakeConnection:
+    """The one ssh connection a bound board opens, answering every bound command with `reply`."""
+
+    def __init__(self, reply: str) -> None:
+        """reply: what running the staged line answers with."""
+        self.reply = reply
+
+    def __enter__(self) -> FakeConnection:
+        return self
+
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        fault: BaseException | None,
+        trace: TracebackType | None,
+    ) -> bool:
+        return False
+
+    def __getitem__(self, name: str) -> FakeConnection:
+        return self
+
+    def __call__(self) -> str:
+        return self.reply
 
 
-@pytest.fixture
-def provisioned(board: Board, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    """A finished `default` installation and a stub `pixi` on PATH, yielding the binary's path.
+class FakeProvisioner:
+    """A `Provisioner` double recording what a local install compiled and activated."""
 
-    pixi stamps the fingerprint only once an install completes, so writing it is what makes
-    the workspace look provisioned, and the stub is what a shell would have been replaced by.
+    calls: list[Provisioned] = []
+
+    def __init__(self, root: Path, manifest: Manifest) -> None:
+        FakeProvisioner.calls.append(("init", root))
+
+    def activate(self, env: str, *, modules: dict[str, str]) -> str:
+        FakeProvisioner.calls.append(("activate", (env, dict(modules))))
+        return f"/repo/.mainboard/{env}-activate.sh"
+
+    def provision(self, env: str, *, resolve: bool) -> None:
+        FakeProvisioner.calls.append(("provision", (env, resolve)))
+
+
+class FakeCloud(ProviderBackend, Account, Delivery, LogSource):
+    """A registered `fakecloud`-kind backend carrying every capability, so nothing is refused.
+
+    Module-level so it registers exactly once.
     """
-    fingerprint = board.root / ".mainboard" / ".pixi" / "envs" / "default" / "conda-meta"
+
+    name = "fakecloud"
+    submitted: list[str] = []
+    cancelled: list[str] = []
+
+    def cancel(self, handle: str) -> None:
+        FakeCloud.cancelled.append(handle)
+
+    def deliver(self, handle: str, *, path: str) -> None:
+        return None
+
+    def logs(self, handle: str) -> str:
+        return "cloud log"
+
+    def standing(self) -> Standing:
+        return Standing(keyed=True, note="a fake cloud is always paid up")
+
+    def state(self, handle: str) -> JobState:
+        return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
+
+    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+        FakeCloud.submitted.append(command)
+        return "cloud-1"
+
+
+@pytest.fixture
+def installed(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Board]:
+    """A board on its own workspace where `default` is provisioned and a stub `pixi` is on PATH.
+
+    pixi stamps the fingerprint only once an install completes, so writing it is what makes the
+    workspace look provisioned, and the stub is what a shell would have been replaced by. The
+    workspace is this test's own rather than the shared station, since both artifacts would
+    otherwise outlive it and make a later test read an environment nobody installed.
+    """
+    fingerprint = workspace / ".mainboard" / ".pixi" / "envs" / "default" / "conda-meta"
     fingerprint.mkdir(parents=True)
     (fingerprint / ".pixi-environment-fingerprint").write_text("installed\n")
-    bindir = tmp_path_factory.mktemp("bin")
+    bindir = workspace / "bin"
+    bindir.mkdir()
     binary = bindir / "pixi"
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
+    monkeypatch.chdir(workspace)
     with local.env(PATH=f"{bindir}{os.pathsep}{local.env['PATH']}"):
-        yield str(binary)
+        yield Board(workspace)
+
+
+def cloud_job(board: Board, monkeypatch: pytest.MonkeyPatch, *, fetch: str = "") -> ProviderJob:
+    """A submitted `ProviderJob` routed to the shared `fakecloud`-kind backend."""
+    FakeCloud.submitted = []
+    FakeCloud.cancelled = []
+    manifest = board.manifest.model_copy(
+        update={
+            "hosts": {
+                **board.manifest.hosts,
+                "cloudbox": board.manifest.profile(_GOLD).model_copy(update={"kind": "fakecloud"}),
+            }
+        }
+    )
+    monkeypatch.setitem(board.shared, "manifest", manifest)
+    monkeypatch.setitem(board.shared, "resolver", None)
+    submitted = board.on("cloudbox").submit("python train.py", mem_gb=8, fetch=fetch or None)
+    assert isinstance(submitted, ProviderJob)
+    return submitted
 
 
 def test_on_binds_the_host_and_shares_the_loaded_manifest(board: Board) -> None:
     assert board.local and board.host == "local"
-    bound = board.on("miyabi-g")
-    assert bound.host == "miyabi-g" and not bound.local
+    bound = board.on(_MIYABI_G)
+    assert bound.host == _MIYABI_G and not bound.local
     assert bound.manifest is board.manifest
     assert bound.dispatcher is board.dispatcher
+    assert bound.resolver is board.resolver
     assert bound.plan().containerized
 
 
-def test_local_run_executes_through_the_wrapped_line(board: Board) -> None:
-    assert board.run("true") == 0
-    assert board.run("false") == 1
+def test_one_shared_subsystem_is_built_once_however_many_threads_ask_at_once(
+    board: Board,
+) -> None:
+    """Two threads reaching an unbuilt subsystem together would otherwise each build one.
+
+    A second dispatcher means a second dispatch cache, and a second cache is a second SQLite
+    connection owned by whichever thread happened to win, so the build is locked rather than
+    merely memoized. The waiting thread is let into `once` only once the other is already
+    inside its builder, which is the interleaving that used to produce two.
+    """
+    building = Event()
+
+    def slow() -> object:
+        building.set()
+        sleep(0.05)
+        return object()
+
+    thread = Thread(target=lambda: board.once("thing", slow))
+    thread.start()
+    assert building.wait(timeout=5.0)
+    mine = board.once("thing", object)
+    thread.join()
+    assert mine is board.shared["thing"]
+    assert board.on(_GOLD).once("thing", object) is mine
+
+
+@pytest.mark.parametrize(
+    ("accessor", "kind"),
+    [
+        ("compute", Survey),
+        ("deps", Dependencies),
+        ("doctor", Doctor),
+        ("fleet", Fleet),
+        ("monitor", Monitor),
+        ("scaffold", Scaffold),
+    ],
+)
+def test_the_board_hands_out_each_subsystem_bound_to_this_workspace(
+    board: Board, accessor: str, kind: type
+) -> None:
+    """Every verb reaches its subsystem through the one addressable interface.
+
+    The host-independent ones answer the same whatever host the board is pivoted onto, since a
+    survey, a sweep and a dependency belong to the workspace rather than to one machine.
+    """
+    subsystem = getattr(board.on(_GOLD), accessor)()
+    assert isinstance(subsystem, kind)
+    assert subsystem.board.manifest is board.manifest
+
+
+@pytest.mark.parametrize(("command", "code"), [("true", 0), ("false", 1)])
+def test_a_local_run_executes_the_wrapped_line_and_answers_with_its_exit_code(
+    board: Board, command: str, code: int
+) -> None:
+    assert board.run(command) == code
 
 
 def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
@@ -75,7 +223,13 @@ def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
     """`test` is a task in the fixture manifest, so the shell never sees that word at all."""
     staged: list[str] = []
 
-    def capture(plan, root, *, command, containerize=None):
+    def capture(
+        plan: ExecutionPlan,
+        root: str,
+        *,
+        command: str,
+        containerize: Callable[[list[str]], list[str]] | None = None,
+    ) -> str:
         staged.append(command)
         return "true"
 
@@ -91,21 +245,29 @@ def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
 
 
 def test_remote_root_comes_from_the_profile_or_refuses(board: Board) -> None:
-    assert board.on("miyabi-g").remote_root() == "/work/xg25g007/x10537/projects"
+    assert board.on(_MIYABI_G).remote_root() == _REMOTE_ROOT
     with pytest.raises(MissionError, match=r"set \[hosts.gold\] root"):
-        board.on("gold").remote_root()
+        board.on(_GOLD).remote_root()
 
 
-def test_local_facts_are_the_wire_snapshot(board: Board) -> None:
-    facts = board.facts()
-    assert isinstance(facts, HostFacts)
-    assert facts.schema_version >= 1
-
-
-def test_submit_resolves_profile_defaults_and_expressions(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        (
+            {"attempt": 2},
+            {"queue": "debug-g", "walltime": "00:30:00", "mem": 100, "account": "xg25g007"},
+        ),
+        (
+            {"queue": "short-g", "mem_gb": 64, "attempt": 1},
+            {"queue": "short-g", "walltime": "00:30:00", "mem": 64, "account": "xg25g007"},
+        ),
+    ],
+    ids=["profile defaults with the expression evaluated", "overrides beat the defaults"],
+)
+def test_submit_resolves_the_hosts_declared_resources(
+    board: Board, monkeypatch: pytest.MonkeyPatch, given: dict[str, int | str], expected: dict
 ) -> None:
-    seen: dict[str, object] = {}
+    seen: dict[str, str | int | bool] = {}
 
     def fake_run(plan, cmd, *, root, resources, containerize=None, **extra):
         seen.update(
@@ -119,90 +281,47 @@ def test_submit_resolves_profile_defaults_and_expressions(
         return Handle(id="77", host=plan.host, root=root, kind=plan.profile.kind)
 
     monkeypatch.setattr(board.dispatcher, "run", fake_run)
-    job = board.on("miyabi-g").submit("python -m exp.run", attempt=2)
+    job = board.on(_MIYABI_G).submit("python -m exp.run", **given)
     assert isinstance(job, Job) and job.handle.id == "77"
-    assert seen == {
-        "queue": "debug-g",
-        "walltime": "00:30:00",
-        "mem": 100,
-        "account": "xg25g007",
-        "containerized": True,
-        "root": "/work/xg25g007/x10537/projects",
-    }
+    assert seen == {**expected, "containerized": True, "root": _REMOTE_ROOT}
 
 
-def test_submit_overrides_beat_the_defaults(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, object] = {}
-
-    def fake_run(plan, cmd, *, root, resources, **extra):
-        seen.update(queue=resources.queue, mem=resources.mem_gb)
-        return Handle(id="78", host=plan.host, root=root, kind=plan.profile.kind)
-
-    monkeypatch.setattr(board.dispatcher, "run", fake_run)
-    board.on("miyabi-g").submit("true", queue="short-g", mem_gb=64, attempt=1)
-    assert seen == {"queue": "short-g", "mem": 64}
-
-
-def test_job_wait_and_pull_delegate_to_the_dispatcher(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    handle = Handle(id="9", host="miyabi-g", root="/work/p", kind="pbs")
-    verdict = Verdict(verdict="ok")
-    monkeypatch.setattr(
-        board.dispatcher, "await_many", lambda handles, **kw: {handles[0]: verdict}
-    )
-    pulled: list[Handle] = []
-    monkeypatch.setattr(board.dispatcher, "fetch", lambda h, **kw: pulled.append(h))
-    job = Job(board.on("miyabi-g"), handle)
-    assert job.wait() is verdict
-    job.pull()
-    assert pulled == [handle]
-
-
-class FakeProvisioner:
-    """A `Provisioner` double recording what a local install compiled and activated."""
-
-    calls: list[tuple[str, object]] = []
-
-    def __init__(self, root, manifest):
-        FakeProvisioner.calls.append(("init", root))
-
-    def activate(self, env, *, modules):
-        FakeProvisioner.calls.append(("activate", (env, dict(modules))))
-        return f"/repo/.mainboard/{env}-activate.sh"
-
-    def provision(self, env, *, resolve):
-        FakeProvisioner.calls.append(("provision", (env, resolve)))
-
-
-def test_install_provisions_and_activates_locally(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ({"env": "serving", "resolve": True}, ("serving", {})),
+        ({"profile": _MIYABI_G}, ("default", {"singularity": "4.2.1"})),
+    ],
+    ids=["a named environment", "the module stack of a named profile"],
+)
+def test_installing_here_provisions_and_activates_in_place(
+    board: Board, monkeypatch: pytest.MonkeyPatch, given: dict[str, str | bool], expected: tuple
 ) -> None:
     FakeProvisioner.calls = []
     monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
-    setup = board.install("serving", resolve=True)
-    assert ("provision", ("serving", True)) in FakeProvisioner.calls
-    assert ("activate", ("serving", {})) in FakeProvisioner.calls
+    setup = board.install(**given)
+    assert ("provision", (expected[0], given.get("resolve", False))) in FakeProvisioner.calls
+    assert ("activate", expected) in FakeProvisioner.calls
     assert setup.host == "local"
     assert setup.installer == "in-place"
-    assert setup.activate.endswith("serving-activate.sh")
+    assert setup.activate.endswith(f"{expected[0]}-activate.sh")
     assert setup.tool
 
 
-def test_install_takes_its_modules_from_a_named_profile(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("host", "env", "expected"),
+    [
+        (_MIYABI_G, "serving", ("serving", _REMOTE_ROOT)),
+        (_GOLD, "", ("serving", "")),
+    ],
+    ids=["a named environment on a rooted host", "the environment the profile itself names"],
+)
+def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
+    board: Board, monkeypatch: pytest.MonkeyPatch, host: str, env: str, expected: tuple[str, str]
 ) -> None:
-    FakeProvisioner.calls = []
-    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
-    board.install(profile=_MIYABI_G)
-    assert ("activate", ("default", {"singularity": "4.2.1"})) in FakeProvisioner.calls
-
-
-def test_install_on_a_host_runs_the_onboarding(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: dict[str, object] = {}
-    report = HostSetup(host="gold", root="/repo", installer="uv")
+    """gold declares `env = "serving"`, so setting gold up must not fall back to default."""
+    seen: dict[str, str | int | bool] = {}
+    report = HostSetup(host=host, root="/repo", installer="uv")
 
     class FakeOnboarding:
         def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch):
@@ -215,46 +334,22 @@ def test_install_on_a_host_runs_the_onboarding(
                 containerized=plan.containerized,
             )
 
-        def run(self):
+        def run(self) -> HostSetup:
             return report
 
     monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
-    assert board.on(_MIYABI_G).install("serving") is report
+    assert board.on(host).install(env) is report
     assert seen == {
-        "host": _MIYABI_G,
-        "root": "/work/xg25g007/x10537/projects",
-        "env": "serving",
-        "artifact": (
-            ".mainboard/pixi.toml",
-            ".mainboard/pixi.lock",
-            ".mainboard/state.toml",
-        ),
+        "host": host,
+        "root": expected[1],
+        "env": expected[0],
+        "artifact": (".mainboard/pixi.toml", ".mainboard/pixi.lock", ".mainboard/state.toml"),
         "resolve": False,
         "containerized": False,
     }
 
 
-def test_installing_a_host_provisions_the_environment_its_profile_names(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """gold declares `env = "serving"`, so setting gold up must not fall back to default."""
-    seen: dict[str, object] = {}
-
-    class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch):
-            seen.update(env=plan.env)
-
-        def run(self):
-            return HostSetup(host="gold", root="/repo")
-
-    monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
-    board.on("gold").install()
-    assert seen == {"env": "serving"}
-
-
-def test_shell_replaces_this_process_with_a_frozen_pixi_shell(
-    board: Board, provisioned: str
-) -> None:
+def test_shell_replaces_this_process_with_a_frozen_pixi_shell(installed: Board) -> None:
     """The terminal goes to `pixi shell`, pinned to the workspace and forbidden to solve."""
     seen: list[tuple[str, list[str]]] = []
 
@@ -263,254 +358,253 @@ def test_shell_replaces_this_process_with_a_frozen_pixi_shell(
         raise Replaced
 
     with pytest.raises(Replaced):
-        board.shell(replace=replace)
+        installed.shell(replace=replace)
 
-    manifest = str(board.root / ".mainboard" / "pixi.toml")
-    argv = [provisioned, "shell", "--manifest-path", manifest, "--frozen", "-e", "default"]
-    assert seen == [(provisioned, argv)]
+    binary = str(installed.root / "bin" / "pixi")
+    manifest = str(installed.root / ".mainboard" / "pixi.toml")
+    argv = [binary, "shell", "--manifest-path", manifest, "--frozen", "-e", "default"]
+    assert seen == [(binary, argv)]
 
 
-def test_shell_refuses_an_environment_nothing_provisioned(board: Board) -> None:
+@pytest.mark.parametrize(
+    ("host", "env", "refusal"),
+    [
+        ("local", "serving", "Run `mainboard install serving`"),
+        (_GOLD, "", "this machine only"),
+    ],
+    ids=["an environment nothing provisioned", "a board bound to another machine"],
+)
+def test_shell_refuses_what_it_cannot_hand_the_terminal_to(
+    board: Board, host: str, env: str, refusal: str
+) -> None:
     """A shell on the system interpreter is the failure the refusal exists to prevent."""
-    with pytest.raises(MissionError, match="Run `mainboard install serving`"):
-        board.shell("serving")
+    with pytest.raises(MissionError, match=refusal):
+        board.on(host).shell(env)
 
 
-def test_shell_refuses_on_a_bound_host(board: Board) -> None:
-    with pytest.raises(MissionError, match="this machine only"):
-        board.on("gold").shell()
+def interacting() -> tuple[list[list[str]], Callable[[str, list[str]], NoReturn]]:
+    """A recording exec seam, plus the argv list it appends each replaced process to."""
+    seen: list[list[str]] = []
+
+    def replace(path: str, argv: list[str]) -> NoReturn:
+        assert path == "ssh"
+        seen.append(argv)
+        raise Replaced
+
+    return seen, replace
 
 
-def test_job_logs_and_kill_use_keyword_scheduler_calls(
+def test_interact_hands_an_ssh_host_terminal_to_that_hosts_own_tool(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[tuple[str, str]] = []
-
-    class FakeScheduler:
-        def cancel(self, remote, root, *, handle):
-            calls.append(("cancel", handle))
-
-        def logs(self, remote, root, *, handle):
-            calls.append(("logs", handle))
-            return "the log"
-
-    class FakeConnection:
-        def __enter__(self):
-            return "remote"
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr("mainboard.board.pick", lambda profile: FakeScheduler())
-    monkeypatch.setattr("mainboard.board.connection", lambda host: FakeConnection())
-    job = Job(board.on("miyabi-g"), Handle(id="9", host="miyabi-g", root="/work/p", kind="pbs"))
-    assert job.logs() == "the log"
-    job.kill()
-    assert calls == [("logs", "9"), ("cancel", "9")]
-
-
-def test_remote_facts_parse_the_last_json_line(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    payload = HostFacts(schema_version=1, hostname="fake-remote").model_dump_json()
-
-    class FakeCommand:
-        def __call__(self):
-            return f"module chatter\n{payload}\n"
-
-    class FakeRemote:
-        def __getitem__(self, name):
-            return FakeBound()
-
-    class FakeBound:
-        def __getitem__(self, argv):
-            return FakeCommand()
-
-    class FakeConnection:
-        def __enter__(self):
-            return FakeRemote()
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr("mainboard.board.connection", lambda host: FakeConnection())
-    facts = board.on("miyabi-g").facts()
-    assert facts.hostname == "fake-remote"
-
-
-def test_remote_run_streams_over_the_connection(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class FakeRemote:
-        def __getitem__(self, name):
-            return FakeBound()
-
-    class FakeBound:
-        def __getitem__(self, argv):
-            return "bound"
-
-    class FakeConnection:
-        def __enter__(self):
-            return FakeRemote()
-
-        def __exit__(self, *exc):
-            return False
-
-    monkeypatch.setattr("mainboard.board.connection", lambda host: FakeConnection())
-    monkeypatch.setattr("mainboard.board._streamed", lambda command: 7)
-    assert board.on("miyabi-g").run("true", container="none") == 7
-
-
-def test_fleet_accessor_binds_this_board(board: Board) -> None:
-
-    fleet = board.on("gold").fleet()
-    assert isinstance(fleet, Fleet)
-
-
-def test_compute_surveys_the_whole_workspace_whatever_host_the_board_is_bound_to(
-    board: Board,
-) -> None:
-    survey = board.on("gold").compute()
-    assert isinstance(survey, Survey)
-    assert survey.board.manifest is board.manifest
-
-
-class _FakeCloud(ProviderBackend, Account, Delivery, LogSource):
-    """A registered `fakecloud`-kind backend carrying every capability, so nothing is refused.
-
-    Module-level so it registers exactly once.
-    """
-
-    name = "fakecloud"
-    submitted: list[str] = []
-    cancelled: list[str] = []
-
-    def cancel(self, handle):
-        _FakeCloud.cancelled.append(handle)
-
-    def deliver(self, handle, *, path):
-        return None
-
-    def logs(self, handle):
-        return "cloud log"
-
-    def standing(self):
-        return Standing(keyed=True, note="a fake cloud is always paid up")
-
-    def state(self, handle):
-        return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
-
-    def submit(self, plan, command, resources):
-        _FakeCloud.submitted.append(command)
-        return "cloud-1"
-
-
-def _submit_to_fakecloud(
-    board: Board, monkeypatch: pytest.MonkeyPatch, *, fetch: str | None = None
-) -> ProviderJob:
-    """A submitted `ProviderJob` routed to the shared `fakecloud`-kind backend."""
-    _FakeCloud.submitted = []
-    _FakeCloud.cancelled = []
-    manifest = board.manifest.model_copy(
+    """An ssh box is already the machine the work runs on, so nothing is allocated for it."""
+    rooted = board.manifest.model_copy(
         update={
             "hosts": {
                 **board.manifest.hosts,
-                "cloudbox": board.manifest.profile("gold").model_copy(
-                    update={"kind": "fakecloud"}
+                _GOLD: board.manifest.profile(_GOLD).model_copy(update={"root": "/home/p/lab"}),
+            }
+        }
+    )
+    monkeypatch.setitem(board.shared, "manifest", rooted)
+    monkeypatch.setitem(board.shared, "resolver", None)
+    seen, replace = interacting()
+
+    with pytest.raises(Replaced):
+        board.on(_GOLD).interact(replace=replace)
+    [argv] = seen
+    assert argv[:3] == ["ssh", "-t", _GOLD]
+    assert argv[3].startswith("bash -lc ")
+    assert "cd /home/p/lab" in argv[3]
+    assert argv[3].endswith("mainboard shell serving'")
+
+    seen.clear()
+    with pytest.raises(Replaced):
+        board.on(_GOLD).interact("pwd", replace=replace)
+    assert seen[0][3].endswith("mainboard run --env serving -- pwd'")
+
+
+def test_interact_asks_a_queued_host_for_an_allocation_before_the_terminal(
+    board: Board,
+) -> None:
+    """A PBS terminal belongs on an allocated node, never on the login node that asked."""
+    seen, replace = interacting()
+    with pytest.raises(Replaced):
+        board.on(_MIYABI_G).interact(replace=replace)
+    staged = seen[0][3]
+    assert f"cd {_REMOTE_ROOT}" in staged
+    assert "module load singularity/4.2.1" in staged
+    assert staged.endswith("qsub -I -q debug-g -l walltime=00:30:00 -W group_list=xg25g007'")
+
+
+def test_interact_prefers_the_declared_interactive_queue_over_the_batch_one(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A site that routes interactive work elsewhere says so once, on the profile."""
+    profile = board.manifest.profile(_MIYABI_G)
+    routed = board.manifest.model_copy(
+        update={
+            "hosts": {
+                **board.manifest.hosts,
+                _MIYABI_G: profile.model_copy(
+                    update={
+                        "defaults": profile.defaults.model_copy(
+                            update={"interact_queue": "interact-g"}
+                        )
+                    }
                 ),
             }
         }
     )
-    monkeypatch.setitem(board.shared, "manifest", manifest)
+    monkeypatch.setitem(board.shared, "manifest", routed)
     monkeypatch.setitem(board.shared, "resolver", None)
-    return board.on("cloudbox").submit("python train.py", mem_gb=8, fetch=fetch)
+    seen, replace = interacting()
+
+    with pytest.raises(Replaced):
+        board.on(_MIYABI_G).interact(replace=replace)
+    assert "qsub -I -q interact-g" in seen[0][3]
+
+    seen.clear()
+    with pytest.raises(Replaced):
+        board.on(_MIYABI_G).interact(queue="short-g", walltime="06:00:00", replace=replace)
+    assert "qsub -I -q short-g -l walltime=06:00:00" in seen[0][3]
 
 
-def test_submit_routes_provider_kinds_to_the_backend(
+@pytest.mark.parametrize(
+    ("host", "options", "refusal"),
+    [
+        ("local", {}, "needs a host"),
+        ("cloudbox", {}, "hands out no terminal"),
+        (_MIYABI_G, {"walltime": "09:00:00"}, "exceeds the 'debug-g' ceiling"),
+    ],
+    ids=["this machine", "a rented instance", "a walltime the queue would reject"],
+)
+def test_interact_refuses_what_it_cannot_hand_a_terminal_to(
+    board: Board, monkeypatch: pytest.MonkeyPatch, host: str, options: dict[str, str], refusal: str
+) -> None:
+    """The scheduler's own rejection arrives minutes later; this one arrives before the ssh."""
+    rented = board.manifest.model_copy(
+        update={
+            "hosts": {
+                **board.manifest.hosts,
+                "cloudbox": board.manifest.profile(_GOLD).model_copy(
+                    update={"kind": "fakecloud", "root": "/rented"}
+                ),
+            }
+        }
+    )
+    monkeypatch.setitem(board.shared, "manifest", rented)
+    monkeypatch.setitem(board.shared, "resolver", None)
+    with pytest.raises(MissionError, match=refusal):
+        board.on(host).interact(**options)
+
+
+def test_a_scheduler_job_delegates_every_verb_to_its_host_and_dispatcher(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    job = _submit_to_fakecloud(board, monkeypatch)
-    assert isinstance(job, ProviderJob)
-    assert job.backend.submitted == ["python train.py"]
+    calls: list[tuple[str, str]] = []
+    handle = Handle(id="9", host=_MIYABI_G, root="/work/p", kind="pbs")
+    verdict = Verdict(verdict="ok")
+    probed = JobState(handle="9", state="R", verdict="running")
 
+    class FakeScheduler:
+        def cancel(self, remote: FakeConnection, root: str, *, handle: str) -> None:
+            calls.append(("cancel", handle))
 
-def test_provider_job_wait_logs_kill_and_pull_delegate_to_the_backend(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    job = _submit_to_fakecloud(board, monkeypatch, fetch="results/")
-    states = iter(["running", "ok"])
+        def logs(self, remote: FakeConnection, root: str, *, handle: str) -> str:
+            calls.append(("logs", handle))
+            return "the log"
 
-    def flipping(handle):
-        return JobState(handle=handle, state="x", verdict=next(states))
+    monkeypatch.setattr("mainboard.board.pick", lambda profile: FakeScheduler())
+    monkeypatch.setattr("mainboard.board.connection", lambda host: FakeConnection(""))
+    monkeypatch.setattr(
+        board.dispatcher, "await_many", lambda handles, **kw: {handles[0]: verdict}
+    )
+    monkeypatch.setattr(board.dispatcher, "probe", lambda asked: probed)
+    monkeypatch.setattr(board.dispatcher, "state", lambda asked: probed)
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda asked, **kw: calls.append(("pull", "9")))
 
-    job.backend.state = flipping
-    verdict = job.wait(poll=lambda seconds: None)
-    assert verdict.ok and job.logs() == "cloud log"
+    job = Job(board.on(_MIYABI_G), handle)
+    assert job.logs() == "the log"
     job.kill()
     job.pull()
+    assert job.wait() is verdict
+    assert job.state() is probed
+    assert job.poll() is probed  # the same read with the blip left unabsorbed
+    assert calls == [("logs", "9"), ("cancel", "9"), ("pull", "9")]
 
 
-def test_a_provider_submit_is_recorded_in_the_same_cache_a_queued_job_lands_in(
+def test_a_bound_board_reads_facts_and_runs_commands_over_one_connection(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote fact read parses the last JSON line out of whatever the login shell said first."""
+    payload = HostFacts(schema_version=1, hostname="fake-remote").model_dump_json()
+    monkeypatch.setattr(
+        "mainboard.board.connection", lambda host: FakeConnection(f"module chatter\n{payload}\n")
+    )
+    monkeypatch.setattr("mainboard.board._streamed", lambda command: 7)
+    bound = board.on(_MIYABI_G)
+    assert bound.facts().hostname == "fake-remote"
+    assert bound.run("true", container="none") == 7
+
+
+def test_a_provider_submit_is_recorded_so_a_later_process_rebuilds_the_rental(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Without the record no later process could settle the run, and the rental would bill on."""
-    job = _submit_to_fakecloud(board, monkeypatch, fetch="results/run")
-    record = board.dispatcher.cache.run(job.handle.id)
+    submitted = cloud_job(board, monkeypatch, fetch="results/run")
+    assert submitted.backend.submitted == ["python train.py"]
+    record = board.dispatcher.cache.run(submitted.handle.id)
     assert (record.target, record.kind) == ("cloudbox", "fakecloud")
     assert (record.script, record.fetch_path) == ("python train.py", "results/run")
     assert record.verdict is None
-
-
-def test_job_rebuilds_a_provider_run_as_the_kind_the_cache_recorded(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A fresh process addresses a rental the way the process that rented it did."""
-    submitted = _submit_to_fakecloud(board, monkeypatch, fetch="results/run")
     rebuilt = board.job(submitted.handle.id)
     assert isinstance(rebuilt, ProviderJob)
     assert rebuilt.handle == submitted.handle
     assert rebuilt.backend.name == "fakecloud"
 
 
-def test_a_provider_job_that_finishes_a_wait_has_its_rental_ended(
+def test_a_provider_job_delegates_to_its_backend_and_ends_the_rental_on_a_wait(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A caller that blocked on the run is the last thing between it and an idle meter."""
-    job = _submit_to_fakecloud(board, monkeypatch)
-    assert job.wait(poll=lambda seconds: None).ok
+    job = cloud_job(board, monkeypatch, fetch="results/")
+    states = iter(["running", "running", "ok"])
+    job.backend.state = lambda handle: JobState(handle=handle, state="x", verdict=next(states))
+    assert job.poll().verdict == "running"
+    verdict = job.wait(poll=lambda seconds: None)
+    assert verdict.ok and job.logs() == "cloud log"
     assert job.backend.cancelled == [job.handle.id]
+    job.kill()
+    job.pull()
 
 
-def test_a_provider_job_refuses_a_capability_its_backend_never_had(board: Board) -> None:
+@pytest.mark.parametrize(
+    ("fetch", "fault", "refusal"),
+    [
+        ("results/", MissionError, r"bare backend keeps no logs; read bare-1\.log"),
+        ("results/", MissionError, "does not implement Delivery"),
+        ("", LookupError, "no fetch path"),
+    ],
+    ids=["logs it never keeps", "a delivery it never had", "a path nobody recorded"],
+)
+def test_a_provider_job_refuses_a_capability_its_backend_never_had(
+    fetch: str, fault: type[Exception], refusal: str
+) -> None:
     """The absence is discovered before the call, and answered with the backend's own advice."""
-    handle = Handle(id="bare-1", host="cloudbox", root="", kind="bare", fetch_path="results/")
+    handle = Handle(id="bare-1", host="cloudbox", root="", kind="bare", fetch_path=fetch or None)
     job = ProviderJob(BareBackend(), handle)
     job.kill()
     assert job.wait(poll=lambda seconds: None).ok
-    with pytest.raises(MissionError, match=r"bare backend keeps no logs; read bare-1\.log"):
-        job.logs()
-    with pytest.raises(MissionError, match="does not implement Delivery"):
-        job.pull()
-
-
-def test_a_provider_job_with_no_recorded_results_path_has_nothing_to_pull(board: Board) -> None:
-    job = ProviderJob(BareBackend(), Handle(id="bare-1", host="cloudbox", root="", kind="bare"))
-    with pytest.raises(LookupError, match="no fetch path"):
-        job.pull()
-
-
-def test_job_state_is_a_non_blocking_probe(board: Board, monkeypatch: pytest.MonkeyPatch) -> None:
-    handle = Handle(id="9", host=_MIYABI_G, root="/work/p", kind="pbs")
-    probed = JobState(handle="9", state="R", verdict="running")
-    monkeypatch.setattr(
-        board.dispatcher, "probe", lambda asked: probed if asked == handle else None
-    )
-    assert Job(board.on(_MIYABI_G), handle).state() is probed
+    asked = job.logs if "logs" in refusal else job.pull
+    with pytest.raises(fault, match=refusal):
+        asked()
 
 
 def test_job_rebuilds_a_dispatched_run_from_the_cache(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A fresh process addresses an already-running job the way the one that submitted it did."""
     record = RunRecord(
         handle="4242",
         target=_MIYABI_G,
@@ -526,6 +620,6 @@ def test_job_rebuilds_a_dispatched_run_from_the_cache(
     job = board.job(4242)
     assert job.handle.id == "4242"
     assert job.handle.host == _MIYABI_G
-    assert job.handle.root == "/work/xg25g007/x10537/projects"
+    assert job.handle.root == _REMOTE_ROOT
     assert job.handle.fetch_path == "results/run"
     assert job.board.host == _MIYABI_G

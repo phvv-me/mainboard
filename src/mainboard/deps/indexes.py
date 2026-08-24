@@ -20,6 +20,7 @@ _TIMEOUT = 20.0
 
 # The machine-readable listing PEP 691 defines, which every PEP 503 index serves beside its
 # HTML. Asking for it is the difference between reading an index and scraping a web page.
+_JSON = "application/json"
 _SIMPLE = "application/vnd.pypi.simple.v1+json"
 
 _PYPI = "https://pypi.org/simple"
@@ -96,7 +97,8 @@ class Python(Index):
     def latest(self, name: str) -> str:
         """The newest release the index lists, PyPI when the manifest declares no other."""
         index = self.sources[0] if self.sources else _PYPI
-        listing = cast("dict[str, list[str]]", fetched(f"{index.rstrip('/')}/{name}/", _SIMPLE))
+        url = f"{index.rstrip('/')}/{name}/"
+        listing = cast("dict[str, list[str]]", _fetched(url, accept=_SIMPLE))
         return _newest(listing.get("versions", []), name=name, where=index)
 
 
@@ -105,7 +107,7 @@ class Nodejs(Index):
 
     def latest(self, name: str) -> str:
         """The release npm's own `latest` tag points at."""
-        tags = cast("dict[str, dict[str, str]]", fetched(f"{_NPM}/{name}", "application/json"))
+        tags = cast("dict[str, dict[str, str]]", _fetched(f"{_NPM}/{name}", accept=_JSON))
         return _newest([tags.get("dist-tags", {}).get("latest", "")], name=name, where=_NPM)
 
     def pin(self, version: str) -> str:
@@ -118,7 +120,7 @@ class Rust(Index):
 
     def latest(self, name: str) -> str:
         """The newest stable release crates.io reports for the crate."""
-        crate = cast("dict[str, dict[str, str]]", fetched(f"{_CRATES}/{name}", "application/json"))
+        crate = cast("dict[str, dict[str, str]]", _fetched(f"{_CRATES}/{name}", accept=_JSON))
         return _newest(
             [crate.get("crate", {}).get("max_stable_version", "")], name=name, where=_CRATES
         )
@@ -129,7 +131,7 @@ class Go(Index):
 
     def latest(self, name: str) -> str:
         """The version the module proxy resolves `latest` to, without its `v` prefix."""
-        found = cast("dict[str, str]", fetched(f"{_GOPROXY}/{name}/@latest", "application/json"))
+        found = cast("dict[str, str]", _fetched(f"{_GOPROXY}/{name}/@latest", accept=_JSON))
         return _newest([str(found.get("Version", "")).lstrip("v")], name=name, where=_GOPROXY)
 
     def pin(self, version: str) -> str:
@@ -137,7 +139,7 @@ class Go(Index):
         return version
 
 
-def fetched(url: str, accept: str) -> Json:
+def _fetched(url: str, *, accept: str) -> Json:
     """The JSON body `url` answers with, under a bounded request.
 
     url: the registry endpoint to read.

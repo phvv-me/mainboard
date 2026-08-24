@@ -17,7 +17,7 @@ from urllib.request import Request
 from uuid import uuid4
 
 from ...core.errors import MissionError
-from ..schedulers.base import JobState
+from ..vocabulary import JobState
 from .base import (
     Account,
     Credentials,
@@ -32,7 +32,7 @@ from .base import (
 if TYPE_CHECKING:
     from ...context.plan import ExecutionPlan
     from ...manifest.schema.host import HostProfile
-    from ..schedulers.base import Resources
+    from ..vocabulary import Resources
     from .base import Transport
 
 # Where an initScript's exit-code and output sentinels land. The instance's own data disk, since

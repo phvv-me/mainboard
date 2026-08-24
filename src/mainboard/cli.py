@@ -6,19 +6,22 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 
 from cyclopts import App, Parameter
 
+from .batch.spec import BatchSpec
 from .board import Board
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
 from .doctor import Verdict
 from .manifest.loading import load
-from .render import install_traceback, mode_of, progress, record, rows
+from .render import install_traceback, mode_of, progress, record, rows, totals
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from .batch.watch import BatchStatus
     from .deps import Change
     from .dispatch.state import MonitorReport
+    from .render.values import Node
 
 
 def build(root: Path | None = None) -> App:
@@ -317,6 +320,29 @@ def build(root: Path | None = None) -> App:
         """
         board("local").shell(env)
 
+    @app.command(version_flags=[])
+    def interact(
+        *command: Annotated[str, Parameter(allow_leading_hyphen=True)],
+        on: str,
+        env: str = "",
+        queue: str = "",
+        walltime: str = "",
+    ) -> NoReturn:
+        """Open an interactive session on a host, inside its mirrored workspace.
+
+        `shell` for a machine that is not this one. This process becomes the ssh, so quitting
+        the session returns to the terminal that asked. A queued host is asked for an
+        interactive allocation first, so the terminal lands on a compute node rather than on the
+        login node the request was made from.
+
+        command: a command to run instead of handing over the terminal, everything after `--`.
+        on: the host alias the session opens on.
+        env: an environment name overriding the profile's choice.
+        queue: the queue the allocation targets, the profile's declared choice when omitted.
+        walltime: the session's wall-clock limit, the profile's declared choice when omitted.
+        """
+        board(on).interact(*command, env=env, queue=queue, walltime=walltime)
+
     @app.command
     def setup(
         host: str,
@@ -504,6 +530,192 @@ def build(root: Path | None = None) -> App:
             title="check",
         )
 
+    batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
+    app.command(batch)
+
+    def declared(spec: str, job: tuple[str, ...], name: str) -> BatchSpec:
+        """The batch the caller declared, a spec file or repeated `target:command` flags."""
+        if spec:
+            return BatchSpec.load(workspace_root() / spec)
+        if not job:
+            raise MissionError("declare a batch: a spec file, or --job target:command")
+        return BatchSpec.inline(name or "batch", job)
+
+    @batch.command(name="prepare")
+    def batch_prepare(
+        spec: str = "",
+        *,
+        job: tuple[str, ...] = (),
+        name: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Measure what each job must still put on its target, and record the measurement.
+
+        The mirror a host already carries is not shipped again, so what a job actually sends is
+        the workspace's changes since that mirror plus whatever data the job itself names. Both
+        sizes are reported, on disk and compressed, because compressed is what crosses the wire.
+        Nothing is dispatched.
+
+        spec: the batch spec file, relative to the workspace root.
+        job: a `target:command` job, repeatable, for a batch declared without a file.
+        name: the batch's name when declared with `--job` rather than a file.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the transfer columns.
+        """
+        batched = board("local").batch(declared(spec, job, name))
+        with progress(f"measuring {batched.id}"):
+            measured = [transfer.model_dump() for transfer in batched.prepare()]
+        _tabled(
+            measured,
+            _TRANSFER_COLUMNS,
+            ("files", "raw_bytes", "wire_bytes"),
+            json_mode=json,
+            agent=agent,
+            fields=fields,
+            title=f"prepare: {batched.id}",
+        )
+
+    @batch.command(name="estimate")
+    def batch_estimate(
+        spec: str = "",
+        *,
+        job: tuple[str, ...] = (),
+        name: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Price every job of a batch before any of it runs, one row each and a total.
+
+        What each job ships, what hardware it lands on, how long that target has actually taken
+        to start work, and what the meter says about that. The setup times are fitted from this
+        workspace's own recorded dispatches, so a target nobody has measured is priced with a
+        deliberately pessimistic assumption and says so in its sample count. Nothing is
+        dispatched, nothing is rented, and no target is even contacted.
+
+        spec: the batch spec file, relative to the workspace root.
+        job: a `target:command` job, repeatable, for a batch declared without a file.
+        name: the batch's name when declared with `--job` rather than a file.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the estimate columns.
+        """
+        batched = board("local").batch(declared(spec, job, name))
+        with progress(f"pricing {batched.id}"):
+            priced = [row.model_dump() for row in batched.estimate().jobs]
+        _tabled(
+            priced,
+            _ESTIMATE_COLUMNS,
+            ("wire_bytes", "runtime_s", "expected_usd", "p90_usd"),
+            json_mode=json,
+            agent=agent,
+            fields=fields,
+            title=f"estimate: {batched.id}",
+        )
+
+    @batch.command(name="run")
+    def batch_run(
+        spec: str = "",
+        *,
+        job: tuple[str, ...] = (),
+        name: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Dispatch every job of a batch to its own target, printing the batch id and each handle.
+
+        One target refusing is that job's row and the rest still go, since a batch spread over a
+        fleet routinely meets one machine that is asleep or was never declared. Watch the batch
+        by the id printed here.
+
+        spec: the batch spec file, relative to the workspace root.
+        job: a `target:command` job, repeatable, for a batch declared without a file.
+        name: the batch's name when declared with `--job` rather than a file.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over job/target/handle/kind/reason.
+        """
+        batched = board("local").batch(declared(spec, job, name))
+        mode = mode_of(json_mode=json, agent=agent)
+        with progress(f"dispatching {batched.id}"):
+            dispatched = batched.run()
+        if mode is None:
+            print(batched.id)
+        rows(
+            [entry.model_dump() for entry in dispatched],
+            mode=mode,
+            fields=_fields(fields) or _DISPATCH_COLUMNS,
+            title=f"run: {batched.id}",
+        )
+
+    @batch.command(name="watch")
+    def batch_watch(
+        batch_id: str,
+        *,
+        interval: float = 0.0,
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Show every job of a dispatched batch, on every target, as the durable sweep settles it.
+
+        Each pass runs the same sweep a cron runs, so results are pulled back and provider
+        rentals are cancelled whether or not anyone is watching, and every change becomes a line
+        in the batch's own receipts. One pass and exit by default.
+
+        batch_id: the batch to watch, as `run` printed it.
+        interval: seconds between passes, following until every job settles; one pass when 0.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over job/target/handle/state/verdict/detail.
+        """
+        watcher = board("local").watch(batch_id)
+        mode = mode_of(json_mode=json, agent=agent)
+        chosen = _fields(fields) or _STATUS_COLUMNS
+        if not interval:
+            with progress(f"sweeping {batch_id}"):
+                status = watcher.once()
+            _status(status, mode=mode, fields=chosen)
+            return
+        with suppress(KeyboardInterrupt):
+            for status in watcher.follow(interval):
+                _status(status, mode=mode, fields=chosen)
+
+    @app.command
+    def sample(
+        stream: str,
+        *,
+        job: str = "",
+        interval: float = 0.0,
+        seconds: float = 0.0,
+        parent: int = 0,
+    ) -> None:
+        """Publish this machine's live readings into a stream's receipts until told to stop.
+
+        GPU memory and busyness, host memory, and the enforced cgroup cap that memory is really
+        running under, which is the number an OOM kill fires against and the one a hosted
+        dashboard never had. Every reading is a `job.sample` receipt, so it lands in the
+        workspace's own file first and reaches whatever `[tracking]` declared second.
+
+        A dispatched job starts this for itself, so this verb is here for a command somebody
+        runs by hand and for the job scripts that already call it.
+
+        stream: the receipts stream the samples belong to, a batch id or a run's name.
+        job: the job inside that stream, the stream itself when omitted.
+        interval: seconds between readings, the manifest's own when 0.
+        seconds: stop after this long, 0 to run until interrupted.
+        parent: stop when this process does, 0 for none.
+        """
+        sampler = board("local").samples(
+            stream, job=job or stream, interval=interval, seconds=seconds, parent=parent
+        )
+        with suppress(KeyboardInterrupt), sampler:
+            sampler.thread.join()
+
     @app.command
     def jobs(
         *, limit: int = 20, json: bool = False, agent: bool = False, fields: str = ""
@@ -539,6 +751,26 @@ def build(root: Path | None = None) -> App:
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
 
+# The columns each batch table carries, named here so an empty batch still renders its heading and
+# so the totals row is summed over the same shape the rows are printed in.
+_TRANSFER_COLUMNS = ("job", "target", "files", "raw_bytes", "wire_bytes", "since")
+_ESTIMATE_COLUMNS = (
+    "job",
+    "target",
+    "kind",
+    "hardware",
+    "wire_bytes",
+    "runtime_s",
+    "setup_p50_s",
+    "setup_p90_s",
+    "setup_samples",
+    "rate_usd_hr",
+    "expected_usd",
+    "p90_usd",
+)
+_DISPATCH_COLUMNS = ("job", "target", "handle", "kind", "reason")
+_STATUS_COLUMNS = ("job", "target", "handle", "state", "verdict", "detail")
+
 
 def _exit_on_mission_error(error: MissionError) -> NoReturn:
     """Print `error` to stderr without a traceback, then exit 1."""
@@ -561,6 +793,39 @@ def _changed(
         mode=mode_of(json_mode=json_mode, agent=agent),
         fields=_fields(fields),
         title=title,
+    )
+
+
+def _tabled(
+    payloads: list[dict[str, Node]],
+    columns: Sequence[str],
+    summing: Sequence[str],
+    *,
+    json_mode: bool,
+    agent: bool,
+    fields: str,
+    title: str,
+) -> None:
+    """Print an analysis table: one row per job, then one row adding up what the batch costs.
+
+    The total rides in the table rather than beside it, since every mode a caller can ask for
+    renders rows and a figure printed outside them would be the one number `--json` dropped.
+    """
+    rows(
+        [*payloads, totals(payloads, columns=columns, summing=summing)],
+        mode=mode_of(json_mode=json_mode, agent=agent),
+        fields=_fields(fields) or columns,
+        title=title,
+    )
+
+
+def _status(status: BatchStatus, *, mode: str | None, fields: Sequence[str]) -> None:
+    """Print one pass over a batch, its still-running count in the heading."""
+    rows(
+        [job.model_dump() for job in status.jobs],
+        mode=mode,
+        fields=fields,
+        title=f"{status.batch}: {status.running} running",
     )
 
 

@@ -2,19 +2,21 @@ from inspect import signature
 from typing import TYPE_CHECKING
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from mainboard import Board, HostFacts, Survey
 from mainboard.compute import Access, reachable, summary
-from mainboard.dispatch import HostSetup
+from mainboard.dispatch import HostSetup, HostUnreachable, SshTransport
 from mainboard.dispatch.backends import ProviderBackend, VastBackend
-from mainboard.dispatch.transport import HostUnreachable, SshTransport
-from mainboard.probe.snapshot import GpuFact
+from mainboard.manifest import HostProfile
+from mainboard.probe import GpuFact
 
 from .dispatch.backends.conftest import BareBackend, not_found, vast_backend
+from .strategies import PATHS, WORDS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from mainboard.compute import ComputePath
 
@@ -29,6 +31,16 @@ _OFFER = {
     "geolocation": "Texas, US",
 }
 
+# An onboarding record as the survey reads one, either carrying the hardware the probe found or
+# carrying nothing but the environment it installed.
+_SETUPS = st.none() | st.builds(
+    HostSetup,
+    host=WORDS,
+    root=PATHS,
+    env=WORDS,
+    hardware=st.none() | st.builds(HostFacts, memory_total_bytes=st.integers(0, 10**12)),
+)
+
 
 def facts(*gpus: str, memory_gb: int = 64) -> HostFacts:
     """A hardware snapshot naming `gpus` and `memory_gb`, the shape a survey summarizes."""
@@ -37,13 +49,6 @@ def facts(*gpus: str, memory_gb: int = 64) -> HostFacts:
         memory_total_bytes=memory_gb * 10**9,
         gpus=tuple(GpuFact(name=name, memory_total_bytes=24 * 10**9) for name in gpus),
     )
-
-
-@pytest.fixture
-def board(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Board:
-    """A board over the fixture workspace, its dispatch state kept inside that directory."""
-    monkeypatch.chdir(workspace)
-    return Board(workspace)
 
 
 def survey(
@@ -63,40 +68,35 @@ def named(paths: list[ComputePath]) -> dict[str, ComputePath]:
     return {path.name: path for path in paths}
 
 
-# --- summary ---
-
-
-def test_summary_counts_identical_gpus_and_always_names_the_memory() -> None:
-    assert summary(facts("H100", "H100", memory_gb=512)) == "2x H100, 512 GB RAM"
-    assert summary(facts(memory_gb=16)) == "16 GB RAM"
-
-
-# --- reachable ---
-
-
-def test_reachable_is_empty_when_one_bounded_round_trip_lands(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("gpus", "memory_gb", "line"),
+    [
+        (("H100", "H100"), 512, "2x H100, 512 GB RAM"),
+        ((), 16, "16 GB RAM"),
+    ],
+    ids=["identical gpus counted once", "a machine with no gpu at all"],
+)
+def test_summary_counts_identical_gpus_and_always_names_the_memory(
+    gpus: tuple[str, ...], memory_gb: int, line: str
 ) -> None:
-    monkeypatch.setattr(SshTransport, "warm", lambda self, host: None)
-    assert not reachable(_GOLD)
+    assert summary(facts(*gpus, memory_gb=memory_gb)) == line
 
 
+@pytest.mark.parametrize(
+    "refusal", ["", "ssh connect to 'gold' timed out"], ids=["one round trip lands", "it refuses"]
+)
 def test_reachable_answers_with_the_refusal_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, refusal: str
 ) -> None:
-    def refuse(self: SshTransport, host: str) -> None:
-        raise HostUnreachable(f"ssh connect to {host!r} timed out")
+    """The probe is bounded and its failure is an answer, since a survey stays a listing."""
 
-    monkeypatch.setattr(SshTransport, "warm", refuse)
-    assert reachable(_GOLD) == "ssh connect to 'gold' timed out"
+    def warm(self: SshTransport, host: str) -> None:
+        if refusal:
+            raise HostUnreachable(refusal)
 
-
-def test_reachable_probes_under_a_bounded_default_policy() -> None:
-    policy = signature(reachable).parameters["ssh"].default
-    assert policy.deadline < 30
-
-
-# --- the local row ---
+    monkeypatch.setattr(SshTransport, "warm", warm)
+    assert reachable(_GOLD) == refusal
+    assert signature(reachable).parameters["ssh"].default.deadline < 30
 
 
 def test_the_first_row_is_this_machine_with_its_own_hardware(board: Board) -> None:
@@ -107,50 +107,28 @@ def test_the_first_row_is_this_machine_with_its_own_hardware(board: Board) -> No
     assert first.detail == "1x NVIDIA GeForce RTX 4090, 64 GB RAM"
 
 
-# --- host rows ---
-
-
-def test_a_host_that_will_not_answer_is_a_row_state_carrying_why(board: Board) -> None:
-    paths = named(survey(board, reach=lambda host: f"{host} is down").paths())
-    assert paths[_MIYABI_G].access is Access.UNREACHABLE
-    assert paths[_MIYABI_G].kind == "pbs"
-    assert paths[_MIYABI_G].detail == "miyabi-g is down"
-
-
-def test_a_host_that_answers_but_was_never_set_up_is_reachable_not_ready(board: Board) -> None:
-    paths = named(survey(board).paths())
-    assert paths[_GOLD].access is Access.REACHABLE
-    assert paths[_GOLD].kind == "ssh"
-    assert paths[_GOLD].detail == "never set up"
-
-
-def test_an_onboarded_host_reports_the_hardware_onboarding_recorded(board: Board) -> None:
-    board.dispatcher.cache.save_host(
-        HostSetup(host=_GOLD, root="/repo", hardware=facts("NVIDIA GB10", memory_gb=119))
-    )
-    paths = named(survey(board).paths())
-    assert paths[_GOLD].access is Access.READY
-    assert paths[_GOLD].detail == "1x NVIDIA GB10, 119 GB RAM"
-
-
-def test_an_onboarded_host_with_no_recorded_hardware_says_so(board: Board) -> None:
-    board.dispatcher.cache.save_host(HostSetup(host=_GOLD, root="/repo", env="serving"))
-    assert named(survey(board).paths())[_GOLD].detail == "serving, hardware unrecorded"
-
-
-def test_a_host_whose_kind_routes_to_a_provider_is_left_to_that_provider_s_row(
-    board: Board,
+@given(
+    alias=WORDS,
+    profile=st.builds(HostProfile, kind=WORDS),
+    setup=_SETUPS,
+    refusal=st.sampled_from(["", "gold is down"]),
+)
+def test_a_host_row_says_only_what_the_probe_and_the_onboarding_record_support(
+    board: Board, alias: str, profile: HostProfile, setup: HostSetup | None, refusal: str
 ) -> None:
-    """A rented machine is listed once, by its provider, never probed as if it were an ssh box."""
-    hosts = {
-        **board.manifest.hosts,
-        "rented": board.manifest.profile(_GOLD).model_copy(update={"kind": "vast"}),
-    }
-    board.shared["manifest"] = board.manifest.model_copy(update={"hosts": hosts})
-    assert "rented" not in named(survey(board).paths())
-
-
-# --- provider rows ---
+    """Three states and one rule each: a host that will not answer is unreachable whatever was
+    recorded of it, one that answers without a record is reachable rather than ready, and a ready
+    row describes real hardware without a second round trip.
+    """
+    row = survey(board, reach=lambda host: refusal).machine(alias, profile, setup)
+    assert (row.name, row.kind) == (alias, profile.kind)
+    if refusal:
+        assert row.access is Access.UNREACHABLE and row.detail == refusal
+    elif setup is None:
+        assert row.access is Access.REACHABLE and row.detail == "never set up"
+    else:
+        assert row.access is Access.READY
+        assert row.detail.endswith("GB RAM") if setup.hardware else setup.env in row.detail
 
 
 def test_a_provider_with_a_key_carries_its_credit_and_a_live_rate(
@@ -158,8 +136,7 @@ def test_a_provider_with_a_key_carries_its_credit_and_a_live_rate(
 ) -> None:
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     backend = vast_backend({"credit": 42.5}, {"offers": [_OFFER]})
-    row = named(survey(board, providers=(backend,)).paths()).get("vast")
-    assert row is not None
+    row = named(survey(board, providers=(backend,)).paths())["vast"]
     assert row.kind == "provider"
     assert row.access is Access.KEYED
     assert row.credit_usd == pytest.approx(42.5)
@@ -167,40 +144,51 @@ def test_a_provider_with_a_key_carries_its_credit_and_a_live_rate(
     assert row.detail == "1x RTX 4090 Texas, US"
 
 
-def test_a_provider_with_no_key_is_a_row_naming_the_variable_to_set(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("keyed", "backend", "name", "access", "fragment"),
+    [
+        (False, VastBackend, "vast", Access.UNKEYED, "VAST_API_KEY"),
+        (False, BareBackend, "bare", Access.UNKEYED, "does not implement Account"),
+        (True, None, "vast", Access.UNREACHABLE, "404"),
+    ],
+    ids=[
+        "a provider with no key names the variable to set",
+        "a provider answering for no account is listed with what it lacks",
+        "a provider that will not answer is a row state, not a failure",
+    ],
+)
+def test_a_provider_row_without_a_price_still_says_what_stands_in_the_way(
+    board: Board,
+    monkeypatch: pytest.MonkeyPatch,
+    keyed: bool,
+    backend: type[ProviderBackend] | None,
+    name: str,
+    access: Access,
+    fragment: str,
 ) -> None:
-    monkeypatch.delenv("VAST_API_KEY", raising=False)
-    monkeypatch.delenv("VASTAI_API_KEY", raising=False)
-    row = named(survey(board, providers=(VastBackend(),)).paths())["vast"]
-    assert row.access is Access.UNKEYED
+    """A survey stays a listing, so nothing a provider refuses ever costs the rest of the rows."""
+    if keyed:
+        monkeypatch.setenv("VAST_API_KEY", "key-123")
+    else:
+        monkeypatch.delenv("VAST_API_KEY", raising=False)
+        monkeypatch.delenv("VASTAI_API_KEY", raising=False)
+    asked = backend() if backend is not None else vast_backend(not_found())
+    row = named(survey(board, providers=(asked,)).paths())[name]
+    assert row.access is access
     assert row.credit_usd is None
-    assert "VAST_API_KEY" in row.detail
-
-
-def test_a_provider_answering_for_no_account_is_listed_with_what_it_lacks(board: Board) -> None:
-    """A survey stays a listing, so a backend with no account notion is a row, not a raise."""
-    row = named(survey(board, providers=(BareBackend(),)).paths())["bare"]
-    assert row.access is Access.UNKEYED
-    assert row.detail == "the bare backend does not implement Account"
-
-
-def test_a_provider_that_will_not_answer_is_a_row_state_not_a_failure(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("VAST_API_KEY", "key-123")
-    row = named(survey(board, providers=(vast_backend(not_found()),)).paths())["vast"]
-    assert row.access is Access.UNREACHABLE
-    assert "404" in row.detail
-
-
-# --- the whole survey ---
+    assert fragment in row.detail
 
 
 def test_every_declared_host_and_provider_is_surveyed_this_machine_first(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A rented machine is listed once, by its provider, never probed as if it were an ssh box."""
     monkeypatch.setenv("VAST_API_KEY", "key-123")
+    hosts = {
+        **board.manifest.hosts,
+        "rented": board.manifest.profile(_GOLD).model_copy(update={"kind": "vast"}),
+    }
+    board.shared["manifest"] = board.manifest.model_copy(update={"hosts": hosts})
     backend = vast_backend({"credit": 1.0}, {"offers": []})
     paths = survey(board, providers=(backend,)).paths()
     assert [path.name for path in paths] == ["local", _GOLD, _MIYABI_G, "vast"]

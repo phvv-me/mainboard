@@ -1,47 +1,52 @@
+import math
+
 import pytest
+from hypothesis import example, given
+from hypothesis import strategies as st
 
 from mainboard import MissionError
 from mainboard.lab import Lane
 from mainboard.lab.lane import orders, validates
 
-
-def test_lane_name_is_required() -> None:
-    assert Lane(name="cold").name == "cold"
+from ..strategies import TEXT, WORDS
 
 
-def test_lane_accepts_arbitrary_extras() -> None:
-    lane = Lane(name="warm", warmup=True, prompt="hello")
-    assert lane.warmup is True
-    assert lane.prompt == "hello"
+@given(name=WORDS, warmup=st.booleans(), prompt=TEXT)
+def test_a_lane_carries_its_name_and_whatever_extras_it_was_declared_with(
+    *, name: str, warmup: bool, prompt: str
+) -> None:
+    lane = Lane(name=name, warmup=warmup, prompt=prompt)
+    assert lane.name == name
+    assert lane.warmup is warmup
+    assert lane.prompt == prompt
 
 
-def test_orders_cycles_through_every_permutation() -> None:
-    lanes = (Lane(name="cold"), Lane(name="warm"))
-    assert [lane.name for lane in orders(lanes, 0)] == ["cold", "warm"]
-    assert [lane.name for lane in orders(lanes, 1)] == ["warm", "cold"]
-    assert [lane.name for lane in orders(lanes, 2)] == ["cold", "warm"]
+@given(names=st.lists(WORDS, unique=True, max_size=3), block=st.integers(0, 30))
+@example(names=[], block=3)
+@example(names=["only"], block=5)
+@example(names=["cold", "warm"], block=1)
+def test_orders_runs_every_lane_permutation_once_before_repeating_one(
+    *, names: list[str], block: int
+) -> None:
+    lanes = tuple(Lane(name=name) for name in names)
+    cycle = math.factorial(len(lanes))
+    ordering = orders(lanes, block)
+    assert sorted(lane.name for lane in ordering) == sorted(names)
+    assert orders(lanes, block + cycle) == ordering
+    assert (
+        len({tuple(lane.name for lane in orders(lanes, step)) for step in range(cycle)}) == cycle
+    )
 
 
-def test_orders_with_a_single_lane_always_returns_it() -> None:
-    lanes = (Lane(name="only"),)
-    assert orders(lanes, 0) == lanes
-    assert orders(lanes, 5) == lanes
-
-
-def test_orders_with_no_lanes_returns_empty() -> None:
-    assert orders((), 3) == ()
-
-
-def test_validates_accepts_a_multiple_of_the_permutation_count() -> None:
-    lanes = (Lane(name="cold"), Lane(name="warm"))
-    validates(4, lanes)
-
-
-def test_validates_rejects_a_non_multiple() -> None:
-    lanes = (Lane(name="cold"), Lane(name="warm"))
-    with pytest.raises(MissionError, match="not a multiple"):
-        validates(3, lanes)
-
-
-def test_validates_with_no_lanes_accepts_any_block_count() -> None:
-    validates(5, ())
+@given(count=st.integers(0, 3), cycles=st.integers(0, 3), remainder=st.integers(0, 5))
+@example(count=2, cycles=1, remainder=0)
+@example(count=2, cycles=1, remainder=1)
+def test_validates_accepts_only_a_block_count_that_completes_whole_cycles(
+    *, count: int, cycles: int, remainder: int
+) -> None:
+    lanes = tuple(Lane(name=f"lane{index}") for index in range(count))
+    cycle = math.factorial(count)
+    validates(cycles * cycle, lanes)
+    if remainder % cycle:
+        with pytest.raises(MissionError, match="not a multiple"):
+            validates(cycles * cycle + remainder, lanes)

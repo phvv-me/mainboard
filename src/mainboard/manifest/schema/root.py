@@ -9,6 +9,7 @@ from .gate import Gate
 from .host import HostProfile
 from .scope import Scope
 from .template import Template
+from .tracking import Tracking
 from .workspace import Header
 
 _DEFAULTS_KEY = "defaults"
@@ -23,16 +24,26 @@ class Manifest(Scope):
     `[containers.*]` declaring base images, and `[hosts.*]` carrying per-host
     execution profiles that inherit `[hosts.defaults]`.
 
-    Two tables carry no dependency at all and exist so a workspace can hand its
-    own decisions to the verbs that would otherwise have to guess them:
-    `[gates.*]` names the commands `doctor` asks for a verdict, and
-    `[templates.*]` names the project templates `new` renders.
+    Three tables carry no dependency at all and exist so a workspace can hand
+    its own decisions to the verbs that would otherwise have to guess them:
+    `[gates.*]` names the commands `doctor` asks for a verdict, `[templates.*]`
+    names the project templates `new` renders, and `[tracking]` names where a
+    batch's receipts are mirrored beyond this workspace's own files.
     """
 
-    # The tables no compile reads. `[gates]` is what `doctor` asks and `[templates]` is what
-    # `new` renders, so neither reaches a generated file and editing one must not make every
-    # installed environment stale.
-    uncompiled: ClassVar[frozenset[str]] = frozenset({"gates", "templates"})
+    # The tables no compile reads, the exact complement of what `PixiManifest.from_manifest`
+    # and the second stage translate. `[gates]` is what `doctor` asks, `[templates]` is what
+    # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
+    # `[hosts]` are how a job reaches a machine, and `[vars]`
+    # has already been folded into every string that quotes it by the time a manifest
+    # validates, so a var a compiled table really uses moves the digest through that table's own
+    # rendered value. None of them reaches a generated file, so editing one must not make every
+    # installed environment stale. The classification is proved table by table against the
+    # compiler's own output in `tests/engines/compile/test_compiler.py`, so a table added to
+    # the schema is refused until somebody decides which side of this line it sits on.
+    uncompiled: ClassVar[frozenset[str]] = frozenset(
+        {"containers", "gates", "hosts", "templates", "tracking", "vars"}
+    )
 
     workspace: Header
     vars: dict[str, str] = {}
@@ -44,6 +55,7 @@ class Manifest(Scope):
     tasks: dict[str, Task] = {}
     gates: dict[str, Gate] = {}
     templates: dict[str, Template] = {}
+    tracking: Tracking = Tracking()
     containers: dict[str, Container] = {}
     hosts: dict[str, HostProfile] = {}
 

@@ -3,27 +3,16 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard.engines.compile.ecosystems import Rust
-from mainboard.manifest.schema.spec import Spec
-from mainboard.manifest.schema.toolchain import Toolchain
+from mainboard.manifest.schema.spec import Json, Spec
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from pytest_subprocess import FakeProcess
 
     from mainboard.engines.compile.backend import Pixi
-    from mainboard.manifest.schema.spec import Json
 
+    from ..conftest import Bind
 
-def _rust(body: dict[str, Json], tmp_path: Path, pixi: Pixi) -> Rust:
-    return Rust(
-        Toolchain.model_validate(body),
-        env="default",
-        project="w",
-        workspace=tmp_path,
-        out=pixi.manifest.parent,
-        pixi=pixi,
-    )
+_REGISTRY = "(registry+https://example.com)"
 
 
 def _record(rust: Rust, *entries: str) -> None:
@@ -33,76 +22,82 @@ def _record(rust: Rust, *entries: str) -> None:
     (rust.prefix / ".crates.toml").write_text(f"[v1]\n{body}\n")
 
 
-def test_crates_install_into_the_environment_prefix_activation_already_exports(
-    tmp_path: Path, pixi: Pixi
-) -> None:
-    rust = _rust({"deps": {"ripgrep": "*"}}, tmp_path, pixi)
-    assert rust.prefix == pixi.env_prefix("default")
-    assert rust.binary_dirs() == ()
-
-
 @pytest.mark.parametrize(
-    ("spec", "expected"),
+    ("declared", "args"),
     [
-        ("*", []),
-        (">=14", ["--version", ">=14"]),
+        pytest.param("*", [], id="an-unconstrained-requirement-pins-nothing"),
+        pytest.param(">=14", ["--version", ">=14"], id="a-version-pin-becomes-a-version-flag"),
+        pytest.param(
+            {"version": ">=0.1", "git": "https://example.com/c.git", "rev": "abc", "locked": True},
+            [
+                "--version",
+                ">=0.1",
+                "--git",
+                "https://example.com/c.git",
+                "--rev",
+                "abc",
+                "--locked",
+            ],
+            id="every-source-extra-becomes-the-cargo-flag-of-the-same-name",
+        ),
     ],
 )
-def test_a_version_pin_becomes_a_cargo_version_flag(spec: str, expected: list[str]) -> None:
-    assert Rust.install_args(Spec.model_validate(spec)) == expected
-
-
-def test_source_and_locked_extras_become_the_cargo_flags_of_the_same_name() -> None:
-    spec = Spec.model_validate(
-        {"version": ">=0.1", "git": "https://example.com/c.git", "rev": "abc", "locked": True}
-    )
-    assert Rust.install_args(spec) == [
-        "--version",
-        ">=0.1",
-        "--git",
-        "https://example.com/c.git",
-        "--rev",
-        "abc",
-        "--locked",
-    ]
+def test_a_declared_crate_becomes_the_cargo_flags_that_express_it(
+    declared: Json, args: list[str]
+) -> None:
+    assert Rust.install_args(Spec.model_validate(declared)) == args
 
 
 @pytest.mark.parametrize(
     ("constraint", "installed", "satisfied"),
     [
-        ("*", "0.1.0", True),
-        (">=14", "14.2.0", True),
-        (">=14", "13.0.0", False),
-        ("^1.2", "1.3.0", True),
-        (">=14", "abc", True),
+        pytest.param("*", "0.1.0", True, id="an-unconstrained-requirement-accepts-anything"),
+        pytest.param(">=14", "14.2.0", True, id="a-version-inside-the-constraint"),
+        pytest.param(">=14", "13.0.0", False, id="a-version-that-drifted-below-it"),
+        pytest.param("^1.2", "1.3.0", True, id="a-caret-spelling-packaging-cannot-read"),
+        pytest.param(">=14", "abc", True, id="a-recorded-version-answering-to-no-constraint"),
     ],
 )
 def test_only_a_readable_constraint_can_report_an_installed_crate_as_drifted(
     constraint: str, installed: str, *, satisfied: bool
 ) -> None:
-    """A caret spelling or an unreadable version is trusted rather than reinstalled forever."""
+    """Trusting cargo's own record beats reinstalling on every single sync."""
     assert Rust.satisfied(constraint, installed) is satisfied
 
 
-def test_no_install_record_reads_as_an_empty_environment(tmp_path: Path, pixi: Pixi) -> None:
-    assert _rust({"deps": {"ripgrep": "*"}}, tmp_path, pixi).installed() == {}
-
-
-def test_an_install_record_entry_without_a_version_is_skipped(tmp_path: Path, pixi: Pixi) -> None:
+@pytest.mark.parametrize(
+    ("entries", "installed"),
+    [
+        pytest.param((), {}, id="no-install-record-reads-as-an-empty-environment"),
+        pytest.param(
+            (f"ripgrep 14.1.0 {_REGISTRY}", "broken"),
+            {"ripgrep": "14.1.0"},
+            id="an-entry-without-a-version-is-no-usable-record",
+        ),
+    ],
+)
+def test_what_cargo_recorded_under_the_prefix_is_read_back_by_name_and_version(
+    entries: tuple[str, ...], installed: dict[str, str], bind: Bind
+) -> None:
     """A `.crates.toml` key reads `name version (source)`, and a partial one records nothing."""
-    rust = _rust({}, tmp_path, pixi)
-    _record(rust, "ripgrep 14.1.0 (registry+https://example.com)", "broken")
-    assert rust.installed() == {"ripgrep": "14.1.0"}
+    rust = bind(Rust, {})
+    if entries:
+        _record(rust, *entries)
+    assert rust.installed() == installed
 
 
 def test_sync_installs_a_missing_crate_against_the_environment_prefix(
-    tmp_path: Path, pixi: Pixi, fp: FakeProcess, tool_paths: dict[str, str]
+    bind: Bind, pixi: Pixi, fp: FakeProcess, tool_paths: dict[str, str]
 ) -> None:
-    rust = _rust({"deps": {"ripgrep": ">=14"}}, tmp_path, pixi)
+    """Crates share the environment's own `bin/`, so activation exports them with everything
+    else and no extra directory of this toolchain's own ever reaches PATH."""
+    rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
     fp.register([fp.any()], stdout="installed\n")
 
     rust.sync()
 
+    assert rust.prefix == pixi.env_prefix("default")
+    assert rust.binary_dirs() == ()
     assert list(fp.calls[0]) == [
         tool_paths["pixi"],
         "run",
@@ -121,35 +116,25 @@ def test_sync_installs_a_missing_crate_against_the_environment_prefix(
 
 
 def test_sync_leaves_a_crate_that_already_satisfies_its_constraint_alone(
-    tmp_path: Path, pixi: Pixi, fp: FakeProcess, tool_paths: dict[str, str]
+    bind: Bind, fp: FakeProcess
 ) -> None:
-    rust = _rust({"deps": {"ripgrep": ">=14"}}, tmp_path, pixi)
-    _record(rust, "ripgrep 14.1.0 (registry+https://example.com)")
+    rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
+    _record(rust, f"ripgrep 14.1.0 {_REGISTRY}")
 
     rust.sync()
 
     assert not fp.calls
 
 
-def test_sync_forces_a_reinstall_only_over_a_crate_that_drifted(
-    tmp_path: Path, pixi: Pixi, fp: FakeProcess, tool_paths: dict[str, str]
+def test_sync_uninstalls_what_was_dropped_and_forces_a_reinstall_over_what_drifted(
+    bind: Bind, fp: FakeProcess
 ) -> None:
-    rust = _rust({"deps": {"ripgrep": ">=14"}}, tmp_path, pixi)
-    _record(rust, "ripgrep 13.0.0 (registry+https://example.com)")
-    fp.register([fp.any()], stdout="installed\n")
+    rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
+    _record(rust, f"ripgrep 13.0.0 {_REGISTRY}", f"orphan 1.0 {_REGISTRY}")
+    for _ in range(2):
+        fp.register([fp.any()], stdout="done\n")
 
     rust.sync()
 
-    assert list(fp.calls[0])[-4:] == ["--version", ">=14", "--force", "ripgrep"]
-
-
-def test_sync_uninstalls_a_crate_the_table_no_longer_declares(
-    tmp_path: Path, pixi: Pixi, fp: FakeProcess, tool_paths: dict[str, str]
-) -> None:
-    rust = _rust({}, tmp_path, pixi)
-    _record(rust, "ripgrep 14.1.0 (registry+https://example.com)")
-    fp.register([fp.any()], stdout="removed\n")
-
-    rust.sync()
-
-    assert list(fp.calls[0])[-4:] == ["uninstall", "--root", str(rust.prefix), "ripgrep"]
+    assert list(fp.calls[0])[-4:] == ["uninstall", "--root", str(rust.prefix), "orphan"]
+    assert list(fp.calls[1])[-4:] == ["--version", ">=14", "--force", "ripgrep"]

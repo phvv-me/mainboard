@@ -6,39 +6,25 @@ import pytest
 from mainboard.dispatch.state import History
 
 
-def test_record_and_recent_round_trip(tmp_path: Path) -> None:
-    history = History(tmp_path / "db.sqlite")
-    history.record("submit", ("gold", "job.sh"), monotonic(), "ok", handle="H1")
-    [event] = history.recent(10)
-    assert event.command == "submit"
-    assert event.target == "gold"
-    assert event.handle == "H1"
-    assert event.outcome == "ok"
+def test_history_replays_every_recorded_invocation_oldest_to_newest() -> None:
+    history = History(Path(":memory:"))
+    history.record("submit", (3, "gold", "job.sh"), monotonic(), "ok", handle="H1")
+    history.record("ls", (), monotonic(), "error", detail="boom")
+    first, second = history.recent(10)
+    assert (first.command, first.target, first.handle, first.outcome) == (
+        "submit",
+        "gold",
+        "H1",
+        "ok",
+    )
+    assert first.args == ["3", "gold", "job.sh"]
+    assert first.duration_ms is not None
+    assert (second.command, second.target, second.detail) == ("ls", None, "boom")
 
 
-def test_recent_orders_oldest_to_newest(tmp_path: Path) -> None:
-    history = History(tmp_path / "db.sqlite")
-    history.record("a", (), monotonic(), "ok")
-    history.record("b", (), monotonic(), "ok")
-    events = history.recent(10)
-    assert [event.command for event in events] == ["a", "b"]
-
-
-def test_record_captures_a_detail_on_error(tmp_path: Path) -> None:
-    history = History(tmp_path / "db.sqlite")
-    history.record("submit", (), monotonic(), "error", detail="boom")
-    [event] = history.recent(10)
-    assert event.detail == "boom"
-
-
-def test_target_is_the_first_string_argument(tmp_path: Path) -> None:
-    history = History(tmp_path / "db.sqlite")
-    history.record("submit", (3, "gold", "job.sh"), monotonic(), "ok")
-    [event] = history.recent(10)
-    assert event.target == "gold"
-
-
-def test_disabled_history_is_a_no_op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_disabled_history_never_touches_the_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("MAINBOARD_NO_HISTORY", "1")
     history = History(tmp_path / "db.sqlite")
     history.record("submit", (), monotonic(), "ok")

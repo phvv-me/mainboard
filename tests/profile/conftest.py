@@ -2,8 +2,20 @@ import os
 from typing import TYPE_CHECKING
 
 import pytest
+from rich.console import Console, RenderableType
 
-from mainboard.profile import Activity, TraceCollector, Tracer, annotate
+from mainboard.profile import (
+    Activity,
+    ActivityRecord,
+    KernelTrace,
+    MemcpyTrace,
+    Profile,
+    RegionSummary,
+    RegionWindow,
+    TraceCollector,
+    Tracer,
+    annotate,
+)
 from mainboard.profile import spans as span_module
 
 if TYPE_CHECKING:
@@ -165,3 +177,66 @@ def one_gpu(monkeypatch: pytest.MonkeyPatch) -> FakeGPU:
     gpu = one_process_gpu()
     monkeypatch.setattr(annotate, "_tracer", clock_tracer())
     return gpu
+
+
+def kernel(
+    name: str,
+    ns: int,
+    *,
+    start_ns: int = 0,
+    grid: str = "",
+    block: str = "",
+    registers: int = 0,
+    static_shared_mem: int = 0,
+    dynamic_shared_mem: int = 0,
+) -> KernelTrace:
+    """A `KernelTrace` named `name` lasting `ns` nanoseconds from `start_ns`.
+
+    Every launch-shape field is spelled out so callers name only the axis they vary and
+    the call stays type-checked, which a `**shape` passthrough cannot be.
+    """
+    return KernelTrace(
+        name=name,
+        start_ns=start_ns,
+        end_ns=start_ns + ns,
+        grid=grid,
+        block=block,
+        registers=registers,
+        static_shared_mem=static_shared_mem,
+        dynamic_shared_mem=dynamic_shared_mem,
+    )
+
+
+def traced_profile() -> Profile:
+    """A profile with two regions and kernels/memcpys binned across their device windows.
+
+    The one fixture every deep-report reader shares: `gemm` straddles both regions, `relu`
+    sits inside the first, and there is exactly one copy and one generic activity.
+    """
+    return Profile(
+        device="dev",
+        summaries=(
+            RegionSummary(name="encode", wall_ms=2.0, avg_util_pct=50.0, avg_power_w=100.0),
+            RegionSummary(name="decode", wall_ms=1.0),
+        ),
+        windows=(
+            RegionWindow(name="encode", start_ns=0, end_ns=1000, wall_ns=2_000_000),
+            RegionWindow(name="decode", start_ns=1000, end_ns=2000, wall_ns=1_000_000),
+        ),
+        kernels=(
+            kernel("gemm", 600, grid="8x1x1", block="256x1x1"),
+            kernel("gemm", 400, start_ns=1000),
+            kernel("relu", 100, start_ns=600),
+        ),
+        memcpys=(MemcpyTrace(kind="HtoD", start_ns=0, end_ns=100, bytes_moved=4096),),
+        activities=(
+            ActivityRecord(kind="runtime", name="cudaLaunchKernel", start_ns=0, end_ns=5),
+        ),
+    )
+
+
+def render(renderable: RenderableType) -> str:
+    """Render a rich renderable to plain text, for content assertions."""
+    console = Console(no_color=True, width=120, record=True)
+    console.print(renderable)
+    return console.export_text()

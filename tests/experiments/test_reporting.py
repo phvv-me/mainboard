@@ -1,145 +1,109 @@
 from typing import TYPE_CHECKING
 
-from mainboard.dispatch.state import Cache, RunRecord
+import pytest
+
 from mainboard.experiments import Progress, Study, StudyLedger
+from mainboard.experiments.identity import study_label
 from mainboard.experiments.reporting import StudySummary, overview, study_progress, study_runs
+
+from .conftest import make_run
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-
-def make_run(
-    name: str, *, handle: str, submitted_at: str = "t0", verdict: str | None = None
-) -> RunRecord:
-    """A dispatch `RunRecord` labeled `name`, resolved to `verdict` when given."""
-    return RunRecord(
-        handle=handle,
-        target="gold",
-        kind="pbs",
-        script="job.sh",
-        args="",
-        git_sha="abc1234",
-        dirty=0,
-        submitted_at=submitted_at,
-        name=name,
-        verdict=verdict,
-    )
+    from mainboard.dispatch.state import Cache
 
 
-def test_study_runs_keeps_the_bare_and_slash_suffixed_labels(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    cache.record(make_run("study:sid", handle="H1"))
-    cache.record(make_run("study:sid/trial-a", handle="H2"))
-    cache.record(make_run("study:other", handle="H3"))
-    cache.record(make_run("", handle="H4"))
-    runs = study_runs(cache, "sid")
-    assert {run.handle for run in runs} == {"H1", "H2"}
-
-
-def test_study_runs_orders_newest_first_and_respects_limit(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
+def test_study_runs_keeps_the_bare_and_slash_suffixed_labels_newest_first(cache: Cache) -> None:
+    """`study:<id>` and `study:<id>/<trial>` both name the same study, and a run labelled for
+    another study or for nothing at all is not this study's."""
     cache.record(make_run("study:sid", handle="H1", submitted_at="2024-01-01T00:00:00"))
-    cache.record(make_run("study:sid", handle="H2", submitted_at="2024-01-02T00:00:00"))
-    assert [run.handle for run in study_runs(cache, "sid")] == ["H2", "H1"]
-    assert [run.handle for run in study_runs(cache, "sid", limit=1)] == ["H2"]
+    cache.record(make_run("study:other", handle="H2", submitted_at="2024-01-02T00:00:00"))
+    cache.record(make_run("", handle="H3", submitted_at="2024-01-03T00:00:00"))
+    cache.record(make_run("study:sid/trial-a", handle="H4", submitted_at="2024-01-04T00:00:00"))
+    assert [run.handle for run in study_runs(cache, "sid")] == ["H4", "H1"]
+    assert [run.handle for run in study_runs(cache, "sid", limit=1)] == ["H4"]
 
 
-def test_study_progress_defaults_an_unresolved_handle_to_submitted(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    study = Study.create("e", config_space={}, git_sha="s")
-    ledger = StudyLedger(tmp_path, study.study_id)
-    ledger.submitted("H1", host="gold")
-    assert study_progress(cache, ledger, study) == Progress(submitted=1, running=1)
-
-
-def test_study_progress_lets_a_resolved_dispatch_verdict_outrank_the_ledger(
+@pytest.mark.parametrize(
+    ("recorded", "dispatched", "verdict", "progress"),
+    [
+        pytest.param(
+            ("submitted",), False, None, Progress(submitted=1, running=1), id="unresolved-so-far"
+        ),
+        pytest.param(
+            ("submitted",),
+            True,
+            "failed",
+            Progress(submitted=1, failed=1),
+            id="dispatchs-terminal-verdict-outranks-the-ledger",
+        ),
+        pytest.param(
+            ("submitted", "ok"),
+            True,
+            None,
+            Progress(submitted=1, ok=1),
+            id="the-ledgers-own-verdict-stands-while-dispatch-has-none",
+        ),
+        pytest.param(
+            (),
+            True,
+            None,
+            Progress(submitted=1, running=1),
+            id="a-handle-only-dispatch-ever-recorded-still-counts",
+        ),
+    ],
+)
+def test_study_progress_merges_dispatchs_resolved_verdicts_over_the_ledgers_own_fold(
+    cache: Cache,
     tmp_path: Path,
+    study: Study,
+    recorded: tuple[str, ...],
+    dispatched: bool,
+    verdict: str | None,
+    progress: Progress,
 ) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    study = Study.create("e", config_space={}, git_sha="s")
     ledger = StudyLedger(tmp_path, study.study_id)
-    ledger.submitted("H1", host="gold")
-    cache.record(make_run(f"study:{study.study_id}", handle="H1", verdict="failed"))
-    assert study_progress(cache, ledger, study) == Progress(submitted=1, running=0, failed=1)
+    for state in recorded:
+        if state == "submitted":
+            ledger.submitted("H1", host="gold")
+        else:
+            ledger.verdict("H1", state=state)
+    if dispatched:
+        cache.record(make_run(study_label(study.study_id), handle="H1", verdict=verdict))
+    assert study_progress(cache, ledger, study) == progress
 
 
-def test_study_progress_keeps_the_ledgers_own_verdict_when_dispatch_has_none_yet(
-    tmp_path: Path,
+def test_overview_reads_an_absent_root_or_an_empty_ledger_file_as_nothing_to_summarize(
+    cache: Cache, tmp_path: Path
 ) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    study = Study.create("e", config_space={}, git_sha="s")
-    ledger = StudyLedger(tmp_path, study.study_id)
-    ledger.submitted("H1", host="gold")
-    ledger.verdict("H1", state="ok")
-    cache.record(make_run(f"study:{study.study_id}", handle="H1"))
-    assert study_progress(cache, ledger, study) == Progress(submitted=1, ok=1)
-
-
-def test_study_progress_counts_a_handle_dispatch_knows_but_the_ledger_never_recorded(
-    tmp_path: Path,
-) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    study = Study.create("e", config_space={}, git_sha="s")
-    ledger = StudyLedger(tmp_path, study.study_id)
-    cache.record(make_run(f"study:{study.study_id}", handle="H1"))
-    assert study_progress(cache, ledger, study) == Progress(submitted=1, running=1)
-
-
-def test_overview_is_empty_for_a_ledgers_root_that_does_not_exist(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    assert overview(cache, tmp_path / "studies") == []
-
-
-def test_overview_skips_an_empty_ledger_file_gracefully(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
     studies = tmp_path / "studies"
+    assert overview(cache, studies) == []
     studies.mkdir()
     (studies / "sid.jsonl").touch()
-    [summary] = overview(cache, studies)
-    assert summary == StudySummary(study_id="sid", counts={})
+    assert overview(cache, studies) == [StudySummary(study_id="sid", counts={})]
 
 
-def _two_ledgered_studies(cache: Cache, studies: Path) -> tuple[Study, Study]:
-    """Two studies on disk: `first` created and fully resolved, `second` bare and vanished."""
-    first = Study.create("e", config_space={"x": 1}, git_sha="s", name="alpha")
-    second = Study.create("e", config_space={"x": 2}, git_sha="s", name="beta")
-    first_ledger = StudyLedger.at(studies / f"{first.study_id}.jsonl")
-    first_ledger.created(first)
-    for handle in ("H1", "H2"):
-        first_ledger.submitted(handle, host="gold")
-    cache.record(make_run(f"study:{first.study_id}", handle="H1", verdict="ok"))
-    second_ledger = StudyLedger.at(studies / f"{second.study_id}.jsonl")
-    second_ledger.submitted("H3", host="gold")
-    second_ledger.verdict("H3", state="vanished")
-    return first, second
-
-
-def test_overview_summarizes_every_ledger_file_joined_against_dispatch(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    studies = tmp_path / "studies"
-    first, second = _two_ledgered_studies(cache, studies)
-    summaries = overview(cache, studies)
-    assert [summary.study_id for summary in summaries] == sorted([first.study_id, second.study_id])
-
-
-def test_overview_summary_carries_a_studys_name_counts_and_timestamp_span(tmp_path: Path) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
-    studies = tmp_path / "studies"
-    first, _second = _two_ledgered_studies(cache, studies)
-    by_id = {summary.study_id: summary for summary in overview(cache, studies)}
-    assert by_id[first.study_id].name == "alpha"
-    assert by_id[first.study_id].counts == {"ok": 1, "submitted": 1}
-    assert by_id[first.study_id].oldest_at is not None
-    assert by_id[first.study_id].newest_at is not None
-    assert by_id[first.study_id].oldest_at <= by_id[first.study_id].newest_at
-
-
-def test_overview_summary_has_no_name_when_the_ledger_never_recorded_a_created_event(
-    tmp_path: Path,
+def test_overview_summarizes_every_ledger_file_with_its_name_counts_and_timestamp_span(
+    cache: Cache, tmp_path: Path
 ) -> None:
-    cache = Cache(tmp_path / "db.sqlite")
     studies = tmp_path / "studies"
-    _first, second = _two_ledgered_studies(cache, studies)
-    by_id = {summary.study_id: summary for summary in overview(cache, studies)}
-    assert by_id[second.study_id].name is None
-    assert by_id[second.study_id].counts == {"vanished": 1}
+    named = Study.create("e", config_space={"x": 1}, git_sha="s", name="alpha")
+    anonymous = Study.create("e", config_space={"x": 2}, git_sha="s", name="beta")
+    ledger = StudyLedger.at(studies / f"{named.study_id}.jsonl")
+    ledger.created(named)
+    for handle in ("H1", "H2"):
+        ledger.submitted(handle, host="gold")
+    cache.record(make_run(study_label(named.study_id), handle="H1", verdict="ok"))
+    bare = StudyLedger.at(studies / f"{anonymous.study_id}.jsonl")
+    bare.submitted("H3", host="gold")
+    bare.verdict("H3", state="vanished")
+
+    summaries = {summary.study_id: summary for summary in overview(cache, studies)}
+    assert [summary.study_id for summary in overview(cache, studies)] == sorted(summaries)
+    assert summaries[named.study_id].name == "alpha"
+    assert summaries[named.study_id].counts == {"ok": 1, "submitted": 1}
+    oldest, newest = summaries[named.study_id].oldest_at, summaries[named.study_id].newest_at
+    assert oldest is not None and newest is not None and oldest <= newest
+    assert summaries[anonymous.study_id].name is None
+    assert summaries[anonymous.study_id].counts == {"vanished": 1}

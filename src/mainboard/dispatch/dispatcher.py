@@ -20,13 +20,13 @@ from plumbum.commands.processes import ProcessExecutionError
 from ..context.admission import admit
 from . import schedulers
 from .jobs import JobSpec
-from .schedulers import HostUnreachable, JobState, Resources, failure_reason, pick, read_log
-from .schedulers import base as scheduler_base
-from .shared import HandleId, logger, now, state_dir
+from .schedulers import HostUnreachable, failure_reason, pick, read_log
+from .shared import HandleId, db_file, logger, now, state_path, workspace
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
 from .transport import SshTransport
+from .vocabulary import POLL_SECONDS, JobState, Resources
 from .wrapping import connection, wrap
 
 if TYPE_CHECKING:
@@ -115,14 +115,31 @@ def _bare_name_or_raise(script: str, error: FileNotFoundError) -> str:
 
 
 class Dispatcher:
-    """Dispatch a job to a resolved host and hand back a `Handle` to poll/await/fetch."""
+    """Dispatch a job to a resolved host and hand back a `Handle` to poll/await/fetch.
 
-    def __init__(self, cache: Cache | None = None, sync: GitignoreFilter | None = None) -> None:
-        self.cache = cache or Cache()
-        self.sync = sync or GitignoreFilter()
+    Every workspace path a dispatch touches, the state database, the staged job scripts, the
+    mirror's own include list and a pulled results path, resolves against one root rather than
+    against the directory the command was typed in. That root is the mirror filter's, since the
+    mirror is what decides where the workspace begins.
+    """
+
+    def __init__(
+        self,
+        cache: Cache | None = None,
+        sync: GitignoreFilter | None = None,
+        root: Path | None = None,
+    ) -> None:
+        """cache: the dispatch state store, the one under `root` when None.
+
+        sync: the mirror's ignore filter, one rooted at `root` when None.
+        root: the workspace root, discovered upward from the cwd when None.
+        """
+        self.sync = sync or GitignoreFilter(root or workspace())
+        self.root = self.sync.root
+        self.cache = cache or Cache(db_file(self.root))
 
     def await_many(
-        self, handles: Sequence[Handle], *, interval: float = scheduler_base.POLL_SECONDS
+        self, handles: Sequence[Handle], *, interval: float = POLL_SECONDS
     ) -> dict[Handle, Verdict]:
         """Block until every handle is terminal, returning each one's `Verdict`.
 
@@ -154,12 +171,12 @@ class Dispatcher:
     def fetch_path(
         self, host: str, *, root: str, path: str, ssh: SshTransport | None = None
     ) -> None:
-        """rsync `path` back from `host` into the same local path (a file or a directory)."""
+        """rsync `path` back from `host` into the same workspace path (a file or a directory)."""
         policy = ssh or SshTransport()
-        target = Path(path)
+        target = self.local(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         rsync(
-            [f"{host}:{root}/{target}"],
+            [f"{host}:{root}/{Path(path)}"],
             f"{target.parent}/",
             rsh=policy.rsync_shell,
             timeout=ceil(policy.deadline),
@@ -195,7 +212,7 @@ class Dispatcher:
                 f"nothing to sync to {plan.host!r}; declare [hosts.{plan.host}.sync].include "
                 "(or [hosts.defaults.sync].include) before dispatching"
             )
-        include = [path for path in scope.include if Path(path).exists()]
+        include = [path for path in scope.include if self.local(path).exists()]
         if stale := [path for path in scope.include if path not in include]:
             logger.warning(
                 "skipping %d stale sync include path(s) missing locally: %s",
@@ -205,7 +222,9 @@ class Dispatcher:
         if not include:
             raise LookupError(f"every sync include path for {plan.host!r} is missing locally")
         incomplete = [
-            list(group) for group in required if not all(Path(path).is_file() for path in group)
+            list(group)
+            for group in required
+            if not all(self.local(path).is_file() for path in group)
         ]
         if incomplete:
             raise LookupError(
@@ -239,9 +258,11 @@ class Dispatcher:
                     timeout=ceil(policy.deadline),
                     host=plan.host,
                     allow_vanished=not gitignore_files and not required_paths and not extra,
+                    cwd=self.root,
                 )
             except ProcessExecutionError as error:
                 _raise_required_sync_failure(error, plan.host, required_paths, extra)
+        self.cache.mark_synced(plan.host)
 
     def run(
         self,
@@ -254,6 +275,7 @@ class Dispatcher:
         fetch: str | None = None,
         name: str = "",
         gpu_in_select: bool = True,
+        sampler: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
     ) -> Handle:
         """Render `cmd` into a job script for `plan`'s host and dispatch it.
@@ -268,6 +290,8 @@ class Dispatcher:
         verify: a preflight command proving the host's activated environment actually runs.
         fetch: a results path recorded on the handle, pulled back by `fetch`.
         gpu_in_select: whether a PBS GPU request belongs in the `select=` chunk.
+        sampler: a shell line the script runs beside the command, empty for none. Opaque here
+            on purpose, since what a host watches about itself is not the dispatcher's decision.
         containerize: builds the container runtime argv around `["bash", "-c", cmd]`; required
             when `plan.containerized`.
         """
@@ -290,6 +314,7 @@ class Dispatcher:
             account=resources.account,
             mem_gb=resources.mem_gb,
             container_command=container_command,
+            sampler=sampler,
         )
         script = self.write_job_script(
             spec, pbs=plan.profile.kind == "pbs", gpu_in_select=gpu_in_select
@@ -414,18 +439,26 @@ class Dispatcher:
         logger.info("%s -> %s on %s (%s)", command, handle, host, kind)
         return Handle(id=handle, host=host, root="", kind=kind, fetch_path=fetch)
 
+    def local(self, path: str) -> Path:
+        """`path` as a real file here: a workspace-relative name resolved against the root.
+
+        The one place a dispatch turns a written-down path into a file on this machine, so a
+        command typed in a subdirectory reads and writes the same files it would from the
+        workspace root. An absolute path is already a location and passes through.
+        """
+        given = Path(path).expanduser()
+        return given if given.is_absolute() else self.root / given
+
     def write_job_script(self, spec: JobSpec, *, pbs: bool, gpu_in_select: bool = True) -> str:
-        """Render `spec`, write it under `{STATE_DIR}/jobs/`, return its path.
+        """Render `spec`, write it under `{STATE_DIR}/jobs/`, return its workspace-relative path.
 
         The file is content-addressed, so repeated runs reuse it instead of growing the jobs
-        directory unboundedly.
+        directory unboundedly. The path comes back relative to the workspace because it is also
+        what the mirror recreates on the host and what the scheduler is told to run there.
         """
         text = spec.render(pbs=pbs, gpu_in_select=gpu_in_select)
         digest = hashlib.sha256(text.encode()).hexdigest()[:12]
-        path = Path(state_dir()) / "jobs" / f"job-{digest}.sh"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-        return str(path)
+        return self._stage(f"job-{digest}.sh", text.encode())
 
     def _prepare_script(self, script: str) -> tuple[str, tuple[str, ...]]:
         """Stage a concrete local script and return its host-safe path plus its sync source.
@@ -434,17 +467,20 @@ class Dispatcher:
         explicit path must exist locally, since forwarding an unresolved local path would make
         the host fail later with no way to guarantee what it runs.
         """
-        source = Path(script).expanduser()
         try:
-            content = source.read_bytes()
+            content = self.local(script).read_bytes()
         except FileNotFoundError as error:
             return _bare_name_or_raise(script, error), ()
         digest = hashlib.sha256(content).hexdigest()[:12]
-        staged = Path(state_dir()) / "jobs" / f"job-{digest}.sh"
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        staged.write_bytes(content)
-        path = str(staged)
-        return path, (path,)
+        staged = self._stage(f"job-{digest}.sh", content)
+        return staged, (staged,)
+
+    def _stage(self, name: str, content: bytes) -> str:
+        """Write `content` into the jobs directory and answer its workspace-relative path."""
+        path = state_path(self.root) / "jobs" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+        return str(path.relative_to(self.root))
 
     def probe(self, handle: Handle) -> JobState | None:
         """One non-blocking scheduler probe of `handle`, the read a status view wants.
@@ -468,6 +504,37 @@ class Dispatcher:
         with connection(handle.host) as remote:
             scheduler = schedulers.SCHEDULERS.select(handle.kind, default="ssh")
             return scheduler.state(remote, handle.root, handle=handle.id)
+
+    def states(self, handles: Sequence[Handle]) -> dict[str, JobState]:
+        """Every handle's state, keyed by id, over one connection to the host they share.
+
+        The batched twin of `state`, for a caller holding many handles on one host. A dispatch
+        cache that has been accumulating for months holds a thousand runs on a single box, and
+        asking that box once instead of a thousand times is the difference between a sweep that
+        finishes and one nobody waits for. Every handle must name the same host, root and kind,
+        since one connection and one scheduler answer for all of them, so the first handle is
+        what those are read from.
+
+        A backend whose batched listing does not cover a handle (a SLURM `squeue` that only spans
+        live jobs, a PBS server that purged its history) is asked about that handle on its own
+        over the same connection, which is where the job's real ending is. `HostUnreachable`
+        surfaces exactly as it does from `state`, since a host that will not answer is a fact
+        about the host rather than about any one of these jobs.
+        """
+        if not handles:
+            return {}
+        shared = handles[0]
+        scheduler = schedulers.SCHEDULERS.select(shared.kind, default="ssh")
+        ids = list(dict.fromkeys(handle.id for handle in handles))
+        resolved: dict[str, JobState] = {}
+        with connection(shared.host) as remote:
+            listed = scheduler.states(remote, shared.root, ids)
+            for job_id in ids:
+                found = listed.get(job_id)
+                if found is None:
+                    found = scheduler.state(remote, shared.root, handle=job_id)
+                resolved[job_id] = found
+        return resolved
 
     def _verdict(self, handle: Handle, state: JobState) -> Verdict:
         """Persist a terminal state to the cache and project it onto a `Verdict`.

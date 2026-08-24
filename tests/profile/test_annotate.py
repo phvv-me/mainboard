@@ -7,32 +7,27 @@ import pytest
 from mainboard import Profiler
 from mainboard.profile import Tracer, annotate
 
-from .conftest import clock_tracer
 
+def test_the_backend_is_detected_once_with_the_vendors_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`present` reaches `Tracer.detect` unchanged and the instance is cached from then on.
 
-def test_tracer_lazy_detection_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`annotate.tracer()` detects once and caches the instance."""
-    monkeypatch.setattr(Tracer, "detect", classmethod(lambda cls, **_: Tracer()))
-    first = annotate.tracer()
+    Only the first caller's `present` decides the backend, since detection never repeats
+    for the life of the process, and `callbacks()` reads through the same cached instance.
+    """
+    seen: list[frozenset[str]] = []
+
+    def detect(cls: type[Tracer], *, present: frozenset[str] = frozenset()) -> Tracer:
+        seen.append(present)
+        return Tracer()
+
+    monkeypatch.setattr(Tracer, "detect", classmethod(detect))
+    first = annotate.tracer(present=frozenset({"nvidia"}))
     assert annotate.tracer() is first
-
-
-def test_tracer_forwards_present_vendors_to_detect(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`present` reaches `Tracer.detect` unchanged, so the first caller decides the backend."""
-    seen = []
-    monkeypatch.setattr(
-        Tracer, "detect", classmethod(lambda cls, *, present=frozenset(): seen.append(present))
-    )
-    annotate.tracer(present=frozenset({"nvidia"}))
     assert seen == [frozenset({"nvidia"})]
-
-
-def test_callbacks_proxies_the_tracer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`callbacks()` returns the active tracer's callback session."""
-    monkeypatch.setattr(annotate, "_tracer", clock_tracer())
     with annotate.callbacks() as session:
-        pass
-    assert session.counts() == {}
+        assert session.counts() == {}
 
 
 def test_enable_auto_instruments_matching_calls() -> None:
@@ -53,13 +48,12 @@ def test_enable_auto_instruments_matching_calls() -> None:
     assert annotate.enabled_codes() == ()
 
 
-def test_module_codes_handles_missing_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = types.ModuleType("mainboard_fake_module")
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    assert Profiler.module_codes((module.__name__,)) == set()
+def test_module_codes_finds_owned_code_and_nothing_else(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auto-annotation covers a module's own functions, never the ones it imported."""
+    empty = types.ModuleType("mainboard_fake_module")
+    monkeypatch.setitem(sys.modules, empty.__name__, empty)
+    assert Profiler.module_codes((empty.__name__,)) == set()
 
-
-def test_module_codes_excludes_imported_functions(monkeypatch: pytest.MonkeyPatch) -> None:
     module = types.ModuleType("mainboard_owned_module")
 
     def owned() -> None:
@@ -74,31 +68,31 @@ def test_module_codes_excludes_imported_functions(monkeypatch: pytest.MonkeyPatc
     assert Profiler.module_codes((module.__name__,)) == {owned.__code__}
 
 
-def test_monitor_hooks_balance_return_unwind_and_empty_stack() -> None:
-    code = (lambda: None).__code__
-    annotate.frames().clear()
-    annotate.on_start(code, 0)
-    annotate.on_start(code, 0)
-    annotate.on_return(code, 0, None)
-    annotate.on_unwind(code, 0, ValueError())
-    annotate.on_return(code, 0, None)
-    annotate.on_return(code, 0, None)
-    assert annotate.frames() == []
+def test_monitor_hooks_balance_return_unwind_and_empty_stack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every close pairs with an open and never pops past the bottom of the stack.
 
-
-def test_monitor_unwind_closes_only_selected_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    An unwind of code that was never selected closes nothing, and a return against an
+    already empty stack is ignored.
+    """
     selected = (lambda: None).__code__
     other = (lambda: 1).__code__
     monkeypatch.setattr(annotate, "_codes", (selected,))
     annotate.frames().clear()
+
     annotate.on_start(selected, 0)
-    annotate.on_unwind(other, 0, ValueError())
-    assert len(annotate.frames()) == 1
+    annotate.on_start(selected, 0)
+    annotate.on_unwind(other, 0, ValueError())  # not selected, so it closes nothing
+    assert len(annotate.frames()) == 2
+    annotate.on_return(selected, 0, None)
     annotate.on_unwind(selected, 0, ValueError())
+    annotate.on_return(selected, 0, None)  # already empty
     assert annotate.frames() == []
 
 
 def test_monitor_stack_is_thread_local() -> None:
+    """A thread that never opened a span starts from its own empty stack."""
     seen: list[int] = []
     thread = threading.Thread(target=lambda: seen.append(len(annotate.frames())))
     thread.start()

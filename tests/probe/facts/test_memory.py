@@ -1,36 +1,47 @@
 import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from mainboard.probe import Memory
-from mainboard.probe.facts import memory as memory_mod
+
+_GIB = 1024**3
+# Byte counts a real reading holds, bounded so the gibibyte views stay exact in float rather
+# than testing the arithmetic of an integer no machine reports.
+BYTES = st.integers(min_value=0, max_value=2**53)
 
 
-class FakeVirtualMemory:
-    total = 32 * 1024**3
-    used = 20 * 1024**3
-    available = 12 * 1024**3
-
-
-def test_system_samples_psutil(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`Memory.system` reads total/used/free straight off `psutil.virtual_memory`."""
-    monkeypatch.setattr(memory_mod.psutil, "virtual_memory", lambda: FakeVirtualMemory())
-    memory = Memory.system()
-    assert memory.total_bytes == 32 * 1024**3
-    assert memory.used_bytes == 20 * 1024**3
-    assert memory.free_bytes == 12 * 1024**3
-    assert memory.scope == "system"
-    assert memory.unified is False
+@pytest.mark.usefixtures("fake_psutil_memory")
+def test_a_system_reading_records_the_pool_it_sampled() -> None:
+    """`Memory.system` takes total, used and free straight off psutil and names its own source,
+    so a caller can tell a host RAM reading from a device one it was handed alongside."""
+    memory = Memory.system(scope="unified", unified=True)
+    assert (memory.total_bytes, memory.used_bytes, memory.free_bytes) == (
+        48 * _GIB,
+        16 * _GIB,
+        32 * _GIB,
+    )
+    assert memory.scope == "unified"
+    assert memory.unified is True
     assert memory.source == "psutil"
+    assert Memory.system().scope == "system"
 
 
-def test_gb_conversions_and_percent_used() -> None:
-    """The gibibyte helpers and `percent_used` divide correctly."""
-    memory = Memory(total_bytes=10 * 1024**3, used_bytes=5 * 1024**3, free_bytes=5 * 1024**3)
-    assert memory.total_gb == 10.0
-    assert memory.used_gb == 5.0
-    assert memory.free_gb == 5.0
-    assert memory.percent_used == 50.0
-
-
-def test_percent_used_is_zero_when_total_is_zero() -> None:
-    """An empty reading never divides by zero."""
-    assert Memory().percent_used == 0.0
+# The arithmetic is a handful of divisions and the round trip either holds or does not, so a
+# small budget covers it, with the empty reading pinned below rather than searched for.
+@settings(max_examples=15)
+@given(
+    memory=st.builds(Memory, total_bytes=BYTES, used_bytes=BYTES, free_bytes=BYTES),
+    wire=st.from_type(Memory),
+)
+@example(memory=Memory(), wire=Memory())
+def test_a_reading_converts_to_gibibytes_survives_json_and_never_divides_by_zero(
+    memory: Memory, wire: Memory
+) -> None:
+    """Every byte field has a gibibyte view scaled by the same 1024**3, an empty reading reports
+    zero percent used rather than raising, and any reading round trips through the wire."""
+    assert memory.total_gb == memory.total_bytes / _GIB
+    assert memory.used_gb == memory.used_bytes / _GIB
+    assert memory.free_gb == memory.free_bytes / _GIB
+    used_share = memory.used_bytes / memory.total_bytes * 100 if memory.total_bytes else 0.0
+    assert memory.percent_used == used_share
+    assert Memory.model_validate_json(wire.model_dump_json()) == wire

@@ -57,6 +57,61 @@ in the study ledgers that own them, and reports only what changed, so a
 schedule of passes never announces the same job twice and a host that is down
 is one line in the report rather than a failed sweep.
 
+## Many jobs, many machines, one flow
+
+A batch is declared as data and moves through three verbs, and only the last
+one runs anything.
+
+```toml
+# fleet.toml
+name = "fleet"
+
+[defaults]              # every job inherits these
+runtime_s = 1800        # what the command is expected to take, which is what an estimate prices
+
+[[jobs]]
+name = "sweep-a"        # the target and its position when left out
+target = "miyabi-g"
+command = "python -m experiments.run --shard 0"
+data = ["corpus/shard-0.npz"]   # what this job needs beyond the mirror
+walltime = "06:00:00"
+mem_gb = 100
+fetch = "results/sweep-a"
+
+[[jobs]]
+target = "gold"
+command = "python -m experiments.run --shard 1"
+```
+
+```console
+$ mainboard batch prepare fleet.toml --agent      # what must ship, nothing runs
+job       target    files  raw_bytes  wire_bytes  since
+sweep-a   miyabi-g  1440   9400549    2435370     2026-08-19T02:03:53+00:00
+gold-2    gold      19     106701     33053       2026-08-20T15:49:32+00:00
+total               1459   9507250    2468423
+$ mainboard batch estimate fleet.toml --agent     # what it will cost, nothing runs
+job      target  kind  hardware     wire_bytes  runtime_s  setup_p50_s  setup_p90_s  setup_samples  rate_usd_hr  expected_usd  p90_usd
+sweep-a  gold    ssh   129 GB RAM   33053       25.0       2.49         7.53         3              0.0          0.0           0.0
+$ mainboard batch run fleet.toml                  # every job to its own target
+fleet-db4af53f
+$ mainboard batch watch fleet-db4af53f --interval 5
+```
+
+`prepare` measures the delta rather than the tree: a host already carries the
+workspace, so what a job actually sends is what changed since that mirror plus
+the data the job names, compressed the way the wire will carry it. `estimate`
+prices each row against setup times fitted from this workspace's own recorded
+dispatches, and a target nobody has timed says so in its sample count instead
+of inventing a number. `watch` drives the same durable sweep a cron runs, so
+results come back and provider rentals are cancelled whether or not anyone is
+watching.
+
+Every state change and cost observation is one NDJSON line under the batch's
+own directory, and each verb reads its cursor back out of those lines rather
+than out of memory. The topics and payloads are written down in one place,
+`batch/receipts.py`, so the file transport can become a broker without anything
+downstream noticing.
+
 ## One file
 
 ```toml

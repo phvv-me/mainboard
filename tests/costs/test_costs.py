@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from mainboard.costs import (
@@ -17,214 +17,234 @@ from mainboard.costs import (
     from_vast,
 )
 
+from ..strategies import WORDS
+
 if TYPE_CHECKING:
     from pathlib import Path
 
-_MODAL = BillingModel(provider="modal", gpu="H100", rate_usd_hr=4.56, granularity_s=1)
-_HPCAI = BillingModel(
-    provider="hpc-ai", gpu="H200", rate_usd_hr=2.20, granularity_s=60, minimum_s=60
+# A roster as a catalog really holds one, every offer named in the tame vocabulary so a
+# falsifying example stays legible and a case-insensitive query has something to fold.
+_ROSTER = st.lists(
+    st.builds(Offer, provider=WORDS, gpu=WORDS, rate_usd_hr=st.floats(0.01, 100.0)),
+    max_size=6,
 )
-
-
-def test_per_second_vs_per_minute_billing_for_a_short_job() -> None:
-    assert _MODAL.billed_seconds(setup_s=4, run_s=30) == 34
-    assert _HPCAI.billed_seconds(setup_s=240, run_s=30) == 300
-    assert _MODAL.cost_usd(setup_s=4, run_s=30) == pytest.approx(4.56 * 34 / 3600)
-    assert _HPCAI.cost_usd(setup_s=240, run_s=30) == pytest.approx(2.20 * 300 / 3600)
-
-
-def test_minimum_floor_and_fees_apply() -> None:
-    floor = BillingModel(provider="x", rate_usd_hr=3.6, minimum_s=120, fees_usd=0.05)
-    assert floor.billed_seconds(setup_s=0, run_s=1) == 120
-    assert floor.cost_usd(setup_s=0, run_s=1) == pytest.approx(0.05 + 0.12)
 
 
 @given(
-    setup=st.floats(0, 600),
-    run=st.floats(0, 3600),
-    drain=st.floats(0, 60),
+    setup=st.floats(0.0, 600.0),
+    run=st.floats(0.0, 3600.0),
+    drain=st.floats(0.0, 60.0),
     granularity=st.sampled_from([1, 60]),
+    minimum=st.sampled_from([0, 60, 120]),
+    fees=st.floats(0.0, 5.0),
+    rate=st.floats(0.0, 50.0),
 )
-def test_billed_seconds_never_undercharge_wall_time(
-    *, setup: float, run: float, drain: float, granularity: int
+def test_billing_never_undercharges_wall_time_and_prices_an_hour_at_the_hourly_rate(
+    *,
+    setup: float,
+    run: float,
+    drain: float,
+    granularity: int,
+    minimum: int,
+    fees: float,
+    rate: float,
 ) -> None:
-    model = BillingModel(provider="p", rate_usd_hr=1.0, granularity_s=granularity)
+    model = BillingModel(
+        provider="p",
+        rate_usd_hr=rate,
+        granularity_s=granularity,
+        minimum_s=minimum,
+        fees_usd=fees,
+    )
     billed = model.billed_seconds(setup_s=setup, run_s=run, drain_s=drain)
     assert billed >= setup + run + drain - 1e-9
+    assert billed >= minimum
     assert billed % granularity == 0
+    assert model.billed_seconds(setup_s=setup, run_s=run + 60.0, drain_s=drain) >= billed
+    assert model.cost_usd(setup_s=setup, run_s=run, drain_s=drain) >= fees
+    hourly = BillingModel(provider="p", rate_usd_hr=rate)
+    assert hourly.cost_usd(setup_s=0.0, run_s=3600.0) == pytest.approx(rate)
 
 
-def test_observation_derives_phases_and_tolerates_missing() -> None:
-    complete = Observation(provider="modal", t_submit=100.0, t_running=104.0, t_ended=134.0)
-    assert complete.setup_s == pytest.approx(4.0)
-    assert complete.run_s == pytest.approx(30.0)
-    unstarted = Observation(provider="modal", t_submit=100.0)
-    assert unstarted.setup_s == pytest.approx(0.0)
-    assert unstarted.run_s == pytest.approx(0.0)
-    unfinished = Observation(provider="modal", t_submit=100.0, t_running=104.0)
-    assert unfinished.run_s == pytest.approx(0.0)
+@given(
+    submit=st.floats(0.0, 1000.0),
+    running=st.floats(0.0, 2000.0),
+    ended=st.floats(0.0, 3000.0),
+)
+@example(submit=100.0, running=0.0, ended=0.0)
+@example(submit=100.0, running=104.0, ended=0.0)
+@example(submit=100.0, running=104.0, ended=134.0)
+def test_an_observation_reads_a_phase_as_zero_until_both_of_its_stamps_land(
+    *, submit: float, running: float, ended: float
+) -> None:
+    observed = Observation(provider="modal", t_submit=submit, t_running=running, t_ended=ended)
+    assert observed.setup_s >= 0.0
+    assert observed.run_s >= 0.0
+    if not running:
+        assert (observed.setup_s, observed.run_s) == (0.0, 0.0)
+    if not ended:
+        assert observed.run_s == 0.0
+    if submit <= running <= ended and running and ended:
+        assert observed.setup_s + observed.run_s == pytest.approx(ended - submit)
 
 
-def test_ledger_round_trips_and_filters(tmp_path: Path) -> None:
+def test_the_ledger_appends_every_observation_and_narrows_by_provider_and_gpu(
+    tmp_path: Path,
+) -> None:
     ledger = Ledger(tmp_path)
     assert ledger.observations() == []
-    for setup, provider, gpu in (
-        (5, "modal", "H100"),
-        (250, "hpc-ai", "H200"),
-        (7, "modal", "H100"),
-    ):
-        ledger.record(
-            Observation(
-                provider=provider,
-                gpu=gpu,
-                t_submit=0.0,
-                t_running=float(setup),
-                t_ended=setup + 30.0,
-            )
-        )
-    assert len(ledger.observations()) == 3
-    assert len(ledger.observations(provider="modal")) == 2
-    assert len(ledger.observations(provider="modal", gpu="H100")) == 2
-    assert ledger.observations(provider="hpc-ai")[0].setup_s == pytest.approx(250.0)
+    recorded = [
+        Observation(provider="modal", gpu="H100", t_submit=0.0, t_running=5.0, t_ended=35.0),
+        Observation(provider="hpc-ai", gpu="H200", t_submit=0.0, t_running=250.0, t_ended=280.0),
+        Observation(provider="modal", gpu="H100", t_submit=0.0, t_running=7.0, t_ended=37.0),
+    ]
+    for observed in recorded:
+        ledger.record(observed)
+    assert ledger.observations() == recorded
+    assert ledger.observations(provider="modal") == [recorded[0], recorded[2]]
+    assert ledger.observations(gpu="H200") == [recorded[1]]
+    assert ledger.observations(provider="modal", gpu="H200") == []
 
 
-def test_setup_fit_needs_three_samples(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("setups", "samples"),
+    [
+        pytest.param((4.0, 6.0), None, id="two-observations-are-not-a-fit"),
+        pytest.param((5.0, 8.0, 30.0), 3, id="three-observations-fit"),
+        pytest.param((5.0, 8.0, 30.0, 0.0), 3, id="a-job-that-never-started-is-not-a-sample"),
+    ],
+)
+def test_a_setup_fit_needs_three_measured_setups_and_brackets_them(
+    tmp_path: Path, setups: tuple[float, ...], samples: int | None
+) -> None:
     ledger = Ledger(tmp_path)
-    for setup in (4.0, 6.0):
+    for setup in setups:
         ledger.record(
-            Observation(provider="modal", t_submit=0.0, t_running=setup, t_ended=setup + 1)
-        )
-    assert SetupFit.from_ledger(ledger, provider="modal") is None
-
-
-def test_setup_fit_reports_percentiles_once_three_samples_land(tmp_path: Path) -> None:
-    ledger = Ledger(tmp_path)
-    for setup in (5.0, 8.0, 30.0):
-        ledger.record(
-            Observation(provider="modal", t_submit=0.0, t_running=setup, t_ended=setup + 1)
+            Observation(provider="modal", t_submit=0.0, t_running=setup, t_ended=setup + 1.0)
         )
     fit = SetupFit.from_ledger(ledger, provider="modal")
-    assert fit is not None and fit.samples == 3
-    assert fit.p50_s == pytest.approx(8.0)
-    assert fit.p90_s > fit.p50_s
-    assert fit.mean_s == pytest.approx(43 / 3)
+    if samples is None:
+        assert fit is None
+        return
+    measured = [setup for setup in setups if setup]
+    assert fit is not None
+    assert (fit.provider, fit.gpu, fit.samples) == ("modal", "", samples)
+    assert min(measured) <= fit.p50_s <= fit.p90_s <= max(measured)
+    assert min(measured) <= fit.mean_s <= max(measured)
 
 
-def test_offers_query_by_hardware_across_providers() -> None:
-    catalog = Catalog(
-        (
-            Offer(provider="modal", gpu="GB200", rate_usd_hr=11.0),
-            Offer(
-                provider="hpc-ai",
-                gpu="GB200",
-                region="sg",
-                rate_usd_hr=7.5,
-                granularity_s=60,
-                minimum_s=60,
-            ),
-            Offer(provider="hpc-ai", gpu="H200", rate_usd_hr=2.2, granularity_s=60),
-        )
-    )
-    gb200 = catalog.offers(gpu="gb200")
-    assert {offer.provider for offer in gb200} == {"modal", "hpc-ai"}
-    assert catalog.offers(gpu="GB200", provider="modal")[0].rate_usd_hr == pytest.approx(11.0)
-    assert catalog.offers() == catalog.roster
-
-
-def test_quotes_price_fitted_vs_unmeasured_providers(tmp_path: Path) -> None:
-    ledger = Ledger(tmp_path)
-    for setup in (2.0, 2.0, 2.0):
-        ledger.record(
-            Observation(
-                provider="modal", gpu="GB200", t_submit=0.0, t_running=setup, t_ended=setup + 1
-            )
-        )
-    catalog = Catalog(
-        (
-            Offer(provider="modal", gpu="GB200", rate_usd_hr=11.0),
-            Offer(provider="hpc-ai", gpu="GB200", rate_usd_hr=7.5, granularity_s=60, minimum_s=60),
-        )
-    )
-    quotes = catalog.quotes(gpu="GB200", run_s=30.0, ledger=ledger, default_setup_s=300.0)
-    assert (quotes[0].offer.provider, quotes[0].setup_samples) == ("modal", 3)
-    assert quotes[0].expected_usd == pytest.approx(11.0 * 32 / 3600)
-    assert quotes[1].offer.provider == "hpc-ai"
-    assert quotes[1].expected_usd == pytest.approx(7.5 * 360 / 3600)
-    assert quotes[1].p90_usd == pytest.approx(quotes[1].expected_usd)
-
-
-def test_quotes_without_a_ledger_penalize_everyone_equally() -> None:
-    catalog = Catalog((Offer(provider="modal", gpu="T4", rate_usd_hr=0.59),))
-    quote = catalog.quotes(gpu="T4", run_s=10.0, default_setup_s=60.0)[0]
-    assert quote.setup_samples == 0
-    assert quote.expected_usd == pytest.approx(quote.p90_usd)
-
-
-def test_catalog_add_extends_the_roster() -> None:
+@given(roster=_ROSTER, gpu=WORDS, provider=WORDS)
+def test_a_catalog_narrows_by_hardware_first_and_by_provider_within_it(
+    *, roster: list[Offer], gpu: str, provider: str
+) -> None:
     catalog = Catalog()
-    catalog.add(Offer(provider="modal", gpu="T4", rate_usd_hr=0.59))
-    assert len(catalog.offers(gpu="T4")) == 1
+    catalog.add(*roster)
+    assert catalog.offers() == catalog.roster == roster
+    by_hardware = catalog.offers(gpu=gpu)
+    assert by_hardware == catalog.offers(gpu=gpu.upper())
+    assert all(offer.gpu == gpu for offer in by_hardware)
+    narrowed = catalog.offers(gpu=gpu.upper(), provider=provider)
+    assert narrowed == [offer for offer in by_hardware if offer.provider == provider]
 
 
-def test_catalog_persists_and_reloads_offers(tmp_path: Path) -> None:
-    catalog = Catalog(
-        (
-            Offer(
-                provider="hpc-ai",
-                gpu="B200-SXM-180GB",
-                rate_usd_hr=3.5,
-                granularity_s=60,
-                source="scraped",
-            ),
+def test_quotes_price_every_offer_cheapest_first_and_penalize_the_unmeasured(
+    tmp_path: Path,
+) -> None:
+    ledger = Ledger(tmp_path)
+    for _ in range(3):
+        ledger.record(
+            Observation(provider="modal", gpu="GB200", t_submit=0.0, t_running=2.0, t_ended=3.0)
         )
+    measured = Offer(provider="modal", gpu="GB200", rate_usd_hr=11.0)
+    unmeasured = Offer(
+        provider="hpc-ai", gpu="GB200", rate_usd_hr=7.5, granularity_s=60, minimum_s=60
     )
-    target = tmp_path / "catalog.ndjson"
-    catalog.save(target)
-    reloaded = Catalog.load(target)
-    assert reloaded.offers(gpu="B200-SXM-180GB")[0].rate_usd_hr == pytest.approx(3.5)
-    assert Catalog.load(tmp_path / "missing.ndjson").roster == []
+    catalog = Catalog((measured, unmeasured, Offer(provider="modal", gpu="H200", rate_usd_hr=2.2)))
+
+    quotes = catalog.quotes(gpu="GB200", run_s=30.0, ledger=ledger, default_setup_s=300.0)
+    assert [quote.offer for quote in quotes] == [measured, unmeasured]
+    assert quotes[0].setup_samples == 3
+    assert quotes[0].expected_usd == pytest.approx(
+        measured.billing.cost_usd(setup_s=2.0, run_s=30.0)
+    )
+    assert quotes[1].setup_samples == 0
+    assert quotes[1].expected_usd == pytest.approx(
+        unmeasured.billing.cost_usd(setup_s=300.0, run_s=30.0)
+    )
+
+    unfitted = catalog.quotes(gpu="GB200", run_s=30.0, default_setup_s=300.0)
+    assert [quote.setup_samples for quote in unfitted] == [0, 0]
+    assert all(quote.expected_usd == pytest.approx(quote.p90_usd) for quote in unfitted)
+
+
+def test_a_catalog_round_trips_through_ndjson_and_reads_an_absent_file_as_no_offers(
+    tmp_path: Path,
+) -> None:
+    roster = (
+        Offer(provider="hpc-ai", gpu="B200-SXM-180GB", rate_usd_hr=3.5, granularity_s=60),
+        Offer(provider="modal", gpu="T4", rate_usd_hr=0.59, available=True, source="scraped"),
+    )
+    target = tmp_path / "feeds" / "catalog.ndjson"
+    Catalog(roster).save(target)
+    assert Catalog.load(target).roster == list(roster)
     Catalog().save(tmp_path / "empty.ndjson")
     assert Catalog.load(tmp_path / "empty.ndjson").roster == []
+    assert Catalog.load(tmp_path / "missing.ndjson").roster == []
 
 
-def test_gpuhunt_rows_import_as_offers() -> None:
-    rows = [
-        SimpleNamespace(
-            provider="vastai", gpu_name="H100", gpu_count=4, price=7.6, spot=True, location="US"
-        ),
-        SimpleNamespace(
-            provider="lambdalabs",
-            gpu_name="H100",
-            gpu_count=8,
-            price=23.92,
-            spot=False,
-            location=None,
-        ),
-        SimpleNamespace(
-            provider="broken", gpu_name="X", gpu_count=1, price=None, spot=False, location=""
-        ),
-    ]
-    offers = from_gpuhunt(rows)
-    assert len(offers) == 2
-    assert offers[0].spot is True and offers[0].gpu_count == 4 and offers[0].region == "US"
-    assert not offers[1].region
-    assert offers[1].source == "imported:gpuhunt"
+def test_an_imported_row_and_a_probed_one_land_under_the_single_name_a_query_asks_for() -> None:
+    """gpuhunt spells Vast `vastai` while the live probe and the host kind spell it `vast`, and
+    a catalog query narrows by exactly one name, so both feeds are reconciled at this seam."""
+    imported = from_gpuhunt(
+        [
+            SimpleNamespace(
+                provider="vastai",
+                gpu_name="H100",
+                gpu_count=4,
+                price=7.6,
+                spot=True,
+                location="US",
+            ),
+            SimpleNamespace(
+                provider="runpod",
+                gpu_name="H100",
+                gpu_count=8,
+                price=23.92,
+                spot=False,
+                location=None,
+            ),
+            SimpleNamespace(
+                provider="vastai", gpu_name="X", gpu_count=1, price=None, spot=False, location=""
+            ),
+        ]
+    )
+    assert (catalog_provider("vastai"), catalog_provider("runpod")) == ("vast", "runpod")
+    assert [offer.provider for offer in imported] == ["vast", "runpod"]
+    assert (imported[0].spot, imported[0].gpu_count, imported[0].region) == (True, 4, "US")
+    assert imported[1].region == ""
+    assert {offer.source for offer in imported} == {"imported:gpuhunt"}
+    assert {offer.available for offer in imported} == {None}
 
+    bundle = {
+        "gpu_name": "H100",
+        "num_gpus": 1,
+        "dph_total": 1.8,
+        "min_bid": 0.4,
+        "rentable": True,
+    }
+    [on_demand] = from_vast([bundle])
+    assert (on_demand.provider, on_demand.source) == ("vast", "probed:vast")
+    assert (on_demand.rate_usd_hr, on_demand.available, on_demand.region) == (1.8, True, "")
+    [interruptible] = from_vast([{**bundle, "geolocation": "JP"}], spot=True)
+    assert (interruptible.rate_usd_hr, interruptible.spot, interruptible.region) == (
+        0.4,
+        True,
+        "JP",
+    )
+    [unprobed] = from_vast([{"gpu_name": "H100", "num_gpus": 1, "dph_total": 1.8}])
+    assert unprobed.available is None
 
-def test_gpuhunt_rows_import_under_the_name_the_probe_and_the_host_kind_use() -> None:
-    """One provider name, so an imported row and a live probe answer the same catalog query."""
-    rows = [
-        SimpleNamespace(
-            provider="vastai", gpu_name="H100", gpu_count=1, price=2.0, spot=False, location=""
-        ),
-        SimpleNamespace(
-            provider="runpod", gpu_name="H100", gpu_count=1, price=2.5, spot=False, location=""
-        ),
-    ]
-    probed = {"gpu_name": "H100", "num_gpus": 1, "dph_total": 1.8, "rentable": True}
-    catalog = Catalog(tuple(from_gpuhunt(rows)) + tuple(from_vast([probed])))
-    assert catalog_provider("vastai") == "vast"
-    assert catalog_provider("runpod") == "runpod"
+    catalog = Catalog((*imported, on_demand, interruptible))
     assert {offer.source for offer in catalog.offers(provider="vast")} == {
         "imported:gpuhunt",
         "probed:vast",

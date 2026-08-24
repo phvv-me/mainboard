@@ -1,0 +1,100 @@
+[workspace]
+name = "kitchen"
+version = "2.1.0"
+channels = ["conda-forge", "nvidia"]
+platforms = [{name = "linux-64-system", platform = "linux-64", cuda = "12.0"}, {name = "linux-aarch64-system", platform = "linux-aarch64", cuda = "12.0"}, {name = "linux-64-serving", platform = "linux-64", cuda = "13.0"}]
+
+[activation]
+scripts = ["../scripts/site.sh", "/opt/global.sh"]
+
+[activation.env]
+LAB_HOME = "/srv/lab"
+
+[dependencies]
+python = ">=3.14"
+path = "*"
+
+[pypi-dependencies]
+torch = ">=2.9"
+
+[pypi-dependencies.lab-core]
+path = "../packages/lab-core"
+editable = true
+
+[pypi-dependencies.vendored]
+path = "/opt/vendored"
+editable = true
+
+[pypi-dependencies.pinned]
+version = ">=1"
+git = "https://example.com/repo"
+
+[pypi-options]
+index-strategy = "unsafe-best-match"
+no-build-isolation = ["fastsafetensors"]
+
+[pypi-options.dependency-overrides]
+cuda-core = ">=1.1.1, <2"
+
+[pypi-options.dependency-overrides.sqlalchemy]
+path = "../packages/sqlalchemy"
+
+[target.linux.dependencies]
+libgcc = "*"
+python = ">=3.14"
+
+[feature.serving]
+channels = ["nvidia"]
+platforms = ["linux-64-serving"]
+
+[feature.serving.pypi-dependencies]
+vllm = ">=0.6"
+pytest-benchmark = "*"
+
+[feature.serving.pypi-options]
+index-strategy = "unsafe-best-match"
+
+[feature.serving.target.linux.dependencies]
+cuda-toolkit = "*"
+
+[feature.serving.target.linux.pypi-dependencies]
+vllm = ">=0.6"
+
+[feature.serving.tasks.serve]
+cmd = "vllm serve"
+cwd = ".."
+
+[feature.isolated]
+platforms = ["linux-64-system", "linux-aarch64-system"]
+
+[feature.mainboard-platforms]
+platforms = ["linux-64-system", "linux-aarch64-system"]
+
+[feature.dev.dependencies]
+ruff = "*"
+
+[environments.serving]
+features = ["serving"]
+
+[environments.isolated]
+features = ["isolated"]
+no-default-feature = true
+
+[environments.default]
+features = ["mainboard-platforms", "dev"]
+
+[tasks.build]
+cmd = "make"
+cwd = ".."
+
+[tasks.test]
+cmd = "pytest"
+cwd = "../packages/lab-core"
+depends-on = ["build"]
+
+[tasks.site]
+cmd = "sphinx"
+cwd = "/opt/docs"
+
+[tasks.all]
+depends-on = ["build", "test"]

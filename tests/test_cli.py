@@ -3,271 +3,246 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board, ComputePath, Job, MissionError, Monitor, Survey
+from mainboard import ComputePath, MissionError, Survey
 from mainboard.cli import build, main
-from mainboard.compute import Access
-from mainboard.dispatch import Handle
-from mainboard.dispatch.state import DownHost, Failed, Finished, MonitorReport
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from .conftest import Relayed
+
 _FIELD_VALUE_HEADER = "field\tvalue"
 _MIYABI_G = "miyabi-g"
 
+# What `submit` translates its flags into, every resource the verb carries, so a case naming one
+# of them says what it changed and nothing else has to be repeated.
+_RESOURCES = {
+    "name": "",
+    "queue": "",
+    "walltime": "",
+    "mem_gb": 0,
+    "gpus": 0,
+    "gpu_name": "",
+    "max_usd": 0.0,
+    "attempt": 1,
+    "fetch": None,
+    "env": "",
+    "container": "",
+}
 
-def _fake_submit(self: Board, command: str, **options: str | int | None) -> Job:
-    return Job(self, Handle(id="4242", host=self.host, root="/work/p", kind="pbs"))
 
-
-def _swept() -> MonitorReport:
-    """A report with one job of every outcome, so a render covers each row shape."""
-    return MonitorReport(
-        running=2,
-        finished=[Finished(handle="1", target="gold", pulled_path="results/run")],
-        failed=[Failed(handle="2", target="gold", reason="exited 137 (out of memory)")],
-        unreachable_hosts=[DownHost(host=_MIYABI_G, reason="daemon down")],
-    )
-
-
-def _surveyed() -> list[ComputePath]:
-    """One row of every shape a compute table can hold, so a render covers each cell."""
-    return [
-        ComputePath(name="local", kind="local", access=Access.HERE, detail="1x RTX 4090, 64 GB"),
-        ComputePath(name=_MIYABI_G, kind="pbs", access=Access.UNREACHABLE, detail="timed out"),
-        ComputePath(
-            name="vast",
-            kind="provider",
-            access=Access.KEYED,
-            detail="1x RTX 4090 Texas, US",
-            usd_hr=0.31,
-            credit_usd=42.5,
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (
+            ["run", "--on", "gold", "--env", "serving", "--", "python", "-c", "print(1)"],
+            ("run", "gold", ("python -c 'print(1)'",), {"env": "serving", "container": ""}),
         ),
-    ]
-
-
-def test_plan_verb_prints_the_resolved_plan(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
+        (
+            ["submit", "--on", _MIYABI_G, "--queue", "short-g", "--mem-gb", "64", "true"],
+            ("submit", _MIYABI_G, ("true",), {**_RESOURCES, "queue": "short-g", "mem_gb": 64}),
+        ),
+        (
+            ["add", "tqdm", "-l", "python", "--dev", "--no-resolve"],
+            (
+                "add",
+                "",
+                ("tqdm",),
+                {"ecosystem": "python", "env": "", "dev": True, "resolve": False},
+            ),
+        ),
+        (
+            ["remove", "tqdm"],
+            ("remove", "", ("tqdm",), {"ecosystem": "", "env": "", "dev": False, "resolve": True}),
+        ),
+        (
+            ["upgrade", "--env", "serving"],
+            ("upgrade", "", ("",), {"ecosystem": "", "env": "serving", "dev": False}),
+        ),
+        (
+            ["new", "p", "--answer", "home=standalone", "--answer", "paper=draft"],
+            (
+                "render",
+                "",
+                ("p",),
+                {
+                    "template": "",
+                    "description": "",
+                    "dest": "",
+                    "answers": {"home": "standalone", "paper": "draft"},
+                },
+            ),
+        ),
+        (["doctor"], ("sections", "", (), {})),
+        (
+            ["install", "serving", "--resolve", "--profile", "gold"],
+            ("install", "local", ("serving",), {"resolve": True, "profile": "gold"}),
+        ),
+        (
+            ["install", "--on", "gold"],
+            ("install", "gold", ("",), {"resolve": False, "profile": ""}),
+        ),
+        (
+            ["setup", "gold", "--env", "serving"],
+            ("install", "gold", ("serving",), {"resolve": False}),
+        ),
+        (["shell", "--env", "serving"], ("shell", "local", ("serving",), {})),
+        (
+            ["interact", "--on", "gold", "--queue", "interact-g", "--", "pwd"],
+            ("interact", "gold", ("pwd",), {"env": "", "queue": "interact-g", "walltime": ""}),
+        ),
+        (["compute"], ("paths", "", (), {})),
+        (["monitor"], ("once", "", (), {})),
+        (["facts", "gold"], ("facts", "gold", (), {})),
+    ],
+    ids=[
+        "run",
+        "submit",
+        "add",
+        "remove",
+        "upgrade",
+        "new",
+        "doctor",
+        "install here",
+        "install on a host",
+        "setup",
+        "shell",
+        "interact",
+        "compute",
+        "monitor",
+        "facts",
+    ],
+)
+def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translated(
+    depot: Path,
+    relayed: list[Relayed],
+    argv: list[str],
+    expected: Relayed,
 ) -> None:
+    """The CLI is a dispatch table, so which method a verb reaches and what it turned its flags
+    into is the whole of what belongs to it. Everything past that seam is tested where it lives.
+    """
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["plan", _MIYABI_G, "--json"])
-    plan = json.loads(capsys.readouterr().out)
-    assert plan["host"] == _MIYABI_G
-    assert plan["container"]["image"].startswith("nvcr.io")
+        build(depot)(argv)
+    assert relayed == [expected]
 
 
-def test_plan_verb_default_is_a_rich_table(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize("flag", ["--version", "--help", "-h"], ids=["--version", "--help", "-h"])
+def test_the_passthrough_verbs_hand_the_clis_own_flags_to_the_command_after_the_delimiter(
+    depot: Path,
+    relayed: list[Relayed],
+    flag: str,
 ) -> None:
+    """`--version` and `--help` after `--` belong to the wrapped program, not to this CLI, which
+    is why the two passthrough verbs give the version flag up entirely.
+    """
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["plan", _MIYABI_G])
-    out = capsys.readouterr().out
-    assert _MIYABI_G in out
-    assert "plan" in out
-
-
-def test_plan_verb_agent_mode_is_tabular(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+        build(depot)(["run", "--", "python", flag])
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["plan", _MIYABI_G, "--agent"])
-    text = capsys.readouterr().out
-    assert text.splitlines()[0] == _FIELD_VALUE_HEADER
-    assert _MIYABI_G in text
+        build(depot)(["submit", "--on", _MIYABI_G, "--", "python", flag])
+    assert [call[0] for call in relayed] == ["run", "submit"]
+    assert [call[2] for call in relayed] == [(f"python {flag}",), (f"python {flag}",)]
 
 
-def test_check_verb_lists_the_declared_surface(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["check", "--json"])
-    surface = json.loads(capsys.readouterr().out)
-    assert surface["workspace"] == "lab"
-    assert _MIYABI_G in surface["hosts"]
-    assert "ngc" in surface["containers"]
-
-
-def test_check_verb_agent_mode_is_tabular(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["check", "--agent"])
-    text = capsys.readouterr().out
-    assert text.splitlines()[0] == _FIELD_VALUE_HEADER
-    assert "workspace" in text
-    assert "lab" in text
-
-
-def test_check_verb_rejects_json_and_agent_together(workspace: Path) -> None:
-    with pytest.raises(MissionError, match="only one"):
-        build(workspace)(["check", "--json", "--agent"])
-
-
-def test_check_verb_fields_flag_trims_and_drops_blank_entries(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["check", "--json", "--fields", "workspace, , hosts"])
-    payload = json.loads(capsys.readouterr().out)
-    assert set(payload) == {"workspace", "hosts"}
-
-
-def test_root_discovery_walks_up_from_the_cwd(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    nested = workspace / "deep" / "inside"
-    nested.mkdir(parents=True)
-    monkeypatch.chdir(nested)
-    with pytest.raises(SystemExit, match="0"):
-        build()(["check", "--json"])
-    assert json.loads(capsys.readouterr().out)["workspace"] == "lab"
-
-
-def test_main_prints_mission_errors_without_traceback(
-    workspace: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr("sys.argv", ["mainboard", "plan", "gold", "--env", "ghost"])
-    with pytest.raises(SystemExit, match="1"):
-        main()
-    assert "declared environments" in capsys.readouterr().err
-
-
-def test_main_runs_a_clean_verb(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr("sys.argv", ["mainboard", "check"])
-    with pytest.raises(SystemExit, match="0"):
-        main()
-    assert "lab" in capsys.readouterr().out
-
-
-def test_run_verb_executes_locally(workspace: Path) -> None:
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["run", "true"])
-    with pytest.raises(SystemExit, match="1"):
-        build(workspace)(["run", "false"])
-
-
-def test_run_verb_passes_leading_hyphen_tokens_through(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[str] = []
-    monkeypatch.setattr(Board, "run", lambda self, command, **options: seen.append(command) or 0)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["run", "python", "-c", "print(1)"])
-    assert seen == ["python -c 'print(1)'"]
-
-
-@pytest.mark.parametrize("flag", ["--version", "--help", "-h"])
-def test_run_verb_hands_the_cli_s_own_flags_to_the_command_after_the_delimiter(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, flag: str
-) -> None:
-    """`--version` and `--help` after `--` belong to the wrapped program, not to this CLI."""
-    seen: list[str] = []
-    monkeypatch.setattr(Board, "run", lambda self, command, **options: seen.append(command) or 0)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["run", "--", "python", flag])
-    assert seen == [f"python {flag}"]
-
-
-@pytest.mark.parametrize("flag", ["--version", "--help", "-h"])
-def test_submit_verb_hands_the_cli_s_own_flags_to_the_command_after_the_delimiter(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flag: str
-) -> None:
-    monkeypatch.setattr(Board, "submit", _fake_submit)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["submit", "--on", _MIYABI_G, "--", "python", flag])
-    assert capsys.readouterr().out.strip() == "4242"
-
-
-def test_run_verb_still_documents_itself_before_the_delimiter(
-    workspace: Path, capsys: pytest.CaptureFixture[str]
+def test_a_passthrough_verb_still_documents_itself_before_the_delimiter(
+    depot: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Dropping the version flag from the passthrough verbs must not cost them their help."""
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["run", "--help"])
+        build(depot)(["run", "--help"])
     assert "container" in capsys.readouterr().out
 
 
-def test_shell_verb_opens_the_named_environment_on_this_machine(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        ([], "4242"),
+        (["--agent"], _FIELD_VALUE_HEADER),
+        (["--json"], ""),
+    ],
+    ids=["the bare id a shell captures", "the compact record", "the whole handle as json"],
+)
+def test_submit_prints_the_bare_handle_unless_a_record_was_asked_for(
+    depot: Path,
+    relayed: list[Relayed],
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    expected: str,
 ) -> None:
-    seen: list[tuple[str, str]] = []
-    monkeypatch.setattr(Board, "shell", lambda self, env: seen.append((self.host, env)))
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["shell", "--env", "serving"])
-    assert seen == [("local", "serving")]
-
-
-def test_shell_verb_defaults_to_the_profiles_environment(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    seen: list[tuple[str, str]] = []
-    monkeypatch.setattr(Board, "shell", lambda self, env: seen.append((self.host, env)))
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["shell"])
-    assert seen == [("local", "")]
-
-
-def test_submit_verb_prints_the_handle(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(Board, "submit", _fake_submit)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["submit", "--on", _MIYABI_G, "python", "-m", "exp.run"])
-    assert capsys.readouterr().out.strip() == "4242"
-
-
-def test_submit_verb_json_mode_prints_the_full_handle(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(Board, "submit", _fake_submit)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["submit", "--on", _MIYABI_G, "--json", "python", "-m", "exp.run"])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == {
-        "id": "4242",
-        "host": _MIYABI_G,
-        "root": "/work/p",
-        "kind": "pbs",
-        "fetch_path": None,
-    }
-
-
-def test_submit_verb_agent_mode_prints_the_tabular_handle(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(Board, "submit", _fake_submit)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["submit", "--on", _MIYABI_G, "--agent", "python", "-m", "exp.run"])
-    text = capsys.readouterr().out
-    assert text.splitlines()[0] == _FIELD_VALUE_HEADER
-    assert "4242" in text
-
-
-def test_compute_verb_default_tables_every_path(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(Survey, "paths", lambda self: _surveyed())
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["compute"])
+        build(depot)(["submit", "--on", _MIYABI_G, *flags, "true"])
     out = capsys.readouterr().out
-    assert "local" in out and "vast" in out
-    assert "unreachable" in out and "keyed" in out
+    if not expected:
+        assert json.loads(out) == {
+            "id": "4242",
+            "host": _MIYABI_G,
+            "root": "/work/p",
+            "kind": "pbs",
+            "fetch_path": None,
+        }
+        return
+    assert out.splitlines()[0] == expected
 
 
-def test_compute_verb_json_mode_prices_and_credits_the_provider_rows(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("flags", "fragments"),
+    [
+        (["--json"], ()),
+        ([], ("miyabi-g", "plan")),
+        (["--agent"], (_FIELD_VALUE_HEADER, _MIYABI_G)),
+    ],
+    ids=["as json", "as the default rich table", "as the compact record"],
+)
+def test_the_plan_verb_prints_the_resolved_plan(
+    depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], fragments: tuple[str, ...]
 ) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(Survey, "paths", lambda self: _surveyed())
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["compute", "--json"])
+        build(depot)(["plan", _MIYABI_G, *flags])
+    out = capsys.readouterr().out
+    if not fragments:
+        plan = json.loads(out)
+        assert plan["host"] == _MIYABI_G
+        assert plan["container"]["image"].startswith("nvcr.io")
+        return
+    assert all(fragment in out for fragment in fragments)
+
+
+@pytest.mark.parametrize(
+    ("flags", "fields"),
+    [
+        ([], {"workspace", "environments", "containers", "hosts", "tasks"}),
+        (["--fields", "workspace, , hosts"], {"workspace", "hosts"}),
+    ],
+    ids=["the whole declared surface", "a projection that trims and drops blank entries"],
+)
+def test_the_check_verb_lists_what_the_manifest_declares(
+    depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], fields: set[str]
+) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["check", "--json", *flags])
+    surface = json.loads(capsys.readouterr().out)
+    assert set(surface) == fields
+    assert surface["workspace"] == "lab"
+
+
+def test_the_mode_flags_refuse_each_other_before_anything_is_probed(
+    depot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(self: Survey) -> list[ComputePath]:
+        raise AssertionError("the mode flags are checked before any probe runs")
+
+    monkeypatch.setattr(Survey, "paths", refuse)
+    with pytest.raises(MissionError, match="only one"):
+        build(depot)(["compute", "--json", "--agent"])
+
+
+def test_the_compute_verb_prices_and_credits_the_provider_rows(
+    depot: Path,
+    relayed: list[Relayed],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["compute", "--json"])
     payload = json.loads(capsys.readouterr().out)
     assert [row["name"] for row in payload] == ["local", _MIYABI_G, "vast"]
     assert payload[0]["access"] == "here"
@@ -281,36 +256,37 @@ def test_compute_verb_json_mode_prices_and_credits_the_provider_rows(
     }
 
 
-def test_compute_verb_agent_mode_projects_the_named_columns(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("flags", "fragments"),
+    [
+        ([], ("2 running", "unreachable", "daemon down", "failed", "results/run")),
+        (["--agent", "--fields", "running,changed"], (_FIELD_VALUE_HEADER, "running", "changed")),
+    ],
+    ids=["what moved this pass, one row each", "the whole document projected onto two fields"],
+)
+def test_the_monitor_verb_prints_what_moved_or_the_whole_report(
+    depot: Path,
+    relayed: list[Relayed],
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    fragments: tuple[str, ...],
 ) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(Survey, "paths", lambda self: _surveyed())
+    """A cron reads the full report and branches on it, a person at a terminal wants the jobs
+    that actually settled, so the compact modes carry the document and the table carries rows.
+    """
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["compute", "--agent", "--fields", "name,credit_usd"])
-    lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "name\tcredit_usd"
-    assert lines[3] == "vast\t42.5"
+        build(depot)(["monitor", *flags])
+    out = capsys.readouterr().out
+    assert all(fragment in out for fragment in fragments)
 
 
-def test_compute_verb_rejects_json_and_agent_before_probing_anything(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
+def test_the_monitor_verb_carries_the_counts_and_the_changed_flag_in_json(
+    depot: Path,
+    relayed: list[Relayed],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    def refuse(self: Survey) -> list[ComputePath]:
-        raise AssertionError("the mode flags are checked before any probe runs")
-
-    monkeypatch.setattr(Survey, "paths", refuse)
-    with pytest.raises(MissionError, match="only one"):
-        build(workspace)(["compute", "--json", "--agent"])
-
-
-def test_monitor_verb_json_mode_prints_the_whole_report(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(Monitor, "once", lambda self: _swept())
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["monitor", "--json"])
+        build(depot)(["monitor", "--json"])
     payload = json.loads(capsys.readouterr().out)
     assert payload["running"] == 2
     assert payload["changed"] is True
@@ -318,74 +294,75 @@ def test_monitor_verb_json_mode_prints_the_whole_report(
     assert payload["unreachable_hosts"][0]["host"] == _MIYABI_G
 
 
-def test_monitor_verb_sweeps_an_untouched_cache_without_changes(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        (["--json"], {"running": 0, "finished": [], "failed": [], "unreachable_hosts": []}),
+        ([], None),
+    ],
+    ids=["a quiet pass says exactly that", "a quiet pass still prints its heading"],
+)
+def test_the_monitor_verb_sweeps_an_untouched_cache_without_changes(
+    depot: Path,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    expected: dict[str, int | list[str]] | None,
 ) -> None:
-    monkeypatch.chdir(workspace)
+    """The change table names its columns even when nothing moved, so a reader sees a heading
+    rather than nothing at all.
+    """
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["monitor", "--json"])
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == {
-        "running": 0,
-        "finished": [],
-        "failed": [],
-        "unreachable_hosts": [],
-        "changed": False,
-    }
-
-
-def test_monitor_verb_default_tables_what_changed(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(Monitor, "once", lambda self: _swept())
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["monitor"])
+        build(depot)(["monitor", *flags])
     out = capsys.readouterr().out
-    assert "2 running" in out
-    assert "unreachable" in out and "daemon down" in out
-    assert "failed" in out
+    if expected is None:
+        assert "monitor: 0 running" in out
+        assert "outcome" in out
+        return
+    assert json.loads(out) == {**expected, "changed": False}
 
 
-def test_monitor_verb_still_prints_its_heading_when_nothing_moved(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    "interrupted", [False, True], ids=["every pass renders", "an interrupt stops it quietly"]
+)
+def test_the_monitor_verb_watches_in_the_foreground_until_it_is_stopped(
+    depot: Path,
+    relayed: list[Relayed],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    interrupted: bool,
 ) -> None:
-    monkeypatch.chdir(workspace)
+    if interrupted:
+        monkeypatch.setattr("mainboard.monitor.Monitor.watch", lambda self, interval: _interrupt())
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["monitor"])
-    out = capsys.readouterr().out
-    assert "monitor: 0 running" in out
-    assert "outcome" in out
+        build(depot)(["monitor", "--watch", "0.1", "--json"])
+    assert capsys.readouterr().out.count('"running": 2') == (0 if interrupted else 2)
 
 
-def test_monitor_verb_agent_mode_is_tabular(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def _interrupt() -> None:
+    raise KeyboardInterrupt
+
+
+@pytest.mark.parametrize(
+    ("argv", "code", "fragment"),
+    [
+        (["mainboard", "check"], "0", "lab"),
+        (["mainboard", "plan", "gold", "--env", "ghost"], "1", "declared environments"),
+    ],
+    ids=["a clean verb from a directory below the root", "a refusal printed without a traceback"],
+)
+def test_the_entry_point_discovers_the_workspace_and_refuses_without_a_traceback(
+    depot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    code: str,
+    fragment: str,
 ) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(Monitor, "once", lambda self: _swept())
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["monitor", "--agent", "--fields", "running,changed"])
-    lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == _FIELD_VALUE_HEADER
-    assert [line.split("\t")[0] for line in lines[1:]] == ["running", "changed"]
-
-
-def test_monitor_verb_watch_renders_every_pass(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(Monitor, "watch", lambda self, interval: iter([_swept(), _swept()]))
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["monitor", "--watch", "0.1", "--json"])
-    assert capsys.readouterr().out.count('"running": 2') == 2
-
-
-def test_monitor_verb_watch_stops_quietly_on_an_interrupt(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def interrupted(self: Monitor, interval: float) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(Monitor, "watch", interrupted)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["monitor", "--watch", "0.1"])
+    nested = depot / "deep" / "inside"
+    nested.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(nested)
+    monkeypatch.setattr("sys.argv", argv)
+    with pytest.raises(SystemExit, match=code):
+        main()
+    printed = capsys.readouterr()
+    assert fragment in (printed.out if code == "0" else printed.err)

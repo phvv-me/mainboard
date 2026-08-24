@@ -64,6 +64,8 @@ class HostSetup(FrozenModel):
     capabilities: the host as the bootstrap probe found it, None for an in-place install.
     hardware: the host's hardware snapshot, read back through the new activation.
     onboarded_at: ISO-8601 time the install finished.
+    synced_at: ISO-8601 time the workspace was last mirrored here, empty until one lands after
+        the onboarding that first mirrored it.
     """
 
     host: str
@@ -76,6 +78,17 @@ class HostSetup(FrozenModel):
     capabilities: Facts | None = None
     hardware: HostFacts | None = None
     onboarded_at: str = ""
+    synced_at: str = ""
+
+    @property
+    def mirrored_at(self) -> str:
+        """When this host's copy of the workspace was last brought up to date.
+
+        The latest mirror when one has been recorded since, else the onboarding that first put
+        the workspace there. This is the watermark a transfer set measures a delta against, so a
+        host nobody has mirrored since being set up still has an honest answer.
+        """
+        return max(self.synced_at, self.onboarded_at)
 
 
 class RemoteShell:

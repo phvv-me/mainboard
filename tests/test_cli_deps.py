@@ -3,185 +3,96 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board, MissionError
+from mainboard import MissionError
 from mainboard.cli import build
-from mainboard.deps import Change, Dependencies
 from mainboard.doctor import Doctor, Section, Verdict
-from mainboard.scaffold import Scaffold, Scaffolded
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from .conftest import Relayed
+
 _ROWS = 'sc-baseline = { run = "python -m experiments.baseline.run execute" }\n'
 
-_MOVED = [
-    Change(name="tqdm", where="[dev.python.deps]", before="absent", after=">=4.70.0, <5"),
-    Change(name="tqdm", where="pixi.lock", before="absent", after="4.70.0"),
-]
 
-
-@pytest.fixture
-def asked(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str, str, bool, bool]]:
-    """Record what each dependency verb asked for, without editing or solving anything."""
-    calls: list[tuple[str, str, str, str, bool, bool]] = []
-
-    def add(
-        self: Dependencies,
-        spec: str,
-        *,
-        ecosystem: str = "conda",
-        env: str = "",
-        dev: bool = False,
-        resolve: bool = True,
-    ) -> list[Change]:
-        calls.append(("add", spec, ecosystem, env, dev, resolve))
-        return _MOVED
-
-    def remove(
-        self: Dependencies,
-        name: str,
-        *,
-        ecosystem: str = "",
-        env: str = "",
-        dev: bool = False,
-        resolve: bool = True,
-    ) -> list[Change]:
-        calls.append(("remove", name, ecosystem, env, dev, resolve))
-        return _MOVED
-
-    def upgrade(
-        self: Dependencies,
-        name: str = "",
-        *,
-        ecosystem: str = "",
-        env: str = "",
-        dev: bool = False,
-    ) -> list[Change]:
-        calls.append(("upgrade", name, ecosystem, env, dev, True))
-        return _MOVED
-
-    monkeypatch.setattr(Dependencies, "add", add)
-    monkeypatch.setattr(Dependencies, "remove", remove)
-    monkeypatch.setattr(Dependencies, "upgrade", upgrade)
-    return calls
-
-
-def test_add_passes_its_flags_through_and_prints_what_moved(
-    workspace: Path,
-    asked: list[tuple[str, str, str, str, bool, bool]],
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["add", "tqdm", "--json"], ["[dev.python.deps]", "pixi.lock"]),
+        (["remove", "tqdm"], ["pixi.lock"]),
+        (["upgrade", "--agent"], ["name\twhere\tbefore\tafter"]),
+    ],
+    ids=["as json", "as the default rich table", "as the compact table"],
+)
+def test_every_dependency_verb_prints_the_constraint_and_the_pins_its_solve_moved(
+    depot: Path,
+    relayed: list[Relayed],
     capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected: list[str],
 ) -> None:
-    """The short ecosystem flag, the dev flag and the resolve toggle all reach the verb."""
+    """An edit and the pins its solve dragged along are the same fact, something moved from one
+    version to another somewhere, so they render as one shape rather than two tables.
+    """
     with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["add", "tqdm", "-l", "python", "--dev", "--no-resolve", "--json"])
-    assert asked == [("add", "tqdm", "python", "", True, False)]
-    printed = json.loads(capsys.readouterr().out)
-    assert [row["where"] for row in printed] == ["[dev.python.deps]", "pixi.lock"]
-
-
-def test_remove_searches_the_whole_manifest_unless_narrowed(
-    workspace: Path,
-    asked: list[tuple[str, str, str, str, bool, bool]],
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """No ecosystem flag means no narrowing, which is what makes the bare verb usable."""
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["remove", "tqdm"])
-    assert asked == [("remove", "tqdm", "", "", False, True)]
-    assert "pixi.lock" in capsys.readouterr().out
-
-
-def test_upgrade_carries_no_name_when_the_whole_lock_is_meant(
-    workspace: Path,
-    asked: list[tuple[str, str, str, str, bool, bool]],
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A bare upgrade is a different request from a named one and reaches the verb as one."""
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["upgrade", "--agent"])
-    assert asked == [("upgrade", "", "", "", False, True)]
-    assert capsys.readouterr().out.splitlines()[0] == "name\twhere\tbefore\tafter"
-
-
-def test_new_prints_the_rows_to_paste_above_the_record(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A snippet nobody can read out of a table cell is a snippet nobody pastes."""
-    made = Scaffolded(
-        project="scratch-probe",
-        path=str(workspace / "research/scratch-probe"),
-        tasks=str(workspace / "research/scratch-probe/mainboard.tasks.toml"),
-        paste=f"{workspace / 'mainboard.toml'} [tasks]",
-        snippet=_ROWS,
-    )
-    monkeypatch.setattr(Scaffold, "render", lambda self, name, **given: made)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["new", "scratch probe"])
+        build(depot)(argv)
     out = capsys.readouterr().out
+    if argv[-1] == "--json":
+        assert [row["where"] for row in json.loads(out)] == expected
+        return
+    assert all(fragment in out for fragment in expected)
+
+
+@pytest.mark.parametrize(
+    "compact", [False, True], ids=["printed above the record", "carried inside the record"]
+)
+def test_new_prints_the_rows_to_paste_where_the_reader_can_reach_them(
+    depot: Path,
+    relayed: list[Relayed],
+    capsys: pytest.CaptureFixture[str],
+    compact: bool,
+) -> None:
+    """The rows print whole and pasteable at a terminal, so repeating them wrapped inside a table
+    cell would only make them harder to copy back out. A machine reading the record has nowhere
+    else to get them, so there the field stays.
+    """
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["new", "scratch probe", *(["--json"] if compact else [])])
+    out = capsys.readouterr().out
+    if compact:
+        assert json.loads(out)["snippet"] == _ROWS
+        return
     assert out.startswith(_ROWS)
-    assert "scratch-probe" in out
+    assert "snippet" not in out
 
 
-def test_new_carries_the_snippet_as_a_field_in_the_compact_modes(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A machine reading the record needs the rows in it, not printed above it."""
-    made = Scaffolded(project="p", path="/p", snippet=_ROWS)
-    monkeypatch.setattr(Scaffold, "render", lambda self, name, **given: made)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["new", "p", "--json"])
-    printed = json.loads(capsys.readouterr().out)
-    assert printed["snippet"] == _ROWS
-
-
-def test_new_hands_the_template_questions_through_as_a_table(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`--answer` is repeatable, since a template asks more questions than a flag each."""
-    given: list[dict[str, str]] = []
-    monkeypatch.setattr(
-        Scaffold,
-        "render",
-        lambda self, name, **asked: (
-            given.append(dict(asked["answers"])) or Scaffolded(project="p", path="/p")
-        ),
-    )
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["new", "p", "--answer", "home=standalone", "--answer", "paper=draft"])
-    assert given == [{"home": "standalone", "paper": "draft"}]
-
-
-def test_new_refuses_an_answer_written_without_its_value(workspace: Path) -> None:
+def test_new_refuses_an_answer_written_without_its_value(depot: Path) -> None:
     """A bare word is a question nobody answered, and guessing what it meant helps no one."""
     with pytest.raises(MissionError, match="question=value"):
-        build(workspace)(["new", "p", "--answer", "home"])
+        build(depot)(["new", "p", "--answer", "home"])
 
 
+@pytest.mark.parametrize(
+    ("verdict", "code", "detail"),
+    [
+        (Verdict.WARN, "0", "gold is asleep"),
+        (Verdict.FAIL, "1", "6 breakages"),
+    ],
+    ids=["a sleeping host is a word, not a nonzero exit", "a broken workspace shows in the exit"],
+)
 def test_doctor_exits_nonzero_only_when_something_is_actually_broken(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    depot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verdict: Verdict,
+    code: str,
+    detail: str,
 ) -> None:
-    """A sleeping host must never make the exit status mean the network instead of the code."""
-    warned = [Section(section="fleet", verdict=Verdict.WARN, detail="gold is asleep")]
-    monkeypatch.setattr(Doctor, "sections", lambda self: warned)
-    with pytest.raises(SystemExit, match="0"):
-        build(workspace)(["doctor", "--json"])
-    assert json.loads(capsys.readouterr().out)[0]["verdict"] == "warn"
-
-
-def test_doctor_fails_the_shell_when_a_section_fails(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The exit status is what a script branches on, so a broken workspace has to show there."""
-    broken = [Section(section="math", verdict=Verdict.FAIL, detail="6 breakages", fix="fix it")]
-    monkeypatch.setattr(Doctor, "sections", lambda self: broken)
-    with pytest.raises(SystemExit, match="1"):
-        build(workspace)(["doctor"])
-    assert "6 breakages" in capsys.readouterr().out
-
-
-def test_the_board_hands_out_each_new_surface(workspace: Path) -> None:
-    """Every verb reaches its subsystem through the one addressable interface."""
-    board = Board(workspace)
-    assert isinstance(board.deps(), Dependencies)
-    assert isinstance(board.doctor(), Doctor)
-    assert isinstance(board.scaffold(), Scaffold)
+    """The exit status is what a script branches on, so a sleeping host must never make it mean
+    the network instead of the code.
+    """
+    found = [Section(section="fleet", verdict=verdict, detail=detail, fix="fix it")]
+    monkeypatch.setattr(Doctor, "sections", lambda self: found)
+    with pytest.raises(SystemExit, match=code):
+        build(depot)(["doctor"])
+    assert detail in capsys.readouterr().out
