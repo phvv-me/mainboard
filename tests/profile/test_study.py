@@ -1,5 +1,7 @@
 # A sweep has to keep each point's conditions, and survive a point that fails.
 
+from collections.abc import Sequence
+
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from patos import FrozenModel
@@ -8,7 +10,7 @@ from mainboard import Collection
 from mainboard import ProfileStudy as Study
 from mainboard.profile import Feature, Point, Row
 
-from .conftest import one_process_gpu
+from .support import one_process_gpu
 
 
 class Shape(FrozenModel):
@@ -25,7 +27,7 @@ class Shape(FrozenModel):
 # the budget is trimmed from the shared default.
 @settings(max_examples=10)
 @given(sizes=st.lists(st.integers(min_value=0, max_value=99), min_size=1, max_size=3, unique=True))
-def test_every_point_keeps_its_conditions_beside_its_measurement(sizes: list[int]) -> None:
+def test_every_point_keeps_its_conditions_beside_its_measurement(sizes: Sequence[int]) -> None:
     """A number whose input specification is not attached is hard to reproduce.
 
     The policy and the devices are stated once for the whole sweep, so two points cannot

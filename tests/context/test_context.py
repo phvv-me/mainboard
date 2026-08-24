@@ -5,11 +5,9 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from mainboard import MissionError, Resolver, load
+from mainboard import MissionError, Project, Resolver, load
 from mainboard.context import admit, evaluate
 from mainboard.manifest import HostProfile, QueuePolicy
-
-from ..conftest import MANIFEST
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,7 +25,7 @@ _PROFILE = HostProfile(
 @pytest.fixture
 def resolver(workspace: Path) -> Resolver:
     """A resolver over the full-featured fixture workspace."""
-    return Resolver(load(workspace / MANIFEST))
+    return Resolver(load(workspace / Project().manifest))
 
 
 def test_a_plan_resolves_where_and_how_one_command_runs(resolver: Resolver) -> None:

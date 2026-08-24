@@ -28,9 +28,9 @@ from typing import TYPE_CHECKING, Protocol
 
 from ..batch.receipts import Topic
 from ..core.errors import MissionError
+from ..dispatch import vocabulary
 from ..dispatch.backends.base import Credentials
 from ..dispatch.shared import logger
-from ..dispatch.vocabulary import OK
 from ..experiments.identity import run_id
 from ..manifest.schema.tracking import TrackingMode
 from .base import Tracker
@@ -136,15 +136,6 @@ class WandbSink(Tracker):
         """The project runs land in: what the manifest declared, else this workspace's name."""
         return self.declared.project or self.workspace or self.stream
 
-    def close(self, job: str, *, exit_code: int) -> None:
-        """End `job`'s run at `exit_code` and forget it, so a later line opens a fresh resume.
-
-        Only ever reached with a run this sink just logged to, since `publish` opens the run
-        before it reads the topic, so there is nothing here to guard against.
-        """
-        self.steps.pop(job)
-        self.runs.pop(job).finish(exit_code=exit_code)
-
     @staticmethod
     def flattened(event: Event) -> dict[str, JsonValue]:
         """`event`'s scalar payload, keyed by its topic, the shape a history row is written in.
@@ -158,6 +149,15 @@ class WandbSink(Tracker):
             for field, value in event.data.items()
             if isinstance(value, str | int | float | bool)
         }
+
+    def close(self, job: str, *, exit_code: int) -> None:
+        """End `job`'s run at `exit_code` and forget it, so a later line opens a fresh resume.
+
+        Only ever reached with a run this sink just logged to, since `publish` opens the run
+        before it reads the topic, so there is nothing here to guard against.
+        """
+        self.steps.pop(job)
+        self.runs.pop(job).finish(exit_code=exit_code)
 
     def publish(self, event: Event) -> None:
         """Tell this stream's runs what one receipt said, opening or closing a run as it says to.
@@ -208,9 +208,9 @@ class WandbSink(Tracker):
 
     def step(self, job: str) -> int:
         """`job`'s next history position, advancing the cursor this sink keeps for it."""
-        at = self.steps[job]
-        self.steps[job] = at + 1
-        return at
+        position = self.steps[job]
+        self.steps[job] = position + 1
+        return position
 
 
 def exit_code(event: Event) -> int:
@@ -218,7 +218,7 @@ def exit_code(event: Event) -> int:
     reported = event.data.get("exit_code")
     if isinstance(reported, int):
         return reported
-    if event.data.get("verdict") == OK:
+    if event.data.get("verdict") == vocabulary.OK:
         return 0
     return _CLOSING[event.topic]
 

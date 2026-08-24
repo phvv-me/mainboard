@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from ....core.host import current_platform, platform_selectors
@@ -28,6 +29,57 @@ class SecondStage:
         self.manifest = manifest
         self.out = out
         self.pixi = pixi
+
+    def binary_dirs(self, env: str) -> list[Path]:
+        """Every directory the toolchains link executables into, for `env`'s activation."""
+        return [directory for eco in self.ecosystems(env) for directory in eco.binary_dirs()]
+
+    def ecosystems(self, env: str) -> list[Ecosystem]:
+        """One bound ecosystem per implementation, in registration order.
+
+        Every implementation is built, not only the ones the manifest still declares, because
+        an ecosystem is also what cleans up after a table that was deleted: a `package.json`
+        outliving its `[nodejs]` table would keep reinstalling packages nobody declares. A
+        table no implementation claims (`[python]`, which pixi compiles itself) is ignored. An
+        implementation whose tree is the workspace's rather than the environment's binds to the
+        whole manifest instead (`Ecosystem.shared`).
+
+        env: the environment whose merged tables the ecosystems bind to.
+        """
+        scoped = self.toolchains(env)
+        shared = self.merged(self.shared_scopes())
+        return [
+            implementation(
+                (shared if implementation.shared else scoped).get(
+                    implementation.toolchain, Toolchain()
+                ),
+                env=env,
+                project=self.manifest.workspace.name,
+                workspace=self.root,
+                out=self.out,
+                pixi=self.pixi,
+            )
+            for implementation in Ecosystem.implementations()
+        ]
+
+    def generate(self, files: Writer, env: str) -> None:
+        """Write every file the toolchains install from, under the sync lock the caller holds."""
+        for ecosystem in self.ecosystems(env):
+            ecosystem.generate(files)
+
+    def install(self, env: str) -> None:
+        """Run each toolchain's installer inside the environment pixi has already provisioned."""
+        with self.pixi.activated(env):
+            for ecosystem in self.ecosystems(env):
+                ecosystem.sync()
+
+    def merged(self, scopes: Sequence[Scope]) -> dict[str, Toolchain]:
+        """Every ecosystem table across `scopes`, each merged over the ones beneath it."""
+        merged: dict[str, Toolchain] = {}
+        for scope in scopes:
+            for name, table in scope.toolchains().items():
+                merged[name] = table.merged(merged[name]) if name in merged else table
+        return merged
 
     def overlays(self, scope: Manifest | Env) -> list[Scope]:
         """``scope`` followed by the platform overlays under it that this machine matches."""
@@ -67,57 +119,6 @@ class SecondStage:
             *(scope for env in self.manifest.envs.values() for scope in self.overlays(env)),
         ]
 
-    def merged(self, scopes: list[Scope]) -> dict[str, Toolchain]:
-        """Every ecosystem table across `scopes`, each merged over the ones beneath it."""
-        merged: dict[str, Toolchain] = {}
-        for scope in scopes:
-            for name, table in scope.toolchains().items():
-                merged[name] = table.merged(merged[name]) if name in merged else table
-        return merged
-
     def toolchains(self, env: str) -> dict[str, Toolchain]:
         """Every ecosystem table active for `env`, each merged over the scopes beneath it."""
         return self.merged(self.scopes(env))
-
-    def ecosystems(self, env: str) -> list[Ecosystem]:
-        """One bound ecosystem per implementation, in registration order.
-
-        Every implementation is built, not only the ones the manifest still declares, because
-        an ecosystem is also what cleans up after a table that was deleted: a `package.json`
-        outliving its `[nodejs]` table would keep reinstalling packages nobody declares. A
-        table no implementation claims (`[python]`, which pixi compiles itself) is ignored. An
-        implementation whose tree is the workspace's rather than the environment's binds to the
-        whole manifest instead (`Ecosystem.shared`).
-
-        env: the environment whose merged tables the ecosystems bind to.
-        """
-        scoped = self.toolchains(env)
-        shared = self.merged(self.shared_scopes())
-        return [
-            implementation(
-                (shared if implementation.shared else scoped).get(
-                    implementation.toolchain, Toolchain()
-                ),
-                env=env,
-                project=self.manifest.workspace.name,
-                workspace=self.root,
-                out=self.out,
-                pixi=self.pixi,
-            )
-            for implementation in Ecosystem.implementations()
-        ]
-
-    def binary_dirs(self, env: str) -> list[Path]:
-        """Every directory the toolchains link executables into, for `env`'s activation."""
-        return [directory for eco in self.ecosystems(env) for directory in eco.binary_dirs()]
-
-    def generate(self, files: Writer, env: str) -> None:
-        """Write every file the toolchains install from, under the sync lock the caller holds."""
-        for ecosystem in self.ecosystems(env):
-            ecosystem.generate(files)
-
-    def install(self, env: str) -> None:
-        """Run each toolchain's installer inside the environment pixi has already provisioned."""
-        with self.pixi.activated(env):
-            for ecosystem in self.ecosystems(env):
-                ecosystem.sync()

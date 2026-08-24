@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -46,9 +47,11 @@ def rendering(fp: FakeProcess, destination: Path, *, tasks: bool = True) -> None
 def test_a_project_lands_under_its_templates_home_with_its_rows_read_back(
     workspace: Path, templates: None, fp: FakeProcess
 ) -> None:
-    """The first declared template is the default, and where it renders is its own to say. The
-    task rows it writes are read back for the caller to paste, since the root manifest is a
-    hand-curated file and half of that edit landing on its own is worse than none of it.
+    """The default template renders where it says and pastes nothing itself.
+
+    The first declared template is the default, and the task rows it writes are read back
+    for the caller to paste, since the root manifest is a hand-curated file and half of that
+    edit landing on its own is worse than none of it.
     """
     rendering(fp, workspace / _HOME / "scratch-probe")
     made = Board(workspace).scaffold().render("Scratch Probe")
@@ -126,8 +129,8 @@ def test_the_answers_come_from_the_name_the_workspace_and_the_caller(
     given: dict[str, str | dict[str, str]],
     landing: str,
     tasks: bool,
-    present: tuple[str, ...],
-    absent: tuple[str, ...],
+    present: Sequence[str],
+    absent: Sequence[str],
 ) -> None:
     rendering(fp, workspace / landing, tasks=tasks)
     made = Board(workspace).scaffold().render("Scratch Probe", **given)

@@ -6,6 +6,7 @@
 # call counter, none of it needing real hardware.
 
 import types
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,8 +15,6 @@ from mainboard.profile import Activity, TraceCollector
 from mainboard.profile.providers import nvidia_tracer as nv
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
-
     from mainboard.profile.protocols import RawActivity
     from mainboard.profile.providers.nvidia.protocols import CallbackData, Subscriber
 
@@ -155,7 +154,7 @@ def test_supported_drops_kinds_that_raise_not_implemented_and_caches_the_rest(
     supported = nv.NvtxTracer().supported()
     assert Activity.KERNEL in supported
     assert Activity.MEMORY not in supported  # GB10-style: MEMORY unavailable
-    assert nv._supported() is supported  # noqa: SLF001  reason=asserts the module-private cache since=2026-08-16
+    assert nv.NvtxTracer._supported() is supported  # noqa: SLF001  reason=asserts the module-private cache since=2026-08-16
 
 
 def test_collector_lifecycle_collects_routes_and_then_drops_its_records(
@@ -220,8 +219,10 @@ def test_a_generic_activity_resolves_its_name_after_the_callback_returns(
 def test_the_buffer_callbacks_offer_a_sized_buffer_and_tolerate_no_collector(
     fake_cupti: FakeCupti,
 ) -> None:
-    """CUPTI is handed a sized, empty buffer, and a buffer completed with nobody listening
-    is dropped rather than raising."""
+    """A buffer completed with nobody listening is dropped.
+
+    CUPTI is handed a sized, empty buffer, and the drop never raises.
+    """
     del fake_cupti
     size, count = nv._on_buffer_requested()  # noqa: SLF001  reason=unit-tests the CUPTI buffer-size callback since=2026-08-16
     assert size > 0 and count == 0

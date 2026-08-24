@@ -6,7 +6,7 @@ from mainboard import Machine
 from mainboard.probe import GPU, NvidiaGPU, Vendor
 from mainboard.probe.providers.nvidia import apis as nvidia_apis_module
 
-from ...conftest import (
+from ...support import (
     FakeNvidiaApis,
     FakeSensorlessDevice,
     InstallNvidiaStack,
@@ -59,8 +59,11 @@ def unimportable_bindings(install: InstallNvidiaStack, monkeypatch: pytest.Monke
 def test_a_visible_device_reports_the_same_identity_through_either_layer(
     has_cuda_core: bool, source: str, install_nvidia_stack: InstallNvidiaStack
 ) -> None:
-    """Identity, capability and capacity read the same whether the optional `cuda.core` layer
-    loaded or the provider fell back to `cuda.bindings` (runtime plus NVML) alone."""
+    """Both API stacks answer the same identity, capability and capacity.
+
+    Identity, capability and capacity read the same whether the optional `cuda.core` layer
+    loaded or the provider fell back to `cuda.bindings` (runtime plus NVML) alone.
+    """
     apis = install_nvidia_stack(has_cuda_core=has_cuda_core)
     assert apis.has_cuda_core is has_cuda_core
     assert NvidiaGPU.is_available() is True
@@ -92,8 +95,11 @@ def test_a_visible_device_reports_the_same_identity_through_either_layer(
 def test_a_coherent_grace_hopper_pool_flags_its_memory_as_unified(
     has_cuda_core: bool, install_nvidia_stack: InstallNvidiaStack
 ) -> None:
-    """A device reporting both pageable and concurrent-managed access sits on a coherent fabric
-    where host RAM is a peer NUMA node of HBM, and the flag flows through either memory tier."""
+    """Coherent-fabric devices carry the unified flag through every tier.
+
+    A device reporting both pageable and concurrent-managed access sits on a coherent fabric
+    where host RAM is a peer NUMA node of HBM, and the flag flows through either memory tier.
+    """
     install_nvidia_stack(has_cuda_core=has_cuda_core, coherent=True)
     gpu = NvidiaGPU(index=0)
     assert gpu.coherent is True
@@ -124,8 +130,11 @@ def test_a_binding_without_the_attribute_query_degrades_to_not_coherent(
 def test_the_memory_ladder_ends_at_the_cuda_runtime_reading(
     setup: Setup, install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Whichever tier refuses first, `cudaMemGetInfo` is the last resort and its free/total pair
-    becomes the reading, with the current device restored around the query."""
+    """`cudaMemGetInfo` is the memory reading of last resort.
+
+    Whichever tier refuses first, its free/total pair becomes the reading, with the current
+    device restored around the query.
+    """
     setup(install_nvidia_stack, monkeypatch)
     memory = NvidiaGPU(index=0).memory
     assert memory.source == "cuda-runtime"
@@ -139,8 +148,11 @@ def test_the_memory_ladder_ends_at_the_cuda_runtime_reading(
 def test_a_failing_runtime_memory_query_raises_rather_than_reporting_zero_capacity(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The last tier has nothing to fall back on, and a host with no current device to restore
-    still runs the query, so a failure surfaces instead of a zeroed reading."""
+    """The last tier surfaces its failure instead of zeroing the reading.
+
+    It has nothing to fall back on, and a host with no current device to restore still runs
+    the query.
+    """
     monkeypatch.setattr(nvidia_host.runtime, "cudaGetDevice", lambda: (99, 0))
     monkeypatch.setattr(nvidia_host.runtime, "cudaMemGetInfo", lambda: (99, 0, 0))
     monkeypatch.setattr(NvidiaGPU, "system_device", FakeSensorlessDevice())
@@ -210,8 +222,11 @@ def test_a_host_with_no_cuda_device_reports_nothing_instead_of_raising(
 def test_a_base_install_without_the_cuda_extra_degrades_at_the_import_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The real `NvidiaApis` constructor runs here and fails to import `cuda.bindings.runtime`,
-    so the whole fan-out through `GPU.all` and `Machine` has to survive the missing extra."""
+    """A machine without the CUDA extra still probes clean.
+
+    The real `NvidiaApis` constructor runs here and fails to import `cuda.bindings.runtime`,
+    so the whole fan-out through `GPU.all` and `Machine` has to survive the missing extra.
+    """
 
     def absent(name: str) -> NoReturn:
         raise ModuleNotFoundError(f"No module named {name!r}")

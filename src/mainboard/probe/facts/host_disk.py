@@ -1,10 +1,8 @@
-from patos import FrozenModel
-
 from . import drive_info as drive_info_mod
 from .drive_info import DriveInfo
 
 
-class HostDisk(FrozenModel):
+class HostDisk:
     """All physical drives detected on the host.
 
     cards: one DriveInfo per physical block device, each carrying its mounted

@@ -23,8 +23,11 @@ _IDENTITIES = [
 def test_an_apple_engine_names_itself_from_the_soc_and_reports_unified_memory(
     engine: type[Unit], kind: UnitKind, backend: str, suffix: str
 ) -> None:
-    """Both engines share the one memory pool the CPU sees, so capacity is host RAM and the
-    reading carries the unified flag rather than a device-local capacity."""
+    """Apple engines report the unified pool, not a device capacity.
+
+    Both share the one memory pool the CPU sees, so capacity is host RAM and the reading
+    carries the unified flag.
+    """
     assert engine.is_available() is True
     (unit,) = engine.all()
     assert unit.vendor is Vendor.APPLE

@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import tomlkit
 import tomlkit.items
 
@@ -33,7 +35,7 @@ class ManifestText:
             return declared
         return tomlkit.dumps({name: declared}).partition("=")[2].strip()
 
-    def declares(self, path: tuple[str, ...], name: str) -> bool:
+    def declares(self, path: Sequence[str], name: str) -> bool:
         """Whether the table at `path` exists and carries `name`."""
         table = self.document
         for key in path:
@@ -50,13 +52,13 @@ class ManifestText:
         was, instead of an empty `[rust.deps]` heading declaring nothing.
         """
         del self.table(path)[name]
-        at = path
-        while at and not self.table(at):
-            parent = self.document if len(at) == 1 else self.table(at[:-1])
-            del parent[at[-1]]
-            at = at[:-1]
+        emptied = path
+        while emptied and not self.table(emptied):
+            parent = self.document if len(emptied) == 1 else self.table(emptied[:-1])
+            del parent[emptied[-1]]
+            emptied = emptied[:-1]
 
-    def put(self, path: tuple[str, ...], name: str, spec: str) -> None:
+    def put(self, path: tuple[str, ...], name: str, *, spec: str) -> None:
         """Declare `name` as `spec` in the table at `path`, creating the table when absent.
 
         Replacing an existing entry leaves its own alignment and any trailing comment alone,
@@ -69,7 +71,7 @@ class ManifestText:
             table[name] = spec
             return
         key = tomlkit.key(name)
-        key.sep = " " * max(_column(table) - len(name) - _ASSIGN, 1) + "= "
+        key.sep = " " * max(ManifestText._column(table) - len(name) - _ASSIGN, 1) + "= "
         # tomlkit files the whitespace and comments that follow a table inside that table's own
         # body, so appending outright would put the new requirement below the comment that
         # introduces the next table. Lifting that trailing trivia off, appending, and laying it
@@ -104,15 +106,15 @@ class ManifestText:
         """The whole manifest as it should now be written."""
         return tomlkit.dumps(self.document)
 
+    @staticmethod
+    def _column(table: tomlkit.items.Table) -> int:
+        """The column this table starts its values in, so a new entry lines up with the rest.
 
-def _column(table: tomlkit.items.Table) -> int:
-    """The column this table starts its values in, so a new entry lines up with the rest.
-
-    tomlkit keeps a key's padding in the key text and its `= ` in the separator, so where a
-    value begins is the two measured together, and a table with nothing in it yet begins
-    nowhere and gets the single space every ordinary entry would have carried.
-    """
-    return max(
-        (len(str(key)) + len(key.sep) for key, _ in table.value.body if key is not None),
-        default=0,
-    )
+        tomlkit keeps a key's padding in the key text and its `= ` in the separator, so where a
+        value begins is the two measured together, and a table with nothing in it yet begins
+        nowhere and gets the single space every ordinary entry would have carried.
+        """
+        return max(
+            (len(str(key)) + len(key.sep) for key, _ in table.value.body if key is not None),
+            default=0,
+        )

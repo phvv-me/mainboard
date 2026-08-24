@@ -25,7 +25,7 @@ _CONNECT_ATTEMPTS = 4
 _CONNECT_BACKOFF = 2.0
 
 
-def activation(root: str, env: str = "default") -> str:
+def activation(root: str, *, env: str = "default") -> str:
     """The activation script a provisioned workspace under `root` carries for `env`.
 
     root: the workspace root on the machine the command runs on.
@@ -113,7 +113,7 @@ def activation_stage(plan: ExecutionPlan, root: str, *, optional: bool = False) 
     """
     prefix = plan.prefix(root)
     default = plan.env == "default"
-    scripts = [activation(root, plan.env)]
+    scripts = [activation(root, env=plan.env)]
     if default:
         scripts.append(f"{root}/.chefe/activate.sh")
     branches = [(f"[ -f {shlex.quote(path)} ]", f"source {shlex.quote(path)}") for path in scripts]

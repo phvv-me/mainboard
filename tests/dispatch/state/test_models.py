@@ -28,7 +28,6 @@ def test_the_state_package_reexports_the_value_objects_a_reconcile_builds() -> N
         "Cache",
         "RunRecord",
         "History",
-        "HistoryEvent",
         "MonitorReport",
         "ReconcileRow",
         "connect",

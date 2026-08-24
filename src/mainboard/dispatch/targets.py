@@ -24,7 +24,7 @@ _ROOT_FINDER = (
 # run in a login shell so the HPC scheduler is on PATH. A per-user engine is looked for in its
 # install directory as well as on PATH, since a non-interactive login shell often never reads
 # the `.bashrc` line its installer appended.
-CAPABILITIES = "\n".join(
+_CAPABILITIES = "\n".join(
     (
         f"root=$({_ROOT_FINDER})",
         "if command -v sbatch >/dev/null 2>&1; then kind=slurm;"
@@ -117,10 +117,10 @@ def find_root(remote: Machine) -> str:
 def probe_capabilities(remote: Machine, alias: str) -> Facts:
     """Probe `alias` over ssh without syncing or installing, as `Facts`.
 
-    Runs the stock-tool `CAPABILITIES` script in a login shell and parses its `key=value`
+    Runs the stock-tool `_CAPABILITIES` script in a login shell and parses its `key=value`
     lines, so it needs nothing on the host, available before a single byte is shipped.
     """
-    raw = remote["bash"][["-lc", CAPABILITIES]]()
+    raw = remote["bash"][["-lc", _CAPABILITIES]]()
     fields = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
     name, _, vram = fields["gpu"].partition(",")
     sysmem_kb = fields["mem"]

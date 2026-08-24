@@ -1,4 +1,5 @@
 import os
+from collections.abc import Callable, Iterator
 from threading import Event, Thread
 from time import sleep
 from types import TracebackType
@@ -19,10 +20,9 @@ from mainboard.manifest import Manifest
 from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold
 
-from .dispatch.backends.conftest import BareBackend
+from .dispatch.backends.support import BareBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 _GOLD = "gold"
@@ -45,6 +45,9 @@ class FakeConnection:
         """reply: what running the staged line answers with."""
         self.reply = reply
 
+    def __call__(self) -> str:
+        return self.reply
+
     def __enter__(self) -> FakeConnection:
         return self
 
@@ -58,9 +61,6 @@ class FakeConnection:
 
     def __getitem__(self, name: str) -> FakeConnection:
         return self
-
-    def __call__(self) -> str:
-        return self.reply
 
 
 class FakeProvisioner:
@@ -172,10 +172,10 @@ def test_one_shared_subsystem_is_built_once_however_many_threads_ask_at_once(
     """
     building = Event()
 
-    def slow() -> object:
+    def slow() -> str:
         building.set()
         sleep(0.05)
-        return object()
+        return "built"
 
     thread = Thread(target=lambda: board.once("thing", slow))
     thread.start()

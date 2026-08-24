@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -28,7 +30,7 @@ def test_an_experiment_declares_nothing_by_default_and_its_setup_does_nothing(
     lanes=st.lists(WORDS, unique=True, min_size=1, max_size=2),
 )
 def test_a_trial_identity_is_stable_for_one_config_and_distinct_per_model_and_lane(
-    *, models: list[str], lanes: list[str]
+    *, models: Sequence[str], lanes: list[str]
 ) -> None:
     instance = Minimal()
 

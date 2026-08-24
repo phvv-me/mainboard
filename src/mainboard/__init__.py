@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from .experiments.fleet import Fleet
     from .experiments.study import Study as ExperimentStudy
     from .manifest import Manifest, load
-    from .monitor import Monitor
     from .probe.gating import gpu_busy, wait_for_idle
     from .probe.machine import Machine
     from .probe.snapshot import HostFacts
@@ -49,7 +48,6 @@ _HOMES: dict[str, tuple[str, str]] = {
     "Manifest": (".manifest", "Manifest"),
     "Meter": (".profile.meter", "Meter"),
     "MissionError": (".core", "MissionError"),
-    "Monitor": (".monitor", "Monitor"),
     "Needs": (".experiments.data", "Needs"),
     "Profile": (".profile.result", "Profile"),
     "ProfileStudy": (".profile.study", "Study"),
@@ -87,7 +85,6 @@ __all__ = [
     "ExperimentStudy",
     "Manifest",
     "load",
-    "Monitor",
     "gpu_busy",
     "wait_for_idle",
     "Machine",

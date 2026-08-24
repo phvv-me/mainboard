@@ -9,7 +9,7 @@ from mainboard.dispatch import Handle, HostUnreachable
 from mainboard.dispatch.state import Failed, Finished, MonitorReport, RunRecord
 from mainboard.monitor import Monitor
 
-from .conftest import Recorder, published, spec
+from .support import Recorder, published, spec
 
 if TYPE_CHECKING:
     from mainboard.batch import BatchSpec
@@ -22,7 +22,7 @@ def dispatching(board: Board, monkeypatch: pytest.MonkeyPatch, *handles: str) ->
     asked: list[str] = []
     queue = list(handles)
 
-    def submit(self: Board, command: str, **options: object) -> SimpleNamespace:
+    def submit(self: Board, command: str, **options: str | int | float | bool) -> SimpleNamespace:
         asked.append(command)
         return SimpleNamespace(
             handle=Handle(id=queue.pop(0), host=self.host, root="/repo", kind="ssh")
@@ -35,7 +35,7 @@ def dispatching(board: Board, monkeypatch: pytest.MonkeyPatch, *handles: str) ->
 def refusing(monkeypatch: pytest.MonkeyPatch, refusal: BaseException) -> None:
     """Answer every submit with `refusal`, the way a target that will not take a job does."""
 
-    def submit(self: Board, command: str, **options: object) -> SimpleNamespace:
+    def submit(self: Board, command: str, **options: str | int | float | bool) -> SimpleNamespace:
         raise refusal
 
     monkeypatch.setattr(Board, "submit", submit)
@@ -317,7 +317,9 @@ def test_a_settled_run_that_was_seen_running_teaches_the_next_estimate_what_setu
 def test_a_run_no_pass_ever_caught_running_is_published_but_never_fitted(
     lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A setup time inferred from a job already over would teach every estimate a wait that
+    """A run never caught running teaches the estimator nothing.
+
+    A setup time inferred from a job already over would teach every estimate a wait that
     never happened, so the receipt says what was seen and the ledger stays empty.
     """
     batch = batched(lab, bus, spec(_TWO[0]))

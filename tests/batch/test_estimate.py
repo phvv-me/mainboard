@@ -8,7 +8,7 @@ from mainboard.dispatch import HostSetup
 from mainboard.manifest import HostProfile
 from mainboard.probe import HostFacts
 
-from .conftest import declaring, spec
+from .support import declaring, spec
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 _OFFER = Offer(provider="vast", gpu="RTX 4090", rate_usd_hr=0.36, granularity_s=1)
 
 
-def priced(board: Board, ledger: Ledger, **job: object) -> JobEstimate:
+def priced(board: Board, ledger: Ledger, **job: str | int) -> JobEstimate:
     """One job's row, against a catalog holding the single declared offer."""
     estimator = Estimator(board, catalog=Catalog((_OFFER,)), ledger=ledger)
     declared = spec({"target": "gold", "command": "true", **job}).jobs[0]

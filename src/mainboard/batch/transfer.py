@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING
 import pathspec
 from patos import FrozenModel
 
-from ..dispatch.sync import ALWAYS_EXCLUDE, GitignoreFilter
+from ..dispatch import sync
+from ..dispatch.sync import GitignoreFilter
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -30,12 +31,6 @@ _CHUNK = 1 << 20
 # eight cores: 1.57x at two threads, 2.35x at four, 2.76x at eight, 2.66x at sixteen. Eight is
 # where the curve turns, and past it the extra threads only take work away from each other.
 _STREAMS = 8
-
-
-def _anywhere(pattern: str) -> str:
-    """`pattern` as rsync reads it: anchored only when it was written with a leading slash."""
-    unanchored = "/" in pattern.rstrip("/") and not pattern.startswith("/")
-    return f"**/{pattern}" if unanchored else pattern
 
 
 class TransferSet(FrozenModel):
@@ -78,84 +73,13 @@ class Transfer:
         """
         self.board = board
         self.level = level
-        self.root = board.root
         self.ignore = GitignoreFilter(board.root)
         self.nested: dict[Path, pathspec.GitIgnoreSpec] = {}
 
-    def set_for(self, job: BatchJob) -> TransferSet:
-        """What `job` ships to its target, measured now.
-
-        A job on this machine ships nothing, since the workspace is already here. Everything
-        else is the mirror's delta plus the job's own named data, measured compressed because
-        that is how it crosses the wire.
-        """
-        if self.board.on(job.target).local:
-            return TransferSet(job=job.name, target=job.target)
-        since = self.watermark(job.target)
-        scope = self.board.on(job.target).plan().profile.sync
-        denied = self.denylist(scope.exclude)
-        changed = [path for path in self.walk(scope.include, denied) if self.newer(path, since)]
-        named = list(self.walk(job.data, denied))
-        files = list(dict.fromkeys([*changed, *named]))
-        raw, wire = self.measure(files)
-        return TransferSet(
-            job=job.name,
-            target=job.target,
-            paths=(*scope.include, *job.data),
-            files=len(files),
-            raw_bytes=raw,
-            wire_bytes=wire,
-            since=since,
-        )
-
-    def measure(self, files: Sequence[Path]) -> tuple[int, int]:
-        """The raw and compressed size of `files`, over a small pool of parallel zstd streams.
-
-        zstd releases the interpreter lock while it compresses, so this is one of the few places
-        in this package where threads buy real time on the plain build rather than only on the
-        free-threaded one: 2.76x at eight threads over 600 MB of this workspace's own files,
-        against 1.57x at two and 2.66x at sixteen.
-
-        Each shard is its own stream, which is also the shape the mirror sends, since rsync
-        compresses what it ships rather than handing the whole set to one long-lived context.
-        """
-        shards = [shard for index in range(_STREAMS) if (shard := files[index::_STREAMS])]
-        if not shards:
-            return 0, 0
-        with ThreadPoolExecutor(max_workers=len(shards)) as pool:
-            measured = list(pool.map(self.compressed, shards))
-        return sum(raw for raw, _ in measured), sum(wire for _, wire in measured)
-
-    def compressed(self, files: Sequence[Path]) -> tuple[int, int]:
-        """The raw and compressed size of `files` read through one zstd stream."""
-        compressor = zstd.ZstdCompressor(level=self.level)
-        raw = wire = 0
-        for path in files:
-            with path.open("rb") as opened:
-                while chunk := opened.read(_CHUNK):
-                    raw += len(chunk)
-                    wire += len(compressor.compress(chunk))
-        return raw, wire + len(compressor.flush())
-
-    def newer(self, path: Path, since: str) -> bool:
-        """Whether `path` changed after the `since` watermark, true when there is no watermark."""
-        return not since or path.stat().st_mtime > datetime.fromisoformat(since).timestamp()
-
-    def walk(self, paths: Sequence[str], denied: pathspec.GitIgnoreSpec) -> Iterator[Path]:
-        """Every mirrorable file under each of `paths`, in a stable order.
-
-        A declared path that does not exist here is skipped the way the mirror skips it, since a
-        stale include line is a warning at dispatch rather than a refusal.
-
-        paths: the declared roots, each a file or a directory under the workspace.
-        denied: the profile's own exclude patterns and the mirror's permanent denylist.
-        """
-        for declared in paths:
-            start = self.root / declared
-            if start.is_file():
-                yield start
-            elif start.is_dir():
-                yield from self.descend(start, denied)
+    @property
+    def root(self) -> Path:
+        """The workspace root, the board's own."""
+        return self.board.root
 
     @staticmethod
     def denylist(excluded: Sequence[str]) -> pathspec.GitIgnoreSpec:
@@ -168,9 +92,20 @@ class Transfer:
 
         excluded: the host profile's declared exclude patterns.
         """
-        patterns = [_anywhere(pattern) for pattern in (*ALWAYS_EXCLUDE, *excluded)]
+        patterns = [Transfer._anywhere(pattern) for pattern in (*sync.ALWAYS_EXCLUDE, *excluded)]
         # pyrefly: ignore  reason=pathspec from_lines stub over-narrows to AnyStr since=2026-08-16
         return pathspec.GitIgnoreSpec.from_lines(patterns)
+
+    def compressed(self, files: Sequence[Path]) -> tuple[int, int]:
+        """The raw and compressed size of `files` read through one zstd stream."""
+        compressor = zstd.ZstdCompressor(level=self.level)
+        raw = wire = 0
+        for path in files:
+            with path.open("rb") as opened:
+                while chunk := opened.read(_CHUNK):
+                    raw += len(chunk)
+                    wire += len(compressor.compress(chunk))
+        return raw, wire + len(compressor.flush())
 
     def descend(self, directory: Path, denied: pathspec.GitIgnoreSpec) -> Iterator[Path]:
         """Every mirrorable file under `directory`, an excluded subtree never entered at all.
@@ -209,6 +144,28 @@ class Transfer:
             if parent != Path()
         )
 
+    def measure(self, files: Sequence[Path]) -> tuple[int, int]:
+        """The raw and compressed size of `files`, over a small pool of parallel zstd streams.
+
+        zstd releases the interpreter lock while it compresses, so this is one of the few places
+        in this package where threads buy real time on the plain build rather than only on the
+        free-threaded one: 2.76x at eight threads over 600 MB of this workspace's own files,
+        against 1.57x at two and 2.66x at sixteen.
+
+        Each shard is its own stream, which is also the shape the mirror sends, since rsync
+        compresses what it ships rather than handing the whole set to one long-lived context.
+        """
+        shards = [shard for index in range(_STREAMS) if (shard := files[index::_STREAMS])]
+        if not shards:
+            return 0, 0
+        with ThreadPoolExecutor(max_workers=len(shards)) as pool:
+            measured = list(pool.map(self.compressed, shards))
+        return sum(raw for raw, _ in measured), sum(wire for _, wire in measured)
+
+    def newer(self, path: Path, since: str) -> bool:
+        """Whether `path` changed after the `since` watermark, true when there is no watermark."""
+        return not since or path.stat().st_mtime > datetime.fromisoformat(since).timestamp()
+
     def pruned(self, parent: Path, *, relative: Path, folder: bool) -> bool:
         """Whether `parent`'s own `.gitignore` prunes `relative`, false when it declares none.
 
@@ -241,6 +198,54 @@ class Transfer:
             # pyrefly: ignore  reason=pathspec from_lines stub over-narrows to AnyStr since=2026-08-16
             self.nested[directory] = pathspec.GitIgnoreSpec.from_lines(lines)
         return self.nested[directory]
+
+    def set_for(self, job: BatchJob) -> TransferSet:
+        """What `job` ships to its target, measured now.
+
+        A job on this machine ships nothing, since the workspace is already here. Everything
+        else is the mirror's delta plus the job's own named data, measured compressed because
+        that is how it crosses the wire.
+        """
+        if self.board.on(job.target).local:
+            return TransferSet(job=job.name, target=job.target)
+        since = self.watermark(job.target)
+        scope = self.board.on(job.target).plan().profile.sync
+        denied = self.denylist(scope.exclude)
+        changed = [path for path in self.walk(scope.include, denied) if self.newer(path, since)]
+        named = list(self.walk(job.data, denied))
+        files = list(dict.fromkeys([*changed, *named]))
+        raw, wire = self.measure(files)
+        return TransferSet(
+            job=job.name,
+            target=job.target,
+            paths=(*scope.include, *job.data),
+            files=len(files),
+            raw_bytes=raw,
+            wire_bytes=wire,
+            since=since,
+        )
+
+    def walk(self, paths: Sequence[str], denied: pathspec.GitIgnoreSpec) -> Iterator[Path]:
+        """Every mirrorable file under each of `paths`, in a stable order.
+
+        A declared path that does not exist here is skipped the way the mirror skips it, since a
+        stale include line is a warning at dispatch rather than a refusal.
+
+        paths: the declared roots, each a file or a directory under the workspace.
+        denied: the profile's own exclude patterns and the mirror's permanent denylist.
+        """
+        for declared in paths:
+            start = self.root / declared
+            if start.is_file():
+                yield start
+            elif start.is_dir():
+                yield from self.descend(start, denied)
+
+    @staticmethod
+    def _anywhere(pattern: str) -> str:
+        """`pattern` as rsync reads it: anchored only when it was written with a leading slash."""
+        unanchored = "/" in pattern.rstrip("/") and not pattern.startswith("/")
+        return f"**/{pattern}" if unanchored else pattern
 
     def watermark(self, alias: str) -> str:
         """When `alias` last had the workspace mirrored onto it, empty when nothing recorded one.

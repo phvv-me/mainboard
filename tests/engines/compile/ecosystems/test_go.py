@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import pytest
@@ -11,7 +12,7 @@ if TYPE_CHECKING:
 
     from mainboard.engines.compile.backend import Pixi
 
-    from ..conftest import Bind
+    from ..support import Bind
 
 _TOOL = "example.com/tool"
 
@@ -54,10 +55,13 @@ def test_a_version_range_is_refused_where_it_is_declared() -> None:
 
 
 def test_sync_installs_every_declared_module_and_unlinks_what_was_dropped(
-    bind: Bind, pixi: Pixi, fp: FakeProcess, tool_paths: dict[str, str]
+    bind: Bind, pixi: Pixi, fp: FakeProcess, tool_paths: Mapping[str, str]
 ) -> None:
-    """`GOBIN` is one directory inside the generated tree that this workspace owns outright,
-    so an executable the table stopped declaring is pruned rather than left to shadow."""
+    """Sync installs what the table declares and prunes what it dropped.
+
+    `GOBIN` is one directory inside the generated tree that this workspace owns outright,
+    so an executable the table stopped declaring is pruned rather than left to shadow.
+    """
     go = bind(Go, {"deps": {_TOOL: "v1.4.0"}})
     go.gobin.mkdir(parents=True)
     go.gobin.joinpath("tool").write_text("")

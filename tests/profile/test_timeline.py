@@ -1,9 +1,11 @@
+from collections.abc import Sequence
+
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from mainboard.profile import DeviceTimeline, KernelTrace, MemcpyTrace
 
-from .conftest import render
+from .support import render
 
 _WINDOWS = st.lists(
     st.tuples(st.integers(min_value=0, max_value=5_000), st.integers(min_value=0, max_value=900)),
@@ -11,7 +13,7 @@ _WINDOWS = st.lists(
 )
 
 
-def _timeline(windows: list[tuple[int, int]], *, min_gap_ns: int = 100) -> DeviceTimeline:
+def _timeline(windows: Sequence[tuple[int, int]], *, min_gap_ns: int = 100) -> DeviceTimeline:
     """Build a timeline from (start, duration) pairs, half of them read as copies."""
     kernels = [
         KernelTrace(name=f"k{i}", start_ns=start, end_ns=start + duration)

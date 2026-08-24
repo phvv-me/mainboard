@@ -1,5 +1,6 @@
 import io
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import Request
@@ -10,8 +11,6 @@ from mainboard import MissionError
 from mainboard.deps import Index
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from pytest_subprocess import FakeProcess
 
     from mainboard.manifest.schema.spec import Json

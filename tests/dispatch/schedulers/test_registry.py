@@ -1,6 +1,7 @@
 import pytest
 
-from mainboard.dispatch.schedulers import SCHEDULERS, Local, Pbs, Pueue, Scheduler, Slurm, pick
+from mainboard.dispatch.schedulers import Local, Pbs, Pueue, Scheduler, Slurm, pick
+from mainboard.dispatch.schedulers.registry import SCHEDULERS
 from mainboard.manifest import HostProfile
 
 

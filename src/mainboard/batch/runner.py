@@ -68,23 +68,35 @@ class Batch:
         """
         self.board = board
         self.spec = spec
-        self.id = spec.batch_id
-        self.dir = directory(board, self.id)
+        self.dir = directory(board, spec.batch_id)
         self.bus = bus or Receipts(self.dir / "events.ndjson")
 
-    def prepare(self) -> list[TransferSet]:
-        """Measure what each job must still put on its target, and publish each measurement.
+    @property
+    def id(self) -> str:
+        """The batch identity, its spec's own."""
+        return self.spec.batch_id
 
-        The analysis a dispatch is worth doing before: a job whose data never reached its host
-        is a job that fails after the queue wait rather than before it, and a mirror that has
-        drifted is minutes of transfer nobody planned for.
-        """
-        self.open()
-        transfer = Transfer(self.board)
-        measured = [transfer.set_for(job) for job in self.spec.jobs]
-        for prepared in measured:
-            publish(self.bus, self.id, Topic.PREPARED, job=prepared.job, data=payload(prepared))
-        return measured
+    def dispatch(self, job: BatchJob) -> Dispatched:
+        """Send one job to its target, recording either its handle or the refusal."""
+        bound = self.board.on(job.target)
+        try:
+            run = bound.submit(job.command, name=self.labelling(job.name), **job.submission())
+        except _REFUSALS as refusal:
+            return self.refused(job, refusal)
+        kind = run.handle.kind
+        publish(
+            self.bus,
+            self.id,
+            Topic.SUBMITTED,
+            job=job.name,
+            data={
+                "handle": run.handle.id,
+                "target": job.target,
+                "kind": kind,
+                "command": job.command,
+            },
+        )
+        return Dispatched(job=job.name, target=job.target, handle=run.handle.id, kind=kind)
 
     def estimate(self) -> BatchEstimate:
         """Price every job from what this workspace already recorded. Nothing runs.
@@ -107,52 +119,17 @@ class Batch:
             publish(self.bus, self.id, Topic.ESTIMATED, job=row.job, data=payload(row))
         return table
 
-    def run(self) -> list[Dispatched]:
-        """Dispatch every job to its own target and publish what each dispatch came to.
-
-        One target refusing is that job's row and the next job still goes, since a batch spread
-        over a fleet routinely meets one machine that is asleep, out of quota, or not declared,
-        and the other four jobs are still worth running.
-        """
-        self.open()
-        return [self.dispatch(job) for job in self.spec.jobs]
-
-    def dispatch(self, job: BatchJob) -> Dispatched:
-        """Send one job to its target, recording either its handle or the refusal."""
-        bound = self.board.on(job.target)
-        try:
-            run = bound.submit(job.command, name=self.labelling(job.name), **job.submission())
-        except _REFUSALS as refusal:
-            refused = Dispatched(job=job.name, target=job.target, reason=str(refusal))
-            publish(
-                self.bus,
-                self.id,
-                Topic.REFUSED,
-                job=job.name,
-                data={"target": job.target, "reason": refused.reason},
-            )
-            return refused
-        kind = run.handle.kind
-        publish(
-            self.bus,
-            self.id,
-            Topic.SUBMITTED,
-            job=job.name,
-            data={
-                "handle": run.handle.id,
-                "target": job.target,
-                "kind": kind,
-                "command": job.command,
-            },
-        )
-        return Dispatched(job=job.name, target=job.target, handle=run.handle.id, kind=kind)
-
     def labelling(self, job: str) -> str:
         """The dispatch label one job of this batch carries, its key in the run registry.
 
-        job: the job's name inside the batch.
+        The job rides in the label because the label is the only thing that reaches the machine
+        running the job, and what that machine publishes about itself has to say which job it
+        is. Dispatch keeps a label as free text and never parses it, so this method and
+        `labelled_batch` are the only two places the `batch:` shape is spelled out.
+
+        job: the job's name inside the batch, empty for the batch as a whole.
         """
-        return batch_label(self.id, job)
+        return f"{_LABEL}{self.id}/{job}" if job else f"{_LABEL}{self.id}"
 
     def open(self) -> None:
         """Announce the batch once, whichever verb touches its receipts first."""
@@ -169,19 +146,41 @@ class Batch:
             },
         )
 
+    def prepare(self) -> list[TransferSet]:
+        """Measure what each job must still put on its target, and publish each measurement.
 
-def batch_label(batch_id: str, job: str = "") -> str:
-    """The dispatch label one of a batch's jobs carries, its key in the run registry.
+        The analysis a dispatch is worth doing before: a job whose data never reached its host
+        is a job that fails after the queue wait rather than before it, and a mirror that has
+        drifted is minutes of transfer nobody planned for.
+        """
+        self.open()
+        transfer = Transfer(self.board)
+        measured = [transfer.set_for(job) for job in self.spec.jobs]
+        for prepared in measured:
+            publish(self.bus, self.id, Topic.PREPARED, job=prepared.job, data=payload(prepared))
+        return measured
 
-    The job rides in the label because the label is the only thing that reaches the machine
-    running the job, and what that machine publishes about itself has to say which job it is.
-    Dispatch keeps a label as free text and never parses it, so this function and
-    `labelled_batch` are the only two places the `batch:` shape is spelled out.
+    def refused(self, job: BatchJob, refusal: Exception) -> Dispatched:
+        """Record one target's refusal as the receipt the batch keeps in place of a handle."""
+        told = Dispatched(job=job.name, target=job.target, reason=str(refusal))
+        publish(
+            self.bus,
+            self.id,
+            Topic.REFUSED,
+            job=job.name,
+            data={"target": job.target, "reason": told.reason},
+        )
+        return told
 
-    batch_id: the batch owning the job.
-    job: the job's name inside the batch, omitted for the batch as a whole.
-    """
-    return f"{_LABEL}{batch_id}/{job}" if job else f"{_LABEL}{batch_id}"
+    def run(self) -> list[Dispatched]:
+        """Dispatch every job to its own target and publish what each dispatch came to.
+
+        One target refusing is that job's row and the next job still goes, since a batch spread
+        over a fleet routinely meets one machine that is asleep, out of quota, or not declared,
+        and the other four jobs are still worth running.
+        """
+        self.open()
+        return [self.dispatch(job) for job in self.spec.jobs]
 
 
 def labelled_batch(label: str) -> str:

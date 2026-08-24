@@ -7,7 +7,7 @@ from mainboard.dispatch import Handle, Verdict
 from mainboard.experiments import Progress, StudyLedger
 from mainboard.experiments.identity import study_label
 
-from .conftest import FakeBoard, make_run
+from .support import FakeBoard, make_run
 
 if TYPE_CHECKING:
     from mainboard.experiments import Study

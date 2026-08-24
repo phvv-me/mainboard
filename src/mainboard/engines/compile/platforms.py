@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Self
 
 from patos import FrozenModel
@@ -91,7 +92,7 @@ class PlatformMatrix(FrozenModel):
 
     @staticmethod
     def spread(
-        system: dict[str, str], suffix: str, platforms: list[str]
+        system: dict[str, str], suffix: str, platforms: Sequence[str]
     ) -> dict[str, PlatformVariant]:
         """One `[system]` table over `platforms`, each entry keeping only the floors it can meet.
 

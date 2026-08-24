@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -9,7 +10,7 @@ from mainboard.cli import build, main
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from .conftest import Relayed
+    from .support import Relayed
 
 _FIELD_VALUE_HEADER = "field\tvalue"
 _MIYABI_G = "miyabi-g"
@@ -119,8 +120,11 @@ def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translat
     argv: list[str],
     expected: Relayed,
 ) -> None:
-    """The CLI is a dispatch table, so which method a verb reaches and what it turned its flags
-    into is the whole of what belongs to it. Everything past that seam is tested where it lives.
+    """A verb owns only its dispatch and its flag translation.
+
+    The CLI is a dispatch table, so which method a verb reaches and what it turned its flags
+    into is the whole of what belongs to it. Everything past that seam is tested where it
+    lives.
     """
     with pytest.raises(SystemExit, match="0"):
         build(depot)(argv)
@@ -130,11 +134,12 @@ def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translat
 @pytest.mark.parametrize("flag", ["--version", "--help", "-h"], ids=["--version", "--help", "-h"])
 def test_the_passthrough_verbs_hand_the_clis_own_flags_to_the_command_after_the_delimiter(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     flag: str,
 ) -> None:
-    """`--version` and `--help` after `--` belong to the wrapped program, not to this CLI, which
-    is why the two passthrough verbs give the version flag up entirely.
+    """The passthrough verbs give the version flag up entirely.
+
+    `--version` and `--help` after `--` belong to the wrapped program, not to this CLI.
     """
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["run", "--", "python", flag])
@@ -164,7 +169,7 @@ def test_a_passthrough_verb_still_documents_itself_before_the_delimiter(
 )
 def test_submit_prints_the_bare_handle_unless_a_record_was_asked_for(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     capsys: pytest.CaptureFixture[str],
     flags: list[str],
     expected: str,
@@ -238,7 +243,7 @@ def test_the_mode_flags_refuse_each_other_before_anything_is_probed(
 
 def test_the_compute_verb_prices_and_credits_the_provider_rows(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit, match="0"):
@@ -266,13 +271,16 @@ def test_the_compute_verb_prices_and_credits_the_provider_rows(
 )
 def test_the_monitor_verb_prints_what_moved_or_the_whole_report(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     capsys: pytest.CaptureFixture[str],
     flags: list[str],
-    fragments: tuple[str, ...],
+    fragments: Sequence[str],
 ) -> None:
-    """A cron reads the full report and branches on it, a person at a terminal wants the jobs
-    that actually settled, so the compact modes carry the document and the table carries rows.
+    """Each monitor mode serves its own reader.
+
+    A cron reads the full report and branches on it, a person at a terminal wants the jobs
+    that actually settled, so the compact modes carry the document and the table carries
+    rows.
     """
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["monitor", *flags])
@@ -282,7 +290,7 @@ def test_the_monitor_verb_prints_what_moved_or_the_whole_report(
 
 def test_the_monitor_verb_carries_the_counts_and_the_changed_flag_in_json(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit, match="0"):
@@ -308,8 +316,9 @@ def test_the_monitor_verb_sweeps_an_untouched_cache_without_changes(
     flags: list[str],
     expected: dict[str, int | list[str]] | None,
 ) -> None:
-    """The change table names its columns even when nothing moved, so a reader sees a heading
-    rather than nothing at all.
+    """An empty change table still names its columns.
+
+    A reader sees a heading rather than nothing at all.
     """
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["monitor", *flags])
@@ -326,7 +335,7 @@ def test_the_monitor_verb_sweeps_an_untouched_cache_without_changes(
 )
 def test_the_monitor_verb_watches_in_the_foreground_until_it_is_stopped(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     interrupted: bool,

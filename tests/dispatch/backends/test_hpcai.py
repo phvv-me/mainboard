@@ -8,7 +8,7 @@ from mainboard.dispatch.backends import Capability, Delivery, HpcAiBackend, LogS
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import HostProfile
 
-from .conftest import FakeTransport, Reply, hpc_ai_backend, plan, refused
+from .support import FakeTransport, Reply, hpc_ai_backend, plan, refused
 
 # The API root every refusal a test queues is attributed to.
 _API = "https://www.hpc-ai.com/api/instance/stop"
@@ -205,9 +205,12 @@ def test_state_maps_every_camel_case_runtime_status_onto_one_of_our_verdicts() -
 
 
 def test_catalog_flattens_the_console_feed_to_one_row_per_type_per_region() -> None:
-    """The launch-form feed is the only place HPC-AI publishes a price, a GPU name or a stock
-    count, so the rows carry exactly what a `[hosts.<name>.vars]` table needs, in-stock first and
-    cheapest first, and a type quoting no hourly rate reads as unpriced rather than crashing."""
+    """The catalog rows carry exactly what a hosts table needs.
+
+    The launch-form feed is the only place HPC-AI publishes a price, a GPU name or a stock
+    count, so the rows land in-stock first and cheapest first, and a type quoting no hourly
+    rate reads as unpriced rather than crashing.
+    """
     backend = authed_backend(
         {
             "instanceInfos": [
@@ -300,8 +303,11 @@ def test_cancel_ends_the_billing_whatever_the_stop_before_it_answered(
 def test_standing_reads_the_balance_under_the_console_key_and_names_it_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`balance` is the pot left once vouchers and monthly credits have been spent first, and no
-    rate rides along since the provider quotes no price without an instance type in hand."""
+    """Standing reads the balance under the console's own key.
+
+    `balance` is the pot left once vouchers and monthly credits have been spent first, and no
+    rate rides along since the provider quotes no price without an instance type in hand.
+    """
     backend = authed_backend({"balance": 100, "availableVoucherAmount": 5})
     standing = backend.standing()
     assert (standing.keyed, standing.credit_usd, standing.usd_hr) == (True, 100.0, None)

@@ -36,7 +36,7 @@ from .manifest.loading import load
 from .monitor import Monitor
 from .probe.snapshot import HostFacts
 from .scaffold import Scaffold
-from .tracking import Sampler, batched, credential, host_env, mirrored, sampling_line, streamed
+from .tracking import Sampler, credential, host_env, is_batched, mirrored, sampling_line, streamed
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -213,27 +213,6 @@ class Board:
         self.shared: dict[str, object] = {}
         self.guard = RLock()
 
-    def once[Built](self, key: str, build: Callable[[], Built]) -> Built:
-        """The one `key` this workspace shares, built on first ask and never a second time.
-
-        Under a lock, because the first ask routinely comes from a worker thread. A doctor
-        report asks four questions at once and a survey probes a whole fleet in a pool, so two
-        threads reaching an unbuilt subsystem together would each build one, and a second
-        dispatch cache is a second SQLite connection owned by whichever thread happened to win.
-        The lock is reentrant since one build reads another, a resolver needing the manifest.
-        A build that raises is not remembered, so a manifest that will not parse is re-read and
-        re-refused rather than answered from a half-filled cache. Emptying a slot is how a
-        caller that swaps one shared value (a test rewriting the manifest) makes the values
-        derived from it be built again.
-
-        key: what is being shared.
-        build: makes it, called once at most.
-        """
-        with self.guard:
-            built = self.shared.get(key) or build()
-            self.shared[key] = built
-            return cast("Built", built)
-
     @property
     def dispatcher(self) -> Dispatcher:
         """The dispatch core, rooted at this workspace and shared across every host pivot.
@@ -259,6 +238,32 @@ class Board:
         """The plan resolver over this workspace's manifest."""
         return self.once("resolver", lambda: Resolver(self.manifest))
 
+    def announce(self, label: str, run: Run, *, command: str, host: str) -> None:
+        """Open this run's own receipts stream, so a dispatch outside a batch is tracked too.
+
+        A batch publishes its own submissions and is skipped here, so no line is written twice.
+
+        label: the run's dispatch label, which says both where it belongs and who publishes it.
+        run: the dispatched run, for the handle its stream is keyed on.
+        command: what the job runs, recorded as this run's config.
+        host: the target it was dispatched to.
+        """
+        if is_batched(label) or not self.manifest.tracking.on:
+            return
+        stream, job = streamed(label, handle=run.handle.id)
+        publish(
+            self.receipts(stream),
+            stream,
+            Topic.SUBMITTED,
+            job=job,
+            data={
+                "handle": run.handle.id,
+                "target": host,
+                "kind": run.handle.kind,
+                "command": command,
+            },
+        )
+
     def batch(self, spec: BatchSpec) -> Batch:
         """The declared batch over this workspace, ready to prepare, price and dispatch.
 
@@ -269,55 +274,6 @@ class Board:
         """
         return Batch(self, spec, bus=self.receipts(spec.batch_id))
 
-    def receipts(self, stream: str) -> Bus:
-        """Where one stream's events go: this workspace's own file, plus whatever it declared.
-
-        The composition root for tracking, here rather than inside any one flow, so a batch, a
-        plain submit and a study all mirror the same way and none of them has to know that a
-        reporting service exists. A workspace whose `[tracking]` table says `off` gets the file
-        alone and every caller is unchanged.
-
-        stream: the receipts stream, a batch id, a study id, or one run's own name.
-        """
-        under = directory(self, stream)
-        return mirrored(
-            Receipts(under / "events.ndjson"),
-            self.manifest.tracking,
-            stream=stream,
-            directory=under,
-            workspace=self.manifest.workspace.name,
-        )
-
-    def samples(
-        self,
-        stream: str,
-        *,
-        job: str,
-        interval: float = 0.0,
-        seconds: float = 0.0,
-        parent: int = 0,
-    ) -> Sampler:
-        """This machine read into `stream`'s receipts for as long as the block runs.
-
-        The in-process half of the live lane, for code that wants its own machine on the same
-        run its receipts are on. A dispatched job gets the same thing without asking, since its
-        script starts this through the CLI.
-
-        stream: the receipts stream the samples belong to.
-        job: the job inside that stream these readings describe.
-        interval: seconds between readings, the manifest's own when 0.
-        seconds: a hard stop, 0 to sample until the caller stops it.
-        parent: a process to end with, 0 for none.
-        """
-        return Sampler(
-            self.receipts(stream),
-            stream=stream,
-            job=job,
-            interval=interval or self.manifest.tracking.interval,
-            seconds=seconds,
-            parent=parent,
-        )
-
     def compute(self) -> Survey:
         """The survey of every compute path this workspace can reach, this machine included.
 
@@ -325,6 +281,16 @@ class Board:
         bound to a host hands back the same whole-workspace survey an unbound one does.
         """
         return Survey(self)
+
+    def containerizer(
+        self, plan: ExecutionPlan, root: str
+    ) -> Callable[[list[str]], list[str]] | None:
+        """The container argv builder for `plan`, None when the plan is bare."""
+        if not plan.containerized or plan.container is None:
+            return None
+        runtime = resolve(plan.container.runtime)()
+        container = plan.container
+        return lambda argv: runtime.command(container, prefix_bind=plan.prefix(root), argv=argv)
 
     def deps(self) -> Dependencies:
         """The manifest's declared requirements, editable and re-solvable from here.
@@ -337,20 +303,6 @@ class Board:
     def doctor(self) -> Doctor:
         """One verdict over this workspace, composed from the probes each subsystem owns."""
         return Doctor(self)
-
-    def scaffold(self) -> Scaffold:
-        """The project generator, rendering the workspace's own templates through copier."""
-        return Scaffold(self)
-
-    def containerizer(
-        self, plan: ExecutionPlan, root: str
-    ) -> Callable[[list[str]], list[str]] | None:
-        """The container argv builder for `plan`, None when the plan is bare."""
-        if not plan.containerized or plan.container is None:
-            return None
-        runtime = resolve(plan.container.runtime)()
-        container = plan.container
-        return lambda argv: runtime.command(container, prefix_bind=plan.prefix(root), argv=argv)
 
     def facts(self) -> HostFacts:
         """The host's probed hardware facts as the versioned wire snapshot.
@@ -369,63 +321,6 @@ class Board:
     def fleet(self) -> Fleet:
         """The many-jobs surface for simultaneous studies over this board."""
         return Fleet(self)
-
-    def line(self, command: str, *, env: str = "", container: str = "") -> str:
-        """The staged shell line this board's host would run `command` through.
-
-        The one place the staging is assembled, cd, PATH, modules, then the environment or the
-        container, so a caller that wants the command's output rather than its exit code runs
-        the very line `run` runs instead of restaging it a second way.
-
-        command: the shell command, or a declared task name and its arguments.
-        env: an environment name overriding the profile's choice.
-        container: a container override, `none` forcing bare.
-        """
-        plan = self.plan(env=env, container=container)
-        root = str(self.root) if self.local else self.remote_root()
-        return wrap(
-            plan,
-            root,
-            command=task_line(self.manifest, command, env=plan.env),
-            containerize=self.containerizer(plan, root),
-        )
-
-    def job(self, handle: str | int, *, host: str = "") -> Run:
-        """The dispatched run `handle`, rebuilt from the dispatch cache as whichever kind it is.
-
-        A fresh process addresses an already-running job the same way the process that
-        submitted it did, without reassembling a `Handle` from the run registry and the host
-        profile by hand. The kind the cache recorded decides which world it comes back from, a
-        scheduler job bound to its host's workspace or a provider run bound to its backend, so a
-        rental outlives the process that started it exactly as a queued job does.
-
-        handle: the scheduler handle or provider run id the job was dispatched under.
-        host: the alias to disambiguate a handle recorded on several hosts.
-        """
-        record = self.dispatcher.cache.run(str(handle), host or None)
-        destination = route(record.kind)
-        if destination != "ssh-family":
-            return ProviderJob(
-                destination(),
-                Handle(
-                    id=record.handle,
-                    host=record.target,
-                    root="",
-                    kind=record.kind,
-                    fetch_path=record.fetch_path,
-                ),
-            )
-        bound = self.on(record.target)
-        return Job(
-            bound,
-            Handle(
-                id=record.handle,
-                host=record.target,
-                root=bound.remote_root(),
-                kind=record.kind,
-                fetch_path=record.fetch_path,
-            ),
-        )
 
     def install(
         self,
@@ -479,51 +374,6 @@ class Board:
             installer="in-place",
             tool=version(self.project.name),
         )
-
-    def monitor(self) -> Monitor:
-        """The durable sweep over every job this workspace's dispatch cache still owes an outcome.
-
-        Host-independent, since one pass covers every target at once; a board bound to a host
-        hands back the same whole-workspace sweep an unbound one does.
-        """
-        return Monitor(self)
-
-    def watch(self, batch_id: str) -> Watch:
-        """The live view over an already-dispatched batch, found by id alone.
-
-        No spec, since everything a live view needs is durable: the batch's receipts name its
-        handles and the dispatch cache says what became of them. A process that dispatched
-        nothing can therefore take over watching a batch another one started.
-
-        batch_id: the batch to watch.
-        """
-        return Watch(self, batch_id, bus=self.receipts(batch_id))
-
-    def on(self, host: str) -> Board:
-        """This workspace bound to `host`, sharing the loaded manifest and caches.
-
-        host: a declared host alias, or any ssh-config alias for defaults.
-        """
-        bound = Board.__new__(Board)
-        bound.project = self.project
-        bound.root = self.root
-        bound.host = host
-        bound.shared = self.shared
-        bound.guard = self.guard
-        return bound
-
-    def plan(self, *, env: str = "", container: str = "") -> ExecutionPlan:
-        """The resolved execution plan for this board's host."""
-        return self.resolver.plan(self.host, env=env, container=container)
-
-    def remote_root(self) -> str:
-        """The declared workspace root on the bound host, refusing when absent."""
-        root = self.plan().profile.root
-        if not root:
-            raise MissionError(
-                f"host {self.host!r} declares no root; set [hosts.{self.host}] root"
-            )
-        return root
 
     def interact(
         self,
@@ -587,6 +437,137 @@ class Board:
         # string for the remote login shell to parse.
         replace("ssh", ["ssh", "-t", self.host, f"bash -lc {shlex.quote(staged)}"])
 
+    def job(self, handle: str | int, *, host: str = "") -> Run:
+        """The dispatched run `handle`, rebuilt from the dispatch cache as whichever kind it is.
+
+        A fresh process addresses an already-running job the same way the process that
+        submitted it did, without reassembling a `Handle` from the run registry and the host
+        profile by hand. The kind the cache recorded decides which world it comes back from, a
+        scheduler job bound to its host's workspace or a provider run bound to its backend, so a
+        rental outlives the process that started it exactly as a queued job does.
+
+        handle: the scheduler handle or provider run id the job was dispatched under.
+        host: the alias to disambiguate a handle recorded on several hosts.
+        """
+        record = self.dispatcher.cache.run(str(handle), host or None)
+        destination = route(record.kind)
+        if destination != "ssh-family":
+            return ProviderJob(
+                destination(),
+                Handle(
+                    id=record.handle,
+                    host=record.target,
+                    root="",
+                    kind=record.kind,
+                    fetch_path=record.fetch_path,
+                ),
+            )
+        bound = self.on(record.target)
+        return Job(
+            bound,
+            Handle(
+                id=record.handle,
+                host=record.target,
+                root=bound.remote_root(),
+                kind=record.kind,
+                fetch_path=record.fetch_path,
+            ),
+        )
+
+    def line(self, command: str, *, env: str = "", container: str = "") -> str:
+        """The staged shell line this board's host would run `command` through.
+
+        The one place the staging is assembled, cd, PATH, modules, then the environment or the
+        container, so a caller that wants the command's output rather than its exit code runs
+        the very line `run` runs instead of restaging it a second way.
+
+        command: the shell command, or a declared task name and its arguments.
+        env: an environment name overriding the profile's choice.
+        container: a container override, `none` forcing bare.
+        """
+        plan = self.plan(env=env, container=container)
+        root = str(self.root) if self.local else self.remote_root()
+        return wrap(
+            plan,
+            root,
+            command=task_line(self.manifest, command, env=plan.env),
+            containerize=self.containerizer(plan, root),
+        )
+
+    def monitor(self) -> Monitor:
+        """The durable sweep over every job this workspace's dispatch cache still owes an outcome.
+
+        Host-independent, since one pass covers every target at once; a board bound to a host
+        hands back the same whole-workspace sweep an unbound one does.
+        """
+        return Monitor(self)
+
+    def on(self, host: str) -> Board:
+        """This workspace bound to `host`, sharing the loaded manifest and caches.
+
+        host: a declared host alias, or any ssh-config alias for defaults.
+        """
+        bound = Board.__new__(Board)
+        bound.project = self.project
+        bound.root = self.root
+        bound.host = host
+        bound.shared = self.shared
+        bound.guard = self.guard
+        return bound
+
+    def once[Built](self, key: str, build: Callable[[], Built]) -> Built:
+        """The one `key` this workspace shares, built on first ask and never a second time.
+
+        Under a lock, because the first ask routinely comes from a worker thread. A doctor
+        report asks four questions at once and a survey probes a whole fleet in a pool, so two
+        threads reaching an unbuilt subsystem together would each build one, and a second
+        dispatch cache is a second SQLite connection owned by whichever thread happened to win.
+        The lock is reentrant since one build reads another, a resolver needing the manifest.
+        A build that raises is not remembered, so a manifest that will not parse is re-read and
+        re-refused rather than answered from a half-filled cache. Emptying a slot is how a
+        caller that swaps one shared value (a test rewriting the manifest) makes the values
+        derived from it be built again.
+
+        key: what is being shared.
+        build: makes it, called once at most.
+        """
+        with self.guard:
+            built = self.shared.get(key) or build()
+            self.shared[key] = built
+            return cast("Built", built)
+
+    def plan(self, *, env: str = "", container: str = "") -> ExecutionPlan:
+        """The resolved execution plan for this board's host."""
+        return self.resolver.plan(self.host, env=env, container=container)
+
+    def receipts(self, stream: str) -> Bus:
+        """Where one stream's events go: this workspace's own file, plus whatever it declared.
+
+        The composition root for tracking, here rather than inside any one flow, so a batch, a
+        plain submit and a study all mirror the same way and none of them has to know that a
+        reporting service exists. A workspace whose `[tracking]` table says `off` gets the file
+        alone and every caller is unchanged.
+
+        stream: the receipts stream, a batch id, a study id, or one run's own name.
+        """
+        under = directory(self, stream)
+        return mirrored(
+            Receipts(under / "events.ndjson"),
+            self.manifest.tracking,
+            stream=stream,
+            directory=under,
+            workspace=self.manifest.workspace.name,
+        )
+
+    def remote_root(self) -> str:
+        """The declared workspace root on the bound host, refusing when absent."""
+        root = self.plan().profile.root
+        if not root:
+            raise MissionError(
+                f"host {self.host!r} declares no root; set [hosts.{self.host}] root"
+            )
+        return root
+
     def run(self, command: str, *, env: str = "", container: str = "") -> int:
         """Run `command` through the host's activated plan, returning its exit code.
 
@@ -605,6 +586,66 @@ class Board:
             return _streamed(localhost["bash"]["-lc", line])
         with connection(self.host) as remote:
             return _streamed(remote["bash"]["-lc", line])
+
+    def samples(
+        self,
+        stream: str,
+        *,
+        job: str,
+        interval: float = 0.0,
+        seconds: float = 0.0,
+        parent: int = 0,
+    ) -> Sampler:
+        """This machine read into `stream`'s receipts for as long as the block runs.
+
+        The in-process half of the live lane, for code that wants its own machine on the same
+        run its receipts are on. A dispatched job gets the same thing without asking, since its
+        script starts this through the CLI.
+
+        stream: the receipts stream the samples belong to.
+        job: the job inside that stream these readings describe.
+        interval: seconds between readings, the manifest's own when 0.
+        seconds: a hard stop, 0 to sample until the caller stops it.
+        parent: a process to end with, 0 for none.
+        """
+        return Sampler(
+            self.receipts(stream),
+            stream=stream,
+            job=job,
+            interval=interval or self.manifest.tracking.interval,
+            seconds=seconds,
+            parent=parent,
+        )
+
+    def sampling(self, tracked: tuple[str, str], *, root: str, resources: Resources) -> str:
+        """The line this job's script runs so it samples itself, empty when nothing samples it.
+
+        Staging the credential is part of building the line rather than a step beside it,
+        because the two are the same decision: a host is asked to ship its own series, so it is
+        given the one variable that lets it, and a host that is asked for nothing is told
+        nothing. A machine with no credential here still samples, into a queued offline run.
+
+        tracked: the stream and job the samples belong to.
+        root: the workspace root on the host.
+        resources: the resolved request, whose walltime bounds the sampler the way it bounds
+            the job.
+        """
+        declared = self.manifest.tracking
+        if not declared.on or declared.interval <= 0:
+            return ""
+        self.stage(root)
+        stream, job = tracked
+        return sampling_line(
+            root=root,
+            stream=stream,
+            job=job,
+            interval=declared.interval,
+            seconds=walltime_seconds(resources.walltime) if resources.walltime else 0.0,
+        )
+
+    def scaffold(self) -> Scaffold:
+        """The project generator, rendering the workspace's own templates through copier."""
+        return Scaffold(self)
 
     def shell(
         self, env: str = "", *, replace: Callable[[str, list[str]], NoReturn] = os.execv
@@ -638,6 +679,29 @@ class Board:
             raise MissionError(missing(plan, plan.prefix(str(self.root))))
         binary = str(pixi.command.executable)
         replace(binary, [binary, "shell", *pixi.scope(), "--frozen", "-e", plan.env])
+
+    def stage(self, root: str) -> None:
+        """Put the one credential this host's jobs need where the job script will read it.
+
+        A dispatched job ships its own live series, which needs the key on the machine running
+        the job rather than on the one that dispatched it. Exactly one variable is written, into
+        its own file with no group or world permission, so the host gets what the lane needs and
+        nothing else this workspace holds. It is passed over stdin rather than as an argument,
+        so it never appears in a process listing, and it is never logged. A machine holding no
+        credential stages nothing, and its jobs queue offline for a later `wandb sync`.
+
+        root: the workspace root on the host.
+        """
+        variable = credential(self.manifest.tracking)
+        Credentials().load()
+        secret = os.environ.get(variable, "") if variable else ""
+        if not secret or self.local:
+            return
+        path = host_env(root)
+        written = f"umask 077; mkdir -p {shlex.quote(str(PurePosixPath(path).parent))}; "
+        written += f"cat > {shlex.quote(path)}"
+        with connection(self.host) as remote:
+            (remote["bash"]["-c", written] << f"{variable}={shlex.quote(secret)}\n")()
 
     def submit(
         self,
@@ -690,8 +754,12 @@ class Board:
             nodes=nodes,
             account=plan.profile.account,
         )
-        label = name or minted(plan.host, command)
-        tracked = streamed(label, "")
+        # A run that arrived without a name is minted one, content-addressed over the target,
+        # the command and this instant, so its receipts stream has a durable key and
+        # `mainboard jobs` reads better for it too.
+        fingerprint = run_id({"host": plan.host, "command": command, "at": time.time()})
+        label = name or f"{plan.host}-{fingerprint[:8]}"
+        tracked = streamed(label, handle="")
         destination = route(plan.profile.kind)
         if destination != "ssh-family":
             backend = destination()
@@ -724,93 +792,16 @@ class Board:
         self.announce(label, run, command=command, host=plan.host)
         return run
 
-    def announce(self, label: str, run: Run, *, command: str, host: str) -> None:
-        """Open this run's own receipts stream, so a dispatch outside a batch is tracked too.
+    def watch(self, batch_id: str) -> Watch:
+        """The live view over an already-dispatched batch, found by id alone.
 
-        A batch publishes its own submissions and is skipped here, so no line is written twice.
+        No spec, since everything a live view needs is durable: the batch's receipts name its
+        handles and the dispatch cache says what became of them. A process that dispatched
+        nothing can therefore take over watching a batch another one started.
 
-        label: the run's dispatch label, which says both where it belongs and who publishes it.
-        run: the dispatched run, for the handle its stream is keyed on.
-        command: what the job runs, recorded as this run's config.
-        host: the target it was dispatched to.
+        batch_id: the batch to watch.
         """
-        if batched(label) or not self.manifest.tracking.on:
-            return
-        stream, job = streamed(label, run.handle.id)
-        publish(
-            self.receipts(stream),
-            stream,
-            Topic.SUBMITTED,
-            job=job,
-            data={
-                "handle": run.handle.id,
-                "target": host,
-                "kind": run.handle.kind,
-                "command": command,
-            },
-        )
-
-    def sampling(self, tracked: tuple[str, str], *, root: str, resources: Resources) -> str:
-        """The line this job's script runs so it samples itself, empty when nothing samples it.
-
-        Staging the credential is part of building the line rather than a step beside it,
-        because the two are the same decision: a host is asked to ship its own series, so it is
-        given the one variable that lets it, and a host that is asked for nothing is told
-        nothing. A machine with no credential here still samples, into a queued offline run.
-
-        tracked: the stream and job the samples belong to.
-        root: the workspace root on the host.
-        resources: the resolved request, whose walltime bounds the sampler the way it bounds
-            the job.
-        """
-        declared = self.manifest.tracking
-        if not declared.on or declared.interval <= 0:
-            return ""
-        self.stage(root)
-        stream, job = tracked
-        return sampling_line(
-            root=root,
-            stream=stream,
-            job=job,
-            interval=declared.interval,
-            seconds=walltime_seconds(resources.walltime) if resources.walltime else 0.0,
-        )
-
-    def stage(self, root: str) -> None:
-        """Put the one credential this host's jobs need where the job script will read it.
-
-        A dispatched job ships its own live series, which needs the key on the machine running
-        the job rather than on the one that dispatched it. Exactly one variable is written, into
-        its own file with no group or world permission, so the host gets what the lane needs and
-        nothing else this workspace holds. It is passed over stdin rather than as an argument,
-        so it never appears in a process listing, and it is never logged. A machine holding no
-        credential stages nothing, and its jobs queue offline for a later `wandb sync`.
-
-        root: the workspace root on the host.
-        """
-        variable = credential(self.manifest.tracking)
-        Credentials().load()
-        secret = os.environ.get(variable, "") if variable else ""
-        if not secret or self.local:
-            return
-        path = host_env(root)
-        written = f"umask 077; mkdir -p {shlex.quote(str(PurePosixPath(path).parent))}; "
-        written += f"cat > {shlex.quote(path)}"
-        with connection(self.host) as remote:
-            (remote["bash"]["-c", written] << f"{variable}={shlex.quote(secret)}\n")()
-
-
-def minted(host: str, command: str) -> str:
-    """A name for a run that arrived without one, so its receipts stream has a durable key.
-
-    Content-addressed over the target, the command and this instant, which makes it unique
-    without a counter and reproducible from what is recorded. It lands in the run registry's own
-    name field, so `mainboard jobs` reads better for it too.
-
-    host: the target the run was dispatched to.
-    command: what the run runs.
-    """
-    return f"{host}-{run_id({'host': host, 'command': command, 'at': time.time()})[:8]}"
+        return Watch(self, batch_id, bus=self.receipts(batch_id))
 
 
 def _streamed(command: BaseCommand) -> int:

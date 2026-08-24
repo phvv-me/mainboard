@@ -13,10 +13,9 @@ from .facts import (
     Scratch,
 )
 from .host import Host
-from .machine import Machine
 from .providers.apple import AppleGPU, AppleNPU
 from .providers.nvidia import ComputeCapability, NvidiaGPU
-from .snapshot import CgroupCap, GpuFact, HostFacts, ScratchInfo
+from .snapshot import GpuFact, HostFacts
 from .units import CPU, GPU, NPU, Unit
 
 __all__ = [
@@ -25,7 +24,6 @@ __all__ = [
     "NPU",
     "AppleGPU",
     "AppleNPU",
-    "CgroupCap",
     "CgroupMemory",
     "Compiler",
     "CompilerKind",
@@ -40,14 +38,13 @@ __all__ = [
     "Host",
     "HostDisk",
     "HostFacts",
-    "Machine",
     "Memory",
     "NvidiaGPU",
     "PartitionInfo",
     "Scheduler",
     "Scratch",
-    "ScratchInfo",
     "Unit",
     "UnitKind",
     "Vendor",
+    "NvidiaGPU",
 ]

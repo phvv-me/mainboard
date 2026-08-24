@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -115,7 +116,7 @@ def test_the_ledger_appends_every_observation_and_narrows_by_provider_and_gpu(
     ],
 )
 def test_a_setup_fit_needs_three_measured_setups_and_brackets_them(
-    tmp_path: Path, setups: tuple[float, ...], samples: int | None
+    tmp_path: Path, setups: Sequence[float], samples: int | None
 ) -> None:
     ledger = Ledger(tmp_path)
     for setup in setups:
@@ -193,8 +194,11 @@ def test_a_catalog_round_trips_through_ndjson_and_reads_an_absent_file_as_no_off
 
 
 def test_an_imported_row_and_a_probed_one_land_under_the_single_name_a_query_asks_for() -> None:
-    """gpuhunt spells Vast `vastai` while the live probe and the host kind spell it `vast`, and
-    a catalog query narrows by exactly one name, so both feeds are reconciled at this seam."""
+    """Both provider spellings land under the one name a query asks for.
+
+    gpuhunt spells Vast `vastai` while the live probe and the host kind spell it `vast`, and
+    a catalog query narrows by exactly one name, so both feeds are reconciled at this seam.
+    """
     imported = from_gpuhunt(
         [
             SimpleNamespace(

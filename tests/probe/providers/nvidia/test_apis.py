@@ -4,7 +4,7 @@ import pytest
 
 from mainboard.probe.providers.nvidia import apis as nvidia_apis_module
 
-from ...conftest import FakeError, FakeNvidiaApis, FakeNvml, FakeRuntime, FakeSystem
+from ...support import FakeError, FakeNvidiaApis, FakeNvml, FakeRuntime, FakeSystem
 
 # What a faked `import_module` hands back, one stand-in per layer the real stack imports.
 type Loaded = FakeRuntime | FakeNvml | FakeSystem | ModuleType
@@ -21,9 +21,12 @@ type Loaded = FakeRuntime | FakeNvml | FakeSystem | ModuleType
 def test_the_stack_binds_whichever_nvml_and_optional_layer_the_host_offers(
     nvml_name: str, has_cuda_core: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`cuda.bindings` is required and either NVML spelling satisfies it, while `cuda.core` is
-    optional and its compiled extensions can fail to load behind another library's `libstdc++`,
-    so an `ImportError` there leaves the stack usable with the optional layer switched off."""
+    """The optional `cuda.core` layer may fail without taking the stack down.
+
+    `cuda.bindings` is required and either NVML spelling satisfies it, while `cuda.core` is
+    optional and its compiled extensions can fail to load behind another library's
+    `libstdc++`, so an `ImportError` there leaves the stack usable with the layer off.
+    """
     stack = FakeNvidiaApis()
     core = ModuleType("cuda.core")
     core.Device = stack.cuda_device_type
@@ -48,8 +51,10 @@ def test_the_stack_binds_whichever_nvml_and_optional_layer_the_host_offers(
 
 
 def test_the_stack_is_imported_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Loading NVML is expensive and every GPU instance reads the same handles, so the accessor
-    caches one stack rather than re-importing per device."""
+    """The accessor caches one stack for every device.
+
+    Loading NVML is expensive and every GPU instance reads the same handles.
+    """
     built: list[int] = []
 
     class Marker:
@@ -65,8 +70,11 @@ def test_the_stack_is_imported_once_per_process(monkeypatch: pytest.MonkeyPatch)
 def test_a_binding_that_names_no_error_types_suppresses_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The suppression set is collected from whatever the binding actually exposes, so a stripped
-    NVML module yields an empty tuple instead of an `AttributeError` while it is built."""
+    """The suppression set is read off what the binding actually exposes.
+
+    A stripped NVML module yields an empty tuple instead of an `AttributeError` while it is
+    built.
+    """
     stack = FakeNvidiaApis()
 
     def loader(name: str) -> Loaded:

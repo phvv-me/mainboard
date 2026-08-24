@@ -73,8 +73,11 @@ def as_host(monkeypatch: pytest.MonkeyPatch, system: str, sysctl: str, cpuinfo: 
 def test_the_cpu_name_comes_from_the_first_identity_source_that_answers(
     system: str, sysctl: str, cpuinfo: str, expected: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """macOS names the SoC through `sysctl`, Linux prefers the cpuinfo model-name line and then
-    the MIDR core mix, and a host that offers neither falls back to `platform.processor`."""
+    """Each platform names its CPU through its own best source.
+
+    macOS names the SoC through `sysctl`, Linux prefers the cpuinfo model-name line and then
+    the MIDR core mix, and a host that offers neither falls back to `platform.processor`.
+    """
     monkeypatch.setattr(host_mod.platform, "processor", lambda: "fallback-cpu")
     assert as_host(monkeypatch, system, sysctl, cpuinfo).cpu == expected
 
@@ -93,8 +96,11 @@ def test_the_cpu_name_comes_from_the_first_identity_source_that_answers(
 def test_the_arm_core_mix_names_known_parts_and_counts_the_repeats(
     cpuinfo: str, expected: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ARM ships no model-name line, so the core mix is read from the MIDR implementer and part
-    IDs, repeats collapse behind a count, and an ID the table does not know is named as raw."""
+    """The ARM core mix is read from MIDR IDs.
+
+    ARM ships no model-name line, so the core mix is read from the MIDR implementer and part
+    IDs, repeats collapse behind a count, and an ID the table does not know is named as raw.
+    """
     assert as_host(monkeypatch, "Linux", "", cpuinfo).arm_cpu_name == expected
 
 
@@ -114,8 +120,11 @@ def test_the_arm_core_mix_names_known_parts_and_counts_the_repeats(
 def test_the_cpu_vendor_is_read_from_whichever_identity_record_the_os_keeps(
     system: str, cpuinfo: str, expected: Vendor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """x86 records a `vendor_id` and ARM a MIDR implementer code, macOS needs neither, and an
-    implementer outside the table is Unknown rather than a guess."""
+    """The CPU vendor comes from the field each architecture actually writes.
+
+    x86 records a `vendor_id` and ARM a MIDR implementer code, macOS needs neither, and an
+    implementer outside the table is Unknown rather than a guess.
+    """
     assert as_host(monkeypatch, system, "", f"processor\t: 0\n{cpuinfo}").cpu_vendor is expected
 
 
@@ -123,8 +132,11 @@ def test_the_cpu_vendor_is_read_from_whichever_identity_record_the_os_keeps(
 def test_core_counts_and_frequency_read_psutil_and_tolerate_a_missing_reading(
     reports_frequency: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Core counts always answer, but a container or a foreign platform has no frequency to
-    report, and that reads as `None` rather than taking the whole host probe down."""
+    """A missing frequency never takes the host probe down.
+
+    Core counts always answer, but a container or a foreign platform has no frequency to
+    report, and that reads as `None` rather than taking the whole host probe down.
+    """
 
     def unsupported() -> NoReturn:
         raise NotImplementedError
@@ -159,8 +171,11 @@ def test_cpuinfo_text_reads_proc_and_degrades_to_empty_when_it_is_absent(
 def test_the_host_hands_each_subsystem_to_the_model_that_probes_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The host is a facade over the fact models, so memory, disks, the cgroup ceiling and the
-    scratch tier are each that model's own probe rather than a second implementation here."""
+    """The host delegates every fact to the model that owns it.
+
+    Memory, disks, the cgroup ceiling and the scratch tier are each that model's own probe
+    rather than a second implementation here.
+    """
     cgroup = CgroupMemory(limit_bytes=5 * _GIB, capped=True)
     scratch = Scratch(free_bytes=_GIB, source="LOCALDIR")
     monkeypatch.setattr(CgroupMemory, "probe", classmethod(lambda cls: cgroup))

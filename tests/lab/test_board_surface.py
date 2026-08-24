@@ -83,8 +83,11 @@ def test_measure_forwards_every_config_field_and_the_lane_only_to_a_function_dec
 
 
 def test_decorated_experiments_register_under_kebab_names() -> None:
-    """A function's snake_case would leak into the registry key, where every other
-    implementation is kebab, so the generated class declares the name itself."""
+    """The generated class declares its own registry name.
+
+    A function's snake_case would leak into the registry key, where every other
+    implementation is kebab.
+    """
 
     @experiment()
     def multi_word_probe(run: Run) -> dict[str, float]:

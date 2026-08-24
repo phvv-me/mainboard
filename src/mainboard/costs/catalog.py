@@ -34,12 +34,16 @@ class Offer(FrozenModel):
     def billing(self) -> BillingModel:
         """This offer's billing mechanics as the cost model's input."""
         return BillingModel(
-            provider=self.provider,
-            gpu=self.gpu,
-            rate_usd_hr=self.rate_usd_hr,
-            granularity_s=self.granularity_s,
-            minimum_s=self.minimum_s,
-            fees_usd=self.fees_usd,
+            **self.model_dump(
+                include={
+                    "provider",
+                    "gpu",
+                    "rate_usd_hr",
+                    "granularity_s",
+                    "minimum_s",
+                    "fees_usd",
+                }
+            ),
         )
 
 

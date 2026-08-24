@@ -1,16 +1,18 @@
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import pytest
 
 from mainboard.engines.compile.ecosystems import Rust
-from mainboard.manifest.schema.spec import Json, Spec
+from mainboard.manifest import Spec
+from mainboard.manifest.schema.spec import Json
 
 if TYPE_CHECKING:
     from pytest_subprocess import FakeProcess
 
     from mainboard.engines.compile.backend import Pixi
 
-    from ..conftest import Bind
+    from ..support import Bind
 
 _REGISTRY = "(registry+https://example.com)"
 
@@ -62,7 +64,7 @@ def test_only_a_readable_constraint_can_report_an_installed_crate_as_drifted(
     constraint: str, installed: str, *, satisfied: bool
 ) -> None:
     """Trusting cargo's own record beats reinstalling on every single sync."""
-    assert Rust.satisfied(constraint, installed) is satisfied
+    assert Rust.satisfied(constraint, installed=installed) is satisfied
 
 
 @pytest.mark.parametrize(
@@ -87,10 +89,13 @@ def test_what_cargo_recorded_under_the_prefix_is_read_back_by_name_and_version(
 
 
 def test_sync_installs_a_missing_crate_against_the_environment_prefix(
-    bind: Bind, pixi: Pixi, fp: FakeProcess, tool_paths: dict[str, str]
+    bind: Bind, pixi: Pixi, fp: FakeProcess, tool_paths: Mapping[str, str]
 ) -> None:
-    """Crates share the environment's own `bin/`, so activation exports them with everything
-    else and no extra directory of this toolchain's own ever reaches PATH."""
+    """Crates land in the environment's own `bin/`.
+
+    Activation exports them with everything else and no extra directory of this toolchain's
+    own ever reaches PATH.
+    """
     rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
     fp.register([fp.any()], stdout="installed\n")
 

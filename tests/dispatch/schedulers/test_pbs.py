@@ -7,7 +7,6 @@ from mainboard.dispatch.schedulers import Pbs, build_qsub_flags
 from mainboard.dispatch.schedulers.pbs import (
     JobInfo,
     PbsState,
-    _extract_job_id,
     bare,
     parse_job_state,
     parse_qstat_full,
@@ -16,7 +15,7 @@ from mainboard.dispatch.schedulers.pbs import (
 from mainboard.dispatch.vocabulary import Resources
 
 from ...strategies import WORDS
-from ..conftest import machine_with
+from ..support import machine_with
 
 
 @pytest.mark.parametrize(
@@ -137,7 +136,7 @@ def test_submitting_returns_the_job_id_qsub_printed_or_refuses_with_its_output(
     )
     assert submitted == handle
     assert remote.calls[-1] == ["bash", "-lc", "qsub -q short-g job.sh"]
-    assert _extract_job_id("no leading digits here") == "no leading digits here"
+    assert Pbs._extract_job_id("no leading digits here") == "no leading digits here"
 
 
 def test_a_handle_resolves_live_then_from_history_then_from_its_exit_artifact() -> None:

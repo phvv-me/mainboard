@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated
 
 import pytest
@@ -10,8 +11,6 @@ from mainboard.lab.domains import space_of
 from ..strategies import WORDS
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from mainboard.lab.domains import Domain
 
 # Exactly the scalar kinds a declared config field may hold, no NaN because a domain marker is

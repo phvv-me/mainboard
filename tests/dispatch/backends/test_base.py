@@ -35,7 +35,7 @@ from mainboard.dispatch.backends.vast import api_key as vast_key
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import HostProfile
 
-from .conftest import BareBackend, FakeTransport, hpc_ai_backend, vast_backend
+from .support import BareBackend, FakeTransport, hpc_ai_backend, vast_backend
 
 # Money as a provider really quotes it, from a free rental up to a balance nobody has.
 _MONEY = st.floats(min_value=0.0, max_value=1e5, allow_nan=False, allow_infinity=False)
@@ -263,8 +263,11 @@ def test_the_audited_url_open_is_what_every_rest_backend_takes_by_default(
 @example(figure=99.99680725539)
 @example(figure=0.285925925926)
 def test_standing_quotes_money_at_the_precision_money_has(figure: float) -> None:
-    """Four places rather than two, so two real hourly rates never read as the same price, and a
-    figure the provider publishes none of stays absent rather than becoming a zero."""
+    """Money keeps the precision money has.
+
+    Four places rather than two, so two real hourly rates never read as the same price, and a
+    figure the provider publishes none of stays absent rather than becoming a zero.
+    """
     priced = Standing(keyed=True, credit_usd=figure, usd_hr=None)
     assert priced.credit_usd == pytest.approx(figure, abs=1e-4)
     assert priced.credit_usd == round(priced.credit_usd, 4)

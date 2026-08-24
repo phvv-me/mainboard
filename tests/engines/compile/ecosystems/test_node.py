@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pytest
@@ -7,7 +8,6 @@ from mainboard import MissionError
 from mainboard.engines.compile.ecosystems import Node
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
     from pytest_subprocess import FakeProcess
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from mainboard.engines.compile.backend import Pixi
     from mainboard.engines.compile.generated import Writer
 
-    from ..conftest import Bind
+    from ..support import Bind
 
 
 @pytest.mark.parametrize(
@@ -28,8 +28,11 @@ if TYPE_CHECKING:
 def test_where_a_toolchain_installs_follows_whether_it_is_the_application(
     *, app: bool, name: str, bind: Bind, pixi: Pixi, tmp_path: Path, files: Writer
 ) -> None:
-    """A bundler resolves `node_modules` from the application root, so `app` moves both there,
-    and a toolchain that is not the application never claims the name the workspace publishes."""
+    """`app` moves the whole node tree to the application root.
+
+    A bundler resolves `node_modules` from there, and a toolchain that is not the
+    application never claims the name the workspace publishes.
+    """
     node = bind(Node, {"app": app, "deps": {"vite": ">=5"}})
     directory = tmp_path if app else pixi.manifest.parent
 
@@ -89,8 +92,10 @@ def test_a_source_requirement_npm_would_misread_is_refused_at_compile(bind: Bind
 def test_sync_installs_through_the_declared_manager_once_there_is_a_manifest(
     bind: Bind, fp: FakeProcess, stub_binary: Callable[[str], str]
 ) -> None:
-    """The manager needs no environment flag, since the directory it runs in is the
-    environment it installs into."""
+    """The manager needs no environment flag.
+
+    The directory it runs in is the environment it installs into.
+    """
     pnpm = stub_binary("pnpm")
     node = bind(Node, {"manager": "pnpm", "deps": {"vite": "*"}})
 

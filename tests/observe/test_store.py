@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 from mainboard.observe import Frame, Kind
 
-from .conftest import AT
+from .support import AT
 
 if TYPE_CHECKING:
     from mainboard.observe import Store

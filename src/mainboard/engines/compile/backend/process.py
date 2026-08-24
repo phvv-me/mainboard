@@ -24,18 +24,6 @@ class Process:
     """
 
     @staticmethod
-    def handover(command: BaseCommand) -> int:
-        """Give ``command`` the caller's own terminal on all three streams, returning its code.
-
-        An interactive program draws its own screen: a shell, a REPL or a pager puts the
-        terminal into raw mode and expects every keystroke and every escape sequence to travel
-        over the tty. :meth:`stream` gives it pipes instead so it can retain a copy of the
-        output, which leaves such a program typing into a terminal nothing ever redraws. Those
-        callers come here and trade the retained copy for a working terminal.
-        """
-        return command.popen(stdin=None, stdout=None, stderr=None).wait()
-
-    @staticmethod
     def capture(command: BaseCommand, *, timeout: float | None = None) -> CommandResult:
         """Capture a query whose failure is itself an answer, under an optional deadline.
 
@@ -47,6 +35,18 @@ class Process:
         """
         returncode, stdout, stderr = command.run(retcode=None, timeout=timeout)
         return CommandResult(int(returncode), str(stdout), str(stderr))
+
+    @staticmethod
+    def handover(command: BaseCommand) -> int:
+        """Give ``command`` the caller's own terminal on all three streams, returning its code.
+
+        An interactive program draws its own screen: a shell, a REPL or a pager puts the
+        terminal into raw mode and expects every keystroke and every escape sequence to travel
+        over the tty. :meth:`stream` gives it pipes instead so it can retain a copy of the
+        output, which leaves such a program typing into a terminal nothing ever redraws. Those
+        callers come here and trade the retained copy for a working terminal.
+        """
+        return command.popen(stdin=None, stdout=None, stderr=None).wait()
 
     @staticmethod
     def output(command: BaseCommand, operation: str) -> str:

@@ -2,7 +2,7 @@
 
 import threading
 from collections import defaultdict, deque
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING, ClassVar, cast
@@ -91,7 +91,7 @@ def _on_buffer_requested() -> tuple[int, int]:
     return _BUFFER_SIZE, 0
 
 
-def _on_buffer_completed(activities: list[RawActivity]) -> None:
+def _on_buffer_completed(activities: Sequence[RawActivity]) -> None:
     """Copy bounded raw records while CUPTI still owns the activity objects."""
     if not _active:
         return
@@ -137,63 +137,7 @@ def _on_buffer_completed(activities: list[RawActivity]) -> None:
                 )
 
 
-def _ensure_registered() -> None:
-    """Register the activity callbacks once, for the process (never unregistered)."""
-    global _registered
-    if _registered:
-        return
-    api = _cupti()
-    api.activity_register_callbacks(_on_buffer_requested, _on_buffer_completed)
-    _domain[int(api.ActivityKind.RUNTIME)] = api.CallbackDomain.RUNTIME_API
-    _domain[int(api.ActivityKind.DRIVER)] = api.CallbackDomain.DRIVER_API
-    _registered = True
-
-
 _supported_kinds: Activity | None = None
-
-
-def _supported() -> Activity:
-    """The Activity kinds CUPTI can enable on this device, probed once and cached.
-
-    ``activity_enable`` is the capability gate — it raises ``NotImplementedError`` for a
-    kind the device/driver does not implement (e.g. ``MEMORY`` on GB10, or PC sampling
-    anywhere in cupti-python). We toggle each candidate on then straight off and keep the
-    set that took. Probing runs before any collector registers buffer callbacks, so the
-    transient enable/disable cannot drop real records.
-    """
-    global _supported_kinds
-    if _supported_kinds is not None:
-        return _supported_kinds
-    api = _cupti()
-    found = Activity(0)
-    for flag, enum_name in _CUPTI_KIND.items():
-        kind = getattr(api.ActivityKind, enum_name)
-        try:
-            api.activity_enable(kind)
-        except NotImplementedError:
-            continue
-        api.activity_disable(kind)
-        found |= flag
-    _supported_kinds = found
-    return found
-
-
-def _enable(kinds: Activity) -> tuple[int, ...]:
-    """Enable requested CUPTI kinds and return the exact native members enabled.
-
-    ``kinds`` is already reconciled against :func:`_supported`, so every kind here is
-    known to enable; an error would be a real bug, not an unsupported device.
-    """
-    api = _cupti()
-    enabled = []
-    for flag, enum_name in _CUPTI_KIND.items():
-        if flag not in kinds:
-            continue
-        kind = getattr(api.ActivityKind, enum_name)
-        api.activity_enable(kind)
-        _label[int(kind)] = flag.label
-        enabled.append(kind)
-    return tuple(enabled)
 
 
 def _disable(kinds: Sequence[int]) -> None:
@@ -263,22 +207,18 @@ class CuptiCollector(TraceCollector):
         self.running = False
 
     def __enter__(self) -> CuptiCollector:
-        _ensure_registered()
+        CuptiCollector._ensure_registered()
         if _active:
             raise RuntimeError("nested CUPTI collection unsupported (single-subscriber)")
-        self.enabled_kinds = _enable(self.kinds)
-        started = False
-        try:
+        self.enabled_kinds = CuptiCollector._enable(self.kinds)
+        with ExitStack() as undo:
+            undo.callback(self._abandon)
             _sync()
             _cupti().activity_flush_all(1)  # drain prior records before capture starts
             _active.append(self)
             self.running = True
-            started = True
-            return self
-        finally:
-            if not started:
-                _disable(self.enabled_kinds)
-                self.enabled_kinds = ()
+            undo.pop_all()
+        return self
 
     @staticmethod
     def activity_name(record: RawGeneric) -> str:
@@ -317,6 +257,41 @@ class CuptiCollector(TraceCollector):
     def flush(self) -> None:
         _sync()
         _cupti().activity_flush_all(1)
+
+    def _abandon(self) -> None:
+        """Roll the enables back after a start that never reached capture."""
+        _disable(self.enabled_kinds)
+        self.enabled_kinds = ()
+
+    @staticmethod
+    def _ensure_registered() -> None:
+        """Register the activity callbacks once, for the process (never unregistered)."""
+        global _registered
+        if _registered:
+            return
+        api = _cupti()
+        api.activity_register_callbacks(_on_buffer_requested, _on_buffer_completed)
+        _domain[int(api.ActivityKind.RUNTIME)] = api.CallbackDomain.RUNTIME_API
+        _domain[int(api.ActivityKind.DRIVER)] = api.CallbackDomain.DRIVER_API
+        _registered = True
+
+    @staticmethod
+    def _enable(kinds: Activity) -> tuple[int, ...]:
+        """Enable requested CUPTI kinds and return the exact native members enabled.
+
+        ``kinds`` is already reconciled against :func:`_supported`, so every kind here is
+        known to enable; an error would be a real bug, not an unsupported device.
+        """
+        api = _cupti()
+        enabled = []
+        for flag, enum_name in _CUPTI_KIND.items():
+            if flag not in kinds:
+                continue
+            kind = getattr(api.ActivityKind, enum_name)
+            api.activity_enable(kind)
+            _label[int(kind)] = flag.label
+            enabled.append(kind)
+        return tuple(enabled)
 
     def kernels(self) -> list[KernelTrace]:
         with self.lock:
@@ -359,17 +334,27 @@ class CuptiCollector(TraceCollector):
     def stop(self) -> None:
         if not self.running:
             return
-        try:
+        with ExitStack() as teardown:
+            teardown.callback(self._settle)
+            teardown.callback(self._retire)
             _sync()
             _cupti().activity_flush_all(1)
-        finally:
-            if _active and _active[-1] is self:
-                _active.pop()
-            try:
-                _disable(self.enabled_kinds)
-            finally:
-                self.enabled_kinds = ()
-                self.running = False
+
+    def _retire(self) -> None:
+        """Leave the active stack, tolerating a session someone else already popped."""
+        if _active and _active[-1] is self:
+            _active.pop()
+
+    def _settle(self) -> None:
+        """Disable what this session enabled and mark it stopped, whatever else failed."""
+        with ExitStack() as rest:
+            rest.callback(self._mark_stopped)
+            _disable(self.enabled_kinds)
+
+    def _mark_stopped(self) -> None:
+        """Forget the enables and read as not running."""
+        self.enabled_kinds = ()
+        self.running = False
 
     # force buffered records to the completion callback
 
@@ -448,7 +433,33 @@ class NvtxTracer(Tracer):
         return lambda: api.end_range(range_id)
 
     def supported(self) -> Activity:
-        return _supported() if cupti is not None else Activity(0)
+        return NvtxTracer._supported() if cupti is not None else Activity(0)
 
     def timestamp(self) -> int:
         return int(cupti.get_timestamp()) if cupti is not None else super().timestamp()
+
+    @staticmethod
+    def _supported() -> Activity:
+        """The Activity kinds CUPTI can enable on this device, probed once and cached.
+
+        ``activity_enable`` is the capability gate — it raises ``NotImplementedError`` for a
+        kind the device/driver does not implement (e.g. ``MEMORY`` on GB10, or PC sampling
+        anywhere in cupti-python). We toggle each candidate on then straight off and keep the
+        set that took. Probing runs before any collector registers buffer callbacks, so the
+        transient enable/disable cannot drop real records.
+        """
+        global _supported_kinds
+        if _supported_kinds is not None:
+            return _supported_kinds
+        api = _cupti()
+        found = Activity(0)
+        for flag, enum_name in _CUPTI_KIND.items():
+            kind = getattr(api.ActivityKind, enum_name)
+            try:
+                api.activity_enable(kind)
+            except NotImplementedError:
+                continue
+            api.activity_disable(kind)
+            found |= flag
+        _supported_kinds = found
+        return found

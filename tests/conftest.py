@@ -1,10 +1,10 @@
 import os
 import sys
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from shutil import rmtree
 from tempfile import mkdtemp
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -20,34 +20,13 @@ from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold, Scaffolded
 
-if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
-
-# What a stand-in is handed, what it hands back, and what one recorded call looks like. The
-# verbs pass names and commands positionally and everything else by keyword, so the option
-# values are exactly the scalar kinds a flag parses into.
-type Owner = Board | Dependencies | Doctor | Monitor | Scaffold | Survey
-type Option = str | int | float | bool | dict[str, str] | None
-type Answer = (
-    int
-    | None
-    | HostFacts
-    | HostSetup
-    | MonitorReport
-    | Scaffolded
-    | SimpleNamespace
-    | list[Change]
-    | list[ComputePath]
-    | list[Section]
-    | Iterator[MonitorReport]
-)
-type Relayed = tuple[str, str, tuple[str, ...], dict[str, Option]]
+from .support import Answer, Option, Owner, Relayed
 
 # The stand-in for "this module was never imported", so the tracking seal restores absence as
 # faithfully as it restores a module.
 _ABSENT = object()
 
-MANIFEST = Project().manifest
+_MANIFEST = Project().manifest
 
 # Hypothesis runs derandomized here, which buys two things this suite needs. The gate demands
 # every line and branch on every run, so a property that reaches a branch has to reach it again
@@ -183,7 +162,7 @@ def sealed_credentials() -> None:
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A workspace directory holding the full-featured fixture manifest."""
     monkeypatch.setenv("MC_TEST_SCRATCH", "/scratch/lab")
-    (tmp_path / MANIFEST).write_text(_FIXTURE)
+    (tmp_path / _MANIFEST).write_text(_FIXTURE)
     return tmp_path
 
 
@@ -248,7 +227,7 @@ def station() -> Iterator[Path]:
     """
     under = _MEMORY if os.access(_MEMORY, os.W_OK) else None
     root = Path(mkdtemp(dir=under, prefix="mainboard-station-"))
-    (root / MANIFEST).write_text(_FIXTURE)
+    (root / _MANIFEST).write_text(_FIXTURE)
     Cache(root / db_file()).connection.close()
     yield root
     rmtree(root, ignore_errors=True)

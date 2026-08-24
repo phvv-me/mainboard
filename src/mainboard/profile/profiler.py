@@ -367,6 +367,11 @@ class Profiler:
                 )
             )
 
+    @staticmethod
+    def _skipped_snapshot() -> None:
+        """Log one failed device snapshot as a warning and stand for its absent reading."""
+        logger.warning("device sampler skipped a failed snapshot", exc_info=True)
+
     def report(self) -> str:
         """Render the current result as plain text."""
         return self.result().report()
@@ -428,8 +433,7 @@ class Profiler:
         try:
             raw = gpu.snapshot(name=name)
         except OSError, RuntimeError:
-            logger.warning("device sampler skipped a failed snapshot", exc_info=True)
-            return None
+            return self._skipped_snapshot()
         process = next((item for item in raw.processes if item.pid == os.getpid()), None)
         if process is None:
             return None

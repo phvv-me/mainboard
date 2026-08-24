@@ -8,7 +8,7 @@ from hypothesis import strategies as st
 from mainboard.observe import Kind, Spool, encoded_length, follow
 
 from ..strategies import TEXT
-from .conftest import ended, line
+from .support import ended, line
 
 if TYPE_CHECKING:
     from pathlib import Path

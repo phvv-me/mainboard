@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -5,8 +6,6 @@ import pytest
 from mainboard.render.values import columns_of, to_row
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from mainboard.render.values import Cell, Node, Row
 
 

@@ -2,6 +2,7 @@ import asyncio
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
+from contextlib import ExitStack
 
 import pytest
 
@@ -233,15 +234,14 @@ def test_generator_spans_cover_consumption_not_creation() -> None:
     async def consume() -> list[int]:
         return [item async for item in stream()]
 
-    spans.activate(session)
-    try:
+    with ExitStack() as active:
+        spans.activate(session)
+        active.callback(spans.deactivate, session)
         iterator = produce()
         assert session.entered == []  # creation alone opens nothing
         assert list(iterator) == [1, 2]
         assert list(walk()) == [5]
         assert asyncio.run(consume()) == [7]
-    finally:
-        spans.deactivate(session)
     assert session.entered[0] == "gen"
     assert session.entered[1].endswith("walk")
     assert session.entered[2] == "agen"

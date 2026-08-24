@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -6,9 +7,8 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from mainboard.profile import Profile, ProfileDiff, RegionStat, RegionSummary, perfetto
-from mainboard.profile.result import _region_text
 
-from .conftest import traced_profile
+from .support import traced_profile
 
 
 def test_the_profile_verbs_read_their_reports_off_the_evidence_it_holds() -> None:
@@ -68,14 +68,14 @@ def test_a_diff_matches_regions_by_name_and_survives_a_round_trip(tmp_path: Path
     ids=["nothing_collected", "spans_and_gpu_activity", "activities_dropped", "spans_dropped"],
 )
 def test_the_report_carries_only_the_evidence_sections_it_has(
-    profile: Profile, present: tuple[str, ...], absent: tuple[str, ...]
+    profile: Profile, present: Sequence[str], absent: Sequence[str]
 ) -> None:
     """A section appears only when its evidence does, and an empty run says so plainly."""
     text = profile.report()
     assert str(profile) == text
     assert all(fragment in text for fragment in present)
     assert not any(fragment in text for fragment in absent)
-    assert _region_text([]) == "No regions recorded."
+    assert Profile._region_text([]) == "No regions recorded."
 
 
 # Two region names over a short list is a small space, so a trimmed budget covers it and keeps
@@ -91,7 +91,7 @@ def test_the_report_carries_only_the_evidence_sections_it_has(
     )
 )
 def test_per_name_stats_collapse_every_call_of_a_region_into_one_row(
-    regions: list[tuple[str, float]],
+    regions: Sequence[tuple[str, float]],
 ) -> None:
     """A region called many times is one row with its call count, not one row per call."""
     summaries = [RegionSummary(name=name, wall_ms=wall) for name, wall in regions]

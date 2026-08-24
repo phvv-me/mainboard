@@ -1,4 +1,5 @@
 import hashlib
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -59,7 +60,7 @@ def test_an_hf_declaration_keys_on_repo_at_revision_reading_an_unpinned_one_as_m
     ],
 )
 def test_an_hf_download_roots_its_cache_under_the_work_root_and_carries_only_declared_flags(
-    declared: Declaration, present: tuple[str, ...], absent: tuple[str, ...]
+    declared: Declaration, present: Sequence[str], absent: Sequence[str]
 ) -> None:
     command = declared.command("/work/proj")
     assert command.startswith("HF_HOME=/work/proj/.cache/huggingface hf download ")

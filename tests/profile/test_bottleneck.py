@@ -8,7 +8,7 @@ import pytest
 from mainboard import Profiler as RealProfiler
 from mainboard.profile import Activity, Profile, ProfileReport, annotate, bottleneck
 
-from .conftest import FakeGPU, FakeMemory, FakeUtilization, kernel
+from .support import FakeGPU, FakeMemory, FakeUtilization, kernel
 
 if TYPE_CHECKING:
     from types import TracebackType

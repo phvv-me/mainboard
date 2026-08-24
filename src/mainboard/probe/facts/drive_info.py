@@ -12,7 +12,7 @@ SKIP_PREFIXES = frozenset({"loop", "dm-", "sr", "ram", "zram", "fd"})
 _SYS_PLACEHOLDER = frozenset({"unknown", "not specified", "none", "n/a"})
 
 
-def read_sys(path: Path) -> str | None:
+def _read_sys(path: Path) -> str | None:
     """Return stripped sysfs text, or None if absent or a placeholder value.
 
     Tolerates missing or unreadable pseudo-files so callers can probe
@@ -35,7 +35,7 @@ def capacity_bytes(device_dir: Path) -> int:
 
     device_dir: the device's own directory, e.g. `SYS_BLOCK / "nvme0n1"`.
     """
-    sectors = read_sys(device_dir / "size")
+    sectors = _read_sys(device_dir / "size")
     try:
         return int(sectors) * 512 if sectors else 0
     except ValueError:
@@ -60,7 +60,7 @@ class DriveInfo(FrozenModel):
         """Drive technology, NVMe, SSD, HDD, or Unknown."""
         if self.name.startswith("nvme"):
             return DiskKind.NVME
-        rotational = read_sys(SYS_BLOCK / self.name / "queue" / "rotational")
+        rotational = _read_sys(SYS_BLOCK / self.name / "queue" / "rotational")
         if not rotational:
             return DiskKind.UNKNOWN
         return DiskKind.HDD if rotational == "1" else DiskKind.SSD
@@ -68,7 +68,7 @@ class DriveInfo(FrozenModel):
     @cached_property
     def model(self) -> str | None:
         """Drive model string from sysfs, or None if unavailable."""
-        return read_sys(SYS_BLOCK / self.name / "device" / "model")
+        return _read_sys(SYS_BLOCK / self.name / "device" / "model")
 
     @cached_property
     def partitions(self) -> tuple[PartitionInfo, ...]:
@@ -82,7 +82,7 @@ class DriveInfo(FrozenModel):
     @cached_property
     def serial(self) -> str | None:
         """Serial number from sysfs, or None if unavailable."""
-        return read_sys(SYS_BLOCK / self.name / "device" / "serial")
+        return _read_sys(SYS_BLOCK / self.name / "device" / "serial")
 
     @cached_property
     def size_bytes(self) -> int:

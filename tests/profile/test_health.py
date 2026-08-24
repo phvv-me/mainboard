@@ -5,7 +5,7 @@ from hypothesis import strategies as st
 from mainboard import Meter
 from mainboard.profile import Diagnosis
 
-from .conftest import FakeGPU, FakeMemory, FakeProcess, FakeSnapshot, FakeThermal, FakeUtilization
+from .support import FakeGPU, FakeMemory, FakeProcess, FakeSnapshot, FakeThermal, FakeUtilization
 
 
 def meter_with(*, peak_gpu_gb: float = 0.0, host_delta_gb: float = 0.0) -> Meter:

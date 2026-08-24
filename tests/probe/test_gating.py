@@ -1,11 +1,8 @@
-from typing import TYPE_CHECKING
+from collections.abc import Iterator
 
 import pytest
 
 from mainboard.probe import gating
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 
 class FakeGpu:
@@ -60,8 +57,11 @@ def test_gpu_busy_reads_the_first_visible_device_and_calls_a_bare_host_idle(
 def test_wait_for_idle_holds_out_for_a_continuous_idle_window(
     fleet: list[FakeGpu], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A single idle sample is not enough, since a job between kernels looks idle for an instant,
-    so any busy reading restarts the window and only an unbroken stretch of it returns."""
+    """Only an unbroken idle stretch returns.
+
+    A single idle sample is not enough, since a job between kernels looks idle for an
+    instant, so any busy reading restarts the window.
+    """
     fleet.append(FakeGpu(busy=False))
     readings: Iterator[bool] = iter([False, True, False])
     monkeypatch.setattr(

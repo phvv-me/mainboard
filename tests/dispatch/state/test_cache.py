@@ -5,7 +5,7 @@ import pytest
 
 from mainboard.dispatch import HostSetup, now
 
-from ..conftest import cache, run_record
+from ..support import cache, run_record
 
 
 def test_a_cache_nobody_holds_any_more_closes_the_database_it_opened() -> None:

@@ -64,11 +64,6 @@ class Node(Ecosystem):
     # directory or at the root, never one per environment.
     shared: ClassVar[bool] = True
 
-    @cached_property
-    def options(self) -> NodeOptions:
-        """The table's settings beyond its deps, defaulted when it declares none."""
-        return NodeOptions.model_validate(self.table.model_extra or {})
-
     @property
     def directory(self) -> Path:
         """Where `package.json` and `node_modules` live for this toolchain."""
@@ -84,6 +79,11 @@ class Node(Ecosystem):
     def manifest(self) -> Path:
         """The generated `package.json` the manager installs from."""
         return self.directory / _MANIFEST
+
+    @cached_property
+    def options(self) -> NodeOptions:
+        """The table's settings beyond its deps, defaulted when it declares none."""
+        return NodeOptions.model_validate(self.table.model_extra or {})
 
     def binary_dirs(self) -> tuple[Path, ...]:
         """Where the manager links the executables its packages ship."""

@@ -1,12 +1,9 @@
-from typing import TYPE_CHECKING
+from collections.abc import Iterable, Sequence
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from mainboard import Meter
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
 
 
 class GrowingHost:
@@ -62,7 +59,7 @@ class FakeMachine:
     ),
 )
 def test_the_meter_peaks_over_its_samples_and_a_fresh_one_reads_zero(
-    readings: list[float], gpu_used: list[float]
+    readings: list[float], gpu_used: Sequence[float]
 ) -> None:
     """Peaks are the maximum over every sample and the delta spans first to last.
 

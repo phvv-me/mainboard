@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING, NoReturn
+from collections.abc import Callable
+from typing import NoReturn
 
 import pytest
 
@@ -12,16 +13,13 @@ from mainboard.lab.gates import (
     is_parity_assumed,
 )
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
-
-def met() -> bool:
+def is_met() -> bool:
     """A probe reporting its precondition already holds."""
     return True
 
 
-def unmet() -> bool:
+def is_unmet() -> bool:
     """A probe cleanly reporting its precondition does not hold yet."""
     return False
 
@@ -67,8 +65,8 @@ def receipt_gate(answer: Callable[[], bool]) -> Gate:
 def test_every_gate_translates_its_own_probe_into_the_shared_three_way_verdict(
     context: Run, build: Callable[[Callable[[], bool]], Gate], blocked: str
 ) -> None:
-    assert build(met).check(context) == GateVerdict(status=GateStatus.PASSED)
-    assert build(unmet).check(context) == GateVerdict(status=GateStatus.BLOCKED, reason=blocked)
+    assert build(is_met).check(context) == GateVerdict(status=GateStatus.PASSED)
+    assert build(is_unmet).check(context) == GateVerdict(status=GateStatus.BLOCKED, reason=blocked)
     assert build(broken).check(context) == GateVerdict(status=GateStatus.FAILED, reason="boom")
 
 

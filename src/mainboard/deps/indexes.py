@@ -41,7 +41,9 @@ class Index(Registry, abc.ABC):
     """
 
     def __init__(self, sources: Sequence[str] = ()) -> None:
-        """sources: the registries the manifest declares for this ecosystem, the conda channels
+        """Hold the registries version queries will read.
+
+        sources: the registries the manifest declares for this ecosystem, the conda channels
         or a Python index url, empty for one published to a single public registry.
         """
         self.sources = tuple(sources)
@@ -147,10 +149,11 @@ def _fetched(url: str, *, accept: str) -> Json:
     """
     request = urllib.request.Request(url, headers={"Accept": accept})
     try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT) as reply:
-            return cast("Json", json.load(reply))
+        reply = urllib.request.urlopen(request, timeout=_TIMEOUT)
     except OSError as refusal:
         raise MissionError(f"{url} would not answer: {refusal}") from None
+    with reply:
+        return cast("Json", json.load(reply))
 
 
 def _newest(versions: Sequence[str], *, name: str, where: str) -> str:

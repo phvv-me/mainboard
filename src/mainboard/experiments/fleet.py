@@ -83,6 +83,20 @@ class Fleet:
         ledgers_root = board_root / Project().out_dir / "studies"
         return reporting.overview(cache, ledgers_root)
 
+    def owner(self, handle: Handle) -> str:
+        """The study id owning `handle`, empty when the handle belongs to no study.
+
+        Prefers this fleet's own record of what it dispatched and falls back to the dispatch
+        label the run registry kept, which survives the process that submitted it.
+        """
+        origin = self._origins.get(handle)
+        if origin is not None:
+            return origin.study_id
+        with suppress(LookupError):
+            record = self.board.dispatcher.cache.run(handle.id, handle.host)
+            return labelled_study(record.name)
+        return ""
+
     def progress(self, study: Study) -> Progress:
         """`study`'s live trial counts, dispatch's resolved verdicts merged over the ledger.
 
@@ -118,6 +132,21 @@ class Fleet:
             ledger.submitted(job.handle.id, host=origin.host)
             jobs.append(job)
         return jobs
+
+    def settle(self, verdicts: Mapping[Handle, Verdict]) -> None:
+        """Record each resolved verdict in the ledger of the study that owns its handle.
+
+        A handle this fleet never submitted settles too, since the owning study is recoverable
+        from the durable dispatch label the trial carries. That is what lets a fresh process
+        close out a study it did not start, rebuilding each job with `Board.job` and settling
+        it here, instead of the verdicts living only in the process that submitted them.
+
+        verdicts: the terminal outcomes to record, keyed by handle.
+        """
+        for handle, verdict in verdicts.items():
+            study_id = self.owner(handle)
+            if study_id:
+                StudyLedger(self.board.root, study_id).verdict(handle.id, state=verdict.verdict)
 
     def statuses(self, study: Study) -> dict[str, str]:
         """Every handle `study` has dispatched, folded to its current ledger status."""
@@ -155,35 +184,6 @@ class Fleet:
             ledger.submitted(job.handle.id, host=host)
             jobs.append(job)
         return jobs
-
-    def settle(self, verdicts: Mapping[Handle, Verdict]) -> None:
-        """Record each resolved verdict in the ledger of the study that owns its handle.
-
-        A handle this fleet never submitted settles too, since the owning study is recoverable
-        from the durable dispatch label the trial carries. That is what lets a fresh process
-        close out a study it did not start, rebuilding each job with `Board.job` and settling
-        it here, instead of the verdicts living only in the process that submitted them.
-
-        verdicts: the terminal outcomes to record, keyed by handle.
-        """
-        for handle, verdict in verdicts.items():
-            study_id = self.owner(handle)
-            if study_id:
-                StudyLedger(self.board.root, study_id).verdict(handle.id, state=verdict.verdict)
-
-    def owner(self, handle: Handle) -> str:
-        """The study id owning `handle`, empty when the handle belongs to no study.
-
-        Prefers this fleet's own record of what it dispatched and falls back to the dispatch
-        label the run registry kept, which survives the process that submitted it.
-        """
-        origin = self._origins.get(handle)
-        if origin is not None:
-            return origin.study_id
-        with suppress(LookupError):
-            record = self.board.dispatcher.cache.run(handle.id, handle.host)
-            return labelled_study(record.name)
-        return ""
 
     def wait_all(self, jobs: Sequence[Job]) -> dict[Handle, Verdict]:
         """Block until every job in `jobs` is terminal, recording each verdict in its ledger.

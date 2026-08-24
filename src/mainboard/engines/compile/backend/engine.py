@@ -54,11 +54,6 @@ class PixiEngine(Tool):
             return local[str(self.installed_binary())]
 
     @staticmethod
-    def home() -> Path:
-        """pixi's home, where its `bin/` and global `envs/` live."""
-        return Path(os.environ.get("PIXI_HOME") or Path.home() / ".pixi")
-
-    @staticmethod
     def appended_shell_file() -> str:
         """The startup file pixi's installer is about to append a PATH line to, else empty.
 
@@ -68,6 +63,11 @@ class PixiEngine(Tool):
         if os.environ.get("PIXI_NO_PATH_UPDATE"):
             return ""
         return _SHELL_RC.get(PurePath(os.environ.get("SHELL", "")).name, "")
+
+    @staticmethod
+    def home() -> Path:
+        """pixi's home, where its `bin/` and global `envs/` live."""
+        return Path(os.environ.get("PIXI_HOME") or Path.home() / ".pixi")
 
     def bootstrap(self) -> None:
         """Install pixi (the engine) when it is missing, so `pip install mainboard` is enough.

@@ -2,7 +2,6 @@ import json
 import os
 import tomllib
 from contextlib import contextmanager
-from functools import cached_property
 from typing import TYPE_CHECKING, cast
 
 from plumbum import local
@@ -23,6 +22,19 @@ if TYPE_CHECKING:
 
 # What pixi writes into a prefix's `conda-meta/` once an installation has finished.
 _FINGERPRINT = ".pixi-environment-fingerprint"
+
+# The env var conda tooling reads to vouch each virtual-package floor a platform descriptor can
+# carry. A machine that cannot present the package itself still installs the frozen lock its
+# jobs will run under, the cluster login node with no GPU driver being the canonical case.
+_FLOOR_OVERRIDES = {
+    "archspec": "CONDA_OVERRIDE_ARCHSPEC",
+    "cuda": "CONDA_OVERRIDE_CUDA",
+    "glibc": "CONDA_OVERRIDE_GLIBC",
+    "linux": "CONDA_OVERRIDE_LINUX",
+    "macos": "CONDA_OVERRIDE_OSX",
+    "osx": "CONDA_OVERRIDE_OSX",
+    "windows": "CONDA_OVERRIDE_WIN",
+}
 
 
 class Pixi(Tool):
@@ -46,10 +58,19 @@ class Pixi(Tool):
         self.engine = PixiEngine()
         self.manifest = out / self.filename
 
-    @cached_property
+    @property
     def command(self) -> BaseCommand:
-        """The pixi executable, resolved (and bootstrapped when absent) by the engine."""
-        return self.engine.command
+        """The pixi executable, resolved by the engine, vouching the workspace's floors.
+
+        Every declared virtual-package floor rides along as its `CONDA_OVERRIDE_*` variable, so
+        a frozen install succeeds on a machine that cannot present the package itself, and a
+        value the caller already exported always wins. Read per invocation rather than cached,
+        since the floors live in the generated manifest the compiler may write moments earlier.
+        """
+        command = self.engine.command
+        if overrides := Pixi._floor_overrides(self.manifest):
+            command = command.with_env(**overrides)
+        return command
 
     @property
     def lock(self) -> Path:
@@ -86,24 +107,6 @@ class Pixi(Tool):
             locked=not resolve and not self._has_editable_paths(),
             frozen=not resolve and self._has_editable_paths(),
         )
-
-    def _has_editable_paths(self) -> bool:
-        """Whether the generated manifest carries a mutable editable Python source."""
-        try:
-            manifest = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return False
-
-        pending = [manifest]
-        while pending:
-            value = pending.pop()
-            if isinstance(value, dict):
-                if isinstance(value.get("path"), str) and value.get("editable") is True:
-                    return True
-                pending.extend(value.values())
-            elif isinstance(value, list):
-                pending.extend(value)
-        return False
 
     def install(self, env: str, *, resolve: bool = False) -> None:
         """Install ``env`` locked by default and verify every explicitly resolved lock."""
@@ -170,15 +173,28 @@ class Pixi(Tool):
     def scope(self) -> tuple[str, ...]:
         return ("--manifest-path", str(self.manifest))
 
-    def update(self, env: str) -> None:
-        """Move ``env``'s lock to the newest releases the manifest still allows.
+    @staticmethod
+    def _floor_overrides(manifest: Path) -> dict[str, str]:
+        """The `CONDA_OVERRIDE_*` values for every floor the generated `manifest` declares.
 
-        The one verb that re-reads the indexes inside the declared bounds. `install` keeps
-        whatever the lock already pins as long as it satisfies the manifest, which is the right
-        default and the reason asking for newer releases has to be its own request.
+        Floors are read from the workspace platform descriptors the compiler wrote, the one place
+        they already live, and an override the process env already carries is left to stand so a
+        caller keeps the last word.
+
+        manifest: path to the generated pixi manifest.
         """
-        if self.within_cwd(Process.stream, "update", "-e", env).returncode:
-            raise MissionError("`pixi update` failed (see its output above)")
+        try:
+            parsed = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        entries = parsed.get("workspace", {}).get("platforms", [])
+        return {
+            _FLOOR_OVERRIDES[key]: str(value)
+            for entry in entries
+            if isinstance(entry, dict)
+            for key, value in entry.items()
+            if key in _FLOOR_OVERRIDES and _FLOOR_OVERRIDES[key] not in os.environ
+        }
 
     def shell_hook(self, env: str = "default", *, shell: str = "bash") -> str:
         """The activation script for ``env`` as a sourceable ``shell`` snippet.
@@ -189,6 +205,16 @@ class Pixi(Tool):
         """
         command = self.command["shell-hook", "-s", shell, "-e", env, *self.scope()]
         return Process.output(command, "pixi shell-hook")
+
+    def update(self, env: str) -> None:
+        """Move ``env``'s lock to the newest releases the manifest still allows.
+
+        The one verb that re-reads the indexes inside the declared bounds. `install` keeps
+        whatever the lock already pins as long as it satisfies the manifest, which is the right
+        default and the reason asking for newer releases has to be its own request.
+        """
+        if self.within_cwd(Process.stream, "update", "-e", env).returncode:
+            raise MissionError("`pixi update` failed (see its output above)")
 
     @staticmethod
     def _raise_on_lock_drift(result: CommandResult, *, locked: bool) -> None:
@@ -206,3 +232,21 @@ class Pixi(Tool):
                 f"the manifest drifted from pixi.lock. Run `{Project().name} install --resolve` "
                 "on a solve-capable machine, which is also what a host is then sent."
             )
+
+    def _has_editable_paths(self) -> bool:
+        """Whether the generated manifest carries a mutable editable Python source."""
+        try:
+            manifest = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+
+        pending = [manifest]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                if isinstance(value.get("path"), str) and value.get("editable") is True:
+                    return True
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+        return False

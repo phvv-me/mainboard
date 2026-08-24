@@ -61,8 +61,11 @@ def test_run_returns_stdout_and_executes_the_program_once_per_argv(
 def test_sysctl_strips_a_reading_and_answers_empty_when_the_key_is_unreachable(
     local: dict[str, FakeCommand | BoomCommand], expected: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Callers probe Darwin-only keys without guarding the platform, so a missing binary
-    (`OSError`) and an unknown command (`KeyError`) both read as no value at all."""
+    """A missing sysctl reads as no value at all.
+
+    Callers probe Darwin-only keys without guarding the platform, so a missing binary
+    (`OSError`) and an unknown command (`KeyError`) answer alike.
+    """
     monkeypatch.setattr(sysctl_mod, "local", local)
     assert sysctl("machdep.cpu.brand_string") == expected
 

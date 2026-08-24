@@ -1,7 +1,7 @@
 from mainboard.dispatch.schedulers import Local
 from mainboard.dispatch.vocabulary import Resources
 
-from ..conftest import machine_with
+from ..support import machine_with
 
 
 def test_the_local_backend_runs_the_script_in_the_foreground_with_nothing_to_queue() -> None:

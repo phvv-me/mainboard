@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -147,7 +148,7 @@ def test_every_outcome_renders_one_receipt_line_under_the_one_published_key(
     declared: type[Experiment],
     word: str,
     gates: list[dict[str, str]],
-    own: dict[str, JsonValue],
+    own: Mapping[str, JsonValue],
     absent: str,
 ) -> None:
     outcome = runnable(declared, "gpt2", declared())

@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from urllib.error import HTTPError
 
@@ -12,7 +13,7 @@ from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
 from ...strategies import WORDS
-from .conftest import Naps, Reply, not_found, plan, refused, vast_backend
+from .support import Naps, Reply, not_found, plan, refused, vast_backend
 
 # The v0 root their own CLI defaults to, which every request a test reads back hangs off.
 _ROOT = "https://console.vast.ai/api/v0"
@@ -132,11 +133,14 @@ def test_api_key_reads_either_spelling_and_refuses_when_unset(
     ],
 )
 def test_search_posts_the_consoles_own_filters_and_ranks_by_what_a_rental_will_pay(
-    spot: bool, narrowing: dict, extra: dict, ranked: list[int]
+    spot: bool, narrowing: dict, extra: Mapping, ranked: list[int]
 ) -> None:
-    """The four constant filters keep unverified hosts, resold capacity and already-rented
-    machines out. Vast ranks by the on-demand total whichever mode is asked for, so a spot search
-    is re-ranked here by the bid floor it will actually pay."""
+    """The offer search filters the market and ranks by what will actually be paid.
+
+    The four constant filters keep unverified hosts, resold capacity and already-rented
+    machines out. Vast ranks by the on-demand total whichever mode is asked for, so a spot
+    search is re-ranked here by the bid floor it will actually pay.
+    """
     backend = vast_backend(_MIXED, spot=spot)
     assert [row["id"] for row in backend.search(**narrowing)] == ranked
     (request,) = backend.transport.calls
@@ -171,8 +175,11 @@ def test_search_posts_the_consoles_own_filters_and_ranks_by_what_a_rental_will_p
 def test_pick_rents_the_most_reliable_machine_the_budget_already_allows(
     offers: list[dict], spot: bool, rented: int
 ) -> None:
-    """Renting the lowest-priced listing put earlier rentals at the bottom of the market, where
-    the container is billed for and never starts, so price decides admission and nothing more."""
+    """Price decides admission and nothing more.
+
+    Renting the lowest-priced listing put earlier rentals at the bottom of the market, where
+    the container is billed for and never starts.
+    """
     backend = vast_backend({"offers": offers}, spot=spot)
     assert backend.pick(gpu_name="RTX 4090", gpus=1)["id"] == rented
 
@@ -206,8 +213,10 @@ def test_pick_refuses_when_the_market_has_no_matching_offer(
 def test_the_hourly_cap_spends_exactly_the_budget_over_the_walltime_a_job_declares(
     hours: int, minutes: int, budget: float
 ) -> None:
-    """A spend cap only bounds an hourly rental once the job also says how long it may run, so a
-    walltime-less request searches the whole market and leans on `max_usd` alone."""
+    """A spend cap needs a walltime before it can bound an hourly rental.
+
+    A walltime-less request searches the whole market and leans on `max_usd` alone.
+    """
     capped = Resources(max_usd=budget, walltime=f"{hours:02d}:{minutes:02d}:00")
     assert VastBackend.hourly_cap(capped) * (hours + minutes / 60) == pytest.approx(budget)
     assert VastBackend.hourly_cap(Resources(max_usd=budget)) == 0.0
@@ -222,10 +231,13 @@ def test_submit_refuses_before_any_network_call_when_the_budget_is_unset() -> No
 
 
 def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_contract() -> None:
-    """`args` launch mode runs the image as it is, with `onstart` as the entrypoint and `args` as
+    """A rental runs the image one-shot and a failed rent never parks an instance.
+
+    `args` launch mode runs the image as it is, with `onstart` as the entrypoint and `args` as
     its argv, which is how the official CLI spells a one-shot container. Vast reports container
     status and never a process exit code, so the wrapper echoes the real one into the log, and
-    the rent fails outright rather than parking a stopped instance we would owe storage on."""
+    the rent fails outright rather than parking a stopped instance we would owe storage on.
+    """
     backend = vast_backend(_OFFERS, _CREATED)
     handle = backend.submit(vast_plan(), "python train.py", Resources(max_usd=5.0, gpus=2))
     assert handle == "4242"
@@ -246,9 +258,12 @@ def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_c
 
 
 def test_submit_narrows_the_search_and_the_rental_to_what_the_request_asks_for() -> None:
-    """A request naming no GPU count still rents one machine's worth, a walltime turns the spend
-    cap into the hourly ceiling the search filters on, a spot rental bids the offer's own floor,
-    and a containerized plan rents under its own image rather than Vast's base one."""
+    """Every resource field lands in the search, the bid, or the image.
+
+    A request naming no GPU count still rents one machine's worth, a walltime turns the spend
+    cap into the hourly ceiling the search filters on, a spot rental bids the offer's own
+    floor, and a containerized plan rents under its own image rather than Vast's base one.
+    """
     backend = vast_backend(_OFFERS, _CREATED, spot=True)
     backend.submit(
         vast_plan(container=Container(image="pytorch/pytorch:latest")),
@@ -275,8 +290,11 @@ def test_state_of_a_container_that_has_not_finished_costs_no_log_fetch() -> None
 
 
 def test_state_of_a_terminal_container_reports_the_process_exit_code() -> None:
-    """The verdict comes from the marker the onstart wrapper echoed after the command, so it
-    describes the command rather than the container that happened to stop cleanly around it."""
+    """The exit verdict is the wrapper's own marker.
+
+    The marker is echoed after the command, so it describes the command rather than the
+    container that happened to stop cleanly around it.
+    """
     read = {}
     for status, code in _TERMINAL:
         backend = terminal_backend(status, log=f"training done\n{_MARKER}{code}\n")
@@ -324,8 +342,11 @@ def test_state_stays_unknown_when_the_log_cannot_say_how_the_command_ended(
 def test_state_reads_a_gone_instance_as_vanished_and_re_raises_anything_else(
     reply: Reply, verdict: str | None
 ) -> None:
-    """A destroyed instance answers either a null row or a 404 depending on how long ago it went,
-    and a post-mortem reads both the same way."""
+    """A destroyed instance reads empty however long ago it went.
+
+    It answers either a null row or a 404 depending on the age, and a post-mortem reads both
+    the same way.
+    """
     backend = vast_backend(reply)
     if verdict is None:
         with pytest.raises(HTTPError, match="401"):
@@ -339,10 +360,13 @@ def test_state_reads_a_gone_instance_as_vanished_and_re_raises_anything_else(
     chatter=st.lists(WORDS, max_size=3),
 )
 def test_exit_sentinel_reads_the_last_status_the_wrapper_echoed(
-    codes: list[int], chatter: list[str]
+    codes: Sequence[int], chatter: list[str]
 ) -> None:
-    """The last marker wins, since a container Vast restarted appends its own line below the
-    first and the command ran again (thirteen restarts in five minutes, verified live)."""
+    """The last marker wins.
+
+    A container Vast restarted appends its own line below the first and the command ran again
+    (thirteen restarts in five minutes, verified live).
+    """
     lines = [*chatter, *(f"{_MARKER}{code}" for code in codes)]
     assert exit_sentinel("\n".join(lines) + "\n") == codes[-1]
 
@@ -361,8 +385,11 @@ def test_exit_sentinel_skips_what_it_cannot_read_as_a_status(log: str, status: i
 
 
 def test_logs_requests_an_upload_then_polls_for_it_without_the_api_key() -> None:
-    """`request_logs` answers before the log reaches storage, so the first fetches come back 404
-    until it lands, and the url is storage's own signed link rather than ours."""
+    """A log fetch retries until storage has the file.
+
+    `request_logs` answers before the log reaches storage, so the first fetches come back 404
+    until it lands, and the url is storage's own signed link rather than ours.
+    """
     naps = Naps()
     backend = vast_backend(
         {"result_url": "https://s3.example/logs/7.log"}, not_found(), "landed at last", naps=naps
@@ -421,7 +448,7 @@ def test_logs_hands_the_url_over_when_it_cannot_bring_the_log_back_itself(
     ],
 )
 def test_catalog_turns_a_live_search_into_priced_offer_rows(
-    spot: bool, limit: int, asked: int, rates: list[float]
+    spot: bool, limit: int, asked: int, rates: Sequence[float]
 ) -> None:
     """The authed refresh of the imported price feed, priced by the mode that rents the machine."""
     backend = vast_backend(_OFFERS, spot=spot)
@@ -478,9 +505,12 @@ def test_catalog_turns_a_live_search_into_priced_offer_rows(
 def test_standing_reads_the_credit_and_prices_one_sample_card(
     account: dict, offers: list[dict], credit: float | None, usd_hr: float | None, note: str
 ) -> None:
-    """`credit` is the spendable figure on a prepaid account, where its sibling `balance` is the
+    """Standing reads the prepaid credit and prints a tidy location.
+
+    `credit` is the spendable figure on a prepaid account, where its sibling `balance` is the
     invoicing one and sits at zero, and a machine whose city is unset carries its country as
-    `, US`, so the separator is trimmed rather than printed as a stray comma."""
+    `, US`, so the separator is trimmed rather than printed as a stray comma.
+    """
     backend = vast_backend(account, {"offers": offers})
     standing = backend.standing()
     assert standing.keyed is True
@@ -519,9 +549,12 @@ def test_standing_without_a_key_names_the_variable_and_never_calls_out(
 def test_cancel_destroys_the_rental_and_treats_one_vast_already_forgot_as_ended(
     reply: Reply, refuses: bool
 ) -> None:
-    """A finished command leaves the rental up, so this is the call that stops the meter, and it
-    is asked more than once by design, by a sweep that settles the same run twice and by anyone
-    who already destroyed the instance in the console."""
+    """Cancel is the call that stops the meter, and it tolerates repeats.
+
+    A finished command leaves the rental up, and cancel is asked more than once by design, by
+    a sweep that settles the same run twice and by anyone who already destroyed the instance
+    in the console.
+    """
     backend = vast_backend(reply)
     with pytest.raises(HTTPError) if refuses else nullcontext():
         backend.cancel("4242")

@@ -8,7 +8,7 @@ import pytest
 from mainboard import Collection, Profiler, Reach, span
 from mainboard.profile import Activity, BottleneckReport, Feature, Tracer, annotate
 
-from .conftest import FakeGPU, FakeSnapshot, one_process_gpu
+from .support import FakeGPU, FakeSnapshot, one_process_gpu
 
 # `mainboard.profile` shadows the `benchmark` submodule with its re-exported function as an
 # attribute lookup; `import_module` reads `sys.modules` by dotted name, unaffected.

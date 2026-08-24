@@ -18,15 +18,15 @@ from patos import FrozenModel
 from plumbum.commands.processes import ProcessExecutionError
 
 from ..context.admission import admit
-from . import schedulers
+from . import vocabulary
 from .jobs import JobSpec
-from .schedulers import HostUnreachable, failure_reason, pick, read_log
+from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, db_file, logger, now, state_path, workspace
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
 from .transport import SshTransport
-from .vocabulary import POLL_SECONDS, JobState, Resources
+from .vocabulary import JobState, Resources
 from .wrapping import connection, wrap
 
 if TYPE_CHECKING:
@@ -91,29 +91,6 @@ class Verdict(FrozenModel):
         return self.verdict == "ok"
 
 
-def _raise_required_sync_failure(
-    error: ProcessExecutionError, host: str, required_paths: Sequence[str], extra: Sequence[str]
-) -> None:
-    """Re-raise `error` verbatim when nothing required was in flight, else wrap it with detail."""
-    if not required_paths and not extra:
-        raise error
-    paths = ", ".join((*required_paths, *extra))
-    raise RuntimeError(
-        f"failed to ship required sync path(s) {paths} to {host}; "
-        "submission aborted before scheduler dispatch"
-    ) from error
-
-
-def _bare_name_or_raise(script: str, error: FileNotFoundError) -> str:
-    """`script` unchanged when it is a bare name, else re-raise with staging-specific detail."""
-    if Path(script).name == script:
-        return script
-    raise FileNotFoundError(
-        f"cannot submit script {script!r}: the local file does not exist, so it "
-        "cannot be shipped to the host"
-    ) from error
-
-
 class Dispatcher:
     """Dispatch a job to a resolved host and hand back a `Handle` to poll/await/fetch.
 
@@ -139,7 +116,7 @@ class Dispatcher:
         self.cache = cache or Cache(db_file(self.root))
 
     def await_many(
-        self, handles: Sequence[Handle], *, interval: float = POLL_SECONDS
+        self, handles: Sequence[Handle], *, interval: float = vocabulary.POLL_SECONDS
     ) -> dict[Handle, Verdict]:
         """Block until every handle is terminal, returning each one's `Verdict`.
 
@@ -183,6 +160,28 @@ class Dispatcher:
             host=host,
         )
         logger.info("fetched %s from %s", path, host)
+
+    def local(self, path: str) -> Path:
+        """`path` as a real file here: a workspace-relative name resolved against the root.
+
+        The one place a dispatch turns a written-down path into a file on this machine, so a
+        command typed in a subdirectory reads and writes the same files it would from the
+        workspace root. An absolute path is already a location and passes through.
+        """
+        given = Path(path).expanduser()
+        return given if given.is_absolute() else self.root / given
+
+    def probe(self, handle: Handle) -> JobState | None:
+        """One non-blocking scheduler probe of `handle`, the read a status view wants.
+
+        Returns None on a transient blip (an unreachable host on this tick) rather than a
+        verdict, so a caller polling on its own cadence retries instead of recording a state
+        the host never actually reported. `await_many` is this same probe under a wait loop.
+        """
+        try:
+            return self.state(handle)
+        except HostUnreachable as down:
+            logger.warning("%s unreachable, retrying: %s", handle.id, down)
 
     def rsync_up(
         self,
@@ -261,7 +260,9 @@ class Dispatcher:
                     cwd=self.root,
                 )
             except ProcessExecutionError as error:
-                _raise_required_sync_failure(error, plan.host, required_paths, extra)
+                Dispatcher._raise_required_sync_failure(
+                    error, plan.host, required_paths, extra=extra
+                )
         self.cache.mark_synced(plan.host)
 
     def run(
@@ -333,6 +334,48 @@ class Dispatcher:
         return Handle(
             id=handle, host=plan.host, root=root, kind=plan.profile.kind, fetch_path=fetch
         )
+
+    def state(self, handle: Handle) -> JobState:
+        """One scheduler probe of `handle`, raising `HostUnreachable` when the host is down.
+
+        The unabsorbed form of `probe`, for a caller that has to say which host could not be
+        reached and why (a durable sweep reporting a dead host once and moving on) rather than
+        quietly retrying it on the next tick.
+        """
+        with connection(handle.host) as remote:
+            scheduler = registry.SCHEDULERS.select(handle.kind, default="ssh")
+            return scheduler.state(remote, handle.root, handle=handle.id)
+
+    def states(self, handles: Sequence[Handle]) -> dict[str, JobState]:
+        """Every handle's state, keyed by id, over one connection to the host they share.
+
+        The batched twin of `state`, for a caller holding many handles on one host. A dispatch
+        cache that has been accumulating for months holds a thousand runs on a single box, and
+        asking that box once instead of a thousand times is the difference between a sweep that
+        finishes and one nobody waits for. Every handle must name the same host, root and kind,
+        since one connection and one scheduler answer for all of them, so the first handle is
+        what those are read from.
+
+        A backend whose batched listing does not cover a handle (a SLURM `squeue` that only spans
+        live jobs, a PBS server that purged its history) is asked about that handle on its own
+        over the same connection, which is where the job's real ending is. `HostUnreachable`
+        surfaces exactly as it does from `state`, since a host that will not answer is a fact
+        about the host rather than about any one of these jobs.
+        """
+        if not handles:
+            return {}
+        shared = handles[0]
+        scheduler = registry.SCHEDULERS.select(shared.kind, default="ssh")
+        ids = list(dict.fromkeys(handle.id for handle in handles))
+        resolved: dict[str, JobState] = {}
+        with connection(shared.host) as remote:
+            listed = scheduler.states(remote, shared.root, ids)
+            for job_id in ids:
+                found = listed.get(job_id)
+                if found is None:
+                    found = scheduler.state(remote, shared.root, handle=job_id)
+                resolved[job_id] = found
+        return resolved
 
     def submit(
         self,
@@ -439,16 +482,6 @@ class Dispatcher:
         logger.info("%s -> %s on %s (%s)", command, handle, host, kind)
         return Handle(id=handle, host=host, root="", kind=kind, fetch_path=fetch)
 
-    def local(self, path: str) -> Path:
-        """`path` as a real file here: a workspace-relative name resolved against the root.
-
-        The one place a dispatch turns a written-down path into a file on this machine, so a
-        command typed in a subdirectory reads and writes the same files it would from the
-        workspace root. An absolute path is already a location and passes through.
-        """
-        given = Path(path).expanduser()
-        return given if given.is_absolute() else self.root / given
-
     def write_job_script(self, spec: JobSpec, *, pbs: bool, gpu_in_select: bool = True) -> str:
         """Render `spec`, write it under `{STATE_DIR}/jobs/`, return its workspace-relative path.
 
@@ -460,6 +493,33 @@ class Dispatcher:
         digest = hashlib.sha256(text.encode()).hexdigest()[:12]
         return self._stage(f"job-{digest}.sh", text.encode())
 
+    @staticmethod
+    def _bare_name_or_raise(script: str, error: FileNotFoundError) -> str:
+        """`script` unchanged when it is a bare name, else re-raise with staging detail."""
+        if Path(script).name == script:
+            return script
+        raise FileNotFoundError(
+            f"cannot submit script {script!r}: the local file does not exist, so it "
+            "cannot be shipped to the host"
+        ) from error
+
+    @staticmethod
+    def _raise_required_sync_failure(
+        error: ProcessExecutionError,
+        host: str,
+        required_paths: Sequence[str],
+        *,
+        extra: Sequence[str],
+    ) -> None:
+        """Re-raise `error` verbatim when nothing required was in flight, else wrap it."""
+        if not required_paths and not extra:
+            raise error
+        paths = ", ".join((*required_paths, *extra))
+        raise RuntimeError(
+            f"failed to ship required sync path(s) {paths} to {host}; "
+            "submission aborted before scheduler dispatch"
+        ) from error
+
     def _prepare_script(self, script: str) -> tuple[str, tuple[str, ...]]:
         """Stage a concrete local script and return its host-safe path plus its sync source.
 
@@ -470,7 +530,7 @@ class Dispatcher:
         try:
             content = self.local(script).read_bytes()
         except FileNotFoundError as error:
-            return _bare_name_or_raise(script, error), ()
+            return Dispatcher._bare_name_or_raise(script, error), ()
         digest = hashlib.sha256(content).hexdigest()[:12]
         staged = self._stage(f"job-{digest}.sh", content)
         return staged, (staged,)
@@ -481,60 +541,6 @@ class Dispatcher:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         return str(path.relative_to(self.root))
-
-    def probe(self, handle: Handle) -> JobState | None:
-        """One non-blocking scheduler probe of `handle`, the read a status view wants.
-
-        Returns None on a transient blip (an unreachable host on this tick) rather than a
-        verdict, so a caller polling on its own cadence retries instead of recording a state
-        the host never actually reported. `await_many` is this same probe under a wait loop.
-        """
-        try:
-            return self.state(handle)
-        except HostUnreachable as down:
-            logger.warning("%s unreachable, retrying: %s", handle.id, down)
-
-    def state(self, handle: Handle) -> JobState:
-        """One scheduler probe of `handle`, raising `HostUnreachable` when the host is down.
-
-        The unabsorbed form of `probe`, for a caller that has to say which host could not be
-        reached and why (a durable sweep reporting a dead host once and moving on) rather than
-        quietly retrying it on the next tick.
-        """
-        with connection(handle.host) as remote:
-            scheduler = schedulers.SCHEDULERS.select(handle.kind, default="ssh")
-            return scheduler.state(remote, handle.root, handle=handle.id)
-
-    def states(self, handles: Sequence[Handle]) -> dict[str, JobState]:
-        """Every handle's state, keyed by id, over one connection to the host they share.
-
-        The batched twin of `state`, for a caller holding many handles on one host. A dispatch
-        cache that has been accumulating for months holds a thousand runs on a single box, and
-        asking that box once instead of a thousand times is the difference between a sweep that
-        finishes and one nobody waits for. Every handle must name the same host, root and kind,
-        since one connection and one scheduler answer for all of them, so the first handle is
-        what those are read from.
-
-        A backend whose batched listing does not cover a handle (a SLURM `squeue` that only spans
-        live jobs, a PBS server that purged its history) is asked about that handle on its own
-        over the same connection, which is where the job's real ending is. `HostUnreachable`
-        surfaces exactly as it does from `state`, since a host that will not answer is a fact
-        about the host rather than about any one of these jobs.
-        """
-        if not handles:
-            return {}
-        shared = handles[0]
-        scheduler = schedulers.SCHEDULERS.select(shared.kind, default="ssh")
-        ids = list(dict.fromkeys(handle.id for handle in handles))
-        resolved: dict[str, JobState] = {}
-        with connection(shared.host) as remote:
-            listed = scheduler.states(remote, shared.root, ids)
-            for job_id in ids:
-                found = listed.get(job_id)
-                if found is None:
-                    found = scheduler.state(remote, shared.root, handle=job_id)
-                resolved[job_id] = found
-        return resolved
 
     def _verdict(self, handle: Handle, state: JobState) -> Verdict:
         """Persist a terminal state to the cache and project it onto a `Verdict`.

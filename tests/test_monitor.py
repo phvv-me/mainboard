@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable, Sequence
 from itertools import islice
 from typing import TYPE_CHECKING, ClassVar
 
@@ -14,15 +15,14 @@ from mainboard.dispatch.vocabulary import JobState
 from mainboard.experiments import StudyLedger
 from mainboard.experiments.identity import study_label
 
-from .dispatch.backends.conftest import FakeTransport, refused
+from .dispatch.backends.support import FakeTransport, refused
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
     from urllib.request import Request
 
     from mainboard.dispatch import Handle
 
-    from .dispatch.backends.conftest import Reply
+    from .dispatch.backends.support import Reply
 
 _HOST = "miyabi-g"
 _STUDY = "ec15c1b1e073"
@@ -178,8 +178,10 @@ def test_a_finished_job_is_pulled_reported_and_announced_once(
 def test_a_finished_job_reports_only_the_results_it_could_actually_bring_back(
     board: Board, monkeypatch: pytest.MonkeyPatch, fetch_path: str | None
 ) -> None:
-    """One missing artifact is a warning in the log, never a sweep that dies holding every other
-    job's outcome, so the verdict still lands whatever the transfer did.
+    """The verdict lands whatever the transfer did.
+
+    One missing artifact is a warning in the log, never a sweep that dies holding every
+    other job's outcome.
     """
     seed("3", fetch_path=fetch_path)
     probing(board, monkeypatch, finishing())
@@ -217,8 +219,10 @@ def test_a_failed_job_carries_a_network_free_reason(
 def test_a_verdict_the_cache_already_holds_costs_no_probe(
     board: Board, monkeypatch: pytest.MonkeyPatch, reported: str | None, changed: bool
 ) -> None:
-    """A terminal verdict can never change, which is also what keeps a finished job the queue has
-    already forgotten from reading back as vanished.
+    """A terminal verdict can never change.
+
+    That is also what keeps a finished job the queue has already forgotten from reading back
+    as vanished.
     """
     seed("6", verdict="ok", reported=reported)
     trips = probing(board, monkeypatch, finishing())
@@ -303,11 +307,13 @@ def test_a_finished_rental_is_settled_and_then_ended(
     board: Board,
     monkeypatch: pytest.MonkeyPatch,
     backend: type[Rented] | type[Instance],
-    replies: list[Reply],
+    replies: Sequence[Reply],
     ended: list[str],
 ) -> None:
-    """A finished command does not end a provider run, so a terminal verdict here is followed by
-    the cancel the scheduler path deliberately never makes.
+    """A provider run is cancelled the moment its verdict is terminal.
+
+    A finished command does not end a provider run, so the cancel follows here where the
+    scheduler path deliberately never makes one.
     """
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     monkeypatch.setenv("HPCAI_API_KEY", "key-123")

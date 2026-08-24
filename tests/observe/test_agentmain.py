@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from datetime import UTC
 from typing import TYPE_CHECKING
 
@@ -6,10 +7,9 @@ import pytest
 from mainboard.observe import Kind, Spool
 from mainboard.observe.agentmain import Args, main, parse_args, wrap
 
-from .conftest import AT, ended, line
+from .support import AT, ended, line
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from datetime import datetime
     from pathlib import Path
 

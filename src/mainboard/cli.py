@@ -385,14 +385,7 @@ def build(root: Path | None = None) -> App:
         fields: a comma-separated projection over host/root/env/installer/tool/onboarded_at.
         """
         payloads = [
-            {
-                "host": setup.host,
-                "root": setup.root,
-                "env": setup.env,
-                "installer": setup.installer,
-                "tool": setup.tool,
-                "onboarded_at": setup.onboarded_at,
-            }
+            setup.model_dump(include=set(_HOSTS_COLUMNS))
             for setup in board("local").dispatcher.cache.hosts()
         ]
         rows(
@@ -571,7 +564,7 @@ def build(root: Path | None = None) -> App:
         _tabled(
             measured,
             _TRANSFER_COLUMNS,
-            ("files", "raw_bytes", "wire_bytes"),
+            summing=("files", "raw_bytes", "wire_bytes"),
             json_mode=json,
             agent=agent,
             fields=fields,
@@ -609,7 +602,7 @@ def build(root: Path | None = None) -> App:
         _tabled(
             priced,
             _ESTIMATE_COLUMNS,
-            ("wire_bytes", "runtime_s", "expected_usd", "p90_usd"),
+            summing=("wire_bytes", "runtime_s", "expected_usd", "p90_usd"),
             json_mode=json,
             agent=agent,
             fields=fields,
@@ -750,6 +743,7 @@ def build(root: Path | None = None) -> App:
 
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
+_HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
 
 # The columns each batch table carries, named here so an empty batch still renders its heading and
 # so the totals row is summed over the same shape the rows are printed in.
@@ -799,8 +793,8 @@ def _changed(
 def _tabled(
     payloads: list[dict[str, Node]],
     columns: Sequence[str],
-    summing: Sequence[str],
     *,
+    summing: Sequence[str],
     json_mode: bool,
     agent: bool,
     fields: str,
@@ -834,7 +828,7 @@ def _fields(raw: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip()) if raw else ()
 
 
-def _answers(given: tuple[str, ...]) -> dict[str, str]:
+def _answers(given: Sequence[str]) -> dict[str, str]:
     """The `question=value` pairs a caller passed, refusing one written without its value."""
     split = [pair.partition("=") for pair in given]
     if bare := [pair for pair, separator, _ in split if not separator]:

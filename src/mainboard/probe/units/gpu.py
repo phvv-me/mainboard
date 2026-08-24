@@ -82,7 +82,12 @@ class GPU(Unit, Registry):
         try:
             return tuple(provider.all())
         except Exception:
-            logger.warning(
-                "GPU provider %s failed to probe, skipping", provider.__name__, exc_info=True
-            )
-            return ()
+            return cls.skipped(provider)
+
+    @classmethod
+    def skipped(cls, provider: type[GPU]) -> tuple[GPU, ...]:
+        """Log one provider's failed probe and stand for its absent devices."""
+        logger.warning(
+            "GPU provider %s failed to probe, skipping", provider.__name__, exc_info=True
+        )
+        return ()

@@ -48,14 +48,17 @@ def totals(
     return {
         column: label
         if at == 0
-        else (sum(_number(row.get(column)) for row in rows) if column in summing else "")
+        else (
+            sum(
+                cell if isinstance(cell := row.get(column), int | float) else 0
+                for row in rows
+                if not isinstance(row.get(column), bool)
+            )
+            if column in summing
+            else ""
+        )
         for at, column in enumerate(columns)
     }
-
-
-def _number(value: Node) -> float:
-    """`value` as a number for summing, zero for a cell holding anything else."""
-    return value if isinstance(value, int | float) and not isinstance(value, bool) else 0
 
 
 def pairs_of(row: Row, *, fields: Sequence[str] | None) -> list[dict[str, Cell]]:

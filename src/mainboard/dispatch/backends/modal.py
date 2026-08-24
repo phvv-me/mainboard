@@ -103,48 +103,6 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         "time and pull it by hand until that path lands",
     }
 
-    def cancel(self, handle: str) -> None:
-        """Terminate the sandbox, tolerating one Modal has already forgotten.
-
-        Every run the durable sweep settles is cancelled, and the same run can be settled twice,
-        so a sandbox that is no longer addressable is the state this asks for rather than a fault.
-        """
-        modal = _modal()
-        with suppress(modal.exception.NotFoundError):
-            modal.Sandbox.from_id(handle).terminate()
-
-    def logs(self, handle: str) -> str:
-        return str(_modal().Sandbox.from_id(handle).stdout.read())
-
-    def state(self, handle: str) -> JobState:
-        sandbox = _modal().Sandbox.from_id(handle)
-        exit_code = sandbox.poll()
-        verdict = "running" if exit_code is None else ("ok" if exit_code == 0 else "failed")
-        return JobState(handle=handle, exit_code=exit_code, verdict=verdict)
-
-    def standing(self) -> Standing:
-        """What the workspace can still spend, by whichever of two routes can answer for it.
-
-        The token pair is what `modal.Client` itself checks before its first call, resolved from
-        `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or the active profile in `~/.modal.toml`, so an
-        unauthenticated machine costs no round trip. Past that the preference is for the figure
-        Modal itself keeps, a cycle budget, falling back on the one this workspace declares and
-        we do the arithmetic for.
-
-        The workspace `.env` is merged in before the SDK is imported at all, since Modal reads
-        that pair out of the environment as its own module loads and would never see a token
-        this workspace declared but nothing had exported yet.
-        """
-        Credentials().load()
-        try:
-            modal = _modal()
-        except MissionError as absent:
-            return Standing(note=str(absent))
-        config = modal.config.config
-        if not (config["token_id"] and config["token_secret"]):
-            return Standing(note="run `modal token new`, or set MODAL_TOKEN_ID/MODAL_TOKEN_SECRET")
-        return self.budgeted(modal) or self.derived(modal)
-
     @staticmethod
     def budgeted(modal: ModuleType) -> Standing | None:
         """The cycle budget less what this cycle has used, None when the workspace keeps none.
@@ -202,6 +160,48 @@ class ModalBackend(ProviderBackend, Account, LogSource):
             credit_usd=declared - spent,
             note=f"derived, ${declared:.2f} declared less ${spent:.2f} metered in {cycle}",
         )
+
+    def cancel(self, handle: str) -> None:
+        """Terminate the sandbox, tolerating one Modal has already forgotten.
+
+        Every run the durable sweep settles is cancelled, and the same run can be settled twice,
+        so a sandbox that is no longer addressable is the state this asks for rather than a fault.
+        """
+        modal = _modal()
+        with suppress(modal.exception.NotFoundError):
+            modal.Sandbox.from_id(handle).terminate()
+
+    def logs(self, handle: str) -> str:
+        return str(_modal().Sandbox.from_id(handle).stdout.read())
+
+    def standing(self) -> Standing:
+        """What the workspace can still spend, by whichever of two routes can answer for it.
+
+        The token pair is what `modal.Client` itself checks before its first call, resolved from
+        `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or the active profile in `~/.modal.toml`, so an
+        unauthenticated machine costs no round trip. Past that the preference is for the figure
+        Modal itself keeps, a cycle budget, falling back on the one this workspace declares and
+        we do the arithmetic for.
+
+        The workspace `.env` is merged in before the SDK is imported at all, since Modal reads
+        that pair out of the environment as its own module loads and would never see a token
+        this workspace declared but nothing had exported yet.
+        """
+        Credentials().load()
+        try:
+            modal = _modal()
+        except MissionError as absent:
+            return Standing(note=str(absent))
+        config = modal.config.config
+        if not (config["token_id"] and config["token_secret"]):
+            return Standing(note="run `modal token new`, or set MODAL_TOKEN_ID/MODAL_TOKEN_SECRET")
+        return self.budgeted(modal) or self.derived(modal)
+
+    def state(self, handle: str) -> JobState:
+        sandbox = _modal().Sandbox.from_id(handle)
+        exit_code = sandbox.poll()
+        verdict = "running" if exit_code is None else ("ok" if exit_code == 0 else "failed")
+        return JobState(handle=handle, exit_code=exit_code, verdict=verdict)
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         require_budget(resources)

@@ -14,7 +14,7 @@ from mainboard.profile import (
     TraceCollector,
 )
 
-from .conftest import kernel, traced_profile
+from .support import kernel, traced_profile
 
 
 @dataclass

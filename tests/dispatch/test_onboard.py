@@ -1,11 +1,12 @@
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 import pytest
 
 from mainboard import MissionError
+from mainboard.dispatch import HostSetup
 from mainboard.dispatch import onboard as onboard_module
 from mainboard.dispatch.onboard import (
-    HostSetup,
     Onboarding,
     RemoteShell,
     facts_command,
@@ -14,11 +15,9 @@ from mainboard.dispatch.onboard import (
 )
 from mainboard.dispatch.state import Cache
 
-from .conftest import RecordingMachine, Rule, cache, machine_with, plan
+from .support import RecordingMachine, Rule, cache, machine_with, plan
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
-
     from mainboard import ExecutionPlan
 
 # One keyword `Onboarding` accepts past its dispatcher and plan, so the helper below forwards a

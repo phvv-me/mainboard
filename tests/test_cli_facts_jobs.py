@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,7 +11,7 @@ from mainboard.dispatch.state import Cache, RunRecord
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from .conftest import Relayed
+    from .support import Relayed
 
 _FIELD_VALUE_HEADER = "field\tvalue"
 
@@ -89,7 +90,7 @@ def test_the_facts_verb_prints_this_machines_own_probe(
 )
 def test_the_setup_verb_shows_what_the_host_became(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     capsys: pytest.CaptureFixture[str],
     flags: list[str],
     fragments: tuple[str, ...],
@@ -125,7 +126,7 @@ def test_the_setup_verb_shows_what_the_host_became(
 def test_the_jobs_verb_lists_recent_runs_newest_first(
     depot: Path,
     capsys: pytest.CaptureFixture[str],
-    seeded: list[str],
+    seeded: Sequence[str],
     flags: list[str],
     expected: list[dict[str, str]],
 ) -> None:
@@ -145,7 +146,7 @@ def test_the_jobs_verb_lists_recent_runs_newest_first(
     ids=["the default rich table", "the compact table"],
 )
 def test_the_jobs_verb_tables_what_it_listed(
-    depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], expected: tuple[str, ...]
+    depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], expected: Sequence[str]
 ) -> None:
     seed_run()
     with pytest.raises(SystemExit, match="0"):

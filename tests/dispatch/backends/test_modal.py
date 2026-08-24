@@ -10,7 +10,7 @@ from mainboard.dispatch.backends.modal import declared_credit
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container
 
-from .conftest import FakeModal, ModalFault, environment, plan
+from .support import FakeModal, ModalFault, environment, plan
 
 # What a sandbox's `poll()` says, and the verdict a post-mortem reads it as. A sandbox that has
 # not exited polls None, so a live run is the absence of an exit code rather than a state string.
@@ -48,8 +48,11 @@ def _credit_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_missing_modal_extra_refuses_every_verb_with_the_command_that_installs_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`modal` is an optional extra, so every call goes through the lazy accessor, and a survey
-    listing the row must not raise where a dispatched verb rightly does."""
+    """A missing SDK never breaks a survey row.
+
+    `modal` is an optional extra, so every call goes through the lazy accessor, and a survey
+    listing the row must not raise where a dispatched verb rightly does.
+    """
     monkeypatch.delitem(sys.modules, "modal", raising=False)
     monkeypatch.setattr("mainboard.dispatch.backends.modal.import_module", broken_import)
     with pytest.raises(MissionError, match="uv add modal"):
@@ -137,8 +140,11 @@ def test_logs_reads_the_sandboxs_captured_stdout(fake_modal: FakeModal) -> None:
 def test_cancel_terminates_the_sandbox_and_tolerates_one_modal_already_forgot(
     fake_modal: FakeModal,
 ) -> None:
-    """A sweep cancels every run it settles, so the same sandbox is cancelled more than once and
-    the second call walks straight into the `NotFoundError` a gone id raises."""
+    """A second cancel of the same sandbox is part of the design.
+
+    A sweep cancels every run it settles, so the same sandbox is cancelled more than once and
+    the second call walks straight into the `NotFoundError` a gone id raises.
+    """
     handle = ModalBackend().submit(plan(), "echo hi", Resources(max_usd=1.0))
     ModalBackend().cancel(handle)
     assert fake_modal.sandboxes[handle].terminated is True
@@ -155,8 +161,11 @@ def test_the_declared_delivery_gap_names_volumes_and_the_path_asked_for() -> Non
 
 
 def test_standing_prefers_the_default_environments_cycle_budget(fake_modal: FakeModal) -> None:
-    """The closest thing Modal keeps to a balance, and the default environment is where a sandbox
-    lands when nothing names another, so it is read ahead of any other."""
+    """The default environment's budget is read ahead of any other.
+
+    It is the closest thing Modal keeps to a balance, and the default environment is where a
+    sandbox lands when nothing names another.
+    """
     fake_modal.environments.items = [
         environment("staging", budget=10.0, used=1.0),
         environment("main", default=True, budget=50.0, used=12.5),
@@ -175,8 +184,11 @@ def test_standing_prefers_the_default_environments_cycle_budget(fake_modal: Fake
 def test_standing_falls_through_to_the_derivation_when_no_budget_answers(
     fake_modal: FakeModal, monkeypatch: pytest.MonkeyPatch, refusal: str | None
 ) -> None:
-    """A zero budget is what an unbudgeted workspace really answers, not a zero balance, and a
-    workspace without the team feature refuses the read outright. Neither is worth printing."""
+    """An unbudgeted or unlicensed workspace prints no budget at all.
+
+    A zero budget is what an unbudgeted workspace really answers, not a zero balance, and a
+    workspace without the team feature refuses the read outright. Neither is worth printing.
+    """
     monkeypatch.setenv("MODAL_CREDIT_USD", "30")
     if refusal:
         fake_modal.environments.refusal = ModalFault(refusal)
@@ -189,8 +201,10 @@ def test_standing_falls_through_to_the_derivation_when_no_budget_answers(
 def test_declared_credit_reads_the_env_and_refuses_what_is_not_a_dollar_amount(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Modal reports what a cycle has cost and never what is left, so the starting figure has to
-    come from the person who bought the credit."""
+    """The starting credit comes from the person who bought it.
+
+    Modal reports what a cycle has cost and never what is left.
+    """
     assert declared_credit() == pytest.approx(0.0)
     monkeypatch.setenv("MODAL_CREDIT_USD", "30.50")
     assert declared_credit() == pytest.approx(30.5)
@@ -237,9 +251,12 @@ def test_standing_derives_the_balance_from_the_declaration_less_this_cycles_spen
     credit: float | None,
     note: str,
 ) -> None:
-    """Subtracting the metered cost from a declared credit is arithmetic we do rather than a
+    """A derived balance names its own arithmetic.
+
+    Subtracting the metered cost from a declared credit is arithmetic we do rather than a
     balance Modal blessed, so the note carries both figures and the cycle they belong to. A
-    throttled read says nothing about whether the provider is usable, so the row stays keyed."""
+    throttled read says nothing about whether the provider is usable, so the row stays keyed.
+    """
     if declared:
         monkeypatch.setenv("MODAL_CREDIT_USD", declared)
     fake_modal.billing.reply.metered_cost = Decimal(metered)
@@ -255,8 +272,10 @@ def test_standing_derives_the_balance_from_the_declaration_less_this_cycles_spen
 def test_standing_without_a_configured_token_names_the_command_that_mints_one(
     fake_modal: FakeModal,
 ) -> None:
-    """The token pair is what `modal.Client` itself checks first, so an unauthenticated machine
-    costs no round trip at all."""
+    """An unauthenticated machine is caught before any round trip.
+
+    The token pair is what `modal.Client` itself checks first.
+    """
     fake_modal.config.config["token_id"] = ""
     standing = ModalBackend().standing()
     assert standing.keyed is False

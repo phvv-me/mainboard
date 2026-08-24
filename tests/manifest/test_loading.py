@@ -5,10 +5,9 @@ import tomlkit
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from mainboard import Manifest, MissionError, load
+from mainboard import Manifest, MissionError, Project, load
 from mainboard.manifest import EnvMode, Guardrail, Header, HostProfile, Spec
 
-from ..conftest import MANIFEST
 from ..strategies import PATHS, SPECS, WORDS
 
 # A manifest built from its own schema, over the tables a round trip can compare field by field.
@@ -51,7 +50,7 @@ def test_a_manifest_that_cannot_be_read_names_what_went_wrong(
     tmp_path: Path, body: str | None, match: str
 ) -> None:
     """A missing file, broken TOML, a template error and a schema error each name their spot."""
-    path = tmp_path / MANIFEST
+    path = tmp_path / Project().manifest
     if body is not None:
         path.write_text(body, encoding="utf-8")
     with pytest.raises(MissionError, match=match):
@@ -64,6 +63,6 @@ def test_a_manifest_dumped_to_toml_loads_back_as_the_same_model(
     tmp_path: Path, manifest: Manifest
 ) -> None:
     """Every example writes and reloads a file, so the budget stays small on purpose."""
-    path = tmp_path / MANIFEST
+    path = tmp_path / Project().manifest
     path.write_text(tomlkit.dumps(manifest.model_dump(exclude_defaults=True)), encoding="utf-8")
     assert load(path) == manifest

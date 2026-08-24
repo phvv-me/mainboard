@@ -1,13 +1,13 @@
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 import pytest
 
 from mainboard import MissionError
-from mainboard.engines.compile.ecosystems import Ecosystem, Go, Node, Rust, SecondStage
+from mainboard.engines.compile import Ecosystem, SecondStage
+from mainboard.engines.compile.ecosystems import Go, Node, Rust
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from pytest_subprocess import FakeProcess
 
     from mainboard.engines.compile.generated import Writer
@@ -112,8 +112,11 @@ def test_an_undeclared_environment_is_refused_with_the_declared_roster(
 def test_a_workspace_wide_toolchain_reads_every_environments_tables(
     stage_from: Callable[[str], SecondStage],
 ) -> None:
-    """One `package.json` serves every env, so provisioning one env may not narrow it, while a
-    toolchain installing into the pixi prefix sees only the environment being provisioned."""
+    """Each toolchain sees exactly the scope it installs into.
+
+    One `package.json` serves every env, so provisioning one env may not narrow it, while a
+    toolchain installing into the pixi prefix sees only the environment being provisioned.
+    """
     stage = stage_from(
         f"{_HEADER}"
         '[dev.nodejs.deps]\nprettier = ">=3"\n'
@@ -154,7 +157,7 @@ def test_install_runs_every_toolchains_installer_inside_the_provisioned_environm
     stage_from: Callable[[str], SecondStage],
     files: Writer,
     fp: FakeProcess,
-    tool_paths: dict[str, str],
+    tool_paths: Mapping[str, str],
     stub_binary: Callable[[str], str],
 ) -> None:
     """Every manager ships as a conda package pixi has just installed."""

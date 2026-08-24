@@ -8,9 +8,10 @@ import shlex
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ...core.project import Project
+from .. import vocabulary
 from ..shared import state_dir
 from ..transport import HostUnreachable, is_transport_failure
-from ..vocabulary import VANISHED, JobState, Resources
+from ..vocabulary import JobState, Resources
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -181,7 +182,7 @@ def log_excerpt(log: str, limit: int = 10) -> list[str]:
 
 def short_reason(verdict: str, exit_code: int | None) -> str:
     """A short, network-free cause for a non-ok terminal verdict, from its cached state alone."""
-    if verdict == VANISHED:
+    if verdict == vocabulary.VANISHED:
         return "vanished (the scheduler no longer remembers the job)"
     if (known := exit_reason(exit_code)) is not None:
         return known

@@ -1,4 +1,5 @@
 import shlex
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pytest
@@ -9,7 +10,6 @@ from mainboard import script, sh
 from ..strategies import TEXT
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from string.templatelib import Template
 
 

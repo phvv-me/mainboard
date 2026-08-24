@@ -98,7 +98,7 @@ def credential(declared: Tracking) -> str:
     return Tracker.find(declared.provider).credential
 
 
-def streamed(name: str, handle: str) -> tuple[str, str]:
+def streamed(name: str, *, handle: str) -> tuple[str, str]:
     """The `(stream, job)` one dispatched run belongs to.
 
     The one router from a dispatch label to a receipts stream, so a plain submit, a study trial
@@ -117,7 +117,7 @@ def streamed(name: str, handle: str) -> tuple[str, str]:
     return (name, name) if name else (f"run-{handle}", handle)
 
 
-def batched(name: str) -> bool:
+def is_batched(name: str) -> bool:
     """Whether a batch already publishes every line about this run, so nothing else should.
 
     Its own flow writes every receipt about a batch job, from the dispatch through the sweep

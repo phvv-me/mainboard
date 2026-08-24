@@ -1,15 +1,12 @@
 import os
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
 
 import pytest
 
 from mainboard.batch import Topic
 from mainboard.tracking import Sampler, host_env, sampling_line
 
-from ..batch.conftest import Recorder
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
+from ..batch.support import Recorder
 
 _STREAM = "smoke-1"
 _JOB = "trial-a"

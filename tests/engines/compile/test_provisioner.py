@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pytest
@@ -7,7 +8,6 @@ from mainboard.engines.compile import Provisioner, task_line
 from mainboard.engines.compile.state import SyncState
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
     from pytest_subprocess import FakeProcess
@@ -33,8 +33,10 @@ def _solvable(provisioner: Provisioner) -> None:
 def test_provision_compiles_and_installs_under_one_lock(
     manifest_from: Callable[[str], Manifest], tmp_path: Path, fp: FakeProcess
 ) -> None:
-    """A second provision recompiles nothing, since the writer is a no-op once the generated
-    file already matches."""
+    """A second provision recompiles nothing.
+
+    The writer is a no-op once the generated file already matches.
+    """
     provisioner = Provisioner(tmp_path, manifest_from(_PINNED))
     assert provisioner.out == tmp_path / ".mainboard"
     assert provisioner.pixi.manifest == provisioner.out / "pixi.toml"

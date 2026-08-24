@@ -1,4 +1,5 @@
 import inspect
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -8,17 +9,14 @@ from plumbum.commands.processes import ProcessExecutionError
 from mainboard import MissionError
 from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, Verdict
 from mainboard.dispatch import dispatcher as dispatch_module
-from mainboard.dispatch import schedulers as schedulers_module
 from mainboard.dispatch.jobs import JobSpec
-from mainboard.dispatch.schedulers import HostUnreachable
+from mainboard.dispatch.schedulers import HostUnreachable, registry
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
-from .conftest import RecordingScheduler, cache, machine_with, plan, run_record
+from .support import RecordingScheduler, cache, machine_with, plan, run_record
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from mainboard.dispatch.transport import Machine
 
 _CONTAINERIZED = {
@@ -43,7 +41,7 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> RecordingScheduler:
     """Pin the backend, the connection, git and the clock, every seam a dispatch reaches."""
     scheduler = RecordingScheduler()
     monkeypatch.setattr(dispatch_module, "pick", lambda profile: scheduler)
-    monkeypatch.setattr(schedulers_module, "SCHEDULERS", _StubStrategy(scheduler))
+    monkeypatch.setattr(registry, "SCHEDULERS", _StubStrategy(scheduler))
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
     monkeypatch.setattr(
         dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else ""

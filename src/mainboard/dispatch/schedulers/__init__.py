@@ -1,4 +1,4 @@
-from ..transport import DaemonDown, HostUnreachable
+from ..transport import HostUnreachable
 from .base import (
     Scheduler,
     exit_reason,
@@ -12,12 +12,10 @@ from .base import (
 from .local import Local
 from .pbs import Pbs, build_qsub_flags
 from .pueue import Pueue
-from .registry import SCHEDULERS, pick
+from .registry import pick
 from .slurm import Slurm, build_sbatch_flags, slurm_verdict
 
 __all__ = [
-    "SCHEDULERS",
-    "DaemonDown",
     "HostUnreachable",
     "Local",
     "Pbs",

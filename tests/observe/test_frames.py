@@ -3,7 +3,7 @@ from hypothesis import strategies as st
 
 from mainboard.observe import Frame, decode, encode, encoded_length, next_offset, parse_tail
 
-from .conftest import FRAMES, line
+from .support import FRAMES, line
 
 
 @given(frame=FRAMES)

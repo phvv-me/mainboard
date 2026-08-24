@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import pytest
@@ -6,14 +7,13 @@ from plumbum import local
 from mainboard import MissionError
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from pathlib import Path
 
     from pytest_subprocess import FakeProcess
 
     from mainboard.engines.compile.backend import Pixi
 
-    from .conftest import Record
+    from .support import Record
 
 _FINGERPRINT = ".pixi-environment-fingerprint"
 _DAMAGED = "cupy-cuda13x"
@@ -59,8 +59,11 @@ def test_install_requires_a_lock_unless_resolution_was_requested(
 def test_a_mutable_editable_source_is_what_relaxes_locked_into_frozen(
     generated: str | None, rule: str, fp: FakeProcess, pixi: Pixi
 ) -> None:
-    """An editable's code moves without the lock moving, so demanding an unchanged tree would
-    refuse every workspace that develops one of its own dependencies."""
+    """An editable's code may move without the lock moving.
+
+    Demanding an unchanged tree would refuse every workspace that develops one of its own
+    dependencies.
+    """
     if generated is not None:
         pixi.manifest.write_text(generated)
     pixi.lock.write_text("version: 7\n")
@@ -138,8 +141,10 @@ def test_a_resolve_installs_once_more_to_verify_the_lock_it_just_solved(
     pixi: Pixi,
     tool_paths: Mapping[str, str],
 ) -> None:
-    """A solve is successful only after the resulting pair passes pixi's own check, the known
-    double-install wart carried over from chefe."""
+    """A solve counts only once pixi's own check passes.
+
+    The resulting pair must clear it, the known double-install wart carried over from chefe.
+    """
     pixi.manifest.write_text(generated)
     pixi.lock.write_text("version: 7\n")
     for _ in range(2):
@@ -299,8 +304,11 @@ def test_the_lock_reading_names_every_pinned_package(fp: FakeProcess, pixi: Pixi
 def test_the_lock_reading_is_empty_when_there_is_nothing_to_read(
     solved: bool, fp: FakeProcess, pixi: Pixi, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A before-and-after reading has to survive the before, so a miss is a snapshot of
-    nothing rather than an error somebody has to catch."""
+    """A missing state reads as a snapshot of nothing.
+
+    A before-and-after reading has to survive the before, rather than raising an error
+    somebody has to catch.
+    """
     if solved:
         pixi.lock.write_text("version: 7\n")
         fp.register([fp.any()], returncode=1, stderr="unknown environment\n")

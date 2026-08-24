@@ -82,53 +82,25 @@ class Diagnosis(FrozenModel):
         contended = len(gpu.processes) > 1
         host_offload = meter.host_delta_gb >= host_growth_gb or contended
         throttled = gpu.thermal.is_throttling
+        # Severity order: an imminent OOM kill outranks a throttle, which outranks contention
+        # or offload thrash, which outranks an idle GPU. With no flag the trial reads healthy.
+        renderings = [
+            (
+                near_oom,
+                f"near OOM: {meter.peak_gpu_gb:.1f}/{capacity_gb:.1f} GB ({used_pct:.0f}%)",
+            ),
+            (throttled, f"throttled: {', '.join(gpu.thermal.throttle_names)}"),
+            (
+                host_offload and contended,
+                f"host offload: {len(gpu.processes)} processes share the GPU",
+            ),
+            (host_offload, f"host offload: host memory grew {meter.host_delta_gb:.1f} GB"),
+            (gpu_underutilized, f"GPU underutilized: {compute_pct}% compute"),
+        ]
         return cls(
             near_oom=near_oom,
             gpu_underutilized=gpu_underutilized,
             host_offload=host_offload,
             throttled=throttled,
-            reason=cls._reason(
-                meter=meter,
-                gpu=gpu,
-                capacity_gb=capacity_gb,
-                used_pct=used_pct,
-                compute_pct=compute_pct,
-                contended=contended,
-                near_oom=near_oom,
-                throttled=throttled,
-                gpu_underutilized=gpu_underutilized,
-                host_offload=host_offload,
-            ),
+            reason=next((told for fired, told in renderings if fired), "healthy"),
         )
-
-    @staticmethod
-    def _reason(
-        *,
-        meter: Meter,
-        gpu: DeviceSnapshot,
-        capacity_gb: float,
-        used_pct: float,
-        compute_pct: int,
-        contended: bool,
-        near_oom: bool,
-        throttled: bool,
-        gpu_underutilized: bool,
-        host_offload: bool,
-    ) -> str:
-        """Render the dominant flag, near-OOM first as the most urgent, then a throttle.
-
-        The order encodes severity: an imminent OOM kill outranks a throttle, which
-        outranks contention or offload thrash, which outranks an idle GPU. With no flag
-        the trial reads as ``healthy``.
-        """
-        if near_oom:
-            return f"near OOM: {meter.peak_gpu_gb:.1f}/{capacity_gb:.1f} GB ({used_pct:.0f}%)"
-        if throttled:
-            return f"throttled: {', '.join(gpu.thermal.throttle_names)}"
-        if host_offload:
-            if contended:
-                return f"host offload: {len(gpu.processes)} processes share the GPU"
-            return f"host offload: host memory grew {meter.host_delta_gb:.1f} GB"
-        if gpu_underutilized:
-            return f"GPU underutilized: {compute_pct}% compute"
-        return "healthy"

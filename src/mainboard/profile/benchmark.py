@@ -19,11 +19,6 @@ class BenchSample(FrozenModel):
     samples: tuple[float, ...]
 
     @property
-    def runs(self) -> int:
-        """How many timed iterations were recorded."""
-        return len(self.samples)
-
-    @property
     def mean_us(self) -> float:
         """Mean microseconds per call over the timed iterations."""
         return fmean(self.samples)
@@ -32,6 +27,11 @@ class BenchSample(FrozenModel):
     def min_us(self) -> float:
         """Fastest microsecond time over the timed iterations."""
         return min(self.samples)
+
+    @property
+    def runs(self) -> int:
+        """How many timed iterations were recorded."""
+        return len(self.samples)
 
 
 def _noop() -> None:

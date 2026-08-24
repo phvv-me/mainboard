@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -32,7 +33,7 @@ def test_home_prefers_pixi_home_and_falls_back_to_the_users_own_directory(
 
 
 def test_command_prefers_pixi_on_path_and_falls_back_to_pixi_home(
-    monkeypatch: pytest.MonkeyPatch, tool_paths: dict[str, str], isolated_pixi_home: Path
+    monkeypatch: pytest.MonkeyPatch, tool_paths: Mapping[str, str], isolated_pixi_home: Path
 ) -> None:
     """A non-login remote shell can drop `PIXI_HOME/bin` from PATH without pixi being absent."""
     assert str(PixiEngine().command) == tool_paths["pixi"]
@@ -87,7 +88,7 @@ def test_bootstrap_runs_the_official_installer_and_raises_when_it_fails(fp: Fake
     ],
 )
 def test_the_appended_shell_file_matches_what_the_installer_would_edit(
-    monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], appended: str
+    monkeypatch: pytest.MonkeyPatch, environment: Mapping[str, str], appended: str
 ) -> None:
     """The installer edits a personal startup file, so the engine can name which one."""
     monkeypatch.delenv("PIXI_NO_PATH_UPDATE", raising=False)

@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -8,12 +9,12 @@ from mainboard.batch import Topic
 from mainboard.batch.runner import directory
 from mainboard.cli import build
 
-from .conftest import receipts
+from .support import receipts
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ..conftest import Relayed
+    from ..support import Relayed
 
 _SPEC = """
 name = "smoke"
@@ -71,7 +72,7 @@ def test_a_batch_declared_as_nothing_is_refused_with_the_two_ways_to_declare_one
 
 
 def test_running_prints_the_batch_id_then_every_handle_it_dispatched(
-    depot: Path, relayed: list[Relayed], capsys: pytest.CaptureFixture[str]
+    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The id is what `watch` is pointed at next, so a bare terminal run leads with it."""
     with pytest.raises(SystemExit, match="0"):
@@ -86,7 +87,7 @@ def test_running_prints_the_batch_id_then_every_handle_it_dispatched(
 
 
 def test_a_compact_run_prints_the_record_alone_with_the_id_inside_it(
-    depot: Path, relayed: list[Relayed], capsys: pytest.CaptureFixture[str]
+    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A caller reading a record parses rows, so the bare id line would only be noise there."""
     with pytest.raises(SystemExit, match="0"):
@@ -97,7 +98,7 @@ def test_a_compact_run_prints_the_record_alone_with_the_id_inside_it(
 
 
 def test_watching_settles_every_target_in_one_table(
-    depot: Path, relayed: list[Relayed], capsys: pytest.CaptureFixture[str]
+    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["batch", "run", written(depot)])
@@ -110,7 +111,7 @@ def test_watching_settles_every_target_in_one_table(
 
 
 def test_watching_follows_until_the_batch_closes(
-    depot: Path, relayed: list[Relayed], capsys: pytest.CaptureFixture[str]
+    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str]
 ) -> None:
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["batch", "run", written(depot)])

@@ -48,8 +48,8 @@ def test_adding_a_requirement_and_dropping_it_leaves_the_file_byte_identical(
 ) -> None:
     """The round trip is the proof that nothing but the one line was ever touched."""
     edited = ManifestText(text)
-    edited.put(path, name, spec)
-    edited.put(path, name, spec)
+    edited.put(path, name, spec=spec)
+    edited.put(path, name, spec=spec)
     assert edited.declares(path, name)
     assert edited.constraint(path, name) == spec
     restored = ManifestText(edited.text())
@@ -62,16 +62,16 @@ def test_a_new_entry_keeps_the_column_and_the_comment_that_introduces_the_next_t
 ) -> None:
     """Alignment is read off the table, and a heading comment stays with the table it announces."""
     edited = ManifestText(text)
-    edited.put(_DEV_PYTHON, "tqdm", ">=4.70.0, <5")
+    edited.put(_DEV_PYTHON, "tqdm", spec=">=4.70.0, <5")
     written = edited.text().splitlines()
-    at = written.index('tqdm      = ">=4.70.0, <5"')
-    assert written[at - 1].startswith("pytest")
+    landed = written.index('tqdm      = ">=4.70.0, <5"')
+    assert written[landed - 1].startswith("pytest")
     assert (
-        written[at + 2]
+        written[landed + 2]
         == "# runtime-keyed toolchains, the table name matches the package in [deps]"
     )
     aligned = ManifestText(text)
-    aligned.put(_PYTHON, "tqdm", ">=4")
+    aligned.put(_PYTHON, "tqdm", spec=">=4")
     columns = {
         line.index("=")
         for line in aligned.text().splitlines()
@@ -79,14 +79,14 @@ def test_a_new_entry_keeps_the_column_and_the_comment_that_introduces_the_next_t
     }
     assert len(columns) == 1
     replaced = ManifestText(text)
-    replaced.put(_PYTHON, "torch", ">=3.0")
+    replaced.put(_PYTHON, "torch", spec=">=3.0")
     assert 'torch     = ">=3.0"' in replaced.text()
 
 
 def test_a_table_the_manifest_never_had_is_written_as_one_heading(text: str) -> None:
     """A new ecosystem reads as `[rust.deps]`, the way every other table is written."""
     edited = ManifestText(text)
-    edited.put(("rust", "deps"), "ripgrep", ">=14, <15")
+    edited.put(("rust", "deps"), "ripgrep", spec=">=14, <15")
     written = edited.text()
     assert "[rust.deps]" in written
     assert 'ripgrep = ">=14, <15"' in written
@@ -96,8 +96,8 @@ def test_a_table_the_manifest_never_had_is_written_as_one_heading(text: str) -> 
 def test_dropping_the_last_requirement_takes_the_table_it_left_empty_with_it(text: str) -> None:
     """`put` writes a table the manifest never had, so `drop` must be able to unwrite it."""
     edited = ManifestText(text)
-    edited.put(("rust", "deps"), "ripgrep", ">=14, <15")
-    edited.put(("rust", "deps"), "fd", ">=10")
+    edited.put(("rust", "deps"), "ripgrep", spec=">=14, <15")
+    edited.put(("rust", "deps"), "fd", spec=">=10")
     edited.drop(("rust", "deps"), "fd")
     assert "[rust.deps]" in edited.text()
     edited.drop(("rust", "deps"), "ripgrep")

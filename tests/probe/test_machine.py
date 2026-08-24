@@ -6,14 +6,17 @@ from mainboard import Machine
 from mainboard.probe import CPU, GPU, NPU, Scheduler, UnitKind, Vendor
 
 if TYPE_CHECKING:
-    from .conftest import FakeNvidiaApis
+    from .support import FakeNvidiaApis
 
 
 def test_the_compilers_target_the_newest_cuda_device_on_the_host(
     nvidia_host: FakeNvidiaApis,
 ) -> None:
-    """A native build has to be told which architecture to emit for, and that is read off the
-    detected devices rather than configured, paired with the host CPU the flags are tuned to."""
+    """The build toolchain reads its targets off the detected hardware.
+
+    A native build has to be told which architecture to emit for, and that is read off the
+    detected devices rather than configured, paired with the host CPU the flags are tuned to.
+    """
     machine = Machine()
     compilers = machine.compilers
     assert compilers.cuda_arch == "89"
@@ -22,8 +25,11 @@ def test_the_compilers_target_the_newest_cuda_device_on_the_host(
 
 
 def test_the_compilers_refuse_a_host_with_no_cuda_device(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every other subsystem is best effort, and this is the deliberate exception, since a CUDA
-    build has no compute capability to target when the machine carries no CUDA device."""
+    """A CUDA target on a CUDA-less machine is the one deliberate refusal.
+
+    Every other subsystem is best effort, and this is the exception, since a CUDA build has
+    no compute capability to target when the machine carries no CUDA device.
+    """
     machine = Machine()
     monkeypatch.setattr(type(machine), "gpus", (GPU(index=0),))
     with pytest.raises(RuntimeError, match="No CUDA device"):
@@ -33,8 +39,11 @@ def test_the_compilers_refuse_a_host_with_no_cuda_device(monkeypatch: pytest.Mon
 def test_the_facade_composes_one_cpu_with_every_detected_gpu_and_npu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`Machine` is one shared view of the host, so it interns a single instance, mirrors the
-    host identity into its CPU unit, and lists that CPU ahead of the accelerators it found."""
+    """`Machine` is one interned view of the host.
+
+    It mirrors the host identity into its CPU unit and lists that CPU ahead of the
+    accelerators it found.
+    """
     machine = Machine()
     assert Machine() is machine
 
@@ -52,8 +61,11 @@ def test_the_facade_composes_one_cpu_with_every_detected_gpu_and_npu(
 
 
 def test_the_machine_enumerates_its_providers_and_survives_a_broken_one() -> None:
-    """The facade promises best-effort detection rather than a crash, so a provider that throws
-    has to be skipped at the `Machine` boundary too and not only inside `GPU.all`."""
+    """A throwing provider is skipped at the `Machine` boundary too.
+
+    The facade promises best-effort detection rather than a crash, not only inside
+    `GPU.all`.
+    """
 
     class BrokenGPU(GPU):
         @classmethod

@@ -34,7 +34,7 @@ class FabricPort(FrozenModel):
     link_layer: str = ""
 
 
-def device_order(device_dir: Path) -> tuple[str | int, ...]:
+def _device_order(device_dir: Path) -> tuple[str | int, ...]:
     """A sort key reading a device name's digits as numbers, so `mlx5_2` precedes `mlx5_10`.
 
     Splitting on digit runs alternates text and number, and the split always starts with text,
@@ -68,7 +68,7 @@ class Fabric:
         root: the `infiniband` class directory to scan, a test feeds a fake tmp tree here.
         """
         try:
-            device_dirs = sorted(root.iterdir(), key=device_order)
+            device_dirs = sorted(root.iterdir(), key=_device_order)
         except OSError:
             return ()
         return tuple(

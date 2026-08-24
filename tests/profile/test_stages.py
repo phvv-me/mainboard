@@ -1,6 +1,7 @@
 # `profile_stages` and `StageProfile`, which benchmark a set of named steps and optionally
 # trace them in one pass.
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,10 +17,9 @@ from mainboard.profile import (
     stages,
 )
 
-from .conftest import FakeGPU
+from .support import FakeGPU
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from types import TracebackType
 
     from mainboard.profile.protocols import DeviceProbe

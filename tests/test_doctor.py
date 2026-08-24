@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,8 +17,6 @@ from mainboard.engines.compile.state import SyncState
 from .strategies import WORDS
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
-
     from mainboard.dispatch import HostSetup
 
 _FINGERPRINT = ".pixi-environment-fingerprint"
@@ -182,9 +181,10 @@ def test_the_environment_section_tells_apart_every_way_a_workspace_drifts(
 def test_the_fleet_verdict_is_a_pure_function_of_the_rows_it_was_handed(
     workspace: Path, rows: list[ComputePath]
 ) -> None:
-    """Nothing here ever fails, since a sleeping host and an unkeyed provider are facts about the
-    world rather than about this workspace, and the one repair offered is always the next thing a
-    reader would actually type.
+    """The doctor reports the world and never fails on it.
+
+    A sleeping host and an unkeyed provider are facts about the world rather than about this
+    workspace, and the one repair offered is always the next thing a reader would type.
     """
     board = Board(workspace)
     found = Doctor(board, survey=FixedSurvey(board, rows)).fleet()

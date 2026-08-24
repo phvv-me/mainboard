@@ -1,3 +1,4 @@
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -6,7 +7,6 @@ from mainboard import Board, MissionError
 from mainboard.deps import Change, Dependencies, Index, ManifestText
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from mainboard import Manifest
@@ -39,7 +39,7 @@ _WRITES = [
 class FakePixi:
     """A pixi seam that answers with a scripted lock reading instead of running anything."""
 
-    def __init__(self, readings: list[dict[str, str]]) -> None:
+    def __init__(self, readings: Sequence[dict[str, str]]) -> None:
         self.readings = readings
 
     def locked(self, env: str) -> dict[str, str]:
@@ -96,7 +96,7 @@ def constraint(deps: Dependencies, table: str, name: str) -> str:
     return ManifestText(deps.path.read_text(encoding="utf-8")).constraint(path, name)
 
 
-def moved(changes: list[Change], name: str) -> Change:
+def moved(changes: Sequence[Change], name: str) -> Change:
     """The one reported change for `name`."""
     return next(change for change in changes if change.name == name)
 

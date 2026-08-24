@@ -254,45 +254,12 @@ class Onboarding:
         self.root = root
         self.artifact = tuple(artifact)
         self.resolve = resolve
-        self.env = plan.env
         self.watch = watch or _announce
 
-    def run(self) -> HostSetup:
-        """Onboard the host and return (and record) what it became.
-
-        The mirror carries the compiled artifact alongside the sources, so the install step
-        below has a lock this workspace already solved and never asks the host to solve one.
-        """
-        host = self.plan.host
-        with connection(host) as remote:
-            self.watch(f"probing {host}")
-            capabilities = probe_capabilities(remote, host)
-            root = self.root or find_root(remote)
-            shell = RemoteShell(remote, self.plan, root)
-            self.watch(f"mirroring the workspace to {host}:{root}")
-            self.dispatcher.rsync_up(
-                self.plan, root, required=[self.artifact] if self.artifact else []
-            )
-            self.watch(f"installing {_TOOL} on {host}")
-            winner = self.bootstrap(shell)
-            self.watch(f"provisioning {self.env} on {host}")
-            self.provision(shell, host=host, root=root)
-            self.watch(f"reading {host} back through its activation")
-            hardware = read_facts(shell.run(facts_command(), activate=True))
-            setup = HostSetup(
-                host=host,
-                root=root,
-                env=self.env,
-                activate=activation(root, self.env),
-                installer=winner.winner,
-                rejected=winner.rejected,
-                tool=shell.run(f"{_TOOL} --version").strip(),
-                capabilities=capabilities,
-                hardware=hardware,
-            )
-        recorded = self.dispatcher.cache.save_host(setup)
-        logger.info("onboarded %s at %s through %s", host, root, recorded.installer)
-        return recorded
+    @property
+    def env(self) -> str:
+        """The environment provisioned, the plan's own."""
+        return self.plan.env
 
     def bootstrap(self, shell: RemoteShell) -> Resolution[Installer]:
         """Install the tool through the first route the host supports, keeping the rejections.
@@ -326,12 +293,49 @@ class Onboarding:
         shell.run(
             f"{_TOOL} install {shlex.quote(self.env)}{resolve} --profile {shlex.quote(host)}"
         )
-        script = activation(root, self.env)
+        script = activation(root, env=self.env)
         if not shell.ok(f"test -f {shlex.quote(script)}"):
             raise MissionError(
                 f"{host!r} has no {script} after installing {self.env!r}; "
                 "the environment was not provisioned"
             )
+
+    def run(self) -> HostSetup:
+        """Onboard the host and return (and record) what it became.
+
+        The mirror carries the compiled artifact alongside the sources, so the install step
+        below has a lock this workspace already solved and never asks the host to solve one.
+        """
+        host = self.plan.host
+        with connection(host) as remote:
+            self.watch(f"probing {host}")
+            capabilities = probe_capabilities(remote, host)
+            root = self.root or find_root(remote)
+            shell = RemoteShell(remote, self.plan, root)
+            self.watch(f"mirroring the workspace to {host}:{root}")
+            self.dispatcher.rsync_up(
+                self.plan, root, required=[self.artifact] if self.artifact else []
+            )
+            self.watch(f"installing {_TOOL} on {host}")
+            winner = self.bootstrap(shell)
+            self.watch(f"provisioning {self.env} on {host}")
+            self.provision(shell, host=host, root=root)
+            self.watch(f"reading {host} back through its activation")
+            hardware = read_facts(shell.run(facts_command(), activate=True))
+            setup = HostSetup(
+                host=host,
+                root=root,
+                env=self.env,
+                activate=activation(root, env=self.env),
+                installer=winner.winner,
+                rejected=winner.rejected,
+                tool=shell.run(f"{_TOOL} --version").strip(),
+                capabilities=capabilities,
+                hardware=hardware,
+            )
+        recorded = self.dispatcher.cache.save_host(setup)
+        logger.info("onboarded %s at %s through %s", host, root, recorded.installer)
+        return recorded
 
 
 def _announce(stage: str) -> None:

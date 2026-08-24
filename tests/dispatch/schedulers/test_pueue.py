@@ -1,5 +1,5 @@
 import json
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
 
 import pytest
 from plumbum.commands.processes import ProcessExecutionError
@@ -19,10 +19,7 @@ from mainboard.dispatch.schedulers.pueue import (
 )
 from mainboard.dispatch.vocabulary import Resources
 
-from ..conftest import machine_with
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
+from ..support import machine_with
 
 type Json = str | int | float | bool | None | dict[str, "Json"] | list["Json"]
 

@@ -57,8 +57,11 @@ def test_a_cpu_surfaces_its_identity_fields_and_the_system_memory_pool() -> None
 
 
 def test_a_provider_that_raises_mid_probe_is_skipped_so_the_others_still_report() -> None:
-    """A backend can load and then throw, an unexpected NVML error or a binding that imports
-    but fails on its first call, and the fan-out is best-effort so the survivors still report."""
+    """A backend that throws mid-probe never silences the survivors.
+
+    It can load and then throw, an unexpected NVML error or a binding that imports but fails
+    on its first call, and the fan-out is best-effort.
+    """
 
     class GoodGPU(GPU):
         @classmethod

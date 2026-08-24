@@ -56,7 +56,7 @@ class Rust(Ecosystem):
         return args
 
     @staticmethod
-    def satisfied(constraint: str, installed: str) -> bool:
+    def satisfied(constraint: str, *, installed: str) -> bool:
         """Whether an already installed crate version meets `constraint`.
 
         Anything cargo accepts but `packaging` cannot read (a caret spelling, a git or path
@@ -98,7 +98,7 @@ class Rust(Ecosystem):
             self.cargo("uninstall", name)
         for name, spec in self.deps.items():
             current = installed.get(name)
-            if current is not None and self.satisfied(spec.version, current):
+            if current is not None and self.satisfied(spec.version, installed=current):
                 continue
             reinstall = ("--force",) if current is not None else ()
             self.cargo("install", *self.install_args(spec), *reinstall, name)

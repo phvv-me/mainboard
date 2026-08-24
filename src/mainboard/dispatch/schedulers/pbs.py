@@ -126,13 +126,6 @@ def build_qsub_flags(resources: Resources) -> list[str]:
     return flags
 
 
-def _extract_job_id(output: str) -> str:
-    """The PBS job identifier from raw `qsub` output."""
-    if match := re.match(r"^(\d+(?:\[[^\]]*\])?)\.?.*$", output.strip()):
-        return match.group(1)
-    return output.strip()
-
-
 class Pbs:
     """Dispatch jobs to a PBS cluster via `qsub`."""
 
@@ -210,7 +203,14 @@ class Pbs:
         handle = out.strip().splitlines()[-1] if out.strip() else ""
         if not handle[:1].isdigit():
             raise SystemExit(f"qsub failed (rc={retcode}): {(err or out).strip()[-400:]}")
-        return _extract_job_id(handle)
+        return Pbs._extract_job_id(handle)
+
+    @staticmethod
+    def _extract_job_id(output: str) -> str:
+        """The PBS job identifier from raw `qsub` output."""
+        if match := re.match(r"^(\d+(?:\[[^\]]*\])?)\.?.*$", output.strip()):
+            return match.group(1)
+        return output.strip()
 
     @staticmethod
     def __job_state(handle: str, job: JobInfo) -> JobState:

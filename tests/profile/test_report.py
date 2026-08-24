@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
@@ -11,7 +13,7 @@ from mainboard.profile import (
     RegionSummary,
 )
 
-from .conftest import kernel
+from .support import kernel
 
 
 def _report(profile: Profile, *, peak_bandwidth_gbps: float = 0.0) -> ProfileReport:
@@ -78,7 +80,7 @@ def test_the_bound_verdict_follows_the_time_split_then_the_utilization_signal(
 @settings(max_examples=15)
 @given(durations=st.lists(st.integers(min_value=1, max_value=10_000), min_size=1, max_size=8))
 @example(durations=[100, 100, 500])  # two calls of one name against a hotter single call
-def test_kernel_shares_partition_the_kernel_time_hottest_first(durations: list[int]) -> None:
+def test_kernel_shares_partition_the_kernel_time_hottest_first(durations: Sequence[int]) -> None:
     """Per-kernel shares always add back up to 100% and rank the hottest name first.
 
     Repeated launches of one name collapse into a single row carrying the call count and

@@ -87,52 +87,6 @@ class Doctor:
         self.survey = survey or Survey(board)
         self.probe = probe or self.through_runner
 
-    def sections(self) -> list[Section]:
-        """Every section, the manifest first because everything after it reads the manifest.
-
-        A manifest that will not load is the whole report, since an environment digest, a host
-        roster, a task list and the gate roster itself are all things that manifest was going to
-        supply, and inventing verdicts for them from a file nobody could parse would say nothing
-        true.
-
-        Everything durable the pool will need is read here first, on this thread. The dispatch
-        cache is one SQLite connection that only its opening thread may use, so a fleet probe
-        that reached for the onboarding records from inside the pool would open that connection
-        there and leave the interpreter closing it from here at exit. The shared subsystems are
-        built here for the same reason, which is also why building them is locked.
-        """
-        manifest = self.manifest()
-        if manifest.verdict is Verdict.FAIL:
-            return [manifest]
-        setups = self.survey.onboarded()
-        asked: list[Callable[[], Section]] = [
-            self.environment,
-            partial(self.fleet, setups),
-            *(partial(self.gate, name) for name in self.board.manifest.gates),
-        ]
-        with ThreadPoolExecutor(max_workers=len(asked)) as pool:
-            return [manifest, *pool.map(lambda question: question(), asked)]
-
-    def manifest(self) -> Section:
-        """Whether the workspace manifest still parses, interpolates and validates."""
-        try:
-            loaded = self.board.manifest
-        except MissionError as refusal:
-            return Section(
-                section="manifest",
-                verdict=Verdict.FAIL,
-                detail=str(refusal).splitlines()[0],
-                fix=f"{_TOOL} check",
-            )
-        return Section(
-            section="manifest",
-            verdict=Verdict.PASS,
-            detail=(
-                f"{loaded.workspace.name}: {len(loaded.envs) + 1} environments, "
-                f"{len(loaded.profiles())} hosts, {len(loaded.tasks)} tasks"
-            ),
-        )
-
     def environment(self) -> Section:
         """Whether what is installed answers to the manifest, and still imports.
 
@@ -272,9 +226,55 @@ class Doctor:
         return Section(
             section=name,
             verdict=Verdict.FAIL,
-            detail=_complaint(output) or f"`{gate.run}` exited {status}",
+            detail=Doctor._complaint(output) or f"`{gate.run}` exited {status}",
             fix=repair,
         )
+
+    def manifest(self) -> Section:
+        """Whether the workspace manifest still parses, interpolates and validates."""
+        try:
+            loaded = self.board.manifest
+        except MissionError as refusal:
+            return Section(
+                section="manifest",
+                verdict=Verdict.FAIL,
+                detail=str(refusal).splitlines()[0],
+                fix=f"{_TOOL} check",
+            )
+        return Section(
+            section="manifest",
+            verdict=Verdict.PASS,
+            detail=(
+                f"{loaded.workspace.name}: {len(loaded.envs) + 1} environments, "
+                f"{len(loaded.profiles())} hosts, {len(loaded.tasks)} tasks"
+            ),
+        )
+
+    def sections(self) -> list[Section]:
+        """Every section, the manifest first because everything after it reads the manifest.
+
+        A manifest that will not load is the whole report, since an environment digest, a host
+        roster, a task list and the gate roster itself are all things that manifest was going to
+        supply, and inventing verdicts for them from a file nobody could parse would say nothing
+        true.
+
+        Everything durable the pool will need is read here first, on this thread. The dispatch
+        cache is one SQLite connection that only its opening thread may use, so a fleet probe
+        that reached for the onboarding records from inside the pool would open that connection
+        there and leave the interpreter closing it from here at exit. The shared subsystems are
+        built here for the same reason, which is also why building them is locked.
+        """
+        manifest = self.manifest()
+        if manifest.verdict is Verdict.FAIL:
+            return [manifest]
+        setups = self.survey.onboarded()
+        asked: list[Callable[[], Section]] = [
+            self.environment,
+            partial(self.fleet, setups),
+            *(partial(self.gate, name) for name in self.board.manifest.gates),
+        ]
+        with ThreadPoolExecutor(max_workers=len(asked)) as pool:
+            return [manifest, *pool.map(lambda question: question(), asked)]
 
     def through_runner(self, command: str, timeout: float) -> tuple[int, str]:
         """Run `command` through this workspace's own runner, bounded, and capture what it said.
@@ -290,8 +290,8 @@ class Doctor:
         result = Process.capture(localhost["bash"]["-lc", staged], timeout=timeout)
         return result.returncode, result.stdout
 
-
-def _complaint(output: str) -> str:
-    """The last thing a command said, which is where a command line tool puts its complaint."""
-    spoken = [line.strip() for line in output.splitlines() if line.strip()]
-    return spoken[-1] if spoken else ""
+    @staticmethod
+    def _complaint(output: str) -> str:
+        """The last thing a command said, which is where a command line tool puts its complaint."""
+        spoken = [line.strip() for line in output.splitlines() if line.strip()]
+        return spoken[-1] if spoken else ""

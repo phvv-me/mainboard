@@ -83,11 +83,6 @@ class BatchEstimate(FrozenModel):
     jobs: tuple[JobEstimate, ...]
 
     @property
-    def wire_bytes(self) -> int:
-        """What the whole batch ships, compressed."""
-        return sum(job.wire_bytes for job in self.jobs)
-
-    @property
     def expected_usd(self) -> float:
         """What the whole batch is expected to cost."""
         return sum(job.expected_usd for job in self.jobs)
@@ -96,6 +91,11 @@ class BatchEstimate(FrozenModel):
     def p90_usd(self) -> float:
         """What the whole batch costs when every setup lands in its own tail."""
         return sum(job.p90_usd for job in self.jobs)
+
+    @property
+    def wire_bytes(self) -> int:
+        """What the whole batch ships, compressed."""
+        return sum(job.wire_bytes for job in self.jobs)
 
 
 class Estimator:
@@ -119,6 +119,28 @@ class Estimator:
         self.board = board
         self.catalog = catalog if catalog is not None else Catalog.load(generated / _CATALOG)
         self.ledger = ledger if ledger is not None else Ledger(generated / _COSTS)
+
+    def hardware(self, job: BatchJob) -> str:
+        """What `job` lands on: what onboarding recorded, else the hardware it asked to rent."""
+        try:
+            setup = self.board.dispatcher.cache.host(job.target)
+        except LookupError:
+            return _requested(job)
+        return summary(setup.hardware) if setup.hardware else _requested(job)
+
+    def quote(self, job: BatchJob, *, kind: str) -> Quote | None:
+        """The cheapest offer this provider makes for what `job` asks for, None when it is ours.
+
+        Owned hardware has no offer and needs none: the machine is already paid for, so the row
+        prices at zero rather than at a number invented for the column's sake.
+        """
+        priced = self.catalog.quotes(
+            gpu=job.gpu_name,
+            run_s=job.runtime_s,
+            ledger=self.ledger,
+            default_setup_s=_UNFITTED_SETUP_S,
+        )
+        return next((quote for quote in priced if quote.offer.provider == kind), None)
 
     def row(self, job: BatchJob, transfer: TransferSet) -> JobEstimate:
         """Price one job against its target's fitted behavior and whatever offer covers it.
@@ -145,28 +167,6 @@ class Estimator:
             expected_usd=round(quote.expected_usd, 4) if quote else 0.0,
             p90_usd=round(quote.p90_usd, 4) if quote else 0.0,
         )
-
-    def quote(self, job: BatchJob, *, kind: str) -> Quote | None:
-        """The cheapest offer this provider makes for what `job` asks for, None when it is ours.
-
-        Owned hardware has no offer and needs none: the machine is already paid for, so the row
-        prices at zero rather than at a number invented for the column's sake.
-        """
-        priced = self.catalog.quotes(
-            gpu=job.gpu_name,
-            run_s=job.runtime_s,
-            ledger=self.ledger,
-            default_setup_s=_UNFITTED_SETUP_S,
-        )
-        return next((quote for quote in priced if quote.offer.provider == kind), None)
-
-    def hardware(self, job: BatchJob) -> str:
-        """What `job` lands on: what onboarding recorded, else the hardware it asked to rent."""
-        try:
-            setup = self.board.dispatcher.cache.host(job.target)
-        except LookupError:
-            return _requested(job)
-        return summary(setup.hardware) if setup.hardware else _requested(job)
 
     def table(
         self, batch: str, jobs: Sequence[BatchJob], transfers: Sequence[TransferSet]

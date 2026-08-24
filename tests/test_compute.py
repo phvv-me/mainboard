@@ -1,3 +1,4 @@
+from collections.abc import Callable, Sequence
 from inspect import signature
 from typing import TYPE_CHECKING
 
@@ -12,12 +13,10 @@ from mainboard.dispatch.backends import ProviderBackend, VastBackend
 from mainboard.manifest import HostProfile
 from mainboard.probe import GpuFact
 
-from .dispatch.backends.conftest import BareBackend, not_found, vast_backend
+from .dispatch.backends.support import BareBackend, not_found, vast_backend
 from .strategies import PATHS, WORDS
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from mainboard.compute import ComputePath
 
 _GOLD = "gold"
@@ -63,7 +62,7 @@ def survey(
     )
 
 
-def named(paths: list[ComputePath]) -> dict[str, ComputePath]:
+def named(paths: Sequence[ComputePath]) -> dict[str, ComputePath]:
     """The surveyed rows keyed by name, for a test asserting about one of them."""
     return {path.name: path for path in paths}
 
@@ -116,9 +115,11 @@ def test_the_first_row_is_this_machine_with_its_own_hardware(board: Board) -> No
 def test_a_host_row_says_only_what_the_probe_and_the_onboarding_record_support(
     board: Board, alias: str, profile: HostProfile, setup: HostSetup | None, refusal: str
 ) -> None:
-    """Three states and one rule each: a host that will not answer is unreachable whatever was
-    recorded of it, one that answers without a record is reachable rather than ready, and a ready
-    row describes real hardware without a second round trip.
+    """Three states, one rule each.
+
+    A host that will not answer is unreachable whatever was recorded of it, one that answers
+    without a record is reachable rather than ready, and a ready row describes real hardware
+    without a second round trip.
     """
     row = survey(board, reach=lambda host: refusal).machine(alias, profile, setup)
     assert (row.name, row.kind) == (alias, profile.kind)

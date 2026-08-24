@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,7 +11,7 @@ from mainboard.doctor import Doctor, Section, Verdict
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from .conftest import Relayed
+    from .support import Relayed
 
 _ROWS = 'sc-baseline = { run = "python -m experiments.baseline.run execute" }\n'
 
@@ -26,13 +27,15 @@ _ROWS = 'sc-baseline = { run = "python -m experiments.baseline.run execute" }\n'
 )
 def test_every_dependency_verb_prints_the_constraint_and_the_pins_its_solve_moved(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     capsys: pytest.CaptureFixture[str],
     argv: list[str],
     expected: list[str],
 ) -> None:
-    """An edit and the pins its solve dragged along are the same fact, something moved from one
-    version to another somewhere, so they render as one shape rather than two tables.
+    """An edit and its dragged pins render as one shape.
+
+    Both are the same fact, something moved from one version to another somewhere, so one
+    table carries them rather than two.
     """
     with pytest.raises(SystemExit, match="0"):
         build(depot)(argv)
@@ -48,13 +51,14 @@ def test_every_dependency_verb_prints_the_constraint_and_the_pins_its_solve_move
 )
 def test_new_prints_the_rows_to_paste_where_the_reader_can_reach_them(
     depot: Path,
-    relayed: list[Relayed],
+    relayed: Sequence[Relayed],
     capsys: pytest.CaptureFixture[str],
     compact: bool,
 ) -> None:
-    """The rows print whole and pasteable at a terminal, so repeating them wrapped inside a table
-    cell would only make them harder to copy back out. A machine reading the record has nowhere
-    else to get them, so there the field stays.
+    """Rows print pasteable at a terminal and stay whole in the record.
+
+    Repeating them wrapped inside a table cell would only make them harder to copy back out,
+    while a machine reading the record has nowhere else to get them.
     """
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["new", "scratch probe", *(["--json"] if compact else [])])
@@ -88,8 +92,9 @@ def test_doctor_exits_nonzero_only_when_something_is_actually_broken(
     code: str,
     detail: str,
 ) -> None:
-    """The exit status is what a script branches on, so a sleeping host must never make it mean
-    the network instead of the code.
+    """A sleeping host never bends the exit status.
+
+    The status is what a script branches on, so it must mean the code and not the network.
     """
     found = [Section(section="fleet", verdict=verdict, detail=detail, fix="fix it")]
     monkeypatch.setattr(Doctor, "sections", lambda self: found)

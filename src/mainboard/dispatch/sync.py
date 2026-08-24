@@ -2,6 +2,7 @@
 
 import fcntl
 import hashlib
+from contextlib import ExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, TextIO
 
@@ -223,12 +224,10 @@ class SyncLock:
     def __enter__(self) -> Self:
         """Wait for this target's mirror lock and hold it until context exit."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        file = self.path.open("a+")
-        try:
+        with ExitStack() as undo:
+            file = undo.enter_context(self.path.open("a+"))
             fcntl.flock(file.fileno(), fcntl.LOCK_EX)
-        except OSError:
-            file.close()
-            raise
+            undo.pop_all()
         self.file = file
         return self
 
@@ -243,11 +242,9 @@ class SyncLock:
         file = self.file
         if file is None:
             return
-        try:
+        self.file = None
+        with file:
             fcntl.flock(file.fileno(), fcntl.LOCK_UN)
-        finally:
-            file.close()
-            self.file = None
 
 
 class GitignoreFilter:

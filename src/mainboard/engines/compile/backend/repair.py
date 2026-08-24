@@ -23,25 +23,6 @@ _SOURCE_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", 
 _IGNORED_DIRS = frozenset({"__pycache__", "build", "dist", "node_modules", "target"})
 
 
-def newest_source(tree: Path) -> int:
-    """The newest modification time, in nanoseconds, among the files a native build reads.
-
-    Dot directories and build output trees are skipped, and `0` comes back for a tree holding
-    nothing a compiler would open, which is every pure Python package.
-    """
-    newest = 0
-    for directory, subdirectories, filenames in tree.walk():
-        subdirectories[:] = [
-            name
-            for name in subdirectories
-            if not name.startswith(".") and name not in _IGNORED_DIRS
-        ]
-        for filename in filenames:
-            if filename in _SOURCE_NAMES or Path(filename).suffix in _SOURCE_SUFFIXES:
-                newest = max(newest, (directory / filename).stat().st_mtime_ns)
-    return newest
-
-
 class DirInfo(FrozenOpenModel):
     """The `dir_info` half of a PEP 610 record, written when an install came from a directory."""
 
@@ -58,11 +39,6 @@ class DirectUrl(FrozenOpenModel):
     url: str = ""
     dir_info: DirInfo = DirInfo()
 
-    @classmethod
-    def beside(cls, distribution: Distribution) -> DirectUrl:
-        """Parse the record shipped next to ``distribution``, empty when it ships none."""
-        return cls.model_validate_json(distribution.read_text("direct_url.json") or "{}")
-
     @property
     def editable(self) -> bool:
         """Whether the distribution imports straight from a source tree somebody still edits."""
@@ -74,6 +50,11 @@ class DirectUrl(FrozenOpenModel):
         if not self.editable or not self.url.startswith("file://"):
             return None
         return Path(unquote(urlparse(self.url).path))
+
+    @classmethod
+    def beside(cls, distribution: Distribution) -> DirectUrl:
+        """Parse the record shipped next to ``distribution``, empty when it ships none."""
+        return cls.model_validate_json(distribution.read_text("direct_url.json") or "{}")
 
 
 class InstalledPackage:
@@ -149,7 +130,26 @@ class InstalledPackage:
         if not artifacts:
             return False
         built = min((path.stat().st_mtime_ns for path in artifacts if path.exists()), default=0)
-        return newest_source(source) > built
+        return InstalledPackage._newest_source(source) > built
+
+    @staticmethod
+    def _newest_source(tree: Path) -> int:
+        """The newest modification time, in nanoseconds, among the files a native build reads.
+
+        Dot directories and build output trees are skipped, and `0` comes back for a tree holding
+        nothing a compiler would open, which is every pure Python package.
+        """
+        newest = 0
+        for directory, subdirectories, filenames in tree.walk():
+            subdirectories[:] = [
+                name
+                for name in subdirectories
+                if not name.startswith(".") and name not in _IGNORED_DIRS
+            ]
+            for filename in filenames:
+                if filename in _SOURCE_NAMES or Path(filename).suffix in _SOURCE_SUFFIXES:
+                    newest = max(newest, (directory / filename).stat().st_mtime_ns)
+        return newest
 
 
 class EnvironmentAudit:
@@ -167,6 +167,11 @@ class EnvironmentAudit:
     def __init__(self, prefix: Path) -> None:
         self.prefix = prefix
 
+    @staticmethod
+    def names(packages: Iterable[InstalledPackage]) -> tuple[str, ...]:
+        """The distinct distribution names, ordered case-insensitively for a stable argv."""
+        return tuple(sorted({package.name for package in packages}, key=str.casefold))
+
     def damaged(self) -> tuple[str, ...]:
         """The installed wheels whose declared import roots have all disappeared."""
         return self.names(package for package in self.installed() if package.damaged())
@@ -183,8 +188,3 @@ class EnvironmentAudit:
         return self.names(
             package for package in self.installed() if package.damaged() or package.outdated()
         )
-
-    @staticmethod
-    def names(packages: Iterable[InstalledPackage]) -> tuple[str, ...]:
-        """The distinct distribution names, ordered case-insensitively for a stable argv."""
-        return tuple(sorted({package.name for package in packages}, key=str.casefold))

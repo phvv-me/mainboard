@@ -1,5 +1,5 @@
 import json
-from typing import TYPE_CHECKING
+from collections.abc import Iterator, Sequence
 
 import pytest
 from patos import Shared, StrategyError
@@ -7,10 +7,7 @@ from patos import Shared, StrategyError
 from mainboard.observe import Channels, PollChannel, StreamChannel, encode, encoded_length
 from mainboard.observe.channels import cached, cached_stream
 
-from .conftest import line
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
+from .support import line
 
 _BODY = encode(line(0, "a")) + encode(line(50, "b"))
 _FOLLOW = "python -m mainboard.observe.agentmain --root /spool --job job1 --follow --from-offset"
@@ -80,7 +77,7 @@ def test_poll_reads_the_status_then_a_tail_translated_against_the_live_base(
     ],
 )
 def test_stream_runs_one_follow_exec_and_skips_a_blank_line(
-    offset: int, lines: tuple[str, ...], texts: list[str], resume: int
+    offset: int, lines: Sequence[str], texts: list[str], resume: int
 ) -> None:
     """One long-lived exec carries the whole batch, and a keepalive line is not a frame."""
     seen: list[str] = []

@@ -10,6 +10,7 @@
 
 import json
 import os
+from collections.abc import Mapping
 from contextlib import suppress
 from typing import TYPE_CHECKING
 from urllib.error import HTTPError
@@ -25,6 +26,7 @@ from .base import (
     LogSource,
     ProviderBackend,
     Standing,
+    forgotten,
     http_transport,
     require_budget,
 )
@@ -143,8 +145,7 @@ class HpcAiBackend(ProviderBackend, Account):
         try:
             self.request("POST", path="/instance/terminate", body={"instanceId": handle})
         except HTTPError as error:
-            if error.status != 404:
-                raise
+            forgotten(error)
 
     def catalog(self) -> list[dict]:
         """Every rentable instance type, flattened to one row per type per region.
@@ -155,20 +156,21 @@ class HpcAiBackend(ProviderBackend, Account):
         needs, and are ordered cheapest first so the first in-stock row is the one to take.
         """
         payload = self.request("POST", path="/resource/user/instance/list", body={})
-        rows = [
-            {
-                "gpu": family.get("gpuName") or "",
-                "gpus": kind.get("gpuNum") or 0,
-                "usd_hr": _hourly(kind),
-                "region": region.get("regionName") or "",
-                "region_id": region.get("regionId") or "",
-                "instance_type_id": kind.get("instanceTypeId") or "",
-                "in_stock": kind.get("stockStatus") == "InStock",
-            }
-            for family in payload.get("instanceInfos") or []
-            for region in family.get("regionInfos") or []
-            for kind in region.get("instanceTypeInfos") or []
-        ]
+        rows = []
+        for family in payload.get("instanceInfos") or []:
+            rows += [
+                {
+                    "gpu": family.get("gpuName") or "",
+                    "gpus": kind.get("gpuNum") or 0,
+                    "usd_hr": HpcAiBackend._hourly(kind),
+                    "region": region.get("regionName") or "",
+                    "region_id": region.get("regionId") or "",
+                    "instance_type_id": kind.get("instanceTypeId") or "",
+                    "in_stock": kind.get("stockStatus") == "InStock",
+                }
+                for region in family.get("regionInfos") or []
+                for kind in region.get("instanceTypeInfos") or []
+            ]
         return sorted(rows, key=lambda row: (not row["in_stock"], row["usd_hr"]))
 
     def instance(self, handle: str) -> dict:
@@ -193,14 +195,20 @@ class HpcAiBackend(ProviderBackend, Account):
                 return {}
             page += 1
 
-    def state(self, handle: str) -> JobState:
-        entry = self.instance(handle)
-        if not entry:
-            return JobState(handle=handle, verdict="vanished")
-        status = str(entry.get("instanceRuntimeInfo", {}).get("status") or "")
-        return JobState(
-            handle=handle, state=status, verdict=_VERDICTS.get(status.lower(), "unknown")
+    def request(self, method: str, *, path: str, body: dict) -> dict:
+        """An authenticated call to the instance API under the console API key.
+
+        Every endpoint hangs off `https://www.hpc-ai.com/api`, spelled inline so the https root
+        is visible at the one place a `Request` is built.
+        """
+        headers = {"Content-Type": "application/json", "X-API-Key": api_key()}
+        request = Request(
+            f"https://www.hpc-ai.com/api{path}",
+            method=method,
+            data=json.dumps(body).encode(),
+            headers=headers,
         )
+        return json.loads(self.transport(request).read())
 
     def standing(self) -> Standing:
         """The account balance HPC-AI reports, or the key that is missing.
@@ -217,6 +225,15 @@ class HpcAiBackend(ProviderBackend, Account):
             return Standing(note=str(unset))
         payload = self.request("GET", path="/balance", body={})
         return Standing(keyed=True, credit_usd=float(payload["balance"]))
+
+    def state(self, handle: str) -> JobState:
+        entry = self.instance(handle)
+        if not entry:
+            return JobState(handle=handle, verdict="vanished")
+        status = str(entry.get("instanceRuntimeInfo", {}).get("status") or "")
+        return JobState(
+            handle=handle, state=status, verdict=_VERDICTS.get(status.lower(), "unknown")
+        )
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         """Create an instance whose initScript runs `command`, returning HPC-AI's instance id.
@@ -251,29 +268,14 @@ class HpcAiBackend(ProviderBackend, Account):
         )
         return str(payload["instanceId"])
 
-    def request(self, method: str, *, path: str, body: dict) -> dict:
-        """An authenticated call to the instance API under the console API key.
+    @staticmethod
+    def _hourly(kind: Mapping) -> float:
+        """The on-demand hourly rate an instance-type row quotes, 0.0 when it publishes none.
 
-        Every endpoint hangs off `https://www.hpc-ai.com/api`, spelled inline so the https root
-        is visible at the one place a `Request` is built.
+        A type carries one price entry per charge mode (`perHour`, `perDay`, the tide-priced
+        `tidePerHour`), and only the plain hourly one is comparable across types.
         """
-        headers = {"Content-Type": "application/json", "X-API-Key": api_key()}
-        request = Request(
-            f"https://www.hpc-ai.com/api{path}",
-            method=method,
-            data=json.dumps(body).encode(),
-            headers=headers,
-        )
-        return json.loads(self.transport(request).read())
-
-
-def _hourly(kind: dict) -> float:
-    """The on-demand hourly rate an instance-type row quotes, 0.0 when it publishes none.
-
-    A type carries one price entry per charge mode (`perHour`, `perDay`, the tide-priced
-    `tidePerHour`), and only the plain hourly one is comparable across types.
-    """
-    for price in kind.get("price") or []:
-        if price.get("chargeMode") == "perHour":
-            return float(price["price"])
-    return 0.0
+        for price in kind.get("price") or []:
+            if price.get("chargeMode") == "perHour":
+                return float(price["price"])
+        return 0.0

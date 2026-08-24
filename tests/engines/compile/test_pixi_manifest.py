@@ -1,4 +1,5 @@
 import tomllib
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 import pytest
@@ -20,8 +21,6 @@ from mainboard.manifest.schema.spec import Json
 from ...strategies import PATHS, SPECS, WORDS
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from mainboard.engines.compile.toml import Toml
     from mainboard.manifest.schema.environment import Task
 
@@ -160,10 +159,13 @@ def test_a_platform_overlay_never_widens_what_the_scope_it_overlays_pinned(
     ],
 )
 def test_pypi_options_forward_only_the_settings_pixi_defines(
-    body: dict[str, Json], options: dict[str, Toml]
+    body: dict[str, Json], options: Mapping[str, Toml]
 ) -> None:
-    """A setting beside the deps that configures something other than the solve stays put, and
-    the override sub-table is emitted last so TOML cannot swallow the scalars after it."""
+    """Non-solve settings pass through and overrides are emitted last.
+
+    A setting beside the deps that configures something other than the solve stays put, and
+    the trailing override sub-table keeps TOML from swallowing the scalars after it.
+    """
     assert list(pypi_options(Scope.model_validate(body)).items()) == list(options.items())
 
 

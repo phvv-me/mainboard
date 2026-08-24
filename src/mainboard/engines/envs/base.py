@@ -64,5 +64,7 @@ def resolve(mode: EnvMode) -> type[EnvBackend]:
     try:
         return EnvBackend.find(mode, attr="mode")
     except LookupError:
-        known = [implementation.mode for implementation in EnvBackend.implementations()]
-        raise MissionError(f"no env backend for {mode!r}, known modes are {known}") from None
+        raise MissionError(
+            f"no env backend for {mode!r}, known modes are "
+            f"{[implementation.mode for implementation in EnvBackend.implementations()]}"
+        ) from None

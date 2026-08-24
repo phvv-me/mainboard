@@ -1,3 +1,4 @@
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -8,8 +9,6 @@ from mainboard.engines.compile.platforms import PlatformMatrix, SystemFloors
 from mainboard.manifest import Header
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from mainboard.engines.compile.toml import Toml
 
 _LINUX64 = "linux-64"
@@ -104,15 +103,17 @@ platforms = ["linux-aarch64"]
     ],
 )
 def test_a_virtual_package_floor_expands_into_named_platform_variants(
-    platforms: list[str],
+    platforms: Sequence[str],
     declared: str,
     workspace: list[Toml],
     environments: dict[str, list[str]],
     default: list[str],
     manifest_from: Callable[[str], Manifest],
 ) -> None:
-    """A floor names only the platforms whose family can provide it, and any floor that survives
-    forces each env to name the variants it runs on."""
+    """A floor binds only the platforms whose family can provide it.
+
+    Any floor that survives forces each env to name the variants it runs on.
+    """
     listed = ", ".join(f'"{platform}"' for platform in platforms)
     manifest = manifest_from(f'[workspace]\nname = "w"\nplatforms = [{listed}]\n{declared}')
     matrix = PlatformMatrix.from_manifest(manifest)

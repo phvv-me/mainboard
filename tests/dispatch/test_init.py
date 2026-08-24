@@ -1,9 +1,10 @@
 from mainboard import dispatch
+from mainboard.dispatch.shared import logger, state_dir
 
 
 def test_the_package_names_its_own_paths_logger_and_public_surface() -> None:
-    assert dispatch.STATE_DIR == ".mainboard/dispatch"
-    assert dispatch.logger.name == "mainboard.dispatch"
+    assert state_dir() == ".mainboard/dispatch"
+    assert logger.name == "mainboard.dispatch"
     assert {
         "Dispatcher",
         "Handle",
@@ -17,6 +18,5 @@ def test_the_package_names_its_own_paths_logger_and_public_surface() -> None:
         "DaemonDown",
         "HostUnreachable",
         "SshTransport",
-        "VERDICTS",
     } <= set(dispatch.__all__)
     assert dispatch.Dispatcher is not None

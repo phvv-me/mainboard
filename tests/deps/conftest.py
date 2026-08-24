@@ -1,5 +1,6 @@
 import os
 import tomllib
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import pytest
@@ -8,7 +9,6 @@ from plumbum import local
 from mainboard import Manifest
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
 
 # A manifest carrying one table of every shape the addressing has to reach: conda and an

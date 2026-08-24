@@ -1,4 +1,5 @@
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,8 +11,6 @@ from mainboard.render import tabular
 from ..strategies import TEXT
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from mainboard.render.values import Row
 
 _HOSTS = ("gold", "miyabi-g", "miyabi-debug", "crimson", "local")

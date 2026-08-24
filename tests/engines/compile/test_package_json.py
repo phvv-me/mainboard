@@ -1,10 +1,12 @@
 import json
+from collections.abc import Mapping
 
 import pytest
 
 from mainboard import MissionError
 from mainboard.engines.compile.package_json import PackageJson
-from mainboard.manifest.schema.spec import Json, Spec
+from mainboard.manifest import Spec
+from mainboard.manifest.schema.spec import Json
 
 
 @pytest.mark.parametrize(
@@ -40,7 +42,7 @@ from mainboard.manifest.schema.spec import Json, Spec
     ],
 )
 def test_a_compiled_manifest_carries_what_the_node_manager_installs_from(
-    deps: dict[str, str], dev: dict[str, str], fields: dict[str, Json], body: dict[str, Json]
+    deps: Mapping[str, str], dev: Mapping[str, str], fields: dict[str, Json], body: dict[str, Json]
 ) -> None:
     """`[nodejs.package]` is the escape hatch, so it is merged last and overrides."""
     compiled = PackageJson.compiled(

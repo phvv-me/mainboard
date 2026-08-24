@@ -14,13 +14,6 @@ def text(value: bytes | str) -> str:
     return value
 
 
-def _load_nvml() -> Nvml:
-    try:
-        return cast("Nvml", import_module("cuda.bindings._nvml"))
-    except ImportError:
-        return cast("Nvml", import_module("cuda.bindings.nvml"))
-
-
 class NvidiaApis:
     """CUDA/NVML imports for the NVIDIA provider.
 
@@ -41,7 +34,7 @@ class NvidiaApis:
 
     def __init__(self) -> None:
         self.runtime = cast("CudaRuntime", import_module("cuda.bindings.runtime"))
-        self.nvml = _load_nvml()
+        self.nvml = NvidiaApis._load_nvml()
         self.system = None
         self.cuda_device_type = None
         with suppress(ImportError):
@@ -63,6 +56,13 @@ class NvidiaApis:
     def has_cuda_core(self) -> bool:
         """Whether the optional `cuda.core` layer loaded successfully."""
         return self.cuda_device_type is not None
+
+    @staticmethod
+    def _load_nvml() -> Nvml:
+        try:
+            return cast("Nvml", import_module("cuda.bindings._nvml"))
+        except ImportError:
+            return cast("Nvml", import_module("cuda.bindings.nvml"))
 
 
 @cache

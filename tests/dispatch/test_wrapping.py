@@ -7,7 +7,7 @@ from mainboard.dispatch import wrapping as wrapping_module
 from mainboard.dispatch.wrapping import activation, activation_stage, argv, connection, wrap
 from mainboard.manifest import Container, HostProfile
 
-from .conftest import plan
+from .support import plan
 
 # Mirrors wrapping.py's own private per-user install dirs, kept as a literal here rather than
 # imported so a new bin dir demands a deliberate test update, not silent inherited coverage.
@@ -72,7 +72,7 @@ def test_wrap_containerized_delegates_to_the_injected_builder_or_refuses_without
 def test_the_activation_stage_tries_the_named_script_then_the_prefix_then_refuses() -> None:
     """A silent wrong interpreter costs far more to find than a command that refuses to start."""
     assert activation("/repo") == "/repo/.mainboard/activate.sh"
-    assert activation("/repo", "serving") == "/repo/.mainboard/activate-serving.sh"
+    assert activation("/repo", env="serving") == "/repo/.mainboard/activate-serving.sh"
     default = activation_stage(plan(), "/repo")
     assert "/repo/.chefe/activate.sh" in default
     assert "elif [ -d /repo/.mainboard/.pixi/envs/default/bin ]" in default

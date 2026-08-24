@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -14,7 +15,7 @@ _UNLIMITED_V1 = "9223372036854771712"  # the kernel's page-aligned near-2**63 "n
 
 # A cap file holds either a real ceiling or one of the two spellings of unlimited, and the walk
 # has to read past both of those to the tightest real number anywhere above the process.
-CAP_VALUES = st.lists(
+_CAP_VALUES = st.lists(
     st.one_of(st.integers(1, 2**50), st.just("max"), st.just(_UNLIMITED_V1)),
     min_size=1,
     max_size=4,
@@ -63,7 +64,7 @@ _NO_MEMBERSHIP_FILE = (None, {}, None)
 class LayOutCgroup(Protocol):
     """Write one cgroup layout, its membership file included, into the fake tree."""
 
-    def __call__(self, membership: str | None, nodes: dict[str, dict[str, str]]) -> None: ...
+    def __call__(self, membership: str | None, nodes: Mapping[str, dict[str, str]]) -> None: ...
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def lay_out_cgroup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LayOutCgr
         cgroup_mod.psutil, "virtual_memory", lambda: type("VM", (), {"total": _HOST_RAM})()
     )
 
-    def lay_out(membership: str | None, nodes: dict[str, dict[str, str]]) -> None:
+    def lay_out(membership: str | None, nodes: Mapping[str, dict[str, str]]) -> None:
         if membership is not None:
             proc = tmp_path / "self.cgroup"
             proc.write_text(membership)
@@ -111,11 +112,14 @@ def test_the_enforced_cap_is_read_from_whichever_cgroup_version_the_host_runs(
     expected: int | None,
     lay_out_cgroup: LayOutCgroup,
 ) -> None:
-    """A scheduler writes the limit on an ancestor of the process's own leaf, so both versions
-    are walked up to the root. v2 reads the unified `0::` line and `memory.max`, v1 reads the
-    memory-controller line and both `limit_in_bytes` files, and the memsw one is the ceiling
-    Miyabi's GH200 PBS actually enforces. A corrupt file, an unlimited sentinel, a membership
-    line for another controller, and an unreadable membership file all contribute nothing."""
+    """Both cgroup versions are walked up to the root.
+
+    A scheduler writes the limit on an ancestor of the process's own leaf. v2 reads the
+    unified `0::` line and `memory.max`, v1 reads the memory-controller line and both
+    `limit_in_bytes` files, and the memsw one is the ceiling Miyabi's GH200 PBS actually
+    enforces. A corrupt file, an unlimited sentinel, a membership line for another
+    controller, and an unreadable membership file all contribute nothing.
+    """
     lay_out_cgroup(membership, nodes)
 
     assert CgroupMemory.enforced_limit() == expected
@@ -128,13 +132,16 @@ def test_the_enforced_cap_is_read_from_whichever_cgroup_version_the_host_runs(
 # Each example builds a whole cgroup chain on disk, so the budget is trimmed to keep the
 # suite's inner loop fast. Every branch is pinned by the layouts above rather than found here.
 @settings(max_examples=10, suppress_health_check=[HealthCheck.function_scoped_fixture])
-@given(caps=CAP_VALUES)
+@given(caps=_CAP_VALUES)
 def test_the_tightest_real_ceiling_anywhere_on_the_walk_is_the_one_reported(
-    caps: list[int | str], lay_out_cgroup: LayOutCgroup
+    caps: Sequence[int | str], lay_out_cgroup: LayOutCgroup
 ) -> None:
-    """The process can sit many levels below the node the limit was written on and any level may
-    be unlimited, so the answer is the smallest finite value found on the whole chain, while an
-    all-unlimited chain reports the host's own RAM rather than a sentinel near 2**63."""
+    """The cap is the smallest finite limit on the whole chain.
+
+    The process can sit many levels below the node the limit was written on and any level
+    may be unlimited, while an all-unlimited chain reports the host's own RAM rather than a
+    sentinel near 2**63.
+    """
     # Each depth gets its own subtree, so one example never reads a level a longer one wrote.
     levels = [f"depth{len(caps)}"] + [f"level{index}" for index in range(len(caps))]
     nodes = {

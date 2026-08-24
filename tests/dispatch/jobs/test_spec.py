@@ -4,7 +4,7 @@ from hypothesis import strategies as st
 
 from mainboard.dispatch.jobs import JobSpec, walltime_seconds
 
-from ..conftest import FieldValue, plan
+from ..support import FieldValue, plan
 
 
 def spec(**overrides: FieldValue) -> JobSpec:

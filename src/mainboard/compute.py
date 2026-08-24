@@ -138,6 +138,36 @@ class Survey:
             else list(providers)
         )
 
+    def here(self) -> ComputePath:
+        """This machine, from its own probed facts."""
+        return ComputePath(
+            name="local", kind="local", access=Access.HERE, detail=summary(self.facts())
+        )
+
+    def machine(self, alias: str, profile: HostProfile, setup: HostSetup | None) -> ComputePath:
+        """One declared host: whether it answers, and what onboarding already recorded of it.
+
+        A host that answers but was never set up is reachable rather than ready, which is the
+        difference between a machine that can take a job and one that still needs `setup`. The
+        hardware line comes from the onboarding record rather than from the host, so a ready row
+        describes real hardware without a second round trip.
+
+        alias: the declared host name.
+        profile: that host's resolved profile, whose kind names the scheduler.
+        setup: what onboarding recorded for the alias, None when it was never set up.
+        """
+        refusal = self.reach(alias)
+        if refusal:
+            return ComputePath(
+                name=alias, kind=profile.kind, access=Access.UNREACHABLE, detail=refusal
+            )
+        if setup is None:
+            return ComputePath(
+                name=alias, kind=profile.kind, access=Access.REACHABLE, detail="never set up"
+            )
+        detail = summary(setup.hardware) if setup.hardware else f"{setup.env}, hardware unrecorded"
+        return ComputePath(name=alias, kind=profile.kind, access=Access.READY, detail=detail)
+
     def onboarded(self) -> dict[str, HostSetup]:
         """What onboarding recorded for each alias, read from the dispatch cache, keyed by alias.
 
@@ -169,36 +199,6 @@ class Survey:
         probes.extend(partial(self.provider, backend) for backend in self.providers)
         with ThreadPoolExecutor(max_workers=len(probes)) as pool:
             return list(pool.map(lambda probe: probe(), probes))
-
-    def here(self) -> ComputePath:
-        """This machine, from its own probed facts."""
-        return ComputePath(
-            name="local", kind="local", access=Access.HERE, detail=summary(self.facts())
-        )
-
-    def machine(self, alias: str, profile: HostProfile, setup: HostSetup | None) -> ComputePath:
-        """One declared host: whether it answers, and what onboarding already recorded of it.
-
-        A host that answers but was never set up is reachable rather than ready, which is the
-        difference between a machine that can take a job and one that still needs `setup`. The
-        hardware line comes from the onboarding record rather than from the host, so a ready row
-        describes real hardware without a second round trip.
-
-        alias: the declared host name.
-        profile: that host's resolved profile, whose kind names the scheduler.
-        setup: what onboarding recorded for the alias, None when it was never set up.
-        """
-        refusal = self.reach(alias)
-        if refusal:
-            return ComputePath(
-                name=alias, kind=profile.kind, access=Access.UNREACHABLE, detail=refusal
-            )
-        if setup is None:
-            return ComputePath(
-                name=alias, kind=profile.kind, access=Access.REACHABLE, detail="never set up"
-            )
-        detail = summary(setup.hardware) if setup.hardware else f"{setup.env}, hardware unrecorded"
-        return ComputePath(name=alias, kind=profile.kind, access=Access.READY, detail=detail)
 
     def provider(self, backend: ProviderBackend) -> ComputePath:
         """One provider backend: whether its credentials are here, and what it says they buy.

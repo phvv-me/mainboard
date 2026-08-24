@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard.batch import Transfer
+from mainboard.batch import Transfer, TransferSet
 from mainboard.dispatch import HostSetup
 
-from .conftest import spec
+from .support import spec
 
 if TYPE_CHECKING:
     from mainboard import Board
@@ -36,7 +36,7 @@ def mirrored(board: Board, alias: str = "miyabi-g", *, at: str = _MIRRORED) -> N
     )
 
 
-def measured(board: Board, **job: object) -> object:
+def measured(board: Board, **job: str | int) -> TransferSet:
     """The transfer set for one declared job over `board`."""
     return Transfer(board).set_for(spec({"target": "miyabi-g", "command": "true", **job}).jobs[0])
 

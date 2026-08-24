@@ -1,6 +1,7 @@
 # Grid-shape parsing, wave math, and the rendered launch-efficiency report.
 
 import math
+from collections.abc import Sequence
 
 import pytest
 from hypothesis import example, given, settings
@@ -10,7 +11,7 @@ from mainboard.profile import EfficiencyReport, KernelEfficiency
 from mainboard.profile.efficiency import grid_blocks, readable
 
 from ..strategies import WORDS
-from .conftest import kernel, render
+from .support import kernel, render
 
 _ONE_ROW = (
     KernelEfficiency(
@@ -78,7 +79,7 @@ def test_readable_trims_mangled_names_and_passes_plain_ones_through(name: str) -
 @example(launches=[("gemm", 100, 3), ("gemm", 100, 3), ("relu", 500, 4)], sm_count=2)
 @example(launches=[("stalled", 0, 1)], sm_count=2)  # a kernel that never ran is not a row
 def test_kernels_rank_by_total_time_and_carry_their_wave_quantisation(
-    launches: list[tuple[str, int, int]], sm_count: int
+    launches: Sequence[tuple[str, int, int]], sm_count: int
 ) -> None:
     """Rows rank slowest first, and each one's waves and tail follow from its grid.
 

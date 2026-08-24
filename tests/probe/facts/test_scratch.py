@@ -11,7 +11,7 @@ _GIB = 1024**3
 @pytest.fixture
 def bare_host(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """A host with no scratch env var set, no local mount, and a fixed free-space reading."""
-    for key in scratch_mod.SCRATCH_ENV:
+    for key in scratch_mod._SCRATCH_ENV:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(scratch_mod, "_SCRATCH_DIRS", ())
     monkeypatch.setattr(
@@ -23,8 +23,11 @@ def bare_host(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 def test_a_scheduler_scratch_variable_is_taken_before_any_bare_local_mount(
     tmp_path: Path, bare_host: pytest.MonkeyPatch
 ) -> None:
-    """PBS and SLURM hand a job its own node-local NVMe through an env var, and that beats the
-    shared `/tmp` a bare mount scan would otherwise settle for."""
+    """A scheduler's own scratch variable beats every mount scan.
+
+    PBS and SLURM hand a job its own node-local NVMe through an env var, and that beats the
+    shared `/tmp` a bare mount scan would otherwise settle for.
+    """
     bare_host.setenv("PBS_LOCALDIR", str(tmp_path))
     bare_host.setattr(scratch_mod, "_SCRATCH_DIRS", ("/nonexistent", str(tmp_path / "unused")))
 
@@ -39,8 +42,11 @@ def test_a_scheduler_scratch_variable_is_taken_before_any_bare_local_mount(
 def test_without_a_variable_the_first_existing_writable_mount_wins(
     tmp_path: Path, bare_host: pytest.MonkeyPatch
 ) -> None:
-    """The literal mounts are tried in cluster-convention order, skipping the ones that are
-    not there, and the chosen path records which candidate it came from."""
+    """Mount candidates are tried in cluster-convention order.
+
+    The ones that are not there are skipped, and the chosen path records which candidate it
+    came from.
+    """
     local = tmp_path / "local"
     local.mkdir()
     bare_host.setattr(scratch_mod, "_SCRATCH_DIRS", ("/nonexistent", str(local)))
@@ -54,8 +60,10 @@ def test_without_a_variable_the_first_existing_writable_mount_wins(
 def test_a_host_with_nothing_writable_reports_an_unavailable_tier(
     writable: bool, tmp_path: Path, bare_host: pytest.MonkeyPatch
 ) -> None:
-    """A caller has to be able to tell node-local NVMe from a shared filesystem, so a directory
-    that exists but rejects writes is passed over exactly like one that is missing."""
+    """An unwritable scratch candidate is passed over like a missing one.
+
+    A caller has to be able to tell node-local NVMe from a shared filesystem.
+    """
     if not writable:
         bare_host.setenv("LOCALDIR", str(tmp_path))
         bare_host.setattr(scratch_mod.os, "access", lambda path, mode: False)

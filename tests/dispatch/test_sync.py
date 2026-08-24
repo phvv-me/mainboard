@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from contextlib import chdir
 from pathlib import Path
 from typing import NoReturn
@@ -6,8 +7,9 @@ import pytest
 from plumbum import CommandNotFound
 from plumbum.commands.processes import ProcessExecutionError
 
-from mainboard.dispatch import STATE_DIR, GitignoreFilter, HostUnreachable, SyncLock
+from mainboard.dispatch import GitignoreFilter, HostUnreachable, SyncLock
 from mainboard.dispatch import sync as sync_module
+from mainboard.dispatch.shared import STATE_DIR
 from mainboard.dispatch.sync import ALWAYS_EXCLUDE, Rsync, binary, rsync
 
 _MIRROR = Rsync.ARCHIVE | Rsync.RELATIVE | Rsync.DELETE | Rsync.DELETE_AFTER
@@ -87,7 +89,7 @@ def test_the_denylist_covers_git_env_and_every_generated_directory() -> None:
     ],
 )
 def test_binary_prefers_upstream_rsync_and_refuses_to_mirror_with_apples(
-    monkeypatch: pytest.MonkeyPatch, installed: dict[str, _Version], mirror: bool, chosen: str
+    monkeypatch: pytest.MonkeyPatch, installed: Mapping[str, _Version], mirror: bool, chosen: str
 ) -> None:
     """openrsync cannot prune inside shared directories, so a remote mirror silently keeps them."""
     monkeypatch.setattr(sync_module, "local", _Missing(**{k: v for k, v in installed.items()}))
@@ -169,8 +171,11 @@ def test_a_real_mirror_prunes_the_stale_and_the_ignored_while_protecting_the_rem
 def test_a_mirror_reads_its_sources_from_the_workspace_not_from_where_it_was_typed(
     tmp_path: Path,
 ) -> None:
-    """`--relative` rebuilds each source path under the destination, so a path read from a
-    subdirectory would name a different file or none at all."""
+    """Sync always runs from the workspace root.
+
+    `--relative` rebuilds each source path under the destination, so a path read from a
+    subdirectory would name a different file or none at all.
+    """
     repo, host = tmp_path / "repo", tmp_path / "host"
     seed(repo, "src/run.py", "src/deep/nested.py")
     host.mkdir()

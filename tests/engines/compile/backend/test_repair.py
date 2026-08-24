@@ -8,7 +8,7 @@ from mainboard.engines.compile.backend import EnvironmentAudit
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ..conftest import Record
+    from ..support import Record
 
 _EXTENSION = "core.cpython-314-x86_64-linux-gnu.so"
 
@@ -35,8 +35,11 @@ def aged(path: Path, moment: int) -> None:
 def test_a_wheel_that_lost_every_import_root_is_damaged_and_named_in_a_stable_order(
     audit: EnvironmentAudit, record: Record, site_packages: Path
 ) -> None:
-    """A `dist-info` outliving its own files is what a swapped provider leaves behind, and the
-    argv a repair builds is ordered case-insensitively so the same damage reinstalls the same."""
+    """A repair reinstalls the same damage the same way.
+
+    A `dist-info` outliving its own files is what a swapped provider leaves behind, and the
+    argv a repair builds is ordered case-insensitively.
+    """
     for name in ("Zeta", "alpha", "Beta"):
         record(site_packages, name, roots=f"{name.lower()}\n")
 
@@ -75,8 +78,11 @@ def test_a_wheel_keeping_one_import_root_is_left_alone(
 def test_a_record_claiming_nothing_pixi_installed_is_never_reinstalled(
     installer: str, roots: str, audit: EnvironmentAudit, record: Record, site_packages: Path
 ) -> None:
-    """Metadata-only distributions claim nothing that could go missing, and only what uv
-    installed for pixi is pixi's to reinstall, however broken a conda one looks."""
+    """A repair touches only what is pixi's to reinstall.
+
+    Metadata-only distributions claim nothing that could go missing, and only what uv
+    installed for pixi qualifies, however broken a conda one looks.
+    """
     record(site_packages, "claimless", installer=installer, roots=roots)
 
     assert audit.suspect() == ()

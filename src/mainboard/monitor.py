@@ -17,7 +17,7 @@ from .dispatch.schedulers import HostUnreachable, short_reason
 from .dispatch.shared import logger
 from .dispatch.state import DownHost, Failed, Finished, MonitorReport
 from .dispatch.vocabulary import JobState
-from .tracking import batched, streamed
+from .tracking import is_batched, streamed
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -79,6 +79,23 @@ class Sweep:
             groups.setdefault((record.target, record.kind), []).append(record)
         return groups
 
+    def memoized(self, record: RunRecord) -> JobState | None:
+        """`record`'s cached terminal state, None when it still owes its target a probe.
+
+        A terminal verdict can never change, so it is read straight from the cache and the target
+        is never touched for it, which is also what keeps a finished job the queue has already
+        forgotten from reading back as vanished.
+        """
+        verdict = record.verdict
+        if verdict is not None and verdict in vocabulary.TERMINAL:
+            return JobState(
+                handle=record.handle,
+                state=record.state,
+                exit_code=record.exit_code,
+                verdict=verdict,
+            )
+        return None
+
     def settle(self, kind: str, records: Sequence[RunRecord]) -> None:
         """Rebuild every run in `records` and resolve the ones still owed a probe.
 
@@ -104,23 +121,6 @@ class Sweep:
         found = self.board.dispatcher.states([self.runs[record].handle for record in pending])
         self.states.update({record: found[record.handle] for record in pending})
 
-    def memoized(self, record: RunRecord) -> JobState | None:
-        """`record`'s cached terminal state, None when it still owes its target a probe.
-
-        A terminal verdict can never change, so it is read straight from the cache and the target
-        is never touched for it, which is also what keeps a finished job the queue has already
-        forgotten from reading back as vanished.
-        """
-        verdict = record.verdict
-        if verdict is not None and verdict in vocabulary.TERMINAL:
-            return JobState(
-                handle=record.handle,
-                state=record.state,
-                exit_code=record.exit_code,
-                verdict=verdict,
-            )
-        return None
-
 
 class Monitor:
     """The durable pass over every dispatched job still owed an outcome.
@@ -142,6 +142,11 @@ class Monitor:
         self.board = board
         self.cache = board.dispatcher.cache
         self.streams: dict[str, Bus] = {}
+
+    @staticmethod
+    def unpulled(path: str, *, host: str, fault: Exception) -> None:
+        """Log one failed pull as a warning and stand for its absent results path."""
+        logger.warning("could not pull %s from %s: %s", path, host, fault)
 
     def once(self) -> MonitorReport:
         """Resolve every unsettled run once, harvest the newly terminal ones, report the changes.
@@ -214,8 +219,7 @@ class Monitor:
         try:
             job.pull()
         except (ProcessExecutionError, HostUnreachable, MissionError, OSError) as fault:
-            logger.warning("could not pull %s from %s: %s", path, job.handle.host, fault)
-            return None
+            return self.unpulled(path, host=job.handle.host, fault=fault)
         return path
 
     def release(self, job: Run) -> None:
@@ -248,9 +252,9 @@ class Monitor:
         detail: where its results landed or why it failed, empty while it is still in flight.
         """
         label = record.name or ""
-        if batched(label) or not self.board.manifest.tracking.on:
+        if is_batched(label) or not self.board.manifest.tracking.on:
             return
-        stream, job = streamed(label, record.handle)
+        stream, job = streamed(label, handle=record.handle)
         bus = self.streams.setdefault(stream, self.board.receipts(stream))
         seen = latest(bus.replay(), Topic.STATE).get(job)
         moved = {"handle": record.handle, "state": state.state or "", "verdict": state.verdict}

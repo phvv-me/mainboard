@@ -12,7 +12,7 @@ from .platforms import PlatformMatrix
 from .toml import Toml
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from ...manifest import Env, Manifest, Scope, Spec, Toolchain
     from ...manifest.schema.environment import Task
@@ -103,8 +103,8 @@ def spec_toml(spec: Spec) -> Toml:
     return {**named, **extra}
 
 
-def layered(declared: dict[str, Spec], over: dict[str, Spec]) -> dict[str, Spec]:
-    """Each requirement layered over the one it shadows, the way `Spec.merged` layers a scope.
+def _layered(declared: Mapping[str, Spec], *, over: Mapping[str, Spec]) -> dict[str, Spec]:
+    """Each requirement _layered over the one it shadows, the way `Spec.merged` layers a scope.
 
     A pixi `[target]` dependency replaces its scope's own rather than narrowing it, so an
     overlay entry has to arrive already carrying whatever the scope said about that package.
@@ -129,15 +129,16 @@ def dependency_tables(scope: Scope, *, over: Scope | None = None) -> dict[str, T
     (`nodejs`, `rust`, ...) rides in the manifest but is not yet translated.
 
     over: the scope this one overlays, when it compiles into a `[target]` table rather than
-        standing on its own. See `layered` for why an overlay must not be compiled bare.
+        standing on its own. See `_layered` for why an overlay must not be compiled bare.
     """
     shadowed = over.deps if over else {}
-    dependencies = {name: spec_toml(spec) for name, spec in layered(scope.deps, shadowed).items()}
+    merged = _layered(scope.deps, over=shadowed)
+    dependencies = {name: spec_toml(spec) for name, spec in merged.items()}
     tables: dict[str, Toml] = {"dependencies": dependencies} if dependencies else {}
     python: Toolchain | None = scope.toolchains().get("python")
     if python and python.all_deps():
         inherited: Toolchain | None = over.toolchains().get("python") if over else None
-        requirements = layered(python.all_deps(), inherited.all_deps() if inherited else {})
+        requirements = _layered(python.all_deps(), over=inherited.all_deps() if inherited else {})
         tables["pypi-dependencies"] = {
             name: spec_toml(spec) for name, spec in requirements.items()
         }
@@ -222,6 +223,23 @@ class PixiManifest(FrozenModel):
         return out
 
     @classmethod
+    def declared_feature(cls, name: str, env: Env, platforms: PlatformMatrix) -> Toml:
+        """One `[feature.<name>]` table: the env's own feature table, platforms and tasks."""
+        return {
+            **cls.feature_table(env),
+            **(
+                {_PLATFORMS: platforms.environments[name]}
+                if name in platforms.environments
+                else {}
+            ),
+            **(
+                {"tasks": {task: cls.task(spec) for task, spec in env.tasks.items()}}
+                if env.tasks
+                else {}
+            ),
+        }
+
+    @classmethod
     def feature_table(cls, env: Env) -> dict[str, Toml]:
         """One env's own deps, channels, platforms and per-platform `[target]` overlays."""
         body = dependency_tables(env)
@@ -239,23 +257,6 @@ class PixiManifest(FrozenModel):
         if target:
             body["target"] = target
         return body
-
-    @classmethod
-    def declared_feature(cls, name: str, env: Env, platforms: PlatformMatrix) -> Toml:
-        """One `[feature.<name>]` table: the env's own feature table, platforms and tasks."""
-        return {
-            **cls.feature_table(env),
-            **(
-                {_PLATFORMS: platforms.environments[name]}
-                if name in platforms.environments
-                else {}
-            ),
-            **(
-                {"tasks": {task: cls.task(spec) for task, spec in env.tasks.items()}}
-                if env.tasks
-                else {}
-            ),
-        }
 
     @classmethod
     def features(

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..core.project import Project
-from ..profile.spans import _Span as Span
+from ..profile.spans import Span
 from ..profile.spans import span as profile_span
 
 if TYPE_CHECKING:

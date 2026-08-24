@@ -45,7 +45,7 @@ class Memory(FrozenModel):
         return self.used_bytes / 1024**3
 
     @classmethod
-    def system(cls, scope: str = "system", unified: bool = False) -> Memory:
+    def system(cls, scope: str = "system", *, unified: bool = False) -> Memory:
         """Live system RAM usage sampled from psutil.
 
         scope: region name to record, e.g. `system` or `unified`.

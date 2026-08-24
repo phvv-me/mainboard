@@ -1,4 +1,5 @@
 import tomllib
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,7 +11,6 @@ from mainboard.engines.compile.state import SyncState
 from mainboard.manifest import Manifest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
     from pytest_subprocess import FakeProcess
@@ -46,14 +46,6 @@ _EDITS: dict[str, Json] = {
 }
 
 
-def _edited(table: str) -> str:
-    """The bare manifest with one table's declared edit applied.
-
-    table: the manifest table being edited, keyed into `_EDITS`.
-    """
-    return tomlkit.dumps({**tomllib.loads(_BARE), table: _EDITS[table]})
-
-
 def test_every_declared_manifest_table_is_classified_by_this_suite() -> None:
     """A new table has to arrive with the edit that decides whether a compile can read it."""
     assert set(_EDITS) == set(Manifest.model_fields)
@@ -71,7 +63,8 @@ def test_a_manifest_table_moves_the_digest_exactly_when_a_compile_reads_it(
     tables here: the second stage reads scopes (`[deps]`, `[dev]`, `[envs]`, `[on]`) and the
     workspace name, which are the same tables that already reach this text.
     """
-    bare, edited = compiler_from(_BARE), compiler_from(_edited(table))
+    bare = compiler_from(_BARE)
+    edited = compiler_from(tomlkit.dumps({**tomllib.loads(_BARE), table: _EDITS[table]}))
     compiled = [
         PixiManifest.from_manifest(compiler.manifest, project_name=_PROJECT).to_toml()
         for compiler in (bare, edited)
@@ -85,8 +78,10 @@ def test_a_manifest_table_moves_the_digest_exactly_when_a_compile_reads_it(
 def test_staleness_starts_once_something_has_been_compiled_to_be_stale_against(
     compiler_from: Callable[[str], Compiler], files: Writer, pixi: Pixi
 ) -> None:
-    """A workspace with nothing compiled yet is not stale, since first provisioning is
-    `provision`'s job rather than `activated`'s."""
+    """A workspace with nothing compiled yet is not stale.
+
+    First provisioning is `provision`'s job rather than `activated`'s.
+    """
     compiler = compiler_from(_BARE)
     assert compiler.stale() is False
 
@@ -138,8 +133,11 @@ def test_write_never_blesses_a_lock_it_did_not_solve(
 def test_the_resolution_digest_covers_what_a_solve_reads(
     other: str, *, same: bool, compiler_from: Callable[[str], Compiler], files: Writer
 ) -> None:
-    """Leaving activation in would make the digest depend on where the workspace lives and so
-    refuse every host whose root differs from the machine that solved."""
+    """The digest leaves activation out.
+
+    Leaving it in would make the digest depend on where the workspace lives and so refuse
+    every host whose root differs from the machine that solved.
+    """
     bare = compiler_from(_BARE)
     bare.write(files, "default")
     before = bare.resolution_digest()
@@ -152,8 +150,12 @@ def test_the_resolution_digest_covers_what_a_solve_reads(
 def test_the_resolution_digest_follows_every_local_python_projects_own_metadata(
     compiler_from: Callable[[str], Compiler], files: Writer, tmp_path: Path
 ) -> None:
-    """Editable source metadata drifts the lock without changing a manifest byte, a path
-    declared only inside `[envs.*]` counts too, and one with nothing on disk yet never raises."""
+    """Editable metadata drift counts as staleness wherever it is declared.
+
+    Editable source metadata drifts the lock without changing a manifest byte, a path
+    declared only inside `[envs.*]` counts too, and one with nothing on disk yet never
+    raises.
+    """
     compiler = compiler_from(
         """
         [workspace]
@@ -202,8 +204,11 @@ def test_install_locked_refuses_a_lock_nothing_on_disk_vouches_for(
 def test_install_locked_accepts_a_lock_solved_somewhere_else_from_this_very_tree(
     compiler_from: Callable[[str], Compiler], files: Writer, pixi: Pixi, fp: FakeProcess
 ) -> None:
-    """The shipped-artifact case, where a host that never solved installs from a lock it was
-    handed together with the manifest and the metadata that lock was solved from."""
+    """A shipped lock installs without a solve.
+
+    A host that never solved installs from a lock it was handed together with the manifest
+    and the metadata that lock was solved from.
+    """
     pixi.manifest.write_text('[workspace]\nplatforms = ["linux-64"]\n')
     pixi.lock.write_text("version: 7\n")
     compiler = compiler_from(_BARE)

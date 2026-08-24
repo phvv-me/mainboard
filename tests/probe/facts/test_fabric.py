@@ -20,9 +20,12 @@ def make_port(root: Path, device: str, port: str, **fields: str) -> None:
 def test_probe_reads_every_numbered_port_in_numeric_order_and_skips_what_is_not_one(
     tmp_path: Path,
 ) -> None:
-    """Ports sort by their number rather than lexically, so `2` comes before `10`, and a stray
-    file under `ports`, a device with no `ports` directory at all, and a port whose field files
-    cannot be read each degrade quietly instead of taking the whole scan down."""
+    """Ports sort numerically and a torn entry degrades quietly.
+
+    `2` comes before `10`, and a stray file under `ports`, a device with no `ports`
+    directory at all, and a port whose field files cannot be read each contribute nothing
+    instead of taking the whole scan down.
+    """
     for port in ("10", "2", "1"):
         make_port(
             tmp_path,

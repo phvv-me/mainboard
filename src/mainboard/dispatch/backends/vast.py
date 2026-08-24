@@ -23,12 +23,13 @@ from .base import (
     Market,
     ProviderBackend,
     Standing,
+    forgotten,
     http_transport,
     require_budget,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
@@ -147,6 +148,16 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         self.transport = transport
         self.sleeper = sleeper
 
+    @staticmethod
+    def hourly_cap(resources: Resources) -> float:
+        """The hourly ceiling `resources` implies, 0 when the request leaves the job open-ended.
+
+        A spend cap only bounds an hourly rental once the job also says how long it may run, so a
+        walltime-less request searches the whole market and leans on `max_usd` alone.
+        """
+        seconds = walltime_seconds(resources.walltime) if resources.walltime else 0
+        return resources.max_usd * 3600.0 / seconds if seconds else 0.0
+
     def cancel(self, handle: str) -> None:
         """Destroy the rental, tolerating an instance Vast has already forgotten.
 
@@ -158,39 +169,18 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         try:
             self.request("DELETE", path=f"/instances/{handle}/")
         except HTTPError as error:
-            if error.status != 404:
-                raise
+            forgotten(error)
 
-    def logs(self, handle: str) -> str:
-        payload = self.request(
-            "PUT",
-            path=f"/instances/request_logs/{handle}/",
-            body={"tail": str(_LOG_TAIL_LINES)},
-        )
-        url = str(payload.get("result_url") or "")
-        if not url:
-            raise MissionError(
-                f"vast refused logs for instance {handle}: {payload.get('msg') or payload}"
-            )
-        return self.uploaded(url)
+    def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
+        """A live offer search as catalog rows, the authed refresh of the imported price feed.
 
-    def state(self, handle: str) -> JobState:
-        instance = self.instance(handle)
-        if not instance:
-            return JobState(handle=handle, verdict="vanished")
-        status = str(instance.get("actual_status") or "")
-        if status in _LIVE_STATUSES:
-            return JobState(handle=handle, state=status, verdict="running")
-        if status not in _TERMINAL_STATUSES:
-            return JobState(handle=handle, state=status, verdict="unknown")
-        code = self.exit_code(handle)
-        if code is None:
-            return JobState(handle=handle, state=status, verdict="unknown")
-        return JobState(
-            handle=handle,
-            state=status,
-            exit_code=code,
-            verdict="ok" if code == 0 else "failed",
+        gpu_name: the Vast GPU name to narrow to, empty for the whole market.
+        gpus: the GPU count per machine, 0 for any.
+        limit: how many offers to bring back, 0 for this backend's own page size.
+        """
+        return from_vast(
+            self.search(gpu_name=gpu_name, gpus=gpus, limit=limit or _SEARCH_LIMIT),
+            spot=self.spot,
         )
 
     def exit_code(self, handle: str) -> int | None:
@@ -207,74 +197,30 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             return None
         return exit_sentinel(log)
 
-    def standing(self) -> Standing:
-        """The account's credit and one live rate for the sample card, or the key that is missing.
+    def instance(self, handle: str) -> dict:
+        """`handle`'s instance row, empty once Vast has forgotten the instance.
 
-        Vast is the provider that answers both halves cheaply: `/users/current` carries the
-        spendable `credit` for the authed user (its sibling `balance` is the invoicing figure,
-        which sits at zero on a prepaid account), and one narrow offer search prices the market
-        as it stands. Neither call happens until a key is found, so an unconfigured Vast row
-        costs nothing but the environment lookup.
+        A destroyed instance answers either a null row or a 404 depending on how long ago it went,
+        and a post-mortem reads both the same way, so both come back empty here.
         """
         try:
-            api_key()
-        except MissionError as unset:
-            return Standing(note=str(unset))
-        credit = self.request("GET", path="/users/current/").get("credit")
-        spendable = float(credit) if credit is not None else None
-        cheapest = next(iter(self.search(gpu_name=_SAMPLE_GPU, gpus=1, limit=1)), None)
-        if cheapest is None:
-            return Standing(
-                keyed=True, credit_usd=spendable, note=f"no 1x {_SAMPLE_GPU} offer right now"
+            payload = self.request("GET", path=f"/instances/{handle}/", query={"owner": "me"})
+        except HTTPError as error:
+            return forgotten(error)
+        return payload.get("instances") or {}
+
+    def logs(self, handle: str) -> str:
+        payload = self.request(
+            "PUT",
+            path=f"/instances/request_logs/{handle}/",
+            body={"tail": str(_LOG_TAIL_LINES)},
+        )
+        url = str(payload.get("result_url") or "")
+        if not url:
+            raise MissionError(
+                f"vast refused logs for instance {handle}: {payload.get('msg') or payload}"
             )
-        # A Vast machine whose city is unset still carries its country as `, US`, so the
-        # separator is trimmed along with the whitespace rather than printed as a stray comma.
-        where = str(cheapest.get("geolocation") or "").strip(" ,")
-        return Standing(
-            keyed=True,
-            credit_usd=spendable,
-            usd_hr=self.rate(cheapest),
-            note=f"1x {_SAMPLE_GPU} {where}".strip(),
-        )
-
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
-        require_budget(resources)
-        offer = self.pick(
-            gpu_name=resources.gpu_name,
-            gpus=max(resources.gpus, 1),
-            max_usd_hr=self.hourly_cap(resources),
-        )
-        script = f"{command}\nstatus=$?\necho {_EXIT_SENTINEL}$status\nexit $status\n"
-        body = {
-            "client_id": "me",
-            "image": plan.container.image if plan.containerized else _DEFAULT_IMAGE,
-            "disk": self.disk_gb,
-            "label": f"mainboard-{plan.host}",
-            # `args` launch mode runs the image as it is, with `onstart` as the entrypoint and
-            # `args` as its argv, which is how the official CLI spells a one-shot container.
-            "runtype": "args",
-            "onstart": "bash",
-            "args": ["-c", script],
-            # Fail the rent outright rather than parking a stopped instance we would still owe
-            # storage on when the offer is taken between the search and the create.
-            "cancel_unavail": True,
-        }
-        if self.spot:
-            body["price"] = float(offer["min_bid"])
-        payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
-        return str(payload["new_contract"])
-
-    def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
-        """A live offer search as catalog rows, the authed refresh of the imported price feed.
-
-        gpu_name: the Vast GPU name to narrow to, empty for the whole market.
-        gpus: the GPU count per machine, 0 for any.
-        limit: how many offers to bring back, 0 for this backend's own page size.
-        """
-        return from_vast(
-            self.search(gpu_name=gpu_name, gpus=gpus, limit=limit or _SEARCH_LIMIT),
-            spot=self.spot,
-        )
+        return self.uploaded(url)
 
     def pick(self, *, gpu_name: str, gpus: int, max_usd_hr: float = 0.0) -> dict:
         """The offer to rent: the most reliable machine the budget already allows.
@@ -298,31 +244,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             )
         return max(offers, key=lambda offer: (float(offer["reliability2"]), -self.rate(offer)))
 
-    @staticmethod
-    def hourly_cap(resources: Resources) -> float:
-        """The hourly ceiling `resources` implies, 0 when the request leaves the job open-ended.
-
-        A spend cap only bounds an hourly rental once the job also says how long it may run, so a
-        walltime-less request searches the whole market and leans on `max_usd` alone.
-        """
-        seconds = walltime_seconds(resources.walltime) if resources.walltime else 0
-        return resources.max_usd * 3600.0 / seconds if seconds else 0.0
-
-    def instance(self, handle: str) -> dict:
-        """`handle`'s instance row, empty once Vast has forgotten the instance.
-
-        A destroyed instance answers either a null row or a 404 depending on how long ago it went,
-        and a post-mortem reads both the same way, so both come back empty here.
-        """
-        try:
-            payload = self.request("GET", path=f"/instances/{handle}/", query={"owner": "me"})
-        except HTTPError as error:
-            if error.status != 404:
-                raise
-            return {}
-        return payload.get("instances") or {}
-
-    def rate(self, offer: dict) -> float:
+    def rate(self, offer: Mapping) -> float:
         """What one hour of `offer` costs under this backend's pricing mode."""
         return float(offer["min_bid"] if self.spot else offer["dph_total"])
 
@@ -388,6 +310,82 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             query["dph_total"] = {"lte": max_usd_hr}
         offers = self.request("POST", path="/bundles/", body=query).get("offers") or []
         return sorted(offers, key=self.rate)
+
+    def standing(self) -> Standing:
+        """The account's credit and one live rate for the sample card, or the key that is missing.
+
+        Vast is the provider that answers both halves cheaply: `/users/current` carries the
+        spendable `credit` for the authed user (its sibling `balance` is the invoicing figure,
+        which sits at zero on a prepaid account), and one narrow offer search prices the market
+        as it stands. Neither call happens until a key is found, so an unconfigured Vast row
+        costs nothing but the environment lookup.
+        """
+        try:
+            api_key()
+        except MissionError as unset:
+            return Standing(note=str(unset))
+        credit = self.request("GET", path="/users/current/").get("credit")
+        spendable = float(credit) if credit is not None else None
+        cheapest = next(iter(self.search(gpu_name=_SAMPLE_GPU, gpus=1, limit=1)), None)
+        if cheapest is None:
+            return Standing(
+                keyed=True, credit_usd=spendable, note=f"no 1x {_SAMPLE_GPU} offer right now"
+            )
+        # A Vast machine whose city is unset still carries its country as `, US`, so the
+        # separator is trimmed along with the whitespace rather than printed as a stray comma.
+        where = str(cheapest.get("geolocation") or "").strip(" ,")
+        return Standing(
+            keyed=True,
+            credit_usd=spendable,
+            usd_hr=self.rate(cheapest),
+            note=f"1x {_SAMPLE_GPU} {where}".strip(),
+        )
+
+    def state(self, handle: str) -> JobState:
+        instance = self.instance(handle)
+        if not instance:
+            return JobState(handle=handle, verdict="vanished")
+        status = str(instance.get("actual_status") or "")
+        if status in _LIVE_STATUSES:
+            return JobState(handle=handle, state=status, verdict="running")
+        if status not in _TERMINAL_STATUSES:
+            return JobState(handle=handle, state=status, verdict="unknown")
+        code = self.exit_code(handle)
+        if code is None:
+            return JobState(handle=handle, state=status, verdict="unknown")
+        return JobState(
+            handle=handle,
+            state=status,
+            exit_code=code,
+            verdict="ok" if code == 0 else "failed",
+        )
+
+    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+        require_budget(resources)
+        offer = self.pick(
+            gpu_name=resources.gpu_name,
+            gpus=max(resources.gpus, 1),
+            max_usd_hr=self.hourly_cap(resources),
+        )
+        script = f"{command}\nstatus=$?\necho {_EXIT_SENTINEL}$status\nexit $status\n"
+        body = {
+            "client_id": "me",
+            "image": plan.container.image if plan.containerized else _DEFAULT_IMAGE,
+            "disk": self.disk_gb,
+            "label": f"mainboard-{plan.host}",
+            # `args` launch mode runs the image as it is, with `onstart` as the entrypoint and
+            # `args` as its argv, which is how the official CLI spells a one-shot container.
+            "runtype": "args",
+            "onstart": "bash",
+            "args": ["-c", script],
+            # Fail the rent outright rather than parking a stopped instance we would still owe
+            # storage on when the offer is taken between the search and the create.
+            "cancel_unavail": True,
+        }
+        if self.spot:
+            body["price"] = float(offer["min_bid"])
+        payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
+        return str(payload["new_contract"])
 
     def uploaded(self, url: str) -> str:
         """The log body Vast uploaded at `url`, polled while the upload is still in flight.

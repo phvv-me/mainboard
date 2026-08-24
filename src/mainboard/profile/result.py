@@ -125,7 +125,7 @@ class Profile(FrozenModel):
         """A plain-text report containing only populated evidence sections."""
         sections = []
         if self.summaries:
-            sections.append(f"Spans\n{_region_text(self.stats())}")
+            sections.append(f"Spans\n{Profile._region_text(self.stats())}")
         if self.kernels or self.memcpys or self.activities:
             report = self.trace_report()
             sections.append(
@@ -163,15 +163,15 @@ class Profile(FrozenModel):
         """Deep GPU-time ranking (compute/copy split, hot regions and kernels)."""
         return BottleneckReport.from_traces(self.windows, self.kernels, self.memcpys, top)
 
-
-def _region_text(stats: list[RegionStat]) -> str:
-    """Plain-text per-name table, the CLI-free fallback for `Profile.report`."""
-    if not stats:
-        return "No regions recorded."
-    rows = [f"{'region':<30}{'calls':>6}{'total ms':>10}{'avg ms':>9}{'peak MB':>10}"]
-    rows += [
-        f"{s.name:<30}{s.calls:>6d}{s.total_ms:>10.2f}{s.avg_ms:>9.2f}"
-        f"{s.peak_memory_bytes / 1024**2:>10.1f}"
-        for s in stats
-    ]
-    return "\n".join(rows)
+    @staticmethod
+    def _region_text(stats: list[RegionStat]) -> str:
+        """Plain-text per-name table, the CLI-free fallback for `Profile.report`."""
+        if not stats:
+            return "No regions recorded."
+        rows = [f"{'region':<30}{'calls':>6}{'total ms':>10}{'avg ms':>9}{'peak MB':>10}"]
+        rows += [
+            f"{s.name:<30}{s.calls:>6d}{s.total_ms:>10.2f}{s.avg_ms:>9.2f}"
+            f"{s.peak_memory_bytes / 1024**2:>10.1f}"
+            for s in stats
+        ]
+        return "\n".join(rows)

@@ -1,13 +1,10 @@
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
 from mainboard.probe import Compiler, CompilerKind, Compilers
 from mainboard.probe.facts import compilers as compilers_mod
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
 
 _GRACE_BANNER = "clang version 17.0.6 for Grace"
 _NVCC_BANNER = "nvcc: NVIDIA (R) Cuda compiler driver"
@@ -35,7 +32,7 @@ def bare_toolchain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     only_on_path(monkeypatch)
     answer_version(monkeypatch, _NVCC_BANNER)
     monkeypatch.setattr(compilers_mod.sys, "prefix", str(tmp_path / "prefix"))
-    monkeypatch.setattr(compilers_mod, "CUDA_ROOT", tmp_path / "usr-local")
+    monkeypatch.setattr(compilers_mod, "_CUDA_ROOT", tmp_path / "usr-local")
     return tmp_path
 
 
@@ -81,8 +78,11 @@ def test_the_compiler_family_comes_from_the_binary_name_then_its_version_banner(
 def test_the_host_compiler_prefers_grace_clang_then_gpp_then_clang(
     arch: str, present: Sequence[str], banner: str, expected: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Grace Clang only wins on aarch64 and only when its banner says so, so an ordinary clang++
-    on the same machine loses to g++, and clang++ is taken only where g++ is absent."""
+    """The C++ pick follows the platform's own preference order.
+
+    Grace Clang only wins on aarch64 and only when its banner says so, so an ordinary clang++
+    on the same machine loses to g++, and clang++ is taken only where g++ is absent.
+    """
     only_on_path(monkeypatch, *present)
     answer_version(monkeypatch, banner)
     assert Compilers(arch=arch, cpu="Neoverse-V2", cuda_arch="90").cxx.path == Path(
@@ -107,8 +107,11 @@ def test_nvcc_is_taken_from_path_first_and_from_the_toolkit_roots_after(
     bare_toolchain: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A CUDA toolkit often installs outside PATH, so either spelling on PATH is used first and
-    the interpreter prefix then the conventional install roots are searched after it."""
+    """nvcc is found on PATH first and in the conventional roots after.
+
+    A CUDA toolkit often installs outside PATH, so either spelling on PATH is used first and
+    the interpreter prefix then the conventional install roots are searched after it.
+    """
     if on_path:
         only_on_path(monkeypatch, on_path)
     installed = bare_toolchain / relative if relative else None
@@ -128,8 +131,11 @@ def test_nvcc_is_taken_from_path_first_and_from_the_toolkit_roots_after(
 def test_a_missing_half_of_the_toolchain_is_named_rather_than_left_a_blank_path(
     half: str, message: str, bare_toolchain: Path
 ) -> None:
-    """A build configured against an empty path fails much later and far less clearly, so each
-    compiler resolves lazily and says which half of the toolchain the host does not have."""
+    """A missing compiler refuses by name at first touch.
+
+    A build configured against an empty path fails much later and far less clearly, so each
+    compiler resolves lazily and says which half of the toolchain the host does not have.
+    """
     compilers = Compilers(arch="x86_64", cpu="Xeon", cuda_arch="89")
     with pytest.raises(FileNotFoundError, match=message):
         getattr(compilers, half)
@@ -158,8 +164,12 @@ def test_a_missing_half_of_the_toolchain_is_named_rather_than_left_a_blank_path(
 def test_release_flags_track_the_cpu_architecture_and_forward_through_nvcc(
     arch: str, cpu: str, expected_cxx: str | None, expected_cuda: str | None
 ) -> None:
-    """Grace gets its own `-mcpu` target while other aarch64 parts fall back to native, x86 tunes
-    both march and mtune, and an architecture with no tuning to offer leaves the flags unset."""
+    """Release flags tune to the exact part where one is known.
+
+    Grace gets its own `-mcpu` target while other aarch64 parts fall back to native, x86
+    tunes both march and mtune, and an architecture with no tuning to offer leaves the flags
+    unset.
+    """
     compilers = Compilers(arch=arch, cpu=cpu, cuda_arch="90")
     assert compilers.cxx_flags_release_init == expected_cxx
     assert compilers.cuda_flags_release_init == expected_cuda

@@ -1,10 +1,12 @@
+from collections.abc import Sequence
+
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
 from mainboard.dispatch.schedulers import Slurm, build_sbatch_flags, slurm_verdict
+from mainboard.dispatch.schedulers import slurm as slurm_mod
 from mainboard.dispatch.schedulers.slurm import (
-    SLURM_LIVE,
     SlurmJob,
     SlurmState,
     build_sacct_command,
@@ -17,7 +19,7 @@ from mainboard.dispatch.schedulers.slurm import (
 from mainboard.dispatch.vocabulary import Resources
 
 from ...strategies import WORDS
-from ..conftest import machine_with
+from ..support import machine_with
 
 _WALLTIMES = st.one_of(st.none(), st.sampled_from(["00:10:00", "06:00:00"]))
 _ROWS = st.lists(
@@ -45,7 +47,7 @@ def test_a_slurm_state_token_parses_to_its_member_or_stays_verbatim(
         SlurmState.RUNNING,
         SlurmState.SUSPENDED,
         SlurmState.COMPLETING,
-    } == SLURM_LIVE
+    } == slurm_mod._SLURM_LIVE
 
 
 @pytest.mark.parametrize(
@@ -87,7 +89,7 @@ def test_only_a_set_resource_becomes_an_sbatch_flag(resources: Resources) -> Non
 @example(rows=[("123", "train", "gpu")])
 @example(rows=[])
 def test_a_squeue_row_round_trips_through_the_format_the_command_asks_for(
-    rows: list[tuple[str, str, str]],
+    rows: Sequence[tuple[str, str, str]],
 ) -> None:
     """The parser reads back exactly the `%i|%j|%T|%P|%M` layout the built command requests."""
     assert build_squeue_command(me=True)[-1] == "--me"

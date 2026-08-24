@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from .. import vocabulary
 from ..onboard import HostSetup
 from ..shared import db_file, now
-from ..vocabulary import TERMINAL
 from .storage import connect
 
 if TYPE_CHECKING:
@@ -85,21 +85,6 @@ class Cache:
         ).fetchall()
         return [HostSetup.model_validate_json(row["facts"]) for row in rows]
 
-    def save_host(self, setup: HostSetup) -> HostSetup:
-        """Stamp `setup` with the current time and record it (upsert by alias).
-
-        The store owns the timestamp, so a recorded onboarding always says when it happened
-        and two records of the same host can be ordered against each other.
-        """
-        stamped = setup.model_copy(update={"onboarded_at": now()})
-        self.connection.execute(
-            "INSERT INTO hosts (alias, facts, probed_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(alias) DO UPDATE SET facts = excluded.facts, "
-            "probed_at = excluded.probed_at",
-            (stamped.host, stamped.model_dump_json(), stamped.onboarded_at),
-        )
-        return stamped
-
     def mark_synced(self, alias: str) -> None:
         """Record that the workspace has just been mirrored to `alias`.
 
@@ -149,19 +134,6 @@ class Cache:
         self.record(stored)
         return stored
 
-    def tracked(self) -> list[RunRecord]:
-        """Every run a durable sweep still owes an outcome for, newest first.
-
-        A run leaves this set only once its verdict is terminal and that same verdict has been
-        reported, so a sweep never announces a settled run twice and never drops the one whose
-        outcome no process ever recorded, the job whose dispatching agent died before it ended.
-        """
-        rows = self.connection.execute(
-            "SELECT data FROM runs ORDER BY submitted_at DESC"
-        ).fetchall()
-        runs = [RunRecord.model_validate_json(row["data"]) for row in rows]
-        return [run for run in runs if run.verdict not in TERMINAL or run.reported != run.verdict]
-
     def run(self, handle: str, target: str | None = None) -> RunRecord:
         """The most recent run dispatched as `handle`, optionally narrowed to `target`.
 
@@ -184,3 +156,35 @@ class Cache:
                 f"handle {handle!r} is recorded on {', '.join(targets)}; pass the target"
             )
         return runs[0]
+
+    def save_host(self, setup: HostSetup) -> HostSetup:
+        """Stamp `setup` with the current time and record it (upsert by alias).
+
+        The store owns the timestamp, so a recorded onboarding always says when it happened
+        and two records of the same host can be ordered against each other.
+        """
+        stamped = setup.model_copy(update={"onboarded_at": now()})
+        self.connection.execute(
+            "INSERT INTO hosts (alias, facts, probed_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(alias) DO UPDATE SET facts = excluded.facts, "
+            "probed_at = excluded.probed_at",
+            (stamped.host, stamped.model_dump_json(), stamped.onboarded_at),
+        )
+        return stamped
+
+    def tracked(self) -> list[RunRecord]:
+        """Every run a durable sweep still owes an outcome for, newest first.
+
+        A run leaves this set only once its verdict is terminal and that same verdict has been
+        reported, so a sweep never announces a settled run twice and never drops the one whose
+        outcome no process ever recorded, the job whose dispatching agent died before it ended.
+        """
+        rows = self.connection.execute(
+            "SELECT data FROM runs ORDER BY submitted_at DESC"
+        ).fetchall()
+        runs = [RunRecord.model_validate_json(row["data"]) for row in rows]
+        return [
+            run
+            for run in runs
+            if run.verdict not in vocabulary.TERMINAL or run.reported != run.verdict
+        ]

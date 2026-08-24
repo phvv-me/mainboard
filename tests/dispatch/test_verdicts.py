@@ -3,7 +3,6 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 from patos import IllegalTransition
 
-from mainboard.dispatch import VERDICTS
 from mainboard.dispatch.vocabulary import (
     FAILED,
     OK,
@@ -13,6 +12,7 @@ from mainboard.dispatch.vocabulary import (
     TIMEOUT,
     UNKNOWN,
     VANISHED,
+    VERDICTS,
     tracker,
 )
 

@@ -17,7 +17,7 @@ from mainboard.dispatch.schedulers.base import (
 )
 from mainboard.dispatch.vocabulary import JobState, Resources
 
-from ..conftest import machine_with
+from ..support import machine_with
 
 _TRACEBACK = """loading model...
   File "rotation.py", line 65, in forward_rows

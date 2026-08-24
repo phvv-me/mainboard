@@ -16,4 +16,4 @@ def test_every_exported_name_resolves_and_nothing_else_does() -> None:
     assert mainboard.Board.__name__ == "Board"
     assert mainboard.ExperimentStudy is not mainboard.ProfileStudy
     with pytest.raises(AttributeError, match="has no attribute 'Nothing'"):
-        mainboard.Nothing  # noqa: B018
+        _ = mainboard.Nothing

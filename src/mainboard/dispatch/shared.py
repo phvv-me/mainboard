@@ -16,7 +16,7 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def as_handle(value: str | int) -> str:
+def _as_handle(value: str | int) -> str:
     """A scheduler job handle as text, whatever shape its scheduler hands it out in.
 
     pueue numbers its tasks, so a handle read back from JSON (or typed at a CLI) arrives as an
@@ -26,7 +26,7 @@ def as_handle(value: str | int) -> str:
 
 
 # The type every model uses for a scheduler handle, so the normalization is stated once.
-type HandleId = Annotated[str, BeforeValidator(as_handle)]
+type HandleId = Annotated[str, BeforeValidator(_as_handle)]
 
 
 def state_dir() -> str:
@@ -40,8 +40,8 @@ def state_dir() -> str:
     return f"{Project().out_dir}/dispatch"
 
 
-# The subsystem's public path convention, computed once for a caller reading
-# `mainboard.dispatch.STATE_DIR`; every internal submodule calls `state_dir()` instead.
+# The subsystem's path convention computed once, for a reader that wants the value without
+# calling; every internal submodule calls `state_dir()` instead.
 STATE_DIR = state_dir()
 
 

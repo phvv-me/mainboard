@@ -89,72 +89,14 @@ class Dependencies:
         resolve: re-solve after the edit, which is what makes the lock answer for it.
         """
         self.environment(env)
-        name, constraint = _split(spec)
+        name, constraint = Dependencies._split(spec)
         slot = self.slot(ecosystem=ecosystem, env=env, dev=dev)
         manifest = ManifestText(self.path.read_text(encoding="utf-8"))
         before = manifest.constraint(slot.path, name) if manifest.declares(slot.path, name) else ""
         after = constraint or self.pinned(name, slot)
-        manifest.put(slot.path, name, after)
+        manifest.put(slot.path, name, spec=after)
         change = Change(name=name, where=slot.table, before=before or _ABSENT, after=after)
         return self.settled(manifest, change, env=env, resolve=resolve)
-
-    def remove(
-        self,
-        name: str,
-        *,
-        ecosystem: str = "",
-        env: str = "",
-        dev: bool = False,
-        resolve: bool = True,
-    ) -> list[Change]:
-        """Drop `name` from the one table declaring it, then re-solve.
-
-        With no flags the whole manifest is searched, so dropping a requirement never asks the
-        caller to remember which table it was written into. Flags narrow that search to the
-        tables they name, which is also how a name declared in several tables is told apart.
-
-        name: the dependency to drop.
-        ecosystem: narrow the search to one resolver's tables.
-        env: narrow the search to one environment's tables.
-        dev: narrow the search to development-only tables.
-        resolve: re-solve after the edit.
-        """
-        slot = self.locate(name, ecosystem=ecosystem, env=env, dev=dev)
-        manifest = ManifestText(self.path.read_text(encoding="utf-8"))
-        change = Change(
-            name=name,
-            where=slot.table,
-            before=manifest.constraint(slot.path, name),
-            after=_ABSENT,
-        )
-        manifest.drop(slot.path, name)
-        return self.settled(manifest, change, env=env, resolve=resolve)
-
-    def upgrade(
-        self, name: str = "", *, ecosystem: str = "", env: str = "", dev: bool = False
-    ) -> list[Change]:
-        """Move `name` to its newest release, or the whole lock forward inside its bounds.
-
-        Named, this rewrites one constraint to what the ecosystem's index publishes now, which
-        is the only way past a ceiling the manifest itself declares. Unnamed, nothing in the
-        manifest changes and the lock is re-solved against the indexes, which moves every pin
-        as far as the constraints already allow.
-
-        name: the dependency to bump, every declared one inside its bounds when empty.
-        ecosystem: narrow the search to one resolver's tables.
-        env: narrow the search to one environment's tables.
-        dev: narrow the search to development-only tables.
-        """
-        if not name:
-            self.environment(env)
-            return self.resolved(self.board.manifest, env=env, refresh=True)
-        slot = self.locate(name, ecosystem=ecosystem, env=env, dev=dev)
-        manifest = ManifestText(self.path.read_text(encoding="utf-8"))
-        before = manifest.constraint(slot.path, name)
-        after = self.pinned(name, slot)
-        manifest.put(slot.path, name, after)
-        change = Change(name=name, where=slot.table, before=before, after=after)
-        return self.settled(manifest, change, env=env, resolve=True)
 
     def environment(self, env: str) -> str:
         """`env` confirmed against the manifest, the default environment when empty."""
@@ -202,6 +144,38 @@ class Dependencies:
         declared = (chain.model_extra or {}) if chain else {}
         index = declared.get(_INDEX_URL)
         return (index,) if isinstance(index, str) else ()
+
+    def remove(
+        self,
+        name: str,
+        *,
+        ecosystem: str = "",
+        env: str = "",
+        dev: bool = False,
+        resolve: bool = True,
+    ) -> list[Change]:
+        """Drop `name` from the one table declaring it, then re-solve.
+
+        With no flags the whole manifest is searched, so dropping a requirement never asks the
+        caller to remember which table it was written into. Flags narrow that search to the
+        tables they name, which is also how a name declared in several tables is told apart.
+
+        name: the dependency to drop.
+        ecosystem: narrow the search to one resolver's tables.
+        env: narrow the search to one environment's tables.
+        dev: narrow the search to development-only tables.
+        resolve: re-solve after the edit.
+        """
+        slot = self.locate(name, ecosystem=ecosystem, env=env, dev=dev)
+        manifest = ManifestText(self.path.read_text(encoding="utf-8"))
+        change = Change(
+            name=name,
+            where=slot.table,
+            before=manifest.constraint(slot.path, name),
+            after=_ABSENT,
+        )
+        manifest.drop(slot.path, name)
+        return self.settled(manifest, change, env=env, resolve=resolve)
 
     def resolved(self, manifest: Manifest, *, env: str, refresh: bool = False) -> list[Change]:
         """Re-solve the environment and report every pin the lock moved.
@@ -261,12 +235,38 @@ class Dependencies:
         present = declared(self.board.manifest)
         return next((slot for slot in options if slot in present), options[0])
 
+    @staticmethod
+    def _split(spec: str) -> tuple[str, str]:
+        """A requirement as written, split into the name and whatever constraint it carries.
 
-def _split(spec: str) -> tuple[str, str]:
-    """A requirement as written, split into the name and whatever constraint it carries.
+        The `@` npm writes between a package and its range is a separator rather than part of the
+        constraint, so it is dropped once it has done its job of marking where the name ended.
+        """
+        cut = next((at for at, mark in enumerate(spec) if at and mark in _OPERATORS), len(spec))
+        return spec[:cut].strip(), spec[cut:].strip().removeprefix("@").strip()
 
-    The `@` npm writes between a package and its range is a separator rather than part of the
-    constraint, so it is dropped once it has done its job of marking where the name ended.
-    """
-    cut = next((at for at, mark in enumerate(spec) if at and mark in _OPERATORS), len(spec))
-    return spec[:cut].strip(), spec[cut:].strip().removeprefix("@").strip()
+    def upgrade(
+        self, name: str = "", *, ecosystem: str = "", env: str = "", dev: bool = False
+    ) -> list[Change]:
+        """Move `name` to its newest release, or the whole lock forward inside its bounds.
+
+        Named, this rewrites one constraint to what the ecosystem's index publishes now, which
+        is the only way past a ceiling the manifest itself declares. Unnamed, nothing in the
+        manifest changes and the lock is re-solved against the indexes, which moves every pin
+        as far as the constraints already allow.
+
+        name: the dependency to bump, every declared one inside its bounds when empty.
+        ecosystem: narrow the search to one resolver's tables.
+        env: narrow the search to one environment's tables.
+        dev: narrow the search to development-only tables.
+        """
+        if not name:
+            self.environment(env)
+            return self.resolved(self.board.manifest, env=env, refresh=True)
+        slot = self.locate(name, ecosystem=ecosystem, env=env, dev=dev)
+        manifest = ManifestText(self.path.read_text(encoding="utf-8"))
+        before = manifest.constraint(slot.path, name)
+        after = self.pinned(name, slot)
+        manifest.put(slot.path, name, spec=after)
+        change = Change(name=name, where=slot.table, before=before, after=after)
+        return self.settled(manifest, change, env=env, resolve=True)

@@ -35,7 +35,12 @@ class NPU(Unit, Registry):
         try:
             return tuple(provider.all())
         except Exception:
-            logger.warning(
-                "NPU provider %s failed to probe, skipping", provider.__name__, exc_info=True
-            )
-            return ()
+            return cls.skipped(provider)
+
+    @classmethod
+    def skipped(cls, provider: type[NPU]) -> tuple[NPU, ...]:
+        """Log one provider's failed probe and stand for its absent devices."""
+        logger.warning(
+            "NPU provider %s failed to probe, skipping", provider.__name__, exc_info=True
+        )
+        return ()

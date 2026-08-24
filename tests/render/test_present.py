@@ -1,13 +1,10 @@
 import json
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
 
 import pytest
 
 from mainboard import MissionError
 from mainboard.render import present
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
 
 _ONE = {"a": "1", "b": {"c": 2}}
 _MANY = [{"a": "1"}, {"a": "2"}]

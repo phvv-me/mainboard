@@ -63,7 +63,7 @@ def finish(token: SpanToken) -> None:
     session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
 
 
-class _Span:
+class Span:
     """A named context that is dormant until a `Profiler` is active."""
 
     __slots__ = ("name", "session", "start_ns", "token")
@@ -84,15 +84,17 @@ class _Span:
         if inspect.iscoroutinefunction(func):
             return cast(
                 "Callable[P, R]",
-                _decorate_async(cast("Callable[P, Awaitable[ReturnedValue]]", func), self.name),
+                Span._decorate_async(
+                    cast("Callable[P, Awaitable[ReturnedValue]]", func), self.name
+                ),
             )
         if inspect.isasyncgenfunction(func):
-            return cast("Callable[P, R]", _decorate_async_generator(func, self.name))
+            return cast("Callable[P, R]", Span._decorate_async_generator(func, self.name))
         if inspect.isgeneratorfunction(func):
-            return cast("Callable[P, R]", _decorate_generator(func, self.name))
-        return _decorate_sync(func, self.name)
+            return cast("Callable[P, R]", Span._decorate_generator(func, self.name))
+        return Span._decorate_sync(func, self.name)
 
-    def __enter__(self) -> _Span:
+    def __enter__(self) -> Span:
         token = start(self.name)
         if token is not None:
             self.session, self.token, self.start_ns = token
@@ -110,97 +112,97 @@ class _Span:
         self.session = None
         finish((session, self.token, self.start_ns))
 
+    @staticmethod
+    def _decorate_async[**P, R](
+        func: Callable[P, Awaitable[R]], label: str
+    ) -> Callable[P, Coroutine[object, object, R]]:
+        """Wrap a coroutine with one active-session branch on every awaited call."""
 
-def _decorate_sync[**P, R](func: Callable[P, R], label: str) -> Callable[P, R]:
-    """Wrap a function with one active-session branch on every call."""
+        @functools.wraps(func)
+        async def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            session = _active
+            if session is None:
+                return await func(*args, **kwargs)
+            key = session.enter(label)
+            start_ns = time.perf_counter_ns()
+            try:
+                return await func(*args, **kwargs)
+            finally:
+                session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
 
-    @functools.wraps(func)
-    def inner(*args: P.args, **kwargs: P.kwargs) -> R:
-        session = _active
-        if session is None:
-            return func(*args, **kwargs)
-        key = session.enter(label)
-        start_ns = time.perf_counter_ns()
-        try:
-            return func(*args, **kwargs)
-        finally:
-            session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
+        return inner
 
-    return inner
+    @staticmethod
+    def _decorate_async_generator[**P, Y](
+        func: Callable[P, AsyncIterator[Y]], label: str
+    ) -> Callable[P, AsyncIterator[Y]]:
+        """Wrap an async generator so the span covers consumption, not creation.
 
+        Delegation is a plain async-for, so value-sending and throw forwarding
+        through the async protocol are not preserved, the same fidelity
+        CPython's own decorator fix settled on.
+        """
 
-def _decorate_async[**P, R](
-    func: Callable[P, Awaitable[R]], label: str
-) -> Callable[P, Coroutine[object, object, R]]:
-    """Wrap a coroutine with one active-session branch on every awaited call."""
+        @functools.wraps(func)
+        async def inner(*args: P.args, **kwargs: P.kwargs) -> AsyncIterator[Y]:
+            session = _active
+            if session is None:
+                async for item in func(*args, **kwargs):
+                    yield item
+                return
+            key = session.enter(label)
+            start_ns = time.perf_counter_ns()
+            try:
+                async for item in func(*args, **kwargs):
+                    yield item
+            finally:
+                session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
 
-    @functools.wraps(func)
-    async def inner(*args: P.args, **kwargs: P.kwargs) -> R:
-        session = _active
-        if session is None:
-            return await func(*args, **kwargs)
-        key = session.enter(label)
-        start_ns = time.perf_counter_ns()
-        try:
-            return await func(*args, **kwargs)
-        finally:
-            session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
+        return inner
 
-    return inner
+    @staticmethod
+    def _decorate_generator[**P, Y](
+        func: Callable[P, Iterator[Y]], label: str
+    ) -> Callable[P, Iterator[Y]]:
+        """Wrap a generator function so the span covers consumption, not creation.
 
+        The session branch runs at first iteration, so a dormant span still costs
+        one module-global read, and `yield from` keeps send, throw, and close
+        delegation intact.
+        """
 
-def _decorate_generator[**P, Y](
-    func: Callable[P, Iterator[Y]], label: str
-) -> Callable[P, Iterator[Y]]:
-    """Wrap a generator function so the span covers consumption, not creation.
+        @functools.wraps(func)
+        def inner(*args: P.args, **kwargs: P.kwargs) -> Iterator[Y]:
+            session = _active
+            if session is None:
+                yield from func(*args, **kwargs)
+                return
+            key = session.enter(label)
+            start_ns = time.perf_counter_ns()
+            try:
+                yield from func(*args, **kwargs)
+            finally:
+                session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
 
-    The session branch runs at first iteration, so a dormant span still costs
-    one module-global read, and `yield from` keeps send, throw, and close
-    delegation intact.
-    """
+        return inner
 
-    @functools.wraps(func)
-    def inner(*args: P.args, **kwargs: P.kwargs) -> Iterator[Y]:
-        session = _active
-        if session is None:
-            yield from func(*args, **kwargs)
-            return
-        key = session.enter(label)
-        start_ns = time.perf_counter_ns()
-        try:
-            yield from func(*args, **kwargs)
-        finally:
-            session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
+    @staticmethod
+    def _decorate_sync[**P, R](func: Callable[P, R], label: str) -> Callable[P, R]:
+        """Wrap a function with one active-session branch on every call."""
 
-    return inner
+        @functools.wraps(func)
+        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            session = _active
+            if session is None:
+                return func(*args, **kwargs)
+            key = session.enter(label)
+            start_ns = time.perf_counter_ns()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
 
-
-def _decorate_async_generator[**P, Y](
-    func: Callable[P, AsyncIterator[Y]], label: str
-) -> Callable[P, AsyncIterator[Y]]:
-    """Wrap an async generator so the span covers consumption, not creation.
-
-    Delegation is a plain async-for, so value-sending and throw forwarding
-    through the async protocol are not preserved, the same fidelity
-    CPython's own decorator fix settled on.
-    """
-
-    @functools.wraps(func)
-    async def inner(*args: P.args, **kwargs: P.kwargs) -> AsyncIterator[Y]:
-        session = _active
-        if session is None:
-            async for item in func(*args, **kwargs):
-                yield item
-            return
-        key = session.enter(label)
-        start_ns = time.perf_counter_ns()
-        try:
-            async for item in func(*args, **kwargs):
-                yield item
-        finally:
-            session.exit(key, wall_ns=time.perf_counter_ns() - start_ns)
-
-    return inner
+        return inner
 
 
 @overload
@@ -214,15 +216,15 @@ def span[**P, R](name: Callable[P, R]) -> Callable[P, R]: ...
 
 
 @overload
-def span(name: str) -> _Span: ...
+def span(name: str) -> Span: ...
 
 
-def span[**P, R](name: str | Callable[P, R]) -> _Span | Callable[P, R]:
+def span[**P, R](name: str | Callable[P, R]) -> Span | Callable[P, R]:
     """Mark a named block or function for an active `Profiler`.
 
     The annotation contains no collection policy. Without an active profiler it
     performs no clock, memory, marker, device, or context-variable work.
     """
     if isinstance(name, str):
-        return _Span(name)
-    return _Span(getattr(name, "__qualname__", name.__class__.__qualname__))(name)
+        return Span(name)
+    return Span(getattr(name, "__qualname__", name.__class__.__qualname__))(name)

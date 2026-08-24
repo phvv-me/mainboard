@@ -87,6 +87,31 @@ class Compiler:
         if resolve:
             self.__persist_state(files, state.model_copy(update={"solved_from": digest}))
 
+    def resolution_digest(self) -> str:
+        """Hash everything a solve reads, so a lock can be checked against the tree it sits in.
+
+        The generated pixi manifest answers for the declared dependencies, and every local
+        Python project's own metadata answers for the path dependencies pixi resolves through
+        `pyproject.toml` rather than through the manifest. Tasks and activation are excluded on
+        both counts, since neither can change which versions resolve, and leaving activation in
+        would make the digest depend on where the workspace happens to live and so refuse every
+        host whose root differs from the machine that solved.
+
+        Reads the compiled manifest from disk, since that is the file pixi will resolve, and
+        every caller compiles before asking.
+        """
+        digest = hashlib.sha256()
+        compiled = self._resolution_manifest(self.pixi.manifest.read_text(encoding="utf-8"))
+        digest.update(json.dumps(compiled, sort_keys=True, separators=(",", ":")).encode())
+        for declared in self._local_python_projects():
+            project = self.root / declared / "pyproject.toml"
+            digest.update(declared.encode())
+            try:
+                digest.update(project.read_bytes())
+            except FileNotFoundError:
+                digest.update(b"\0")
+        return digest.hexdigest()
+
     def stale(self, env: str = "default") -> bool:
         """Whether ``env``'s generated env predates the current manifest content.
 
@@ -115,31 +140,6 @@ class Compiler:
         self.__persist_state(
             files, state.model_copy(update={"envs": {**state.envs, env: source_digest}})
         )
-
-    def resolution_digest(self) -> str:
-        """Hash everything a solve reads, so a lock can be checked against the tree it sits in.
-
-        The generated pixi manifest answers for the declared dependencies, and every local
-        Python project's own metadata answers for the path dependencies pixi resolves through
-        `pyproject.toml` rather than through the manifest. Tasks and activation are excluded on
-        both counts, since neither can change which versions resolve, and leaving activation in
-        would make the digest depend on where the workspace happens to live and so refuse every
-        host whose root differs from the machine that solved.
-
-        Reads the compiled manifest from disk, since that is the file pixi will resolve, and
-        every caller compiles before asking.
-        """
-        digest = hashlib.sha256()
-        compiled = self._resolution_manifest(self.pixi.manifest.read_text(encoding="utf-8"))
-        digest.update(json.dumps(compiled, sort_keys=True, separators=(",", ":")).encode())
-        for declared in self._local_python_projects():
-            project = self.root / declared / "pyproject.toml"
-            digest.update(declared.encode())
-            try:
-                digest.update(project.read_bytes())
-            except FileNotFoundError:
-                digest.update(b"\0")
-        return digest.hexdigest()
 
     @staticmethod
     def _resolution_manifest(text: str) -> dict[str, Toml]:

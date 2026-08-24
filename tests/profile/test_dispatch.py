@@ -2,7 +2,7 @@ import pytest
 
 from mainboard.profile import arch_config
 
-from .conftest import FakeGPU
+from .support import FakeGPU
 
 _TABLE = {"sm_89": ("ada", 32), "sm_90": ("hopper", 64)}
 _DEFAULT = ("cpu", 8)

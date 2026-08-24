@@ -70,39 +70,6 @@ class Scaffold:
         """board: the workspace whose templates are rendered and whose runner reaches copier."""
         self.board = board
 
-    def render(
-        self,
-        name: str,
-        *,
-        template: str = "",
-        description: str = "",
-        dest: str = "",
-        answers: Mapping[str, str] = {},
-    ) -> Scaffolded:
-        """Render `name` from a template and report what the render left for the workspace.
-
-        name: the project name, which becomes its slug, its package and its task prefix.
-        template: the template to render, a name the manifest declares or any location copier
-            accepts; the workspace's first declared template when empty.
-        description: the one sentence the README and the task rows carry.
-        dest: where to render it, under the template's own declared home when empty.
-        answers: further template questions to answer, overriding what the manifest declares.
-        """
-        chosen = self.chosen(template)
-        slug = _slug(name)
-        destination = (self.board.root / dest) if dest else (self.board.root / chosen.into / slug)
-        if destination.exists():
-            raise MissionError(f"{destination} already exists")
-        source = self.located(chosen)
-        settled = {
-            **chosen.answers,
-            **answers,
-            "project_name": name,
-            "description": description or name,
-        }
-        self.copy(source, destination, settled)
-        return self.reported(slug, destination)
-
     def chosen(self, template: str) -> Template:
         """The template `template` names, the workspace's first declared one when empty.
 
@@ -127,22 +94,6 @@ class Scaffold:
             (entry for entry in declared.values() if entry.path == template), None
         )
         return known or Template(path=template)
-
-    def located(self, template: Template) -> str:
-        """Where the engine is pointed for `template`, refusing a local directory that is not one.
-
-        A template to fetch is the engine's to resolve, so only a path on this disk is checked,
-        and checking it is worth the line because a wrong workspace root is the usual reason a
-        declared template is not where it says it is.
-
-        template: the resolved template being rendered.
-        """
-        if _fetched(template.path):
-            return template.path
-        source = self.board.root / template.path
-        if not (source / _MARKER).is_file():
-            raise MissionError(f"no project template at {source}")
-        return str(source)
 
     def copy(self, template: str, destination: Path, answers: Mapping[str, str]) -> None:
         """Run copier over `template` through the workspace runner, refusing on its failure.
@@ -169,6 +120,62 @@ class Scaffold:
                 f"`{_TOOL} install` is what puts it there."
             )
 
+    def located(self, template: Template) -> str:
+        """Where the engine is pointed for `template`, refusing a local directory that is not one.
+
+        A template to fetch is the engine's to resolve, so only a path on this disk is checked,
+        and checking it is worth the line because a wrong workspace root is the usual reason a
+        declared template is not where it says it is.
+
+        template: the resolved template being rendered.
+        """
+        # A template with a scheme, a `gh:` prefix or a `.git` suffix is fetched by the
+        # engine rather than read off this disk.
+        fetched = (
+            "://" in template.path
+            or template.path.startswith("gh:")
+            or template.path.endswith(".git")
+        )
+        if fetched:
+            return template.path
+        source = self.board.root / template.path
+        if not (source / _MARKER).is_file():
+            raise MissionError(f"no project template at {source}")
+        return str(source)
+
+    def render(
+        self,
+        name: str,
+        *,
+        template: str = "",
+        description: str = "",
+        dest: str = "",
+        answers: Mapping[str, str] = {},
+    ) -> Scaffolded:
+        """Render `name` from a template and report what the render left for the workspace.
+
+        name: the project name, which becomes its slug, its package and its task prefix.
+        template: the template to render, a name the manifest declares or any location copier
+            accepts; the workspace's first declared template when empty.
+        description: the one sentence the README and the task rows carry.
+        dest: where to render it, under the template's own declared home when empty.
+        answers: further template questions to answer, overriding what the manifest declares.
+        """
+        chosen = self.chosen(template)
+        slug = name.strip().lower().replace(" ", "-").replace("_", "-")
+        destination = (self.board.root / dest) if dest else (self.board.root / chosen.into / slug)
+        if destination.exists():
+            raise MissionError(f"{destination} already exists")
+        source = self.located(chosen)
+        settled = {
+            **chosen.answers,
+            **answers,
+            "project_name": name,
+            "description": description or name,
+        }
+        self.copy(source, destination, settled)
+        return self.reported(slug, destination)
+
     def reported(self, slug: str, destination: Path) -> Scaffolded:
         """What the render produced, with the task rows read back for the caller to paste."""
         rows = destination / _TASKS
@@ -183,13 +190,3 @@ class Scaffold:
             paste=f"{self.board.root / self.board.project.manifest} [tasks]",
             snippet=snippet,
         )
-
-
-def _fetched(path: str) -> bool:
-    """Whether `path` names a template the engine fetches rather than one on this disk."""
-    return "://" in path or path.startswith("gh:") or path.endswith(".git")
-
-
-def _slug(name: str) -> str:
-    """`name` as a template spells a project directory, lowercase and hyphenated."""
-    return name.strip().lower().replace(" ", "-").replace("_", "-")

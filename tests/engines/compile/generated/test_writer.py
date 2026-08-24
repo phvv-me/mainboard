@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pytest
@@ -7,7 +8,6 @@ from mainboard import MissionError
 from mainboard.engines.compile.generated import Writer
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -22,8 +22,10 @@ if TYPE_CHECKING:
 def test_no_edit_survives_the_release_of_the_sync_lock(
     edit: Callable[[Writer, Path], None], tmp_path: Path
 ) -> None:
-    """An instance stashed past its block fails loudly instead of racing whoever holds the
-    lock now."""
+    """A writer stashed past its block fails loudly.
+
+    Failing beats racing whoever holds the lock now.
+    """
     writer = Writer(FileLock(tmp_path / ".sync.lock"))
     with pytest.raises(MissionError, match="no longer held"):
         edit(writer, tmp_path / "pixi.toml")

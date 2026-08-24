@@ -94,38 +94,6 @@ class Watch:
         self.bus = bus or Receipts(self.dir / "events.ndjson")
         self.ledger = Ledger(board.root / Project().out_dir / _COSTS)
 
-    def once(self) -> BatchStatus:
-        """Settle whatever ended, then report every job of this batch as it now stands.
-
-        The sweep runs first and over the whole workspace rather than over this batch, since a
-        rental this batch does not own still bills while this one watches, and settling it costs
-        one probe that was going to happen anyway.
-        """
-        swept = self.board.monitor().once()
-        events = self.bus.replay()
-        rows = [
-            self.status(job, event, swept)
-            for job, event in latest(events, Topic.SUBMITTED).items()
-        ]
-        rows += [
-            JobStatus(
-                job=job,
-                target=str(event.data["target"]),
-                verdict=vocabulary.VANISHED,
-                detail=str(event.data["reason"]),
-            )
-            for job, event in latest(events, Topic.REFUSED).items()
-            if job not in {row.job for row in rows}
-        ]
-        landed = [self.record(row, events) for row in rows]
-        status = BatchStatus(
-            batch=self.id,
-            jobs=tuple(rows),
-            running=sum(1 for row in rows if row.verdict not in vocabulary.TERMINAL),
-        )
-        self.close(status, settled=any(landed))
-        return status
-
     @staticmethod
     def detail(handle: str, swept: MonitorReport) -> str:
         """What this pass's sweep said about `handle`, its results path or why it failed."""
@@ -136,6 +104,28 @@ class Watch:
             if failed.handle == handle:
                 return failed.reason
         return ""
+
+    def close(self, status: BatchStatus, *, settled: bool) -> None:
+        """Announce the batch's end on the pass that settles its last job, and only then.
+
+        Tying the announcement to a settlement this pass made is what keeps a quiet pass quiet
+        and still lets a re-dispatched batch close a second time.
+
+        status: this pass's rows.
+        settled: whether this pass settled anything at all.
+        """
+        if not status.settled or not settled:
+            return
+        publish(
+            self.bus,
+            self.id,
+            Topic.CLOSED,
+            data={
+                "jobs": len(status.jobs),
+                "ok": sum(1 for job in status.jobs if job.verdict == vocabulary.OK),
+                "failed": sum(1 for job in status.jobs if job.verdict != vocabulary.OK),
+            },
+        )
 
     def follow(self, interval: float) -> Iterator[BatchStatus]:
         """Repeat `once` every `interval` seconds until every job has settled.
@@ -148,66 +138,6 @@ class Watch:
             if status.settled:
                 return
             sleep(interval)
-
-    def status(self, job: str, submitted: Event, swept: MonitorReport) -> JobStatus:
-        """One dispatched job's row, from the run registry and this pass's own sweep."""
-        handle = str(submitted.data["handle"])
-        target = str(submitted.data["target"])
-        try:
-            record = self.board.dispatcher.cache.run(handle, target)
-        except LookupError:
-            return JobStatus(
-                job=job,
-                target=target,
-                handle=handle,
-                verdict=_UNKNOWN,
-                detail="the run registry has no record of this handle",
-            )
-        return JobStatus(
-            job=job,
-            target=target,
-            handle=handle,
-            state=record.state or "",
-            verdict=record.verdict or vocabulary.RUNNING,
-            detail=self.detail(handle, swept),
-        )
-
-    def record(self, row: JobStatus, events: Sequence[Event]) -> bool:
-        """Publish whatever changed about `row` since the last pass, and say if it settled here.
-
-        The cursor is the run rather than the job, since a batch re-dispatched under the same
-        declaration is the same batch with new handles, and a job that settled last week must
-        not silence the run of it that is finishing now.
-
-        What the run spent is published before it settles, so `job.settled` really is the last
-        line a subscriber sees about this job. That is what lets a sink close its own record of
-        the run on the terminal line without losing the cost that follows it.
-        """
-        seen = latest(events, Topic.STATE).get(row.job)
-        reported = (seen.data.get("handle"), seen.data.get("verdict")) if seen else ()
-        moved = seen is None or reported != (row.handle, row.verdict)
-        if moved:
-            publish(
-                self.bus,
-                self.id,
-                Topic.STATE,
-                job=row.job,
-                data={"handle": row.handle, "state": row.state, "verdict": row.verdict},
-            )
-        settled = latest(events, Topic.SETTLED).get(row.job)
-        if row.verdict not in vocabulary.TERMINAL or (
-            settled is not None and settled.data.get("handle") == row.handle
-        ):
-            return False
-        self.observe(row, events)
-        publish(
-            self.bus,
-            self.id,
-            Topic.SETTLED,
-            job=row.job,
-            data={"handle": row.handle, "verdict": row.verdict, "detail": row.detail},
-        )
-        return True
 
     def observe(self, row: JobStatus, events: Sequence[Event]) -> None:
         """Record what `row` spent, as a receipt always and as a fitted observation when honest.
@@ -257,26 +187,96 @@ class Watch:
                 )
             )
 
-    def close(self, status: BatchStatus, *, settled: bool) -> None:
-        """Announce the batch's end on the pass that settles its last job, and only then.
+    def once(self) -> BatchStatus:
+        """Settle whatever ended, then report every job of this batch as it now stands.
 
-        Tying the announcement to a settlement this pass made is what keeps a quiet pass quiet
-        and still lets a re-dispatched batch close a second time.
-
-        status: this pass's rows.
-        settled: whether this pass settled anything at all.
+        The sweep runs first and over the whole workspace rather than over this batch, since a
+        rental this batch does not own still bills while this one watches, and settling it costs
+        one probe that was going to happen anyway.
         """
-        if not status.settled or not settled:
-            return
+        swept = self.board.monitor().once()
+        events = self.bus.replay()
+        rows = [
+            self.status(job, event, swept)
+            for job, event in latest(events, Topic.SUBMITTED).items()
+        ]
+        rows += [
+            JobStatus(
+                job=job,
+                target=str(event.data["target"]),
+                verdict=vocabulary.VANISHED,
+                detail=str(event.data["reason"]),
+            )
+            for job, event in latest(events, Topic.REFUSED).items()
+            if job not in {row.job for row in rows}
+        ]
+        landed = [self.record(row, events) for row in rows]
+        status = BatchStatus(
+            batch=self.id,
+            jobs=tuple(rows),
+            running=sum(1 for row in rows if row.verdict not in vocabulary.TERMINAL),
+        )
+        self.close(status, settled=any(landed))
+        return status
+
+    def record(self, row: JobStatus, events: Sequence[Event]) -> bool:
+        """Publish whatever changed about `row` since the last pass, and say if it settled here.
+
+        The cursor is the run rather than the job, since a batch re-dispatched under the same
+        declaration is the same batch with new handles, and a job that settled last week must
+        not silence the run of it that is finishing now.
+
+        What the run spent is published before it settles, so `job.settled` really is the last
+        line a subscriber sees about this job. That is what lets a sink close its own record of
+        the run on the terminal line without losing the cost that follows it.
+        """
+        seen = latest(events, Topic.STATE).get(row.job)
+        reported = (seen.data.get("handle"), seen.data.get("verdict")) if seen else ()
+        moved = seen is None or reported != (row.handle, row.verdict)
+        if moved:
+            publish(
+                self.bus,
+                self.id,
+                Topic.STATE,
+                job=row.job,
+                data={"handle": row.handle, "state": row.state, "verdict": row.verdict},
+            )
+        settled = latest(events, Topic.SETTLED).get(row.job)
+        if row.verdict not in vocabulary.TERMINAL or (
+            settled is not None and settled.data.get("handle") == row.handle
+        ):
+            return False
+        self.observe(row, events)
         publish(
             self.bus,
             self.id,
-            Topic.CLOSED,
-            data={
-                "jobs": len(status.jobs),
-                "ok": sum(1 for job in status.jobs if job.verdict == vocabulary.OK),
-                "failed": sum(1 for job in status.jobs if job.verdict != vocabulary.OK),
-            },
+            Topic.SETTLED,
+            job=row.job,
+            data={"handle": row.handle, "verdict": row.verdict, "detail": row.detail},
+        )
+        return True
+
+    def status(self, job: str, submitted: Event, swept: MonitorReport) -> JobStatus:
+        """One dispatched job's row, from the run registry and this pass's own sweep."""
+        handle = str(submitted.data["handle"])
+        target = str(submitted.data["target"])
+        try:
+            record = self.board.dispatcher.cache.run(handle, target)
+        except LookupError:
+            return JobStatus(
+                job=job,
+                target=target,
+                handle=handle,
+                verdict=_UNKNOWN,
+                detail="the run registry has no record of this handle",
+            )
+        return JobStatus(
+            job=job,
+            target=target,
+            handle=handle,
+            state=record.state or "",
+            verdict=record.verdict or vocabulary.RUNNING,
+            detail=self.detail(handle, swept),
         )
 
 

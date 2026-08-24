@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -5,11 +6,12 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from mainboard.dispatch import Facts, resolve, smallest_fit, ssh_hosts
-from mainboard.dispatch.targets import CAPABILITIES, find_root, probe_capabilities
+from mainboard.dispatch import targets as targets_mod
+from mainboard.dispatch.targets import find_root, probe_capabilities
 from mainboard.manifest import HostProfile
 
 from ..strategies import WORDS
-from .conftest import machine_with
+from .support import machine_with
 
 _GPU_PROBE = """root=/work/x/projects
 kind=pbs
@@ -37,7 +39,7 @@ platform=Darwin arm64
 @example(aliases=["gold", "crimson", "gold"], patterns=["dl"])
 @example(aliases=[], patterns=[])
 def test_ssh_hosts_keeps_every_concrete_alias_in_file_order_and_drops_the_patterns(
-    tmp_path: Path, aliases: list[str], patterns: list[str]
+    tmp_path: Path, aliases: list[str], patterns: Sequence[str]
 ) -> None:
     """Only a real, connectable destination is a dispatch target, so `Host *` is never one."""
     lines = ["# a comment", "", "  HostName 1.2.3.4", "Host *"]
@@ -57,8 +59,8 @@ def test_a_multi_alias_host_line_yields_each_of_its_destinations(tmp_path: Path)
 
 def test_the_capabilities_probe_parses_the_key_value_lines_its_own_script_prints() -> None:
     for field in ("root=", "kind=", "gpu=", "mem=", "account=", "queue=", "pixi=", "uv="):
-        assert field in CAPABILITIES
-    assert "uname -sm" in CAPABILITIES
+        assert field in targets_mod._CAPABILITIES
+    assert "uname -sm" in targets_mod._CAPABILITIES
     remote = machine_with(_GPU_PROBE)
     facts = probe_capabilities(remote, "miyabi-g")
     assert remote.calls[-1][:2] == ["bash", "-lc"]

@@ -2,15 +2,16 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
+from pydantic import JsonValue
 
 from mainboard import MissionError
 from mainboard.batch import Event, Mirrored, Receipts, Topic
 from mainboard.manifest import Tracking, TrackingMode
-from mainboard.tracking import Tracker, batched, credential, mirrored, sink, streamed
+from mainboard.tracking import Tracker, credential, is_batched, mirrored, sink, streamed
 from mainboard.tracking.wandb import WandbSink, exit_code, module
 
-from ..batch.conftest import Recorder
-from .conftest import FakeWandb, keyed
+from ..batch.support import Recorder
+from .support import FakeWandb, keyed
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,7 +30,7 @@ def opened(tmp_path: Path, declared: Tracking | None = None, *, workspace: str =
     )
 
 
-def event(topic: Topic, **data: object) -> Event:
+def event(topic: Topic, **data: JsonValue) -> Event:
     """One receipt of `topic` about this module's job, carrying `data`."""
     return Event(at="2026-08-22T00:00:00Z", batch=_STREAM, topic=topic, job=_JOB, data=data)
 
@@ -87,14 +88,14 @@ def test_every_dispatch_label_routes_to_the_stream_and_job_it_names(
     name: str, handle: str, expected: tuple[str, str]
 ) -> None:
     """One router, so a plain submit and a study trial reach the run a batch job reaches."""
-    assert streamed(name, handle) == expected
+    assert streamed(name, handle=handle) == expected
 
 
 def test_only_a_batch_publishes_for_a_batch_job_though_the_job_still_samples_itself() -> None:
     """Its own flow writes every receipt about it, so a second publisher would double each row."""
-    assert batched("batch:smoke-1/gold-1") is True
-    assert batched("study:abc/trial-3") is False
-    assert batched("nightly") is False
+    assert is_batched("batch:smoke-1/gold-1") is True
+    assert is_batched("study:abc/trial-3") is False
+    assert is_batched("nightly") is False
 
 
 def test_a_sink_is_where_events_go_and_never_where_they_come_from(tmp_path: Path) -> None:

@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 
 import pytest
 from hypothesis import example, given
@@ -26,7 +27,7 @@ def test_a_lane_carries_its_name_and_whatever_extras_it_was_declared_with(
 @example(names=["only"], block=5)
 @example(names=["cold", "warm"], block=1)
 def test_orders_runs_every_lane_permutation_once_before_repeating_one(
-    *, names: list[str], block: int
+    *, names: Sequence[str], block: int
 ) -> None:
     lanes = tuple(Lane(name=name) for name in names)
     cycle = math.factorial(len(lanes))

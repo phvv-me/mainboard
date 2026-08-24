@@ -1,3 +1,6 @@
+import subprocess
+import sys
+from collections.abc import Sequence
 from time import monotonic, sleep
 from types import TracebackType
 from typing import TYPE_CHECKING
@@ -13,10 +16,9 @@ from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Tracking
 
-from .conftest import keyed
+from .support import FakeWandb, keyed
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from pathlib import Path
 
 _HOST = "miyabi-g"
@@ -30,6 +32,9 @@ class FakeRemote:
 
     def __init__(self, command: str = "") -> None:
         self.command = command
+
+    def __call__(self) -> str:
+        return ""
 
     def __enter__(self) -> FakeRemote:
         return self
@@ -49,18 +54,15 @@ class FakeRemote:
         FakeRemote.piped.append((self.command, text))
         return self
 
-    def __call__(self) -> str:
-        return ""
 
-
-def tracking(board: Board, **fields: object) -> Board:
+def tracking(board: Board, **fields: str | float) -> Board:
     """Turn this workspace's tracking lane on, at whatever the caller declared."""
     board.shared["manifest"] = board.manifest.model_copy(update={"tracking": Tracking(**fields)})
     return board
 
 
 def test_a_stream_writes_its_own_file_and_mirrors_it_only_when_the_workspace_asked(
-    board: Board, service: object
+    board: Board, service: FakeWandb
 ) -> None:
     """The composition root, so no flow has to know that a reporting service exists."""
     assert isinstance(board.receipts("plain"), Receipts)
@@ -87,7 +89,7 @@ def submitting(board: Board, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, 
         root: str,
         name: str = "",
         sampler: str = "",
-        **rest: object,
+        **rest: str | int | float | bool,
     ) -> Handle:
         asked.append({"name": name, "sampler": sampler, "root": root})
         return Handle(id="77", host=plan.host, root=root, kind=plan.profile.kind)
@@ -97,7 +99,7 @@ def submitting(board: Board, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, 
 
 
 def test_a_run_that_named_itself_nothing_is_named_here_so_its_stream_has_a_key(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: object
+    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
 ) -> None:
     """A sweep on another day settles the run, so the key has to outlive this process."""
     keyed(monkeypatch)
@@ -113,7 +115,7 @@ def test_a_run_that_named_itself_nothing_is_named_here_so_its_stream_has_a_key(
 
 
 def test_a_batch_job_still_watches_itself_though_only_the_batch_publishes_for_it(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: object
+    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
 ) -> None:
     """The node says the one thing only it can say, and the batch says everything else."""
     keyed(monkeypatch)
@@ -124,7 +126,7 @@ def test_a_batch_job_still_watches_itself_though_only_the_batch_publishes_for_it
 
 
 def test_a_dispatched_job_is_handed_the_line_that_makes_it_watch_itself(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: object
+    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
 ) -> None:
     """The seam that carries the live lane onto a host, plus the one credential it needs there."""
     keyed(monkeypatch, key="secret")
@@ -140,7 +142,7 @@ def test_a_dispatched_job_is_handed_the_line_that_makes_it_watch_itself(
 
 
 def test_a_machine_holding_no_credential_stages_nothing_and_still_samples(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: object
+    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
 ) -> None:
     keyed(monkeypatch)
     FakeRemote.piped = []
@@ -152,7 +154,7 @@ def test_a_machine_holding_no_credential_stages_nothing_and_still_samples(
 
 
 def test_staging_is_for_a_machine_that_is_not_this_one(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: object
+    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
 ) -> None:
     """This machine reads the workspace `.env` directly, so nothing is ever written for it."""
     keyed(monkeypatch, key="secret")
@@ -202,7 +204,7 @@ def recorded(handle: str, name: str) -> None:
 
 
 def test_the_durable_sweep_publishes_for_every_run_a_batch_does_not_already_own(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: object
+    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
 ) -> None:
     """What makes a plain submit and a study trial as tracked as a batch job."""
     keyed(monkeypatch)
@@ -217,7 +219,7 @@ def test_the_durable_sweep_publishes_for_every_run_a_batch_does_not_already_own(
 
 
 def test_a_quiet_sweep_writes_nothing_and_a_terminal_one_writes_the_last_line(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: object
+    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
 ) -> None:
     """This runs on a cron, so an unchanged run must cost the stream no line at all."""
     keyed(monkeypatch)
@@ -268,3 +270,18 @@ def test_the_loop_keeps_reading_until_its_budget_runs_out(depot: Path) -> None:
         while len(sampler.bus.replay()) < 3 and monotonic() < deadline:
             sleep(0.01)
     assert len(sampler.bus.replay()) >= 3
+
+
+def test_a_fresh_process_minting_by_name_finds_the_wandb_sink() -> None:
+    """Importing the tracking package alone registers every sink, which is the CLI's own path.
+
+    Guards the registration seam: a sink joins the registry when its module loads, and the
+    package initializer is what loads it, so `mainboard submit` in a fresh interpreter can mint
+    the declared service by name. The suite's own imports register sinks as a side effect, so
+    only a child interpreter proves the production path.
+    """
+    probing = "from mainboard.tracking import Tracker\nTracker.find('wandb')\n"
+    proof = subprocess.run(
+        [sys.executable, "-c", probing], capture_output=True, text=True, timeout=60, check=False
+    )
+    assert proof.returncode == 0, proof.stderr

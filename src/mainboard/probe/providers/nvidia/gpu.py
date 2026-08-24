@@ -116,29 +116,17 @@ class NvidiaGPU(GPU):
         if self.apis.has_cuda_core:
             try:
                 memory = self.system_device.memory_info
-                return Memory(
-                    scope="vram",
-                    total_bytes=memory.total,
-                    used_bytes=memory.used,
-                    free_bytes=memory.free,
-                    unified=unified,
-                    source="cuda-core-system",
-                )
             except self.system_api.NotSupportedError:
                 return self.runtime_memory()
+            return Memory(
+                scope="vram",
+                total_bytes=memory.total,
+                used_bytes=memory.used,
+                free_bytes=memory.free,
+                unified=unified,
+                source="cuda-core-system",
+            )
         return self.nvml_memory()
-
-    @property
-    def utilization(self) -> Utilization:
-        """Current compute and memory-controller utilization."""
-        if self.apis.has_cuda_core:
-            with suppress(self.system_api.NotSupportedError):
-                reading = self.system_device.utilization
-                return Utilization(gpu_pct=reading.gpu, memory_pct=reading.memory)
-        with suppress(*self.apis.nvml_errors):
-            reading = self.apis.nvml.device_get_utilization_rates(self.handle)
-            return Utilization(gpu_pct=reading.gpu, memory_pct=reading.memory)
-        return Utilization()
 
     @cached_property
     def pci_bus_id(self) -> str:
@@ -167,6 +155,18 @@ class NvidiaGPU(GPU):
         """
         return self.system_api.Device(index=self.index)
 
+    @property
+    def utilization(self) -> Utilization:
+        """Current compute and memory-controller utilization."""
+        if self.apis.has_cuda_core:
+            with suppress(self.system_api.NotSupportedError):
+                reading = self.system_device.utilization
+                return Utilization(gpu_pct=reading.gpu, memory_pct=reading.memory)
+        with suppress(*self.apis.nvml_errors):
+            reading = self.apis.nvml.device_get_utilization_rates(self.handle)
+            return Utilization(gpu_pct=reading.gpu, memory_pct=reading.memory)
+        return Utilization()
+
     @cached_property
     def uuid(self) -> str:
         """Unique NVIDIA GPU identifier."""
@@ -184,12 +184,17 @@ class NvidiaGPU(GPU):
         return tuple(cls(index=i) for i in range(count))
 
     @classmethod
+    def device_count(cls) -> int:
+        """How many devices CUDA reports, 0 when the count call itself failed."""
+        api = apis.nvidia_apis()
+        err, count = api.runtime.cudaGetDeviceCount()
+        return count if err == api.runtime.cudaError_t.cudaSuccess else 0
+
+    @classmethod
     def is_available(cls) -> bool:
         """Whether CUDA reports at least one NVIDIA device."""
         try:
-            api = apis.nvidia_apis()
-            err, count = api.runtime.cudaGetDeviceCount()
-            return err == api.runtime.cudaError_t.cudaSuccess and count > 0
+            return cls.device_count() > 0
         except ModuleNotFoundError, ImportError, OSError, RuntimeError:
             return False
 
@@ -210,13 +215,13 @@ class NvidiaGPU(GPU):
     def runtime_memory(self) -> Memory:
         """Current memory state from CUDA Runtime when NVML memory is unsupported."""
         err, current = self.apis.runtime.cudaGetDevice()
-        has_current = err == self.apis.runtime.cudaError_t.cudaSuccess
+        if err != self.apis.runtime.cudaError_t.cudaSuccess:
+            current = self.index
         self.apis.runtime.cudaSetDevice(self.index)
         try:
             err, free_bytes, total_bytes = self.apis.runtime.cudaMemGetInfo()
         finally:
-            if has_current:
-                self.apis.runtime.cudaSetDevice(current)
+            self.apis.runtime.cudaSetDevice(current)
         if err != self.apis.runtime.cudaError_t.cudaSuccess:
             raise RuntimeError(f"cudaMemGetInfo({self.index}) failed: {err}")
         return Memory(

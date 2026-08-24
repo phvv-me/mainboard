@@ -72,8 +72,11 @@ def test_stream_tees_both_output_streams_while_retaining_them(
     ],
 )
 def test_relay_decodes_a_pipe_one_read_at_a_time(raw: bytes, buffer_size: int, text: str) -> None:
-    """`read1` returns after one pipe read, so a short protocol message reaches its client
-    immediately, and the incremental decoder carries a partial character across the boundary."""
+    """Streaming forwards each pipe read whole and splits no character.
+
+    `read1` returns after one pipe read, so a short protocol message reaches its client
+    immediately, and the incremental decoder carries a partial character across the boundary.
+    """
     destination = io.StringIO()
     stream = io.BufferedReader(io.BytesIO(raw), buffer_size=buffer_size)
     assert Process.relay(stream, destination, "utf-8") == text

@@ -41,7 +41,7 @@ class SlurmState(StrEnum):
 
 
 # States in which a job is still in flight (not a terminal verdict).
-SLURM_LIVE = {SlurmState.PENDING, SlurmState.RUNNING, SlurmState.SUSPENDED, SlurmState.COMPLETING}
+_SLURM_LIVE = {SlurmState.PENDING, SlurmState.RUNNING, SlurmState.SUSPENDED, SlurmState.COMPLETING}
 
 _SQUEUE_FORMAT = "%i|%j|%T|%P|%M"
 _SACCT_FORMAT = "JobID,State,ExitCode"
@@ -144,7 +144,7 @@ def parse_sacct_output(output: str, *, job_id: str) -> SlurmJob | None:
     return None
 
 
-def build_resource_flags(resources: Resources) -> list[str]:
+def _build_resource_flags(resources: Resources) -> list[str]:
     """Render `resources` as the allocation flags `sbatch` and `srun` both take.
 
     `gpus` is only emitted when set, so CPU-only jobs run on clusters without GPU GRES.
@@ -165,21 +165,14 @@ def build_resource_flags(resources: Resources) -> list[str]:
 
 def build_sbatch_flags(resources: Resources, script: str) -> list[str]:
     """Render `resources` as `sbatch` flags, including the output sink and the script itself."""
-    return ["sbatch", f"--output={_LOG_TEMPLATE}", *build_resource_flags(resources), script]
-
-
-def _extract_job_id(output: str) -> str:
-    """Pull the job id out of `sbatch` output (`Submitted batch job 12345`)."""
-    if match := re.search(r"Submitted batch job\s+(\d+)", output):
-        return match.group(1)
-    return output.strip().splitlines()[-1].strip() if output.strip() else ""
+    return ["sbatch", f"--output={_LOG_TEMPLATE}", *_build_resource_flags(resources), script]
 
 
 def slurm_verdict(state: SlurmState | str | None, exit_code: int | None) -> str:
     """A one-word verdict for a SLURM job from its `sacct` state and exit code."""
     if state is None:
         return "vanished"
-    if state in SLURM_LIVE:
+    if state in _SLURM_LIVE:
         return "running"
     if state == SlurmState.COMPLETED and (exit_code or 0) == 0:
         return "ok"
@@ -204,7 +197,9 @@ class Slurm:
         """
         del env
         shell = ["bash", "-l"]
-        return shlex.join(["srun", "--pty", *build_resource_flags(resources), *(command or shell)])
+        return shlex.join(
+            ["srun", "--pty", *_build_resource_flags(resources), *(command or shell)]
+        )
 
     def logs(self, remote: Machine, root: str, *, handle: str) -> str:
         return read_log(remote, root, handle=handle)
@@ -254,12 +249,19 @@ class Slurm:
         del args  # SLURM scripts are self-contained; sbatch takes no free-form positional args.
         command = shlex.join(build_sbatch_flags(resources, script))
         retcode, out, err = remote["bash"][["-lc", command]].run(retcode=None)
-        handle = _extract_job_id(out)
+        handle = Slurm._extract_job_id(out)
         if not handle.isdigit():
             raise SystemExit(
                 f"sbatch failed (rc={retcode}): {(err or out).strip()[-400:] or '(no output)'}"
             )
         return handle
+
+    @staticmethod
+    def _extract_job_id(output: str) -> str:
+        """Pull the job id out of `sbatch` output (`Submitted batch job 12345`)."""
+        if match := re.search(r"Submitted batch job\s+(\d+)", output):
+            return match.group(1)
+        return output.strip().splitlines()[-1].strip() if output.strip() else ""
 
     def __cluster_command(self, remote: Machine, command: list[str]) -> str:
         """Run a built `squeue`/`sacct`/`sinfo` argv under a login shell, returning its stdout."""

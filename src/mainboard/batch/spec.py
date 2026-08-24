@@ -92,6 +92,30 @@ class BatchSpec(FrozenModel):
     name: str
     jobs: tuple[BatchJob, ...]
 
+    @property
+    def batch_id(self) -> str:
+        """This batch's identity: its name and a digest over every job it declares.
+
+        Content-addressed so the same declaration always addresses the same receipts, which is
+        what lets `prepare`, `estimate` and `run` write one stream and `watch` find it later by
+        id alone. Changing what a job runs is a different batch and says so.
+        """
+        digest = hashlib.blake2s(self.model_dump_json().encode(), digest_size=4).hexdigest()
+        return f"{self.name}-{digest}"
+
+    @classmethod
+    def inline(cls, name: str, declared: Sequence[str]) -> BatchSpec:
+        """The batch `name` from `target:command` arguments, the file-free way to declare one.
+
+        declared: one `target:command` per job, split at the first colon.
+        """
+        split = [job.partition(_INLINE) for job in declared]
+        if bare := [job for job, separator, _ in split if not separator]:
+            raise MissionError(f"jobs are written target:command, not {bare[0]!r}")
+        return cls.of(
+            name, [{"target": target, "command": command} for target, _, command in split]
+        )
+
     @classmethod
     def load(cls, path: Path) -> BatchSpec:
         """The batch declared in the TOML file at `path`.
@@ -130,30 +154,6 @@ class BatchSpec(FrozenModel):
                 for at, job in enumerate(built, start=1)
             ),
         )
-
-    @classmethod
-    def inline(cls, name: str, declared: Sequence[str]) -> BatchSpec:
-        """The batch `name` from `target:command` arguments, the file-free way to declare one.
-
-        declared: one `target:command` per job, split at the first colon.
-        """
-        split = [job.partition(_INLINE) for job in declared]
-        if bare := [job for job, separator, _ in split if not separator]:
-            raise MissionError(f"jobs are written target:command, not {bare[0]!r}")
-        return cls.of(
-            name, [{"target": target, "command": command} for target, _, command in split]
-        )
-
-    @property
-    def batch_id(self) -> str:
-        """This batch's identity: its name and a digest over every job it declares.
-
-        Content-addressed so the same declaration always addresses the same receipts, which is
-        what lets `prepare`, `estimate` and `run` write one stream and `watch` find it later by
-        id alone. Changing what a job runs is a different batch and says so.
-        """
-        digest = hashlib.blake2s(self.model_dump_json().encode(), digest_size=4).hexdigest()
-        return f"{self.name}-{digest}"
 
     @model_validator(mode="after")
     def names_are_unique(self) -> BatchSpec:

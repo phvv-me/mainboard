@@ -36,8 +36,11 @@ def test_flags_convert_keyword_options_to_cli_args() -> None:
 
 
 def test_a_tool_names_the_binary_it_runs_and_pins_nothing_by_default() -> None:
-    """A backend running through another tool names no binary, so the name is required at the
-    one boundary that needs it rather than of every subclass."""
+    """A tool's binary name is required only where it is used.
+
+    A backend running through another tool names no binary, so the name is demanded at the
+    one boundary that needs it rather than of every subclass.
+    """
     tool = _EchoTool()
     assert str(tool.command) == _ECHO
     assert tool.scope() == ()
@@ -61,8 +64,11 @@ def test_within_cwd_runs_in_the_declared_directory(tmp_path: Path) -> None:
 def test_a_failed_run_raises_or_preserves_its_code_depending_on_who_asked(
     fp: FakeProcess,
 ) -> None:
-    """Raising keeps a failed install from being reported as green, while a transparent
-    passthrough has to exit with whatever the wrapped command exited."""
+    """A run raises on failure and a passthrough relays the exit.
+
+    Raising keeps a failed install from being reported as green, while a transparent
+    passthrough has to exit with whatever the wrapped command exited.
+    """
     fp.register([_ECHO, "hi"], returncode=0)
     assert _EchoTool()("hi") is None
 

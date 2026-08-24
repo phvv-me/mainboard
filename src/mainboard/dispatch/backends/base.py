@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from patos import FrozenModel, Registry, Singleton
@@ -75,6 +76,12 @@ class Credentials(Singleton):
         self.loaded = False
         self.lock = Lock()
 
+    @staticmethod
+    def unquoted(value: str) -> str:
+        """`value` with one matching pair of surrounding quotes off, the way a `.env` writes it."""
+        paired = len(value) > 1 and value[0] == value[-1] and value[0] in "\"'"
+        return value[1:-1] if paired else value
+
     def load(self) -> tuple[str, ...]:
         """Define what the workspace `.env` declares and this environment lacks, by name.
 
@@ -112,12 +119,6 @@ class Credentials(Singleton):
             os.environ[name] = self.unquoted(value.strip())
             defined.append(name)
         return tuple(defined)
-
-    @staticmethod
-    def unquoted(value: str) -> str:
-        """`value` with one matching pair of surrounding quotes off, the way a `.env` writes it."""
-        paired = len(value) > 1 and value[0] == value[-1] and value[0] in "\"'"
-        return value[1:-1] if paired else value
 
 
 class Standing(FrozenModel):
@@ -230,14 +231,6 @@ class ProviderBackend(Registry, abc.ABC):
     def cancel(self, handle: str) -> None:
         """Cancel `handle` on the provider."""
 
-    @abc.abstractmethod
-    def state(self, handle: str) -> JobState:
-        """Post-mortem `handle`: its state, exit code, and a verdict."""
-
-    @abc.abstractmethod
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
-        """Launch `command` under `resources`; return the provider's opaque handle id."""
-
     def refusal(self, capability: type[Capability], **facts: str) -> str:
         """Why this backend cannot answer `capability`, and what to do about it instead.
 
@@ -253,6 +246,25 @@ class ProviderBackend(Registry, abc.ABC):
         if advice is None:
             return f"the {self.name} backend does not implement {capability.__name__}"
         return advice.format(**facts)
+
+    @abc.abstractmethod
+    def state(self, handle: str) -> JobState:
+        """Post-mortem `handle`: its state, exit code, and a verdict."""
+
+    @abc.abstractmethod
+    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+        """Launch `command` under `resources`; return the provider's opaque handle id."""
+
+
+def forgotten(error: HTTPError) -> dict:
+    """An empty row for the 404 a gone instance answers, re-raising every other refusal.
+
+    Cancel and post-mortem reads are asked about instances a provider may already have
+    forgotten, so the 404 is their destination rather than a fault.
+    """
+    if error.status != 404:
+        raise error
+    return {}
 
 
 def http_transport(request: Request) -> HttpResponse:

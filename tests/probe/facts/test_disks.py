@@ -68,8 +68,11 @@ def make_drive(root: Path, name: str, *, sectors: str | None = None, **files: st
 def test_the_drive_kind_comes_from_the_name_then_the_rotational_flag(
     name: str, rotational: str | None, expected: DiskKind, sys_block: Path
 ) -> None:
-    """An NVMe device is named as one and never needs the flag read, while anything else is
-    rotating or not according to sysfs, and a device that will not say is left Unknown."""
+    """The drive kind comes from the name first and the rotational flag second.
+
+    An NVMe device is named as one and never needs the flag read, while anything else is
+    rotating or not according to sysfs, and a device that will not say is left Unknown.
+    """
     make_drive(sys_block, name, sectors="2000000")
     if rotational is not None:
         (sys_block / name / "queue").mkdir()
@@ -89,8 +92,11 @@ def test_the_drive_kind_comes_from_the_name_then_the_rotational_flag(
 def test_a_sysfs_identity_field_reads_back_stripped_or_as_nothing_at_all(
     raw: str, sys_block: Path
 ) -> None:
-    """sysfs pads its pseudo-files and fills the ones it has no answer for with a placeholder,
-    so a reading is either a stripped non-empty string or `None`, and never the placeholder."""
+    """A sysfs reading is a stripped string or nothing.
+
+    sysfs pads its pseudo-files and fills the ones it has no answer for with a placeholder,
+    so a reading is either a stripped non-empty string or `None`, and never the placeholder.
+    """
     make_drive(sys_block, "nvme0n1", sectors="2000000", model=raw)
     model = DriveInfo(name="nvme0n1").model
     assert model is None or (model == raw.strip() and model != "")
@@ -100,9 +106,12 @@ def test_a_sysfs_identity_field_reads_back_stripped_or_as_nothing_at_all(
 def test_a_drive_reports_its_device_path_capacity_and_partitions(
     sys_block: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Capacity is the sysfs sector count scaled by the 512-byte sector sysfs always reports in,
+    """Capacity and partitions come straight from sysfs and the mount table.
+
+    Capacity is the sysfs sector count scaled by the 512-byte sector sysfs always reports in,
     a drive with no size file reads as empty, and the partitions are the mounted ones whose
-    device name this drive prefixes."""
+    device name this drive prefixes.
+    """
     make_drive(sys_block, "nvme0n1", sectors="2000000", serial="S6B0NJ0T", model="none")
     make_drive(sys_block, "sda")
     partitions = (
@@ -123,8 +132,11 @@ def test_a_drive_reports_its_device_path_capacity_and_partitions(
 
 
 def test_the_host_lists_real_drives_and_skips_pseudo_and_empty_devices(sys_block: Path) -> None:
-    """A loop, device-mapper or ramdisk entry is not a physical drive and a zero-sized one is
-    not a usable drive, so neither belongs in the capacity a caller sizes work against."""
+    """Only real, non-empty drives count toward capacity.
+
+    A loop, device-mapper or ramdisk entry is not a physical drive and a zero-sized one is
+    not a usable drive, so neither belongs in the capacity a caller sizes work against.
+    """
     make_drive(sys_block, "nvme0n1", sectors="2000000")
     make_drive(sys_block, "nvme1n1", sectors="4000000")
     make_drive(sys_block, "loop0", sectors="100")
@@ -138,8 +150,11 @@ def test_the_host_lists_real_drives_and_skips_pseudo_and_empty_devices(sys_block
 
 
 def test_a_size_no_kernel_could_have_written_reads_as_no_capacity(sys_block: Path) -> None:
-    """The reader promises quiet degradation, so a torn or padded pseudo-file is zero bytes and
-    the drive it belongs to is not counted, rather than a probe that dies mid-scan."""
+    """A torn pseudo-file degrades quietly instead of killing the scan.
+
+    The reader promises quiet degradation, so a torn or padded pseudo-file is zero bytes and
+    the drive it belongs to is not counted, rather than a probe that dies mid-scan.
+    """
     make_drive(sys_block, "nvme0n1", sectors="2000000")
     make_drive(sys_block, "sdb", sectors="4000000 4000000")
     assert DriveInfo(name="sdb").size_bytes == 0
@@ -157,8 +172,11 @@ def test_the_host_lists_no_drives_when_sysfs_is_absent(
 def test_a_partition_carries_its_mount_options_through_from_psutil(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`all` mirrors one psutil entry per mounted filesystem, and `readonly` reads the `ro` flag
-    out of the raw option string rather than out of a substring match on it."""
+    """Partitions mirror psutil and read the `ro` flag exactly.
+
+    `all` mirrors one psutil entry per mounted filesystem, and `readonly` reads the `ro` flag
+    out of the raw option string rather than out of a substring match on it.
+    """
     fake = FakePsutilPartition("/dev/nvme0n1p1", mountpoint="/", fstype="ext4", opts="ro,relatime")
     monkeypatch.setattr(partition_mod.psutil, "disk_partitions", lambda all: [fake])
 
@@ -177,8 +195,11 @@ def test_a_partition_carries_its_mount_options_through_from_psutil(
 def test_partition_capacity_reads_through_disk_usage_and_zeroes_out_when_it_cannot(
     accessible: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A mount the caller has no permission to stat degrades every byte view to zero, so a
-    utilization percentage over an unreadable mount never divides by zero either."""
+    """An unreadable mount reads as zero bytes everywhere.
+
+    A mount the caller has no permission to stat degrades every byte view to zero, so a
+    utilization percentage over an unreadable mount never divides by zero either.
+    """
 
     def refuse(mountpoint: str) -> NoReturn:
         raise PermissionError(mountpoint)

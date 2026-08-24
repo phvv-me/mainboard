@@ -8,8 +8,8 @@ from patos import FrozenModel
 from ..enums import CompilerKind
 from ..shell import run
 
-CUDA_ROOT = Path("/usr/local")
-NVCC_BINARIES = ("nvcc", "cuda-nvcc")
+_CUDA_ROOT = Path("/usr/local")
+_NVCC_BINARIES = ("nvcc", "cuda-nvcc")
 # Version-banner markers scanned in order, so a new family costs one pair rather than an
 # edit to the classifier. `grace` comes before `clang` because NVIDIA's Grace toolchain
 # banner also says clang, and both GNU spellings map to the same family.
@@ -33,7 +33,7 @@ class Compiler(FrozenModel):
     @cached_property
     def kind(self) -> CompilerKind:
         """Compiler family, read from the binary name and then its `--version` banner."""
-        if self.path.stem in NVCC_BINARIES:
+        if self.path.stem in _NVCC_BINARIES:
             return CompilerKind.NVCC
         banner = run(str(self.path), "--version").lower()
         return next(
@@ -85,8 +85,8 @@ class Compilers(FrozenModel):
             return Compiler(path=Path(found))
         toolkits = (
             Path(sys.prefix) / "bin" / "nvcc",
-            CUDA_ROOT / "cuda" / "bin" / "nvcc",
-            *sorted(CUDA_ROOT.glob("cuda-*/bin/nvcc")),
+            _CUDA_ROOT / "cuda" / "bin" / "nvcc",
+            *sorted(_CUDA_ROOT.glob("cuda-*/bin/nvcc")),
         )
         if path := next((t for t in toolkits if t.exists()), None):
             return Compiler(path=path)
