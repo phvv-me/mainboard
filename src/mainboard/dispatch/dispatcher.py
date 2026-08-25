@@ -275,6 +275,7 @@ class Dispatcher:
         verify: str = "true",
         fetch: str | None = None,
         name: str = "",
+        node: str = "",
         gpu_in_select: bool = True,
         sampler: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
@@ -290,6 +291,7 @@ class Dispatcher:
         resources: the scheduler resource request (queue/walltime/mem/gpus already resolved).
         verify: a preflight command proving the host's activated environment actually runs.
         fetch: a results path recorded on the handle, pulled back by `fetch`.
+        node: the ledger slug this run serves, recorded on the run and its receipts.
         gpu_in_select: whether a PBS GPU request belongs in the `select=` chunk.
         sampler: a shell line the script runs beside the command, empty for none. Opaque here
             on purpose, since what a host watches about itself is not the dispatcher's decision.
@@ -329,6 +331,7 @@ class Dispatcher:
             verify=verify,
             fetch=fetch,
             name=name,
+            node=node,
             containerize=containerize,
         )
         return Handle(
@@ -389,6 +392,7 @@ class Dispatcher:
         verify: str = "true",
         fetch: str | None = None,
         name: str = "",
+        node: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
     ) -> str:
         """Ship the workspace, admit the request, dispatch `script`, and return the handle.
@@ -433,6 +437,7 @@ class Dispatcher:
                 submitted_at=now(),
                 fetch_path=fetch,
                 name=name,
+                node=node,
             )
         )
         logger.info(
@@ -448,6 +453,7 @@ class Dispatcher:
         kind: str,
         command: str,
         name: str = "",
+        node: str = "",
         fetch: str | None = None,
     ) -> Handle:
         """Record a provider-dispatched run in the shared cache and return its `Handle`.
@@ -463,6 +469,7 @@ class Dispatcher:
         kind: the provider kind, which is how a later pass finds the backend again.
         command: the command the run was launched with, kept as its provenance.
         name: a human label for the run, a study's label when a study owns it.
+        node: the ledger slug this run serves, recorded on the run and its receipts.
         fetch: a results path recorded for a later pull.
         """
         self.cache.record(
@@ -477,6 +484,7 @@ class Dispatcher:
                 submitted_at=now(),
                 fetch_path=fetch,
                 name=name,
+                node=node,
             )
         )
         logger.info("%s -> %s on %s (%s)", command, handle, host, kind)

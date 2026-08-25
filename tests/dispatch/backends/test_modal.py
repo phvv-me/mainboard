@@ -1,4 +1,5 @@
 import sys
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import NoReturn
 
@@ -6,7 +7,7 @@ import pytest
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import Delivery, ModalBackend
-from mainboard.dispatch.backends.modal import declared_credit
+from mainboard.dispatch.backends.modal import cycle_month, declared_credit
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container
 
@@ -196,6 +197,22 @@ def test_standing_falls_through_to_the_derivation_when_no_budget_answers(
     assert standing.keyed is True
     assert standing.note.startswith("derived,")
     assert "budget" not in standing.note
+
+
+@pytest.mark.parametrize(
+    ("start", "month"),
+    [
+        (datetime(2026, 8, 1, 0, 0), "2026-08"),
+        (datetime(2026, 9, 1, 8, 59, tzinfo=timezone(timedelta(hours=9))), "2026-08"),
+        (datetime(2026, 8, 31, 23, 59, tzinfo=UTC), "2026-08"),
+    ],
+    ids=["a naive stamp read as UTC", "an aware stamp converted across the boundary", "utc"],
+)
+def test_the_billing_cycle_month_is_pinned_to_utc_wherever_the_command_was_typed(
+    start: datetime, month: str
+) -> None:
+    """A cycle boundary is a UTC fact, so a JST morning still bills into the UTC month."""
+    assert cycle_month(start) == month
 
 
 def test_declared_credit_reads_the_env_and_refuses_what_is_not_a_dollar_amount(

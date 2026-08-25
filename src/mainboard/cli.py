@@ -6,11 +6,13 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 
 from cyclopts import App, Parameter
 
+from . import staleness
 from .batch.spec import BatchSpec
 from .board import Board
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .dispatch import vocabulary
 from .doctor import Verdict
 from .manifest.loading import load
 from .render import install_traceback, mode_of, progress, record, rows, totals
@@ -18,10 +20,12 @@ from .render import install_traceback, mode_of, progress, record, rows, totals
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from .batch.estimate import JobEstimate
     from .batch.watch import BatchStatus
     from .deps import Change
     from .dispatch.state import MonitorReport
     from .render.values import Node
+    from .verdicts import StreamVerdict
 
 
 def build(root: Path | None = None) -> App:
@@ -71,13 +75,20 @@ def build(root: Path | None = None) -> App:
         max_usd: float = 0.0,
         attempt: int = 1,
         fetch: str = "",
+        node: str = "",
         env: str = "",
         container: str = "",
+        yes: bool = False,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
     ) -> None:
         """Dispatch a command as a job on a host, printing its handle.
+
+        The expectation prints first, the same manners a batch has: the resolved target, the
+        queue policy's admission, and what the meter will say, a provider's rate for a rented
+        host and zero for owned hardware. At a terminal the dispatch then asks once; in a
+        script or under `--yes` it proceeds, and the line is printed either way.
 
         command: the command tokens, everything after `--`.
         on: the host alias the job targets.
@@ -85,13 +96,37 @@ def build(root: Path | None = None) -> App:
         max_usd: the spend cap a provider host refuses to submit without.
         attempt: the 1-based try number feeding expression defaults.
         fetch: a results path recorded for later `pull`.
+        node: the ledger slug this run serves, carried into its record and receipts.
+        yes: dispatch without asking, what a script passes.
         json: print the handle as canonical JSON instead of the bare id.
         agent: print the handle in the compact tabular mode instead of the bare id.
         fields: a comma-separated projection over the handle's fields.
         """
+        line = shlex.join(command)
+        priced = board(on).expectation(
+            line,
+            queue=queue,
+            walltime=walltime,
+            mem_gb=mem_gb,
+            gpus=gpus,
+            gpu_name=gpu_name,
+            max_usd=max_usd,
+            attempt=attempt,
+        )
+        print(_expected(priced), file=sys.stderr)
+        if (
+            not yes
+            and sys.stdin.isatty()
+            and input("dispatch? [y/N] ").strip().lower()
+            not in {
+                "y",
+                "yes",
+            }
+        ):
+            raise SystemExit(1)
         with progress(f"submitting on {on}"):
             job = board(on).submit(
-                shlex.join(command),
+                line,
                 name=name,
                 queue=queue,
                 walltime=walltime,
@@ -101,6 +136,7 @@ def build(root: Path | None = None) -> App:
                 max_usd=max_usd,
                 attempt=attempt,
                 fetch=fetch or None,
+                node=node,
                 env=env,
                 container=container,
             )
@@ -710,6 +746,75 @@ def build(root: Path | None = None) -> App:
             sampler.thread.join()
 
     @app.command
+    def wait(
+        handle: str,
+        *,
+        on: str = "",
+        timeout: float = 0.0,
+        interval: float = 0.0,
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> int:
+        """Block until a dispatched job settles, print its receipts-derived outcome, exit its code.
+
+        Every poll is the same durable pass `monitor` runs, so waiting here pulls results back,
+        cancels rentals and writes receipts exactly as the cron would, and a wait killed halfway
+        loses nothing. What prints at the end is read back off the on-disk receipts rather than
+        remembered from the loop, which is what makes this the sanctioned completion check.
+
+        handle: the job to wait on, as `submit` printed it.
+        on: the host alias narrowing a handle recorded on several hosts.
+        timeout: give up after this many seconds, exiting 2 with the job still in flight; 0
+            waits as long as it takes.
+        interval: seconds between polls, the dispatch default when 0.
+        json: print the outcome as canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the verdict columns.
+        """
+        with progress(f"waiting on {handle}"):
+            settled = (
+                board("local")
+                .verdicts()
+                .wait(
+                    handle,
+                    host=on,
+                    timeout=timeout,
+                    interval=interval or vocabulary.POLL_SECONDS,
+                )
+            )
+        _settled(settled, json_mode=json, agent=agent, fields=fields)
+        return settled.code
+
+    @app.command
+    def verdict(
+        target: str,
+        *,
+        on: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> int:
+        """Print the settled truth the on-disk receipts hold, and exit with what it adds up to.
+
+        The anti-fabrication verb. Dashboards, notification digests and progress summaries are
+        sinks; this reads only the receipts they point at, one row per trial with its outcome,
+        its gate sweep and the ledger node it serves, and never a scheduler, a service or a
+        memory of the session that dispatched. The exit status is the completion check: 0 when
+        every row settled clean, 1 on any failure, 2 while anything is still in flight, 3 when
+        the receipts prove nothing.
+
+        target: a stream id, a receipts file path, or a dispatched handle.
+        on: the host alias narrowing a handle recorded on several hosts.
+        json: print the rows as canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the verdict columns.
+        """
+        settled = board("local").verdicts().of(target, host=on)
+        _settled(settled, json_mode=json, agent=agent, fields=fields)
+        return settled.code
+
+    @app.command
     def jobs(
         *, limit: int = 20, json: bool = False, agent: bool = False, fields: str = ""
     ) -> None:
@@ -764,6 +869,32 @@ _ESTIMATE_COLUMNS = (
 )
 _DISPATCH_COLUMNS = ("job", "target", "handle", "kind", "reason")
 _STATUS_COLUMNS = ("job", "target", "handle", "state", "verdict", "detail")
+_VERDICT_COLUMNS = ("job", "handle", "target", "node", "verdict", "exit_code", "detail", "gates")
+
+
+def _expected(priced: JobEstimate) -> str:
+    """One line saying where a submit lands and what the meter will read there.
+
+    A rate means a rented target and carries its tail cost; no rate means hardware this
+    workspace owns and says so instead of printing a zero that looks like a promise.
+    """
+    where = f"{priced.target} ({priced.kind}{', ' + priced.hardware if priced.hardware else ''})"
+    if not priced.rate_usd_hr:
+        return f"submit -> {where}: queue policy ok, owned hardware, expected $0.00"
+    return (
+        f"submit -> {where}: queue policy ok, ${priced.rate_usd_hr:.2f}/hr, "
+        f"expected ${priced.expected_usd:.2f} (p90 ${priced.p90_usd:.2f})"
+    )
+
+
+def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: str) -> None:
+    """Print one stream's settled rows, the stream named in the heading."""
+    rows(
+        [trial.model_dump() for trial in settled.trials],
+        mode=mode_of(json_mode=json_mode, agent=agent),
+        fields=_fields(fields) or _VERDICT_COLUMNS,
+        title=f"verdict: {settled.stream}",
+    )
 
 
 def _exit_on_mission_error(error: MissionError) -> NoReturn:
@@ -880,8 +1011,14 @@ def _changes(report: MonitorReport) -> list[dict[str, str]]:
 
 
 def main() -> None:
-    """Console entry point, `MissionError` printed without a traceback."""
+    """Console entry point, `MissionError` printed without a traceback.
+
+    The staleness line prints first and to stderr, so an edited source tree names its own
+    reinstall on every invocation instead of silently answering from an old snapshot.
+    """
     install_traceback()
+    if line := staleness.check().warning:
+        print(line, file=sys.stderr)
     try:
         build()(sys.argv[1:])
     except MissionError as error:

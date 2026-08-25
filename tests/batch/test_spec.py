@@ -111,4 +111,5 @@ def test_a_job_hands_the_board_only_the_resources_it_declares() -> None:
         "env": "",
         "container": "",
         "fetch": None,
+        "node": "",
     }

@@ -1,11 +1,14 @@
 import json
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import ComputePath, MissionError, Survey
+from mainboard import Board, ComputePath, MissionError, Survey
+from mainboard.batch.estimate import JobEstimate
 from mainboard.cli import build, main
+from mainboard.staleness import Snapshot
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,6 +30,7 @@ _RESOURCES = {
     "max_usd": 0.0,
     "attempt": 1,
     "fetch": None,
+    "node": "",
     "env": "",
     "container": "",
 }
@@ -95,6 +99,11 @@ _RESOURCES = {
         (["compute"], ("paths", "", (), {})),
         (["monitor"], ("once", "", (), {})),
         (["facts", "gold"], ("facts", "gold", (), {})),
+        (
+            ["wait", "4242", "--timeout", "60"],
+            ("wait", "", ("4242",), {"host": "", "timeout": 60.0, "interval": 5.0}),
+        ),
+        (["verdict", "smoke-1"], ("of", "", ("smoke-1",), {"host": ""})),
     ],
     ids=[
         "run",
@@ -112,6 +121,8 @@ _RESOURCES = {
         "compute",
         "monitor",
         "facts",
+        "wait",
+        "verdict",
     ],
 )
 def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translated(
@@ -187,6 +198,88 @@ def test_submit_prints_the_bare_handle_unless_a_record_was_asked_for(
         }
         return
     assert out.splitlines()[0] == expected
+
+
+@pytest.mark.parametrize(
+    ("priced", "answer", "yes", "dispatched", "said"),
+    [
+        (
+            JobEstimate(
+                job="j",
+                target="vast",
+                kind="vast",
+                hardware="1x RTX 4090",
+                rate_usd_hr=0.31,
+                expected_usd=0.05,
+                p90_usd=0.08,
+            ),
+            "n",
+            False,
+            False,
+            "$0.31/hr",
+        ),
+        (
+            JobEstimate(job="j", target=_MIYABI_G, kind="pbs"),
+            "y",
+            False,
+            True,
+            "owned hardware",
+        ),
+        (
+            JobEstimate(job="j", target=_MIYABI_G, kind="pbs"),
+            "never asked",
+            True,
+            True,
+            "owned hardware",
+        ),
+    ],
+    ids=["declined, a rented target priced", "confirmed, owned hardware", "--yes skips the ask"],
+)
+def test_submit_prints_the_expectation_and_asks_once_at_a_terminal(
+    depot: Path,
+    relayed: Sequence[Relayed],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    priced: JobEstimate,
+    answer: str,
+    yes: bool,
+    dispatched: bool,
+    said: str,
+) -> None:
+    """The cost line prints before anything moves, and a declined dispatch never leaves.
+
+    The line goes to stderr so the handle on stdout stays a shell's to capture, a rented
+    target shows the meter and its tail, owned hardware says so instead of a hollow zero, and
+    `--yes` is the script's way past the one question a terminal gets asked.
+    """
+    monkeypatch.setattr(Board, "expectation", lambda self, command, **query: priced)
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", lambda prompt: answer)
+    argv = ["submit", "--on", _MIYABI_G, *(["--yes"] if yes else []), "true"]
+    with pytest.raises(SystemExit, match="0" if dispatched else "1"):
+        build(depot)(argv)
+    assert said in capsys.readouterr().err
+    assert [call[0] for call in relayed] == (["submit"] if dispatched else [])
+
+
+def test_the_entry_point_says_the_staleness_line_before_anything_else(
+    depot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An edited source tree names its own reinstall on every invocation, to stderr."""
+    monkeypatch.setattr(
+        "mainboard.cli.staleness.check",
+        lambda: Snapshot(
+            installed=True, stale=True, detail="the source moved", fix="reinstall it"
+        ),
+    )
+    monkeypatch.chdir(depot)
+    monkeypatch.setattr("sys.argv", ["mainboard", "check"])
+    with pytest.raises(SystemExit, match="0"):
+        main()
+    printed = capsys.readouterr()
+    assert "the source moved; reinstall: reinstall it" in printed.err
 
 
 @pytest.mark.parametrize(

@@ -9,8 +9,11 @@ from typing import TYPE_CHECKING, NoReturn, cast
 from plumbum import FG, ProcessExecutionError
 from plumbum import local as localhost
 
+from .batch.estimate import Estimator, JobEstimate
 from .batch.receipts import Receipts, Topic, publish
 from .batch.runner import Batch, directory
+from .batch.spec import BatchJob
+from .batch.transfer import TransferSet
 from .batch.watch import Watch
 from .compute import Survey
 from .context.admission import admit
@@ -37,6 +40,7 @@ from .monitor import Monitor
 from .probe.snapshot import HostFacts
 from .scaffold import Scaffold
 from .tracking import Sampler, credential, host_env, is_batched, mirrored, sampling_line, streamed
+from .verdicts import Verdicts
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -238,7 +242,7 @@ class Board:
         """The plan resolver over this workspace's manifest."""
         return self.once("resolver", lambda: Resolver(self.manifest))
 
-    def announce(self, label: str, run: Run, *, command: str, host: str) -> None:
+    def announce(self, label: str, run: Run, *, command: str, host: str, node: str = "") -> None:
         """Open this run's own receipts stream, so a dispatch outside a batch is tracked too.
 
         A batch publishes its own submissions and is skipped here, so no line is written twice.
@@ -247,6 +251,7 @@ class Board:
         run: the dispatched run, for the handle its stream is keyed on.
         command: what the job runs, recorded as this run's config.
         host: the target it was dispatched to.
+        node: the ledger slug the run serves, carried on the line only when one was declared.
         """
         if is_batched(label) or not self.manifest.tracking.on:
             return
@@ -261,6 +266,7 @@ class Board:
                 "target": host,
                 "kind": run.handle.kind,
                 "command": command,
+                **({"node": node} if node else {}),
             },
         )
 
@@ -303,6 +309,60 @@ class Board:
     def doctor(self) -> Doctor:
         """One verdict over this workspace, composed from the probes each subsystem owns."""
         return Doctor(self)
+
+    def expectation(
+        self,
+        command: str,
+        *,
+        queue: str = "",
+        walltime: str = "",
+        mem_gb: int = 0,
+        gpus: int = 0,
+        gpu_name: str = "",
+        max_usd: float = 0.0,
+        attempt: int = 1,
+    ) -> JobEstimate:
+        """What one submit on this host is expected to cost, admitted and priced before dispatch.
+
+        The same resource resolution `submit` runs, then the queue policy check a dispatch
+        would enforce anyway, so a request the policy refuses dies here in one sentence rather
+        than after an ssh round trip. The price is the estimator's, a provider's metered rate
+        for a rented host and zero for hardware this workspace owns, with the declared walltime
+        standing in for the runtime the way a batch spec's `runtime_s` does. Nothing connects,
+        nothing rents, nothing dispatches.
+
+        command: the command the submit would run.
+        """
+        plan = self.plan()
+        resources = self.resources(
+            queue=queue,
+            walltime=walltime,
+            mem_gb=mem_gb,
+            gpus=gpus,
+            gpu_name=gpu_name,
+            max_usd=max_usd,
+            attempt=attempt,
+            plan=plan,
+        )
+        admit(
+            plan.profile,
+            queue=resources.queue or "",
+            walltime=resources.walltime or "",
+            mem_gb=resources.mem_gb or 0,
+        )
+        job = BatchJob(
+            name=self.host,
+            target=self.host,
+            command=command,
+            runtime_s=walltime_seconds(resources.walltime) if resources.walltime else 0.0,
+            queue=resources.queue or "",
+            walltime=resources.walltime or "",
+            mem_gb=resources.mem_gb or 0,
+            gpus=resources.gpus,
+            gpu_name=resources.gpu_name,
+            max_usd=resources.max_usd,
+        )
+        return Estimator(self).row(job, TransferSet(job=self.host, target=self.host))
 
     def facts(self) -> HostFacts:
         """The host's probed hardware facts as the versioned wire snapshot.
@@ -568,6 +628,41 @@ class Board:
             )
         return root
 
+    def resources(
+        self,
+        *,
+        queue: str = "",
+        walltime: str = "",
+        mem_gb: int = 0,
+        gpus: int = 0,
+        gpu_name: str = "",
+        max_usd: float = 0.0,
+        nodes: int = 1,
+        attempt: int = 1,
+        plan: ExecutionPlan | None = None,
+    ) -> Resources:
+        """The resolved resource request for this host, profile defaults filling what is unset.
+
+        The one resolution `submit` and `expectation` share, so what a submit is priced at is
+        what it actually asks for. Expression-valued defaults are evaluated against `attempt`,
+        so a retry escalates instead of dying to the same ceiling twice.
+
+        plan: an already-resolved execution plan, this board's own when None.
+        """
+        resolved = plan or self.plan()
+        defaults = resolved.profile.defaults
+        memory = mem_gb or (evaluate(defaults.mem_gb, attempt=attempt) if defaults.mem_gb else 0)
+        return Resources(
+            queue=queue or defaults.queue,
+            walltime=walltime or defaults.walltime,
+            mem_gb=memory,
+            gpus=gpus or defaults.gpus,
+            gpu_name=gpu_name or defaults.gpu_name,
+            max_usd=max_usd or defaults.max_usd,
+            nodes=nodes,
+            account=resolved.profile.account,
+        )
+
     def run(self, command: str, *, env: str = "", container: str = "") -> int:
         """Run `command` through the host's activated plan, returning its exit code.
 
@@ -717,6 +812,7 @@ class Board:
         nodes: int = 1,
         attempt: int = 1,
         fetch: str | None = None,
+        node: str = "",
         env: str = "",
         container: str = "",
     ) -> Run:
@@ -740,19 +836,19 @@ class Board:
         max_usd: the spend cap a provider backend refuses to submit without.
         attempt: the 1-based try number, feeding the default expressions.
         fetch: a results path recorded for `Job.pull`.
+        node: the ledger slug this run serves, carried into its record and receipts.
         """
         plan = self.plan(env=env, container=container)
-        defaults = plan.profile.defaults
-        memory = mem_gb or (evaluate(defaults.mem_gb, attempt=attempt) if defaults.mem_gb else 0)
-        resources = Resources(
-            queue=queue or defaults.queue,
-            walltime=walltime or defaults.walltime,
-            mem_gb=memory,
-            gpus=gpus or defaults.gpus,
-            gpu_name=gpu_name or defaults.gpu_name,
-            max_usd=max_usd or defaults.max_usd,
+        resources = self.resources(
+            queue=queue,
+            walltime=walltime,
+            mem_gb=mem_gb,
+            gpus=gpus,
+            gpu_name=gpu_name,
+            max_usd=max_usd,
             nodes=nodes,
-            account=plan.profile.account,
+            attempt=attempt,
+            plan=plan,
         )
         # A run that arrived without a name is minted one, content-addressed over the target,
         # the command and this instant, so its receipts stream has a durable key and
@@ -771,6 +867,7 @@ class Board:
                     kind=plan.profile.kind,
                     command=command,
                     name=label,
+                    node=node,
                     fetch=fetch,
                 ),
             )
@@ -784,13 +881,22 @@ class Board:
                     root=root,
                     resources=resources,
                     name=label,
+                    node=node,
                     fetch=fetch,
                     containerize=self.containerizer(plan, root),
                     sampler=self.sampling(tracked, root=root, resources=resources),
                 ),
             )
-        self.announce(label, run, command=command, host=plan.host)
+        self.announce(label, run, command=command, host=plan.host, node=node)
         return run
+
+    def verdicts(self) -> Verdicts:
+        """The receipts-derived outcomes of this workspace's runs, the anti-fabrication read.
+
+        Host-independent like `monitor`, since receipts belong to the workspace rather than to
+        whichever host a board happens to be bound to.
+        """
+        return Verdicts(self)
 
     def watch(self, batch_id: str) -> Watch:
         """The live view over an already-dispatched batch, found by id alone.

@@ -34,6 +34,7 @@ class Submission(TypedDict, total=False):
     env: str
     container: str
     fetch: str | None
+    node: str
 
 
 class BatchJob(FrozenModel):
@@ -48,6 +49,8 @@ class BatchJob(FrozenModel):
         prices the setup alone, which is what a job whose runtime nobody has guessed costs
         before it starts.
     fetch: a results path pulled back when the job finishes.
+    node: the ledger slug this job serves, carried into its record and receipts; absent stays
+        a valid job.
     """
 
     name: str = ""
@@ -65,6 +68,7 @@ class BatchJob(FrozenModel):
     env: str = ""
     container: str = ""
     fetch: str = ""
+    node: str = ""
 
     def submission(self) -> Submission:
         """This job's `Board.submit` keywords, the resource decisions it actually declares."""
@@ -79,6 +83,7 @@ class BatchJob(FrozenModel):
             env=self.env,
             container=self.container,
             fetch=self.fetch or None,
+            node=self.node,
         )
 
 

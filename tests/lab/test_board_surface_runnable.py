@@ -1,6 +1,6 @@
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -163,3 +163,8 @@ def test_every_outcome_renders_one_receipt_line_under_the_one_published_key(
     assert absent not in record
     for field, value in own.items():
         assert record[field] == value
+    # The node field is optional both ways: absent from an undeclared receipt, printed when a
+    # trial names the ledger node it serves.
+    assert "node" not in record
+    named = replace(outcome, node="invariance-tax-law")
+    assert json.loads(named.receipt())[RECEIPT]["node"] == "invariance-tax-law"

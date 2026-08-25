@@ -16,7 +16,8 @@
 #   batch.opened    {"name", "jobs": [job names], "root"}         once, by the first verb to write
 #   job.prepared    a `TransferSet`                               what must still reach the target
 #   job.estimated   a `JobEstimate`                               what it is expected to cost
-#   job.submitted   {"handle", "target", "kind", "command"}       a scheduler or provider took it
+#   job.submitted   {"handle", "target", "kind", "command"}       a scheduler or provider took it,
+#                   plus "node" (the ledger slug the run serves) only when one was declared
 #   job.refused     {"target", "reason"}                          the target would not take it
 #   job.state       {"handle", "state", "verdict"}                published only when it changed
 #   job.sample      a live machine reading, at the declared interval, from the node itself

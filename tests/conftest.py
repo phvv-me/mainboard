@@ -19,6 +19,7 @@ from mainboard.dispatch.state import Cache, DownHost, Failed, Finished, MonitorR
 from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold, Scaffolded
+from mainboard.verdicts import StreamVerdict, TrialVerdict, Verdicts
 
 from .support import Answer, Option, Owner, Relayed
 
@@ -200,6 +201,14 @@ def swept() -> MonitorReport:
     )
 
 
+def settled() -> StreamVerdict:
+    """One settled stream with a clean row, what the completion verbs render and exit on."""
+    return StreamVerdict(
+        stream="smoke-1",
+        trials=(TrialVerdict(job="a", handle="4242", target="gold", verdict="ok", exit_code=0),),
+    )
+
+
 def surveyed() -> list[ComputePath]:
     """One row of every shape a compute table can hold, so a render covers each cell."""
     return [
@@ -297,6 +306,8 @@ def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Relayed]:
         (Survey, "paths", surveyed()),
         (Monitor, "once", swept()),
         (Monitor, "watch", iter([swept(), swept()])),
+        (Verdicts, "of", settled()),
+        (Verdicts, "wait", settled()),
     ):
         monkeypatch.setattr(owner, verb, relay(verb, answer))
     return calls

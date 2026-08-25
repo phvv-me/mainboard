@@ -13,6 +13,7 @@ from patos import FrozenModel
 from plumbum import local as localhost
 from plumbum.commands.processes import ProcessTimedOut
 
+from . import staleness
 from .compute import Access, Survey
 from .core.errors import MissionError
 from .core.project import Project
@@ -270,11 +271,26 @@ class Doctor:
         setups = self.survey.onboarded()
         asked: list[Callable[[], Section]] = [
             self.environment,
+            self.snapshot,
             partial(self.fleet, setups),
             *(partial(self.gate, name) for name in self.board.manifest.gates),
         ]
         with ThreadPoolExecutor(max_workers=len(asked)) as pool:
             return [manifest, *pool.map(lambda question: question(), asked)]
+
+    def snapshot(self) -> Section:
+        """Whether the installed CLI snapshot still answers for the source tree it was built from.
+
+        The one drift a lock never notices, since the snapshot is a uv tool environment beside
+        the workspace rather than inside it. A checkout running its own source has nothing to
+        be stale against and passes with that word.
+        """
+        found = staleness.check()
+        if found.stale:
+            return Section(
+                section="snapshot", verdict=Verdict.FAIL, detail=found.detail, fix=found.fix
+            )
+        return Section(section="snapshot", verdict=Verdict.PASS, detail=found.detail)
 
     def through_runner(self, command: str, timeout: float) -> tuple[int, str]:
         """Run `command` through this workspace's own runner, bounded, and capture what it said.

@@ -32,6 +32,8 @@ class RunRecord(FrozenModel):
     fetch_path: the results path to pull back, when `--fetch` was given.
     name: a human label for the run, shown instead of the internal script path; empty falls
         back to the script's basename at render time.
+    node: the ledger slug this run serves, carried into its receipts; empty when the dispatch
+        declared none, which stays a valid run.
     state: the last resolved scheduler outcome, memoized so a finished job (whose verdict can
         never change) is read straight from the cache instead of re-probed over ssh. `None`
         means never resolved; a terminal verdict here is trusted without touching the host.
@@ -52,6 +54,7 @@ class RunRecord(FrozenModel):
     submitted_at: str
     fetch_path: str | None = None
     name: str = ""
+    node: str = ""
     state: str | None = None
     exit_code: int | None = None
     verdict: str | None = None

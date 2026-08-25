@@ -2,7 +2,7 @@ import inspect
 import json
 import types
 import typing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypedDict, cast
 
@@ -48,27 +48,32 @@ class TrialOutcome:
 
     run_id: this trial's dedup identity.
     gate_evidence: every declared gate's verdict, in declaration order.
+    node: the ledger slug this trial serves; empty stays a valid receipt and the field is
+        simply absent from the printed line.
     """
 
     verdict: ClassVar[GateStatus]
 
     run_id: str
     gate_evidence: tuple[GateVerdict, ...]
+    node: str = field(default="", kw_only=True)
 
     def receipt(self) -> str:
         """This trial as its one `RECEIPT` JSON line, for whatever drives the trial to print.
 
-        Identity, the outcome word, the harness that stamped it, the rendered gate sweep, and
-        then whatever else the outcome kind carries as its own fields. A new kind declares a
-        `verdict` and its fields, and its receipt follows without a renderer here ever being
-        edited. `producer` is provenance for a reader keeping it, never a thing a reader has to
-        branch on, since the point of the line is that every producer's reads the same.
+        Identity, the outcome word, the harness that stamped it, the rendered gate sweep, the
+        ledger node when one was declared, and then whatever else the outcome kind carries as
+        its own fields. A new kind declares a `verdict` and its fields, and its receipt follows
+        without a renderer here ever being edited. `producer` is provenance for a reader
+        keeping it, never a thing a reader has to branch on, since the point of the line is
+        that every producer's reads the same.
         """
-        shared = {"run_id", "gate_evidence"}
+        shared = {"run_id", "gate_evidence", "node"}
         payload: dict[str, JsonValue] = {
             "run_id": self.run_id,
             "outcome": str(self.verdict),
             "producer": Project().name,
+            **({"node": self.node} if self.node else {}),
             "gates": [
                 {"status": str(verdict.status), "reason": verdict.reason}
                 for verdict in self.gate_evidence

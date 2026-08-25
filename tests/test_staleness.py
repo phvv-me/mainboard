@@ -1,0 +1,150 @@
+import json
+import os
+from typing import TYPE_CHECKING
+
+import pytest
+
+from mainboard import staleness
+from mainboard.staleness import Snapshot, check, digest, tool_root
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+_RECEIPT = (
+    '[tool]\nrequirements = [{ name = "mainboard", extras = ["wandb"], directory = "%s" }]\n'
+)
+
+
+@pytest.fixture
+def snapshot(tmp_path: Path) -> Path:
+    """A uv tool layout beside a source checkout: the receipt, the package, and the tree."""
+    source = tmp_path / "checkout"
+    (source / "src" / "mainboard").mkdir(parents=True)
+    (source / "src" / "mainboard" / "cli.py").write_text("code")
+    (source / "src" / "mainboard" / "__pycache__").mkdir()
+    (source / "src" / "mainboard" / "__pycache__" / "cli.pyc").write_text("bytecode")
+    tool = tmp_path / "tool"
+    package = tool / "lib" / "site-packages" / "mainboard"
+    package.mkdir(parents=True)
+    (tool / "uv-receipt.toml").write_text(_RECEIPT % source)
+    return package
+
+
+def touched(source: Path) -> None:
+    """Move one source file's clock forward, the edit the whole check exists to catch."""
+    edited = source / "src" / "mainboard" / "cli.py"
+    stat = edited.stat()
+    os.utime(edited, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+
+def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_moves(
+    snapshot: Path,
+) -> None:
+    """The whole lifecycle: record, agree, drift, warn, reinstall, record again.
+
+    The first run after an install is the baseline, an unchanged tree keeps agreeing with it,
+    an edit flips the answer to stale with the receipt's own extras in the named command, and
+    a reinstall (a rewritten receipt) invalidates the old baseline so the fresh snapshot
+    records the edited tree as its own.
+    """
+    tool = snapshot.parents[2]
+    first = check(snapshot)
+    assert first == Snapshot(installed=True, detail="snapshot matches the source tree")
+    assert first.warning == ""
+    assert check(snapshot).stale is False
+    source = tool.parent / "checkout"
+    touched(source)
+    stale = check(snapshot)
+    assert stale.stale is True
+    assert str(source) in stale.detail
+    assert stale.fix == f"uv tool install --from '{source}[wandb]' mainboard --force"
+    assert stale.detail in stale.warning
+    assert stale.fix in stale.warning
+    receipt = tool / "uv-receipt.toml"
+    stat = receipt.stat()
+    os.utime(receipt, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    assert check(snapshot).stale is False
+
+
+def test_a_checkout_running_its_own_source_has_nothing_to_be_stale_against(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "src" / "mainboard"
+    package.mkdir(parents=True)
+    assert check(package) == Snapshot(installed=False, detail="running from source")
+    assert tool_root(package) is None
+
+
+@pytest.mark.parametrize(
+    ("receipt", "said"),
+    [
+        ("not toml at all [", "names no source directory"),
+        ('[tool]\nrequirements = [{ name = "mainboard" }]\n', "names no source directory"),
+        ('[tool]\nrequirements = [{ name = "other", directory = "x" }]\n', "names no source"),
+    ],
+    ids=["torn receipt", "no directory", "another tool's requirement"],
+)
+def test_a_receipt_that_cannot_vouch_for_a_source_is_installed_but_never_stale(
+    snapshot: Path, receipt: str, said: str
+) -> None:
+    """A snapshot uv cannot explain warns nobody, since there is no tree to compare against."""
+    (snapshot.parents[2] / "uv-receipt.toml").write_text(receipt)
+    found = check(snapshot)
+    assert found == Snapshot(installed=True, detail=found.detail)
+    assert said in found.detail
+
+
+def test_a_receipt_whose_directory_lost_its_source_tree_says_where_it_looked(
+    snapshot: Path, tmp_path: Path
+) -> None:
+    (snapshot.parents[2] / "uv-receipt.toml").write_text(_RECEIPT % (tmp_path / "gone"))
+    found = check(snapshot)
+    assert found.stale is False
+    assert "no source tree at" in found.detail
+
+
+def test_a_receipt_without_extras_still_names_the_wandb_extra(snapshot: Path) -> None:
+    """The extra is load-bearing, so the named command never drops it."""
+    source = snapshot.parents[2].parent / "checkout"
+    (snapshot.parents[2] / "uv-receipt.toml").write_text(
+        f'[tool]\nrequirements = [{{ name = "mainboard", directory = "{source}" }}]\n'
+    )
+    check(snapshot)
+    touched(source)
+    assert "[wandb]" in check(snapshot).fix
+
+
+def test_a_torn_state_file_and_an_unwritable_tool_directory_both_answer_fresh(
+    snapshot: Path,
+) -> None:
+    """The check never fails the command that asked, whatever the state file's condition."""
+    tool = snapshot.parents[2]
+    (tool / "source-state.json").write_text("torn {")
+    assert check(snapshot).stale is False
+    held = json.loads((tool / "source-state.json").read_text())
+    assert set(held) == {"marker", "digest"}
+    (tool / "source-state.json").unlink()
+    tool.chmod(0o555)
+    try:
+        assert check(snapshot).stale is False
+    finally:
+        tool.chmod(0o755)
+
+
+def test_the_digest_reads_names_sizes_and_clocks_and_never_bytecode(snapshot: Path) -> None:
+    """Content is unread on purpose, so the check stays in CLI-startup budget."""
+    source = snapshot.parents[2].parent / "checkout" / "src"
+    before = digest(source)
+    assert digest(source) == before
+    (source / "mainboard" / "__pycache__" / "extra.pyc").write_text("more")
+    assert digest(source) == before
+    touched(source.parent)
+    assert digest(source) != before
+
+
+def test_the_stale_state_survives_a_repeat_ask_without_rerecording(snapshot: Path) -> None:
+    """A stale answer stays stale until a reinstall, never healed by asking twice."""
+    check(snapshot)
+    touched(snapshot.parents[2].parent / "checkout")
+    assert staleness.check(snapshot).stale is True
+    assert staleness.check(snapshot).stale is True

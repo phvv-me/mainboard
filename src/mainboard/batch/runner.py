@@ -94,6 +94,7 @@ class Batch:
                 "target": job.target,
                 "kind": kind,
                 "command": job.command,
+                **({"node": job.node} if job.node else {}),
             },
         )
         return Dispatched(job=job.name, target=job.target, handle=run.handle.id, kind=kind)

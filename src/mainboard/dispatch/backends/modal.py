@@ -24,6 +24,7 @@
 
 import os
 from contextlib import suppress
+from datetime import UTC, datetime
 from importlib import import_module
 from typing import TYPE_CHECKING
 
@@ -62,6 +63,20 @@ def _modal() -> ModuleType:
             "the modal backend needs the `modal` package; run `uv add modal` then "
             "`modal token new` to authenticate"
         ) from None
+
+
+def cycle_month(start: datetime) -> str:
+    """`start` as its billing-cycle month, pinned to UTC explicitly.
+
+    Modal's cycle boundary is a UTC fact, and a naive stamp formatted as-is would name whatever
+    month this machine's local clock happens to sit in near the boundary. A naive stamp is
+    therefore read as UTC and an aware one is converted, so the month never depends on where
+    the command was typed.
+
+    start: the cycle's opening instant as the SDK hands it over, naive or aware.
+    """
+    pinned = start if start.tzinfo else start.replace(tzinfo=UTC)
+    return pinned.astimezone(UTC).strftime("%Y-%m")
 
 
 def declared_credit() -> float:
@@ -149,7 +164,7 @@ class ModalBackend(ProviderBackend, Account, LogSource):
             summary = modal.Workspace.from_context().billing.summary()
         except modal.exception.Error as refused:
             return Standing(keyed=True, note=f"modal refused the billing summary, {refused}")
-        spent, cycle = float(summary.metered_cost), summary.start.strftime("%Y-%m")
+        spent, cycle = float(summary.metered_cost), cycle_month(summary.start)
         if not declared:
             return Standing(
                 keyed=True,

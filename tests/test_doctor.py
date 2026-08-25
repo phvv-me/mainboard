@@ -13,6 +13,7 @@ from mainboard.compute import Access
 from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.engines.compile import Provisioner
 from mainboard.engines.compile.state import SyncState
+from mainboard.staleness import Snapshot
 
 from .strategies import WORDS
 
@@ -310,8 +311,8 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
 @pytest.mark.parametrize(
     ("manifest", "expected"),
     [
-        ("", ["manifest", "environment", "fleet", _BARE, _REPORTING]),
-        ('[workspace]\nname = "bare"\n', ["manifest", "environment", "fleet"]),
+        ("", ["manifest", "environment", "snapshot", "fleet", _BARE, _REPORTING]),
+        ('[workspace]\nname = "bare"\n', ["manifest", "environment", "snapshot", "fleet"]),
     ],
     ids=["every gate the workspace declares", "a workspace that declares none"],
 )
@@ -346,12 +347,38 @@ def test_the_report_never_hands_the_dispatch_cache_to_a_thread_that_does_not_own
         providers=[],
     )
     doctor = Doctor(board, survey=offline, probe=answering(0, _SETTLED))
-    assert [found.section for found in doctor.sections()][:3] == [
+    assert [found.section for found in doctor.sections()][:4] == [
         "manifest",
         "environment",
+        "snapshot",
         "fleet",
     ]
     assert board.dispatcher.cache.hosts() == []
+
+
+@pytest.mark.parametrize(
+    ("found", "verdict", "fix"),
+    [
+        (
+            Snapshot(installed=True, stale=True, detail="the source moved", fix="reinstall it"),
+            Verdict.FAIL,
+            "reinstall it",
+        ),
+        (Snapshot(installed=False, detail="running from source"), Verdict.PASS, ""),
+    ],
+    ids=["a stale snapshot fails with its reinstall", "a checkout passes with its word"],
+)
+def test_the_snapshot_section_carries_the_staleness_check_into_the_exit_status(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    found: Snapshot,
+    verdict: Verdict,
+    fix: str,
+) -> None:
+    """The doctor row is the same check the CLI warning runs, with an exit status behind it."""
+    monkeypatch.setattr("mainboard.doctor.staleness.check", lambda: found)
+    section = Doctor(Board(workspace)).snapshot()
+    assert (section.verdict, section.detail, section.fix) == (verdict, found.detail, fix)
 
 
 def test_the_runner_bounds_the_probe_it_stages(workspace: Path) -> None:

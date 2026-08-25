@@ -112,6 +112,12 @@ def test_a_run_that_named_itself_nothing_is_named_here_so_its_stream_has_a_key(
     [line] = Receipts(directory(board, stream) / "events.ndjson").replay()
     assert (line.topic, line.job, line.data["handle"]) == (Topic.SUBMITTED, stream, "77")
     assert line.data["target"] == _HOST and line.data["command"] == "python train.py"
+    # The node field is optional both ways: absent when nothing declared one, on the line and
+    # in the run registry when the dispatch did.
+    assert "node" not in line.data
+    board.on(_HOST).submit("python train.py", name="noded", node="tax-law")
+    [noded] = Receipts(directory(board, "noded") / "events.ndjson").replay()
+    assert noded.data["node"] == "tax-law"
 
 
 def test_a_batch_job_still_watches_itself_though_only_the_batch_publishes_for_it(
