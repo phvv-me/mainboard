@@ -1,5 +1,7 @@
 import base64
 import json
+import shlex
+import subprocess
 
 import pytest
 
@@ -94,3 +96,54 @@ def test_a_receipt_that_was_both_written_and_printed_is_still_one_trial():
 
 def test_a_log_with_no_receipts_in_it_harvests_nothing():
     assert receipts_in("epoch 1 loss 0.4\nepoch 2 loss 0.3\n") == ()
+
+
+def framed_by_the_shell(receipts: str) -> str:
+    """What `staging` and `framing` really emit, run through a real shell rather than described.
+
+    The one test that can catch a fault in the pipeline itself. Everything above reads a frame
+    this file built in Python, which proves the parser and proves nothing about the six coreutils
+    that produce the frame on a rented machine nobody can attach a debugger to.
+    """
+    script = f"""{staging()}
+printf '%s\\n' {shlex.quote(receipts)} >> "${RECEIPTS_VAR}"
+echo "epoch 1 loss 0.4"
+{framing()}
+"""
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    return done.stdout
+
+
+@pytest.mark.parametrize(
+    "pad",
+    [0, 1, 900, 240 * 3],
+    ids=[
+        "one-short-receipt",
+        "a-length-off-by-one",
+        "longer-than-the-500-char-cut",
+        "an-exact-multiple-of-the-chunk-width",
+    ],
+)
+def test_the_shell_that_really_runs_on_the_instance_frames_a_receipt_back_whole(pad: int):
+    """The pipeline is six coreutils deep and runs where nothing can be inspected.
+
+    `tr` leaves the stream unterminated, so `fold` used to end its last chunk without a newline
+    and the closing marker landed glued to it, which made the block unreadable and lost every
+    receipt in it. A payload that lands on an exact chunk boundary is the case where a frame can
+    look right and still be wrong, so it is pinned by name.
+    """
+    receipt = json.dumps(
+        {"trial_receipt": {"run_id": "r1", "outcome": "passed", "pad": "x" * pad}}
+    )
+    emitted = framed_by_the_shell(receipt)
+    assert max(len(line) for line in emitted.splitlines()) < 500
+    assert unframed(emitted) == f"{receipt}\n"
+    assert receipts_in(emitted) == (receipt,)
+
+
+def test_a_run_that_wrote_no_receipts_leaves_an_ordinary_log_exactly_as_it_was():
+    """The framing must be invisible to every command that never writes a trial."""
+    script = f'{staging()}\necho "epoch 1 loss 0.4"\n{framing()}\n'
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    assert done.stdout == "epoch 1 loss 0.4\n"
+    assert receipts_in(done.stdout) == ()

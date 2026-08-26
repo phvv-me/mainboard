@@ -64,11 +64,16 @@ def framing() -> str:
     One pipeline of tools any Linux image already carries, since this runs on a rented machine
     that this workspace never provisioned and cannot install anything on. A run that wrote no
     receipts emits no block at all, so an ordinary command's log is left exactly as it was.
+
+    The bare `echo` inside the braces is load-bearing. `tr` leaves the stream with no trailing
+    newline, so `fold` ends its last chunk unterminated and the closing marker lands glued to the
+    end of it, which makes the block unreadable and silently loses every receipt in it. Feeding
+    the newline in before the fold is what keeps the last chunk a line of its own.
     """
     file = f'"${RECEIPTS_VAR}"'
     return (
         f"if [ -s {file} ]; then echo {_BEGIN}; "
-        f'base64 < {file} | tr -d "\\n" | fold -w {_CHUNK_WIDTH} '
+        f'{{ base64 < {file} | tr -d "\\n"; echo; }} | fold -w {_CHUNK_WIDTH} '
         f"| sed 's/^/{_CHUNK_MARKER}/'; echo {_END}; fi"
     )
 
