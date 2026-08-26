@@ -4,6 +4,7 @@ from hypothesis import strategies as st
 from patos import IllegalTransition
 
 from mainboard.dispatch.vocabulary import (
+    CANCELLED,
     FAILED,
     OK,
     QUEUED,
@@ -20,9 +21,10 @@ _WORDS = st.sampled_from(sorted(VERDICTS))
 
 
 def test_the_table_declares_exactly_the_lifecycle_dispatch_promises() -> None:
-    assert VERDICTS[QUEUED] == {RUNNING, VANISHED}
-    assert VERDICTS[RUNNING] == {OK, FAILED, VANISHED, TIMEOUT}
-    assert {OK, FAILED, VANISHED, UNKNOWN, TIMEOUT} == TERMINAL
+    """A cancel is reachable from both live states, since it never waits for the job to start."""
+    assert VERDICTS[QUEUED] == {RUNNING, VANISHED, CANCELLED}
+    assert VERDICTS[RUNNING] == {OK, FAILED, VANISHED, TIMEOUT, CANCELLED}
+    assert {OK, FAILED, VANISHED, UNKNOWN, TIMEOUT, CANCELLED} == TERMINAL
     assert QUEUED not in TERMINAL and RUNNING not in TERMINAL
     assert tracker().current == QUEUED
 
@@ -31,6 +33,8 @@ def test_the_table_declares_exactly_the_lifecycle_dispatch_promises() -> None:
 @example(start=QUEUED, target=RUNNING)
 @example(start=QUEUED, target=VANISHED)
 @example(start=RUNNING, target=TIMEOUT)
+@example(start=QUEUED, target=CANCELLED)
+@example(start=CANCELLED, target=RUNNING)
 @example(start=QUEUED, target=OK)
 @example(start=OK, target=RUNNING)
 @example(start=FAILED, target=RUNNING)

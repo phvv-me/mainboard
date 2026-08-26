@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board, MissionError
+from mainboard import Board, Job, MissionError
 from mainboard.batch.receipts import Receipts, Topic, publish
 from mainboard.batch.runner import directory
 from mainboard.dispatch.state import RunRecord
@@ -16,12 +16,19 @@ if TYPE_CHECKING:
 _STREAM = "study-receipts"
 
 
-def recorded(board: Board, handle: str, *, name: str = "", verdict: str | None = None) -> None:
+def recorded(
+    board: Board,
+    handle: str,
+    *,
+    name: str = "",
+    verdict: str | None = None,
+    target: str = "gold",
+) -> None:
     """One dispatched run in the registry, the durable floor a verdict reads from."""
     board.dispatcher.cache.record(
         RunRecord(
             handle=handle,
-            target="gold",
+            target=target,
             kind="ssh",
             script="job.sh",
             args="",
@@ -297,6 +304,100 @@ def test_wait_sweeps_the_monitor_path_until_terminal_and_answers_from_the_receip
     assert len(passes) == 2
     assert settled.code == 0
     assert settled.trials[0].verdict == "ok"
+
+
+def test_cancel_kills_through_the_backend_and_settles_the_record_in_the_same_pass(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancellation with no receipt trail is what killing a job over ssh by hand leaves behind.
+
+    Killing, settling, publishing and releasing are one pass, and the reported cursor moves last
+    so a cancel killed halfway repeats rather than loses the outcome.
+    """
+    recorded(board, "7", name="doomed", target="miyabi-g")
+    acted: list[str] = []
+    monkeypatch.setattr(Monitor, "once", lambda monitor: acted.append("swept"))
+    monkeypatch.setattr(Job, "kill", lambda self: acted.append("killed"))
+    monkeypatch.setattr(Job, "release", lambda self: acted.append("released"))
+    settled = board.verdicts().cancel("7")
+    assert acted == ["killed", "released"]
+    assert settled.trials[0].verdict == "cancelled"
+    # Exit 1: the stop was deliberate, and a completion check must still not call it complete.
+    assert settled.code == 1
+    stored = board.dispatcher.cache.run("7")
+    assert (stored.verdict, stored.reported) == ("cancelled", "cancelled")
+    # Settled for good, so the durable sweep never owes this run another probe.
+    assert stored not in board.dispatcher.cache.tracked()
+
+
+@pytest.mark.parametrize(
+    ("body", "said"),
+    [
+        pytest.param("", "is empty", id="a-file-nothing-has-been-written-to-yet"),
+        pytest.param(
+            '{"certificate": {"claim": "x", "status": "verified"}}\n{"certificate": {}}\n',
+            "none of which is evidence this verb reads",
+            id="a-harness-writing-a-shape-this-verb-was-never-taught",
+        ),
+    ],
+)
+def test_an_empty_table_says_why_instead_of_reading_as_a_failure(
+    board: Board, tmp_path: Path, body: str, said: str
+) -> None:
+    """An empty table is the one answer a reader cannot act on, since it looks the same either way.
+
+    The two shapes are named rather than the tools that write them, so a harness earns the same
+    reading by printing the same line and nothing here has to learn what that harness is called.
+    """
+    path = tmp_path / "evidence.jsonl"
+    path.write_text(body, encoding="utf-8")
+    settled = board.verdicts().of(str(path))
+    assert settled.trials == ()
+    assert said in settled.note
+    # Still exit 3: receipts that prove nothing prove nothing, whatever the note explains.
+    assert settled.code == 3
+
+
+def test_a_stream_that_did_produce_rows_carries_no_note_at_all(board: Board) -> None:
+    """The note exists for the empty case, so a table that says something says only that."""
+    published(board, _STREAM)
+    assert board.verdicts().of(_STREAM).note == ""
+
+
+def test_the_captured_tail_is_preferred_over_a_backend_that_may_no_longer_exist(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A settled run's host gets cleaned and a rental's disk is already gone, so the copy wins."""
+    recorded(board, "5", name="chatty", target="miyabi-g")
+    monkeypatch.setattr(Job, "transcript", lambda self: "live output")
+    assert board.verdicts().captured("5") == "live output"
+    stored = directory(board, "chatty") / "5.log"
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_text("what the sweep brought home\n", encoding="utf-8")
+    assert board.verdicts().captured("5") == "what the sweep brought home\n"
+
+
+def test_a_backend_that_will_not_answer_costs_a_transcript_and_never_a_sweep(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host quiet between the probe and the read must not take every other job's outcome."""
+    recorded(board, "4", name="quiet", target="miyabi-g")
+
+    def refuse(self: Job) -> str:
+        raise MissionError("host went away")
+
+    monkeypatch.setattr(Job, "logs", refuse)
+    assert board.verdicts().captured("4") == ""
+
+
+def test_cancelling_a_run_that_already_settled_touches_nothing(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A terminal verdict can never change, so a late cancel reports rather than rewrites."""
+    recorded(board, "6", name="done", verdict="ok", target="miyabi-g")
+    monkeypatch.setattr(Job, "kill", lambda self: pytest.fail("a settled run was killed"))
+    settled = board.verdicts().cancel("6")
+    assert (settled.trials[0].verdict, settled.code) == ("ok", 0)
 
 
 def test_wait_gives_up_at_the_deadline_and_reports_the_run_still_in_flight(

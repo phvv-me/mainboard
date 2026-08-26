@@ -9,6 +9,7 @@ from mainboard import Board, ComputePath, MissionError, Survey
 from mainboard.batch.estimate import JobEstimate
 from mainboard.cli import build, main
 from mainboard.staleness import Snapshot
+from mainboard.verdicts import StreamVerdict, Verdicts
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -104,6 +105,8 @@ _RESOURCES = {
             ("wait", "", ("4242",), {"host": "", "timeout": 60.0, "interval": 5.0}),
         ),
         (["verdict", "smoke-1"], ("of", "", ("smoke-1",), {"host": ""})),
+        (["cancel", "4242", "--on", "gold"], ("cancel", "", ("4242",), {"host": "gold"})),
+        (["logs", "4242"], ("captured", "", ("4242",), {"host": ""})),
         (["attest", "smoke-1"], ("attest", "local", ("smoke-1",), {"job": "smoke-1"})),
         (
             ["attest", "smoke-1", "--job", "gold-1"],
@@ -128,6 +131,8 @@ _RESOURCES = {
         "facts",
         "wait",
         "verdict",
+        "cancel",
+        "logs",
         "attest",
         "attest a named job",
     ],
@@ -147,6 +152,45 @@ def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translat
     with pytest.raises(SystemExit, match="0"):
         build(depot)(argv)
     assert relayed == [expected]
+
+
+def test_a_verdict_with_no_rows_says_why_on_stderr_rather_than_printing_a_bare_heading(
+    depot: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A silent empty table reads as a failure, so the note goes where it cannot be mistaken.
+
+    stderr rather than stdout, so a machine-readable mode stays exactly what it was.
+    """
+    note = "evidence.jsonl holds 3 line(s), none of..."
+    empty = StreamVerdict(stream="s", trials=(), note=note)
+    monkeypatch.setattr(Verdicts, "of", lambda self, target, host="": empty)
+    with pytest.raises(SystemExit, match="3"):
+        build(depot)(["verdict", "s", "--json"])
+    printed = capsys.readouterr()
+    assert note in printed.err and note not in printed.out
+
+
+@pytest.mark.parametrize(
+    ("captured", "code", "shown"),
+    [
+        pytest.param("epoch 1\nepoch 2\n", 0, "epoch 2", id="a-run-whose-output-came-home"),
+        pytest.param("   \n", 1, "no output on file", id="a-run-nothing-was-ever-captured-for"),
+    ],
+)
+def test_the_logs_verb_prints_what_a_job_printed_or_says_nothing_was_kept(
+    depot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    captured: str,
+    code: int,
+    shown: str,
+) -> None:
+    """A script has to tell an empty log from a missing one, so the two exit differently."""
+    monkeypatch.setattr(Verdicts, "captured", lambda self, handle, host="": captured)
+    with pytest.raises(SystemExit, match=str(code)):
+        build(depot)(["logs", "4242"])
+    printed = capsys.readouterr()
+    assert shown in (printed.out + printed.err)
 
 
 @pytest.mark.parametrize(

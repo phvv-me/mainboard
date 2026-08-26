@@ -14,6 +14,7 @@ from mainboard.board import ProviderJob
 from mainboard.deps import Dependencies
 from mainboard.dispatch import Handle, HostSetup, Verdict
 from mainboard.dispatch.backends import Account, Delivery, LogSource, ProviderBackend, Standing
+from mainboard.dispatch.schedulers import registry
 from mainboard.dispatch.state import RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.doctor import Doctor
@@ -527,7 +528,11 @@ def test_a_scheduler_job_delegates_every_verb_to_its_host_and_dispatcher(
             calls.append(("logs", handle))
             return "the log"
 
-    monkeypatch.setattr("mainboard.board.pick", lambda profile: FakeScheduler())
+    # The recorded kind picks the backend, never the host's currently declared profile, so a
+    # host whose kind changed under a live job still has that job killed the way it was taken.
+    monkeypatch.setattr(
+        registry.SCHEDULERS, "select", lambda kind, default: FakeScheduler(), raising=False
+    )
     monkeypatch.setattr("mainboard.board.connection", lambda host: FakeConnection(""))
     monkeypatch.setattr(
         board.dispatcher, "await_many", lambda handles, **kw: {handles[0]: verdict}
@@ -611,6 +616,32 @@ def test_a_provider_job_refuses_a_capability_its_backend_never_had(
     asked = job.logs if "logs" in refusal else job.pull
     with pytest.raises(fault, match=refusal):
         asked()
+
+
+@pytest.mark.parametrize(
+    ("backend", "expected"),
+    [
+        pytest.param(BareBackend(), "", id="a-provider-that-keeps-no-log-at-all"),
+        pytest.param(FakeCloud(), "cloud log", id="a-provider-that-hands-its-log-over"),
+    ],
+)
+def test_a_transcript_is_the_tolerant_twin_of_logs_so_a_settle_never_dies_over_one(
+    backend: ProviderBackend, expected: str
+) -> None:
+    """The settle that captures output runs before the release, and must not fail the sweep."""
+    handle = Handle(id="c-1", host="cloudbox", root="", kind=backend.name)
+    assert ProviderJob(backend, handle).transcript() == expected
+
+
+def test_a_provider_that_will_not_hand_its_log_over_costs_a_transcript_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cloud = FakeCloud()
+    monkeypatch.setattr(
+        cloud, "logs", lambda handle: (_ for _ in ()).throw(MissionError("vast refused logs"))
+    )
+    handle = Handle(id="c-2", host="cloudbox", root="", kind="fakecloud")
+    assert ProviderJob(cloud, handle).transcript() == ""
 
 
 def test_job_rebuilds_a_dispatched_run_from_the_cache(

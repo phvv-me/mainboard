@@ -19,17 +19,25 @@ FAILED = "failed"
 VANISHED = "vanished"
 UNKNOWN = "unknown"
 TIMEOUT = "timeout"
+# A job somebody stopped on purpose. It is its own word rather than `failed` or `vanished`
+# because those two are things that happened to a run, and this is a decision about it: a
+# provably doomed job killed at minute three is a success of judgment, and a table that files it
+# beside a crash teaches a reader to distrust the column. It is reachable from both live states,
+# since the whole point of cancelling is that it does not wait for the job to start.
+CANCELLED = "cancelled"
 
-# Declared edges: queued -> running/vanished, running -> one terminal. Every terminal maps to
-# the empty set, so a further move (a stale `running` after `ok`) raises rather than mutates.
+# Declared edges: queued -> running/vanished/cancelled, running -> one terminal. Every terminal
+# maps to the empty set, so a further move (a stale `running` after `ok`) raises rather than
+# mutates.
 VERDICTS: dict[str, set[str]] = {
-    QUEUED: {RUNNING, VANISHED},
-    RUNNING: {OK, FAILED, VANISHED, TIMEOUT},
+    QUEUED: {RUNNING, VANISHED, CANCELLED},
+    RUNNING: {OK, FAILED, VANISHED, TIMEOUT, CANCELLED},
     OK: set(),
     FAILED: set(),
     VANISHED: set(),
     UNKNOWN: set(),
     TIMEOUT: set(),
+    CANCELLED: set(),
 }
 
 

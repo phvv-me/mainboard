@@ -6,6 +6,7 @@ import pytest
 from mainboard import Board, MissionError
 from mainboard.batch import Batch, BatchStatus, Topic, Watch
 from mainboard.batch.receipts import publish
+from mainboard.batch.watch import _epoch
 from mainboard.dispatch import Handle, HostUnreachable
 from mainboard.dispatch.state import Failed, Finished, MonitorReport, RunRecord
 from mainboard.monitor import Monitor
@@ -339,6 +340,15 @@ def test_a_settled_run_reports_what_it_was_quoted_beside_what_it_actually_came_t
     # delta is what a later fit learns from.
     assert cost.data["actual_usd"] < 1.0
     assert cost.data["delta_usd"] == pytest.approx(cost.data["actual_usd"] - 1.0)
+
+
+def test_a_stamp_with_no_offset_is_read_as_utc_not_as_this_machines_local_clock() -> None:
+    """The same pinning the billing cycle already does, for the same reason.
+
+    Reading a naive stamp locally would shift a setup time by the machine's whole UTC offset and
+    teach every later estimate a wait that never happened.
+    """
+    assert _epoch("2026-08-25T12:00:00") == _epoch("2026-08-25T12:00:00+00:00")
 
 
 def test_a_batch_nobody_priced_reports_a_zero_delta_rather_than_inventing_a_comparison(

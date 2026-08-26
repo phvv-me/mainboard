@@ -46,6 +46,21 @@ _PYPI_OPTION_KEYS = (
 # root.
 _DOTENV = "dotenv.sh"
 
+# The generated unset script, sourced right after the dotenv loader so an explicit clear beats a
+# value `.env` filled in. pixi's own `[activation].env` is a string-to-string map with no way to
+# say "not set", so a clear has to be shell rather than a table entry.
+_UNSET = "unset.sh"
+
+
+def cleared(env: dict[str, str | bool]) -> list[str]:
+    """The variables `env` asks to have taken away, in declaration order.
+
+    A `false` value is a clear rather than a setting. It cannot ride in pixi's own
+    `[activation].env`, which is a string-to-string map, so it becomes shell in the generated
+    unset script instead and every consumer of that activation gets it for free.
+    """
+    return [name for name, value in env.items() if value is False]
+
 
 def rerooted(path: str) -> str:
     """A workspace-relative path as the manifest generated under `.mainboard/` must spell it.
@@ -182,10 +197,12 @@ class PixiManifest(FrozenModel):
         """
         scripts: list[Toml] = [
             *([_DOTENV] if m.workspace.dotenv else []),
+            *([_UNSET] if cleared(m.env) else []),
             *(rerooted(script) for script in m.workspace.scripts),
         ]
+        exported = {name: value for name, value in m.env.items() if isinstance(value, str)}
         return {
-            **({"env": m.env} if m.env else {}),
+            **({"env": exported} if exported else {}),
             **({"scripts": scripts} if scripts else {}),
         }
 

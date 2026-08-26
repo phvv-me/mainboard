@@ -28,7 +28,8 @@ from .dispatch.commandline import vetted
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.jobs.spec import walltime_seconds
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
-from .dispatch.schedulers import pick
+from .dispatch.schedulers import HostUnreachable, pick, registry
+from .dispatch.shared import logger
 from .dispatch.vocabulary import Resources
 from .dispatch.wrapping import connection, missing, wrap
 from .doctor import Doctor
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
     from .batch.spec import BatchSpec
     from .context.plan import ExecutionPlan
     from .dispatch.onboard import Watcher
+    from .dispatch.schedulers import Scheduler
     from .dispatch.vocabulary import JobState
     from .manifest.schema.root import Manifest
 
@@ -80,16 +82,38 @@ class Job:
         self.board = board
         self.handle = handle
 
+    @property
+    def scheduler(self) -> Scheduler:
+        """The backend that answers for this run, selected on the kind it was dispatched under.
+
+        The recorded kind rather than whatever the host's profile says today, which is the rule
+        every other probe already follows (`Dispatcher.state`, `Dispatcher.states`, and the
+        sweep's own grouping). A host whose declared kind changed under a live job would
+        otherwise have that job killed through a scheduler that never took it.
+        """
+        return registry.SCHEDULERS.select(self.handle.kind, default="ssh")
+
     def kill(self) -> None:
         """Cancel the job on its scheduler."""
         with connection(self.handle.host) as remote:
-            pick(self.board.plan().profile).cancel(remote, self.handle.root, handle=self.handle.id)
+            self.scheduler.cancel(remote, self.handle.root, handle=self.handle.id)
 
     def logs(self) -> str:
         """The job's captured log so far, merged stdout and stderr."""
         with connection(self.handle.host) as remote:
-            scheduler = pick(self.board.plan().profile)
-            return scheduler.logs(remote, self.handle.root, handle=self.handle.id)
+            return self.scheduler.logs(remote, self.handle.root, handle=self.handle.id)
+
+    def transcript(self) -> str:
+        """The run's captured output, empty when this backend keeps none or will not answer.
+
+        The tolerant twin of `logs`, for a settle that wants the output if it can have it and
+        must never fail the sweep over a host that went quiet between the probe and the read.
+        """
+        try:
+            return self.logs()
+        except (HostUnreachable, MissionError, OSError, ProcessExecutionError) as quiet:
+            logger.warning("no transcript for %s: %s", self.handle.id, quiet)
+            return ""
 
     def poll(self) -> JobState:
         """The job's state now, raising `HostUnreachable` when its host will not answer.
@@ -155,6 +179,22 @@ class ProviderJob:
     def poll(self) -> JobState:
         """The run's state now, as the provider reports it."""
         return self.backend.state(self.handle.id)
+
+    def transcript(self) -> str:
+        """The run's captured output, empty when this provider keeps none or will not answer.
+
+        A rented machine's disk dies with the rental, so this is the only channel a provider run
+        has for anything it produced, which is why it must be read before the release that
+        destroys the instance and why a provider without one is an empty string rather than a
+        refusal.
+        """
+        if not isinstance(self.backend, LogSource):
+            return ""
+        try:
+            return self.backend.logs(self.handle.id)
+        except (MissionError, OSError) as quiet:
+            logger.warning("no transcript for %s: %s", self.handle.id, quiet)
+            return ""
 
     def pull(self) -> None:
         """Bring the run's recorded results path back, refusing when this provider cannot.

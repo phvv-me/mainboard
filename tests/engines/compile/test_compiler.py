@@ -109,6 +109,46 @@ def test_the_dotenv_loader_is_generated_only_when_the_workspace_asks_for_it(
     assert (compiler.out / "dotenv.sh").exists() is written
 
 
+def test_a_variable_declared_false_is_unset_rather_than_set_to_an_empty_string(
+    compiler_from: Callable[[str], Compiler], files: Writer
+) -> None:
+    """An empty variable is still defined, which is a different thing from an absent one.
+
+    `[env]` could only ever set, so declaring a clean arithmetic environment was structurally
+    impossible from the manifest and needed an `env -u` workaround downstream. pixi's own
+    activation table cannot say "not set", so the clear becomes shell in a generated script that
+    every consumer of the activation already sources.
+    """
+    declared = '[workspace]\nname = "w"\n[env]\nKEEP = "1"\n'
+    compiler = compiler_from(f"{declared}OMP_NUM_THREADS = false\nMKL_NUM_THREADS = false\n")
+    compiler.write(files, "default")
+    script = (compiler.out / "unset.sh").read_text(encoding="utf-8")
+    assert "unset -v OMP_NUM_THREADS" in script and "unset -v MKL_NUM_THREADS" in script
+    assert "KEEP" not in script
+    # Sourced after the dotenv loader, so an explicit clear beats a value `.env` filled in.
+    compiled = tomllib.loads(compiler.pixi.manifest.read_text(encoding="utf-8"))
+    assert compiled["activation"]["scripts"] == ["dotenv.sh", "unset.sh"]
+    assert compiled["activation"]["env"] == {"KEEP": "1"}
+
+
+def test_a_workspace_that_clears_nothing_carries_no_unset_script(
+    compiler_from: Callable[[str], Compiler], files: Writer
+) -> None:
+    """And one that stops clearing has the script taken away rather than left behind stale."""
+    clearing = compiler_from('[workspace]\nname = "w"\n[env]\nOMP_NUM_THREADS = false\n')
+    clearing.write(files, "default")
+    assert (clearing.out / "unset.sh").exists()
+    plain = compiler_from('[workspace]\nname = "w"\n[env]\nKEEP = "1"\n')
+    plain.write(files, "default")
+    assert not (plain.out / "unset.sh").exists()
+
+
+def test_env_refuses_the_one_boolean_that_says_nothing() -> None:
+    """A variable is set or taken away, so `true` is a typo rather than a third meaning."""
+    with pytest.raises(ValueError, match="which says nothing"):
+        Manifest.model_validate({"workspace": {"name": "w"}, "env": {"FOO": True}})
+
+
 def test_write_never_blesses_a_lock_it_did_not_solve(
     compiler_from: Callable[[str], Compiler], files: Writer, pixi: Pixi
 ) -> None:
@@ -145,6 +185,37 @@ def test_the_resolution_digest_covers_what_a_solve_reads(
     edited = compiler_from(other)
     edited.write(files, "default")
     assert (edited.resolution_digest() == before) is same
+
+
+@pytest.mark.parametrize(
+    ("edited", "same"),
+    [
+        pytest.param('serve = "vllm serve --port 8001"', True, id="the-command-it-runs"),
+        pytest.param('serve = "vllm serve"\nwarm = "vllm bench"', True, id="one-more-task"),
+        pytest.param(
+            'serve = "vllm serve"\n[envs.serving.deps]\nvllm = "*"',
+            False,
+            id="a-dependency-declared-beside-them",
+        ),
+    ],
+)
+def test_editing_an_environments_own_tasks_leaves_the_lock_it_was_solved_against_alone(
+    edited: str, *, same: bool, compiler_from: Callable[[str], Compiler], files: Writer
+) -> None:
+    """A per-environment task compiles into `[feature.<name>.tasks]`, which the pop never reached.
+
+    So renaming a command moved this digest, refused the lock sitting beside it, forced a full
+    re-solve on a machine that wanted no such thing, and then invalidated that same lock on every
+    host already holding it. What a command is called cannot change which versions resolve.
+    """
+    base = '[workspace]\nname = "w"\n[envs.serving.tasks]\nserve = "vllm serve"\n'
+    before = compiler_from(base)
+    before.write(files, "default")
+    solved = before.resolution_digest()
+
+    after = compiler_from(f'[workspace]\nname = "w"\n[envs.serving.tasks]\n{edited}\n')
+    after.write(files, "default")
+    assert (after.resolution_digest() == solved) is same
 
 
 def test_the_resolution_digest_follows_every_local_python_projects_own_metadata(

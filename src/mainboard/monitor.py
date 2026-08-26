@@ -9,11 +9,13 @@ from typing import TYPE_CHECKING
 from plumbum.commands.processes import ProcessExecutionError
 
 from .batch.receipts import Topic, latest, publish
+from .batch.runner import directory
 from .core.errors import MissionError
 from .dispatch import vocabulary
 from .dispatch.backends.base import route
 from .dispatch.dispatcher import Verdict
-from .dispatch.schedulers import HostUnreachable, short_reason
+from .dispatch.evidence import receipts_in
+from .dispatch.schedulers import HostUnreachable, log_excerpt, short_reason
 from .dispatch.shared import logger
 from .dispatch.state import DownHost, Failed, Finished, MonitorReport
 from .dispatch.vocabulary import JobState
@@ -29,6 +31,11 @@ if TYPE_CHECKING:
 # The routing answer for the schedulers reached over ssh, the one family whose whole host can be
 # asked about in a single query. A provider has no such listing and is asked run by run.
 _QUEUED = "ssh-family"
+
+# How many meaningful lines of a settled run's output are kept beside its receipts. Enough that a
+# traceback and the work around it survive whole, bounded so a chatty training loop cannot fill
+# the workspace with a run nobody will read.
+_LOG_TAIL_LINES = 400
 
 
 class Sweep:
@@ -148,6 +155,41 @@ class Monitor:
         """Log one failed pull as a warning and stand for its absent results path."""
         logger.warning("could not pull %s from %s: %s", path, host, fault)
 
+    def capture(self, record: RunRecord, job: Run) -> None:
+        """Bring a settled run's output and its trial receipts home, beside that run's receipts.
+
+        Only the exit code used to survive a run. The output lived on the host under the state
+        dir, or on a rented disk that dies with the rental, and no verb ever brought either back,
+        so losing the terminal that dispatched a job lost everything it printed. Here the tail is
+        written next to the stream's own `events.ndjson`, which is the directory every reader
+        already knows how to find, and the trial receipts the output carries are lifted into that
+        stream so `verdict` can settle on them.
+
+        This runs before the release, and that ordering is load-bearing rather than tidy: a
+        release cancels a rental, and a cancelled rental's instance takes its log with it, so a
+        read afterwards would come back empty on exactly the runs that most need it.
+
+        Nothing here can fail the sweep. A host that went quiet between the probe and the read
+        costs its own transcript and no other job's outcome, which is the same bargain `pull`
+        already makes.
+
+        record: the run as the dispatch cache holds it.
+        job: that run rebuilt, whichever of the two worlds took it.
+        """
+        if not (transcript := job.transcript()):
+            return
+        stream, name = streamed(record.name or "", handle=record.handle)
+        under = directory(self.board, stream)
+        under.mkdir(parents=True, exist_ok=True)
+        tail = log_excerpt(transcript, _LOG_TAIL_LINES)
+        (under / f"{record.handle}.log").write_text("\n".join(tail) + "\n", encoding="utf-8")
+        harvested = receipts_in(transcript)
+        if harvested:
+            path = under / "receipts.ndjson"
+            with path.open("a", encoding="utf-8") as opened:
+                opened.write("\n".join(harvested) + "\n")
+        logger.info("captured %d log lines for %s (%s)", len(tail), record.handle, name)
+
     def once(self) -> MonitorReport:
         """Resolve every unsettled run once, harvest the newly terminal ones, report the changes.
 
@@ -158,9 +200,12 @@ class Monitor:
         not depend on which target answered first.
 
         A run still in flight is only counted. A run that ended has its results pulled back (or
-        its cause read off the exit code), whatever it still holds released, its verdict recorded
-        in the study ledger that owns it, and only then its reported cursor advanced, so a sweep
-        killed halfway repeats work on the next pass rather than losing an outcome. Releasing
+        its cause read off the exit code), its output and trial receipts captured beside its own
+        receipts stream, whatever it still holds released, its verdict recorded in the study
+        ledger that owns it, and only then its reported cursor advanced, so a sweep killed
+        halfway repeats work on the next pass rather than losing an outcome. Capturing before
+        releasing is the one ordering that cannot be swapped: releasing destroys a rented
+        instance, and its log goes with it. Releasing
         before the cursor moves is what makes that repetition worth wanting, since a pass dying
         between the two leaves the run tracked and the next one cancels the rental again. A run
         whose target could not be resolved has no state, which is the one reason to skip it here,
@@ -192,6 +237,7 @@ class Monitor:
                 detail = short_reason(state.verdict, state.exit_code)
                 failed.append(Failed(handle=record.handle, target=record.target, reason=detail))
             self.track(record, state, detail=detail)
+            self.capture(record, job)
             self.release(job)
             verdict = Verdict(verdict=state.verdict, exit_code=state.exit_code)
             fleet.settle({job.handle: verdict})

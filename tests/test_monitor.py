@@ -1,3 +1,4 @@
+import json
 import logging
 from collections.abc import Callable, Sequence
 from itertools import islice
@@ -7,6 +8,7 @@ import pytest
 from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import Board, Job
+from mainboard.batch.runner import directory
 from mainboard.dispatch import SshTransport
 from mainboard.dispatch.backends import HpcAiBackend, VastBackend
 from mainboard.dispatch.schedulers import HostUnreachable
@@ -60,11 +62,19 @@ class Instance(HpcAiBackend):
 
 
 def rented(status: str = "exited", *, exit_code: int = 0) -> list[Reply]:
-    """The replies one Vast post-mortem takes, the instance row, its log url, and the log."""
+    """The replies one Vast post-mortem takes, the instance row, its log url, and the log.
+
+    A settled run reads that log twice, once for the exit sentinel the verdict comes from and
+    once to capture the output before the release destroys the instance, so a terminal status
+    queues the upload pair a second time.
+    """
+    log = f"training done\nmainboard-exit:{exit_code}\n"
+    upload: list[Reply] = [{"result_url": "https://s3.example/logs/7.log"}, log]
+    settling = status not in {"created", "loading", "running", "stopping"}
     return [
         {"instances": {"id": 7, "actual_status": status}},
-        {"result_url": "https://s3.example/logs/7.log"},
-        f"training done\nmainboard-exit:{exit_code}\n",
+        *upload,
+        *(upload if settling else []),
     ]
 
 
@@ -291,7 +301,7 @@ def test_a_target_that_will_not_answer_is_asked_once_whatever_kinds_its_runs_car
         (Rented, [*rented(), {"success": True}], [_VAST_INSTANCE]),
         (
             Instance,
-            [listed("13", "Stopped"), {}, {}],
+            [listed("13", "Stopped"), {}, {}],  # hpc-ai keeps no server-side log to capture
             [
                 "https://www.hpc-ai.com/api/instance/stop",
                 "https://www.hpc-ai.com/api/instance/terminate",
@@ -335,6 +345,45 @@ def test_a_finished_scheduler_job_is_never_cancelled(
     monkeypatch.setattr(Job, "kill", lambda self: killed.append(self.handle.id))
     assert [item.handle for item in board.monitor().once().finished] == ["15"]
     assert killed == []
+
+
+def test_a_settled_rentals_output_and_receipts_come_home_before_the_instance_is_destroyed(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the exit code used to survive a run, and a rented disk dies with the rental.
+
+    The capture must happen before the release, since releasing destroys the instance and its
+    log goes with it, and the framed receipts are lifted out so `verdict` can settle on trials
+    a printed line would have been truncated out of.
+    """
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    seed("21", target="rented", kind=Rented.name, name="trial-a")
+    receipt = json.dumps({"trial_receipt": {"run_id": "r1", "outcome": "passed"}})
+    log = f"epoch 1\n{receipt}\nmainboard-exit:0\n"
+    upload: list[Reply] = [{"result_url": "https://s3.example/logs/7.log"}, log]
+    Rented.replies = [
+        {"instances": {"id": 7, "actual_status": "exited"}},
+        *upload,
+        *upload,
+        {"success": True},
+    ]
+    board.monitor().once()
+    under = directory(board, "trial-a")
+    assert "epoch 1" in (under / "21.log").read_text(encoding="utf-8")
+    assert receipt in (under / "receipts.ndjson").read_text(encoding="utf-8")
+    # The read happened while the instance still existed, so the destroy is the last call made.
+    assert Rented.calls[-1].get_method() == "DELETE"
+
+
+def test_a_run_whose_backend_keeps_no_output_captures_nothing_and_still_settles(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hpc-ai keeps no server-side log, so an empty transcript is a quiet skip not a refusal."""
+    monkeypatch.setenv("HPCAI_API_KEY", "key-123")
+    seed("22", target="rented", kind=Instance.name, name="trial-b")
+    Instance.replies = [listed("22", "Stopped"), {}, {}]
+    assert [item.handle for item in board.monitor().once().finished] == ["22"]
+    assert not (directory(board, "trial-b") / "22.log").exists()
 
 
 def test_a_provider_that_refuses_the_cancel_is_a_warning_not_a_failed_sweep(

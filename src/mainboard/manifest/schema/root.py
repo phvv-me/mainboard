@@ -29,6 +29,15 @@ class Manifest(Scope):
     `[gates.*]` names the commands `doctor` asks for a verdict, `[templates.*]`
     names the project templates `new` renders, and `[tracking]` names where a
     batch's receipts are mirrored beyond this workspace's own files.
+
+    `[env]` sets a variable to a string and clears one with `false`. Clearing
+    is not the same as setting an empty string, which is what the table could
+    say before: an empty `OMP_NUM_THREADS` is still defined, so `${VAR:-default}`
+    and `[ -n "$VAR" ]` both behave differently from an unset one, and declaring
+    a genuinely clean environment was therefore impossible from here and needed
+    an `env -u` workaround downstream. `true` is refused rather than guessed at,
+    since a variable is either given a value or taken away and there is no third
+    thing it could mean.
     """
 
     # The tables no compile reads, the exact complement of what `PixiManifest.from_manifest`
@@ -51,13 +60,28 @@ class Manifest(Scope):
     on: dict[str, Scope] = {}
     dev: Scope = Scope()
     envs: dict[str, Env] = {}
-    env: dict[str, str] = {}
+    env: dict[str, str | bool] = {}
     tasks: dict[str, Task] = {}
     gates: dict[str, Gate] = {}
     templates: dict[str, Template] = {}
     tracking: Tracking = Tracking()
     containers: dict[str, Container] = {}
     hosts: dict[str, HostProfile] = {}
+
+    @model_validator(mode="after")
+    def env_values_set_or_clear(self) -> Manifest:
+        """Refuse `true` in `[env]`, since only `false` means anything there.
+
+        A variable is either given a value or taken away, so a boolean has exactly one useful
+        reading and guessing at the other one would hide a typo behind a plausible default.
+        """
+        wrong = sorted(name for name, value in self.env.items() if value is True)
+        if wrong:
+            raise ValueError(
+                f"[env] {wrong[0]!r} is `true`, which says nothing; write a string to set it "
+                "or `false` to clear whatever the machine inherited"
+            )
+        return self
 
     def environment(self, name: str) -> Env:
         """The named environment table, refusing unknown names with the roster.

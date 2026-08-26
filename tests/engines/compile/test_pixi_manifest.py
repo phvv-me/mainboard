@@ -205,6 +205,16 @@ def test_a_task_takes_pixis_own_keys_and_runs_from_the_repo_root(
             'dotenv = false\nscripts = ["scripts/activate.sh"]\n',
             {"scripts": ["../scripts/activate.sh"]},
         ),
+        # A cleared variable cannot ride in pixi's own string-to-string env table, so it becomes
+        # the unset script, sourced after the dotenv loader so the clear beats a `.env` fill.
+        (
+            "\n[env]\nOMP_NUM_THREADS = false\n",
+            {"scripts": ["dotenv.sh", "unset.sh"]},
+        ),
+        (
+            '\n[env]\nFOO = "bar"\nPIP_CONSTRAINT = false\n',
+            {"env": {"FOO": "bar"}, "scripts": ["dotenv.sh", "unset.sh"]},
+        ),
     ],
 )
 def test_the_activation_table_sources_the_dotenv_loader_before_declared_scripts(

@@ -812,6 +812,60 @@ def build(root: Path | None = None) -> App:
         return settled.code
 
     @app.command
+    def logs(handle: str, *, on: str = "") -> int:
+        """Print what a dispatched job actually printed, whether or not its host still exists.
+
+        Only the exit code used to survive a run: the output lived on the host or on a rented
+        disk that dies with the rental, so a lost terminal lost everything the job said. The
+        durable sweep now keeps each settled run's tail beside that run's receipts, and this
+        reads that copy first, falling back to the backend for a run still in flight.
+
+        Exits 1 when nothing was ever captured, so a script can tell an empty log from a missing
+        one.
+
+        handle: the job to read, as `submit` printed it.
+        on: the host alias narrowing a handle recorded on several hosts.
+        """
+        captured = board("local").verdicts().captured(handle, host=on)
+        if not captured.strip():
+            print(f"no output on file for {handle}", file=sys.stderr)
+            return 1
+        print(captured, end="" if captured.endswith("\n") else "\n")
+        return 0
+
+    @app.command
+    def cancel(
+        handle: str,
+        *,
+        on: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> int:
+        """Stop a dispatched job on whatever took it and settle its record in the same pass.
+
+        The verb a provably doomed run needs. Without it a job could only die at its own
+        walltime, and killing it over ssh by hand would stop the job while leaving the dispatch
+        record claiming it still ran, so a cancellation lost its receipt trail. This kills
+        through the backend the run was dispatched under, whether that is pueue, PBS or a
+        provider API, writes the terminal verdict, publishes the settled receipt, and ends the
+        rental, which is the only thing that stops a provider charging.
+
+        Exits the settled code, so a cancelled run exits 1: the stop was deliberate, and a
+        completion check must still never call a stopped run complete.
+
+        handle: the job to cancel, as `submit` printed it.
+        on: the host alias narrowing a handle recorded on several hosts.
+        json: print the outcome as canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the verdict columns.
+        """
+        with progress(f"cancelling {handle}"):
+            settled = board("local").verdicts().cancel(handle, host=on)
+        _settled(settled, json_mode=json, agent=agent, fields=fields)
+        return settled.code
+
+    @app.command
     def verdict(
         target: str,
         *,
@@ -927,13 +981,22 @@ def _expected(priced: JobEstimate) -> str:
 
 
 def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: str) -> None:
-    """Print one stream's settled rows, the stream named in the heading."""
+    """Print one stream's settled rows, the stream named in the heading.
+
+    A stream with no rows says why on stderr rather than printing a bare heading over nothing.
+    An empty table is the one answer a reader cannot act on, since it looks identical whether
+    the run has not started, the evidence landed elsewhere, or the harness wrote a shape this
+    verb was never taught. The note goes to stderr so a machine-readable mode stays exactly what
+    it was on stdout.
+    """
     rows(
         [trial.model_dump() for trial in settled.trials],
         mode=mode_of(json_mode=json_mode, agent=agent),
         fields=_fields(fields) or _VERDICT_COLUMNS,
         title=f"verdict: {settled.stream}",
     )
+    if settled.note:
+        print(settled.note, file=sys.stderr)
 
 
 def _exit_on_mission_error(error: MissionError) -> NoReturn:

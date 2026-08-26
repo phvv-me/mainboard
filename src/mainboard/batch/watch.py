@@ -7,7 +7,7 @@
 # the sweep rather than reimplementing it: a batch nobody is watching still settles, and a batch
 # somebody is watching settles the same way.
 
-from datetime import datetime
+from datetime import UTC, datetime
 from time import sleep
 from typing import TYPE_CHECKING
 
@@ -294,8 +294,16 @@ class Watch:
 
 
 def _epoch(stamp: str) -> float:
-    """An ISO-8601 instant as epoch seconds, the footing an observation is recorded on."""
-    return datetime.fromisoformat(stamp).timestamp()
+    """An ISO-8601 instant as epoch seconds, the footing an observation is recorded on.
+
+    A stamp carrying no offset is read as UTC rather than as this machine's local clock, the same
+    pinning the billing cycle already does. Every line this workspace writes is aware, so the
+    naive case is a receipts file some other tool appended to, or an older one; reading it locally
+    would shift a setup time by the machine's whole UTC offset and teach every later estimate a
+    wait that never happened. Nine hours of imaginary provisioning is worse than none.
+    """
+    read = datetime.fromisoformat(stamp)
+    return (read if read.tzinfo else read.replace(tzinfo=UTC)).timestamp()
 
 
 def _money(event: Event | None, field: str) -> float:

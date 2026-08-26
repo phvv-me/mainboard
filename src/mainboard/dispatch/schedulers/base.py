@@ -182,6 +182,8 @@ def log_excerpt(log: str, limit: int = 10) -> list[str]:
 
 def short_reason(verdict: str, exit_code: int | None) -> str:
     """A short, network-free cause for a non-ok terminal verdict, from its cached state alone."""
+    if verdict == vocabulary.CANCELLED:
+        return "cancelled (stopped on purpose, not by the job or the queue)"
     if verdict == vocabulary.VANISHED:
         return "vanished (the scheduler no longer remembers the job)"
     if (known := exit_reason(exit_code)) is not None:

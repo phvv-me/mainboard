@@ -307,6 +307,8 @@ def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Relayed]:
         (Survey, "paths", surveyed()),
         (Monitor, "once", swept()),
         (Monitor, "watch", iter([swept(), swept()])),
+        (Verdicts, "cancel", settled()),
+        (Verdicts, "captured", "the captured tail\n"),
         (Verdicts, "of", settled()),
         (Verdicts, "wait", settled()),
     ):
