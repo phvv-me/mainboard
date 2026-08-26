@@ -9,6 +9,23 @@ from .ledger import Ledger, SetupFit
 from .model import BillingModel
 
 
+def card(name: str) -> str:
+    """`name` as the one key a card is matched under, whoever wrote it.
+
+    The same GPU reaches this catalog under two spellings and both are correct where they are
+    written. A provider's own market answers `RTX 4090`, and that is what an imported or probed
+    offer carries, while a request spells the card the way that provider's search wants it, which
+    for Vast is `RTX_4090`. Matching those as plain strings priced every row naming a card at
+    $0.00 while a row that named none was quoted happily, and a zero for hardware the provider
+    will rent is worse than an error. So underscores read as spaces, runs of whitespace collapse,
+    and case is ignored, which is exactly the difference between the two spellings and nothing
+    more.
+
+    name: a card as a request, a manifest or an offer spells it.
+    """
+    return " ".join(name.replace("_", " ").split()).casefold()
+
+
 class Offer(FrozenModel):
     """One provider's terms for one piece of hardware in one region.
 
@@ -88,13 +105,13 @@ class Catalog:
     def offers(self, *, gpu: str = "", provider: str = "") -> list[Offer]:
         """Every offer matching the filters, hardware being the primary axis.
 
-        gpu: the hardware name, matched case-insensitively, empty for all.
+        gpu: the hardware name, matched on `card`, empty for all.
         provider: narrow to one provider kind, empty for all.
         """
         found = self.roster
         if gpu:
-            wanted = gpu.lower()
-            found = [offer for offer in found if offer.gpu.lower() == wanted]
+            wanted = card(gpu)
+            found = [offer for offer in found if card(offer.gpu) == wanted]
         if provider:
             found = [offer for offer in found if offer.provider == provider]
         return list(found)

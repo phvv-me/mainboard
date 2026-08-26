@@ -8,7 +8,7 @@ from mainboard.costs import Catalog, Ledger, Observation, Offer
 from mainboard.dispatch import HostSetup
 from mainboard.dispatch.backends import Market, ProviderBackend
 from mainboard.dispatch.vocabulary import JobState, Resources
-from mainboard.manifest import HostProfile
+from mainboard.manifest import Defaults, HostProfile
 from mainboard.probe import HostFacts
 
 from .support import declaring, spec
@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 
 # One rented offer and one owned target, the two halves of any real fleet.
 _OFFER = Offer(provider="vast", gpu="RTX 4090", rate_usd_hr=0.36, granularity_s=1)
+# The same card as a provider's own market spells it back, which is what the roster ends up
+# holding whoever wrote it, and never how a request for that card is spelled.
+_SPELLED = Offer(provider="quoting", gpu="RTX 4090", rate_usd_hr=0.36)
 
 
 def priced(board: Board, ledger: Ledger, **job: str | int) -> JobEstimate:
@@ -168,7 +171,9 @@ def test_a_roster_that_already_prices_the_card_costs_no_round_trip_and_says_it_i
             MissionError("set VAST_API_KEY"), [], "VAST_API_KEY", id="a-provider-unkeyed"
         ),
         pytest.param(OSError("no route to host"), [], "no route", id="a-provider-unreachable"),
-        pytest.param(None, [], "no offer right now", id="a-market-with-nothing-matching"),
+        pytest.param(
+            None, [], "quoting quotes no A100 offer right now", id="a-market-with-nothing-matching"
+        ),
     ],
 )
 def test_a_price_nobody_could_get_says_why_instead_of_reading_as_free(
@@ -181,6 +186,68 @@ def test_a_price_nobody_could_get_says_why_instead_of_reading_as_free(
     row = quoted(lab, tmp_path, catalog=Catalog())
     assert row.rate_usd_hr == 0.0
     assert row.rate_source.startswith("unpriced: ") and said in row.rate_source
+
+
+@pytest.mark.parametrize(
+    ("stored", "market", "source", "asked"),
+    [
+        pytest.param(
+            [_SPELLED], [], "catalog", [], id="a-card-the-roster-already-priced-under-a-space"
+        ),
+        pytest.param(
+            [], [_SPELLED], "live", [("RTX_4090", 0)], id="a-card-the-market-just-quoted-back"
+        ),
+    ],
+)
+def test_a_card_prices_the_same_however_the_request_spells_it(
+    lab: Board,
+    tmp_path: Path,
+    stored: list[Offer],
+    market: list[Offer],
+    source: str,
+    asked: list[tuple[str, int]],
+) -> None:
+    """The silent zero this fix closes: two correct spellings of one card that never matched.
+
+    A request spells a card the way its provider's own search wants it (`RTX_4090`) and every
+    market answers in the provider's display spelling (`RTX 4090`), which is what the roster then
+    holds. Matching those as plain strings priced the row at $0.00 for hardware Vast rents all
+    day, while a row that named no card at all was quoted happily, so the table read as free
+    exactly where a reader was making a paid decision.
+    """
+    Quoting.asked = []
+    Quoting.fault = None
+    Quoting.offers = market
+    declaring(lab, "rented", HostProfile(kind="quoting"))
+    estimator = Estimator(lab, catalog=Catalog(tuple(stored)), ledger=Ledger(tmp_path))
+    rental = spec(
+        {"target": "rented", "command": "true", "gpu_name": "RTX_4090", "runtime_s": 3600}
+    )
+    row = estimator.row(rental.jobs[0], TransferSet(job="rented-1", target="rented"))
+    assert (row.rate_usd_hr, row.rate_source) == (0.36, source)
+    assert row.expected_usd == pytest.approx(0.36 * (3600 + 300) / 3600)
+    # The provider's own search reads the request's spelling, so only the roster lookup normalizes.
+    assert Quoting.asked == asked
+
+
+def test_a_row_naming_no_card_is_priced_for_the_one_its_host_will_actually_rent(
+    lab: Board, tmp_path: Path
+) -> None:
+    """A row that names no card does not rent none: its dispatch resolves the profile default.
+
+    Pricing it against the whole roster quoted whichever card happened to be cheapest in the
+    file, which is a number about some other machine entirely.
+    """
+    Quoting.asked = []
+    Quoting.fault = None
+    Quoting.offers = []
+    profile = HostProfile(kind="quoting", defaults=Defaults(gpu_name="RTX 4090"))
+    declaring(lab, "rented", profile)
+    cheaper = Offer(provider="quoting", gpu="T4", rate_usd_hr=0.05)
+    estimator = Estimator(lab, catalog=Catalog((cheaper, _SPELLED)), ledger=Ledger(tmp_path))
+    rental = spec({"target": "rented", "command": "true", "runtime_s": 3600})
+    row = estimator.row(rental.jobs[0], TransferSet(job="rented-1", target="rented"))
+    assert (row.rate_usd_hr, row.rate_source, row.hardware) == (0.36, "catalog", "1x RTX 4090")
 
 
 class Marketless(ProviderBackend):
@@ -205,7 +272,8 @@ def test_a_provider_that_publishes_no_market_leaves_the_roster_alone_and_says_it
     estimator = Estimator(lab, catalog=Catalog(), ledger=Ledger(tmp_path))
     rental = spec({"target": "silent", "command": "true", "gpu_name": "H100"})
     row = estimator.row(rental.jobs[0], TransferSet(job="silent-1", target="silent"))
-    assert (row.rate_usd_hr, row.rate_source) == (0.0, "unpriced: no offer right now")
+    assert row.rate_usd_hr == 0.0
+    assert row.rate_source == "unpriced: marketless quotes no H100 offer right now"
     assert estimator.catalog.roster == []
 
 

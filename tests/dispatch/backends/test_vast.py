@@ -34,13 +34,17 @@ _BASE_QUERY = {
     "limit": 32,
 }
 
-# `actual_status` values that mean the container has not finished, plus one Vast has not invented
-# yet and a row carrying no status at all, both of which must read as unknown rather than crash.
-_LIVE = {
-    "created": "running",
-    "loading": "running",
+# `actual_status` values that mean the container has not run the command yet, so no marker can
+# exist and the row alone answers.
+_PENDING = ("created", "loading")
+# `actual_status` values whose container has been up, so the log is asked for a marker first.
+# Without one, a container still up keeps waiting, while anything else (a state Vast has not
+# invented yet, a row carrying none, or a container that stopped before the wrapper spoke) is
+# unknown rather than a crash or a clean run.
+_STARTED = {
     "running": "running",
     "stopping": "running",
+    "exited": "unknown",
     "mystery": "unknown",
     "": "unknown",
 }
@@ -286,15 +290,50 @@ def test_submit_narrows_the_search_and_the_rental_to_what_the_request_asks_for()
     assert create["image"] == "pytorch/pytorch:latest"
 
 
-def test_state_of_a_container_that_has_not_finished_costs_no_log_fetch() -> None:
-    """A live status, and one Vast adds later, are both answered from the instance row alone."""
+def test_state_of_a_container_that_has_not_started_the_command_costs_no_log_fetch() -> None:
+    """A container still being created has no marker to read, so the instance row alone answers."""
     read = {}
-    for status in _LIVE:
+    for status in _PENDING:
         backend = vast_backend({"instances": {"id": 7, "actual_status": status}})
         state = backend.state("7")
         read[status] = (state.state, state.verdict, state.exit_code)
         assert backend.transport.urls == [f"{_ROOT}/instances/7/?owner=me"]
-    assert read == {status: (status, verdict, None) for status, verdict in _LIVE.items()}
+    assert read == {status: (status, "running", None) for status in _PENDING}
+
+
+def test_a_container_that_has_been_up_is_asked_for_a_marker_before_its_status_is_read() -> None:
+    """The marker is the only thing that knows the command ended, so it is asked for first.
+
+    Without one the container's own status decides, and it decides only between waiting longer
+    and admitting the run is unreadable. A clean container stop is never read as a clean run.
+    """
+    read = {}
+    for status in _STARTED:
+        backend = terminal_backend(status, log="epoch 1\nepoch 2\n")
+        state = backend.state("7")
+        read[status] = (state.state, state.verdict, state.exit_code)
+        assert backend.transport.urls == [
+            f"{_ROOT}/instances/7/?owner=me",
+            f"{_ROOT}/instances/request_logs/7/",
+            "https://s3.example/logs/7.log",
+        ]
+    assert read == {status: (status, verdict, None) for status, verdict in _STARTED.items()}
+
+
+def test_a_container_vast_restarted_settles_on_the_marker_the_finished_command_left() -> None:
+    """The money leak: Vast restarts the container it exited, so a finished run reads `running`.
+
+    An instance is held at its intended status, so the exited container comes back up and the
+    command runs again. A sweep that believed that status never reached a terminal verdict, never
+    cancelled, and left the meter running on work that was already done (eight instances still
+    billing after a campaign had finished, $2.35 against $0.65 expected, 2026-08-26). The last
+    marker is what says the command ended, however many times the container has come back.
+    """
+    backend = terminal_backend(
+        "running", log=f"{_MARKER}0\nrestarted\ntraining done\n{_MARKER}0\n"
+    )
+    state = backend.state("7")
+    assert (state.state, state.exit_code, state.verdict) == ("running", 0, "ok")
 
 
 def test_state_of_a_terminal_container_reports_the_process_exit_code() -> None:

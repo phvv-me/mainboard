@@ -119,10 +119,20 @@ class SshTransport(FrozenModel):
         )
 
     def run(self, command: tuple[str, ...], host: str, *, operation: str) -> str:
-        """Run one SSH transfer in a killable process group and surface a typed failure."""
+        """Run one SSH transfer in a killable process group and surface a typed failure.
+
+        Its stdin is `/dev/null`, which is `ssh -n` spelled where every ssh and scp this policy
+        runs inherits it. An ssh client left on the caller's own stdin reads it greedily to
+        forward to the far side, and every verb here opens a connection before it does anything,
+        so `while read handle; do mainboard submit ...; done < handles` lost the rest of the
+        file to the first submit's connection warm-up. Nothing this policy runs wants a caller's
+        input: the warm-up runs `true`, scp moves a file, and a real remote command rides
+        plumbum's own session, whose stdin is a pipe it writes the command into.
+        """
         try:
             process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh/scp argv built from typed fields, not untrusted input since=2026-08-16
                 command,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

@@ -15,6 +15,16 @@
 # next estimate is free. A live offer is one that is rentable right now, which is also what turns
 # a catalog price into a real one, and `rate_source` says on every row which of the two a reader
 # is looking at. Reading a market rents nothing.
+#
+# That fix left one silent zero behind, and it is fixed here too. Every lookup was keyed on the
+# row's literal `gpu_name`, which is the wrong key twice over: a row naming no card was priced
+# against the cheapest offer in the whole roster rather than against the profile default it will
+# actually rent, and a row naming one asked the roster under the request's own spelling
+# (`RTX_4090`) while the market had answered in the provider's (`RTX 4090`), so it matched
+# nothing and came back free. Both keys are now the card the dispatch will really rent, matched
+# under `costs.catalog.card`, and a row that still cannot be priced says so with the card it
+# could not price rather than printing $0.00 (found 2026-08-26 by a Vast batch quoted at zero
+# for every card but the profile's own).
 
 from typing import TYPE_CHECKING
 
@@ -146,26 +156,26 @@ class Estimator:
         self.catalog = catalog if catalog is not None else Catalog.load(generated / _CATALOG)
         self.ledger = ledger if ledger is not None else Ledger(generated / _COSTS)
 
-    def hardware(self, job: BatchJob) -> str:
+    def hardware(self, job: BatchJob, *, card: str) -> str:
         """What `job` lands on: what onboarding recorded, else the hardware it asked to rent."""
         try:
             setup = self.board.dispatcher.cache.host(job.target)
         except LookupError:
-            return _requested(job)
-        return summary(setup.hardware) if setup.hardware else _requested(job)
+            return _requested(job, card)
+        return summary(setup.hardware) if setup.hardware else _requested(job, card)
 
-    def priced(self, job: BatchJob, *, kind: str) -> Quote | None:
-        """The cheapest quote the stored roster already makes for `job` on `kind`, else None."""
+    def priced(self, job: BatchJob, *, kind: str, card: str) -> Quote | None:
+        """The cheapest quote the stored roster already makes for `card` on `kind`, else None."""
         priced = self.catalog.quotes(
-            gpu=job.gpu_name,
+            gpu=card,
             run_s=job.runtime_s,
             ledger=self.ledger,
             default_setup_s=_UNFITTED_SETUP_S,
         )
         return next((quote for quote in priced if quote.offer.provider == kind), None)
 
-    def quote(self, job: BatchJob, *, kind: str) -> tuple[Quote | None, str]:
-        """The cheapest offer this provider makes for what `job` asks for, and where it came from.
+    def quote(self, job: BatchJob, *, kind: str, card: str) -> tuple[Quote | None, str]:
+        """The cheapest offer this provider makes for `card`, and where the price came from.
 
         Owned hardware has no offer and needs none: the machine is already paid for, so the row
         prices at zero and says `owned` rather than inventing a number for the column's sake.
@@ -174,24 +184,26 @@ class Estimator:
         roster is empty on every fresh workspace and a table of zeroes is worse than no table at
         all. What the market answers is kept, so only the first estimate of a given card pays for
         the round trip. A provider with no key, no route out or nothing matching is not a failure
-        here: the row carries the refusal in place of a price, which is what tells a reader the
-        zero means unknown.
+        here: the row carries the refusal in place of a price, and it names the card it could not
+        price, which is what tells a reader the zero means unknown rather than free.
         """
         backend = route(kind)
         if backend == "ssh-family":
             return None, "owned"
-        stored = self.priced(job, kind=kind)
+        stored = self.priced(job, kind=kind, card=card)
         if stored is not None:
             return stored, "catalog"
         try:
-            self.refresh(job, backend=backend)
+            self.refresh(job, backend=backend, card=card)
         except (MissionError, OSError, ValueError, KeyError) as unpriced:
             return None, f"unpriced: {unpriced}"
-        live = self.priced(job, kind=kind)
-        return (live, "live") if live is not None else (None, "unpriced: no offer right now")
+        live = self.priced(job, kind=kind, card=card)
+        if live is not None:
+            return live, "live"
+        return None, f"unpriced: {kind} quotes no {card or 'matching'} offer right now"
 
-    def refresh(self, job: BatchJob, *, backend: type[ProviderBackend]) -> None:
-        """Ask `backend`'s own market what `job`'s hardware rents for, and keep what it answers.
+    def refresh(self, job: BatchJob, *, backend: type[ProviderBackend], card: str) -> None:
+        """Ask `backend`'s own market what `card` rents for, and keep what it answers.
 
         The same read `mainboard compute` makes, which is the whole point: the survey and the
         estimate disagreed because one asked the provider and the other asked a file nothing
@@ -201,7 +213,7 @@ class Estimator:
         market = backend()
         if not isinstance(market, Market):
             return
-        offers = market.catalog(gpu_name=job.gpu_name, gpus=job.gpus)
+        offers = market.catalog(gpu_name=card, gpus=job.gpus)
         if not offers:
             return
         self.catalog.add(*offers)
@@ -210,19 +222,25 @@ class Estimator:
     def row(self, job: BatchJob, transfer: TransferSet) -> JobEstimate:
         """Price one job against its target's fitted behavior and whatever offer covers it.
 
+        Every price here is keyed on the card the dispatch will really rent, which for a row that
+        names none is the host profile's default, exactly as `Board.submit` resolves it. A row
+        naming no card is not a row that rents no card, and pricing one against the whole roster
+        quoted whatever was cheapest in the file rather than the machine the meter would read.
+
         The seconds and the dollars are rounded to what an estimate can actually claim. A
         fitted median carried to fifteen digits is false precision, and a reader budgeting
         against this table is deciding in cents.
         """
         profile = self.board.on(job.target).plan().profile
         key = platform(alias=job.target, kind=profile.kind)
-        fit = SetupFit.from_ledger(self.ledger, provider=key, gpu=job.gpu_name)
-        quote, source = self.quote(job, kind=profile.kind)
+        card = job.gpu_name or profile.defaults.gpu_name
+        fit = SetupFit.from_ledger(self.ledger, provider=key, gpu=card)
+        quote, source = self.quote(job, kind=profile.kind, card=card)
         return JobEstimate(
             job=job.name,
             target=job.target,
             kind=profile.kind,
-            hardware=self.hardware(job),
+            hardware=self.hardware(job, card=card),
             wire_bytes=transfer.wire_bytes,
             runtime_s=job.runtime_s,
             setup_p50_s=round(fit.p50_s if fit else _UNFITTED_SETUP_S, 2),
@@ -251,8 +269,12 @@ class Estimator:
         )
 
 
-def _requested(job: BatchJob) -> str:
-    """The hardware `job` asked for, as one line, empty when it asked for nothing in particular."""
-    if not job.gpus and not job.gpu_name:
+def _requested(job: BatchJob, card: str) -> str:
+    """The hardware `job` will rent, as one line, empty when it asked for nothing in particular.
+
+    job: the declared job, for the GPU count it asks for.
+    card: the resolved card, the job's own or the target profile's default.
+    """
+    if not job.gpus and not card:
         return ""
-    return f"{job.gpus or 1}x {job.gpu_name}".strip()
+    return f"{job.gpus or 1}x {card}".strip()

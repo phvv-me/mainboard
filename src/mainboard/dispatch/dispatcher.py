@@ -41,9 +41,17 @@ _VERDICT_EXITS = {"ok": 0, "failed": 1, "running": 2}
 
 
 def git(*args: str) -> str:
-    """Stripped stdout of a local `git` command (the dispatched run's provenance)."""
+    """Stripped stdout of a local `git` command (the dispatched run's provenance).
+
+    On `/dev/null` for the same reason every ssh this tool runs is: a dispatch is routinely
+    called from inside a shell loop reading handles, and a child left on the caller's stdin can
+    eat the rest of that loop's input. Nothing asked for here reads any.
+    """
     argv = ["git", *args]  # fixed local invocation off PATH, not untrusted input
-    return subprocess.run(argv, capture_output=True, text=True, check=False).stdout.strip()  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-16
+    read = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-16
+        argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
+    )
+    return read.stdout.strip()
 
 
 class Handle(FrozenModel):

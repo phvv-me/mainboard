@@ -56,11 +56,13 @@ _LOG_TAIL_LINES = 2000
 # many times, this many seconds apart, before the url is handed to the caller instead.
 _LOG_ATTEMPTS = 20
 _LOG_POLL_SECONDS = 1.0
-# `actual_status` values that mean the container has not finished yet, and the ones Vast's own
-# docs call terminal. A status in neither set (a new Vast state) reads as "unknown" rather than
-# crashing, and never costs a log fetch.
+# `actual_status` values that mean the container has not run the command yet, so no marker can
+# exist and asking for a log costs the upload poll for nothing.
+_PENDING_STATUSES = frozenset({"created", "loading"})
+# `actual_status` values that mean the container is still up. A status in neither this set nor
+# `_PENDING_STATUSES` (a new Vast state, or a row carrying none) reads as "unknown" once the log
+# has failed to say how the command ended, rather than crashing.
 _LIVE_STATUSES = frozenset({"created", "loading", "running", "stopping"})
-_TERMINAL_STATUSES = frozenset({"exited", "stopped", "offline", "error"})
 # The card a price sample quotes. One card, always listed in volume, so the sample reads as a
 # real market rate rather than a quote for hardware nobody rents today.
 _SAMPLE_GPU = "RTX 4090"
@@ -113,9 +115,11 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
 
     A finished command does not end the rental. Vast keeps an instance at its `intended_status`,
     so it restarts the exited container and the command runs again, appending another sentinel
-    (verified live 2026-08-19, thirteen restarts in five minutes). `state` reading the last marker
-    is what keeps the verdict right through that, and `cancel` is what actually stops the meter,
-    so a caller that reaches a terminal verdict must still cancel.
+    (verified live 2026-08-19, thirteen restarts in five minutes). That is why `state` asks the
+    log for a marker before it reads the container's status at all: a restarted container says
+    `running` about a command that already ended, and only the marker knows better. `cancel` is
+    then what actually stops the meter, so a caller that reaches a terminal verdict must still
+    cancel, which is exactly what the durable sweep does with one.
 
     Stateless between calls: every method addresses an instance by the id `submit` returned.
 
@@ -343,17 +347,31 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         )
 
     def state(self, handle: str) -> JobState:
+        """`handle`'s verdict, taken from the command's own marker ahead of the container status.
+
+        The marker decides and the container only says whether to keep waiting, because the two
+        disagree by design. Vast holds an instance at its intended status, so it restarts the
+        container the command exited from and runs the command again, which means a run that
+        finished cleanly reads `running` on nearly every poll after it ended. Believing that
+        status is how a sweep never reaches a terminal verdict, never cancels, and lets the meter
+        run on work that was already over (eight instances still billing after a campaign had
+        finished, $2.35 against $0.65 expected, 2026-08-26). So a log carrying the wrapper's
+        marker is a command that has already ended, whatever the container is doing now.
+
+        The marker therefore costs one log fetch per poll of a container that has been up, which
+        is the only signal a rented machine gives that its work is over, and is not asked of a
+        container that has not started one yet.
+        """
         instance = self.instance(handle)
         if not instance:
             return JobState(handle=handle, verdict="vanished")
         status = str(instance.get("actual_status") or "")
-        if status in _LIVE_STATUSES:
+        if status in _PENDING_STATUSES:
             return JobState(handle=handle, state=status, verdict="running")
-        if status not in _TERMINAL_STATUSES:
-            return JobState(handle=handle, state=status, verdict="unknown")
         code = self.exit_code(handle)
         if code is None:
-            return JobState(handle=handle, state=status, verdict="unknown")
+            unfinished = "running" if status in _LIVE_STATUSES else "unknown"
+            return JobState(handle=handle, state=status, verdict=unfinished)
         return JobState(
             handle=handle,
             state=status,

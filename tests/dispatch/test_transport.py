@@ -153,6 +153,30 @@ def test_a_timed_out_transfer_takes_its_whole_process_group_down_with_it(
     assert process.wait_calls == [2.0]
 
 
+def test_every_ssh_this_policy_runs_reads_devnull_and_never_the_callers_own_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A submit inside a shell loop used to eat the loop's remaining input.
+
+    An ssh client left on its caller's stdin reads it greedily to forward to the far side, and
+    every remote verb warms a connection before it does anything, so
+    `while read handle; do mainboard submit ...; done < handles` fed the first submit's warm-up
+    the rest of the file and the loop ran once. Nothing here wants a caller's input: the warm-up
+    runs `true`, scp moves a file, and a real remote command rides plumbum's own piped session.
+    """
+    opened: list[dict[str, object]] = []
+
+    def record(*args: object, **kwargs: object) -> _FakeProcess:
+        opened.append(kwargs)
+        return _FakeProcess(stdout="ok\n")
+
+    monkeypatch.setattr(subprocess, "Popen", record)
+    policy = SshTransport()
+    policy.warm("gold")
+    policy.copy("job.sh", destination="gold:/repo/job.sh", host="gold")
+    assert [call["stdin"] for call in opened] == [subprocess.DEVNULL, subprocess.DEVNULL]
+
+
 def test_terminate_escalates_to_sigkill_and_tolerates_a_group_already_gone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

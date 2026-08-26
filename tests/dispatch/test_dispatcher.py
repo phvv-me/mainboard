@@ -188,10 +188,16 @@ def test_submit_records_the_run_with_the_git_provenance_it_was_dispatched_from(
 
 
 def test_git_reports_a_local_commands_stripped_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        dispatch_module.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": " abc \n"})()
-    )
+    """And reads no stdin, since a dispatch is routinely called from inside a shell read loop."""
+    asked: list[dict[str, object]] = []
+
+    def record(*args: object, **kwargs: object) -> object:
+        asked.append(kwargs)
+        return type("R", (), {"stdout": " abc \n"})()
+
+    monkeypatch.setattr(dispatch_module.subprocess, "run", record)
     assert dispatch_module.git("rev-parse", "HEAD") == "abc"
+    assert [call["stdin"] for call in asked] == [dispatch_module.subprocess.DEVNULL]
 
 
 def test_submit_refuses_a_broken_environment_and_names_the_host_a_scheduler_rejected(

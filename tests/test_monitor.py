@@ -64,17 +64,17 @@ class Instance(HpcAiBackend):
 def rented(status: str = "exited", *, exit_code: int = 0) -> list[Reply]:
     """The replies one Vast post-mortem takes, the instance row, its log url, and the log.
 
-    A settled run reads that log twice, once for the exit sentinel the verdict comes from and
-    once to capture the output before the release destroys the instance, so a terminal status
-    queues the upload pair a second time.
+    Any container that has been up costs a log fetch, since the wrapper's marker is the only
+    thing that knows the command ended and the container's own status does not. A run that
+    settles on that marker then reads the log a second time, to capture the output before the
+    release destroys the instance, so the upload pair is queued twice.
     """
     log = f"training done\nmainboard-exit:{exit_code}\n"
     upload: list[Reply] = [{"result_url": "https://s3.example/logs/7.log"}, log]
-    settling = status not in {"created", "loading", "running", "stopping"}
+    pending = status in {"created", "loading"}
     return [
         {"instances": {"id": 7, "actual_status": status}},
-        *upload,
-        *(upload if settling else []),
+        *([] if pending else [*upload, *upload]),
     ]
 
 
@@ -333,6 +333,47 @@ def test_a_finished_rental_is_settled_and_then_ended(
     assert [item.handle for item in report.finished] == ["13"]
     assert [call.full_url for call in backend.calls[-len(ended) :]] == ended
     assert board.dispatcher.cache.run("13").reported == "ok"
+
+
+def test_a_rental_vast_restarted_settles_on_its_marker_and_stops_billing(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The money leak end to end: a finished command whose container Vast brought straight back.
+
+    An instance is held at its intended status, so the container the command exited from restarts
+    and reads `running` again. Every sweep believed it, so the run never settled, the rental was
+    never cancelled, and eight instances were still billing after their campaign had finished
+    ($2.35 against $0.65 expected, 2026-08-26). The marker settles it and the release destroys it.
+    """
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    seed("23", target="rented", kind=Rented.name)
+    Rented.replies = [*rented(status="running"), {"success": True}]
+    assert [item.handle for item in board.monitor().once().finished] == ["23"]
+    assert (Rented.calls[-1].full_url, Rented.calls[-1].get_method()) == (
+        "https://console.vast.ai/api/v0/instances/23/",
+        "DELETE",
+    )
+    assert board.dispatcher.cache.run("23").reported == "ok"
+
+
+def test_the_cancel_verb_destroys_the_rental_rather_than_leaving_it_stopped(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every path that lets a rental go reaches one call, and that call has to be the destroy.
+
+    A stopped Vast instance is not a released one: it still holds its machine and still bills for
+    the disk it sits on. The verb kills through the backend and then releases, which is the same
+    idempotent destroy twice by design, since a cancel killed between the two must repeat rather
+    than leave the meter running.
+    """
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    seed("24", target="rented", kind=Rented.name)
+    Rented.replies = [{"success": True}, {"success": True}]
+    settled = board.verdicts().cancel("24")
+    assert settled.trials[0].verdict == "cancelled"
+    assert [(call.full_url, call.get_method()) for call in Rented.calls] == [
+        ("https://console.vast.ai/api/v0/instances/24/", "DELETE")
+    ] * 2
 
 
 def test_a_finished_scheduler_job_is_never_cancelled(
