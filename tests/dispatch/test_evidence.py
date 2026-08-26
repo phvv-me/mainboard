@@ -141,6 +141,30 @@ def test_the_shell_that_really_runs_on_the_instance_frames_a_receipt_back_whole(
     assert receipts_in(emitted) == (receipt,)
 
 
+@pytest.mark.parametrize("code", [0, 7], ids=["a-command-that-succeeded", "one-that-failed"])
+def test_an_image_missing_the_tools_costs_its_receipts_and_never_the_jobs_exit_code(code: int):
+    """A job script runs under `set -e`, where a failing command in an `if` body is not exempt.
+
+    So a minimal container without `fold` would have taken the whole script down inside the
+    framing, before the line that reports what the command itself did. Evidence is worth a great
+    deal and never worth changing the outcome it is evidence of.
+    """
+    script = f"""set -euo pipefail
+{staging()}
+printf '%s\\n' '{{"trial_receipt": {{"run_id": "r1"}}}}' >> "${RECEIPTS_VAR}"
+status=0
+bash -c 'exit {code}' || status=$?
+PATH=/nonexistent
+{framing()}
+exit $status
+"""
+    # `base64`, `tr`, `fold` and `sed` are the four externals here, so emptying PATH after the
+    # command has run is exactly an image that never carried them.
+    bare = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    assert bare.returncode == code
+    assert receipts_in(bare.stdout) == ()
+
+
 def test_a_run_that_wrote_no_receipts_leaves_an_ordinary_log_exactly_as_it_was():
     """The framing must be invisible to every command that never writes a trial."""
     script = f'{staging()}\necho "epoch 1 loss 0.4"\n{framing()}\n'

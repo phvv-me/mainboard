@@ -69,12 +69,22 @@ def framing() -> str:
     newline, so `fold` ends its last chunk unterminated and the closing marker lands glued to the
     end of it, which makes the block unreadable and silently loses every receipt in it. Feeding
     the newline in before the fold is what keeps the last chunk a line of its own.
+
+    So is the `|| true`. A job script runs under `set -euo pipefail`, and a failing command in an
+    `if` body is not exempt from that, so an image missing one of these six tools would take the
+    whole script down here, before the line that reports the command's own exit code. Evidence
+    is worth a great deal and never worth changing the outcome it is evidence of, so the pipeline
+    absorbs its own failure and the block simply does not arrive.
+
+    The guard sits on the pipeline rather than around the whole statement on purpose: a caller
+    redirecting this into a log file redirects the `if`, and a trailing `|| true` outside it
+    would capture that redirect instead.
     """
     file = f'"${RECEIPTS_VAR}"'
     return (
         f"if [ -s {file} ]; then echo {_BEGIN}; "
         f'{{ base64 < {file} | tr -d "\\n"; echo; }} | fold -w {_CHUNK_WIDTH} '
-        f"| sed 's/^/{_CHUNK_MARKER}/'; echo {_END}; fi"
+        f"| sed 's/^/{_CHUNK_MARKER}/' || true; echo {_END}; fi"
     )
 
 
