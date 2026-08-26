@@ -64,6 +64,9 @@ class TrialVerdict(FrozenModel):
     detail: where results landed, why it failed, or a trial receipt's own reason.
     gates: the gate sweep summarized, empty when the receipts carry none.
     producer: the harness that stamped a trial receipt, empty for event streams.
+    contended: what the machine was already doing when this run started, empty when it attested
+        an idle node and empty when nothing attested at all. A cell here is the difference
+        between a measurement and a measurement taken while another job held the GPU.
     """
 
     job: str
@@ -76,6 +79,7 @@ class TrialVerdict(FrozenModel):
     detail: str = ""
     gates: str = ""
     producer: str = ""
+    contended: str = ""
 
     @property
     def code(self) -> int:
@@ -204,6 +208,7 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
     states = latest(recorded, Topic.STATE)
     settled = latest(recorded, Topic.SETTLED)
     refused = latest(recorded, Topic.REFUSED)
+    attested = latest(recorded, Topic.ATTESTED)
     jobs = list(dict.fromkeys([*submitted, *refused]))
     return tuple(
         _joined(
@@ -212,6 +217,7 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
             state=states.get(job),
             ended=settled.get(job),
             refusal=refused.get(job),
+            attestation=attested.get(job),
         )
         for job in jobs
     )
@@ -288,6 +294,21 @@ def registered(record: RunRecord, *, job: str) -> TrialVerdict:
     )
 
 
+def contention(attestation: Event | None) -> str:
+    """What a job's attestation says it started under, empty for an idle node or no attestation.
+
+    Only the unwelcome half is rendered, since a clean measurement's whole point is that there is
+    nothing to say about it, and a column full of the word `idle` would bury the one row that
+    matters. The busy figure rides along so a reader can weigh it rather than take the flag's
+    word for it.
+
+    attestation: the run's `job.attested` line, None when nothing attested.
+    """
+    if attestation is None or attestation.data.get("idle"):
+        return ""
+    return f"gpu {attestation.data.get('gpu_pct', 0)}% busy at start"
+
+
 def _joined(
     job: str,
     *,
@@ -295,16 +316,20 @@ def _joined(
     state: Event | None,
     ended: Event | None,
     refusal: Event | None,
+    attestation: Event | None = None,
 ) -> TrialVerdict:
     """One job's row folded from its latest line per topic.
 
     A settled line wins the verdict, a state line stands in while the job flies, and a refusal
     is terminal in its own words. A job submitted again after settling compares handles, so a
-    stale settlement never silences the run of it that is still going.
+    stale settlement never silences the run of it that is still going. An attestation is carried
+    onto every row the run has, since what the machine was doing at the start is as true of the
+    finished measurement as it was of the running one.
     """
     handle = str(submitted.data.get("handle", "")) if submitted else ""
     target = str(submitted.data.get("target", "")) if submitted else ""
     node = str(submitted.data.get("node", "")) if submitted else ""
+    contended = contention(attestation)
     if submitted is None and refusal is not None:
         return TrialVerdict(
             job=job,
@@ -325,6 +350,7 @@ def _joined(
             verdict=str(ended.data.get("verdict", "")),
             exit_code=code if isinstance(code, int) else None,
             detail=str(ended.data.get("detail", "")),
+            contended=contended,
         )
     return TrialVerdict(
         job=job,
@@ -333,4 +359,5 @@ def _joined(
         node=node,
         state=current,
         verdict=verdict or vocabulary.RUNNING,
+        contended=contended,
     )

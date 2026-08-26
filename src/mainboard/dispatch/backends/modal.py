@@ -29,6 +29,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 from ...core.errors import MissionError
+from ..evidence import framing, staging
 from ..jobs.spec import walltime_seconds
 from ..vocabulary import JobState
 from .base import (
@@ -235,8 +236,11 @@ class ModalBackend(ProviderBackend, Account, LogSource):
             kwargs["timeout"] = walltime_seconds(resources.walltime)
         # The command IS the sandbox entrypoint, so the sandbox lifetime, exit code,
         # and stdout are the job's own; a detached exec would leave the sandbox idling
-        # as running forever with empty logs (found by the first live submit).
-        sandbox = modal.Sandbox.create("bash", "-c", command, **kwargs)
+        # as running forever with empty logs (found by the first live submit). The command's
+        # status is captured and re-raised as the entrypoint's, so framing the receipts back
+        # after it costs the sandbox none of its own exit code.
+        script = f"{staging()}\n{command}\nstatus=$?\n{framing()}\nexit $status"
+        sandbox = modal.Sandbox.create("bash", "-c", script, **kwargs)
         return str(sandbox.object_id)
 
     @staticmethod

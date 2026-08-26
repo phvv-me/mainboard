@@ -18,6 +18,7 @@ from urllib.request import Request
 from uuid import uuid4
 
 from ...core.errors import MissionError
+from ..evidence import framing, staging
 from ..vocabulary import JobState
 from .base import (
     Account,
@@ -244,8 +245,14 @@ class HpcAiBackend(ProviderBackend, Account):
         `delete` address the rental by; the `name` is ours and is never an address.
         """
         require_budget(resources)
+        # The command's own status is captured before anything else runs, since the framing
+        # below would otherwise be what `$?` reports. Receipts are framed into the same captured
+        # log the sentinel pair already writes, so whoever reads that file by hand gets the
+        # trials as well as the output.
         init_script = (
-            f"mkdir -p {_SENTINEL_DIR}\n{command} > {_LOG_PATH} 2>&1\necho $? > {_EXIT_PATH}\n"
+            f"mkdir -p {_SENTINEL_DIR}\n{staging()}\n"
+            f"{{ {command}\n}} > {_LOG_PATH} 2>&1\nstatus=$?\n"
+            f"{framing()} >> {_LOG_PATH}\necho $status > {_EXIT_PATH}\n"
         )
         payload = self.request(
             "POST",

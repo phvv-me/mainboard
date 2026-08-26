@@ -295,6 +295,7 @@ def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Relayed]:
         (Board, "run", 0),
         (Board, "submit", SimpleNamespace(handle=_HANDLE)),
         (Board, "install", HostSetup(host="gold", root="/repo", installer="uv")),
+        (Board, "attest", None),
         (Board, "shell", None),
         (Board, "interact", None),
         (Board, "facts", HostFacts(schema_version=1, hostname="box")),

@@ -135,7 +135,9 @@ def test_submitting_returns_the_job_id_qsub_printed_or_refuses_with_its_output(
         remote, "/repo", script="job.sh", args=(), resources=Resources(queue="short-g")
     )
     assert submitted == handle
-    assert remote.calls[-1] == ["bash", "-lc", "qsub -q short-g job.sh"]
+    # qsub is invoked from the workspace root so the workspace-relative script path resolves and
+    # PBS_O_WORKDIR (which the generated script cds back to) is the root, not the login home.
+    assert remote.calls[-1] == ["bash", "-lc", "cd /repo && qsub -q short-g job.sh"]
     assert Pbs._extract_job_id("no leading digits here") == "no leading digits here"
 
 

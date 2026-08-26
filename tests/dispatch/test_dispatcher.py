@@ -144,7 +144,7 @@ def test_run_containerized_wraps_the_command_via_the_builder_or_refuses_without_
     )
     [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
     text = (workdir / script).read_text()
-    assert text.splitlines()[-1] == "apptainer exec image.sif bash -c 'python -m foo'"
+    assert "apptainer exec image.sif bash -c 'python -m foo' || status=$?" in text
 
 
 def test_submit_admits_the_request_before_a_single_ssh_connection(

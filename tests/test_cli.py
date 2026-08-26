@@ -104,6 +104,11 @@ _RESOURCES = {
             ("wait", "", ("4242",), {"host": "", "timeout": 60.0, "interval": 5.0}),
         ),
         (["verdict", "smoke-1"], ("of", "", ("smoke-1",), {"host": ""})),
+        (["attest", "smoke-1"], ("attest", "local", ("smoke-1",), {"job": "smoke-1"})),
+        (
+            ["attest", "smoke-1", "--job", "gold-1"],
+            ("attest", "local", ("smoke-1",), {"job": "gold-1"}),
+        ),
     ],
     ids=[
         "run",
@@ -123,6 +128,8 @@ _RESOURCES = {
         "facts",
         "wait",
         "verdict",
+        "attest",
+        "attest a named job",
     ],
 )
 def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translated(
@@ -140,6 +147,31 @@ def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translat
     with pytest.raises(SystemExit, match="0"):
         build(depot)(argv)
     assert relayed == [expected]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(
+            ["submit", "--on", _MIYABI_G, "--walltim", "01:00:00", "--", "python", "x"],
+            id="a-misspelled-option-before-the-delimiter",
+        ),
+        pytest.param(
+            ["run", "--on", "gold", "--enve", "serving", "--", "true"],
+            id="an-option-this-cli-never-had",
+        ),
+    ],
+)
+def test_an_option_this_cli_does_not_know_is_refused_by_name_not_folded_into_the_command(
+    depot: Path, relayed: Sequence[Relayed], argv: list[str]
+) -> None:
+    """An unknown flag used to be appended to the user's command and fail on the host minutes
+    later, which cost a campaign four jobs. It is a parse-time refusal naming the option instead.
+    """
+    with pytest.raises(SystemExit) as refused:
+        build(depot)(argv)
+    assert refused.value.code != 0
+    assert relayed == []
 
 
 @pytest.mark.parametrize("flag", ["--version", "--help", "-h"], ids=["--version", "--help", "-h"])
@@ -212,25 +244,26 @@ def test_submit_prints_the_bare_handle_unless_a_record_was_asked_for(
                 rate_usd_hr=0.31,
                 expected_usd=0.05,
                 p90_usd=0.08,
+                rate_source="live",
             ),
             "n",
             False,
             False,
-            "$0.31/hr",
+            "$0.31/hr (live)",
         ),
         (
-            JobEstimate(job="j", target=_MIYABI_G, kind="pbs"),
+            JobEstimate(job="j", target=_MIYABI_G, kind="pbs", rate_source="owned"),
             "y",
             False,
             True,
-            "owned hardware",
+            "owned, expected $0.00",
         ),
         (
-            JobEstimate(job="j", target=_MIYABI_G, kind="pbs"),
+            JobEstimate(job="j", target=_MIYABI_G, kind="pbs", rate_source="owned"),
             "never asked",
             True,
             True,
-            "owned hardware",
+            "owned, expected $0.00",
         ),
     ],
     ids=["declined, a rented target priced", "confirmed, owned hardware", "--yes skips the ask"],

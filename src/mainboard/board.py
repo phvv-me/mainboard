@@ -24,6 +24,7 @@ from .core.project import Project
 from .deps import Dependencies
 from .dispatch import vocabulary
 from .dispatch.backends.base import Credentials, Delivery, LogSource, ProviderBackend, route
+from .dispatch.commandline import vetted
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.jobs.spec import walltime_seconds
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
@@ -39,7 +40,16 @@ from .manifest.loading import load
 from .monitor import Monitor
 from .probe.snapshot import HostFacts
 from .scaffold import Scaffold
-from .tracking import Sampler, credential, host_env, is_batched, mirrored, sampling_line, streamed
+from .tracking import (
+    Sampler,
+    attesting_line,
+    credential,
+    host_env,
+    is_batched,
+    mirrored,
+    sampling_line,
+    streamed,
+)
 from .verdicts import Verdicts
 
 if TYPE_CHECKING:
@@ -269,6 +279,34 @@ class Board:
                 **({"node": node} if node else {}),
             },
         )
+
+    def attest(self, stream: str, *, job: str) -> None:
+        """Publish one attestation of this machine into `stream`'s receipts and return.
+
+        The synchronous, once-only twin of `samples`. It reads the machine it is called on, so a
+        dispatched job runs it on the node that will do the work rather than on the one that
+        dispatched it, which is the only reading that describes the measurement's conditions.
+
+        stream: the receipts stream the attestation belongs to.
+        job: the job inside that stream this reading describes.
+        """
+        Sampler(self.receipts(stream), stream=stream, job=job, interval=0.0).attest()
+
+    def attesting(self, tracked: tuple[str, str], *, root: str) -> str:
+        """The line this job's script runs to attest to its own machine, empty when none does.
+
+        A sibling of `sampling`, gated on the same declaration, since both are the workspace's
+        tracking lane reaching a host and neither is worth staging on a workspace that tracks
+        nothing. Unlike the sampler this one carries no interval, because an attestation happens
+        exactly once and its whole value is that it happens before the work.
+
+        tracked: the stream and job the attestation belongs to.
+        root: the workspace root on the host.
+        """
+        if not self.manifest.tracking.on:
+            return ""
+        stream, job = tracked
+        return attesting_line(root=root, stream=stream, job=job)
 
     def batch(self, spec: BatchSpec) -> Batch:
         """The declared batch over this workspace, ready to prepare, price and dispatch.
@@ -728,7 +766,6 @@ class Board:
         declared = self.manifest.tracking
         if not declared.on or declared.interval <= 0:
             return ""
-        self.stage(root)
         stream, job = tracked
         return sampling_line(
             root=root,
@@ -785,6 +822,10 @@ class Board:
         so it never appears in a process listing, and it is never logged. A machine holding no
         credential stages nothing, and its jobs queue offline for a later `wandb sync`.
 
+        Staged once per dispatch by `submit` rather than by each line that needs it, since
+        both the sampler and the attestation read the same file and two ssh round trips writing
+        the same bytes buy nothing.
+
         root: the workspace root on the host.
         """
         variable = credential(self.manifest.tracking)
@@ -838,6 +879,10 @@ class Board:
         fetch: a results path recorded for `Job.pull`.
         node: the ledger slug this run serves, carried into its record and receipts.
         """
+        # Before the plan, before the resources, and before any transport: a command a shell
+        # cannot run costs a scheduler round trip on owned hardware and a whole rental on a
+        # metered one, since a provider bills from boot and never learns the command never ran.
+        command = vetted(command)
         plan = self.plan(env=env, container=container)
         resources = self.resources(
             queue=queue,
@@ -873,6 +918,7 @@ class Board:
             )
         else:
             root = self.remote_root()
+            self.stage(root)
             run = Job(
                 self,
                 self.dispatcher.run(
@@ -885,6 +931,7 @@ class Board:
                     fetch=fetch,
                     containerize=self.containerizer(plan, root),
                     sampler=self.sampling(tracked, root=root, resources=resources),
+                    attestation=self.attesting(tracked, root=root),
                 ),
             )
         self.announce(label, run, command=command, host=plan.host, node=node)

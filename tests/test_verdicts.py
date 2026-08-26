@@ -78,6 +78,42 @@ def published(board: Board, stream: str) -> None:
     publish(bus, stream, Topic.SUBMITTED, job="d", data={"handle": "4", "target": "gold"})
 
 
+@pytest.mark.parametrize(
+    ("attested", "flagged"),
+    [
+        pytest.param(None, "", id="a-run-that-attested-nothing-at-all"),
+        pytest.param({"idle": True, "gpu_pct": 0}, "", id="a-run-that-started-on-an-idle-node"),
+        pytest.param(
+            {"idle": False, "gpu_pct": 47},
+            "gpu 47% busy at start",
+            id="a-run-that-started-while-another-job-held-the-gpu",
+        ),
+    ],
+)
+def test_a_measurement_taken_under_contention_says_so_on_every_row_of_its_run(
+    board: Board, attested: dict | None, flagged: str
+) -> None:
+    """A contended artifact otherwise looks exactly as authoritative as a clean one.
+
+    Only the unwelcome half is rendered, so a column full of the word `idle` never buries the
+    one row that matters, and the busy figure rides along so a reader weighs it.
+    """
+    stream = f"contention-{flagged.count('%')}-{attested is not None}"
+    bus = Receipts(directory(board, stream) / "events.ndjson")
+    publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "9", "target": "gold"})
+    if attested is not None:
+        publish(bus, stream, Topic.ATTESTED, job="a", data=attested)
+    publish(
+        bus,
+        stream,
+        Topic.SETTLED,
+        job="a",
+        data={"handle": "9", "verdict": "ok", "exit_code": 0, "detail": ""},
+    )
+    (settled,) = board.verdicts().of(stream).trials
+    assert settled.contended == flagged
+
+
 def test_a_stream_answers_with_one_settled_row_per_job_and_the_completion_exit(
     board: Board,
 ) -> None:

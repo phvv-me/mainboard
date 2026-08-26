@@ -9,6 +9,7 @@ import pytest
 from plumbum import local
 
 from mainboard import Board, ExecutionPlan, Fleet, HostFacts, Job, MissionError, Survey
+from mainboard.batch import Topic
 from mainboard.board import ProviderJob
 from mainboard.deps import Dependencies
 from mainboard.dispatch import Handle, HostSetup, Verdict
@@ -242,6 +243,17 @@ def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
         "pixi run --manifest-path .mainboard/pixi.toml --frozen -e default test --quiet",
         "pytest --quiet",
     ]
+
+
+def test_attest_publishes_one_reading_of_this_machine_into_the_streams_receipts(
+    board: Board,
+) -> None:
+    """The synchronous once-only twin of the sampler, read on the node that does the work."""
+    board.attest("smoke-1", job="gold-1")
+    (line,) = board.receipts("smoke-1").replay()
+    assert line.topic is Topic.ATTESTED
+    assert (line.batch, line.job) == ("smoke-1", "gold-1")
+    assert "idle" in line.data and "gpu_pct" in line.data
 
 
 def test_remote_root_comes_from_the_profile_or_refuses(board: Board) -> None:

@@ -8,6 +8,7 @@ import pytest
 from mainboard import MissionError
 from mainboard.dispatch.backends import Delivery, ModalBackend
 from mainboard.dispatch.backends.modal import cycle_month, declared_credit
+from mainboard.dispatch.evidence import framing, staging
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container
 
@@ -108,7 +109,8 @@ def test_submit_creates_one_sandbox_whose_entrypoint_image_and_timeout_are_the_p
     )
     (created,) = fake_modal.sandboxes.values()
     assert handle == created.object_id
-    assert created.entrypoint == ("bash", "-c", "echo hi")
+    script = f"{staging()}\necho hi\nstatus=$?\n{framing()}\nexit $status"
+    assert created.entrypoint == ("bash", "-c", script)
     assert vars(created.kwargs["image"]) == image
     assert created.kwargs["app"].name == "mainboard"
     assert created.kwargs.get("timeout") == timeout

@@ -5,6 +5,7 @@ import pytest
 
 from mainboard import Board, MissionError
 from mainboard.batch import Batch, BatchStatus, Topic, Watch
+from mainboard.batch.receipts import publish
 from mainboard.dispatch import Handle, HostUnreachable
 from mainboard.dispatch.state import Failed, Finished, MonitorReport, RunRecord
 from mainboard.monitor import Monitor
@@ -312,6 +313,49 @@ def test_a_settled_run_that_was_seen_running_teaches_the_next_estimate_what_setu
     assert cost.data["setup_s"] >= 0.0
     assert len(passes) == 2
     assert [row.provider for row in watch.ledger.observations()] == ["gold"]
+
+
+def test_a_settled_run_reports_what_it_was_quoted_beside_what_it_actually_came_to(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An estimate nobody checks against an outcome is a guess that never improves."""
+    batch = batched(lab, bus, spec(_TWO[0]))
+    dispatching(lab, monkeypatch, "77")
+    batch.run()
+    publish(
+        bus,
+        batch.id,
+        Topic.ESTIMATED,
+        job="gold-1",
+        data={"rate_usd_hr": 3.6, "expected_usd": 1.0},
+    )
+    recorded(lab, "77", target="gold", verdict="ok")
+    sweeping(lab, monkeypatch, MonitorReport())
+    watch = watching(lab, batch, bus)
+    watch.once()
+    [cost] = published(bus, Topic.COST)
+    assert cost.data["expected_usd"] == 1.0
+    # The run is seconds old here, so what it came to is far under what it was quoted, and the
+    # delta is what a later fit learns from.
+    assert cost.data["actual_usd"] < 1.0
+    assert cost.data["delta_usd"] == pytest.approx(cost.data["actual_usd"] - 1.0)
+
+
+def test_a_batch_nobody_priced_reports_a_zero_delta_rather_than_inventing_a_comparison(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batch = batched(lab, bus, spec(_TWO[0]))
+    dispatching(lab, monkeypatch, "77")
+    batch.run()
+    recorded(lab, "77", target="gold", verdict="ok")
+    sweeping(lab, monkeypatch, MonitorReport())
+    watching(lab, batch, bus).once()
+    [cost] = published(bus, Topic.COST)
+    assert (cost.data["expected_usd"], cost.data["actual_usd"], cost.data["delta_usd"]) == (
+        0.0,
+        0.0,
+        0.0,
+    )
 
 
 def test_a_run_no_pass_ever_caught_running_is_published_but_never_fitted(

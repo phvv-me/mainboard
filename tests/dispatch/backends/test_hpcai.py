@@ -5,6 +5,7 @@ import pytest
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import Capability, Delivery, HpcAiBackend, LogSource, api_key
+from mainboard.dispatch.evidence import framing, staging
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import HostProfile
 
@@ -149,10 +150,10 @@ def test_submit_posts_every_field_their_create_validator_calls_required(spot: bo
             "enableCommonData": False,
             "enableDocker": False,
             "initScript": (
-                """mkdir -p /root/dataDisk
-python train.py > /root/dataDisk/mainboard.log 2>&1
-echo $? > /root/dataDisk/mainboard.exit
-"""
+                f"mkdir -p /root/dataDisk\n{staging()}\n"
+                "{ python train.py\n} > /root/dataDisk/mainboard.log 2>&1\nstatus=$?\n"
+                f"{framing()} >> /root/dataDisk/mainboard.log\n"
+                "echo $status > /root/dataDisk/mainboard.exit\n"
             ),
         },
         "nodePorts": [],

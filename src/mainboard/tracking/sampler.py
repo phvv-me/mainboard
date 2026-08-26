@@ -39,6 +39,10 @@ _JOIN_S = 5.0
 # overwrite what that host already declares, and one known path to audit, rotate or delete.
 _HOST_ENV = "tracking.env"
 
+# Compute utilization above which an accelerator counts as already working, the same threshold
+# `probe.gating.gpu_busy` judges a machine by, so one workspace has one idea of busy.
+_BUSY_PCT = 10
+
 
 class Reading(Protocol):
     """A memory figure a sample reads."""
@@ -161,6 +165,27 @@ class Sampler:
             return True
         return bool(self.parent) and not psutil.pid_exists(self.parent)
 
+    def attest(self) -> Event:
+        """Publish one reading as this job's `job.attested` receipt, saying if the node was idle.
+
+        The attestation rather than the series, taken once and in the foreground before the work
+        starts. Two jobs on one host run concurrently, so a benchmark can be measuring while
+        another job holds the GPU, and the contended artifact otherwise looks exactly as
+        authoritative as a clean one (a 1.29x speedup claimed this way vanished when it was
+        re-run on a verified-idle host, 2026-08-22). Attesting rather than serializing is the
+        honest half of that: nothing is forbidden, and a measurement campaign gets to decide for
+        itself what a busy machine does to its numbers. The whole reading rides along with the
+        verdict, so a reader can judge the conditions instead of trusting one word for them.
+        """
+        busiest = max((gpu.utilization.gpu_pct for gpu in self.machine.gpus), default=0)
+        return publish(
+            self.bus,
+            self.stream,
+            Topic.ATTESTED,
+            job=self.job,
+            data={**self.reading(), "idle": busiest <= _BUSY_PCT},
+        )
+
     def loop(self) -> None:
         """Sample now, then every interval, until stopped, expired, or orphaned."""
         self.sample()
@@ -205,6 +230,25 @@ def host_env(root: str) -> str:
     root: the workspace root on that host.
     """
     return f"{root}/{Project().out_dir}/{_HOST_ENV}"
+
+
+def attesting_line(*, root: str, stream: str, job: str) -> str:
+    """The shell line a dispatched job runs so it attests to its own machine before it works.
+
+    The foreground twin of `sampling_line`, and foreground is the whole point: a reading taken
+    beside the command describes the command, while a reading taken before it describes the
+    conditions the command was handed. It carries the staged credential the same way, and its
+    output is discarded because an attestation belongs in the receipts rather than in the log
+    the job's own output belongs in. A failure to attest never stops the job, since a missing
+    attestation is a row that says nothing and a refused dispatch is a run that never happened.
+
+    root: the workspace root on the host, where the staged credential lives.
+    stream: the receipts stream the attestation belongs to.
+    job: the job inside that stream.
+    """
+    attest = shlex.join([Project().name, "attest", stream, "--job", job])
+    staged = shlex.quote(host_env(root))
+    return f"( set -a; . {staged} 2>/dev/null; set +a; {attest} ) >/dev/null 2>&1 || true"
 
 
 def sampling_line(

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ...context.plan import ExecutionPlan
+from ..evidence import framing, staging
 from ..shared import state_dir
 from ..wrapping import activation_stage
 
@@ -65,6 +66,10 @@ class JobSpec(FrozenModel):
         watches itself while the job runs. Opaque text here on purpose, since a job script is
         the one place that decision can be carried onto a machine that is not this one, and
         rendering it is not the same as knowing what it says.
+    attestation: a preformatted shell line the script runs in the foreground immediately before
+        the command, recording what the machine looked like as the work started. Opaque for the
+        same reason `sampler` is, and ordered before it in the script because a reading taken
+        after the command is under way describes the command rather than the conditions.
     """
 
     cmd: str
@@ -80,6 +85,7 @@ class JobSpec(FrozenModel):
     isolate_pythonpath: bool = True
     container_command: str = ""
     sampler: str = ""
+    attestation: str = ""
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
         """The job script text: a full PBS script when `pbs`, else a bash wrapper.
@@ -117,6 +123,9 @@ class JobSpec(FrozenModel):
             activation=activation_stage(self.plan, self.root),
             container_command=self.container_command,
             sampler=self.sampler,
+            attestation=self.attestation,
+            receipts_staging=staging(),
+            receipts_framing=framing(),
             state_dir=state_dir(),
         )
 

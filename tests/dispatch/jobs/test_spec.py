@@ -85,5 +85,8 @@ def test_the_rendered_body_quotes_the_command_and_owns_its_pythonpath() -> None:
     assert "PYTHONPATH" not in spec(isolate_pythonpath=False).render(pbs=False)
     assert "export PYTHONPATH=/repo/src" in spec(pythonpath="/repo/src").render(pbs=False)
     contained = spec(container_command="apptainer exec image.sif bash -c 'run'").render(pbs=False)
-    assert contained.splitlines()[-1] == "apptainer exec image.sif bash -c 'run'"
+    assert "apptainer exec image.sif bash -c 'run' || status=$?" in contained
     assert contained.count("bash -c 'run'") == 1
+    # The command's own status is kept and re-raised, so framing the receipts back after it
+    # costs the job none of its exit code.
+    assert contained.splitlines()[-1] == "exit $status"

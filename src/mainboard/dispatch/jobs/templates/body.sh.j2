@@ -6,14 +6,28 @@ export PYTHONPATH={{ pythonpath }}
 # happened to export is dropped here on purpose rather than inherited without anyone deciding.
 unset PYTHONPATH
 {% endif %}
+{% if attestation %}
+# What this machine looked like the instant before the command started, recorded into the job's
+# own receipts. It runs in the foreground and before the work, which is the only way the reading
+# describes the conditions the measurement was actually taken under.
+{{ attestation }}
+{% endif %}
 {% if sampler %}
 # This host watches itself while the job runs, publishing into the job's own receipts. It is
 # backgrounded, its output goes nowhere so it can never land in the captured log, and it ends
 # with this script rather than outliving it.
 {{ sampler }}
 {% endif %}
+# A trial writes its receipts to this file rather than printing them, so a line long enough to be
+# cut, interleaved with another job's output, or swallowed by a torn log still arrives whole. The
+# command's own status is kept and re-raised below, so framing the receipts back afterwards costs
+# the job none of its exit code.
+{{ receipts_staging }}
+status=0
 {% if container_command %}
-{{ container_command }}
+{{ container_command }} || status=$?
 {% else %}
-bash -c {{ cmd }}
+bash -c {{ cmd }} || status=$?
 {% endif %}
+{{ receipts_framing }}
+exit $status

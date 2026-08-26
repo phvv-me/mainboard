@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 from mainboard import MissionError
 from mainboard.dispatch.backends import Delivery, VastBackend
 from mainboard.dispatch.backends.vast import api_key, exit_sentinel
+from mainboard.dispatch.evidence import framing, staging
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
@@ -237,6 +238,9 @@ def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_c
     its argv, which is how the official CLI spells a one-shot container. Vast reports container
     status and never a process exit code, so the wrapper echoes the real one into the log, and
     the rent fails outright rather than parking a stopped instance we would owe storage on.
+
+    The receipts file is staged before the command and framed back after it, because vast cuts
+    every log line at 500 characters and a printed receipt would arrive here in half.
     """
     backend = vast_backend(_OFFERS, _CREATED)
     handle = backend.submit(vast_plan(), "python train.py", Resources(max_usd=5.0, gpus=2))
@@ -252,7 +256,11 @@ def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_c
         "label": "mainboard-provider-host",
         "runtype": "args",
         "onstart": "bash",
-        "args": ["-c", "python train.py\nstatus=$?\necho mainboard-exit:$status\nexit $status\n"],
+        "args": [
+            "-c",
+            f"{staging()}\npython train.py\nstatus=$?\n{framing()}\n"
+            "echo mainboard-exit:$status\nexit $status\n",
+        ],
         "cancel_unavail": True,
     }
 

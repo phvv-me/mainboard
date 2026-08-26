@@ -1,4 +1,3 @@
-import shlex
 import sys
 from contextlib import suppress
 from pathlib import Path
@@ -13,6 +12,7 @@ from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
 from .dispatch import vocabulary
+from .dispatch.commandline import joined
 from .doctor import Verdict
 from .manifest.loading import load
 from .render import install_traceback, mode_of, progress, record, rows, totals
@@ -46,9 +46,16 @@ def build(root: Path | None = None) -> App:
     # honours the `--` delimiter for its own help flags but not for its version flag, so the two
     # passthrough verbs give up `--version` entirely (the root app still answers it) rather than
     # answering `run -- python --version` with this tool's version.
+    #
+    # The command tokens are deliberately NOT `allow_leading_hyphen`. That annotation told
+    # cyclopts to stop recognising options for this parameter, which meant an option this CLI
+    # does not know was folded into the user's command instead of refused, and then failed on
+    # the remote host minutes later (four jobs lost this way, 2026-08-25). Without it cyclopts
+    # refuses `--walltim` by name at parse time, and everything after `--` still binds here as
+    # positional argv, flags and all, which is the behaviour the delimiter is for.
     @app.command(version_flags=[])
     def run(
-        *command: Annotated[str, Parameter(allow_leading_hyphen=True)],
+        *command: str,
         on: str = "local",
         env: str = "",
         container: str = "",
@@ -60,11 +67,11 @@ def build(root: Path | None = None) -> App:
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
         """
-        return board(on).run(shlex.join(command), env=env, container=container)
+        return board(on).run(joined(command), env=env, container=container)
 
     @app.command(version_flags=[])
     def submit(
-        *command: Annotated[str, Parameter(allow_leading_hyphen=True)],
+        *command: str,
         on: str,
         name: str = "",
         queue: str = "",
@@ -102,7 +109,7 @@ def build(root: Path | None = None) -> App:
         agent: print the handle in the compact tabular mode instead of the bare id.
         fields: a comma-separated projection over the handle's fields.
         """
-        line = shlex.join(command)
+        line = joined(command)
         priced = board(on).expectation(
             line,
             queue=queue,
@@ -358,7 +365,7 @@ def build(root: Path | None = None) -> App:
 
     @app.command(version_flags=[])
     def interact(
-        *command: Annotated[str, Parameter(allow_leading_hyphen=True)],
+        *command: str,
         on: str,
         env: str = "",
         queue: str = "",
@@ -715,6 +722,24 @@ def build(root: Path | None = None) -> App:
                 _status(status, mode=mode, fields=chosen)
 
     @app.command
+    def attest(stream: str, *, job: str = "") -> None:
+        """Record what this machine looks like right now into a stream's receipts, once.
+
+        The reading a measurement needs in order to say what it was taken under. Two jobs on one
+        host run at the same time, so a benchmark can be measuring while another job holds the
+        GPU, and nothing about the resulting artifact says so. This publishes one `job.attested`
+        receipt carrying the machine's readings and whether the accelerator was idle, which is
+        what lets `verdict` flag a row rather than forbid the run.
+
+        A dispatched job runs this for itself before its command starts, so the verb is here for
+        a measurement somebody takes by hand and for the job scripts that already call it.
+
+        stream: the receipts stream the attestation belongs to, a batch id or a run's name.
+        job: the job inside that stream, the stream itself when omitted.
+        """
+        board("local").attest(stream, job=job or stream)
+
+    @app.command
     def sample(
         stream: str,
         *,
@@ -864,26 +889,40 @@ _ESTIMATE_COLUMNS = (
     "setup_p90_s",
     "setup_samples",
     "rate_usd_hr",
+    "rate_source",
     "expected_usd",
     "p90_usd",
 )
 _DISPATCH_COLUMNS = ("job", "target", "handle", "kind", "reason")
 _STATUS_COLUMNS = ("job", "target", "handle", "state", "verdict", "detail")
-_VERDICT_COLUMNS = ("job", "handle", "target", "node", "verdict", "exit_code", "detail", "gates")
+_VERDICT_COLUMNS = (
+    "job",
+    "handle",
+    "target",
+    "node",
+    "verdict",
+    "exit_code",
+    "detail",
+    "gates",
+    "contended",
+)
 
 
 def _expected(priced: JobEstimate) -> str:
     """One line saying where a submit lands and what the meter will read there.
 
-    A rate means a rented target and carries its tail cost; no rate means hardware this
-    workspace owns and says so instead of printing a zero that looks like a promise.
+    A rate means a rented target and carries its tail cost. No rate names why there is none, so
+    a machine this workspace owns reads as `owned` while a provider nobody could get a price out
+    of says that instead, and neither prints a bare zero that looks like a promise. Where the
+    rate came from rides beside it for the same reason: a live offer can be rented at that price
+    and a stored one is last week's.
     """
     where = f"{priced.target} ({priced.kind}{', ' + priced.hardware if priced.hardware else ''})"
     if not priced.rate_usd_hr:
-        return f"submit -> {where}: queue policy ok, owned hardware, expected $0.00"
+        return f"submit -> {where}: queue policy ok, {priced.rate_source}, expected $0.00"
     return (
-        f"submit -> {where}: queue policy ok, ${priced.rate_usd_hr:.2f}/hr, "
-        f"expected ${priced.expected_usd:.2f} (p90 ${priced.p90_usd:.2f})"
+        f"submit -> {where}: queue policy ok, ${priced.rate_usd_hr:.2f}/hr "
+        f"({priced.rate_source}), expected ${priced.expected_usd:.2f} (p90 ${priced.p90_usd:.2f})"
     )
 
 

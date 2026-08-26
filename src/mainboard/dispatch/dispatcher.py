@@ -278,6 +278,7 @@ class Dispatcher:
         node: str = "",
         gpu_in_select: bool = True,
         sampler: str = "",
+        attestation: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
     ) -> Handle:
         """Render `cmd` into a job script for `plan`'s host and dispatch it.
@@ -295,6 +296,8 @@ class Dispatcher:
         gpu_in_select: whether a PBS GPU request belongs in the `select=` chunk.
         sampler: a shell line the script runs beside the command, empty for none. Opaque here
             on purpose, since what a host watches about itself is not the dispatcher's decision.
+        attestation: a shell line the script runs in the foreground before the command, empty for
+            none, recording what the machine looked like as the work started.
         containerize: builds the container runtime argv around `["bash", "-c", cmd]`; required
             when `plan.containerized`.
         """
@@ -318,6 +321,7 @@ class Dispatcher:
             mem_gb=resources.mem_gb,
             container_command=container_command,
             sampler=sampler,
+            attestation=attestation,
         )
         script = self.write_job_script(
             spec, pbs=plan.profile.kind == "pbs", gpu_in_select=gpu_in_select

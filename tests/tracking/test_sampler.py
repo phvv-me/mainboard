@@ -4,7 +4,7 @@ from collections.abc import Sequence
 import pytest
 
 from mainboard.batch import Topic
-from mainboard.tracking import Sampler, host_env, sampling_line
+from mainboard.tracking import Sampler, attesting_line, host_env, sampling_line
 
 from ..batch.support import Recorder
 
@@ -86,6 +86,40 @@ def test_a_reading_carries_the_cap_a_hosted_dashboard_never_had() -> None:
         "host_capped": True,
         "host_frac": 0.5,
     }
+
+
+@pytest.mark.parametrize(
+    ("gpus", "idle"),
+    [
+        pytest.param([FakeGPU(4.0, 0, 0)], True, id="a-node-doing-nothing"),
+        pytest.param([FakeGPU(4.0, 10, 0)], True, id="a-node-at-exactly-the-threshold"),
+        pytest.param([FakeGPU(4.0, 47, 0)], False, id="a-node-another-job-is-already-holding"),
+        pytest.param([], True, id="a-machine-with-no-accelerator-at-all"),
+    ],
+)
+def test_an_attestation_says_what_the_machine_was_doing_before_the_work_started(
+    gpus: list[FakeGPU], idle: bool
+) -> None:
+    """The honest half of contention: nothing is forbidden, the conditions are simply recorded."""
+    bus = Recorder()
+    machine = FakeMachine(FakeHost(used_gb=1.0, limit_gb=8.0), gpus)
+    published = sampler(bus, machine).attest()
+    assert published.topic is Topic.ATTESTED
+    assert published.job == _JOB and published.batch == _STREAM
+    assert published.data["idle"] is idle
+    # The whole reading rides along, so a reader weighs the conditions rather than taking one
+    # word for them.
+    assert published.data["host_cap_gb"] == 8.0
+    assert [line.topic for line in bus.replay()] == [Topic.ATTESTED]
+
+
+def test_the_attesting_line_runs_in_the_foreground_and_never_fails_the_job() -> None:
+    """A reading taken beside the command describes the command, not the conditions it got."""
+    line = attesting_line(root="/repo", stream=_STREAM, job=_JOB)
+    assert f"mainboard attest {_STREAM} --job {_JOB}" in line
+    assert not line.rstrip().endswith("&")
+    assert line.rstrip().endswith("|| true")
+    assert host_env("/repo") in line
 
 
 def test_a_machine_with_no_accelerator_and_no_cap_still_reads_as_something() -> None:

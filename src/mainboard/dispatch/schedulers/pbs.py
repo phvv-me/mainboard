@@ -198,7 +198,11 @@ class Pbs:
     ) -> str:
         del args  # PBS scripts are self-contained; qsub takes no free-form positional args.
         flags = build_qsub_flags(resources)
-        command = shlex.join(["qsub", *flags, script])
+        # qsub runs from the workspace root, not the login shell's home: the staged script path
+        # is workspace-relative, and the generated script cds to PBS_O_WORKDIR, which is wherever
+        # qsub was invoked. A host whose home happens to be the root hid this; Miyabi's /work
+        # root did not.
+        command = f"cd {shlex.quote(root)} && " + shlex.join(["qsub", *flags, script])
         retcode, out, err = remote["bash"][["-lc", command]].run(retcode=None)
         handle = out.strip().splitlines()[-1] if out.strip() else ""
         if not handle[:1].isdigit():

@@ -20,8 +20,13 @@
 #                   plus "node" (the ledger slug the run serves) only when one was declared
 #   job.refused     {"target", "reason"}                          the target would not take it
 #   job.state       {"handle", "state", "verdict"}                published only when it changed
+#   job.attested    a machine reading plus "idle", taken in the foreground on the node itself the
+#                   instant before the command started, so a measurement can say what conditions
+#                   it was taken under rather than leaving a reader to assume clean ones
 #   job.sample      a live machine reading, at the declared interval, from the node itself
-#   job.cost        {"platform", "gpu", "setup_s", "run_s", "observed"}
+#   job.cost        {"platform", "gpu", "setup_s", "run_s", "observed", "expected_usd",
+#                   "actual_usd", "delta_usd"}, what the run was quoted at beside what it
+#                   came to, so the cost model learns from its own misses
 #   job.settled     {"handle", "verdict", "exit_code", "detail"}  terminal, once and last
 #   batch.closed    {"jobs", "ok", "failed"}                      every job settled, once
 #
@@ -61,6 +66,7 @@ class Topic(StrEnum):
     SUBMITTED = "job.submitted"
     REFUSED = "job.refused"
     STATE = "job.state"
+    ATTESTED = "job.attested"
     SAMPLE = "job.sample"
     SETTLED = "job.settled"
     COST = "job.cost"

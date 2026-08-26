@@ -13,6 +13,7 @@ from urllib.request import Request
 
 from ...core.errors import MissionError
 from ...costs.imports import from_vast
+from ..evidence import framing, staging
 from ..jobs.spec import walltime_seconds
 from ..vocabulary import JobState
 from .base import (
@@ -367,7 +368,13 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             gpus=max(resources.gpus, 1),
             max_usd_hr=self.hourly_cap(resources),
         )
-        script = f"{command}\nstatus=$?\necho {_EXIT_SENTINEL}$status\nexit $status\n"
+        # Receipts are staged before the command and framed after it, in that order, because the
+        # log is the only thing that leaves a rental and vast cuts every line of it at 500
+        # characters. A trial that printed its receipt straight out would arrive here in half.
+        script = (
+            f"{staging()}\n{command}\nstatus=$?\n{framing()}\n"
+            f"echo {_EXIT_SENTINEL}$status\nexit $status\n"
+        )
         body = {
             "client_id": "me",
             "image": plan.container.image if plan.containerized else _DEFAULT_IMAGE,

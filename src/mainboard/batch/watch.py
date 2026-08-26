@@ -149,6 +149,12 @@ class Watch:
         last one is not a duration at all. A run no pass ever caught running is published all the
         same and kept out of the ledger, since a setup time inferred from a job that was already
         over would teach every later estimate to expect a wait that never happened.
+
+        What this run was quoted at is published beside what it actually came to, because an
+        estimate nobody ever checks against an outcome is a guess that never improves. The quote
+        is read back off this batch's own `job.estimated` line, so a batch nobody priced reports
+        a zero delta rather than inventing a comparison, and the figure lands on the observation
+        as well, so a later fit stands on money as well as on seconds.
         """
         mine = [
             event
@@ -165,6 +171,9 @@ class Watch:
         ended = _epoch(now())
         opened = _epoch(submitted[0].at) if submitted else ended
         running = _epoch(started[0].at) if started else 0.0
+        quoted = latest(events, Topic.ESTIMATED).get(row.job)
+        actual = _money(quoted, "rate_usd_hr") * (ended - opened) / 3600.0
+        expected = _money(quoted, "expected_usd")
         publish(
             self.bus,
             self.id,
@@ -175,6 +184,9 @@ class Watch:
                 "setup_s": (running - opened) if running else 0.0,
                 "run_s": (ended - running) if running else 0.0,
                 "observed": bool(running),
+                "expected_usd": round(expected, 4),
+                "actual_usd": round(actual, 4),
+                "delta_usd": round(actual - expected, 4),
             },
         )
         if running:
@@ -184,6 +196,7 @@ class Watch:
                     t_submit=opened,
                     t_running=running,
                     t_ended=ended,
+                    billed_usd=round(actual, 4),
                 )
             )
 
@@ -283,3 +296,13 @@ class Watch:
 def _epoch(stamp: str) -> float:
     """An ISO-8601 instant as epoch seconds, the footing an observation is recorded on."""
     return datetime.fromisoformat(stamp).timestamp()
+
+
+def _money(event: Event | None, field: str) -> float:
+    """A dollar figure off an event payload, zero when no line ever carried one.
+
+    A payload is free-form JSON, so a batch nobody priced and a batch whose estimate wrote
+    something unreadable both answer zero rather than raising in the middle of a settle.
+    """
+    amount = event.data.get(field) if event is not None else None
+    return float(amount) if isinstance(amount, int | float) else 0.0
