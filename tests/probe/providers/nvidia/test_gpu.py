@@ -78,7 +78,8 @@ def test_a_visible_device_reports_the_same_identity_through_either_layer(
     assert str(gpu.cuda_architecture) == "8.9"
     assert gpu.architecture == "Ada"
     assert gpu.arch_key == "sm_89"
-    assert gpu.driver_version == (13, 1)
+    assert gpu.driver == "580.65.06"  # the host driver, not the CUDA version it tops out at
+    assert gpu.runtime_version == (13, 1)
     assert gpu.pci_bus_id == "0000:00:00.0"
     memory = gpu.memory
     assert (memory.total_bytes, memory.used_bytes, memory.free_bytes) == (
@@ -104,6 +105,24 @@ def test_a_coherent_grace_hopper_pool_flags_its_memory_as_unified(
     gpu = NvidiaGPU(index=0)
     assert gpu.coherent is True
     assert gpu.memory.unified is True
+
+
+def test_a_driver_version_nvml_will_not_answer_reads_empty_rather_than_the_cuda_one(
+    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Does a refused driver query leave the field empty instead of borrowing the CUDA version?
+
+    The two are different facts and the receipt stamped one under the other's name for a whole
+    generation, so an unanswerable driver is silence and never the number that reads like it.
+    """
+
+    def absent() -> NoReturn:
+        raise AttributeError("module 'cuda.bindings.nvml' has no system_get_driver_version")
+
+    monkeypatch.setattr(nvidia_host.nvml, "system_get_driver_version", absent)
+    gpu = NvidiaGPU(index=0)
+    assert gpu.driver == ""
+    assert gpu.runtime_version == (13, 1)
 
 
 def test_a_binding_without_the_attribute_query_degrades_to_not_coherent(

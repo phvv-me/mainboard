@@ -36,7 +36,7 @@ def test_a_base_gpu_reports_zeroed_sensors_and_no_driver() -> None:
     gpu = GPU(index=0)
     assert gpu.arch_key == "unknown"  # the base key is the lowercased architecture name
     assert gpu.uuid == ""
-    assert gpu.driver_version is None
+    assert gpu.driver == "" and gpu.runtime_version is None
     assert (gpu.utilization.gpu_pct, gpu.utilization.memory_pct) == (0, 0)
     assert gpu.peak_bandwidth_gbs == 0.0
 

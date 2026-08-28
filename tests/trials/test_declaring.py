@@ -188,11 +188,13 @@ def test_the_real_git_reader_answers_about_a_directory_that_is_not_a_repository(
 def test_a_probe_that_broke_is_never_mistaken_for_a_host_with_no_device() -> None:
     """Found, absent and failed are three answers, and only the middle one is a clean machine."""
     found = card_of(Machine((Card(),)))
-    assert found.id == "GPU-1111" and found.name == "Test Card" and found.driver == "580.1"
+    assert found.id == "GPU-1111" and found.name == "Test Card"
+    # The driver is the HOST driver and the runtime version rides beside it, never inside it.
+    assert (found.driver, found.runtime) == ("580.65.06", "13.1")
     assert found.probed is Probed.FOUND
 
-    unnamed = card_of(Machine((Card(uuid="", driver=None),)))
-    assert unnamed.id == "Test Card" and not unnamed.driver
+    unnamed = card_of(Machine((Card(uuid="", driver="", runtime=None),)))
+    assert unnamed.id == "Test Card" and not unnamed.driver and not unnamed.runtime
 
     assert card_of(Machine()).probed is Probed.ABSENT
     broken = card_of(Machine(breaks="nvml is not loaded"))

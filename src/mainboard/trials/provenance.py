@@ -100,15 +100,24 @@ class Card(FrozenModel):
 
     id: the device UUID, the coverage identity, falling back to the name where none is exposed.
     name: the human name, which is a display column and never an identity.
-    driver: the driver version the reading ran under.
+    driver: the HOST DRIVER version the reading ran under, `610.57.04` shaped.
+    runtime: the compute runtime version beside it, `13.3` shaped, the CUDA one on an NVIDIA host.
     capability: the architecture key a kernel dispatches on.
     probed: `found`, `absent` on a host that carries no device, `failed` when the probe broke.
     detail: what the probe said when it broke, empty otherwise.
+
+    THE TWO VERSION FIELDS ARE TWO FACTS AND THE RECEIPT USED TO CARRY ONE OF THEM TWICE. `driver`
+    held `cudaDriverGetVersion()`, the maximum CUDA a driver supports, under a name that promised
+    the driver, so a generation of receipts stamped `13.3` on a host whose driver is `610.57.04`
+    and carried no driver version at all. Three independent reviews on 2026-08-29
+    (`fprev_recovery` 7c, `recovery_cost` 7d, `accuracy_selection` 6e) found it separately, which
+    is what a field whose name and content disagree costs.
     """
 
     id: str = ""
     name: str = ""
     driver: str = ""
+    runtime: str = ""
     capability: str = ""
     probed: Probed = Probed.ABSENT
     detail: str = ""
@@ -129,11 +138,12 @@ def card_of(machine: Machine) -> Card:
     if not cards:
         return Card(probed=Probed.ABSENT)
     found = cards[0]
-    driver = found.driver_version
+    runtime = found.runtime_version
     return Card(
         id=found.uuid or found.label,
         name=found.label,
-        driver=".".join(str(part) for part in driver) if driver else "",
+        driver=found.driver,
+        runtime=".".join(str(part) for part in runtime) if runtime else "",
         capability=found.arch_key,
         probed=Probed.FOUND,
     )
@@ -163,6 +173,7 @@ def provenance(
         "card_name": card.name,
         "card_detail": card.detail,
         "driver": card.driver,
+        "runtime": card.runtime,
         "capability": card.capability,
         "commit": took.commit,
         "worktree_dirty": took.dirty,

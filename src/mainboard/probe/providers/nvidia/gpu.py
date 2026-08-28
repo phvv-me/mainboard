@@ -77,9 +77,17 @@ class NvidiaGPU(GPU):
         return ComputeCapability(major, minor)
 
     @cached_property
-    def driver_version(self) -> tuple[int, int]:
-        """Maximum CUDA version supported by the installed driver."""
-        _, raw = self.apis.runtime.cudaDriverGetVersion()
+    def driver(self) -> str:
+        """The installed NVIDIA driver, as `nvidia-smi` prints it, or empty when NVML refuses."""
+        self.apis.nvml.init_v2()
+        with suppress(*self.apis.nvml_errors, AttributeError):
+            return text(self.apis.nvml.system_get_driver_version())
+        return ""
+
+    @cached_property
+    def runtime_version(self) -> tuple[int, int]:
+        """The CUDA runtime version this process links, e.g. `(13, 3)`."""
+        _, raw = self.apis.runtime.cudaRuntimeGetVersion()
         return (raw // 1000, (raw % 1000) // 10)
 
     @cached_property

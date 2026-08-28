@@ -44,7 +44,7 @@ class FakeRuntime:
     def cudaDeviceGetPCIBusId(self, length: int, index: int) -> tuple[int, bytes]:
         return (CudaErrorT.cudaSuccess, f"0000:0{index}:00.0\x00".encode())
 
-    def cudaDriverGetVersion(self) -> tuple[int, int]:
+    def cudaRuntimeGetVersion(self) -> tuple[int, int]:
         return (CudaErrorT.cudaSuccess, 13010)
 
     def cudaGetDevice(self) -> tuple[int, int]:
@@ -190,6 +190,9 @@ class FakeNvml:
 
     def init_v2(self) -> None:
         return None
+
+    def system_get_driver_version(self) -> str:
+        return "580.65.06"
 
 
 class FakeSystem:

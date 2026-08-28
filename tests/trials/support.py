@@ -12,7 +12,8 @@ PROBED = {
     "card_probed": "found",
     "card_name": "Test Card",
     "card_detail": "",
-    "driver": "580.1",
+    "driver": "580.65.06",
+    "runtime": "13.1",
     "capability": "sm_89",
     "commit": "abc1234",
     "worktree_dirty": False,
@@ -32,18 +33,20 @@ class Item:
 
 
 class Card:
-    """One probed device, the four attributes provenance reads and nothing else."""
+    """One probed device, the five attributes provenance reads and nothing else."""
 
     def __init__(
         self,
         uuid: str = "GPU-1111",
         label: str = "Test Card",
-        driver: tuple[int, int] | None = (580, 1),
+        driver: str = "580.65.06",
+        runtime: tuple[int, int] | None = (13, 1),
         arch_key: str = "sm_89",
     ) -> None:
         self.uuid = uuid
         self.label = label
-        self.driver_version = driver
+        self.driver = driver
+        self.runtime_version = runtime
         self.arch_key = arch_key
 
 

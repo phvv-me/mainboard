@@ -46,8 +46,18 @@ class GPU(Unit, Registry):
         return "unknown"
 
     @cached_property
-    def driver_version(self) -> tuple[int, int] | None:
-        """Driver or runtime version as `(major, minor)` when known."""
+    def driver(self) -> str:
+        """The HOST DRIVER version this device answers under, `610.57.04` shaped, or empty.
+
+        The driver and the CUDA version a driver tops out at are two different facts and only
+        one of them is the driver. Reporting the second under the first is how a receipt came to
+        carry `13.3` on a host whose driver is `610.57.04`, which is why they are two properties.
+        """
+        return ""
+
+    @cached_property
+    def runtime_version(self) -> tuple[int, int] | None:
+        """The compute runtime version as `(major, minor)`, the CUDA one here, when known."""
         return None
 
     @cached_property
