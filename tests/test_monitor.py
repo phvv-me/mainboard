@@ -215,6 +215,24 @@ def test_a_failed_job_carries_a_network_free_reason(
     assert "memory" in report.failed[0].reason
 
 
+def test_a_run_that_died_mid_campaign_still_brings_its_receipts_home(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store that stages and renames every fragment keeps 399 when trial 400 of 500 kills it.
+
+    The pull used to sit inside the clean branch, so exactly the runs whose partial evidence is
+    least reproducible, an OOM at trial 400 or a metered rental hitting its cap, were the ones
+    it was thrown away for. The exit code decides the verdict here and nothing else.
+    """
+    seed("25", fetch_path="results/partial")
+    probing(board, monkeypatch, finishing(verdict="failed", exit_code=137))
+    pulled: list[str] = []
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda handle, **kw: pulled.append(handle.id))
+    [item] = board.monitor().once().failed
+    assert pulled == ["25"]
+    assert (item.pulled_path, "memory" in item.reason) == ("results/partial", True)
+
+
 @pytest.mark.parametrize(
     ("reported", "changed"),
     [

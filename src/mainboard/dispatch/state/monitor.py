@@ -24,15 +24,22 @@ class Finished(FrozenModel):
 class Failed(FrozenModel):
     """A job that ended badly (`failed` or `vanished`) since the last sweep, with the cause.
 
+    A failed run still carries its results path, because the work it did before it died is
+    what a partial sweep is worth: 399 immutable receipt fragments out of 500 planned trials
+    are the ordinary end of a metered rental, and they come home whatever the exit code said.
+
     handle: the scheduler's job handle.
     target: the host alias it ran on.
     reason: a short, network-free cause (a signal exit, a plain non-zero code, or that it is
         gone).
+    pulled_path: the local path whatever it managed to write was rsynced into, or None when the
+        run had no fetch path or the pull failed.
     """
 
     handle: str
     target: str
     reason: str
+    pulled_path: str | None = None
 
 
 class DownHost(FrozenModel):
@@ -55,7 +62,8 @@ class MonitorReport(FrozenModel):
 
     running: how many tracked jobs are still in flight.
     finished: jobs newly `ok` this sweep, each with its pulled results path.
-    failed: jobs newly `failed`/`vanished` this sweep, each with a reason.
+    failed: jobs newly `failed`/`vanished` this sweep, each with a reason and whatever partial
+        results still came home.
     unreachable_hosts: hosts that could not be probed, each with why.
     """
 

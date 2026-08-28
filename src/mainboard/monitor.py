@@ -199,17 +199,23 @@ class Monitor:
         in the order the cache reports them, so what a run causes and when it is announced does
         not depend on which target answered first.
 
-        A run still in flight is only counted. A run that ended has its results pulled back (or
-        its cause read off the exit code), its output and trial receipts captured beside its own
-        receipts stream, whatever it still holds released, its verdict recorded in the study
-        ledger that owns it, and only then its reported cursor advanced, so a sweep killed
-        halfway repeats work on the next pass rather than losing an outcome. Capturing before
-        releasing is the one ordering that cannot be swapped: releasing destroys a rented
-        instance, and its log goes with it. Releasing
+        A run still in flight is only counted. A run that ended has its results pulled back, its
+        output and trial receipts captured beside its own receipts stream, whatever it still
+        holds released, its verdict recorded in the study ledger that owns it, and only then its
+        reported cursor advanced, so a sweep killed halfway repeats work on the next pass rather
+        than losing an outcome. Capturing before releasing is the one ordering that cannot be
+        swapped: releasing destroys a rented instance, and its log goes with it. Releasing
         before the cursor moves is what makes that repetition worth wanting, since a pass dying
         between the two leaves the run tracked and the next one cancels the rental again. A run
         whose target could not be resolved has no state, which is the one reason to skip it here,
         and that target is named once in the report rather than once per run on it.
+
+        The pull happens whatever the exit code said, and only the verdict the run reports is
+        decided by it. A sweep of 500 trials that dies at 400 leaves 399 immutable receipt
+        fragments on the host, which is exactly the crash safety the staged-and-renamed store
+        exists to give, and a settle that pulled only a clean run threw those away on the runs
+        that most needed them. A partial sweep is also the ordinary end of a metered rental that
+        hit its cap, so this is the common case rather than the sad one.
         """
         running = 0
         finished: list[Finished] = []
@@ -227,15 +233,22 @@ class Monitor:
                 self.track(record, state, detail="")
                 running += 1
                 continue
+            pulled = self.pull(job)
             if state.verdict == vocabulary.OK:
-                pulled = self.pull(job)
                 finished.append(
                     Finished(handle=record.handle, target=record.target, pulled_path=pulled)
                 )
                 detail = pulled or ""
             else:
                 detail = short_reason(state.verdict, state.exit_code)
-                failed.append(Failed(handle=record.handle, target=record.target, reason=detail))
+                failed.append(
+                    Failed(
+                        handle=record.handle,
+                        target=record.target,
+                        reason=detail,
+                        pulled_path=pulled,
+                    )
+                )
             self.track(record, state, detail=detail)
             self.capture(record, job)
             self.release(job)
@@ -252,7 +265,12 @@ class Monitor:
         )
 
     def pull(self, job: Run) -> str | None:
-        """Bring a finished job's recorded results back, returning where they landed.
+        """Bring a settled job's recorded results back, returning where they landed.
+
+        Whatever its verdict was. A crashed run has written everything it wrote before it
+        crashed, and the receipt store stages and renames each fragment precisely so that
+        those readings survive the trial that killed the process, so a failed job is the one
+        whose artifacts are least reproducible and most worth carrying home.
 
         None when the run recorded no results path at dispatch, or when the pull itself failed
         (a directory the job never wrote, a host that dropped mid-transfer, a provider whose disk
