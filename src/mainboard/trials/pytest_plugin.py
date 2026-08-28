@@ -183,11 +183,18 @@ def pytest_report_teststatus(
 
     The exit code is untouched, so a dead hypothesis still exits zero and only a trial that could
     not be taken at all exits nonzero.
+
+    THE LAST WORD IS THE ONE PRINTED, because a trial may settle several rows. A search lane
+    narrates one row per ask-tell iteration and then settles the study, so reading the first word
+    would print how its opening point scored and hide the outcome the whole budget was spent to
+    reach. A lane that settles once is unaffected, since its first word is also its last.
     """
     session = config.stash.get(SESSION, None)
     if session is None or report.when != "call" or not report.passed:
         return None
-    settled = next((str(value) for name, value in report.user_properties if name == WORD), "")
+    settled = next(
+        (str(value) for name, value in reversed(report.user_properties) if name == WORD), ""
+    )
     if settled not in session.declared.words:
         return None
     word = session.declared.words[settled]

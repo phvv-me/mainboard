@@ -28,12 +28,13 @@
 # declared words are methods on it. Nothing in a lane names a run, a card, a commit, a claim or a
 # tracked flag, because every one of those is derived.
 #
-# A LANE KIND THAT CHOOSES ITS OWN CELLS IS AN OPTIONAL EXTRA. `Hunt` states a law as a property
-# and spends a draw budget trying to break it, shrinking a failure to a minimal witness. Its
-# driver, hypothesis, is an extra this tool does not depend on, and a lane declared without it
-# refuses by naming the package and the extra. It obeys the rule `adaptive` states: an adaptive
-# result is a CANDIDATE, never coverage, and it is confirmed by a declared parametrize cell on
-# fresh seeds before any claim leans on it.
+# TWO LANE KINDS CHOOSE THEIR OWN CELLS AND ARE OPTIONAL EXTRAS. `Hunt` states a law as a property
+# and spends a draw budget trying to break it, shrinking a failure to a minimal witness; `Study`
+# spends a budget of real evaluations walking toward a worst case and writes a receipt row per
+# ask-tell iteration. Their drivers, hypothesis and optuna, are extras this tool does not depend
+# on, and a lane declared without one refuses by naming the package and the extra. Both obey the
+# rule `adaptive` states: an adaptive result is a CANDIDATE, never coverage, and it is confirmed by
+# a declared parametrize cell on fresh seeds before any claim leans on it.
 
 from .adaptive import Absent, Owed, driver
 from .adversarial import Breach, Hunt
@@ -45,6 +46,7 @@ from .figures import Figures, Gap, Need, Refusal, rendered_twice
 from .flags import Flag, held, moved, reading
 from .ledger import NESTED, Ledger, TrialReceipts, wire
 from .provenance import SOURCE_VAR, Card, Source, card_of, installed, provenance, source
+from .search import Miss, Optuna, Proposer, Study
 from .session import Session, Trial
 from .stage import Stage
 from .universe import Universe
@@ -70,16 +72,20 @@ __all__ = [
     "LaneStatus",
     "Ledger",
     "Local",
+    "Miss",
     "Need",
+    "Optuna",
     "Outcome",
     "Owed",
     "Partition",
     "Probed",
+    "Proposer",
     "Refusal",
     "Session",
     "Source",
     "Stage",
     "Stance",
+    "Study",
     "Trial",
     "TrialReceipts",
     "Universe",

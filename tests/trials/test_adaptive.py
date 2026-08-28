@@ -7,8 +7,11 @@ from mainboard.trials import (
     Absent,
     Breach,
     Hunt,
+    Miss,
+    Optuna,
     Owed,
     Session,
+    Study,
     adaptive,
     driver,
 )
@@ -25,14 +28,14 @@ def trial(session: Session, tmp_path: Path):
 
 @pytest.fixture
 def doubled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The driver stood in for, at the import call `driver` makes and nowhere wider.
+    """Both drivers stood in for, at the import call `driver` makes and nowhere wider.
 
     NOT `sys.modules`, and the reason is this suite itself: hypothesis is what most of these tests
     are written in, its pytest plugin imports the real module during every call phase, and a fake
     installed under that name takes the plugin down with it. Patching the one import call keeps
-    the refusal path and the error handling of `driver` exactly as shipped.
+    the refusal path, the caching and the error handling of `driver` exactly as shipped.
     """
-    stood = {"hypothesis": support_adaptive.hypothesis()}
+    stood = {"hypothesis": support_adaptive.hypothesis(), "optuna": support_adaptive.optuna()}
     monkeypatch.setattr(adaptive, "import_module", lambda name: stood[name])
 
 
@@ -142,3 +145,86 @@ def test_a_hunt_replays_from_its_own_receipt_because_the_seed_is_what_walked_it(
 
     assert walked() == walked()
     assert rows(session)[0]["measured"]["replay"] == "re-run this lane at seed 7 with draws=5"
+
+
+def test_a_study_writes_one_row_per_iteration_and_settles_on_its_worst_point(
+    trial, session: Session, doubled: None
+) -> None:
+    """The sampler keeps no record, so every ask-tell iteration is a receipt row of its own."""
+    proposer = Optuna({"tokens": [192, 288], "depth": [1024, 3072]}, seed=11)
+    study = Study(
+        trial,
+        proposer,
+        question="where does the served law miss worst",
+        budget=4,
+        seed=11,
+        refuted="refuted",
+        survived="undecided",
+        owed=owed(),
+        policy="default",
+    )
+    study.run(lambda tokens, depth: Miss(loss=tokens / depth, reading={"tokens": tokens}))
+
+    written = rows(session)
+    assert len(written) == 5
+    assert [row["measured"]["row"] for row in written] == ["point"] * 4 + ["study"]
+    assert [row["verdict"] for row in written] == ["undecided"] * 5
+    assert proposer.study.told == [
+        (0, 192 / 1024),
+        (1, 288 / 3072),
+        (2, 192 / 1024),
+        (3, 288 / 3072),
+    ]
+    study_row = written[-1]["measured"]
+    assert study_row["point"] == {"tokens": 192, "depth": 1024}
+    assert study_row["outside"] is False and study_row["outside_points"] == 0
+    assert study_row["owed"] is None and study_row["policy"] == "default"
+    assert study_row["budget"] == 4 and study_row["seed"] == 11
+    assert "found no excursion inside its budget" in written[-1]["reason"]
+
+
+def test_a_worst_point_outside_the_band_settles_refuted_and_names_what_confirms_it(
+    trial, session: Session, doubled: None
+) -> None:
+    """A sampler walks toward the corner it is rewarded for, so its worst point is a proposal."""
+    study = Study(
+        trial,
+        Optuna({"tokens": [192, 288]}, seed=1),
+        question="where does the served law miss worst",
+        budget=3,
+        seed=1,
+        refuted="refuted",
+        survived="undecided",
+        owed=owed(),
+    )
+    point, miss = study.run(lambda tokens: Miss(loss=tokens, outside=tokens > 200))
+
+    assert point == {"tokens": 288} and miss.outside
+    settled = rows(session)[-1]
+    assert settled["verdict"] == "refuted"
+    assert settled["measured"]["outside_points"] == 1
+    assert settled["measured"]["owed"]["cell"] == {"shape": "w96", "tokens": "288"}
+    assert "OUTSIDE the band" in settled["reason"] and "a CANDIDATE, owed" in settled["reason"]
+
+
+def test_a_study_settles_the_last_word_it_reached_and_not_the_first_row_it_narrated(
+    trial, session: Session, doubled: None
+) -> None:
+    """A search narrates as it goes, so a terminal prints the word the study ended on."""
+    Study(
+        trial,
+        Optuna({"tokens": [192, 288]}, seed=0),
+        question="where does the served law miss worst",
+        budget=2,
+        seed=0,
+        refuted="refuted",
+        survived="undecided",
+        owed=owed(),
+    ).run(lambda tokens: Miss(loss=tokens, outside=tokens > 200))
+
+    assert [word for _, word in trial.item.user_properties] == [
+        "undecided",
+        "undecided",
+        "refuted",
+    ]
+    assert trial.settled == "refuted"

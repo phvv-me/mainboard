@@ -1,13 +1,17 @@
-# THE DRIVER, STOOD IN FOR, because what is under test here is the lane and not the library.
+# THE TWO DRIVERS, STOOD IN FOR, because what is under test here is the lane and not the library.
 #
-# hypothesis's shrinker is somebody else's tested code, and a suite that drove the real one would
-# be asserting its behaviour while paying for its install. What this package owes a reader is that
-# `Hunt` spends the budget it was given, counts what it drew, keeps the LAST witness a shrink
-# produced and settles the consumer's own words with it. Every one of those is a statement about
-# the SEAM, so the seam is what is doubled: a module answering the exact calls `adversarial` makes,
-# and nothing else.
+# hypothesis's shrinker and optuna's sampler are somebody else's tested code, and a suite that
+# drove the real ones would be asserting their behaviour while paying for their install. What this
+# package owes a reader is that `Hunt` spends the budget it was given, counts what it drew, keeps
+# the LAST witness a shrink produced and settles the consumer's own words with it, and that `Study`
+# asks, evaluates, tells and writes one row per iteration before settling on its worst point. Both
+# of those are statements about the SEAM, so the seam is what is doubled: two modules answering the
+# exact calls `adversarial` and `search` make, and nothing else.
+#
+# THEY ARE INSTALLED BY NAME INTO `sys.modules`, which is the same door `adaptive.driver` opens, so
+# the import path under test is the real one and only what comes back through it is ours.
 
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 
@@ -83,4 +87,36 @@ def hypothesis(*, health: tuple[str, ...] = ("too_slow",)) -> ModuleType:
         seed,
         health,
     )
+    return module
+
+
+class Cycle:
+    """A fake optuna study, suggesting each axis in order and recording what it was told."""
+
+    def __init__(self, sampler: Any, direction: str) -> None:
+        self.sampler = sampler
+        self.direction = direction
+        self.asked = 0
+        self.told: list[tuple[Any, float]] = []
+
+    def ask(self) -> Any:
+        """One trial whose `suggest_categorical` walks the declared values by its own index."""
+        index = self.asked
+        self.asked += 1
+        return SimpleNamespace(
+            number=index,
+            suggest_categorical=lambda name, values: values[index % len(values)],
+        )
+
+    def tell(self, trial: Any, loss: float) -> None:
+        """Record the score, which is the whole of what a sampler is given back."""
+        self.told.append((trial.number, loss))
+
+
+def optuna() -> ModuleType:
+    """A module answering the names `search.Optuna` reaches for, and no others."""
+    module = ModuleType("optuna")
+    module.logging = SimpleNamespace(set_verbosity=lambda level: None, WARNING=30)
+    module.samplers = SimpleNamespace(TPESampler=lambda seed: SimpleNamespace(seed=seed))
+    module.create_study = lambda direction, sampler: Cycle(sampler, direction)
     return module
