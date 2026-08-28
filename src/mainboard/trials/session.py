@@ -1,0 +1,247 @@
+# ONE RUN AND ONE TRIAL, WHICH IS EVERYTHING THE HOOKS IN `pytest_plugin` STAND ON.
+#
+# A `Session` is the run: its identity, the provenance stamped on every row it writes, the store
+# each claim's receipts land in, and the baseline of every tracked flag. A `Trial` is one row of
+# it, and the whole of what a lane touches.
+#
+# A LANE SUPPLIES MEASUREMENTS AND NOTHING ELSE. Who ran, on what card, at which commit, under
+# which trial of which claim is already here, because every one of those is derivable and a fact a
+# test has to retype is a fact a test will eventually retype wrong.
+#
+# AND THE FLAG COLUMN SAYS WHICH QUESTION IT ANSWERS. `session_<flag>` is what the flag read when
+# the run opened and is a fact about the SESSION. It is not a fact about the reading, since a lane
+# that moves a flag has readings on both sides of it, so `<flag>` beside it is the LIVE value read
+# at the instant the trial settled. A review of the reference found 24 of 40 rows of one claim
+# carrying a policy their own reading was not taken under, purely because only the session-level
+# value existed. A lane measuring under two policies in one trial cannot be answered by one column
+# either way and carries the policy observed beside each reading inside `measured`.
+
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
+from uuid import uuid4
+
+from pydantic import JsonValue
+
+from .coverage import PROBED, Cell, LaneStatus, Probed
+from .flags import moved, reading
+from .provenance import provenance
+from .stage import Stage
+from .vocabulary import Outcome
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
+    import pytest
+
+    from .declaration import Declaration
+    from .ledger import TrialReceipts
+
+# The report property a settled word rides to the terminal on. `user_properties` is pytest's own
+# typed channel from an item to its report, which is exactly this trip, so nothing here has to
+# hang an attribute off a report object and hope every consumer of it tolerates the extra field.
+WORD = "mainboard_trials_word"
+
+
+def params_of(item: pytest.Item) -> dict[str, JsonValue]:
+    """A trial's own parametrize values as text, empty for a lane that takes no grid.
+
+    Text because a receipt column has to be comparable across runs and a parametrize value is
+    whatever object the grid held, which may not survive a round trip through parquet at all.
+    """
+    drawn = getattr(item, "callspec", None)
+    return {name: str(value) for name, value in getattr(drawn, "params", {}).items()}
+
+
+def lane_of(item: pytest.Item) -> tuple[str, str]:
+    """A trial's lane and its key, the node id split at the parametrize bracket."""
+    lane, _, key = item.nodeid.partition("[")
+    return lane, key.removesuffix("]")
+
+
+class Session:
+    """One run of a declared universe: its identity, its provenance and its open stores.
+
+    declared: what the consumer stated about its trials.
+    """
+
+    def __init__(self, declared: Declaration) -> None:
+        self.declared = declared
+        self.run = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+        self.baseline = reading(declared.flags)
+        self.common: dict[str, JsonValue] = {
+            **provenance(declared.tree, probed=declared.universe.probed),
+            **{f"session_{name}": value for name, value in self.baseline.items()},
+        }
+        self.writers: dict[str, TrialReceipts] = {}
+        self.lanes: tuple[LaneStatus, ...] = ()
+        self.leaked: dict[str, str] = {}
+        self.staged = Stage("", resident=declared.resident)
+
+    @property
+    def card(self) -> str:
+        """The device this run measures on, empty on a host that carries none."""
+        return str(self.common.get("card", ""))
+
+    @property
+    def heading(self) -> str:
+        """The line a session opens with, naming the machine its coverage is scoped to."""
+        named = str(self.common.get("card_name", "")) or "no card"
+        return f"evidence on {named}{f' ({self.card})' if self.card else ''}:"
+
+    def cell(self, params: Mapping[str, JsonValue]) -> Cell:
+        """Where a trial sits on the declared axes, and why each axis reads what it does.
+
+        An axis is read off the trial's own parameters when it names one and off the run's probed
+        provenance otherwise, which is one rule covering both kinds: `model` comes from a
+        parametrize grid and `card` from the machine, and neither is special-cased anywhere. The
+        outcome rides beside the value, taken from the probe that produced it where there was one
+        and `unasked` where nothing was ever asked, so an axis a lane simply does not use never
+        looks like a machine nobody could identify.
+
+        params: the trial's own parametrize values.
+        """
+        values, probing = {}, {}
+        for axis in self.declared.universe.axes:
+            drawn = params.get(axis)
+            values[axis] = str(drawn) if drawn else str(self.common.get(axis, "") or "")
+            outcome = str(self.common.get(f"{axis}{PROBED}", "")) if drawn is None else ""
+            probing[axis] = Probed(outcome) if outcome else Probed.UNASKED
+        return Cell(values=values, probing=probing)
+
+    def close(self) -> str:
+        """Release, compact, then say why the run must fail, or nothing at all.
+
+        Compaction runs unconditionally, because a run that moved a flag still took every reading
+        it took and the fragments are worth exactly as much either way.
+        """
+        self.staged.drop()
+        for writer in self.writers.values():
+            writer.compact()
+        drifted = moved(self.declared.flags, self.baseline)
+        if not drifted:
+            return ""
+        lines = [
+            f"  {name}: opened at {self.baseline[name]!r}, ended at {value!r}, first moved by "
+            f"{self.leaked.get(name, 'a trial that settled no receipt')}"
+            for name, value in drifted.items()
+        ]
+        return "\n".join(
+            [
+                f"trials REFUSE this session: {len(drifted)} tracked flag(s) ended off baseline, "
+                "so every trial collected after the move measured a machine nobody can identify.",
+                *lines,
+                "Move a tracked flag only inside `mainboard.trials.held(...)`, which writes it "
+                "back on the way out.",
+            ]
+        )
+
+    def enter(self, node: str) -> None:
+        """Make `node` the claim now running, releasing whatever the previous one held."""
+        if node == self.staged.claim:
+            return
+        self.staged.drop()
+        self.staged = Stage(node, resident=self.declared.resident)
+
+    def trial(self, item: pytest.Item) -> Trial:
+        """The evidence line for one collected trial, the claim it belongs to now open.
+
+        Entering the claim here rather than in a fixture of its own is what makes the residency
+        scope real: every lane that measures asks for its evidence line, so no claim can start
+        without the previous one's holdings having been dropped first.
+        """
+        self.enter(self.declared.universe.node_of(Path(str(item.path))))
+        return Trial(item, self)
+
+    def writer(self, node: str) -> TrialReceipts:
+        """One claim's store for this run, opened on first use and compacted at teardown."""
+        if node not in self.writers:
+            self.writers[node] = self.declared.universe.dataset(node).writer(
+                self.run, {"node": node, "producer": "mainboard.trials", **self.common}
+            )
+        return self.writers[node]
+
+
+class Trial:
+    """One trial's evidence line: derived identity, host and commit, plus what the lane measured.
+
+    A lane settles ONCE, with one of its workspace's declared words and its readings. A trial that
+    settles nothing settles `failed` at teardown, so a broken instrument leaves a row rather than
+    a hole, and the trial itself fails because a silent instrument is not a result.
+
+    item: the running test. session: the run this row belongs to.
+    """
+
+    def __init__(self, item: pytest.Item, session: Session) -> None:
+        self.item = item
+        self.session = session
+        self.lane, self.key = lane_of(item)
+        self.settled = ""
+
+    def __getattr__(self, name: str) -> Callable[..., None]:
+        """One declared word as a method, so a lane calls `trial.validated(...)` and reads well.
+
+        The words are the consumer's, so the methods are too, and there is no table of them here
+        to fall out of step with the vocabulary. An undeclared word refuses at the attribute
+        rather than settling a row nothing can read.
+
+        name: the word being reached for.
+        """
+        words = self.session.declared.words
+        if name not in words:
+            raise AttributeError(
+                f"{name!r} is not a declared settle word; declared: {words.names}"
+            )
+
+        def settle(reason: str = "", **measured: JsonValue) -> None:
+            self.settle(name, reason=reason, **measured)
+
+        return settle
+
+    def record(
+        self,
+        word: str,
+        *,
+        reason: str,
+        measured: Mapping[str, JsonValue],
+        outcome: Outcome,
+    ) -> None:
+        """Write this trial's one fragment and tell the terminal which word to print for it.
+
+        Every tracked flag is read HERE rather than carried from the session baseline, so a lane
+        that moved one names what was actually in force when it settled, and a value that differs
+        from the baseline records this trial as the first suspect for the end-of-run check.
+        """
+        params = params_of(self.item)
+        path = Path(str(self.item.path))
+        live = reading(self.session.declared.flags)
+        for name, value in live.items():
+            if value != self.session.baseline[name]:
+                self.session.leaked.setdefault(name, self.item.nodeid)
+        self.settled = word
+        self.item.user_properties.append((WORD, word))
+        self.session.writer(self.session.declared.universe.node_of(path)).write(
+            {
+                "lane": self.lane,
+                "key": self.key,
+                "trial": self.item.nodeid,
+                "run_id": self.item.nodeid.rpartition("::")[2],
+                "kind": path.stem.removeprefix("test_"),
+                **self.session.cell(params).filters,
+                **live,
+                "outcome": str(outcome),
+                "verdict": word,
+                "reason": reason,
+                "at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "params": params,
+                "measured": dict(measured),
+            }
+        )
+
+    def settle(self, word: str, *, reason: str = "", **measured: JsonValue) -> None:
+        """Commit this trial under one of the declared words, with whatever it read.
+
+        word: a word the consumer's own vocabulary declares.
+        reason: one line saying what happened. measured: the readings behind it.
+        """
+        self.record(word, reason=reason, measured=measured, outcome=Outcome.PASSED)
