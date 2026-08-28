@@ -18,12 +18,18 @@ if TYPE_CHECKING:
 
     from .flags import Flag
 
-# What a trial can be marked with out of the box, and why each one skips. `paid` is the only
-# marker wired to an option, since it is the only one whose cost is money rather than time.
+# What a trial can be marked with out of the box, and the two things a marker here does. The first
+# three decide whether a trial RUNS AT ALL, and `paid` is the only one wired to an option since it
+# is the only one whose cost is money rather than time. The last two decide nothing and NAME THE
+# LANE KIND, because an adaptive lane's result is a candidate rather than coverage and a reader
+# tallying what a suite establishes has to be able to select those out: `-m "not adversarial and
+# not search"` is the whole of a run that claims only what a declared grid measured.
 MARKERS = {
     "gpu": "needs a real card, skipped where there is none",
     "slow": "runs for minutes rather than seconds",
     "paid": "could bill money, skipped unless --paid is passed",
+    "adversarial": "hunts a counterexample by shrinking, so what it finds is a candidate",
+    "search": "proposes its own points adaptively, so what it finds is a candidate",
 }
 
 

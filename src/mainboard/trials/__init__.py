@@ -27,7 +27,13 @@
 # A lane is an ordinary test function that asks for `trial` and supplies measurements, and the
 # declared words are methods on it. Nothing in a lane names a run, a card, a commit, a claim or a
 # tracked flag, because every one of those is derived.
+#
+# AND A LANE MAY CHOOSE ITS OWN CELLS, which is what `adaptive` is about: an adaptive result is a
+# CANDIDATE, never coverage, and it is confirmed by a declared parametrize cell on fresh seeds
+# before any claim leans on it. `driver` is the one door the lane kinds' optional packages come
+# through and `Owed` is where that confirmation debt is written onto a receipt.
 
+from .adaptive import Absent, Owed, driver
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import Dataset
 from .declaration import MARKERS, Declaration
@@ -46,6 +52,7 @@ __all__ = [
     "NESTED",
     "PROBED",
     "SOURCE_VAR",
+    "Absent",
     "Card",
     "Cell",
     "Dataset",
@@ -60,6 +67,7 @@ __all__ = [
     "Local",
     "Need",
     "Outcome",
+    "Owed",
     "Partition",
     "Probed",
     "Refusal",
@@ -73,6 +81,7 @@ __all__ = [
     "Vocabulary",
     "Word",
     "card_of",
+    "driver",
     "held",
     "installed",
     "moved",

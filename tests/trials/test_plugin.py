@@ -355,6 +355,8 @@ def test_a_shuffling_plugin_is_held_still_and_the_declared_markers_are_registere
         "gpu: needs a real card, skipped where there is none",
         "slow: runs for minutes rather than seconds",
         "paid: could bill money, skipped unless --paid is passed",
+        "adversarial: hunts a counterexample by shrinking, so what it finds is a candidate",
+        "search: proposes its own points adaptively, so what it finds is a candidate",
     ]
     assert config.stash[pytest_plugin.SESSION].run
 
