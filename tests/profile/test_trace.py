@@ -12,6 +12,7 @@ from mainboard.profile import (
     Profile,
     RegionWindow,
     TraceCollector,
+    busy_ns,
 )
 
 from .support import kernel, traced_profile
@@ -120,6 +121,58 @@ def test_the_deep_report_splits_compute_from_copy_and_ranks_the_hot_spots() -> N
     empty = Profile().trace_report()
     assert empty.total_kernel_ns == 0
     assert empty.hot_kernels == ()
+
+
+@pytest.mark.parametrize(
+    ("spans", "busy"),
+    [
+        ((), 0),
+        (((0, 100),), 100),
+        (((0, 100), (100, 250)), 250),
+        (((0, 100), (40, 60)), 100),
+        (((0, 100), (60, 140)), 140),
+        (((60, 140), (0, 100)), 140),
+        (((0, 100), (200, 260)), 160),
+        (((10, 10), (0, 50)), 50),
+    ],
+    ids=[
+        "nothing",
+        "one_span",
+        "abutting",
+        "nested",
+        "overlapping",
+        "unsorted",
+        "disjoint",
+        "empty_span_dropped",
+    ],
+)
+def test_device_busy_time_is_a_union_and_never_a_sum(
+    spans: tuple[tuple[int, int], ...], busy: int
+) -> None:
+    """Does the busy clock count concurrent and nested device work once rather than twice?
+
+    Summing durations answers how much WORK the device did and is not a time, which is why a
+    share against wall may only divide the union.
+    """
+    assert busy_ns(spans) == busy
+
+
+def test_the_summed_work_time_can_exceed_the_clock_and_the_report_carries_both() -> None:
+    """Does a report that traced overlapping device work say so rather than double count it?
+
+    This is `recovery_cost`'s 2026-08-29 finding in the reproducibility workspace, where a
+    summed device time read 1.9 to 2.1 times the CUDA-event ground truth at TEN launches and was
+    diagnosed as an artefact of several thousand. Two kernels and a copy that overlap here sum to
+    250 ns of work inside a 130 ns window, so the sum is the larger by construction at any count.
+    """
+    profile = Profile(
+        kernels=(kernel("a", 100, start_ns=0), kernel("b", 100, start_ns=30)),
+        memcpys=(MemcpyTrace(start_ns=80, end_ns=130, bytes_moved=1024),),
+    )
+    report = profile.trace_report()
+    assert report.total_kernel_ns + report.total_memcpy_ns == 250
+    assert report.device_busy_ns == 130
+    assert report.device_busy_ns < report.total_kernel_ns + report.total_memcpy_ns
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,7 @@ from enum import Enum
 from patos import FrozenModel
 
 from .result import DeviceEvidence, Profile
-from .trace import Activity, KernelTrace, MemcpyTrace
+from .trace import Activity, KernelTrace, MemcpyTrace, busy_ns
 
 
 class Bound(Enum):
@@ -52,7 +52,10 @@ class ProfileReport(FrozenModel):
 
     dominant_kernel/dominant_share_pct: the hottest kernel and its slice of kernel time.
     bound: the memory-vs-compute verdict (:class:`Bound`). total_kernel_ns/total_memcpy_ns:
-    summed GPU time per class. achieved_bandwidth_gbps/peak_bandwidth_gbps: copy bandwidth
+    summed WORK time per class, one entry per traced record, which counts concurrent and nested
+    device work once each rather than once. device_busy_ns: the CLOCK time the device spent on
+    either, the union of both interval sets, and the only one of the three a share against a wall
+    time may divide. achieved_bandwidth_gbps/peak_bandwidth_gbps: copy bandwidth
     measured against the device peak (the memory-bound signal). peak_memory_bytes/
     avg_memory_bytes: the device-memory high-water mark and mean over the sampled run — the
     answer to "how much HBM did this kernel need". kernels: the per-kernel breakdown,
@@ -70,6 +73,7 @@ class ProfileReport(FrozenModel):
     total_kernel_ns: int = 0
     total_memcpy_ns: int = 0
     total_memcpy_bytes: int = 0
+    device_busy_ns: int = 0
     compute_pct: float = 0.0
     memcpy_pct: float = 0.0
     achieved_bandwidth_gbps: float = 0.0
@@ -123,6 +127,9 @@ class ProfileReport(FrozenModel):
             total_kernel_ns=total_kernel,
             total_memcpy_ns=total_memcpy,
             total_memcpy_bytes=memcpy_bytes,
+            device_busy_ns=busy_ns(
+                (span.start_ns, span.end_ns) for span in (*profile.kernels, *profile.memcpys)
+            ),
             compute_pct=100.0 * total_kernel / denom,
             memcpy_pct=100.0 * total_memcpy / denom,
             achieved_bandwidth_gbps=achieved,

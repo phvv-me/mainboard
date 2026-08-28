@@ -19,6 +19,7 @@ from .trace import (
     MemcpyTrace,
     RegionWindow,
     TraceCollector,
+    busy_ns,
 )
 from .tracer import Tracer, Vendor
 
@@ -54,6 +55,7 @@ __all__ = [
     "Vendor",
     "arch_config",
     "benchmark",
+    "busy_ns",
     "compare",
     "profile_stages",
 ]

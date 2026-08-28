@@ -1,7 +1,7 @@
 # Native activity records, span attribution, and bottleneck ranking.
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from enum import Flag, auto
 from types import TracebackType
 
@@ -256,6 +256,35 @@ class CallbackSession:
         """Unsubscribe from the callback domains."""
 
 
+def busy_ns(spans: Iterable[tuple[int, int]]) -> int:
+    """How long the device was BUSY over `spans`, the union of their half-open intervals.
+
+    spans: `(start_ns, end_ns)` pairs in one clock, in any order.
+
+    SUMMING DURATIONS IS NOT DEVICE TIME AND THE DIFFERENCE BITES AT LOW LAUNCH COUNTS. Anything
+    that runs concurrently, two streams, a copy under a kernel, or one span nested inside another
+    because a profiler reports the launching call beside the kernel it launched, is counted once
+    per record by a sum and once by the clock. `experiments/recovery_cost` in the reproducibility
+    workspace read a device share of 1.908 and 1.860 of its own wall from a sum like that, and its
+    2026-08-29 referee reproduced the factor at TEN launches, which is where the diagnosis
+    "an accounting artefact at several thousand launches" came from and why it was wrong: the
+    factor is structural, not statistical, so it does not wash out at any count.
+
+    A share against wall must divide this, never a sum. A sum answers a different question, how
+    much WORK the device did, and both are reported so neither has to stand in for the other.
+    """
+    ordered = sorted((start, end) for start, end in spans if end > start)
+    busy, reach = 0, None
+    for start, end in ordered:
+        if reach is None or start > reach:
+            busy += end - start
+            reach = end
+        elif end > reach:
+            busy += end - reach
+            reach = end
+    return busy
+
+
 class HotKernel(FrozenModel):
     """A kernel name's share of total kernel time."""
 
@@ -277,11 +306,17 @@ class HotRegion(FrozenModel):
 
 
 class BottleneckReport(FrozenModel):
-    """Where GPU time goes: compute-vs-copy split, hot regions and hot kernels."""
+    """Where GPU time goes: compute-vs-copy split, hot regions and hot kernels.
+
+    `total_kernel_ns` and `total_memcpy_ns` are summed WORK time, one entry per traced record.
+    `device_busy_ns` is the CLOCK time the device was doing either, the union of both sets of
+    intervals, and it is the only one of the three a share against wall may divide.
+    """
 
     total_kernel_ns: int
     total_memcpy_ns: int
     total_memcpy_bytes: int
+    device_busy_ns: int
     compute_pct: float
     memcpy_pct: float
     hot_regions: tuple[HotRegion, ...]
@@ -303,6 +338,7 @@ class BottleneckReport(FrozenModel):
             total_kernel_ns=total_kernel,
             total_memcpy_ns=total_memcpy,
             total_memcpy_bytes=sum(m.bytes_moved for m in memcpys),
+            device_busy_ns=busy_ns((span.start_ns, span.end_ns) for span in (*kernels, *memcpys)),
             compute_pct=100.0 * total_kernel / denom,
             memcpy_pct=100.0 * total_memcpy / denom,
             hot_regions=cls._hot_regions(windows, kernels, total=total_kernel or 1, top=top),
