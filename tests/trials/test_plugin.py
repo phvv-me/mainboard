@@ -358,6 +358,13 @@ def test_a_shuffling_plugin_is_held_still_and_the_declared_markers_are_registere
     ]
     assert config.stash[pytest_plugin.SESSION].run
 
+    # A suite nothing shuffles still opens its run, and the guard is not invented on a config
+    # that carries no such option to hold.
+    unshuffled = Configured(declaration(tmp_path))
+    pytest_plugin.pytest_configure(cast("pytest.Config", unshuffled))
+    assert not hasattr(unshuffled.option, "randomly_reorganize")
+    assert unshuffled.stash[pytest_plugin.SESSION].run
+
     bare = cast("pytest.Config", Configured(None))
     pytest_plugin.pytest_configure(bare)
     assert pytest_plugin.SESSION not in bare.stash

@@ -13,6 +13,7 @@ from mainboard.engines.compile.pixi_manifest import (
     rerooted,
     spec_toml,
 )
+from mainboard.engines.compile.platforms import PlatformMatrix
 from mainboard.manifest import Manifest, Scope, Spec
 
 # `Json` annotates a property's own arguments, which hypothesis resolves at run time.
@@ -223,6 +224,46 @@ def test_the_activation_table_sources_the_dotenv_loader_before_declared_scripts(
     """A declared script is workspace-relative, so it is rerooted like any other location."""
     manifest = manifest_from(f'[workspace]\nname = "w"\n{header}')
     assert PixiManifest.activation_table(manifest) == table
+
+
+@pytest.mark.parametrize(
+    ("declared", "isolated", "shared"),
+    [
+        pytest.param(
+            "OMP_NUM_THREADS = false",
+            {"scripts": ["unset.sh"]},
+            None,
+            id="an-isolated-environment-carries-the-workspace-clears-itself",
+        ),
+        pytest.param(
+            'OMP_NUM_THREADS = "8"',
+            None,
+            None,
+            id="a-setting-stays-with-the-default-feature-an-isolated-env-opted-out-of",
+        ),
+    ],
+)
+def test_a_cleared_variable_reaches_an_environment_that_excludes_the_default_feature(
+    declared: str,
+    isolated: dict[str, Toml] | None,
+    shared: dict[str, Toml] | None,
+    manifest_from: Callable[[str], Manifest],
+) -> None:
+    """`no-default` is a statement about the solve, and pixi applies it to activation too.
+
+    So an environment declaring it saw neither the workspace's settings nor its clears, and a
+    `[env] X = false` meant to guarantee a clean arithmetic environment silently stopped at the
+    one environment the GPU work actually runs under. A clear says the variable must not be
+    present at all, which isolation is a reason to honour rather than to skip, while a setting
+    is exactly what an isolated environment opted out of.
+    """
+    manifest = manifest_from(
+        f'[workspace]\nname = "w"\n[env]\n{declared}\n'
+        "[envs.vserve]\nno-default = true\n[envs.tools]\n"
+    )
+    feature, _ = PixiManifest.features(manifest, PlatformMatrix.from_manifest(manifest), _PROJECT)
+    assert feature["vserve"].get("activation") == isolated
+    assert feature["tools"].get("activation") == shared
 
 
 @settings(max_examples=10)

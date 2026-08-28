@@ -240,8 +240,22 @@ class PixiManifest(FrozenModel):
         return out
 
     @classmethod
-    def declared_feature(cls, name: str, env: Env, platforms: PlatformMatrix) -> Toml:
-        """One `[feature.<name>]` table: the env's own feature table, platforms and tasks."""
+    def declared_feature(
+        cls, name: str, env: Env, platforms: PlatformMatrix, *, clearing: bool = False
+    ) -> Toml:
+        """One `[feature.<name>]` table: the env's own feature table, platforms and tasks.
+
+        An environment declaring `no-default` starts from nothing but itself, and pixi reads
+        that exclusion as covering the workspace `[activation]` table too, not only the deps.
+        A clear is not a setting though. It is the workspace saying a variable must not be
+        present at all, which an isolated environment has more reason to honour rather than
+        less, and a variable the calling shell exported reaches an activated command whatever
+        the environment solved from. So the generated unset script is carried into an isolated
+        feature's own activation, and the environments that do include the default feature
+        already source it there and are left alone.
+
+        clearing: whether the workspace `[env]` table takes any variable away at all.
+        """
         return {
             **cls.feature_table(env),
             **(
@@ -254,6 +268,7 @@ class PixiManifest(FrozenModel):
                 if env.tasks
                 else {}
             ),
+            **({"activation": {"scripts": [_UNSET]}} if clearing and env.no_default else {}),
         }
 
     @classmethod
@@ -286,8 +301,10 @@ class PixiManifest(FrozenModel):
         `dev` carries the `[dev.*]` deps so a provisioned default env installs dev tooling
         beside the runtime deps.
         """
+        clearing = bool(cleared(m.env))
         feature: dict[str, Toml] = {
-            name: cls.declared_feature(name, env, platforms) for name, env in m.envs.items()
+            name: cls.declared_feature(name, env, platforms, clearing=clearing)
+            for name, env in m.envs.items()
         }
         environments: dict[str, Toml] = {
             name: {
