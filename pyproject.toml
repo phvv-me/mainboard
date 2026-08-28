@@ -18,6 +18,11 @@ dependencies = [
     "patos>=0.0.13",
     "plumbum>=1.8",
     "pathspec>=0.12",
+    # The trials subsystem stores receipts as parquet and `mainboard verdict` reads that store,
+    # so the reader ships with the tool rather than behind an extra. polars carries no
+    # dependencies of its own and is imported only by `mainboard.trials`, which no other verb
+    # touches, so a `doctor` or a `submit` still pays nothing for it.
+    "polars>=1.20",
     "psutil>=6.0",
     "pydantic>=2.9",
     "rich>=13.0",
@@ -34,6 +39,14 @@ wandb = ["wandb>=0.28"]
 
 [project.scripts]
 mainboard = "mainboard.cli:main"
+
+# NO `pytest11` ENTRY POINT, and the reason is this file's own coverage gate. An entry-point
+# plugin is imported by pytest before pytest-cov starts its engine, so every module the plugin
+# pulls in has its definitions executed unmeasured and the whole trials subsystem reads as
+# uncovered however thoroughly it is tested. A consumer registers the plugin with one line,
+# `pytest_plugins = ["mainboard.trials.pytest_plugin"]` in its rootdir conftest, which is the
+# ordinary way to register a plugin module and also keeps `--paid` and `--rerun` out of every
+# unrelated pytest session on a machine this tool happens to be installed beside.
 
 [dependency-groups]
 # uv installs this group by default, so `uv sync` alone builds the whole gate. Every tool the
@@ -71,12 +84,15 @@ max_output_tokens = 384000
 # route liveness cannot be judged from this repository alone. Every export here without a
 # monorepo consumer was already pruned, and what remains is consumed outside this checkout.
 # The tracking initializer exports its sink module because importing it is what registers the
-# sink under `Tracker`, the seam a fresh `mainboard submit` mints services through.
+# sink under `Tracker`, the seam a fresh `mainboard submit` mints services through. The trials
+# facade is the same case one subsystem inward: its whole audience is a consumer's conftest and
+# a consumer's render, neither of which lives in this checkout.
 [tool.mcmr.rules."PY-MODU0005"]
 exclude = [
   "src/mainboard/__init__.py",
   "src/mainboard/profile/__init__.py",
   "src/mainboard/tracking/__init__.py",
+  "src/mainboard/trials/__init__.py",
 ]
 
 # pytest binds every test and fixture argument by name, never by position, so two adjacent
@@ -125,6 +141,13 @@ exclude = [
 # leading underscore would turn into protected-member reads inside `src`. The tests share one
 # Hypothesis strategy catalog and one frame catalog, and the house rule against importing
 # underscore names keeps a shared catalog public.
+# The trials subsystem's constants are its written-down contracts and are public on purpose:
+# `NESTED` is the encoded-column list a writer and a reader must agree on, `PROBED` is the probe
+# outcome column suffix, `SOURCE_VAR` is the environment variable a dispatcher declares a mirrored
+# commit in, `MARKERS` is the marker table a consumer may replace, `WORD` is the report property a
+# settled word rides to the terminal on, and `SESSION` and `PASSED` are the two stash keys the
+# plugin's hooks share. The trials tests share one provenance catalog and one conftest source the
+# same way the other shared test catalogs do.
 [tool.mcmr.rules."PY-CONS0001"]
 exclude = [
   "src/mainboard/dispatch/vocabulary.py",
@@ -135,14 +158,26 @@ exclude = [
   "src/mainboard/probe/facts/drive_info.py",
   "tests/strategies.py",
   "tests/observe/support.py",
+  "src/mainboard/trials/coverage.py",
+  "src/mainboard/trials/declaration.py",
+  "src/mainboard/trials/ledger.py",
+  "src/mainboard/trials/provenance.py",
+  "src/mainboard/trials/pytest_plugin.py",
+  "src/mainboard/trials/session.py",
+  "tests/trials",
 ]
 
 # Each of these types is a record whose field count belongs to the shape it mirrors: a manifest
 # table a user writes, a scheduler's job description, a provider's catalog row, a CUPTI or NVML
 # reading, a profile report row. Narrowing the record would drop a field of the external shape.
-# The test files mirror the SDK surfaces their doubles stand in for.
+# The test files mirror the SDK surfaces their doubles stand in for. A trials `Session` is one
+# run of a universe, and its eight fields are eight facts about that run: its identity, what it
+# declared, the provenance every row carries, the flag baseline, the open stores, the collected
+# lanes, the claim now resident and the first trial that moved a flag. None is derivable from
+# another and dropping any one loses a column of the receipt or a line of the refusal.
 [tool.mcmr.rules."ALL-CLAS0004"]
 exclude = [
+  "src/mainboard/trials/session.py",
   "src/mainboard/batch/estimate.py",
   "src/mainboard/batch/spec.py",
   "src/mainboard/costs/catalog.py",
@@ -191,6 +226,11 @@ exclude = ["src", "tests"]
 # states the domain rather than a constant. The tests share one Hypothesis strategy catalog
 # (`tests/strategies.py`), and a strategy is declared once and composed by name everywhere,
 # which is the pattern the property-based suite is built on.
+# A subsystem states each of its contracts once and every module that speaks it imports the one
+# spelling. `NESTED` in the writer and the reader, `PROBED` in the coordinate and the store,
+# `RECEIPTS_VAR` from the dispatch boundary that owns it: retyping any of them is how a writer and
+# a reader come to disagree about the same file, which is the defect this rule guards against and
+# the reason these imports exist.
 [tool.mcmr.rules."PY-CONS0002"]
 exclude = [
   "tests",
@@ -201,6 +241,7 @@ exclude = [
   "src/mainboard/probe/providers/apple/npu.py",
   "src/mainboard/probe/providers/nvidia/gpu.py",
   "src/mainboard/profile/profiler.py",
+  "src/mainboard/trials",
 ]
 
 # White-box tests pin the exact seam they monkeypatch or assert on, and that seam is deliberately
@@ -265,12 +306,16 @@ exclude = ["tests/profile/test_spans.py"]
 # The profiler and CUPTI tracer records are built once per span or activity record on the
 # measurement hot path, where pydantic validation would cost more than what is being measured.
 # Test doubles mirror SDK record shapes the real SDK never validates.
+# A `Flag` is a name and two bare callables, so a pydantic model would have to be told to accept
+# arbitrary types and would validate nothing it did not already know. The same reason the lab
+# vocabulary is excluded above.
 [tool.mcmr.rules."PY-MODE0005"]
 exclude = [
   "src/mainboard/lab",
   "src/mainboard/profile/profiler.py",
   "src/mainboard/profile/providers/nvidia/tracer.py",
   "tests",
+  "src/mainboard/trials/flags.py",
 ]
 
 # This package's collection policy is immutable by default: results are hashable patos
@@ -283,11 +328,14 @@ exclude = ["src", "tests"]
 # The three fixed pairs the rule still flags are records: `(stream, job)` on a sampling line,
 # the `(domain, id)` handle nvtx hands back, and a parametrized `(env, script)` expectation.
 # Loosening them to `Sequence` would lose exactly the pair shape their readers destructure.
+# `pytest_collection_modifyitems` takes a `list` because pytest's own hookspec does, and a
+# plugin that narrowed it would be describing a different hook from the one it implements.
 [tool.mcmr.rules."PY-COLL0001"]
 exclude = [
   "src/mainboard/board.py",
   "src/mainboard/profile/providers/nvidia/protocols.py",
   "tests/test_board.py",
+  "src/mainboard/trials/pytest_plugin.py",
 ]
 
 # One module holds one closed type family, the shapes of one contract, named by the module
@@ -333,6 +381,8 @@ exclude = ["src", "tests"]
 # `__getattr__` is the PEP 562 hook the interpreter itself calls, `script` and `sh` are root
 # facade exports consumed outside this checkout, and the protocol classes type the optional
 # CUDA, NVML and profiling SDK surfaces that appear only in annotations.
+# Every `pytest_` function in the plugin is called by pluggy off its own hookspec, so no
+# reference to one exists anywhere and none ever will.
 [tool.mcmr.rules."ALL-REAC0001"]
 exclude = [
   "src/mainboard/__init__.py",
@@ -340,6 +390,7 @@ exclude = [
   "src/mainboard/probe/providers/nvidia/protocols.py",
   "src/mainboard/profile/protocols.py",
   "src/mainboard/profile/spans.py",
+  "src/mainboard/trials/pytest_plugin.py",
 ]
 
 # These prints are the product, not debris: `render/present` is the CLI's one output seam, and
@@ -363,14 +414,26 @@ exclude = ["src/mainboard/profile/profiler.py", "tests"]
 
 # The schedulers are `Scheduler` registry implementations: the class is the unit runtime
 # dispatch selects by kind, so a namespace of verbs is its whole job. `Fabric` is a frozen
-# fact model whose classmethods build it from sysfs.
+# fact model whose classmethods build it from sysfs. `Local` and `Fleet` are the same shape one
+# subsystem over: each implements the `Distribution` protocol, and the class is what a caller
+# substitutes, so two verbs is exactly the size of the contract.
 [tool.mcmr.rules."PY-CLAS0003"]
-exclude = ["src/mainboard/dispatch/schedulers", "src/mainboard/probe/facts/fabric.py"]
+exclude = [
+  "src/mainboard/dispatch/schedulers",
+  "src/mainboard/probe/facts/fabric.py",
+  "src/mainboard/trials/distribution.py",
+]
 
 # `Tracker` and `Delivery` are registry roots, the published extension seams a new sink or
 # provider subclasses into. How many implementations exist today is not the contract.
+# `Figures` is a seam whose implementations are the CONSUMER'S renders: the whole design is that
+# the refusal, the current-view read and the determinism check live here and the plotting does not,
+# so the only subclass in this repository will always be the one its own test declares.
 [tool.mcmr.rules."PY-INTE0002"]
-exclude = ["src/mainboard/dispatch/backends/base.py", "src/mainboard/tracking/base.py"]
+exclude = [
+  "src/mainboard/dispatch/backends/base.py", "src/mainboard/tracking/base.py",
+  "src/mainboard/trials/figures.py",
+]
 
 # Each subsystem names its own faults where they arise: `core.errors` holds the workspace-wide
 # `MissionError`, transport holds the connectivity family every scheduler shares.
@@ -427,8 +490,22 @@ exclude = [
 # declared, and each enum those calls index into needs its own protocol, because they are
 # separate objects with separate members. Splitting the module would state a boundary NVML
 # does not have.
+# A plugin's member count is pytest's hook list plus two fixtures, which is not ours to shorten,
+# and the verdict reader's is one settled-row shape per evidence shape it reads.
+# The verdict reader gained the receipts-store branch, which is one more evidence shape read
+# through the same settled-row surface rather than a second module a caller has to know about.
+[tool.mcmr.rules."ALL-MODU0001"]
+exclude = ["src/mainboard/verdicts.py"]
+
+[tool.mcmr.rules."ALL-MODU0006"]
+exclude = ["src/mainboard/verdicts.py"]
+
 [tool.mcmr.rules."ALL-MODU0002"]
-exclude = ["src/mainboard/probe/providers/nvidia/protocols.py"]
+exclude = [
+  "src/mainboard/probe/providers/nvidia/protocols.py",
+  "src/mainboard/trials/pytest_plugin.py",
+  "src/mainboard/verdicts.py",
+]
 
 # `profile` reaching `probe.units` is the one deliberate edge between them, and it buys the whole
 # default: a session that wants device evidence and was handed no probe finds the host's own
