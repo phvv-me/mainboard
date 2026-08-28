@@ -6,7 +6,14 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from mainboard.profile import Profile, ProfileDiff, RegionStat, RegionSummary, perfetto
+from mainboard.profile import (
+    DeviceEvidence,
+    Profile,
+    ProfileDiff,
+    RegionStat,
+    RegionSummary,
+    perfetto,
+)
 
 from .support import traced_profile
 
@@ -64,8 +71,22 @@ def test_a_diff_matches_regions_by_name_and_survives_a_round_trip(tmp_path: Path
             ("Spans", "oldest spans dropped"),
             ("oldest GPU activities dropped",),
         ),
+        (
+            Profile(
+                summaries=(RegionSummary(name="r", wall_ms=1.0),),
+                device_evidence=DeviceEvidence.ABSENT,
+            ),
+            ("Spans", "Device", "no device evidence collected"),
+            ("GPU activity",),
+        ),
     ],
-    ids=["nothing_collected", "spans_and_gpu_activity", "activities_dropped", "spans_dropped"],
+    ids=[
+        "nothing_collected",
+        "spans_and_gpu_activity",
+        "activities_dropped",
+        "spans_dropped",
+        "device_evidence_asked_for_and_absent",
+    ],
 )
 def test_the_report_carries_only_the_evidence_sections_it_has(
     profile: Profile, present: Sequence[str], absent: Sequence[str]

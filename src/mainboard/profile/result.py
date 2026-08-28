@@ -1,5 +1,6 @@
 # The `Profile`, the result of a profiling session, and what you do with it.
 
+from enum import StrEnum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,25 @@ from .trace import ActivityRecord, BottleneckReport, KernelTrace, MemcpyTrace, R
 
 if TYPE_CHECKING:
     from os import PathLike
+
+
+class DeviceEvidence(StrEnum):
+    """What a session has to say about device evidence, so silence is never ambiguous.
+
+    A profile that collected nothing from a GPU and a profile that was never asked to look
+    at one render identically, which is how a session that quietly attached to no device at
+    all reads as a run that simply did no GPU work. Saying which of the two happened is the
+    difference between a result and an empty file.
+
+    UNSOUGHT: neither device telemetry nor GPU activity was requested, so none is expected.
+    ABSENT: it was requested and none came back, because no device was visible to this
+        session or because the profiled code never touched the one that was.
+    COLLECTED: at least one device reading, kernel, copy or activity was observed.
+    """
+
+    UNSOUGHT = auto()
+    ABSENT = auto()
+    COLLECTED = auto()
 
 
 class RegionDelta(FrozenModel):
@@ -64,11 +84,13 @@ class Profile(FrozenModel):
     """One immutable result containing only evidence that was observed.
 
     Span timings, process GPU telemetry, and native activities are independently
-    optional. A detected but unused GPU never creates output.
+    optional. A detected but unused GPU never creates output, so `device_evidence`
+    carries whether the silence was expected, which no absent section can say.
     """
 
     host: str = ""
     device: str = ""
+    device_evidence: DeviceEvidence = DeviceEvidence.UNSOUGHT
     summaries: tuple[RegionSummary, ...] = ()
     windows: tuple[RegionWindow, ...] = ()
     kernels: tuple[KernelTrace, ...] = ()
@@ -134,6 +156,8 @@ class Profile(FrozenModel):
                 f"{len(self.activities)} other activities, "
                 f"{report.total_kernel_ns / 1e6:.2f} ms kernel time"
             )
+        if self.device_evidence is DeviceEvidence.ABSENT:
+            sections.append("Device\nno device evidence collected: asked for it and observed none")
         drops = []
         if self.dropped_spans:
             drops.append(f"{self.dropped_spans} oldest spans dropped")

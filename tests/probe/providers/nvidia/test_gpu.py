@@ -194,6 +194,79 @@ def test_utilization_takes_the_first_layer_that_answers(
     assert (reading.gpu_pct, reading.memory_pct) == expected
 
 
+@pytest.mark.parametrize(
+    ("refuse", "peak_gbs"),
+    [(False, 1008.096), (True, 0.0)],
+    ids=["bus_width_times_the_doubled_memory_clock", "nvml_refuses"],
+)
+def test_peak_bandwidth_is_the_bus_width_times_the_doubled_memory_clock(
+    refuse: bool,
+    peak_gbs: float,
+    nvidia_host: FakeNvidiaApis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The vendor headline figure, computed rather than looked up in a table of cards.
+
+    A 384-bit bus at 10501 MHz is a 4090's 1008 GB/s, and a device whose clock query is
+    unsupported scores nothing rather than reporting a fabricated peak.
+    """
+    if refuse:
+        monkeypatch.setattr(nvidia_host.nvml, "device_get_max_clock_info", raise_unsupported)
+    assert NvidiaGPU(index=0).peak_bandwidth_gbs == pytest.approx(peak_gbs)
+
+
+def test_a_snapshot_gathers_every_sensor_the_device_answers(nvidia_host: FakeNvidiaApis) -> None:
+    """One reading carries identity, region, power, temperature, utilization and processes."""
+    reading = NvidiaGPU(index=0).snapshot(name="matmul")
+    assert reading.unit_name == "NVIDIA GeForce RTX 4090"
+    assert reading.region == "matmul"
+    assert reading.energy.power_w == pytest.approx(17.647)
+    assert reading.thermal.temperature_c == 42
+    assert reading.utilization.gpu_pct == 61
+    assert [(item.pid, item.used_bytes) for item in reading.processes] == [(4242, 2 * _GIB)]
+
+
+def test_each_sensor_degrades_on_its_own_rather_than_sinking_the_reading(
+    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A device refusing every sensor still answers, with each field at its neutral value."""
+    for query in (
+        "device_get_power_usage",
+        "device_get_temperature_v",
+        "device_get_compute_running_processes_v3",
+        "device_get_current_clocks_event_reasons",
+    ):
+        monkeypatch.setattr(nvidia_host.nvml, query, raise_unsupported)
+    reading = NvidiaGPU(index=0).snapshot()
+    assert reading.unit_name == "NVIDIA GeForce RTX 4090"
+    assert (reading.energy.power_w, reading.thermal.temperature_c) == (0.0, 0)
+    assert reading.processes == ()
+    assert reading.thermal.is_throttling is False
+
+
+def test_only_the_real_slowdowns_count_as_throttling(
+    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An idle device is not a throttled one, so the benign bits never reach the reading.
+
+    NVML answers with one mask covering both, and every idle GPU sets a bit in it, so
+    reading the mask as a boolean would report a healthy device as held back.
+    """
+    reasons = nvidia_host.nvml.ClocksEventReasons
+    assert NvidiaGPU(index=0).snapshot().thermal.is_throttling is False  # only the idle bit
+
+    monkeypatch.setattr(
+        nvidia_host.nvml,
+        "clocks_event_reasons",
+        reasons.EVENT_REASON_GPU_IDLE
+        | reasons.EVENT_REASON_SW_POWER_CAP
+        | reasons.THROTTLE_REASON_HW_THERMAL_SLOWDOWN,
+    )
+    thermal = NvidiaGPU(index=0).snapshot().thermal
+    assert thermal.is_throttling is True
+    assert thermal.throttle_names == ("power cap", "hardware thermal")
+
+
 def test_system_api_refuses_when_the_optional_layer_never_loaded(
     install_nvidia_stack: InstallNvidiaStack,
 ) -> None:

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard import Profiler as RealProfiler
+from mainboard.probe import GPU
 from mainboard.profile import Activity, Profile, ProfileReport, annotate, bottleneck
 
 from .support import FakeGPU, FakeMemory, FakeUtilization, kernel
@@ -35,12 +36,16 @@ class _NoTracer:
 
 
 class _RecordingProfiler:
-    """A `Profiler` stand-in that ignores tracing and returns a fixed kernel `Profile`."""
+    """A `Profiler` stand-in that ignores tracing and returns a fixed kernel `Profile`.
+
+    It settles on a device the way the real session does, since the report is scored against
+    whichever device the session ended up on rather than against the argument it was handed.
+    """
 
     Feature = None
 
-    def __init__(self, **_) -> None:
-        pass
+    def __init__(self, *, gpus: tuple[FakeGPU, ...] = (), **_) -> None:
+        self.gpu = gpus[0] if gpus else None
 
     def __enter__(self) -> _RecordingProfiler:
         return self
@@ -106,6 +111,18 @@ def test_profile_on_a_cpu_only_host_is_graceful(monkeypatch: pytest.MonkeyPatch)
     assert report.kernels == ()
     assert report.peak_bandwidth_gbps == 0.0
     assert report.unavailable == ()  # no backend -> nothing is flagged unavailable
+
+
+def test_a_discovered_device_still_scores_the_bandwidth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Naming no device costs the trace nothing, so it must not cost the report its peak either.
+
+    The session finds the host's own card, and the copy bandwidth is graded against that card's
+    peak rather than against the zero a caller who passed no argument would otherwise get.
+    """
+    monkeypatch.setattr(bottleneck, "tracer", lambda: _NoTracer())
+    monkeypatch.setattr(GPU, "all", staticmethod(lambda: (FakeGPU(peak_bandwidth_gbs=900.0),)))
+    report = bottleneck.profile(lambda: None, iters=1)
+    assert report.peak_bandwidth_gbps == 900.0
 
 
 @pytest.mark.parametrize(

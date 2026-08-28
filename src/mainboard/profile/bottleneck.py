@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .protocols import BusyDevice, DeviceProbe
-    from .result import Profile
 
 
 def profile[T, S](
@@ -28,8 +27,10 @@ def profile[T, S](
     """Run ``fn`` under the profiler and return its bottleneck report.
 
     fn: the zero-arg callable to profile (bind args with a lambda/partial).
-    gpu: the device to profile and score bandwidth against, or ``None`` for a CPU-only
-        run (`mainboard.probe` is not a dependency of profiling, so the caller resolves it).
+    gpu: the device to profile and score bandwidth against. Left ``None`` the session
+        discovers the host's own devices, so this is an override for picking one of
+        several. Bandwidth is scored against whichever device the session ended up on,
+        discovered or named, so a report never loses its peak for want of an argument.
     iters: timed runs of ``fn`` bracketed in one trace pass; warmup: untimed runs first.
     sync: a device barrier after each run (e.g. ``torch.cuda.synchronize``) so async GPU
         work is captured rather than just the launch.
@@ -38,11 +39,12 @@ def profile[T, S](
     """
     supported = tracer().supported()
     granted = kinds & supported if supported else Activity(0)
-    profile_result = _run(fn, iters=iters, warmup=warmup, sync=sync, kinds=granted, gpu=gpu)
+    session = _run(fn, iters=iters, warmup=warmup, sync=sync, kinds=granted, gpu=gpu)
+    scored = session.gpu
     return ProfileReport.from_profile(
-        profile_result,
+        session.result(),
         iterations=iters,
-        peak_bandwidth_gbps=gpu.peak_bandwidth_gbs if gpu is not None else 0.0,
+        peak_bandwidth_gbps=scored.peak_bandwidth_gbs if scored is not None else 0.0,
         # only flag dropped kinds when a backend offered *some* tracing; with no
         # backend at all (CPU-only host) there is nothing to call unavailable.
         supported=supported.value if supported else None,
@@ -58,19 +60,25 @@ def _run[T, S](
     sync: Callable[[], S] | None,
     kinds: Activity,
     gpu: DeviceProbe | None,
-) -> Profile:
-    """Warm up, then run `iters` timed passes inside one traced `span`."""
+) -> Profiler:
+    """Warm up, run `iters` timed passes inside one traced `span`, and hand back the session.
+
+    The finished session rather than its result, since the caller also needs the device the
+    session settled on, which is the discovered one whenever it was handed none.
+    """
     for _ in range(warmup):
         fn()
     if sync is not None:
         sync()
+    # ACTIVITY is requested only when a backend granted kinds to collect, since asking a
+    # host with no tracing backend for a deep trace is a request nobody can serve and the
+    # profiler now refuses it rather than returning an empty pass. With no `gpu` named the
+    # profiler discovers the host's own, so a GPU host traces without a hand-carried probe.
+    deep = Profiler.Feature.ACTIVITY if kinds else Profiler.Feature(0)
     with Profiler(
         gpus=(gpu,) if gpu is not None else (),
         features=(
-            Profiler.Feature.SPANS
-            | Profiler.Feature.DEVICE
-            | Profiler.Feature.MARKERS
-            | Profiler.Feature.ACTIVITY
+            Profiler.Feature.SPANS | Profiler.Feature.DEVICE | Profiler.Feature.MARKERS | deep
         ),
         activities=kinds,
     ) as profiler:
@@ -79,7 +87,7 @@ def _run[T, S](
                 fn()
             if sync is not None:
                 sync()
-    return profiler.result()
+    return profiler
 
 
 def gpu_busy(

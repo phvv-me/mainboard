@@ -7,6 +7,7 @@ from hypothesis import strategies as st
 from mainboard.profile import (
     Activity,
     Bound,
+    DeviceEvidence,
     MemcpyTrace,
     Profile,
     ProfileReport,
@@ -134,6 +135,17 @@ def test_copy_bandwidth_is_bytes_over_copy_time_scored_against_peak(
     report = _report(profile, peak_bandwidth_gbps=10.0)
     assert report.achieved_bandwidth_gbps == achieved_gbps
     assert "of peak" in report.report()
+
+
+def test_the_verdict_admits_when_the_device_half_of_it_is_empty() -> None:
+    """A bottleneck verdict built from a device-less run says so instead of reading as `cpu`.
+
+    `device cpu | unknown-bound` is what a real CPU-only run looks like and what a run that
+    silently attached to no device looked like, so the verdict carries the difference.
+    """
+    profile = Profile(device_evidence=DeviceEvidence.ABSENT)
+    assert "no device evidence collected" in _report(profile).report()
+    assert "no device evidence collected" not in _report(Profile()).report()
 
 
 def test_sampled_memory_becomes_the_high_water_mark_and_the_mean() -> None:

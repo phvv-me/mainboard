@@ -95,25 +95,92 @@ class FakeUtilizationReading:
         self.memory = memory
 
 
+class FakeClockType:
+    """Mimic `nvmlClockType_t`, read only for the memory-clock domain."""
+
+    CLOCK_MEM = 2
+
+
+class FakeTemperatureSensors:
+    """Mimic `nvmlTemperatureSensors_t`, read only for the die sensor."""
+
+    TEMPERATURE_GPU = 0
+
+
+class FakeClocksEventReasons:
+    """Mimic the `nvmlClocksEventReasons` bitmask, benign bits included.
+
+    `EVENT_REASON_GPU_IDLE` is the one every idle device sets and the provider must ignore,
+    so it is here even though nothing reads it by name.
+    """
+
+    EVENT_REASON_GPU_IDLE = 0x1
+    EVENT_REASON_APPLICATIONS_CLOCKS_SETTING = 0x2
+    EVENT_REASON_SW_POWER_CAP = 0x4
+    THROTTLE_REASON_HW_SLOWDOWN = 0x8
+    EVENT_REASON_SYNC_BOOST = 0x10
+    EVENT_REASON_SW_THERMAL_SLOWDOWN = 0x20
+    THROTTLE_REASON_HW_THERMAL_SLOWDOWN = 0x40
+    THROTTLE_REASON_HW_POWER_BRAKE_SLOWDOWN = 0x80
+
+
+class FakeProcessInfo:
+    """One NVML compute-context entry: the process and what it holds on the device."""
+
+    def __init__(self, *, pid: int, used_gpu_memory: int) -> None:
+        self.pid = pid
+        self.used_gpu_memory = used_gpu_memory
+
+
 class FakeNvml:
-    """Minimal `cuda.bindings.nvml` surface used by the provider."""
+    """Minimal `cuda.bindings.nvml` surface used by the provider.
+
+    The sensor readings are a 4090 at idle: 1008 GB/s of peak bandwidth from a 384-bit bus
+    at 10501 MHz, 17.6 W, 42 C, and a clocks-event mask carrying only the benign idle bit.
+    """
 
     NotSupportedError = FakeError
     NoPermissionError = FakeError
     UnknownError = FakeError
     GpuIsLostError = FakeError
+    ClockType = FakeClockType
+    ClocksEventReasons = FakeClocksEventReasons
+    TemperatureSensors = FakeTemperatureSensors
+
+    def __init__(
+        self, clocks_event_reasons: int = FakeClocksEventReasons.EVENT_REASON_GPU_IDLE
+    ) -> None:
+        self.clocks_event_reasons = clocks_event_reasons
+
+    def device_get_compute_running_processes_v3(self, handle: str) -> tuple[FakeProcessInfo, ...]:
+        return (FakeProcessInfo(pid=4242, used_gpu_memory=2 * 1024**3),)
 
     def device_get_cuda_compute_capability(self, handle: str) -> tuple[int, int]:
         return (8, 9)
 
+    def device_get_current_clocks_event_reasons(self, handle: str) -> int:
+        return self.clocks_event_reasons
+
     def device_get_handle_by_pci_bus_id_v2(self, bus_id: str) -> str:
         return f"handle:{bus_id}"
+
+    def device_get_max_clock_info(self, handle: str, clock: int) -> int:
+        return 10501
+
+    def device_get_memory_bus_width(self, handle: str) -> int:
+        return 384
 
     def device_get_memory_info_v2(self, handle: str) -> FakeMemoryInfo:
         return FakeMemoryInfo(24 * 1024**3, used=6 * 1024**3, free=18 * 1024**3)
 
     def device_get_name(self, handle: str) -> str:
         return "NVIDIA GeForce RTX 4090"
+
+    def device_get_power_usage(self, handle: str) -> int:
+        return 17_647
+
+    def device_get_temperature_v(self, handle: str, sensor: int) -> int:
+        return 42
 
     def device_get_utilization_rates(self, handle: str) -> FakeUtilizationReading:
         return FakeUtilizationReading(gpu=48, memory=22)

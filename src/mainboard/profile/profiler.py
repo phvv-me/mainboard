@@ -15,12 +15,17 @@ from typing import TypeAlias
 
 from patos import FrozenModel
 
+# The one place profiling reaches the probe package: a session that wants device evidence
+# and was handed no device finds the host's own. `probe.units.gpu` is the narrowest entry
+# (it imports nothing from here, and `GPU.all` loads the vendor providers itself), so the
+# `probe.gating` -> `profile.bottleneck` direction cannot close into a cycle.
+from ..probe.units.gpu import GPU
 from . import annotate
 from .models import ProcessReading, RegionStat, RegionSummary
 from .protocols import (
     DeviceProbe,  # noqa: TC001  reason=Profiler is inspect.signature()'d in tests, so __init__'s Sequence[DeviceProbe] annotation must resolve at runtime since=2026-08-17
 )
-from .result import Profile
+from .result import DeviceEvidence, Profile
 from .spans import activate, deactivate
 from .trace import Activity as NativeActivity
 from .trace import BottleneckReport, RegionWindow, TraceCollector
@@ -204,10 +209,19 @@ class Profiler:
         if self.active:
             raise RuntimeError("a Profiler instance cannot be entered twice")
         wanted = self.collection.features
-        index = self.collection.device_index
-        gpus = self.gpus if wanted & (self.Feature.DEVICE | self.Feature.ACTIVITY) else ()
-        if gpus:
-            self.gpu = gpus[index] if index < len(gpus) else gpus[0]
+        if wanted & (self.Feature.DEVICE | self.Feature.ACTIVITY):
+            # Correct behaviour is not an opt-in and a tool does not re-ask for what it already
+            # holds, so a session that wants device evidence and was handed no probe discovers
+            # the host's own cards rather than collecting nothing.
+            self.gpus = self.gpus or GPU.all()
+            self.gpu = self._selected()
+        if self.gpu is None and self._demands_activity():
+            raise RuntimeError(
+                "GPU activity collection was requested and no device is visible here, so "
+                "this session would collect nothing. Run `mainboard facts` to see what the "
+                "host probe finds, or drop `Profiler.Feature.ACTIVITY` to profile the host "
+                "alone."
+            )
         if wanted & (self.Feature.MARKERS | self.Feature.ACTIVITY):
             present = frozenset(gpu.vendor for gpu in self.gpus)
             self.tracer = annotate.tracer(present=present)
@@ -309,6 +323,16 @@ class Profiler:
         """Return the slowest span paths in the current session."""
         return self.result().bottlenecks(top)
 
+    def _demands_activity(self) -> bool:
+        """Whether this session asked for GPU activity specifically rather than by default.
+
+        Under `DEFAULT` the caller asked for everything worth having and a host without a
+        GPU should still profile its Python; asking for `ACTIVITY` by name on such a host
+        is a request that cannot be served, and serving it silently is the bug.
+        """
+        wanted = self.collection.features
+        return bool(wanted & self.Feature.ACTIVITY) and wanted != self.Feature.DEFAULT
+
     def enter(self, name: str) -> int:
         """Open one span and return the exact token later used to close it."""
         stack = self.stack.get()
@@ -329,6 +353,13 @@ class Profiler:
             )
         self.stack.set((*stack, token))
         return token
+
+    def _evidence(self, *, observed: bool) -> DeviceEvidence:
+        """Say whether device evidence came back, or was never asked for in the first place."""
+        if observed:
+            return DeviceEvidence.COLLECTED
+        wanted = self.collection.features & (self.Feature.DEVICE | self.Feature.ACTIVITY)
+        return DeviceEvidence.ABSENT if wanted else DeviceEvidence.UNSOUGHT
 
     def exit(self, token: int, *, wall_ns: int) -> None:
         """Close one span and fold its timing, device samples, and activity window."""
@@ -386,6 +417,7 @@ class Profiler:
             device=self.gpu_label
             if self.gpu_evidence
             else (self.gpu.label if used_gpu and self.gpu is not None else ""),
+            device_evidence=self._evidence(observed=used_gpu),
             summaries=tuple(
                 RegionSummary.from_snaps(item.name, item.wall_ms, item.samples)
                 for item in self.measurements
@@ -413,6 +445,13 @@ class Profiler:
             with self.lock:
                 for frame in frames:
                     frame.samples.append(snapshot)
+
+    def _selected(self) -> DeviceProbe | None:
+        """The device this session samples: the `device_index`th visible one, else the first."""
+        if not self.gpus:
+            return None
+        index = self.collection.device_index
+        return self.gpus[index] if index < len(self.gpus) else self.gpus[0]
 
     def stats(self) -> list[RegionStat]:
         """Return per-span aggregates for the current session."""

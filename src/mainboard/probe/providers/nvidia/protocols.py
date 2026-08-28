@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Protocol
 
 
@@ -60,6 +61,41 @@ class CudaRuntime(Protocol):
     def cudaSetDevice(self, index: int) -> tuple[int]: ...
 
 
+class ClockDomain(Protocol):
+    """The `nvmlClockType_t` enum, read only for the memory-clock domain."""
+
+    CLOCK_MEM: int
+
+
+class TemperatureSensor(Protocol):
+    """The `nvmlTemperatureSensors_t` enum, read only for the die sensor."""
+
+    TEMPERATURE_GPU: int
+
+
+class ClocksEvent(Protocol):
+    """The `nvmlClocksEventReasons` bits that mean the device is really being held back.
+
+    The enum carries benign members too (an idle device, an applied clock setting); only
+    the ones that cost real performance are named here, so the provider cannot read a
+    healthy device as a throttled one.
+    """
+
+    EVENT_REASON_SW_POWER_CAP: int
+    EVENT_REASON_SW_THERMAL_SLOWDOWN: int
+    EVENT_REASON_SYNC_BOOST: int
+    THROTTLE_REASON_HW_POWER_BRAKE_SLOWDOWN: int
+    THROTTLE_REASON_HW_SLOWDOWN: int
+    THROTTLE_REASON_HW_THERMAL_SLOWDOWN: int
+
+
+class ProcessInfo(Protocol):
+    """One NVML compute-context entry: the process and what it holds on the device."""
+
+    pid: int
+    used_gpu_memory: int
+
+
 class Nvml(Protocol):
     """The NVML functions the provider calls (snake_case `cuda.bindings._nvml`).
 
@@ -67,13 +103,31 @@ class Nvml(Protocol):
     dedicated `NvmlHandle` protocol below rather than inspected.
     """
 
+    ClockType: ClockDomain
+    ClocksEventReasons: ClocksEvent
+    TemperatureSensors: TemperatureSensor
+
+    def device_get_compute_running_processes_v3(
+        self, handle: NvmlHandle
+    ) -> Sequence[ProcessInfo]: ...
+
     def device_get_cuda_compute_capability(self, handle: NvmlHandle) -> tuple[int, int]: ...
 
+    def device_get_current_clocks_event_reasons(self, handle: NvmlHandle) -> int: ...
+
     def device_get_handle_by_pci_bus_id_v2(self, pci_bus_id: str) -> NvmlHandle: ...
+
+    def device_get_max_clock_info(self, handle: NvmlHandle, clock: int) -> int: ...
+
+    def device_get_memory_bus_width(self, handle: NvmlHandle) -> int: ...
 
     def device_get_memory_info_v2(self, handle: NvmlHandle) -> MemoryInfo: ...
 
     def device_get_name(self, handle: NvmlHandle) -> bytes | str: ...
+
+    def device_get_power_usage(self, handle: NvmlHandle) -> int: ...
+
+    def device_get_temperature_v(self, handle: NvmlHandle, sensor: int) -> int: ...
 
     def device_get_utilization_rates(self, handle: NvmlHandle) -> UtilizationInfo: ...
 

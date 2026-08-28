@@ -4,6 +4,7 @@ from functools import cached_property
 
 from ...enums import Vendor
 from ...facts.memory import Memory
+from ...facts.telemetry import Energy, Telemetry, Thermal, UnitProcess
 from ...facts.utilization import Utilization
 from ...units.gpu import GPU
 from . import apis
@@ -141,6 +142,21 @@ class NvidiaGPU(GPU):
         return text(raw).split("\x00", 1)[0].strip()
 
     @cached_property
+    def peak_bandwidth_gbs(self) -> float:
+        """Theoretical peak memory bandwidth in GB/s, 0.0 when NVML will not report it.
+
+        The bus width times the maximum memory clock, doubled because the memories move
+        data on both clock edges. That reproduces the vendor headline figure exactly, 1008
+        GB/s for a 4090's 384-bit bus at 10501 MHz.
+        """
+        with suppress(*self.apis.nvml_errors):
+            nvml = self.apis.nvml
+            clock_mhz = nvml.device_get_max_clock_info(self.handle, nvml.ClockType.CLOCK_MEM)
+            bus_bytes = nvml.device_get_memory_bus_width(self.handle) / 8
+            return clock_mhz * 1e6 * 2 * bus_bytes / 1e9
+        return 0.0
+
+    @cached_property
     def system_api(self) -> CoreSystem:
         """The `cuda.core.system` module, present only behind `has_cuda_core`."""
         if self.apis.system is None:
@@ -212,6 +228,21 @@ class NvidiaGPU(GPU):
             )
         return self.runtime_memory()
 
+    def power_w(self) -> float:
+        """Instantaneous power draw in watts, 0.0 when NVML will not report it."""
+        with suppress(*self.apis.nvml_errors):
+            return self.apis.nvml.device_get_power_usage(self.handle) / 1000.0
+        return 0.0
+
+    def processes(self) -> tuple[UnitProcess, ...]:
+        """Every process holding a compute context here, empty when NVML will not say."""
+        with suppress(*self.apis.nvml_errors):
+            running = self.apis.nvml.device_get_compute_running_processes_v3(self.handle)
+            return tuple(
+                UnitProcess(pid=item.pid, used_bytes=item.used_gpu_memory) for item in running
+            )
+        return ()
+
     def runtime_memory(self) -> Memory:
         """Current memory state from CUDA Runtime when NVML memory is unsupported."""
         err, current = self.apis.runtime.cudaGetDevice()
@@ -232,3 +263,47 @@ class NvidiaGPU(GPU):
             unified=self.coherent,
             source="cuda-runtime",
         )
+
+    def snapshot(self, name: str = "") -> Telemetry:
+        """Point-in-time NVML reading of this device's sensors, tagged with region `name`.
+
+        Each sensor degrades on its own, so a device that reports power but refuses
+        per-process memory still returns the power.
+        """
+        return Telemetry(
+            unit_name=self.label,
+            region=name,
+            energy=Energy(power_w=self.power_w()),
+            thermal=Thermal(temperature_c=self.temperature_c(), throttle_names=self.throttles()),
+            utilization=self.utilization,
+            processes=self.processes(),
+        )
+
+    def temperature_c(self) -> int:
+        """Die temperature in degrees Celsius, 0 when NVML will not report it."""
+        nvml = self.apis.nvml
+        with suppress(*self.apis.nvml_errors):
+            sensor = nvml.TemperatureSensors.TEMPERATURE_GPU
+            return nvml.device_get_temperature_v(self.handle, sensor)
+        return 0
+
+    def throttles(self) -> tuple[str, ...]:
+        """The real slowdowns NVML reports as active, ignoring the benign clock states.
+
+        NVML answers with one bitmask covering both, and an idle device always sets a bit,
+        so reading the mask as a boolean would report every idle GPU as throttled.
+        """
+        nvml = self.apis.nvml
+        with suppress(*self.apis.nvml_errors):
+            active = nvml.device_get_current_clocks_event_reasons(self.handle)
+            reasons = nvml.ClocksEventReasons
+            slowdowns = {
+                "power cap": reasons.EVENT_REASON_SW_POWER_CAP,
+                "thermal": reasons.EVENT_REASON_SW_THERMAL_SLOWDOWN,
+                "sync boost": reasons.EVENT_REASON_SYNC_BOOST,
+                "hardware power brake": reasons.THROTTLE_REASON_HW_POWER_BRAKE_SLOWDOWN,
+                "hardware slowdown": reasons.THROTTLE_REASON_HW_SLOWDOWN,
+                "hardware thermal": reasons.THROTTLE_REASON_HW_THERMAL_SLOWDOWN,
+            }
+            return tuple(label for label, bit in slowdowns.items() if active & bit)
+        return ()

@@ -6,7 +6,7 @@ from enum import Enum
 
 from patos import FrozenModel
 
-from .result import Profile
+from .result import DeviceEvidence, Profile
 from .trace import Activity, KernelTrace, MemcpyTrace
 
 
@@ -57,9 +57,12 @@ class ProfileReport(FrozenModel):
     avg_memory_bytes: the device-memory high-water mark and mean over the sampled run — the
     answer to "how much HBM did this kernel need". kernels: the per-kernel breakdown,
     hottest first. unavailable: activity-kind labels the device could not trace.
+    device_evidence: whether device evidence was asked for and came back, so an empty
+    verdict never reads like a real one.
     """
 
     device: str = ""
+    device_evidence: DeviceEvidence = DeviceEvidence.UNSOUGHT
     iterations: int = 0
     dominant_kernel: str = ""
     dominant_share_pct: float = 0.0
@@ -107,6 +110,7 @@ class ProfileReport(FrozenModel):
         peak_memory, avg_memory = cls._memory(profile)
         return cls(
             device=profile.device,
+            device_evidence=profile.device_evidence,
             iterations=iterations,
             dominant_kernel=kernels[0].name if kernels else "",
             dominant_share_pct=kernels[0].share_pct if kernels else 0.0,
@@ -238,6 +242,8 @@ class ProfileReport(FrozenModel):
     def _notes(self) -> str:
         """Trailing notes: peak memory, copy bandwidth vs peak, and any untraced kinds."""
         notes = []
+        if self.device_evidence is DeviceEvidence.ABSENT:
+            notes.append("no device evidence collected: asked for it and observed none")
         if self.peak_memory_bytes:
             notes.append(f"peak memory {self.peak_memory_bytes / 1e9:.3f} GB")
         if self.peak_bandwidth_gbps:

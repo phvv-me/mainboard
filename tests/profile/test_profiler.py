@@ -2,13 +2,22 @@ import importlib
 import inspect
 import time
 from collections.abc import Sequence
+from typing import NoReturn
 
 import pytest
 
 from mainboard import Collection, Profiler, Reach, span
-from mainboard.profile import Activity, BottleneckReport, Feature, Tracer, annotate
+from mainboard.probe import GPU
+from mainboard.profile import (
+    Activity,
+    BottleneckReport,
+    DeviceEvidence,
+    Feature,
+    Tracer,
+    annotate,
+)
 
-from .support import FakeGPU, FakeSnapshot, one_process_gpu
+from .support import FakeGPU, FakeSnapshot, clock_tracer, one_process_gpu
 
 # `mainboard.profile` shadows the `benchmark` submodule with its re-exported function as an
 # attribute lookup; `import_module` reads `sys.modules` by dotted name, unaffected.
@@ -170,9 +179,10 @@ def test_auto_uses_local_monitoring_and_disables_on_exit() -> None:
     assert annotate.enabled_codes() == ()
 
 
-def test_activity_window_buffer_is_bounded() -> None:
+def test_activity_window_buffer_is_bounded(one_gpu: FakeGPU) -> None:
     """The device-window buffer is bounded like the span buffer, counting what it drops."""
     with Profiler(
+        gpus=(one_gpu,),
         features=Profiler.Feature.SPANS | Profiler.Feature.ACTIVITY,
         max_spans=1,
     ) as profiler:
@@ -201,6 +211,73 @@ def test_the_session_takes_its_device_from_the_collection_policy() -> None:
         gpus=(gpu,), features=Profiler.Feature.DEVICE, device_index=5, sample_interval_ms=1000
     ) as profiler:
         assert profiler.gpu is gpu
+
+
+def test_a_session_handed_no_device_profiles_the_hosts_own(
+    one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare `Profiler()` collects device evidence, because the probe already knows the cards.
+
+    This is the whole default. Before, a session nobody handed a probe to attached to no
+    device and collected nothing, which reads exactly like a run that did no GPU work.
+    """
+    monkeypatch.setattr(GPU, "all", staticmethod(lambda: (one_gpu,)))
+    with Profiler(sample_interval_ms=1000) as profiler, span("work"):
+        pass
+    assert profiler.gpus == (one_gpu,)
+    assert profiler.gpu is one_gpu
+    result = profiler.result()
+    assert result.device_evidence is DeviceEvidence.COLLECTED
+    assert result.device == "probe"
+
+
+def test_a_named_device_is_never_second_guessed_by_discovery(
+    one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Naming a device settles it, so discovery never runs and never overrides the choice."""
+
+    def unreachable() -> NoReturn:
+        raise AssertionError("host discovery ran even though the caller named a device")
+
+    monkeypatch.setattr(GPU, "all", staticmethod(unreachable))
+    with Profiler(gpus=(one_gpu,), sample_interval_ms=1000) as profiler:
+        assert profiler.gpu is one_gpu
+
+
+def test_activity_asked_for_by_name_with_no_visible_device_is_refused() -> None:
+    """A deep GPU trace where there is no GPU refuses, rather than tracing nothing.
+
+    An empty activity pass cannot be told apart from a run that did no GPU work, so the
+    session names the situation and the command that shows what the host really has.
+    """
+    features = Profiler.Feature.SPANS | Profiler.Feature.ACTIVITY
+    with pytest.raises(RuntimeError, match="no device is visible"), Profiler(features=features):
+        pass  # pragma: no cover  reason=__enter__ refuses before the body runs since=2026-08-27
+
+
+@pytest.mark.parametrize(
+    ("features", "evidence", "said"),
+    [
+        pytest.param(Feature.DEFAULT, DeviceEvidence.ABSENT, True, id="asked_and_got_none"),
+        pytest.param(Feature.SPANS, DeviceEvidence.UNSOUGHT, False, id="never_asked"),
+    ],
+)
+def test_a_deviceless_session_says_which_kind_of_silence_it_is(
+    features: Feature, evidence: DeviceEvidence, said: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A GPU-less host still profiles its Python, and the result admits the GPU half is empty.
+
+    Under `DEFAULT` the caller asked for everything worth having, so no card is not an error,
+    it is a result that has to say which half of it is missing. A spans-only session was
+    never promised device evidence, so its silence needs no note.
+    """
+    monkeypatch.setattr(annotate, "_tracer", clock_tracer())
+    with Profiler(features=features) as profiler, span("work"):
+        pass
+    result = profiler.result()
+    assert profiler.gpu is None
+    assert result.device_evidence is evidence
+    assert ("no device evidence collected" in result.report()) is said
 
 
 @pytest.mark.parametrize(

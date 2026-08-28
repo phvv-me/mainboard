@@ -1,4 +1,6 @@
-# Structural contracts profiling reads through, so it never imports a probe backend.
+# Structural contracts profiling reads through, so it never names a vendor backend. The
+# `Profiler` reaches the probe package's own vendor-neutral registry to discover a host's
+# devices; nothing here, and nothing that reads a finished `Profile`, knows a backend exists.
 
 from typing import TYPE_CHECKING, Protocol
 
@@ -88,7 +90,7 @@ class DeviceThermal(Protocol):
     def is_throttling(self) -> bool: ...
 
     @property
-    def throttle_names(self) -> list[str]: ...
+    def throttle_names(self) -> Sequence[str]: ...
 
 
 class DeviceMemory(Protocol):

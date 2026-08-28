@@ -7,6 +7,7 @@ from patos import Registry
 
 from ..enums import UnitKind, Vendor
 from ..facts.memory import Memory
+from ..facts.telemetry import Telemetry
 from ..facts.utilization import Utilization
 from .unit import Unit
 
@@ -14,10 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 class GPU(Unit, Registry):
-    """GPU with static identity and capacity.
+    """GPU with static identity, capacity and live sensors.
 
     This is a registry root, so concrete vendor providers self-register on import,
     and `all` fans out over them, concatenating each provider's own probe.
+
+    Identity, capacity, `peak_bandwidth_gbs` and `snapshot` together are the whole surface
+    a profiler samples a device through, so a discovered GPU can be handed straight to one
+    without an adapter standing between them.
     """
 
     index: int = 0
@@ -55,6 +60,11 @@ class GPU(Unit, Registry):
         """Current accelerator memory state."""
         return Memory(scope="device", source=self.backend, supported=False)
 
+    @cached_property
+    def peak_bandwidth_gbs(self) -> float:
+        """Theoretical peak memory bandwidth in GB/s, 0.0 when the provider cannot say."""
+        return 0.0
+
     @property
     def utilization(self) -> Utilization:
         """Current compute and memory-controller utilization."""
@@ -91,3 +101,11 @@ class GPU(Unit, Registry):
             "GPU provider %s failed to probe, skipping", provider.__name__, exc_info=True
         )
         return ()
+
+    def snapshot(self, name: str = "") -> Telemetry:
+        """Point-in-time reading of this GPU's sensors, tagged with region `name`.
+
+        The base reports only what every unit already exposes, so a provider with no sensor
+        access answers with an honest, zeroed reading rather than raising.
+        """
+        return Telemetry(unit_name=self.label, region=name, utilization=self.utilization)

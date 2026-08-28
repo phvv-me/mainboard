@@ -200,6 +200,7 @@ exclude = [
   "src/mainboard/probe/providers/apple/gpu.py",
   "src/mainboard/probe/providers/apple/npu.py",
   "src/mainboard/probe/providers/nvidia/gpu.py",
+  "src/mainboard/profile/profiler.py",
 ]
 
 # White-box tests pin the exact seam they monkeypatch or assert on, and that seam is deliberately
@@ -412,9 +413,29 @@ exclude = [
 exclude = ["src/mainboard/engines/compile/generated/files.py", "tests/core/test_shell.py"]
 
 # `Board` is the deliberate facade: one entry point whose verbs mirror the CLI's own, which is
-# the pattern the whole tool is built around.
+# the pattern the whole tool is built around. `Nvml` is a typed mirror of NVML's own C namespace,
+# so its method count is the vendor's rather than ours, and the test double stands in for that
+# same namespace method for method.
 [tool.mcmr.rules."ALL-CLAS0003"]
-exclude = ["src/mainboard/board.py"]
+exclude = [
+  "src/mainboard/board.py",
+  "src/mainboard/probe/providers/nvidia/protocols.py",
+  "tests/probe/support.py",
+]
+
+# Same mirror argument one level out: every NVML entry point the provider calls has to be
+# declared, and each enum those calls index into needs its own protocol, because they are
+# separate objects with separate members. Splitting the module would state a boundary NVML
+# does not have.
+[tool.mcmr.rules."ALL-MODU0002"]
+exclude = ["src/mainboard/probe/providers/nvidia/protocols.py"]
+
+# `profile` reaching `probe.units` is the one deliberate edge between them, and it buys the whole
+# default: a session that wants device evidence and was handed no probe finds the host's own
+# cards instead of collecting nothing. The alternative is a registration seam whose only member
+# would be the probe package, which is the same dependency written indirectly.
+[tool.mcmr.rules."ALL-ARCH0003"]
+exclude = ["src/mainboard/profile"]
 
 # The cyclopts verbs must each exist as a function for the CLI table, one line or not, and the
 # one-line generators in the spans tests are the subjects under test.
