@@ -16,32 +16,45 @@
 #
 # AND THE DRIVERS ARE OPTIONAL EXTRAS. Neither lane kind's package is a dependency of this tool,
 # because a workspace that declares no adversarial lane should not install a shrinker and one that
-# declares no search should not install a sampler. `driver` is the one import seam, and a missing
-# package refuses by naming both the package and the extra that carries it rather than surfacing a
-# bare `ModuleNotFoundError` from three frames down.
+# declares no search should not install a sampler. `driver` is the one import seam, keyed by the
+# LANE KIND rather than by the package, so the kind, its marker and its extra are one name spelled
+# in one place; a missing package refuses by naming both rather than surfacing a bare
+# `ModuleNotFoundError` from three frames down.
+#
+# AND A DRIVER IS WARMED AT COLLECTION, WHICH IS NOT A PERFORMANCE CHOICE. A package imported for
+# the first time inside a running test leaves that test's frame reachable, the frame holds the
+# fixture values pytest passed it, and those are a claim's checkpoint, so `Stage` reports a card
+# that never came back and refuses the run. It cost 1.33 GB and an afternoon to find. The plugin
+# therefore imports each collected kind's driver before any trial runs, which also turns a missing
+# package into a refusal at collection instead of one in the middle of a measurement.
 
 from importlib import import_module
 from types import ModuleType
 
 from patos import FrozenModel
 
+# Which package drives each adaptive lane kind. The key is the kind, which is also its marker and
+# also the `mainboard[...]` extra that installs it, so a consumer learns one word.
+DRIVERS = {"adversarial": "hypothesis", "search": "optuna"}
+
 
 class Absent(ImportError):
     """An adaptive lane whose driver package this environment does not carry."""
 
 
-def driver(package: str, extra: str) -> ModuleType:
-    """One adaptive lane's driver, refusing by naming the package and the extra that ships it.
+def driver(kind: str) -> ModuleType:
+    """One adaptive lane kind's driver, refusing by naming the package and the extra that ships it.
 
-    package: the importable name. extra: the `mainboard[...]` extra that installs it.
+    kind: the lane kind, which is the marker a lane carries and the extra that installs its driver.
     """
+    package = DRIVERS[kind]
     try:
         return import_module(package)
     except ImportError as missing:
         raise Absent(
-            f"this lane is driven by {package!r}, which is an optional extra of this tool and is "
-            f"not installed here. Install it with `pip install mainboard[{extra}]`, or declare "
-            f"{package!r} in the workspace manifest that owns the lane."
+            f"a {kind!r} lane is driven by {package!r}, which is an optional extra of this tool "
+            f"and is not installed here. Install it with `pip install mainboard[{kind}]`, or "
+            f"declare {package!r} in the workspace manifest that owns the lane."
         ) from missing
 
 

@@ -69,6 +69,17 @@ class Miss(FrozenModel):
     reading: dict[str, JsonValue] = {}
 
 
+class Suggests(Protocol):
+    """The one thing a proposer asks of a driver's own trial object, spelled so nothing imports it.
+
+    A driver is an optional extra, so its types cannot be named at type-check time, and a search
+    lane's proposer needs exactly one method of a suggested point. This is that method.
+    """
+
+    def suggest_categorical(self, name: str, choices: Sequence[JsonValue]) -> JsonValue:
+        """One axis's value, drawn from the values that axis admits."""
+
+
 class Proposer(Protocol):
     """Whatever proposes a search's next point and is told what that point scored.
 
@@ -94,26 +105,32 @@ class Optuna:
     """
 
     def __init__(self, space: Mapping[str, Sequence[JsonValue]], *, seed: int) -> None:
-        optuna = driver("optuna", "search")
+        optuna = driver("search")
         optuna.logging.set_verbosity(optuna.logging.WARNING)
         self.space = {name: list(values) for name, values in space.items()}
         self.seed = seed
         self.study = optuna.create_study(
             direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed)
         )
-        self.pending = None
+        self.pending: Suggests | None = None
 
     def ask(self) -> dict[str, JsonValue]:
         """One point off the sampler, every axis suggested from the values it declared."""
-        self.pending = self.study.ask()
+        self.pending = suggested = self.study.ask()
         return {
-            name: self.pending.suggest_categorical(name, values)
+            name: suggested.suggest_categorical(name, values)
             for name, values in self.space.items()
         }
 
     def tell(self, point: Mapping[str, JsonValue], loss: float) -> None:
-        """Hand the sampler back what its own last point scored."""
-        self.study.tell(self.pending, loss)
+        """Hand the sampler back what its own last point scored, then let that point go.
+
+        A proposer has no use for a suggestion it has already scored, and a driver's trial object
+        is not a small thing to keep, so the pending point is released here rather than left on
+        this object until the next `ask` happens to overwrite it.
+        """
+        told, self.pending = self.pending, None
+        self.study.tell(told, loss)
 
 
 class Study:

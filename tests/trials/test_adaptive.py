@@ -36,7 +36,7 @@ def doubled(monkeypatch: pytest.MonkeyPatch) -> None:
     the refusal path, the caching and the error handling of `driver` exactly as shipped.
     """
     stood = {"hypothesis": support_adaptive.hypothesis(), "optuna": support_adaptive.optuna()}
-    monkeypatch.setattr(adaptive, "import_module", lambda name: stood[name])
+    monkeypatch.setattr(adaptive, "import_module", stood.__getitem__)
 
 
 def rows(session: Session) -> list[dict]:
@@ -55,12 +55,12 @@ def test_a_missing_driver_refuses_by_naming_the_package_and_the_extra_that_ships
     """A bare ModuleNotFoundError three frames down does not tell a reader what to install."""
     monkeypatch.setitem(sys.modules, "optuna", None)
     with pytest.raises(Absent, match=r"pip install mainboard\[search\]"):
-        driver("optuna", "search")
+        driver("search")
 
 
 def test_a_present_driver_comes_back_as_the_module_itself(doubled: None) -> None:
     """The import path under test is the real one, and only what comes back through it is fake."""
-    assert driver("hypothesis", "adversarial").HealthCheck == ("too_slow",)
+    assert driver("adversarial").HealthCheck == ("too_slow",)
 
 
 def test_an_owed_confirmation_states_the_cell_it_names_and_says_so_when_it_names_none() -> None:
@@ -181,6 +181,30 @@ def test_a_study_writes_one_row_per_iteration_and_settles_on_its_worst_point(
     assert study_row["owed"] is None and study_row["policy"] == "default"
     assert study_row["budget"] == 4 and study_row["seed"] == 11
     assert "found no excursion inside its budget" in written[-1]["reason"]
+
+
+def test_a_told_point_is_let_go_because_a_driver_trial_holds_the_frame_that_made_it(
+    trial, session: Session, doubled: None
+) -> None:
+    """One told trial left on a proposer held a whole claim's checkpoint through teardown.
+
+    An optuna trial keeps the suggesting frame reachable, that frame is a pytest test, and its
+    fixtures are a loaded model, so a residency check refused the run over a point nobody needed.
+    """
+    proposer = Optuna({"tokens": [192, 288]}, seed=4)
+    Study(
+        trial,
+        proposer,
+        question="where does the served law miss worst",
+        budget=2,
+        seed=4,
+        refuted="refuted",
+        survived="undecided",
+        owed=owed(),
+    ).run(lambda tokens: Miss(loss=float(tokens)))
+
+    assert proposer.pending is None
+    assert len(proposer.study.told) == 2
 
 
 def test_a_worst_point_outside_the_band_settles_refuted_and_names_what_confirms_it(

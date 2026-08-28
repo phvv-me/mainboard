@@ -103,7 +103,7 @@ class Hunt:
         long enough that the slowness guard fires on a hunt that is working exactly as intended,
         and a lane that filters hard is filtering toward the edge it was written to probe.
         """
-        hypothesis = driver("hypothesis", "adversarial")
+        hypothesis = driver("adversarial")
         found: list[Breach] = []
 
         def probe(**drawn: object) -> None:

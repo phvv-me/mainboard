@@ -47,6 +47,7 @@ import pytest
 from pydantic import JsonValue
 
 from . import hookspecs
+from .adaptive import DRIVERS, driver
 from .flags import held
 from .session import WORD, Session, Trial, lane_of, params_of
 from .stage import Stage
@@ -102,10 +103,26 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         return
     root = session.declared.universe.root.resolve()
     mine = [item for item in items if root in Path(str(item.path)).resolve().parents]
+    _warmed(mine)
     _unrunnable(session, mine, paid=bool(config.getoption("--paid")))
     session.lanes = _surveyed(session, mine)
     if not config.getoption("--rerun"):
         _satisfied(session, mine)
+
+
+def _warmed(items: Sequence[pytest.Item]) -> None:
+    """Import the driver of every adaptive lane kind this session collected, before any trial runs.
+
+    NOT AN OPTIMISATION. A package imported for the first time INSIDE a running test leaves that
+    test's frame reachable for the rest of the process, the frame holds the fixture values pytest
+    passed it, and for a claim those are a loaded checkpoint, so the residency check reports a card
+    that never came back and refuses a run that released everything it owned. Importing here puts
+    that cost on a collection frame that nobody measures. It also turns a missing driver into a
+    refusal at collection rather than one in the middle of a measurement.
+    """
+    for kind in DRIVERS:
+        if any(kind in item.keywords for item in items):
+            driver(kind)
 
 
 def _unrunnable(session: Session, items: Sequence[pytest.Item], *, paid: bool) -> None:

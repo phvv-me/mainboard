@@ -150,6 +150,16 @@ def test_second(trial, stage, run):
 """
 
 
+HUNT = """
+import pytest
+
+
+@pytest.mark.adversarial
+def test_a_law_is_hunted(trial):
+    trial.validated("nothing broke it")
+"""
+
+
 @pytest.fixture
 def universe(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> pytest.Pytester:
     """A consumer workspace with one claim, its provenance fixed so no test touches silicon."""
@@ -167,6 +177,23 @@ def ran(pytester: pytest.Pytester, *args: str) -> pytest.RunResult:
     this suite rather than about anything under test.
     """
     return pytester.runpytest_inprocess("-W", "ignore::pytest.PytestAssertRewriteWarning", *args)
+
+
+def test_a_collected_adaptive_lane_has_its_driver_imported_before_any_trial_runs(
+    universe: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A package first imported inside a running test leaves that test's frame reachable.
+
+    The frame holds the fixture values pytest passed it, which for a claim is a loaded
+    checkpoint, so the residency check reports a card that never came back and refuses a run that
+    released everything it owned. Collection is where that import belongs.
+    """
+    warmed: list[str] = []
+    monkeypatch.setattr(pytest_plugin, "driver", warmed.append)
+    universe.makepyfile(**{"alpha/test_hunt": HUNT})
+
+    assert ran(universe, "alpha/test_hunt.py").ret == 0
+    assert warmed == ["adversarial"]
 
 
 def store(pytester: pytest.Pytester, node: str = "alpha") -> Dataset:
