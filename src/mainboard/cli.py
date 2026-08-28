@@ -870,6 +870,7 @@ def build(root: Path | None = None) -> App:
         target: str,
         *,
         on: str = "",
+        run: str = "",
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -883,13 +884,18 @@ def build(root: Path | None = None) -> App:
         every row settled clean, 1 on any failure, 2 while anything is still in flight, 3 when
         the receipts prove nothing.
 
-        target: a stream id, a receipts file path, or a dispatched handle.
+        A receipts STORE is scored one run at a time, its newest by default, because a store
+        holds every run a harness ever took and reading them as one stream lets a failure from
+        months ago condemn a clean re-run today.
+
+        target: a receipts store directory, a stream id, a receipts file, or a dispatched handle.
         on: the host alias narrowing a handle recorded on several hosts.
+        run: which run of a receipts store to score, its newest when unset.
         json: print the rows as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
-        settled = board("local").verdicts().of(target, host=on)
+        settled = board("local").verdicts().of(target, host=on, run=run)
         _settled(settled, json_mode=json, agent=agent, fields=fields)
         return settled.code
 
@@ -955,6 +961,7 @@ _VERDICT_COLUMNS = (
     "target",
     "node",
     "verdict",
+    "settled",
     "exit_code",
     "detail",
     "gates",

@@ -67,6 +67,10 @@ class TrialVerdict(FrozenModel):
     node: the ledger slug the run serves, empty when none was declared.
     state: the scheduler's own word, empty when nothing reported one.
     verdict: the settled word, `running` while nothing terminal is on file.
+    settled: the word a trial receipt's own vocabulary settled on, empty when it named none.
+        Separate from `verdict` because only `verdict` is what an exit code is derived from: a
+        harness may settle `refuted` or `abandoned` on a reading that was taken perfectly well,
+        and a completion check must read that as the success it is.
     exit_code: the process exit status, when a receipt recorded one.
     detail: where results landed, why it failed, or a trial receipt's own reason.
     gates: the gate sweep summarized, empty when the receipts carry none.
@@ -82,6 +86,7 @@ class TrialVerdict(FrozenModel):
     node: str = ""
     state: str = ""
     verdict: str = ""
+    settled: str = ""
     exit_code: int | None = None
     detail: str = ""
     gates: str = ""
@@ -209,13 +214,18 @@ class Verdicts:
         floor = tuple(mine) or (registered(record, job=job),)
         return StreamVerdict(stream=stream, trials=(*floor, *harvested))
 
-    def of(self, target: str, *, host: str = "") -> StreamVerdict:
-        """The settled truth of `target`, a receipts file, a stream id, or a dispatched handle.
+    def of(self, target: str, *, host: str = "", run: str = "") -> StreamVerdict:
+        """The settled truth of `target`, a receipts store, a file, a stream, or a handle.
 
         target: what to read, tried in that order.
         host: the alias narrowing a handle recorded on several hosts.
+        run: which run of a receipts store to score, its newest when empty. Meaningless for the
+            other three targets, which carry one run's evidence by construction.
         """
         path = self.board.dispatcher.local(target)
+        stored = self.stored(path, stream=target, run=run)
+        if stored is not None:
+            return stored
         if path.is_file():
             read = lined(path)
             return StreamVerdict(stream=target, trials=read, note=unreadable(path, read))
@@ -233,6 +243,36 @@ class Verdicts:
             return self.board.dispatcher.cache.run(handle, host or None)
         except LookupError as missing:
             raise MissionError(f"nothing to wait on: {missing}") from None
+
+    def stored(self, path: Path, *, stream: str, run: str) -> StreamVerdict | None:
+        """One receipts STORE scored a run at a time, None when `path` holds no store at all.
+
+        A store holds every run a harness ever took, so reading them as one flat stream lets a
+        lane that broke in one campaign condemn a clean re-run months later, with no flag able to
+        dig it out. The newest run answers by default and `--run` names an older one.
+
+        The reader is imported here rather than at the top of this module because it carries a
+        dataframe engine costing a fifth of a second to import, and this module is on the path of
+        every command this tool runs. It is the charge-on-touch rule the package facade already
+        states, spent on the one branch that needs the engine.
+
+        path: the directory to read, the partition root or the evidence directory above it.
+        stream: what the caller asked for, which the heading names.
+        run: which run to score, the newest when empty.
+        """
+        from .trials.dataset import Dataset
+
+        store = Dataset.holding(path)
+        if store is None:
+            return None
+        chosen = run or store.newest
+        trials = tuple(receipted(row) for row in store.rows(chosen))
+        note = (
+            ""
+            if trials
+            else f"{store.root} holds no receipts for run {chosen!r}; it holds {store.runs}"
+        )
+        return StreamVerdict(stream=f"{stream} run {chosen}", trials=trials, note=note)
 
     def wait(
         self,
@@ -379,6 +419,7 @@ def receipted(payload: JsonValue) -> TrialVerdict:
         job=str(data.get("run_id", "")),
         node=str(data.get("node", "")),
         verdict=str(data.get("outcome", "")) or vocabulary.OK,
+        settled=str(data.get("verdict", "")),
         detail=str(data.get("reason", "")),
         gates=gated(data.get("gates")),
         producer=str(data.get("producer", "")),

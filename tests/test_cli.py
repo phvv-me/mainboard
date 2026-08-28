@@ -104,7 +104,7 @@ _RESOURCES = {
             ["wait", "4242", "--timeout", "60"],
             ("wait", "", ("4242",), {"host": "", "timeout": 60.0, "interval": 5.0}),
         ),
-        (["verdict", "smoke-1"], ("of", "", ("smoke-1",), {"host": ""})),
+        (["verdict", "smoke-1"], ("of", "", ("smoke-1",), {"host": "", "run": ""})),
         (["cancel", "4242", "--on", "gold"], ("cancel", "", ("4242",), {"host": "gold"})),
         (["logs", "4242"], ("captured", "", ("4242",), {"host": ""})),
         (["attest", "smoke-1"], ("attest", "local", ("smoke-1",), {"job": "smoke-1"})),
@@ -163,7 +163,7 @@ def test_a_verdict_with_no_rows_says_why_on_stderr_rather_than_printing_a_bare_h
     """
     note = "evidence.jsonl holds 3 line(s), none of..."
     empty = StreamVerdict(stream="s", trials=(), note=note)
-    monkeypatch.setattr(Verdicts, "of", lambda self, target, host="": empty)
+    monkeypatch.setattr(Verdicts, "of", lambda self, target, host="", run="": empty)
     with pytest.raises(SystemExit, match="3"):
         build(depot)(["verdict", "s", "--json"])
     printed = capsys.readouterr()
