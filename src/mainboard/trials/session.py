@@ -24,6 +24,7 @@ from uuid import uuid4
 from pydantic import JsonValue
 
 from .coverage import PROBED, Cell, LaneStatus, Probed
+from .dataset import LEDGER
 from .flags import moved, reading
 from .provenance import provenance
 from .stage import Stage
@@ -110,14 +111,23 @@ class Session:
         return Cell(values=values, probing=probing)
 
     def close(self) -> str:
-        """Release, compact, then say why the run must fail, or nothing at all.
+        """Release, compact, remint each store's readable ledger, then say why the run must fail.
 
         Compaction runs unconditionally, because a run that moved a flag still took every reading
         it took and the fragments are worth exactly as much either way.
+
+        THE LEDGER IS REMINTED HERE SO IT IS NEVER OLDER THAN THE STORE IT SITS IN. `latest.jsonl`
+        is the one file in a receipts directory a person can open, and nothing wrote it after the
+        store became parquet, so four universes of one workspace were found on 2026-08-29 handing
+        a reader a generation their own coverage rule had superseded. A run that wrote a store
+        rewrites its ledger, and `Dataset.retire` carries it, which between them are every way the
+        current view can move.
         """
         self.staged.drop()
-        for writer in self.writers.values():
+        for node, writer in self.writers.items():
             writer.compact()
+            store = self.declared.universe.dataset(node)
+            store.as_jsonl(store.root / LEDGER)
         drifted = moved(self.declared.flags, self.baseline)
         if not drifted:
             return ""

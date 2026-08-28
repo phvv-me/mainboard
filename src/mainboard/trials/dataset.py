@@ -47,6 +47,12 @@ if TYPE_CHECKING:
 # a current view both group on.
 _LANE, _KEY = "lane", "key"
 
+# Where a retired generation lands beside a store, and the one human-readable file inside a store.
+# The ledger is named here rather than in each consumer because `retire` has to move it and
+# `as_jsonl` has to rewrite it, and a retirement that spelled it differently from a mint is how a
+# live store came to hold a ledger describing runs it no longer counts.
+RETIRED, GENERATION, LEDGER = "retired", "generation", "latest.jsonl"
+
 
 class Dataset:
     """One store of trial receipts, read across every run it has ever held.
@@ -131,6 +137,44 @@ class Dataset:
         lines = [wire(row) for row in self.rows(run)]
         target.write_text("".join(lines), encoding="utf-8")
         return len(lines)
+
+    def retire(self, generation: str, runs: Sequence[str]) -> Path:
+        """Move `runs` out of the current view into a named generation, the ledger with them.
+
+        generation: what the retired runs are called, becoming `retired/generation=<name>/`
+            beside this store. runs: which run identities leave the current view.
+
+        Returns the directory the generation landed in. A run that is not in this store is named
+        rather than skipped, since retiring a run that was never here is a typo and not a no-op.
+
+        THE LEDGER MOVES AND IS THEN REWRITTEN, WHICH IS THE WHOLE REASON THIS IS A METHOD.
+        `latest.jsonl` is the one file in a receipts directory a person can read, and a retirement
+        that moved the parquet fragments and left it behind hands that person the exact generation
+        the store no longer counts. Three universes of the reproducibility workspace were caught
+        with it on 2026-08-29 in one commit (`recovery_cost` 7a, `contiguous_reduction` 4c,
+        `corrected_law_transfer` 5b) and a fourth on the same day (`accuracy_selection` 6d), all
+        four by hand-rolled retirements that moved directories. So the ledger travels into the
+        generation that owns it and is reminted from whatever run is newest afterwards, or removed
+        when the retirement emptied the store.
+        """
+        held = set(self.runs)
+        missing = [run for run in runs if run not in held]
+        if missing:
+            raise ValueError(
+                f"{self.root} holds no run {', '.join(missing)}, so there is nothing to retire "
+                f"under {generation!r}; it holds {', '.join(sorted(held)) or 'no runs at all'}"
+            )
+        target = self.root.parent / RETIRED / f"{GENERATION}={generation}"
+        target.mkdir(parents=True, exist_ok=True)
+        ledger = self.root / LEDGER
+        if ledger.exists():
+            ledger.replace(target / LEDGER)
+        for run in runs:
+            (self.root / f"run={run}").replace(target / f"run={run}")
+        if not self.runs:
+            return target
+        self.as_jsonl(ledger)
+        return target
 
     def decoded(self, row: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
         """One stored row with its JSON text columns read back as the objects they hold."""

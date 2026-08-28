@@ -206,6 +206,69 @@ def test_one_run_streams_out_as_the_json_lines_the_dispatch_boundary_already_rea
     assert json.loads(target.read_text())["trial_receipt"]["measured"] == {"n": 1}
 
 
+def test_a_retirement_takes_the_readable_ledger_with_it_and_remints_what_is_left(
+    store: Dataset,
+) -> None:
+    """Does the one file in a store a person can read still describe the runs the store counts?
+
+    A retirement that moved parquet fragments and left `latest.jsonl` behind hands that reader the
+    exact generation the store stopped counting, which four universes were caught with on
+    2026-08-29, so the ledger travels into the generation that owns it and is reminted from what
+    survives.
+    """
+    taken(store, "run-1", {"lane": "l", "key": "a", "measured": {"n": 1}})
+    taken(store, "run-2", {"lane": "l", "key": "a", "measured": {"n": 2}})
+    ledger = store.root / "latest.jsonl"
+    store.as_jsonl(ledger)
+    assert json.loads(ledger.read_text())["trial_receipt"]["run"] == "run-2"
+
+    generation = store.retire("old-lane-names", ("run-2",))
+    assert generation == store.root.parent / "retired" / "generation=old-lane-names"
+    assert (generation / "run=run-2").is_dir()
+    assert json.loads((generation / "latest.jsonl").read_text())["trial_receipt"]["run"] == "run-2"
+    assert store.runs == ("run-1",)
+    assert json.loads(ledger.read_text())["trial_receipt"]["run"] == "run-1"
+
+
+def test_retiring_a_run_a_store_never_held_names_it_rather_than_doing_nothing(
+    store: Dataset,
+) -> None:
+    """Is a retirement of a run that is not here a typo the caller is told about?
+
+    Silently succeeding would let a mistyped identity read as a completed retirement while the
+    generation it was meant to remove stays in the current view.
+    """
+    taken(store, "run-1", {"lane": "l", "key": "a"})
+    with pytest.raises(ValueError, match="holds no run run-9"):
+        store.retire("nothing", ("run-9",))
+    assert store.runs == ("run-1",)
+
+
+def test_retiring_every_run_leaves_no_ledger_behind_to_describe_an_empty_store(
+    store: Dataset,
+) -> None:
+    """Does emptying a store remove its ledger rather than leave one naming retired rows?"""
+    taken(store, "run-1", {"lane": "l", "key": "a"})
+    ledger = store.root / "latest.jsonl"
+    store.as_jsonl(ledger)
+    generation = store.retire("everything", ("run-1",))
+    assert store.runs == () and not ledger.exists()
+    assert (generation / "latest.jsonl").exists()
+
+
+def test_a_store_that_never_kept_a_ledger_retires_without_inventing_one(store: Dataset) -> None:
+    """Does a retirement work on a store whose receipts nobody ever streamed out?
+
+    The ledger is a convenience a workspace opts into, so a store without one retires its runs
+    and the survivors gain one rather than the retirement raising on a missing file.
+    """
+    taken(store, "run-1", {"lane": "l", "key": "a"})
+    taken(store, "run-2", {"lane": "l", "key": "a"})
+    generation = store.retire("first", ("run-1",))
+    assert not (generation / "latest.jsonl").exists()
+    assert json.loads((store.root / "latest.jsonl").read_text())["trial_receipt"]["run"] == "run-2"
+
+
 def test_a_universe_finds_a_claim_off_the_file_tree_and_answers_flat_as_one_store(
     tmp_path: Path, declared: Declaration
 ) -> None:
