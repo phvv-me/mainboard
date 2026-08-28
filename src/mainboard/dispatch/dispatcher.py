@@ -4,7 +4,6 @@
 
 import hashlib
 import shlex
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-18
 from collections.abc import (
     Sequence,  # ruff:ignore[typing-only-standard-library-import]  reason=await_many is inspect.signature()'d in tests, so its Sequence[Handle] annotation must resolve at runtime since=2026-08-17
 )
@@ -21,7 +20,7 @@ from ..context.admission import admit
 from . import vocabulary
 from .jobs import JobSpec
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
-from .shared import HandleId, db_file, logger, now, state_path, workspace
+from .shared import HandleId, db_file, git, logger, now, state_path, workspace
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
@@ -38,20 +37,6 @@ if TYPE_CHECKING:
 # How a finished verdict maps to a process exit code: 0 ok, 1 failed, 2 still running, 3
 # vanished/unknown. A caller can branch on this without re-deriving it.
 _VERDICT_EXITS = {"ok": 0, "failed": 1, "running": 2}
-
-
-def git(*args: str) -> str:
-    """Stripped stdout of a local `git` command (the dispatched run's provenance).
-
-    On `/dev/null` for the same reason every ssh this tool runs is: a dispatch is routinely
-    called from inside a shell loop reading handles, and a child left on the caller's stdin can
-    eat the rest of that loop's input. Nothing asked for here reads any.
-    """
-    argv = ["git", *args]  # fixed local invocation off PATH, not untrusted input
-    read = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-16
-        argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
-    )
-    return read.stdout.strip()
 
 
 class Handle(FrozenModel):

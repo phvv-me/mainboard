@@ -7,7 +7,7 @@ import pytest
 from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import MissionError
-from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, Verdict
+from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, Verdict, shared
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.schedulers import HostUnreachable, registry
@@ -195,9 +195,9 @@ def test_git_reports_a_local_commands_stripped_stdout(monkeypatch: pytest.Monkey
         asked.append(kwargs)
         return type("R", (), {"stdout": " abc \n"})()
 
-    monkeypatch.setattr(dispatch_module.subprocess, "run", record)
+    monkeypatch.setattr(shared.subprocess, "run", record)
     assert dispatch_module.git("rev-parse", "HEAD") == "abc"
-    assert [call["stdin"] for call in asked] == [dispatch_module.subprocess.DEVNULL]
+    assert [call["stdin"] for call in asked] == [shared.subprocess.DEVNULL]
 
 
 def test_submit_refuses_a_broken_environment_and_names_the_host_a_scheduler_rejected(

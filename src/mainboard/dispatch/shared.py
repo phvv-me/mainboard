@@ -2,6 +2,7 @@
 # dispatch depends on `dispatch/__init__.py` and its re-exports.
 
 import logging
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-18
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -14,6 +15,24 @@ from ..core.project import Project
 def now() -> str:
     """The current instant as an ISO-8601 string, the timestamp format every record shares."""
     return datetime.now(UTC).isoformat()
+
+
+def git(*args: str) -> str:
+    """Stripped stdout of a local `git` command, the provenance of whatever is being recorded.
+
+    On `/dev/null` for the same reason every ssh this tool runs is: a dispatch is routinely
+    called from inside a shell loop reading handles, and a child left on the caller's stdin can
+    eat the rest of that loop's input. Nothing asked for here reads any.
+
+    Here in the leaf rather than beside the one dispatch that first needed it, because a trial
+    receipt asks git the same two questions a submit does and neither should drag the other's
+    module in to do it.
+    """
+    argv = ["git", *args]  # fixed local invocation off PATH, not untrusted input
+    read = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-16
+        argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
+    )
+    return read.stdout.strip()
 
 
 def _as_handle(value: str | int) -> str:
