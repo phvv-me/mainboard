@@ -49,6 +49,7 @@ from pydantic import JsonValue
 from . import hookspecs
 from .adaptive import DRIVERS, driver
 from .flags import held
+from .lints import findings
 from .session import WORD, Session, Trial, lane_of, params_of
 from .stage import Stage
 from .vocabulary import Outcome
@@ -216,6 +217,32 @@ def pytest_report_teststatus(
         return None
     word = session.declared.words[settled]
     return settled, word.mark, (settled.upper(), word.markup)
+
+
+def pytest_terminal_summary(
+    terminalreporter: pytest.TerminalReporter, config: pytest.Config
+) -> None:
+    """Read the three owed lints over every store this run wrote, and print what they found.
+
+    AFTER the session rather than during it, because each one is a question about a whole store
+    across every run it has ever held and no single trial can answer it. Printed and never fatal:
+    the exit code is about the apparatus, and a gate that could not have failed is a finding a
+    person acts on rather than a broken instrument.
+    """
+    run = config.stash.get(SESSION, None)
+    if run is None or not run.writers:
+        return
+    universe, vocabulary = run.declared.universe, run.declared.words
+    found = [
+        finding
+        for node in sorted(run.writers)
+        for finding in findings(universe.dataset(node), vocabulary)
+    ]
+    if not found:
+        return
+    terminalreporter.write_sep("-", f"trials lints, {len(found)} finding(s)")
+    for finding in found:
+        terminalreporter.write_line(finding.line())
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:

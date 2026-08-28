@@ -45,6 +45,7 @@ from .distribution import Distribution, Fleet, Local, Partition
 from .figures import Figures, Gap, Need, Refusal, rendered_twice
 from .flags import Flag, held, moved, reading
 from .ledger import NESTED, Ledger, TrialReceipts, wire
+from .lints import Finding, findings
 from .provenance import SOURCE_VAR, Card, Source, card_of, installed, provenance, source
 from .search import Miss, Optuna, Proposer, Study
 from .session import Session, Trial
@@ -66,6 +67,7 @@ __all__ = [
     "Distribution",
     "Figures",
     "Flag",
+    "Finding",
     "Fleet",
     "Gap",
     "Hunt",
@@ -93,6 +95,7 @@ __all__ = [
     "Word",
     "card_of",
     "driver",
+    "findings",
     "held",
     "installed",
     "moved",
