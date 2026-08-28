@@ -2,6 +2,7 @@ import json
 import os
 import tomllib
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from plumbum import local
@@ -14,7 +15,6 @@ from .tool import Tool
 
 if TYPE_CHECKING:
     from collections.abc import Generator
-    from pathlib import Path
 
     from plumbum.commands.base import BaseCommand
 
@@ -68,14 +68,29 @@ class Pixi(Tool):
         since the floors live in the generated manifest the compiler may write moments earlier.
         """
         command = self.engine.command
-        if overrides := Pixi._floor_overrides(self.manifest):
+        if overrides := self.overrides:
             command = command.with_env(**overrides)
         return command
+
+    @property
+    def executable(self) -> Path:
+        """The resolved pixi binary itself, without the environment `command` binds onto it.
+
+        A caller that replaces this process rather than spawning one needs the path and the
+        environment separately, since binding them together is a convenience only a child
+        process inherits.
+        """
+        return Path(self.engine.command.executable)
 
     @property
     def lock(self) -> Path:
         """The lock file paired with the compiled Pixi manifest."""
         return self.manifest.with_suffix(".lock")
+
+    @property
+    def overrides(self) -> dict[str, str]:
+        """The `CONDA_OVERRIDE_*` variables this workspace's declared floors vouch for."""
+        return Pixi._floor_overrides(self.manifest)
 
     @contextmanager
     def activated(self, env: str = "default") -> Generator[None]:

@@ -1,5 +1,5 @@
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from threading import Event, Thread
 from time import sleep
 from types import TracebackType
@@ -18,6 +18,7 @@ from mainboard.dispatch.schedulers import registry
 from mainboard.dispatch.state import RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.doctor import Doctor
+from mainboard.engines.compile import Provisioner
 from mainboard.manifest import Manifest
 from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold
@@ -366,7 +367,7 @@ def test_shell_replaces_this_process_with_a_frozen_pixi_shell(installed: Board) 
     """The terminal goes to `pixi shell`, pinned to the workspace and forbidden to solve."""
     seen: list[tuple[str, list[str]]] = []
 
-    def replace(path: str, argv: list[str]) -> NoReturn:
+    def replace(path: str, argv: list[str], env: Mapping[str, str]) -> NoReturn:
         seen.append((path, argv))
         raise Replaced
 
@@ -377,6 +378,31 @@ def test_shell_replaces_this_process_with_a_frozen_pixi_shell(installed: Board) 
     manifest = str(installed.root / ".mainboard" / "pixi.toml")
     argv = [binary, "shell", "--manifest-path", manifest, "--frozen", "-e", "default"]
     assert seen == [(binary, argv)]
+
+
+def test_shell_carries_the_workspace_floors_into_the_replacing_process(
+    installed: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replacing this process drops the bound environment, so the floors travel explicitly.
+
+    A shell is the one path that execs rather than spawns, so a floor that only rides on the
+    plumbum command reaches every child except this one, which is how a host that cannot
+    present the virtual package fails on `shell` alone.
+    """
+    monkeypatch.delenv("CONDA_OVERRIDE_CUDA", raising=False)
+    pixi = Provisioner(installed.root, installed.manifest).pixi
+    pixi.manifest.write_text('[workspace]\nplatforms = [{ cuda = "13.0" }]\n', encoding="utf-8")
+    seen: list[Mapping[str, str]] = []
+
+    def replace(path: str, argv: list[str], env: Mapping[str, str]) -> NoReturn:
+        seen.append(env)
+        raise Replaced
+
+    with pytest.raises(Replaced):
+        installed.shell(replace=replace)
+
+    assert seen[0]["CONDA_OVERRIDE_CUDA"] == "13.0"
+    assert seen[0]["PATH"] == os.environ["PATH"]
 
 
 @pytest.mark.parametrize(

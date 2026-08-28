@@ -54,7 +54,7 @@ from .tracking import (
 from .verdicts import Verdicts
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from plumbum.commands.base import BaseCommand
 
@@ -820,7 +820,10 @@ class Board:
         return Scaffold(self)
 
     def shell(
-        self, env: str = "", *, replace: Callable[[str, list[str]], NoReturn] = os.execv
+        self,
+        env: str = "",
+        *,
+        replace: Callable[[str, list[str], Mapping[str, str]], NoReturn] = os.execve,
     ) -> NoReturn:
         """Hand this terminal to an interactive shell inside the workspace environment.
 
@@ -837,8 +840,12 @@ class Board:
         with the manifest, which turns the everyday way into a workspace into an implicit solve
         nobody asked for, and this tool has one deliberate door for that, `install --resolve`.
 
+        Replacing a process drops the environment a spawned child would have inherited, so the
+        workspace's declared floors are handed over explicitly. Without that, a host that cannot
+        present the virtual package fails on `shell` alone while every other verb works.
+
         env: the environment name, the host profile's own when empty.
-        replace: the process-replacing exec, injectable so a test can read the argv it built.
+        replace: the process-replacing exec, injectable so a test can read what it was handed.
         """
         if not self.local:
             raise MissionError(
@@ -849,8 +856,9 @@ class Board:
         pixi = Provisioner(self.root, self.manifest).pixi
         if not pixi.ready(plan.env):
             raise MissionError(missing(plan, plan.prefix(str(self.root))))
-        binary = str(pixi.command.executable)
-        replace(binary, [binary, "shell", *pixi.scope(), "--frozen", "-e", plan.env])
+        binary = str(pixi.executable)
+        argv = [binary, "shell", *pixi.scope(), "--frozen", "-e", plan.env]
+        replace(binary, argv, os.environ | pixi.overrides)
 
     def stage(self, root: str) -> None:
         """Put the one credential this host's jobs need where the job script will read it.
