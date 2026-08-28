@@ -39,7 +39,6 @@ from .base import (
     LogSource,
     ProviderBackend,
     Standing,
-    require_budget,
 )
 
 if TYPE_CHECKING:
@@ -220,7 +219,7 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         return JobState(handle=handle, exit_code=exit_code, verdict=verdict)
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
-        require_budget(resources)
+        self.admit(plan, resources)
         modal = _modal()
         image = (
             modal.Image.from_registry(plan.container.image)

@@ -6,7 +6,7 @@ import json
 import os
 from contextlib import suppress
 from time import sleep
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request
@@ -26,7 +26,6 @@ from .base import (
     Standing,
     forgotten,
     http_transport,
-    require_budget,
 )
 
 if TYPE_CHECKING:
@@ -38,8 +37,14 @@ if TYPE_CHECKING:
     from .base import Transport
 
 # The image an uncontainerized plan rents under: Vast's own base image, whose `-auto` tag resolves
-# to the CUDA build matching the host's driver.
-_DEFAULT_IMAGE = "vastai/base-image:cuda-12.9.2-auto"
+# to the CUDA build matching the host's driver. Pinned at the house floor rather than at whatever
+# the newest tag happens to be, so the image and the offer filter below agree on one number.
+_DEFAULT_IMAGE = "vastai/base-image:cuda-13.3.1-auto"
+# The two offer fields a rental has to clear, the highest CUDA version a machine's driver can
+# load and the card's own compute capability (`750` for `sm_75`). Vast publishes both on every
+# bundle row, which is what makes them filterable before renting rather than after.
+_CUDA_FIELD = "cuda_max_good"
+_CAPABILITY_FIELD = "compute_cap"
 # Local disk per rental, in GB. It is also what an offer search prices storage at, so one number
 # keeps the quoted rate and the rented machine honest about each other.
 _DISK_GB = 16.0
@@ -82,6 +87,42 @@ def exit_sentinel(log: str) -> int | None:
             with suppress(ValueError):
                 return int(status.strip())
     return None
+
+
+def cuda_max_good(offer: Mapping) -> float:
+    """The highest CUDA version `offer`'s driver can load, 0.0 when the row publishes none.
+
+    Silence never satisfies a floor, here or in `capability`: an offer whose driver version is
+    unknown is exactly the offer that hands back a contract id and no instance.
+
+    offer: one bundle row as the offer search returned it.
+    """
+    try:
+        return float(offer[_CUDA_FIELD])
+    except KeyError, TypeError, ValueError:
+        return 0.0
+
+
+def capability(offer: Mapping) -> int:
+    """`offer`'s compute capability the way a provider spells it (`750` is `sm_75`), 0 for none.
+
+    offer: one bundle row as the offer search returned it.
+    """
+    try:
+        return int(offer[_CAPABILITY_FIELD])
+    except KeyError, TypeError, ValueError:
+        return 0
+
+
+def _describe(offer: Mapping, gpu_name: str) -> str:
+    """`offer` as one human phrase a refusal names it by, id first so it can be looked up.
+
+    offer: the bundle row the refusal is about.
+    gpu_name: the card the caller asked for, standing in when the row names none.
+    """
+    where = str(offer.get("geolocation") or "").strip(" ,")
+    card = offer.get("gpu_name") or gpu_name or "unknown card"
+    return f"offer {offer.get('id')} ({card}, {where or 'unknown location'})"
 
 
 def api_key() -> str:
@@ -228,14 +269,18 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         return self.uploaded(url)
 
     def pick(self, *, gpu_name: str, gpus: int, max_usd_hr: float = 0.0) -> dict:
-        """The offer to rent: the most reliable machine the budget already allows.
+        """The offer to rent: the most reliable machine the budget and the CUDA floors allow.
 
         Renting the lowest-priced listing is what put earlier rentals at the bottom of the
         market, where the container is billed for and never starts, so price decides admission
         here and nothing more. The search returns the cheapest page of what fits under the cap
-        the caller's own budget implies, and the pick is the highest measured host reliability on
-        that page, ties going to the cheaper machine, which lands mid-market rather than at
-        either end. Refuses when the market has no matching offer at all.
+        the caller's own budget implies and above the house floors, and the pick is the highest
+        measured host reliability on that page, ties going to the cheaper machine, which lands
+        mid-market rather than at either end.
+
+        An empty page is handed to `refuse` rather than reported as a bare absence, since the
+        three reasons a page can be empty read identically otherwise and the middle one, a card
+        whose every host runs too old a driver, is what cost five dispatches.
 
         gpu_name: the Vast GPU name the job needs, empty for any.
         gpus: the GPU count per machine.
@@ -243,15 +288,49 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         """
         offers = self.search(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr)
         if not offers:
-            ceiling = f" under ${max_usd_hr:.2f}/hr" if max_usd_hr else ""
-            raise MissionError(
-                f"vast has no rentable {gpus}x {gpu_name or 'any'} offer{ceiling} right now"
-            )
+            self.refuse(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr)
         return max(offers, key=lambda offer: (float(offer["reliability2"]), -self.rate(offer)))
 
     def rate(self, offer: Mapping) -> float:
         """What one hour of `offer` costs under this backend's pricing mode."""
         return float(offer["min_bid"] if self.spot else offer["dph_total"])
+
+    def refuse(self, *, gpu_name: str, gpus: int, max_usd_hr: float) -> NoReturn:
+        """Say why nothing was rentable, naming whichever floor turned the market away.
+
+        Reached only once the floored search came back empty, and it spends one more search,
+        the same one unfloored, to tell an empty market from a market this house has aged out
+        of. That round trip is paid on the refusal path alone. The driver question is asked
+        first because it is the earlier of the two failures, the instance that never starts.
+
+        gpu_name: the Vast GPU name the job asked for, empty for any.
+        gpus: the GPU count per machine.
+        max_usd_hr: the hourly ceiling the search ran under, 0 for none.
+        """
+        ceiling = f" under ${max_usd_hr:.2f}/hr" if max_usd_hr else ""
+        card = f"{gpus}x {gpu_name or 'any'}"
+        raw = self.search(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr, floored=False)
+        if not raw:
+            raise MissionError(f"vast has no rentable {card} offer{ceiling} right now")
+        loadable = [row for row in raw if cuda_max_good(row) >= self.CUDA_FLOOR]
+        if not loadable:
+            best = max(raw, key=cuda_max_good)
+            raise MissionError(
+                f"vast has {len(raw)} rentable {card} offer(s){ceiling} and not one driver "
+                f"reaches CUDA {self.CUDA_FLOOR}, this house's floor. The best is "
+                f"{_describe(best, gpu_name)} at CUDA {cuda_max_good(best)}. Renting it would "
+                "hand back a contract id and no instance, because vast destroys a container its "
+                "driver cannot start. Ask for a card whose hosts run a newer driver."
+            )
+        best = max(loadable, key=capability)
+        raise MissionError(
+            f"vast has {len(loadable)} rentable {card} offer(s){ceiling} whose driver reaches "
+            f"CUDA {self.CUDA_FLOOR}, and not one is an architecture that CUDA still builds "
+            f"for. The best is {_describe(best, gpu_name)} at compute capability "
+            f"{capability(best)}, below the sm_{self.CAPABILITY_FLOOR // 10} floor. Renting it "
+            "would boot, bill, and die at the first kernel launch with no kernel image for its "
+            "own card. Maxwell, Pascal and Volta went with it; ask for Turing or newer."
+        )
 
     def request(
         self, method: str, *, path: str, body: dict | None = None, query: dict | None = None
@@ -283,6 +362,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         gpus: int = 0,
         max_usd_hr: float = 0.0,
         limit: int = _SEARCH_LIMIT,
+        floored: bool = True,
     ) -> list[dict]:
         """Rentable offers matching the filters, cheapest first under this backend's pricing mode.
 
@@ -292,10 +372,18 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         ranks by the on-demand total whichever mode is asked for, so a spot search is re-ranked
         here by the bid floor it will actually pay.
 
+        Both CUDA floors ride on the wire rather than being applied to the reply, because the
+        query is paged and ordered by price: filtering afterwards would judge the market on the
+        cheapest thirty-two rows and refuse a card whose usable offers were simply further down.
+        Every caller gets them without asking, which is what makes the market this backend
+        quotes, prices and rents from one market rather than three.
+
         gpu_name: the Vast GPU name (`RTX 4090`), underscores read as spaces, empty for any.
         gpus: the GPU count per machine, 0 for any.
         max_usd_hr: an hourly total-price ceiling, 0 for none.
         limit: how many offers to ask for.
+        floored: whether the house CUDA floors ride on the query. Only `refuse` drops them, to
+            ask the raw market what the floors turned away.
         """
         query: dict = {
             "verified": {"eq": True},
@@ -313,6 +401,9 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             query["num_gpus"] = {"eq": gpus}
         if max_usd_hr:
             query["dph_total"] = {"lte": max_usd_hr}
+        if floored:
+            query[_CUDA_FIELD] = {"gte": self.CUDA_FLOOR}
+            query[_CAPABILITY_FIELD] = {"gte": self.CAPABILITY_FLOOR}
         offers = self.request("POST", path="/bundles/", body=query).get("offers") or []
         return sorted(offers, key=self.rate)
 
@@ -380,7 +471,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         )
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
-        require_budget(resources)
+        self.admit(plan, resources)
         offer = self.pick(
             gpu_name=resources.gpu_name,
             gpus=max(resources.gpus, 1),

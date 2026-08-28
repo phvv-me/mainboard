@@ -10,6 +10,7 @@
 
 import abc
 import os
+import re
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, ClassVar, Literal, Protocol
@@ -51,6 +52,12 @@ _TIMEOUT_S = 10.0
 
 # Where a workspace keeps the provider credentials every refusal here tells someone to set.
 _ENV_FILE = ".env"
+
+# A CUDA version as an image reference spells it, which is `nvidia/cuda:13.3.1-devel-ubuntu24.04`,
+# `vastai/base-image:cuda-13.3.1-auto` and `pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime` alike.
+# The major and minor are all that is read, since a patch level never decides whether an image
+# loads on a driver.
+_IMAGE_CUDA = re.compile(r"cuda[:_-]?(\d+)\.(\d+)", re.IGNORECASE)
 
 
 class Credentials(Singleton):
@@ -227,6 +234,48 @@ class ProviderBackend(Registry, abc.ABC):
     # not inherit. `{handle}` and `{path}` are filled in where the refusal is raised.
     lacks: ClassVar[Mapping[type[Capability], str]] = {}
 
+    # The CUDA version this house builds, measures and rents on. It is a floor rather than a
+    # pin: a machine that reaches 13.3 runs a 13.0 image, and one that tops out at 12.6 runs
+    # neither. It belongs to the rental contract because a rented machine is the one place
+    # nothing else can enforce it. On owned hardware a wrong toolchain is a broken command
+    # someone reads in a log, while a provider hands back a contract id, destroys the instance
+    # because the image its driver cannot load never came up, and bills for the boot. Five vast
+    # dispatches went that way on 2026-08-27 with no diagnosis, against Tesla T4 offers whose
+    # driver reported `cuda_max_good = 12.6` under a 12.9 image, which is why the mismatch is a
+    # refusal naming both versions rather than a skip.
+    CUDA_FLOOR: ClassVar[float] = 13.0
+
+    # The oldest compute capability that CUDA still builds for, as a provider spells it (`750`
+    # is `sm_75`, Turing). Read off `nvcc --list-gpu-arch` from the house's own CUDA 13.3
+    # toolchain, which offers compute_75 and up while CUDA 12.9 also offered compute_50 through
+    # compute_72. It is a separate floor because the two fail differently and a machine can pass
+    # one and fail the other. A driver too old cannot load the image at all, so the instance dies
+    # at boot. An architecture too old loads the image fine and then has no cubin for its own
+    # card, so the rental boots, bills, and dies at the first kernel launch with "no kernel image
+    # is available for execution on the device". A live vast search on 2026-08-27 found Volta and
+    # Pascal machines reporting `cuda_max_good` of 13.0, which is exactly that second trap.
+    CAPABILITY_FLOOR: ClassVar[int] = 750
+
+    def admit(self, plan: ExecutionPlan, resources: Resources) -> None:
+        """Every refusal a metered dispatch owes before it reaches a provider's API at all.
+
+        The one gate every `submit` opens with, so a house-wide rule about what may be rented is
+        an edit here rather than a fourth copy of the same check in the next backend. Both
+        refusals are free to raise and both otherwise cost a whole rental, because a provider
+        bills from the boot and never learns that the command could not run.
+
+        plan: the resolved execution context, whose container image is the toolchain being rented.
+        resources: the resource request this submit is about to dispatch under.
+        """
+        if not resources.max_usd:
+            raise MissionError("provider dispatch needs an explicit max-usd budget")
+        named = image_cuda(plan.container.image) if plan.containerized else None
+        if named is not None and named < self.CUDA_FLOOR:
+            raise MissionError(
+                f"image {plan.container.image!r} names CUDA {named}, below this house's CUDA "
+                f"{self.CUDA_FLOOR} floor; rent a CUDA {self.CUDA_FLOOR} or newer image instead"
+            )
+
     @abc.abstractmethod
     def cancel(self, handle: str) -> None:
         """Cancel `handle` on the provider."""
@@ -278,16 +327,19 @@ def http_transport(request: Request) -> HttpResponse:
     return urlopen(request, timeout=_TIMEOUT_S)  # ruff:ignore[suspicious-url-open-usage]  reason=the package's single audited seam, every caller builds its Request from a constant https root and tests inject a double since=2026-08-18
 
 
-def require_budget(resources: Resources) -> None:
-    """Refuse an unbounded-cost submission before any network call.
+def image_cuda(image: str) -> float | None:
+    """The CUDA version `image`'s reference names, None when the reference names none.
 
-    Every provider backend runs on someone's metered infrastructure, so a caller that forgot
-    to set `resources.max_usd` gets a plain refusal here instead of an open-ended bill.
+    Read from the text of the reference because that is all anyone has before the rental: the
+    only way to learn an image's real toolchain is to pull it, and by then the machine is billing.
+    An image that says nothing therefore passes, since refusing every untagged reference would
+    turn a CPU job and an NGC calendar tag into refusals while proving nothing about either. The
+    floor is enforced on what can be proven wrong, and named where it can.
 
-    resources: the resource request a submit call is about to dispatch under.
+    image: a container reference, `nvidia/cuda:13.3.1-devel-ubuntu24.04` or the like.
     """
-    if not resources.max_usd:
-        raise MissionError("provider dispatch needs an explicit max-usd budget")
+    found = _IMAGE_CUDA.search(image)
+    return float(f"{found[1]}.{found[2]}") if found else None
 
 
 def route(kind: str) -> Literal["ssh-family"] | type[ProviderBackend]:

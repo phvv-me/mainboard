@@ -26,16 +26,16 @@ from mainboard.dispatch.backends import (
     VastBackend,
     base,
     http_transport,
-    require_budget,
     route,
 )
 from mainboard.dispatch.backends import api_key as hpc_ai_key
+from mainboard.dispatch.backends.base import image_cuda
 from mainboard.dispatch.backends.modal import declared_credit
 from mainboard.dispatch.backends.vast import api_key as vast_key
 from mainboard.dispatch.vocabulary import Resources
-from mainboard.manifest import HostProfile
+from mainboard.manifest import Container, HostProfile
 
-from .support import BareBackend, FakeTransport, hpc_ai_backend, vast_backend
+from .support import BareBackend, FakeTransport, hpc_ai_backend, plan, vast_backend
 
 # Money as a provider really quotes it, from a free rental up to a balance nobody has.
 _MONEY = st.floats(min_value=0.0, max_value=1e5, allow_nan=False, allow_infinity=False)
@@ -277,8 +277,55 @@ def test_standing_quotes_money_at_the_precision_money_has(figure: float) -> None
 @given(cap=_MONEY)
 @example(cap=0.0)
 @example(cap=5.0)
-def test_require_budget_refuses_a_submission_nobody_capped(cap: float) -> None:
+def test_admit_refuses_a_submission_nobody_capped(cap: float) -> None:
     """Every provider bills someone, so an uncapped submit is refused before any network call."""
     refuses = pytest.raises(MissionError, match="max-usd") if not cap else nullcontext()
     with refuses:
-        require_budget(Resources(max_usd=cap))
+        BareBackend().admit(plan(), Resources(max_usd=cap))
+
+
+@pytest.mark.parametrize(
+    ("reference", "named"),
+    [
+        ("vastai/base-image:cuda-13.3.1-auto", 13.3),
+        ("vastai/base-image:cuda-12.9.2-auto", 12.9),
+        ("nvidia/cuda:12.4.1-devel-ubuntu22.04", 12.4),
+        ("nvidia/cuda:13.0.2-runtime-ubuntu24.04", 13.0),
+        ("pytorch/pytorch:2.13.0-cuda13.2-cudnn9-runtime", 13.2),
+        ("nvcr.io/nvidia/pytorch:25.06-py3", None),
+        ("debian:bookworm", None),
+    ],
+)
+def test_image_cuda_reads_the_toolchain_a_reference_names(
+    reference: str, named: float | None
+) -> None:
+    """Every image spelling this house actually rents, plus the two that name no CUDA at all."""
+    assert image_cuda(reference) == named
+
+
+def test_admit_refuses_an_image_below_the_house_cuda_floor() -> None:
+    """A tag naming a retired toolchain is refused by name, with both versions in the line.
+
+    The rented machine is the one place nothing else can catch this: the provider takes the rent,
+    fails to start a container its driver cannot load, destroys it, and bills for the boot.
+    """
+    stale = plan(container=Container(image="nvidia/cuda:12.4.1-devel-ubuntu22.04"))
+    with pytest.raises(MissionError) as refused_at:
+        BareBackend().admit(stale, Resources(max_usd=5.0))
+    refusal = str(refused_at.value)
+    assert "12.4" in refusal, "the version the image names"
+    assert str(ProviderBackend.CUDA_FLOOR) in refusal, "and the floor it failed"
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["vastai/base-image:cuda-13.3.1-auto", "nvcr.io/nvidia/pytorch:25.06-py3"],
+    ids=["at-the-floor", "naming-no-cuda-at-all"],
+)
+def test_admit_admits_an_image_it_cannot_prove_too_old(reference: str) -> None:
+    """The floor refuses what it can prove wrong and never what it merely cannot read.
+
+    A reference is all anyone has before the rental, so an NGC calendar tag would otherwise be
+    refused on no evidence at all while a CPU job was refused for carrying no CUDA.
+    """
+    BareBackend().admit(plan(container=Container(image=reference)), Resources(max_usd=5.0))

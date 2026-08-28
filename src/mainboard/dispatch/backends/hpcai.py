@@ -29,7 +29,6 @@ from .base import (
     Standing,
     forgotten,
     http_transport,
-    require_budget,
 )
 
 if TYPE_CHECKING:
@@ -244,7 +243,7 @@ class HpcAiBackend(ProviderBackend, Account):
         The returned handle is the provider's own `instanceId`, which is what `state`, `stop` and
         `delete` address the rental by; the `name` is ours and is never an address.
         """
-        require_budget(resources)
+        self.admit(plan, resources)
         # The command's own status is captured before anything else runs, since the framing
         # below would otherwise be what `$?` reports. Receipts are framed into the same captured
         # log the sentinel pair already writes, so whoever reads that file by hand gets the

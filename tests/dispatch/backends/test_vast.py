@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from urllib.error import HTTPError
 
@@ -8,7 +8,12 @@ from hypothesis import strategies as st
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import Delivery, VastBackend
-from mainboard.dispatch.backends.vast import api_key, exit_sentinel
+from mainboard.dispatch.backends.vast import (
+    api_key,
+    capability,
+    cuda_max_good,
+    exit_sentinel,
+)
 from mainboard.dispatch.evidence import framing, staging
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
@@ -32,6 +37,8 @@ _BASE_QUERY = {
     "order": [["dph_total", "asc"]],
     "allocated_storage": 16.0,
     "limit": 32,
+    "cuda_max_good": {"gte": 13.0},
+    "compute_cap": {"gte": 750},
 }
 
 # `actual_status` values that mean the container has not run the command yet, so no marker can
@@ -72,7 +79,7 @@ def offer(identifier: int, *, dph: float, bid: float = 0.1, **extra: float | int
     """One `/bundles` offer row, only the fields the backend and the catalog probe read."""
     row = {"id": identifier, "dph_total": dph, "min_bid": bid, "gpu_name": "RTX 4090"}
     row.update({"num_gpus": 1, "geolocation": "Texas, US", "rentable": True})
-    row.update({"reliability2": 0.99})
+    row.update({"reliability2": 0.99, "cuda_max_good": 13.0, "compute_cap": 890})
     row.update(extra)
     return row
 
@@ -207,7 +214,75 @@ def test_pick_refuses_when_the_market_has_no_matching_offer(
     gpu_name: str, max_usd_hr: float, refusal: str
 ) -> None:
     with pytest.raises(MissionError, match=refusal):
-        vast_backend({}).pick(gpu_name=gpu_name, gpus=1, max_usd_hr=max_usd_hr)
+        vast_backend({}, {}).pick(gpu_name=gpu_name, gpus=1, max_usd_hr=max_usd_hr)
+
+
+def test_pick_refuses_a_market_whose_every_driver_is_below_the_cuda_floor() -> None:
+    """The refusal names the floor, the best CUDA on offer, and the offer carrying it.
+
+    The floored search comes back empty and the unfloored one does not, which is a card whose
+    hosts have all aged out rather than a card nobody is renting. Reported as a skip, that is
+    exactly the silence that turned five dispatches into contract ids and destroyed instances on
+    2026-08-27, when every live Tesla T4 offer read `cuda_max_good = 12.6` under a 12.9 image.
+    """
+    stale = {
+        "offers": [
+            offer(11, dph=0.4, cuda_max_good=12.6),
+            offer(22, dph=0.9, cuda_max_good=12.8, gpu_name="Tesla T4"),
+        ]
+    }
+    backend = vast_backend({}, stale)
+    with pytest.raises(MissionError) as refused_at:
+        backend.pick(gpu_name="Tesla T4", gpus=1)
+    refusal = str(refused_at.value)
+    assert "CUDA 13.0" in refusal, "the floor it failed is named"
+    assert "12.8" in refusal, "the best CUDA actually on offer is named"
+    assert "offer 22" in refusal, "the offending offer is named"
+    assert "Texas, US" in refusal, "and where it is, so the reader can check it by hand"
+    assert "destroys a container its driver cannot start" in refusal, "and what would happen"
+    # The diagnosis costs one extra search, and only on the refusal path.
+    floored, unfloored = backend.transport.bodies
+    assert floored["cuda_max_good"] == {"gte": 13.0}
+    assert floored["compute_cap"] == {"gte": 750}
+    assert "cuda_max_good" not in unfloored
+    assert "compute_cap" not in unfloored
+
+
+def test_pick_refuses_an_architecture_this_cuda_no_longer_builds_for() -> None:
+    """A driver new enough and a card too old is its own refusal, because it fails later.
+
+    A live search on 2026-08-27 found Volta and Pascal machines reporting `cuda_max_good` of
+    13.0, so the driver floor alone would have rented one. It would have booted, billed, and died
+    at the first kernel launch with no cubin for its own card.
+    """
+    volta = {"offers": [offer(33, dph=0.1, compute_cap=700, gpu_name="Tesla V100")]}
+    backend = vast_backend({}, volta)
+    with pytest.raises(MissionError) as refused_at:
+        backend.pick(gpu_name="Tesla V100", gpus=1)
+    refusal = str(refused_at.value)
+    assert "700" in refusal, "the capability the card really has"
+    assert "sm_75" in refusal, "the floor it failed"
+    assert "offer 33" in refusal, "the offending offer"
+    assert "Maxwell, Pascal and Volta" in refusal, "and which families went with it"
+
+
+@pytest.mark.parametrize(
+    ("reader", "field", "absent", "present"),
+    [
+        (cuda_max_good, "cuda_max_good", 0.0, 13.0),
+        (capability, "compute_cap", 0, 890),
+    ],
+    ids=["driver-version", "compute-capability"],
+)
+def test_a_row_that_publishes_nothing_never_satisfies_a_floor(
+    reader: Callable[[Mapping], float], field: str, absent: float, present: float
+) -> None:
+    """Silence reads as too old, since the unknown machine is the one that costs a rental."""
+    blank = offer(11, dph=0.4)
+    del blank[field]
+    assert reader(blank) == absent
+    assert reader(offer(11, dph=0.4, **{field: "not a number"})) == absent
+    assert reader(offer(11, dph=0.4)) == present
 
 
 @given(
@@ -255,7 +330,7 @@ def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_c
     assert search["num_gpus"] == {"eq": 2}
     assert create == {
         "client_id": "me",
-        "image": "vastai/base-image:cuda-12.9.2-auto",
+        "image": "vastai/base-image:cuda-13.3.1-auto",
         "disk": 16.0,
         "label": "mainboard-provider-host",
         "runtype": "args",
