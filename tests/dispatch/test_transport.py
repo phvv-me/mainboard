@@ -23,6 +23,8 @@ _TRANSPORT_MARKERS = (
     "control socket",
     "control master",
     "timed out",
+    "permission denied",
+    "too many authentication failures",
 )
 _DAEMON_DOWN_MARKERS = ("connecting to the daemon", "connection refused", ".socket")
 

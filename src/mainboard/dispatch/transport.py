@@ -34,6 +34,13 @@ _TRANSPORT_MARKERS = (
     "control socket",
     "control master",
     "timed out",
+    # An ssh that would not authenticate never opened a session, so no command ran and there is
+    # nothing to read an answer out of. Treating it as a real command answer is what let a
+    # `Permission denied (keyboard-interactive)` on an expired credential raise a bare
+    # `RuntimeError` out of `Job.transcript`, whose own contract says a host that went quiet
+    # costs its transcript and no other job's outcome, and take a whole monitor sweep down.
+    "permission denied",
+    "too many authentication failures",
 )
 
 
