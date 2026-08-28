@@ -31,6 +31,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# An adaptive lane kind of `mainboard.trials`, named after the lane rather than after its library,
+# because the lane is what a workspace declares and the library is an implementation detail it
+# could replace. `mainboard.trials.adaptive.driver` imports it lazily and refuses by naming both
+# the package and the extra, so a workspace that declares no adversarial lane installs no shrinker
+# and one that declares a lane without it is told exactly what to install rather than getting a
+# `ModuleNotFoundError` from three frames down.
+adversarial = ["hypothesis>=6.100"]
 cuda = ["cuda-bindings>=13.0", "cuda-core>=1.1"]
 modal = ["modal>=1.0"]
 # The tracking sink imports this lazily and refuses cleanly without it, so tracking is on by

@@ -28,12 +28,15 @@
 # declared words are methods on it. Nothing in a lane names a run, a card, a commit, a claim or a
 # tracked flag, because every one of those is derived.
 #
-# AND A LANE MAY CHOOSE ITS OWN CELLS, which is what `adaptive` is about: an adaptive result is a
-# CANDIDATE, never coverage, and it is confirmed by a declared parametrize cell on fresh seeds
-# before any claim leans on it. `driver` is the one door the lane kinds' optional packages come
-# through and `Owed` is where that confirmation debt is written onto a receipt.
+# A LANE KIND THAT CHOOSES ITS OWN CELLS IS AN OPTIONAL EXTRA. `Hunt` states a law as a property
+# and spends a draw budget trying to break it, shrinking a failure to a minimal witness. Its
+# driver, hypothesis, is an extra this tool does not depend on, and a lane declared without it
+# refuses by naming the package and the extra. It obeys the rule `adaptive` states: an adaptive
+# result is a CANDIDATE, never coverage, and it is confirmed by a declared parametrize cell on
+# fresh seeds before any claim leans on it.
 
 from .adaptive import Absent, Owed, driver
+from .adversarial import Breach, Hunt
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import Dataset
 from .declaration import MARKERS, Declaration
@@ -53,6 +56,7 @@ __all__ = [
     "PROBED",
     "SOURCE_VAR",
     "Absent",
+    "Breach",
     "Card",
     "Cell",
     "Dataset",
@@ -62,6 +66,7 @@ __all__ = [
     "Flag",
     "Fleet",
     "Gap",
+    "Hunt",
     "LaneStatus",
     "Ledger",
     "Local",
