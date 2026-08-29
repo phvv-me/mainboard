@@ -1,12 +1,22 @@
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
 
-from mainboard.trials import Declaration, Outcome, Probed, Session
+from mainboard.trials import (
+    OPENED,
+    Admissibility,
+    Declaration,
+    Outcome,
+    Probed,
+    Session,
+    digested,
+)
+from mainboard.trials import session as session_module
 from mainboard.trials.session import WORD, lane_of, params_of
 
-from .support import Item, declaration
+from .support import PROBED, Item, Taken, declaration
 from .test_declaring import knob
 
 
@@ -35,8 +45,90 @@ def test_a_run_derives_every_field_a_lane_would_otherwise_have_to_retype(
     assert row["model"] == "qwen" and row["model_probed"] == "unasked"
     assert row["outcome"] == "passed" and row["verdict"] == "validated"
     assert row["measured"] == {"ratio": 1.5} and row["params"] == {"model": "qwen"}
-    assert row["run_id"] == "test_holds[qwen]" and row["kind"] == "law"
-    assert row["commit"] == "abc1234"
+    assert row["case_id"] == "test_holds[qwen]" and row["kind"] == "law"
+    assert row["trial"] == "alpha/test_law.py::test_holds[qwen]"
+    assert row["commit"] == PROBED["commit"] and row["tree"] == PROBED["tree"]
+    assert row["source_digest"] == PROBED["source_digest"]
+    assert row["baselines_digest"] == "baselines-of-alpha"
+    assert row["admissibility"] == "admissible" and row["gate_digest"] == ""
+    assert row["run"] == session.run and row["opened_at_ns"] == session.opened
+
+
+def test_many_runs_opened_at_one_clock_value_are_still_distinct_and_still_time_ordered(
+    declared: Declaration, probed: None
+) -> None:
+    """Does a run's identity survive a second in which many of them open?
+
+    The identity was a second-resolution timestamp and eight hex characters, which is 32 bits of
+    collision room under a name every reader also SORTED by. It is now a uuid7, so the identity
+    is 128 bits, the name is still lexically time-ordered because a uuid7 opens with its own
+    millisecond, and the ORDER is read off `opened`, which is a separate fact in nanoseconds.
+    """
+    opened = [Session(declared) for _ in range(64)]
+    assert len({run.run for run in opened}) == len(opened)
+    assert len({run.run[:16] for run in opened}) == 1
+    assert [run.run for run in opened] == sorted(run.run for run in opened)
+    assert [run.opened for run in opened] == sorted(run.opened for run in opened)
+    assert all(run.common[OPENED] == run.opened for run in opened)
+
+
+def test_a_trial_names_its_case_and_its_run_as_two_fields_that_mean_two_things(
+    session: Session, tmp_path: Path
+) -> None:
+    """Could a reader join two receipts on the field that used to be called `run_id`?
+
+    It held the last component of the pytest node id beside a `run` column already holding the
+    actual run, so joining on it joined on the test case. Two trials of one run now agree on
+    `run` and differ on `case_id`, and the full node id is in `trial` where it always was.
+    """
+    for name in ("one", "two"):
+        session.trial(Item(f"alpha/t.py::{name}", tmp_path / "alpha" / "t.py")).validated("ok")
+    rows = session.declared.universe.dataset("alpha").rows(session.run)
+    assert {str(row["run"]) for row in rows} == {session.run}
+    assert sorted(str(row["case_id"]) for row in rows) == ["one", "two"]
+    assert sorted(str(row["trial"]) for row in rows) == ["alpha/t.py::one", "alpha/t.py::two"]
+
+
+def test_the_registration_a_lane_gates_on_rides_on_the_receipt_it_decided(
+    session: Session, tmp_path: Path
+) -> None:
+    """Can a reader tell a pre-registered gate from one edited into agreement afterwards?
+
+    Only if the row that decided the verdict left a trace on the row that recorded it, so the
+    registration is read THROUGH the trial and comes straight back, and the receipt carries its
+    digest. A lane that gates on nothing carries the empty digest, which is the honest answer.
+    """
+    registered = {"label": "qwen", "law_low": 0.9, "law_high": 1.1}
+    trial = session.trial(Item("alpha/t.py::one", tmp_path / "alpha" / "t.py"))
+    assert trial.gate(registered) is registered
+    trial.validated("inside the registered band", ratio=1.0)
+
+    row = session.declared.universe.dataset("alpha").rows(session.run)[0]
+    assert row["gate_digest"] == digested(registered)
+    assert row["gate_digest"] != digested({**registered, "law_high": 1.2})
+    assert row["baselines_digest"] == "baselines-of-alpha"
+
+
+def test_a_session_on_a_tree_nobody_can_identify_says_so_and_writes_it_on_every_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Does a dirty run refuse, warn, or write rows that say what they are?
+
+    It writes, and the rows say `dirty`, because refusing would make the tool useless for the
+    work it is most used for and a warning in a scroll-back is not a filter. The heading says it
+    too, since learning it from a coverage table three days later is learning it too late.
+    """
+    (tmp_path / "alpha").mkdir()
+    monkeypatch.setattr(
+        session_module, "Preflight", partial(Taken, admissibility=Admissibility.DIRTY)
+    )
+    session = Session(declaration(tmp_path))
+    assert "INADMISSIBLE (dirty), these rows are scratch work" in session.heading
+
+    session.trial(Item("alpha/t.py::one", tmp_path / "alpha" / "t.py")).validated("measured")
+    store = session.declared.universe.dataset("alpha")
+    assert store.rows(session.run)[0]["admissibility"] == "dirty"
+    assert store.passing().is_empty()
 
 
 def test_an_undeclared_word_refuses_at_the_attribute_rather_than_writing_an_unreadable_row(

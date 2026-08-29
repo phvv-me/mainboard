@@ -35,6 +35,12 @@
 #
 # AND NOTHING HERE FAILS A SESSION. The exit code is about the apparatus, so a finding is printed
 # and the run still exits zero. A lint is a reading a person acts on, not a gate a run trips over.
+#
+# THESE READ EVERY PASSING ROW AND NOT ONLY THE ADMISSIBLE ONES, which is the opposite of what a
+# coverage question does and is right for the same reason. A claim may not lean on a row whose
+# tree nobody can identify, but the question here is whether a gate has EVER discriminated on any
+# input, and a scratch run's rows are inputs. Dropping them would let a lane hide an unfailable
+# band by having produced it on a dirty tree.
 
 import math
 from typing import TYPE_CHECKING

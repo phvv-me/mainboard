@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -8,7 +9,7 @@ import pytest
 from mainboard.trials import Dataset, Declaration, pytest_plugin
 from mainboard.trials import session as session_module
 
-from .support import PROBED, declaration
+from .support import PROBED, Taken, declaration
 
 
 class Hooked:
@@ -163,7 +164,7 @@ def test_a_law_is_hunted(trial):
 @pytest.fixture
 def universe(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> pytest.Pytester:
     """A consumer workspace with one claim, its provenance fixed so no test touches silicon."""
-    monkeypatch.setattr(session_module, "provenance", lambda *args, **kwargs: dict(PROBED))
+    monkeypatch.setattr(session_module, "Preflight", Taken)
     pytester.makeconftest(CONFTEST)
     pytester.makepyfile(**{"alpha/test_law": LANES})
     return pytester
@@ -265,7 +266,7 @@ def test_a_lane_that_moves_a_tracked_knob_never_reaches_the_lane_collected_after
     """
     run = ran(universe, "--paid")
     assert run.ret == 0
-    rows = {str(row["run_id"]): row for row in store(universe).rows()}
+    rows = {str(row["case_id"]): row for row in store(universe).rows()}
     assert rows["test_law_moves_the_knob"]["policy"] == "default"
     assert rows["test_law_moves_the_knob"]["measured"] == {"seen": "default"}
     assert rows["test_law_reads_the_knob"]["policy"] == "pinned"
@@ -316,8 +317,11 @@ def test_a_host_with_no_card_and_a_wallet_nobody_opened_both_skip(
     """A machine cannot measure a device it does not have, and nothing spends money unasked."""
     monkeypatch.setattr(
         session_module,
-        "provenance",
-        lambda *args, **kwargs: {**PROBED, "card": "", "card_name": "", "card_probed": "absent"},
+        "Preflight",
+        partial(
+            Taken,
+            stamped={**PROBED, "card": "", "card_name": "", "card_probed": "absent"},
+        ),
     )
     run = ran(universe)
     assert run.parseoutcomes() == {
@@ -343,7 +347,7 @@ def test_a_trial_that_measured_nothing_fails_and_still_leaves_a_row(
     assert run.ret == pytest.ExitCode.TESTS_FAILED
     assert run.parseoutcomes() == {"passed": 1, "failed": 1, "errors": 1}
 
-    rows = {str(row["run_id"]): row for row in store(universe).rows()}
+    rows = {str(row["case_id"]): row for row in store(universe).rows()}
     assert set(rows) == {"test_settles_nothing", "test_breaks"}
     assert all(row["outcome"] == "failed" for row in rows.values())
     assert all(not row["verdict"] for row in rows.values())
@@ -359,7 +363,7 @@ def test_a_claim_holds_its_measure_once_work_and_the_run_names_itself(
     """
     universe.makepyfile(**{"alpha/test_stage": STAGED})
     assert ran(universe, "alpha/test_stage.py").ret == 0
-    rows = {str(row["run_id"]): row for row in store(universe).rows()}
+    rows = {str(row["case_id"]): row for row in store(universe).rows()}
     assert rows["test_first"]["measured"]["loads"] == 1
     assert rows["test_second"]["measured"]["loads"] == 1
     assert rows["test_first"]["measured"]["run"] == rows["test_second"]["measured"]["run"]

@@ -28,6 +28,12 @@
 # declared words are methods on it. Nothing in a lane names a run, a card, a commit, a claim or a
 # tracked flag, because every one of those is derived.
 #
+# AND A RECEIPT IDENTIFIES THE TREE THAT PRODUCED IT, WHICH USED TO BE THE ONE THING IT COULD NOT.
+# The full commit, the committed tree, a digest of the source files actually on disk and a digest
+# of the claim's registered rows are all derived and stamped, and every row says whether that
+# adds up to something a claim may lean on. A dirty tree still runs and still writes; its rows
+# read `dirty` and no coverage or current-view question counts them.
+#
 # TWO LANE KINDS CHOOSE THEIR OWN CELLS AND ARE OPTIONAL EXTRAS. `Hunt` states a law as a property
 # and spends a draw budget trying to break it, shrinking a failure to a minimal witness; `Study`
 # spends a budget of real evaluations walking toward a worst case and writes a receipt row per
@@ -39,14 +45,26 @@
 from .adaptive import Absent, Owed, driver
 from .adversarial import Breach, Hunt
 from .coverage import PROBED, Cell, LaneStatus, Probed
-from .dataset import Dataset
+from .dataset import ADMISSIBILITY, OPENED, Ambiguous, Dataset
 from .declaration import MARKERS, Declaration
 from .distribution import Distribution, Fleet, Local, Partition
 from .figures import Figures, Gap, Need, Refusal, rendered_twice
 from .flags import Flag, held, moved, reading
 from .ledger import NESTED, Ledger, TrialReceipts, wire
 from .lints import Finding, findings
-from .provenance import SOURCE_VAR, Card, Source, card_of, installed, provenance, source
+from .provenance import (
+    BASELINES,
+    SOURCE_VAR,
+    Admissibility,
+    Card,
+    Preflight,
+    Source,
+    card_of,
+    digest_of,
+    digested,
+    installed,
+    source,
+)
 from .search import Miss, Optuna, Proposer, Study
 from .session import Session, Trial
 from .stage import Stage
@@ -54,11 +72,16 @@ from .universe import Universe
 from .vocabulary import Outcome, Stance, Vocabulary, Word
 
 __all__ = [
+    "ADMISSIBILITY",
+    "BASELINES",
     "MARKERS",
     "NESTED",
+    "OPENED",
     "PROBED",
     "SOURCE_VAR",
     "Absent",
+    "Admissibility",
+    "Ambiguous",
     "Breach",
     "Card",
     "Cell",
@@ -80,6 +103,7 @@ __all__ = [
     "Outcome",
     "Owed",
     "Partition",
+    "Preflight",
     "Probed",
     "Proposer",
     "Refusal",
@@ -94,12 +118,13 @@ __all__ = [
     "Vocabulary",
     "Word",
     "card_of",
+    "digest_of",
+    "digested",
     "driver",
     "findings",
     "held",
     "installed",
     "moved",
-    "provenance",
     "reading",
     "rendered_twice",
     "source",

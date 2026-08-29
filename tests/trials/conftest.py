@@ -6,7 +6,7 @@ import pytest
 from mainboard.trials import Dataset, Declaration, Session
 from mainboard.trials import session as session_module
 
-from .support import PROBED, declaration
+from .support import Taken, declaration
 
 
 @pytest.fixture
@@ -29,7 +29,7 @@ def probed(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     Patched at the one seam a session reads it through, so nothing under test touches real
     silicon, a real repository or the clock of the machine running the suite.
     """
-    monkeypatch.setattr(session_module, "provenance", lambda *args, **kwargs: dict(PROBED))
+    monkeypatch.setattr(session_module, "Preflight", Taken)
     yield
 
 

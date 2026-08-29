@@ -5,7 +5,16 @@ from pathlib import Path
 import pytest
 
 from mainboard import Board
-from mainboard.trials import Dataset, Declaration, Ledger, Universe, wire
+from mainboard.trials import (
+    ADMISSIBILITY,
+    OPENED,
+    Ambiguous,
+    Dataset,
+    Declaration,
+    Ledger,
+    Universe,
+    wire,
+)
 from mainboard.trials.dataset import Cell
 from mainboard.trials.ledger import RECEIPTS_VAR
 from mainboard.verdicts import TrialVerdict
@@ -13,9 +22,20 @@ from mainboard.verdicts import TrialVerdict
 from .support import cell
 
 
-def taken(store: Dataset, run: str, *rows: Mapping[str, object]) -> None:
-    """Write `rows` into `store` as one run's fragments, filling in what every receipt carries."""
-    writer = store.writer(run, {"node": store.node})
+def taken(
+    store: Dataset, run: str, *rows: Mapping[str, object], opened: int | None = None
+) -> None:
+    """Write `rows` into `store` as one run's fragments, filling in what every receipt carries.
+
+    Admissible unless a row says otherwise, since that is what a session on a committed tree
+    writes and the exclusion is the exception being tested rather than the default under test.
+
+    opened: the creation coordinate this run persists, none when the run is only named.
+    """
+    common: dict[str, object] = {"node": store.node, ADMISSIBILITY: "admissible"}
+    if opened is not None:
+        common[OPENED] = opened
+    writer = store.writer(run, common)
     for row in rows:
         writer.write({"outcome": "passed", "measured": {}, "params": {}, **row})
 
@@ -150,6 +170,98 @@ def test_the_current_view_takes_the_newest_reading_of_each_cell_unless_every_sam
     assert len(current) == 1
     assert json.loads(current["measured"][0]) == {"n": 2}
     assert len(store.passing(every=True)) == 2
+
+
+def test_two_runs_inside_one_second_are_ordered_by_the_coordinate_and_not_by_the_suffix(
+    store: Dataset,
+) -> None:
+    """Does recency follow what a run wrote down, or the random hex its name ends in?
+
+    A run name opens with a second-resolution timestamp and ends in random hex, so ordering on
+    the name orders two runs inside one second by their tail. Here the SECOND run to open sorts
+    LEXICALLY FIRST, which is the case the old rule got backwards, and every recency question,
+    the newest run, the one-row-per-cell view and the run a coverage read cites, has to follow
+    the coordinate instead.
+    """
+    where = cell(card="GPU-1", model="qwen").filters
+    second = "20260829T094024Z-aaaaaaaa"
+    first = "20260829T094024Z-ffffffff"
+    taken(store, first, {"lane": "l", "key": "a", "measured": {"n": 1}, **where}, opened=1_000)
+    taken(store, second, {"lane": "l", "key": "a", "measured": {"n": 2}, **where}, opened=2_000)
+
+    assert store.runs == (first, second)
+    assert store.newest == second
+    assert json.loads(store.passing()["measured"][0]) == {"n": 2}
+    assert store.rows()[0]["measured"] == {"n": 2}
+    assert store.status("l", ("a",), cell(card="GPU-1", model="qwen")).run == second
+
+
+def test_a_store_that_cannot_order_two_runs_refuses_newest_rather_than_picking_one(
+    store: Dataset,
+) -> None:
+    """Is an unresolvable tie an answer or a refusal?
+
+    Two runs that opened at the same instant are not orderable, and a `newest` that picked one
+    anyway would be picking by whatever the sort fell back on, which is the defect this whole
+    coordinate exists to remove. An explicitly named run still reads, because the store holds
+    both and the ambiguity is only about which one is current.
+    """
+    taken(store, "20260829T094024Z-aaaaaaaa", {"lane": "l", "key": "a"}, opened=7)
+    taken(store, "20260829T094024Z-ffffffff", {"lane": "l", "key": "b"}, opened=7)
+    with pytest.raises(Ambiguous, match="opened at the same instant"):
+        assert store.newest
+    with pytest.raises(Ambiguous, match="20260829T094024Z-aaaaaaaa"):
+        store.passing()
+
+    assert len(store.rows("20260829T094024Z-aaaaaaaa")) == 1
+    assert store.stored == {"20260829T094024Z-aaaaaaaa", "20260829T094024Z-ffffffff"}
+    assert store.retire("tied", ("20260829T094024Z-ffffffff",)).is_dir()
+    assert store.newest == "20260829T094024Z-aaaaaaaa"
+
+
+def test_a_run_written_before_the_coordinate_existed_is_dated_by_its_own_name(
+    store: Dataset,
+) -> None:
+    """Can a store hold a generation from before recency was written down and still be read?
+
+    Such a run knew its own second and never knew more, so that is what it answers with, and two
+    of them one second apart order exactly as they always did. A run whose name encodes no
+    instant at all is UNDATED: name order is the only statement it makes, it sorts before
+    anything dated, and it can never tie with anything.
+    """
+    taken(store, "20260829T094024Z-old00000", {"lane": "l", "key": "a"})
+    taken(store, "20260829T094025Z-old11111", {"lane": "l", "key": "b"})
+    assert store.newest == "20260829T094025Z-old11111"
+
+    taken(store, "handwritten", {"lane": "l", "key": "c"})
+    assert store.runs[0] == "handwritten"
+    assert store.newest == "20260829T094025Z-old11111"
+
+
+def test_a_row_whose_tree_nobody_can_identify_is_visible_and_never_counts(
+    store: Dataset,
+) -> None:
+    """Does scratch work stay readable while it stops being evidence?
+
+    A run on a moving tree measures, prints and writes; what it must not do is satisfy a claim,
+    because two dirty trees at one commit are one string and nothing tells them apart. A row from
+    before this field existed reads `unrecorded`, which proves nothing either and so counts as
+    nothing, rather than being quietly filled in as admissible.
+    """
+    where = cell(card="GPU-1", model="qwen")
+    store.writer("run-dirty", {"node": store.node, ADMISSIBILITY: "dirty"}).write(
+        {"lane": "l", "key": "a", "outcome": "passed", "measured": {}, **where.filters}
+    )
+    store.writer("run-old", {"node": store.node}).write(
+        {"lane": "l", "key": "b", "outcome": "passed", "measured": {}, **where.filters}
+    )
+    assert len(store.rows("run-dirty")) == 1
+    assert store.passing().is_empty()
+    assert store.status("l", ("a", "b"), where).state == "missing"
+
+    taken(store, "run-clean", {"lane": "l", "key": "a", **where.filters})
+    assert len(store.passing()) == 1
+    assert store.status("l", ("a",), where).state == "complete"
 
 
 def test_coverage_is_asked_at_the_cell_and_a_second_card_never_satisfies_the_first(

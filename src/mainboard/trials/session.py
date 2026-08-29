@@ -15,18 +15,32 @@
 # carrying a policy their own reading was not taken under, purely because only the session-level
 # value existed. A lane measuring under two policies in one trial cannot be answered by one column
 # either way and carries the policy observed beside each reading inside `measured`.
+#
+# A RUN IS IDENTIFIED BY 128 BITS AND ORDERED BY A COORDINATE IT WRITES DOWN. The identity used to
+# be a second-resolution timestamp and eight hex characters, which is 32 bits of collision room
+# under a name every reader also SORTED by, so two runs inside one second were ordered by their
+# random suffix and a `newest` was whichever tail happened to sort higher. Those are two jobs and
+# they are now two facts: `run` is a uuid7 under a readable timestamp and is IDENTITY, while
+# `opened_at_ns` is the creation coordinate every recency question is answered from.
+#
+# AND `case_id` IS THE FIELD THAT USED TO LIE. It held the last component of the pytest node id
+# under the name `run_id`, beside a `run` column that already held the actual run, so a reader
+# joining receipts on `run_id` joined them on the test case. The value was always right and the
+# name was always wrong; the column is now spelled for what it holds, and the full node id stays
+# in `trial` where it always was.
 
 from datetime import UTC, datetime
 from pathlib import Path
+from time import time_ns
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import uuid7
 
 from pydantic import JsonValue
 
 from .coverage import PROBED, Cell, LaneStatus, Probed
-from .dataset import LEDGER
+from .dataset import ADMISSIBILITY, LEDGER, OPENED
 from .flags import moved, reading
-from .provenance import provenance
+from .provenance import Admissibility, Preflight, digested
 from .stage import Stage
 from .vocabulary import Outcome
 
@@ -63,15 +77,28 @@ def lane_of(item: pytest.Item) -> tuple[str, str]:
 class Session:
     """One run of a declared universe: its identity, its provenance and its open stores.
 
+    THE IDENTITY IS TWO FACTS AND THEY ARE NOT INTERCHANGEABLE. `run` names this run and nothing
+    else: a uuid7 under the readable timestamp its partition directory is found by, 128 bits where
+    there used to be 32, still lexically time-ordered because a uuid7 opens with its own
+    millisecond. `opened` is the creation COORDINATE, in nanoseconds, and is what every recency
+    question is answered from, because inferring an order from a name that ends in random hex is
+    inferring it from the random hex.
+
     declared: what the consumer stated about its trials.
     """
 
     def __init__(self, declared: Declaration) -> None:
         self.declared = declared
-        self.run = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+        self.opened = time_ns()
+        opened = datetime.fromtimestamp(self.opened // 1_000_000_000, UTC)
+        self.run = f"{opened:%Y%m%dT%H%M%SZ}-{uuid7().hex}"
+        self.taken = Preflight(
+            declared.universe.root, declared.tree, probed=declared.universe.probed
+        )
         self.baseline = reading(declared.flags)
         self.common: dict[str, JsonValue] = {
-            **provenance(declared.tree, probed=declared.universe.probed),
+            **self.taken.stamp,
+            OPENED: self.opened,
             **{f"session_{name}": value for name, value in self.baseline.items()},
         }
         self.writers: dict[str, TrialReceipts] = {}
@@ -86,9 +113,18 @@ class Session:
 
     @property
     def heading(self) -> str:
-        """The line a session opens with, naming the machine its coverage is scoped to."""
+        """The line a session opens with, naming the machine and the tree its rows are scoped to.
+
+        A run on a tree nobody can identify SAYS SO HERE, in the same line that names the card,
+        because the rows it is about to write will not count toward any claim and a person who
+        learns that from a coverage table three days later has already spent the card time.
+        """
         named = str(self.common.get("card_name", "")) or "no card"
-        return f"evidence on {named}{f' ({self.card})' if self.card else ''}:"
+        where = f"{named}{f' ({self.card})' if self.card else ''}"
+        stance = self.taken.admissibility
+        if stance is Admissibility.ADMISSIBLE:
+            return f"evidence on {where}:"
+        return f"evidence on {where}, INADMISSIBLE ({stance}), these rows are scratch work:"
 
     def cell(self, params: Mapping[str, JsonValue]) -> Cell:
         """Where a trial sits on the declared axes, and why each axis reads what it does.
@@ -164,10 +200,22 @@ class Session:
         return Trial(item, self)
 
     def writer(self, node: str) -> TrialReceipts:
-        """One claim's store for this run, opened on first use and compacted at teardown."""
+        """One claim's store for this run, opened on first use and compacted at teardown.
+
+        The claim's own registered rows are digested HERE rather than per trial, because
+        `baselines/` is a fact about the claim and every receipt of it is scored against the same
+        directory. A gate is only pre-registered if the rows it reads existed before the reading,
+        and this is what lets a reader check that instead of taking it on trust.
+        """
         if node not in self.writers:
             self.writers[node] = self.declared.universe.dataset(node).writer(
-                self.run, {"node": node, "producer": "mainboard.trials", **self.common}
+                self.run,
+                {
+                    "node": node,
+                    "producer": "mainboard.trials",
+                    "baselines_digest": self.taken.baselines(node),
+                    **self.common,
+                },
             )
         return self.writers[node]
 
@@ -187,6 +235,7 @@ class Trial:
         self.session = session
         self.lane, self.key = lane_of(item)
         self.settled = ""
+        self.gated = ""
 
     def __getattr__(self, name: str) -> Callable[..., None]:
         """One declared word as a method, so a lane calls `trial.validated(...)` and reads well.
@@ -208,6 +257,21 @@ class Trial:
 
         return settle
 
+    def gate(self, registration: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        """Take the committed row this trial is scored against, digesting it on the way through.
+
+        A LANE READS ITS GATE AND THE RECEIPT NEVER SAW IT. A claim registers an interval, a lane
+        selects the row holding it and settles on whether today's reading falls inside, and the
+        row that decided the verdict left no trace on the row that recorded it, so a reader could
+        not tell a pre-registered gate from one edited into agreement afterwards. Reading the
+        registration THROUGH here is what closes that: the digest rides on the receipt as
+        `gate_digest` and the lane retypes nothing, since the row itself comes straight back.
+
+        registration: the committed baseline row the verdict is taken against.
+        """
+        self.gated = digested(dict(registration))
+        return registration
+
     def record(
         self,
         word: str,
@@ -221,6 +285,10 @@ class Trial:
         Every tracked flag is read HERE rather than carried from the session baseline, so a lane
         that moved one names what was actually in force when it settled, and a value that differs
         from the baseline records this trial as the first suspect for the end-of-run check.
+
+        ADMISSIBILITY IS PER ROW BECAUSE TRACKEDNESS IS PER LANE. A clean tree can still collect a
+        lane nobody committed, and that row names a commit which does not contain the test that
+        produced it, so the run-wide answer alone would call it evidence.
         """
         params = params_of(self.item)
         path = Path(str(self.item.path))
@@ -235,8 +303,10 @@ class Trial:
                 "lane": self.lane,
                 "key": self.key,
                 "trial": self.item.nodeid,
-                "run_id": self.item.nodeid.rpartition("::")[2],
+                "case_id": self.item.nodeid.rpartition("::")[2],
                 "kind": path.stem.removeprefix("test_"),
+                ADMISSIBILITY: str(self.session.taken.admits(path)),
+                "gate_digest": self.gated,
                 **self.session.cell(params).filters,
                 **live,
                 "outcome": str(outcome),
