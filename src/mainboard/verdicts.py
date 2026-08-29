@@ -410,13 +410,19 @@ def lined(path: Path) -> tuple[TrialVerdict, ...]:
 def receipted(payload: JsonValue) -> TrialVerdict:
     """One printed `trial_receipt` payload as a settled row.
 
-    The contract names `run_id`, `outcome`, `producer`, `node` and `gates` as optional fields
+    The contract names `case_id`, `outcome`, `producer`, `node` and `gates` as optional fields
     and any harness may add its own, so everything is read leniently and an absent field is an
     empty cell rather than a refusal.
+
+    `run_id` IS READ ONLY WHERE `case_id` IS ABSENT, and that is the whole of the compatibility.
+    The trials harness spelled the test case `run_id` beside a `run` column already holding the
+    run, so the name promised a join nobody could make; a dispatched job printing its own receipt
+    still names its job there and is still read. A row carrying both is a new row and its
+    `case_id` is what this reads, so the old meaning never enters a new join.
     """
     data = payload if isinstance(payload, dict) else {}
     return TrialVerdict(
-        job=str(data.get("run_id", "")),
+        job=str(data.get("case_id") or data.get("run_id", "")),
         node=str(data.get("node", "")),
         verdict=str(data.get("outcome", "")) or vocabulary.OK,
         settled=str(data.get("verdict", "")),
