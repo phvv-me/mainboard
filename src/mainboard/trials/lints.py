@@ -55,6 +55,13 @@ if TYPE_CHECKING:
 # arithmetic and says nothing about whether a second could have differed.
 ENOUGH = 2
 
+# The constants an identity lands on. A residue is `0.0` and a reproduced ratio is `1.0`, and
+# those are what a cancelling product prints. EVERY OTHER CONSTANT IS SOMEBODY'S DESIGN: a
+# registered band is constant on purpose, so is a declared draw count, a precision and a
+# tolerance, and a lint reporting those would fire on almost every honest lane and teach a reader
+# to skip the section.
+RESIDUES = (0.0, 1.0)
+
 
 class Finding(FrozenModel):
     """One lint's complaint about one lane, in the shape a terminal line and a test both read.
@@ -121,12 +128,14 @@ def lanes_of(rows: Sequence[Mapping[str, JsonValue]]) -> dict[str, list[Mapping[
 def identities(node: str, lane: str, rows: Sequence[Mapping[str, JsonValue]]) -> Iterator[Finding]:
     """Payload keys pinned to one exact constant on every row, which is the identity shape.
 
-    A key that never moved across a whole lane is a quantity the lane did not measure, and when
-    the constant is `0.0` or `1.0` it is almost always a residue or a ratio whose terms cancel.
+    A key that never moved across a whole lane is a quantity the lane did not measure, and at
+    `0.0` or `1.0` it is a residue or a reproduced ratio whose terms cancel. Any other constant is
+    a registration, a declared budget or a tolerance, which are constant because somebody decided
+    they should be.
     """
     for key in keys_of(rows):
         constant = pinned(numbers(rows, key))
-        if constant is None:
+        if constant is None or constant not in RESIDUES:
             continue
         yield Finding(
             lint="identity",
@@ -184,7 +193,10 @@ def uncovered(
     grids = {lane: {str(row.get("key", "")) for row in held} for lane, held in grouped.items()}
     died = {lane: grid for lane, grid in grids.items() if words[lane] & refuting}
     for lane, grid in grids.items():
-        if words[lane] & refuting:
+        # A LANE THAT DECLARES NO GRID CANNOT HAVE AIMED ONE AWAY FROM ANYTHING. One key, or the
+        # empty key a lane without a parametrize carries, means the lane is one cell and its
+        # coverage question is whether that cell exists rather than which cells it left out.
+        if words[lane] & refuting or len(grid) < ENOUGH:
             continue
         missed = sorted(
             {key for other, keys in died.items() if other != lane for key in keys} - grid
