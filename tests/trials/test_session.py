@@ -1,7 +1,9 @@
+import copy
 import json
 import os
 import time
 from functools import partial
+from itertools import chain, repeat
 from pathlib import Path
 
 import pytest
@@ -322,3 +324,25 @@ def test_a_declaration_stamps_the_universe_root_unless_a_repository_is_named(
     assert declaration(tmp_path).tree == tmp_path
     named: Declaration = declaration(tmp_path, repo=tmp_path.parent)
     assert named.tree == tmp_path.parent
+
+
+def test_a_claims_residue_at_close_is_returned_and_everything_below_it_still_runs(
+    declared: Declaration, probed: None, tmp_path: Path
+) -> None:
+    """A residue used to escape `close` and take the compaction and the ledger with it.
+
+    The card reads 0 while the root opens and closes and the claim opens, then 4096 when the
+    claim drops at close, so the claim is refused; the refusal must come back as text while the
+    fragments still compact and the ledger is still reminted.
+    """
+    readings = chain([0, 0, 0], repeat(4096))
+    restless = copy.copy(declared)
+    object.__setattr__(restless, "resident", lambda: next(readings))
+    run = Session(restless)
+    store = restless.universe.dataset("alpha")
+    for key in ("a", "b"):
+        run.trial(Item(f"alpha/t.py::one[{key}]", tmp_path / "alpha" / "t.py")).validated("ok")
+    refusal = run.close()
+    assert "alpha did not release what it held: 4096 bytes" in refusal
+    assert len(store.parts) == 1
+    assert all(row["run"] == run.run for row in _receipts(store.root / "latest.jsonl"))

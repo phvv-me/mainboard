@@ -166,6 +166,14 @@ class Session:
         before anything can raise below it, since a run that measured a card must give it back
         whether or not its own flags ended clean.
 
+        THE LAST CLAIM'S RESIDUE IS RETURNED, NOT RAISED. `Stage.drop` refuses a claim that kept
+        card memory, and when that refusal escaped from here it escaped from
+        `pytest_sessionfinish`: the lease stayed held, no store compacted, no ledger was reminted,
+        and pytest never printed the failures that had caused the residue in the first place, so
+        on 2026-08-31 a whole GH200 wave read as "did not release" with the twelve real
+        `ZeroDivisionError`s behind it invisible. The refusal is a line of the session's verdict
+        like a moved flag is, and everything below it still happens.
+
         THE LEDGER IS REMINTED HERE SO IT IS NEVER OLDER THAN THE STORE IT SITS IN, BUT ONLY WHEN
         THIS RUN COVERS EVERY LANE THE STORE HAS EVER KNOWN. `latest.jsonl` is the one file in a
         receipts directory a person can open, and nothing wrote it after the store became parquet,
@@ -179,7 +187,11 @@ class Session:
         is reported missing. `Dataset.retire` carries the ledger on its own path, which between it
         and this is every way the current view can move.
         """
-        self.staged.drop()
+        refusals = []
+        try:
+            self.staged.drop()
+        except RuntimeError as residue:
+            refusals.append(str(residue))
         if self.leased is not None:
             self.leased.release()
         for node, writer in self.writers.items():
@@ -191,7 +203,7 @@ class Session:
                 store.as_jsonl(store.root / PARTIAL.format(self.run), self.run)
         drifted = moved(self.declared.flags, self.baseline)
         if not drifted:
-            return ""
+            return "\n".join(refusals)
         lines = [
             f"  {name}: opened at {self.baseline[name]!r}, ended at {value!r}, first moved by "
             f"{self.leaked.get(name, 'a trial that settled no receipt')}"
@@ -199,6 +211,7 @@ class Session:
         ]
         return "\n".join(
             [
+                *refusals,
                 f"trials REFUSE this session: {len(drifted)} tracked flag(s) ended off baseline, "
                 "so every trial collected after the move measured a machine nobody can identify.",
                 *lines,
