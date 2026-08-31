@@ -1,4 +1,5 @@
 import inspect
+import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -415,3 +416,30 @@ def test_the_manifest_owns_the_walltime_default_never_the_dispatch_code() -> Non
     source = Path(dispatch_module.__file__).read_text(encoding="utf-8")
     assert "debug-g" not in source
     assert "00:30:00" not in source
+
+
+def _repo(path: Path, dirty: bool) -> None:
+    """A real git repository at `path` with one commit, optionally carrying uncommitted work."""
+    path.mkdir(parents=True, exist_ok=True)
+    run = lambda *args: subprocess.run(  # noqa: E731
+        ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
+    )
+    run("init", "-q")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (path / "tracked.py").write_text("x = 1\n")
+    run("add", "tracked.py")
+    run("commit", "-q", "-m", "one")
+    if dirty:
+        (path / "tracked.py").write_text("x = 2\n")
+
+
+def test_the_source_stamp_names_the_repository_that_owns_the_job_not_the_submitters_cwd(
+    tmp_path: Path,
+) -> None:
+    _repo(tmp_path, dirty=True)
+    _repo(tmp_path / "inner", dirty=False)
+    nested = dispatch_module.source_of("pytest inner/tracked.py -q", tmp_path)
+    fallback = dispatch_module.source_of("python -m foo", tmp_path)
+    assert nested and "-dirty" not in nested
+    assert fallback.endswith("-dirty")

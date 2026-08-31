@@ -84,6 +84,30 @@ class Verdict(FrozenModel):
         return self.verdict == "ok"
 
 
+def source_of(command: str, root: Path) -> str:
+    """The identity of the repository that owns the code `command` runs, as git describes it.
+
+    A workspace can hold nested repositories, and the tree of record for a receipt is the one the
+    job's code lives in, not the one the submitter happened to stand in: a monorepo carrying
+    unrelated uncommitted work would otherwise stamp `-dirty` onto every receipt of a clean
+    submodule. The first command token that names an existing path under `root` picks the
+    repository; a command naming no path falls back to `root` itself. Empty when git answers
+    nothing, which is what a mirror without history reads before it is told.
+
+    command: the shell command the job runs.
+    root: the local workspace root the dispatch is staged from.
+    """
+    for token in shlex.split(command):
+        candidate = root / token
+        if not candidate.exists():
+            continue
+        where = candidate if candidate.is_dir() else candidate.parent
+        top = git("-C", str(where), "rev-parse", "--show-toplevel")
+        if top:
+            return git("-C", top, "describe", "--always", "--dirty")
+    return git("-C", str(root), "describe", "--always", "--dirty")
+
+
 class Dispatcher:
     """Dispatch a job to a resolved host and hand back a `Handle` to poll/await/fetch.
 
@@ -315,7 +339,7 @@ class Dispatcher:
             container_command=container_command,
             sampler=sampler,
             attestation=attestation,
-            source=git("describe", "--always", "--dirty"),
+            source=source_of(cmd, self.root),
         )
         script = self.write_job_script(
             spec, pbs=plan.profile.kind == "pbs", gpu_in_select=gpu_in_select
