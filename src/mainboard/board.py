@@ -467,6 +467,7 @@ class Board:
         resolve: bool = False,
         profile: str = "",
         watch: Watcher | None = None,
+        sync_only: bool = False,
     ) -> HostSetup:
         """Install an environment for this board's host, in place here or by onboarding over ssh.
 
@@ -490,7 +491,15 @@ class Board:
         profile: the declared host profile describing this machine, so the generated activation
             carries that host's module stack; this board's own host when empty.
         watch: announces each onboarding stage as it begins.
+        sync_only: re-mirror and re-provision an already onboarded host without reinstalling
+            the tool or re-probing its hardware, neither of which changed when only the
+            manifest moved; refused on this machine, which has no onboarding to skip parts of.
         """
+        if sync_only and self.local:
+            raise MissionError(
+                "--sync-only onboards a remote host faster; this machine has no onboarding to "
+                "shortcut, run `install` instead"
+            )
         plan = self.resolver.plan(profile or self.host, env=env, container="none")
         provisioner = Provisioner(self.root, self.manifest)
         if not self.local:
@@ -501,7 +510,7 @@ class Board:
                 artifact=provisioner.artifact,
                 resolve=resolve,
                 watch=watch,
-            ).run()
+            ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
         activate = provisioner.activate(plan.env, modules=plan.profile.modules)
         return HostSetup(

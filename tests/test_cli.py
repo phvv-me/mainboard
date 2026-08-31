@@ -90,7 +90,11 @@ _RESOURCES = {
         ),
         (
             ["setup", "gold", "--env", "serving"],
-            ("install", "gold", ("serving",), {"resolve": False}),
+            ("install", "gold", ("serving",), {"resolve": False, "sync_only": False}),
+        ),
+        (
+            ["setup", "gold", "--sync-only"],
+            ("install", "gold", ("",), {"resolve": False, "sync_only": True}),
         ),
         (["shell", "--env", "serving"], ("shell", "local", ("serving",), {})),
         (
@@ -124,6 +128,7 @@ _RESOURCES = {
         "install here",
         "install on a host",
         "setup",
+        "setup sync-only",
         "shell",
         "interact",
         "compute",

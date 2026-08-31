@@ -39,14 +39,25 @@ def render_table(
 
 @contextmanager
 def progress(description: str) -> Iterator[Callable[[str], None]]:
-    """A transient stderr spinner around a block of unknown duration.
+    """A stderr progress reporter around a block of unknown duration.
 
     Yields the label setter, so a block that reaches several stages says which one it is on
     instead of standing still under one description; a caller with nothing to report ignores it.
+    An interactive terminal gets the transient spinner this always was. Anywhere else, a log
+    file, a background job, a CI runner, `Console.status` answers every `.update()` with silence
+    and renders once at the very end, so a multi-stage onboarding piped to a log stood
+    indistinguishable from a hang until the caller killed it; there each stage prints as its own
+    line instead, since a stage worth naming to a live viewer is a stage worth naming in the log
+    nobody is watching live.
 
-    description: the label shown beside the spinner while the block runs.
+    description: the label shown first, and beside the spinner on a terminal.
     """
-    with Console(stderr=True).status(description) as status:
+    console = Console(stderr=True, markup=False)
+    if not console.is_terminal:
+        console.print(description)
+        yield console.print
+        return
+    with console.status(description) as status:
         yield status.update
 
 

@@ -300,13 +300,18 @@ class Onboarding:
                 "the environment was not provisioned"
             )
 
-    def run(self) -> HostSetup:
+    def run(self, *, sync_only: bool = False) -> HostSetup:
         """Onboard the host and return (and record) what it became.
 
         The mirror carries the compiled artifact alongside the sources, so the install step
         below has a lock this workspace already solved and never asks the host to solve one.
+
+        sync_only: skip the bootstrap and the hardware probe, re-mirroring and re-provisioning
+            an already onboarded host instead of onboarding it from nothing; see `_sync`.
         """
         host = self.plan.host
+        if sync_only:
+            return self._sync(host)
         with connection(host) as remote:
             self.watch(f"probing {host}")
             capabilities = probe_capabilities(remote, host)
@@ -336,6 +341,39 @@ class Onboarding:
         recorded = self.dispatcher.cache.save_host(setup)
         logger.info("onboarded %s at %s through %s", host, root, recorded.installer)
         return recorded
+
+    def _sync(self, host: str) -> HostSetup:
+        """Re-mirror and re-provision `host`, its bootstrap and hardware probe skipped.
+
+        The fast path back to a host whose environment has drifted from a manifest that moved
+        since it was set up: neither the tool nor the hardware changed, only the workspace and
+        the environment compiled from it, so nothing here reinstalls or re-probes either.
+        Refuses when the host has never been onboarded, since there is nothing yet to sync.
+
+        THE RECORD IS RE-READ AFTER THE MIRROR, NOT BEFORE. `rsync_up` stamps `synced_at` on
+        its own, mid-block, and building the saved record from a copy taken before that would
+        overwrite the very stamp it just wrote.
+
+        host: the alias to sync, already recorded from a prior `run()`.
+        """
+        recorded = self.dispatcher.cache.host(host)
+        root = self.root or recorded.root
+        with connection(host) as remote:
+            shell = RemoteShell(remote, self.plan, root)
+            self.watch(f"mirroring the workspace to {host}:{root}")
+            self.dispatcher.rsync_up(
+                self.plan, root, required=[self.artifact] if self.artifact else []
+            )
+            self.watch(f"provisioning {self.env} on {host}")
+            self.provision(shell, host=host, root=root)
+        fresh = self.dispatcher.cache.host(host)
+        updated = self.dispatcher.cache.save_host(
+            fresh.model_copy(
+                update={"root": root, "env": self.env, "activate": activation(root, env=self.env)}
+            )
+        )
+        logger.info("synced %s at %s", host, root)
+        return updated
 
 
 def _announce(stage: str) -> None:

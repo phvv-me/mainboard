@@ -392,6 +392,7 @@ def build(root: Path | None = None) -> App:
         *,
         env: str = "",
         resolve: bool = False,
+        sync_only: bool = False,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -406,12 +407,14 @@ def build(root: Path | None = None) -> App:
         env: an environment name overriding the host profile's own.
         resolve: let the host run its own dependency solve instead of installing the shipped
             lock, which puts that host's compiler in the resolution path.
+        sync_only: re-mirror and re-provision a host already set up, skipping the tool
+            reinstall and the hardware probe, the fast path back after only the manifest moved.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the setup record's fields.
         """
         with progress(f"setting up {host}") as stage:
-            report = board(host).install(env, resolve=resolve, watch=stage)
+            report = board(host).install(env, resolve=resolve, watch=stage, sync_only=sync_only)
         record(
             report.model_dump(),
             mode=mode_of(json_mode=json, agent=agent),

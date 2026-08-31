@@ -217,3 +217,45 @@ def test_onboarding_refuses_a_provisioning_that_left_no_activation_behind(
     setup, _ = onboarding(host, monkeypatch)
     with pytest.raises(MissionError, match=r"has no /repo/\.mainboard/activate\.sh"):
         setup.run()
+
+
+def test_sync_only_re_mirrors_and_re_provisions_without_bootstrap_or_hardware_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fast path back to a host whose environment drifted from a manifest that moved.
+
+    Neither the tool nor the hardware changed, only the workspace and what compiles from it, so
+    this must never reach the bootstrap cascade or the facts probe the way a full onboarding does.
+    """
+    host = machine_with()
+    setup, dispatcher = onboarding(host, monkeypatch, root="")
+    dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", installer="uv", tool="0.1.0"))
+
+    report = setup.run(sync_only=True)
+
+    assert dispatcher.mirrored == [("gold", "/repo")]
+    assert host.ran("mainboard install default --profile gold")
+    assert not host.ran("uv tool install")
+    assert not host.ran("facts --json")
+    assert not host.ran("--version")
+    assert (report.root, report.installer, report.tool) == ("/repo", "uv", "0.1.0")
+
+
+def test_sync_only_prefers_a_given_root_over_the_recorded_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = machine_with()
+    setup, dispatcher = onboarding(host, monkeypatch)
+    dispatcher.cache.save_host(HostSetup(host="gold", root="/other", installer="uv"))
+    report = setup.run(sync_only=True)
+    assert report.root == "/repo"
+    assert dispatcher.mirrored == [("gold", "/repo")]
+
+
+def test_sync_only_refuses_a_host_that_was_never_onboarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = machine_with()
+    setup, _ = onboarding(host, monkeypatch)
+    with pytest.raises(LookupError, match="'gold' has never been set up"):
+        setup.run(sync_only=True)

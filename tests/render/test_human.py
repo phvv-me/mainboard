@@ -39,13 +39,29 @@ def test_a_cell_in_square_brackets_survives_the_render(
     assert "[dev.python.deps]" in capsys.readouterr().out
 
 
-def test_progress_runs_its_block_and_yields_the_stage_setter() -> None:
+def test_progress_uses_the_live_spinner_on_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     """A block reaching several stages says which one it is on instead of standing still."""
+    monkeypatch.setattr(human.Console, "is_terminal", property(lambda self: True))
     stages: list[str] = []
     with human.progress("working") as stage:
         stage("second stage")
         stages.append("ran")
     assert stages == ["ran"]
+
+
+def test_progress_prints_each_stage_as_its_own_line_off_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A background job piped to a log gets real lines instead of a spinner nobody renders.
+
+    `Console.status` answers every `.update()` with silence off a terminal and prints once at
+    the very end, so a long onboarding piped to a log stood indistinguishable from a hang.
+    """
+    monkeypatch.setattr(human.Console, "is_terminal", property(lambda self: False))
+    with human.progress("working") as stage:
+        stage("first stage")
+        stage("second stage")
+    assert capsys.readouterr().err.splitlines() == ["working", "first stage", "second stage"]
 
 
 def test_install_traceback_installs_a_rich_excepthook(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -348,7 +348,8 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
                 containerized=plan.containerized,
             )
 
-        def run(self) -> HostSetup:
+        def run(self, *, sync_only: bool = False) -> HostSetup:
+            seen["sync_only"] = sync_only
             return report
 
     monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
@@ -360,7 +361,31 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
         "artifact": (".mainboard/pixi.toml", ".mainboard/pixi.lock", ".mainboard/state.toml"),
         "resolve": False,
         "containerized": False,
+        "sync_only": False,
     }
+
+
+def test_sync_only_reaches_the_onboarding_and_is_refused_on_this_machine(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This machine has no onboarding to shortcut, so the flag refuses rather than no-op."""
+    seen: dict[str, bool] = {}
+    report = HostSetup(host=_GOLD, root="/repo", installer="uv")
+
+    class FakeOnboarding:
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch):
+            pass
+
+        def run(self, *, sync_only: bool = False) -> HostSetup:
+            seen["sync_only"] = sync_only
+            return report
+
+    monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
+    assert board.on(_GOLD).install(sync_only=True) is report
+    assert seen == {"sync_only": True}
+
+    with pytest.raises(MissionError, match="--sync-only"):
+        board.install(sync_only=True)
 
 
 def test_shell_replaces_this_process_with_a_frozen_pixi_shell(installed: Board) -> None:
