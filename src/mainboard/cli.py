@@ -309,6 +309,20 @@ def build(root: Path | None = None) -> App:
             payload.pop("snippet")
         record(payload, mode=mode, fields=_fields(fields), title="new")
 
+    @app.command(name="self-update")
+    def self_update() -> int:
+        """Reinstall the running snapshot from its own source tree, if the two have drifted apart.
+
+        The exact command the staleness nag already names, run for you rather than copied by
+        hand. A checkout running its own source has nothing to reinstall, and a snapshot that
+        already matches its source has nothing to do, so either says so and exits zero.
+        """
+        found = staleness.check()
+        if not found.stale:
+            print(f"{project.name}: {found.detail}")
+            return 0
+        return staleness.refresh(found)
+
     @app.command
     def doctor(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.

@@ -4,13 +4,22 @@ from typing import TYPE_CHECKING
 
 import pytest
 from hypothesis import given
+from plumbum import local as localhost
 
 from mainboard import script, sh
+from mainboard.core.shell import foreground
 
 from ..strategies import TEXT
 
 if TYPE_CHECKING:
     from string.templatelib import Template
+
+
+@pytest.mark.parametrize(("command", "code"), [("true", 0), ("false", 1)])
+def test_foreground_runs_a_command_with_inherited_stdio_and_answers_its_exit_code(
+    command: str, code: int
+) -> None:
+    assert foreground(localhost["bash"]["-c", command]) == code
 
 
 @given(value=TEXT)

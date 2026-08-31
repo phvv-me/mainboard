@@ -361,7 +361,34 @@ def test_the_entry_point_says_the_staleness_line_before_anything_else(
     with pytest.raises(SystemExit, match="0"):
         main()
     printed = capsys.readouterr()
-    assert "the source moved; reinstall: reinstall it" in printed.err
+    assert "the source moved; run `mainboard self-update` to fix it" in printed.err
+
+
+@pytest.mark.parametrize(
+    ("stale", "detail", "code"),
+    [(False, "matches the source tree", 0), (True, "drifted", 3)],
+    ids=["fresh", "stale"],
+)
+def test_self_update_runs_the_fix_only_when_the_snapshot_is_stale(
+    depot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stale: bool,
+    detail: str,
+    code: int,
+) -> None:
+    """A fresh or checked-out snapshot has nothing to reinstall and says so instead."""
+    monkeypatch.setattr(
+        "mainboard.cli.staleness.check",
+        lambda: Snapshot(installed=True, stale=stale, detail=detail, fix="do it"),
+    )
+    ran: list[Snapshot] = []
+    monkeypatch.setattr("mainboard.cli.staleness.refresh", lambda found: ran.append(found) or 3)
+    with pytest.raises(SystemExit, match=str(code)):
+        build(depot)(["self-update"])
+    assert bool(ran) is stale
+    if not stale:
+        assert f"mainboard: {detail}" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

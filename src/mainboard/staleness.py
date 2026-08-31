@@ -18,8 +18,10 @@ from contextlib import suppress
 from pathlib import Path
 
 from patos import FrozenModel
+from plumbum import local as localhost
 
 from .core.project import Project
+from .core.shell import foreground
 
 # The file uv writes beside every tool it installs, naming the source of the snapshot.
 _RECEIPT = "uv-receipt.toml"
@@ -51,7 +53,22 @@ class Snapshot(FrozenModel):
         """The one line a CLI invocation prints, empty when there is nothing to say."""
         if not self.stale:
             return ""
-        return f"{Project().name}: {self.detail}; reinstall: {self.fix}"
+        tool = Project().name
+        return f"{tool}: {self.detail}; run `{tool} self-update` to fix it"
+
+
+def refresh(found: Snapshot) -> int:
+    """Run the reinstall `found.fix` names, streaming its output, and return its exit code.
+
+    The exact command the nag already computes, run here instead of copied by hand. Nothing to
+    do, and nothing wrong, for a snapshot that is not stale: `found.fix` is empty and this
+    exits zero without touching anything.
+
+    found: a snapshot from `check()`, this process's own by default.
+    """
+    if not found.fix:
+        return 0
+    return foreground(localhost["bash"]["-lc", found.fix])
 
 
 def check(package: Path | None = None) -> Snapshot:

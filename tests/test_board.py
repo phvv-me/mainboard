@@ -610,7 +610,7 @@ def test_a_bound_board_reads_facts_and_runs_commands_over_one_connection(
     monkeypatch.setattr(
         "mainboard.board.connection", lambda host: FakeConnection(f"module chatter\n{payload}\n")
     )
-    monkeypatch.setattr("mainboard.board._streamed", lambda command: 7)
+    monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
     bound = board.on(_MIYABI_G)
     assert bound.facts().hostname == "fake-remote"
     assert bound.run("true", container="none") == 7

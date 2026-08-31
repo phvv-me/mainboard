@@ -1,5 +1,25 @@
 import shlex
 from string.templatelib import Interpolation, Template
+from typing import TYPE_CHECKING
+
+from plumbum import FG, ProcessExecutionError
+
+if TYPE_CHECKING:
+    from plumbum.commands.base import BaseCommand
+
+
+def foreground(command: BaseCommand) -> int:
+    """Run a bound command with inherited stdio, returning its exit code.
+
+    The one way this workspace runs a command it wants to watch rather than capture, local or
+    over an open connection alike, since a bound command carries its own machine either way.
+    """
+    try:
+        command & FG
+    except ProcessExecutionError as error:
+        return int(error.retcode or 1)
+    else:
+        return 0
 
 
 def sh(template: Template) -> str:

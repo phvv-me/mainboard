@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 from threading import RLock
 from typing import TYPE_CHECKING, NoReturn, cast
 
-from plumbum import FG, ProcessExecutionError
+from plumbum import ProcessExecutionError
 from plumbum import local as localhost
 
 from .batch.estimate import Estimator, JobEstimate
@@ -21,6 +21,7 @@ from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .core.shell import foreground
 from .deps import Dependencies
 from .dispatch import vocabulary
 from .dispatch.backends.base import Credentials, Delivery, LogSource, ProviderBackend, route
@@ -55,8 +56,6 @@ from .verdicts import Verdicts
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
-
-    from plumbum.commands.base import BaseCommand
 
     from .batch.receipts import Bus
     from .batch.spec import BatchSpec
@@ -765,9 +764,9 @@ class Board:
         """
         line = self.line(command, env=env, container=container)
         if self.local:
-            return _streamed(localhost["bash"]["-lc", line])
+            return foreground(localhost["bash"]["-lc", line])
         with connection(self.host) as remote:
-            return _streamed(remote["bash"]["-lc", line])
+            return foreground(remote["bash"]["-lc", line])
 
     def samples(
         self,
@@ -1012,13 +1011,3 @@ class Board:
         batch_id: the batch to watch.
         """
         return Watch(self, batch_id, bus=self.receipts(batch_id))
-
-
-def _streamed(command: BaseCommand) -> int:
-    """Run a bound command with inherited stdio, returning its exit code."""
-    try:
-        command & FG
-    except ProcessExecutionError as error:
-        return int(error.retcode or 1)
-    else:
-        return 0

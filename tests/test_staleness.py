@@ -59,11 +59,23 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
     assert str(source) in stale.detail
     assert stale.fix == f"uv tool install --from '{source}[wandb]' mainboard --force"
     assert stale.detail in stale.warning
-    assert stale.fix in stale.warning
+    assert "mainboard self-update" in stale.warning
     receipt = tool / "uv-receipt.toml"
     stat = receipt.stat()
     os.utime(receipt, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
     assert check(snapshot).stale is False
+
+
+@pytest.mark.parametrize(("fix", "code"), [("true", 0), ("false", 1)])
+def test_refresh_runs_the_fix_command_and_answers_its_exit_code(fix: str, code: int) -> None:
+    """The exact command the nag names, run here instead of copied by hand."""
+    found = Snapshot(installed=True, stale=True, detail="drifted", fix=fix)
+    assert staleness.refresh(found) == code
+
+
+def test_refresh_does_nothing_for_a_snapshot_with_no_fix_to_run() -> None:
+    """A fresh or uninstalled snapshot has an empty `fix`, so there is nothing to run at all."""
+    assert staleness.refresh(Snapshot(installed=True)) == 0
 
 
 def test_a_checkout_running_its_own_source_has_nothing_to_be_stale_against(
