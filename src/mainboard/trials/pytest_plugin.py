@@ -49,6 +49,7 @@ from pydantic import JsonValue
 from . import hookspecs
 from .adaptive import DRIVERS, driver
 from .flags import held
+from .lease import Busy
 from .lints import findings
 from .session import WORD, Session, Trial, lane_of, params_of
 from .stage import Stage
@@ -106,6 +107,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     mine = [item for item in items if root in Path(str(item.path)).resolve().parents]
     _warmed(mine)
     _unrunnable(session, mine, paid=bool(config.getoption("--paid")))
+    if any("gpu" in item.keywords for item in mine):
+        try:
+            session.claim()
+        except Busy as busy:
+            raise pytest.UsageError(str(busy)) from None
     session.lanes = _surveyed(session, mine)
     if not config.getoption("--rerun"):
         _satisfied(session, mine)

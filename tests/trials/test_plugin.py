@@ -1,3 +1,5 @@
+import os
+import time
 from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
@@ -332,6 +334,37 @@ def test_a_host_with_no_card_and_a_wallet_nobody_opened_both_skip(
     }
     run.stdout.fnmatch_lines(["evidence on no card:"])
     assert not any(str(row["card"]) for row in store(universe).rows())
+
+
+def test_a_run_touching_no_gpu_marked_lane_never_takes_the_card_lease(
+    universe: pytest.Pytester,
+) -> None:
+    """A session that never asked for the card must never be the one that locks it."""
+    universe.makepyfile(**{"beta/test_law": "def test_reads(trial):\n    trial.validated('x')\n"})
+    assert ran(universe, "beta/test_law.py").ret == 0
+    assert not (Path(universe.path) / ".card.lock").exists()
+
+
+def test_a_run_refuses_to_measure_beside_a_live_holder_of_the_card(
+    universe: pytest.Pytester,
+) -> None:
+    """The race `clean_card` never noticed: a second campaign beside a live one refuses."""
+    lock = Path(universe.path) / ".card.lock"
+    lock.write_text(f"{os.getpid()} {time.time()}", encoding="utf-8")
+    refused = ran(universe, "--paid")
+    assert refused.ret != 0
+    refused.stderr.fnmatch_lines([f"*held by pid {os.getpid()}*"])
+    assert lock.read_text(encoding="utf-8").split()[0] == str(os.getpid())
+
+
+def test_a_stale_card_lease_is_reclaimed_rather_than_wedging_every_run_after_it(
+    universe: pytest.Pytester,
+) -> None:
+    """A crashed session's lease must not outlive it and block every session after it."""
+    lock = Path(universe.path) / ".card.lock"
+    lock.write_text(f"{2**31 - 1} {time.time()}", encoding="utf-8")
+    assert ran(universe, "--paid").ret == 0
+    assert not lock.exists()
 
 
 def test_a_trial_that_measured_nothing_fails_and_still_leaves_a_row(

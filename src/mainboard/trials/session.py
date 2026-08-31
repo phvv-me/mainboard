@@ -40,6 +40,7 @@ from pydantic import JsonValue
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import ADMISSIBILITY, LEDGER, OPENED, PARTIAL
 from .flags import moved, reading
+from .lease import CardLease
 from .provenance import Admissibility, Preflight, digested
 from .stage import Stage
 from .vocabulary import Outcome
@@ -105,11 +106,22 @@ class Session:
         self.lanes: tuple[LaneStatus, ...] = ()
         self.leaked: dict[str, str] = {}
         self.staged = Stage("", resident=declared.resident)
+        self.leased: CardLease | None = None
 
     @property
     def card(self) -> str:
         """The device this run measures on, empty on a host that carries none."""
         return str(self.common.get("card", ""))
+
+    def claim(self) -> None:
+        """Take this run's exclusive hold on its card, refusing to measure beside a live holder.
+
+        A no-op off a host with no card, since there is nothing here to contend over. Collection
+        is what decides whether to call this at all, since a pure-theory run that touched no
+        `gpu`-marked lane never needed the card and must never be blocked by whoever holds it.
+        """
+        if self.card:
+            self.leased = CardLease.acquire(self.declared.universe.root)
 
     @property
     def heading(self) -> str:
@@ -147,10 +159,12 @@ class Session:
         return Cell(values=values, probing=probing)
 
     def close(self) -> str:
-        """Release, compact, remint each store's readable ledger, then say why the run must fail.
+        """Release the claim, the card, compact, remint each ledger, then say what must fail.
 
         Compaction runs unconditionally, because a run that moved a flag still took every reading
-        it took and the fragments are worth exactly as much either way.
+        it took and the fragments are worth exactly as much either way. The card lease releases
+        before anything can raise below it, since a run that measured a card must give it back
+        whether or not its own flags ended clean.
 
         THE LEDGER IS REMINTED HERE SO IT IS NEVER OLDER THAN THE STORE IT SITS IN, BUT ONLY WHEN
         THIS RUN COVERS EVERY LANE THE STORE HAS EVER KNOWN. `latest.jsonl` is the one file in a
@@ -166,6 +180,8 @@ class Session:
         and this is every way the current view can move.
         """
         self.staged.drop()
+        if self.leased is not None:
+            self.leased.release()
         for node, writer in self.writers.items():
             writer.compact()
             store = self.declared.universe.dataset(node)

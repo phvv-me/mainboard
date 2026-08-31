@@ -50,6 +50,7 @@ from .declaration import MARKERS, Declaration
 from .distribution import Distribution, Fleet, Local, Partition
 from .figures import Figures, Gap, Need, Refusal, rendered_twice
 from .flags import Flag, held, moved, reading
+from .lease import Busy, CardLease
 from .ledger import NESTED, Ledger, TrialReceipts, wire
 from .lints import Finding, findings
 from .provenance import (
@@ -83,7 +84,9 @@ __all__ = [
     "Admissibility",
     "Ambiguous",
     "Breach",
+    "Busy",
     "Card",
+    "CardLease",
     "Cell",
     "Dataset",
     "Declaration",
@@ -129,4 +132,6 @@ __all__ = [
     "rendered_twice",
     "source",
     "wire",
+    "Busy",
+    "CardLease",
 ]

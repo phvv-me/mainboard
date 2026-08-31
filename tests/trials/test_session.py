@@ -1,4 +1,6 @@
 import json
+import os
+import time
 from functools import partial
 from pathlib import Path
 
@@ -7,6 +9,7 @@ import pytest
 from mainboard.trials import (
     OPENED,
     Admissibility,
+    Busy,
     Declaration,
     Outcome,
     Probed,
@@ -262,6 +265,35 @@ def test_a_run_names_the_machine_it_is_scoped_to(
     assert bare.heading == "evidence on no card:"
     assert bare.cell({}).probing == {"card": Probed.ABSENT, "model": Probed.UNASKED}
     assert bare.cell({"model": "qwen"}).values == {"card": "", "model": "qwen"}
+
+
+def test_claim_takes_the_card_lease_and_close_releases_it(
+    session: Session, tmp_path: Path
+) -> None:
+    """A run that touches a card takes an exclusive hold on it and gives it back at the end."""
+    lock = tmp_path / ".card.lock"
+    assert not lock.exists()
+    session.claim()
+    assert lock.read_text(encoding="utf-8").split()[0] == str(os.getpid())
+    session.close()
+    assert not lock.exists()
+
+
+def test_claim_is_a_no_op_off_a_host_with_no_card(tmp_path: Path, probed: None) -> None:
+    """A pure-theory session never touches the card, so it must never contend over it."""
+    bare = Session(declaration(tmp_path))
+    bare.common.update({"card": "", "card_name": "", "card_probed": str(Probed.ABSENT)})
+    bare.claim()
+    assert bare.leased is None
+    assert not (tmp_path / ".card.lock").exists()
+
+
+def test_claim_refuses_to_measure_beside_a_live_holder(session: Session, tmp_path: Path) -> None:
+    """The race `clean_card` never noticed: another session already has this card."""
+    lock = tmp_path / ".card.lock"
+    lock.write_text(f"{os.getpid()} {time.time()}", encoding="utf-8")
+    with pytest.raises(Busy, match=str(os.getpid())):
+        session.claim()
 
 
 def test_the_two_readings_a_collected_item_is_split_into(tmp_path: Path) -> None:
