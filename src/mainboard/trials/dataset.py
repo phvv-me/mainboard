@@ -81,6 +81,10 @@ _ORDER = "_recency"
 # live store came to hold a ledger describing runs it no longer counts.
 RETIRED, GENERATION, LEDGER = "retired", "generation", "latest.jsonl"
 
+# Where a run that did not cover every lane this store has ever known is still written out
+# readably, since `full` refuses to let such a run become `LEDGER` itself.
+PARTIAL = "partial-{}.jsonl"
+
 
 class Ambiguous(RuntimeError):
     """Two runs claim the same creation instant, so `newest` is not a question with one answer."""
@@ -258,6 +262,34 @@ class Dataset:
         lines = [wire(row) for row in self.rows(run)]
         target.write_text("".join(lines), encoding="utf-8")
         return len(lines)
+
+    def full(self, run: str) -> bool:
+        """Whether `run` alone shows every lane this store has ever recorded, elsewhere included.
+
+        A PARTIAL RUN IS STILL EVIDENCE AND MUST NEVER BECOME THE LEDGER OF RECORD. `latest.jsonl`
+        is minted from one run's own rows, and a run that only recollected some of a claim's lanes
+        (a re-run of one file, a `-k` selection) is a run whose rows would otherwise silently drop
+        every lane it did not touch from the one file a person reads, exactly the defect
+        `Session.close` had before this existed: reminting unconditionally after every run.
+
+        run: the run to check, against every lane the whole store has ever seen.
+        """
+        return self.lanes(run) >= self.lanes()
+
+    def lanes(self, run: str = "") -> frozenset[str]:
+        """Every lane recorded in `run`, or every lane this store has ever recorded when empty.
+
+        The whole-store answer is what a run is measured against in `full`, so a run reproducing
+        every lane the store has ever known can safely become the readable ledger.
+
+        run: which run to scope to, every run when empty.
+        """
+        frame = self.scan()
+        if not frame.collect_schema().names():
+            return frozenset()
+        if run:
+            frame = frame.filter(pl.col("run") == run)
+        return frozenset(str(lane) for lane in frame.select(_LANE).unique().collect()[_LANE])
 
     def retire(self, generation: str, runs: Sequence[str]) -> Path:
         """Move `runs` out of the current view into a named generation, the ledger with them.

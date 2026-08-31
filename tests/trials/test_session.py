@@ -16,7 +16,7 @@ from mainboard.trials import (
 from mainboard.trials import session as session_module
 from mainboard.trials.session import WORD, lane_of, params_of
 
-from .support import PROBED, Item, Taken, declaration
+from .support import PROBED, Item, Taken, cell, declaration
 from .test_declaring import knob
 
 
@@ -177,6 +177,12 @@ def test_a_flag_left_moved_by_nothing_that_settled_still_names_what_it_can(
     assert "first moved by a trial that settled no receipt" in session.close()
 
 
+def _receipts(target: Path) -> list[dict[str, object]]:
+    """Every `trial_receipt` a readable ledger file holds, one per line."""
+    lines = target.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line)["trial_receipt"] for line in lines]
+
+
 def test_a_clean_run_closes_quietly_and_compacts_what_it_wrote(
     session: Session, tmp_path: Path
 ) -> None:
@@ -187,6 +193,39 @@ def test_a_clean_run_closes_quietly_and_compacts_what_it_wrote(
     assert len(store.parts) == 2
     assert session.close() == ""
     assert len(store.parts) == 1
+    ledger = store.root / "latest.jsonl"
+    assert all(row["run"] == session.run for row in _receipts(ledger))
+
+
+def test_a_partial_run_never_replaces_the_ledger_and_still_lands_readably(
+    declared: Declaration, probed: None, tmp_path: Path
+) -> None:
+    """A re-run of one lane must not make the ledger forget the lanes it did not touch.
+
+    Reminting unconditionally after every run was the earlier defect: a run that only
+    recollected `one` would remint the ledger from its own row alone and `two` would vanish
+    from the one file a person reads, though the store underneath still held it.
+    """
+    store = declared.universe.dataset("alpha")
+    ledger = store.root / "latest.jsonl"
+    first = Session(declared)
+    for name in ("one", "two"):
+        first.trial(Item(f"alpha/t.py::{name}", tmp_path / "alpha" / "t.py")).validated("ok")
+    first.close()
+    assert all(row["run"] == first.run for row in _receipts(ledger))
+
+    second = Session(declared)
+    second.trial(Item("alpha/t.py::one", tmp_path / "alpha" / "t.py")).validated("again")
+    second.close()
+
+    assert all(row["run"] == first.run for row in _receipts(ledger))
+    partial = store.root / f"partial-{second.run}.jsonl"
+    assert [row["run"] for row in _receipts(partial)] == [second.run]
+    assert {row["lane"] for row in store.rows(first.run)} == {
+        "alpha/t.py::one",
+        "alpha/t.py::two",
+    }
+    assert store.status("alpha/t.py::one", ("",), cell()).run == second.run
 
 
 def test_a_claim_drops_what_it_held_the_moment_collection_leaves_it(

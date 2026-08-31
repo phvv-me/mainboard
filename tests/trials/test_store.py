@@ -136,10 +136,30 @@ def test_an_empty_store_answers_with_nothing_rather_than_raising(store: Dataset)
     assert store.rows() == [] and store.rows("run-1") == []
     assert not store.passing().columns
     assert store.status("l", ("a",), Cell()).state == "missing"
+    assert store.lanes() == frozenset()
     target = store.root / "out.ndjson"
     target.parent.mkdir(parents=True, exist_ok=True)
     assert store.as_jsonl(target) == 0
     assert target.read_text() == ""
+
+
+def test_full_asks_whether_one_run_alone_reproduces_every_lane_the_store_has_ever_known(
+    store: Dataset,
+) -> None:
+    """The ledger guard's own question: would reminting from just this run drop a lane?"""
+    taken(store, "run-1", {"lane": "a", "key": "x"}, {"lane": "b", "key": "x"})
+    assert store.lanes() == frozenset({"a", "b"})
+    assert store.lanes("run-1") == frozenset({"a", "b"})
+    assert store.full("run-1") is True
+
+    taken(store, "run-2", {"lane": "a", "key": "x"})
+    assert store.lanes("run-2") == frozenset({"a"})
+    assert store.lanes() == frozenset({"a", "b"})
+    assert store.full("run-2") is False
+    assert store.full("run-1") is True
+
+    taken(store, "run-3", {"lane": "c", "key": "x"})
+    assert store.full("run-1") is False
 
 
 def test_a_store_is_found_from_its_partitions_or_from_the_evidence_directory_above_them(

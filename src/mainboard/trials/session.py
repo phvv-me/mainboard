@@ -38,7 +38,7 @@ from uuid import uuid7
 from pydantic import JsonValue
 
 from .coverage import PROBED, Cell, LaneStatus, Probed
-from .dataset import ADMISSIBILITY, LEDGER, OPENED
+from .dataset import ADMISSIBILITY, LEDGER, OPENED, PARTIAL
 from .flags import moved, reading
 from .provenance import Admissibility, Preflight, digested
 from .stage import Stage
@@ -152,18 +152,27 @@ class Session:
         Compaction runs unconditionally, because a run that moved a flag still took every reading
         it took and the fragments are worth exactly as much either way.
 
-        THE LEDGER IS REMINTED HERE SO IT IS NEVER OLDER THAN THE STORE IT SITS IN. `latest.jsonl`
-        is the one file in a receipts directory a person can open, and nothing wrote it after the
-        store became parquet, so four universes of one workspace were found on 2026-08-29 handing
-        a reader a generation their own coverage rule had superseded. A run that wrote a store
-        rewrites its ledger, and `Dataset.retire` carries it, which between them are every way the
-        current view can move.
+        THE LEDGER IS REMINTED HERE SO IT IS NEVER OLDER THAN THE STORE IT SITS IN, BUT ONLY WHEN
+        THIS RUN COVERS EVERY LANE THE STORE HAS EVER KNOWN. `latest.jsonl` is the one file in a
+        receipts directory a person can open, and nothing wrote it after the store became parquet,
+        so four universes of one workspace were found on 2026-08-29 handing a reader a generation
+        their own coverage rule had superseded. Reminting unconditionally traded that defect for a
+        second one: a run that only recollected some of a claim's lanes would remint the ledger
+        from its own rows alone and every lane it did not touch would vanish from the one file a
+        person reads, though the store underneath still held it. A partial run still lands as its
+        own run and is still admissible evidence; it is written out beside the ledger instead of
+        replacing it, so nothing this session measured goes unseen and nothing it did not measure
+        is reported missing. `Dataset.retire` carries the ledger on its own path, which between it
+        and this is every way the current view can move.
         """
         self.staged.drop()
         for node, writer in self.writers.items():
             writer.compact()
             store = self.declared.universe.dataset(node)
-            store.as_jsonl(store.root / LEDGER)
+            if store.full(self.run):
+                store.as_jsonl(store.root / LEDGER)
+            else:
+                store.as_jsonl(store.root / PARTIAL.format(self.run), self.run)
         drifted = moved(self.declared.flags, self.baseline)
         if not drifted:
             return ""
