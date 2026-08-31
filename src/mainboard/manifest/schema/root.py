@@ -4,6 +4,7 @@ from pydantic import model_validator
 
 from ...core.errors import MissionError
 from .container import Container
+from .engine import Engine
 from .environment import Env, Task
 from .gate import Gate
 from .host import HostProfile
@@ -29,6 +30,8 @@ class Manifest(Scope):
     `[gates.*]` names the commands `doctor` asks for a verdict, `[templates.*]`
     names the project templates `new` renders, and `[tracking]` names where a
     batch's receipts are mirrored beyond this workspace's own files.
+    `[engines.*]` names a command `serve` stages through one of `[containers.*]`,
+    the manifest side of the containerize seam `run` already builds argv through.
 
     `[env]` sets a variable to a string and clears one with `false`. Clearing
     is not the same as setting an empty string, which is what the table could
@@ -43,7 +46,8 @@ class Manifest(Scope):
     # The tables no compile reads, the exact complement of what `PixiManifest.from_manifest`
     # and the second stage translate. `[gates]` is what `doctor` asks, `[templates]` is what
     # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
-    # `[hosts]` are how a job reaches a machine, and `[vars]`
+    # `[hosts]` are how a job reaches a machine, `[engines]` is what `serve` stages through one
+    # of those containers, and `[vars]`
     # has already been folded into every string that quotes it by the time a manifest
     # validates, so a var a compiled table really uses moves the digest through that table's own
     # rendered value. None of them reaches a generated file, so editing one must not make every
@@ -51,7 +55,7 @@ class Manifest(Scope):
     # compiler's own output in `tests/engines/compile/test_compiler.py`, so a table added to
     # the schema is refused until somebody decides which side of this line it sits on.
     uncompiled: ClassVar[frozenset[str]] = frozenset(
-        {"containers", "gates", "hosts", "templates", "tracking", "vars"}
+        {"containers", "engines", "gates", "hosts", "templates", "tracking", "vars"}
     )
 
     workspace: Header
@@ -67,6 +71,7 @@ class Manifest(Scope):
     tracking: Tracking = Tracking()
     containers: dict[str, Container] = {}
     hosts: dict[str, HostProfile] = {}
+    engines: dict[str, Engine] = {}
 
     @model_validator(mode="after")
     def env_values_set_or_clear(self) -> Manifest:
@@ -99,22 +104,28 @@ class Manifest(Scope):
 
     @model_validator(mode="after")
     def names_resolve(self) -> Manifest:
-        """Reserved env names stay free, and host references point at real tables."""
+        """Reserved env names stay free, and every host or engine names a table that exists."""
         taken = _RESERVED_ENVS & self.envs.keys()
         if taken:
             raise ValueError(f"reserved environment names declared: {sorted(taken)}")
         for alias, profile in self.profiles().items():
-            if profile.container and profile.container not in self.containers:
-                raise ValueError(
-                    f"host {alias!r} names container {profile.container!r}, "
-                    f"declared containers are {sorted(self.containers)}"
-                )
-            if profile.env != "default" and profile.env not in self.envs:
-                raise ValueError(
-                    f"host {alias!r} names environment {profile.env!r}, "
-                    f"declared environments are {sorted(self.envs)}"
-                )
+            self._resolves(f"host {alias!r}", profile.container, profile.env)
+        for name, engine in self.engines.items():
+            self._resolves(f"engine {name!r}", engine.container, engine.env)
         return self
+
+    def _resolves(self, subject: str, container: str, env: str) -> None:
+        """Refuse `subject`'s container or environment when neither declared table holds it."""
+        if container and container not in self.containers:
+            raise ValueError(
+                f"{subject} names container {container!r}, declared containers are "
+                f"{sorted(self.containers)}"
+            )
+        if env != "default" and env not in self.envs:
+            raise ValueError(
+                f"{subject} names environment {env!r}, declared environments are "
+                f"{sorted(self.envs)}"
+            )
 
     def profile(self, alias: str) -> HostProfile:
         """The resolved profile for `alias`, defaults-only when undeclared.

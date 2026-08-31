@@ -302,6 +302,7 @@ def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Relayed]:
         (Board, "install", HostSetup(host="gold", root="/repo", installer="uv")),
         (Board, "attest", None),
         (Board, "shell", None),
+        (Board, "serve", 0),
         (Board, "interact", None),
         (Board, "facts", HostFacts(schema_version=1, hostname="box")),
         (Dependencies, "add", _MOVED),

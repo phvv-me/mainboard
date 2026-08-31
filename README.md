@@ -172,3 +172,9 @@ container paths covered by the test suite (1332 tests, 100 percent branch
 coverage). The provider router, `board.on("auto")`, scoring hosts by fit,
 price, and time to result across private clusters and commercial GPU clouds,
 is under active development.
+
+`[engines.*]` and `serve` are a skeleton: a declared command staged through a
+declared container, rendered through the same containerize seam `run` already
+builds argv with, on an owned host. Staging `serve` onto a rented provider
+instance, alongside the same fit/price/time-to-result scoring `board.on("auto")`
+is bringing to dispatch, is 0.5 work.

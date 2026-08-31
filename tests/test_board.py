@@ -19,7 +19,7 @@ from mainboard.dispatch.state import RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.doctor import Doctor
 from mainboard.engines.compile import Provisioner
-from mainboard.manifest import Manifest
+from mainboard.manifest import Container, Engine, Header, Manifest
 from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold
 
@@ -388,6 +388,37 @@ def test_sync_only_reaches_the_onboarding_and_is_refused_on_this_machine(
 
     with pytest.raises(MissionError, match="--sync-only"):
         board.install(sync_only=True)
+
+
+_SERVING = Manifest(
+    workspace=Header(name="serving-lab"),
+    containers={"ngc": Container(image="nvcr.io/nvidia/pytorch:25.06-py3")},
+    engines={"vserve": Engine(command="vllm serve --model m", container="ngc")},
+)
+
+
+def test_serve_renders_the_named_engine_through_run(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`serve` is `run` sourced from a declared engine instead of from the terminal."""
+    monkeypatch.setattr(Board, "manifest", property(lambda self: _SERVING))
+    seen: dict[str, str] = {}
+
+    def fake_run(self: Board, command: str, *, env: str = "", container: str = "") -> int:
+        seen.update(command=command, env=env, container=container)
+        return 0
+
+    monkeypatch.setattr(Board, "run", fake_run)
+    assert board.serve("vserve") == 0
+    assert seen == {"command": "vllm serve --model m", "env": "default", "container": "ngc"}
+
+
+def test_serve_refuses_an_undeclared_engine_naming_what_is_declared(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Board, "manifest", property(lambda self: _SERVING))
+    with pytest.raises(MissionError, match=r"declared engines are \['vserve'\]"):
+        board.serve("ghost")
 
 
 def test_shell_replaces_this_process_with_a_frozen_pixi_shell(installed: Board) -> None:

@@ -828,6 +828,24 @@ class Board:
         """The project generator, rendering the workspace's own templates through copier."""
         return Scaffold(self)
 
+    def serve(self, name: str) -> int:
+        """Run a declared engine's command through its container, returning its exit code.
+
+        The same staging `run` gives any command, over one this workspace already named:
+        `[engines.<name>]`'s command, inside the container it declares. No image is built here,
+        only the launcher `run` already knows how to build for any container, so the container's
+        own image must already exist.
+
+        name: the `[engines.<name>]` table to serve.
+        """
+        try:
+            engine = self.manifest.engines[name]
+        except KeyError:
+            raise MissionError(
+                f"no engine {name!r}; declared engines are {sorted(self.manifest.engines)}"
+            ) from None
+        return self.run(engine.command, env=engine.env, container=engine.container)
+
     def shell(
         self,
         env: str = "",

@@ -1,5 +1,6 @@
 from .loading import load
 from .schema.container import Container, EnvMode, Guardrail
+from .schema.engine import Engine
 from .schema.environment import Env
 from .schema.host import HostProfile, Sync
 from .schema.observe import Observe
@@ -14,6 +15,7 @@ from .schema.workspace import Header
 __all__ = [
     "Container",
     "Defaults",
+    "Engine",
     "Env",
     "EnvMode",
     "Guardrail",
@@ -29,4 +31,5 @@ __all__ = [
     "Tracking",
     "TrackingMode",
     "load",
+    "Engine",
 ]

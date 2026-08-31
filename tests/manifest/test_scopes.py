@@ -3,7 +3,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from mainboard import Manifest, MissionError
-from mainboard.manifest import Env, Header, HostProfile, Scope, Spec, Toolchain
+from mainboard.manifest import Engine, Env, Header, HostProfile, Scope, Spec, Toolchain
 
 from ..strategies import SPECS, WORDS
 
@@ -100,11 +100,19 @@ def test_the_environment_roster_answers_by_name_and_refuses_a_stranger() -> None
         ({"envs": {"default": Env()}}, "reserved environment names"),
         ({"hosts": {"gold": HostProfile(container="ghost")}}, "names container 'ghost'"),
         ({"hosts": {"gold": HostProfile(env="ghost")}}, "names environment 'ghost'"),
+        (
+            {"engines": {"vserve": Engine(command="true", container="ghost")}},
+            "names container 'ghost'",
+        ),
+        (
+            {"engines": {"vserve": Engine(command="true", env="ghost")}},
+            "names environment 'ghost'",
+        ),
     ],
 )
 def test_a_manifest_refuses_a_name_that_points_at_no_table(
-    tables: dict[str, dict[str, Env | HostProfile]], match: str
+    tables: dict[str, dict[str, Env | HostProfile | Engine]], match: str
 ) -> None:
-    """A host naming a container or environment that is not there fails at load, not at submit."""
+    """A host or engine naming a container or environment that is not there fails at load."""
     with pytest.raises(ValueError, match=match):
         Manifest(workspace=Header(name="lab"), **tables)

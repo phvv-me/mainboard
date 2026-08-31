@@ -97,6 +97,7 @@ _RESOURCES = {
             ("install", "gold", ("",), {"resolve": False, "sync_only": True}),
         ),
         (["shell", "--env", "serving"], ("shell", "local", ("serving",), {})),
+        (["serve", "vserve", "--on", "gold"], ("serve", "gold", ("vserve",), {})),
         (
             ["interact", "--on", "gold", "--queue", "interact-g", "--", "pwd"],
             ("interact", "gold", ("pwd",), {"env": "", "queue": "interact-g", "walltime": ""}),
@@ -130,6 +131,7 @@ _RESOURCES = {
         "setup",
         "setup sync-only",
         "shell",
+        "serve",
         "interact",
         "compute",
         "monitor",

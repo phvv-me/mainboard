@@ -377,6 +377,19 @@ def build(root: Path | None = None) -> App:
         """
         board("local").shell(env)
 
+    @app.command
+    def serve(name: str, *, on: str = "local") -> int:
+        """Run a declared engine's serve command through its container, exiting with its code.
+
+        Renders the same staged line `run` builds for any command, sourced from
+        `[engines.<name>]` instead of the terminal: its command, inside the container it
+        declares. No image is built here, the container's own image must already exist.
+
+        name: the `[engines.<name>]` table to serve.
+        on: the host alias to serve on, `local` for this machine.
+        """
+        return board(on).serve(name)
+
     @app.command(version_flags=[])
     def interact(
         *command: str,
