@@ -1,7 +1,6 @@
 import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 from hypothesis import example, given
@@ -10,15 +9,13 @@ from plumbum.commands.processes import ProcessTimedOut
 
 from mainboard import Board, ComputePath, HostFacts, Survey
 from mainboard.compute import Access
+from mainboard.dispatch import HostSetup
 from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.engines.compile import Provisioner
 from mainboard.engines.compile.state import SyncState
 from mainboard.staleness import Snapshot
 
 from .strategies import WORDS
-
-if TYPE_CHECKING:
-    from mainboard.dispatch import HostSetup
 
 _FINGERPRINT = ".pixi-environment-fingerprint"
 
@@ -201,6 +198,28 @@ def test_the_fleet_verdict_is_a_pure_function_of_the_rows_it_was_handed(
         assert found.fix == "mainboard compute"
 
 
+def test_the_hosts_verdict_compares_each_recorded_digest_against_the_manifest_now(
+    workspace: Path,
+) -> None:
+    """A host is provisioned once and the manifest can move any number of times after that."""
+    board = Board(workspace)
+    current = Provisioner(board.root, board.manifest).compiler.digest()
+    fresh = HostSetup(host="gold", root="/repo", digest=current)
+    stale = HostSetup(host="miyabi-g", root="/repo2", digest="not-the-current-digest")
+    unrecorded = HostSetup(host="vast", root="/repo3")
+    doctor = Doctor(board)
+
+    agreeing = doctor.hosts({"gold": fresh, "vast": unrecorded})
+    assert agreeing.verdict is Verdict.PASS
+    assert agreeing.detail == "2 onboarded, none diverged from the current manifest"
+    assert agreeing.fix == ""
+
+    diverged = doctor.hosts({"gold": fresh, "miyabi-g": stale, "vast": unrecorded})
+    assert diverged.verdict is Verdict.WARN
+    assert diverged.detail == "diverged from the current manifest: miyabi-g"
+    assert diverged.fix == "mainboard setup miyabi-g --sync-only"
+
+
 @pytest.mark.parametrize(
     ("gate", "status", "output", "verdict", "detail", "fix"),
     [
@@ -311,8 +330,11 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
 @pytest.mark.parametrize(
     ("manifest", "expected"),
     [
-        ("", ["manifest", "environment", "snapshot", "fleet", _BARE, _REPORTING]),
-        ('[workspace]\nname = "bare"\n', ["manifest", "environment", "snapshot", "fleet"]),
+        ("", ["manifest", "environment", "snapshot", "fleet", "hosts", _BARE, _REPORTING]),
+        (
+            '[workspace]\nname = "bare"\n',
+            ["manifest", "environment", "snapshot", "fleet", "hosts"],
+        ),
     ],
     ids=["every gate the workspace declares", "a workspace that declares none"],
 )

@@ -338,7 +338,7 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
     report = HostSetup(host=host, root="/repo", installer="uv")
 
     class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch):
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest):
             seen.update(
                 host=plan.host,
                 root=root,
@@ -346,6 +346,7 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
                 artifact=tuple(artifact),
                 resolve=resolve,
                 containerized=plan.containerized,
+                digested=bool(digest),
             )
 
         def run(self, *, sync_only: bool = False) -> HostSetup:
@@ -362,6 +363,7 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
         "resolve": False,
         "containerized": False,
         "sync_only": False,
+        "digested": True,
     }
 
 
@@ -373,7 +375,7 @@ def test_sync_only_reaches_the_onboarding_and_is_refused_on_this_machine(
     report = HostSetup(host=_GOLD, root="/repo", installer="uv")
 
     class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch):
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest):
             pass
 
         def run(self, *, sync_only: bool = False) -> HostSetup:

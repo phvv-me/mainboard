@@ -66,6 +66,9 @@ class HostSetup(FrozenModel):
     onboarded_at: ISO-8601 time the install finished.
     synced_at: ISO-8601 time the workspace was last mirrored here, empty until one lands after
         the onboarding that first mirrored it.
+    digest: the manifest digest this host was last provisioned from, empty for a host onboarded
+        before this field existed. `doctor` compares it against the manifest as it reads now to
+        say whether a host has drifted out of sync since it was set up.
     """
 
     host: str
@@ -79,6 +82,7 @@ class HostSetup(FrozenModel):
     hardware: HostFacts | None = None
     onboarded_at: str = ""
     synced_at: str = ""
+    digest: str = ""
 
     @property
     def mirrored_at(self) -> str:
@@ -237,6 +241,8 @@ class Onboarding:
         install frozen; empty leaves the host to solve.
     resolve: let the host run its own dependency solve instead of installing from the artifact.
     watch: announces each stage as it begins.
+    digest: the manifest digest this onboarding provisions from, stamped onto the recorded
+        `HostSetup` so `doctor` can later tell this host apart from one the manifest outgrew.
     """
 
     def __init__(
@@ -248,6 +254,7 @@ class Onboarding:
         artifact: Sequence[str] = (),
         resolve: bool = False,
         watch: Watcher | None = None,
+        digest: str = "",
     ) -> None:
         self.dispatcher = dispatcher
         self.plan = plan
@@ -255,6 +262,7 @@ class Onboarding:
         self.artifact = tuple(artifact)
         self.resolve = resolve
         self.watch = watch or _announce
+        self.digest = digest
 
     @property
     def env(self) -> str:
@@ -337,6 +345,7 @@ class Onboarding:
                 tool=shell.run(f"{_TOOL} --version").strip(),
                 capabilities=capabilities,
                 hardware=hardware,
+                digest=self.digest,
             )
         recorded = self.dispatcher.cache.save_host(setup)
         logger.info("onboarded %s at %s through %s", host, root, recorded.installer)
@@ -369,7 +378,12 @@ class Onboarding:
         fresh = self.dispatcher.cache.host(host)
         updated = self.dispatcher.cache.save_host(
             fresh.model_copy(
-                update={"root": root, "env": self.env, "activate": activation(root, env=self.env)}
+                update={
+                    "root": root,
+                    "env": self.env,
+                    "activate": activation(root, env=self.env),
+                    "digest": self.digest or fresh.digest,
+                }
             )
         )
         logger.info("synced %s at %s", host, root)

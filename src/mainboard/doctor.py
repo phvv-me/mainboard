@@ -182,6 +182,36 @@ class Doctor:
             fix=f"{_TOOL} setup {cold[0]}" if cold else f"{_TOOL} compute",
         )
 
+    def hosts(self, setups: Mapping[str, HostSetup] | None = None) -> Section:
+        """Whether an onboarded host's environment still matches the manifest as it reads now.
+
+        A host is provisioned once and the manifest can move any number of times after that,
+        and nothing before this ever asked the two again whether they still agreed. This is the
+        same digest `environment` already asks of this machine, compared instead against what
+        each host was last provisioned from. A host onboarded before this field existed answers
+        `unrecorded` rather than diverged, since there is nothing to compare against yet.
+
+        setups: the onboarding records, read on the cache's own thread when this section runs
+            inside the report's pool; the survey reads them itself when None.
+        """
+        setups = self.survey.onboarded() if setups is None else setups
+        current = Provisioner(self.board.root, self.board.manifest).compiler.digest()
+        diverged = sorted(
+            host for host, setup in setups.items() if setup.digest and setup.digest != current
+        )
+        if not diverged:
+            return Section(
+                section="hosts",
+                verdict=Verdict.PASS,
+                detail=f"{len(setups)} onboarded, none diverged from the current manifest",
+            )
+        return Section(
+            section="hosts",
+            verdict=Verdict.WARN,
+            detail=f"diverged from the current manifest: {', '.join(diverged)}",
+            fix=f"{_TOOL} setup {diverged[0]} --sync-only",
+        )
+
     def gate(self, name: str) -> Section:
         """One declared verification gate's own verdict on this workspace.
 
@@ -273,6 +303,7 @@ class Doctor:
             self.environment,
             self.snapshot,
             partial(self.fleet, setups),
+            partial(self.hosts, setups),
             *(partial(self.gate, name) for name in self.board.manifest.gates),
         ]
         with ThreadPoolExecutor(max_workers=len(asked)) as pool:

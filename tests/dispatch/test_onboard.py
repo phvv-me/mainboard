@@ -219,6 +219,30 @@ def test_onboarding_refuses_a_provisioning_that_left_no_activation_behind(
         setup.run()
 
 
+def test_onboarding_stamps_the_manifest_digest_it_was_given_onto_the_recorded_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`doctor` tells a diverged host apart from a fresh one by comparing this field."""
+    host = machine_with(rules=_HEALTHY)
+    setup, dispatcher = onboarding(host, monkeypatch, digest="deadbeef")
+    report = setup.run()
+    assert report.digest == "deadbeef"
+    assert dispatcher.cache.host("gold").digest == "deadbeef"
+
+
+def test_sync_only_stamps_the_digest_it_was_given_and_keeps_the_old_one_when_given_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = machine_with()
+    setup, dispatcher = onboarding(host, monkeypatch, digest="cafe")
+    dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", digest="stale"))
+    assert setup.run(sync_only=True).digest == "cafe"
+
+    bare, dispatcher = onboarding(host, monkeypatch)
+    dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", digest="stale"))
+    assert bare.run(sync_only=True).digest == "stale"
+
+
 def test_sync_only_re_mirrors_and_re_provisions_without_bootstrap_or_hardware_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

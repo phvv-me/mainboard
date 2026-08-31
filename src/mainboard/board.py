@@ -509,6 +509,7 @@ class Board:
                 artifact=provisioner.artifact,
                 resolve=resolve,
                 watch=watch,
+                digest=provisioner.compiler.digest(),
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
         activate = provisioner.activate(plan.env, modules=plan.profile.modules)
