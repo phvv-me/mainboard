@@ -15,7 +15,7 @@ from .dispatch import vocabulary
 from .dispatch.backends.base import route
 from .dispatch.dispatcher import Verdict
 from .dispatch.evidence import receipts_in
-from .dispatch.schedulers import HostUnreachable, log_excerpt, short_reason
+from .dispatch.schedulers import HostUnreachable, short_reason
 from .dispatch.shared import logger
 from .dispatch.state import DownHost, Failed, Finished, MonitorReport
 from .dispatch.vocabulary import JobState
@@ -35,7 +35,6 @@ _QUEUED = "ssh-family"
 # How many meaningful lines of a settled run's output are kept beside its receipts. Enough that a
 # traceback and the work around it survive whole, bounded so a chatty training loop cannot fill
 # the workspace with a run nobody will read.
-_LOG_TAIL_LINES = 400
 
 
 class Sweep:
@@ -181,14 +180,13 @@ class Monitor:
         stream, name = streamed(record.name or "", handle=record.handle)
         under = directory(self.board, stream)
         under.mkdir(parents=True, exist_ok=True)
-        tail = log_excerpt(transcript, _LOG_TAIL_LINES)
-        (under / f"{record.handle}.log").write_text("\n".join(tail) + "\n", encoding="utf-8")
+        (under / f"{record.handle}.log").write_text(transcript, encoding="utf-8")
         harvested = receipts_in(transcript)
         if harvested:
             path = under / "receipts.ndjson"
             with path.open("a", encoding="utf-8") as opened:
                 opened.write("\n".join(harvested) + "\n")
-        logger.info("captured %d log lines for %s (%s)", len(tail), record.handle, name)
+        logger.info("captured %d log lines for %s (%s)", transcript.count("\n"), record.handle, name)
 
     def once(self) -> MonitorReport:
         """Resolve every unsettled run once, harvest the newly terminal ones, report the changes.
