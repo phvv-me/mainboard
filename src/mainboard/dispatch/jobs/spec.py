@@ -70,6 +70,9 @@ class JobSpec(FrozenModel):
         the command, recording what the machine looked like as the work started. Opaque for the
         same reason `sampler` is, and ordered before it in the script because a reading taken
         after the command is under way describes the command rather than the conditions.
+    source: the dispatching tree's identity as `git describe --always --dirty` spells it, exported
+        to the job as `MAINBOARD_SOURCE` so a receipt written on a mirror that has no history can
+        still say which source it measured, and say `-dirty` when the shipped tree was.
     """
 
     cmd: str
@@ -86,6 +89,7 @@ class JobSpec(FrozenModel):
     container_command: str = ""
     sampler: str = ""
     attestation: str = ""
+    source: str = ""
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
         """The job script text: a full PBS script when `pbs`, else a bash wrapper.
@@ -124,6 +128,7 @@ class JobSpec(FrozenModel):
             container_command=self.container_command,
             sampler=self.sampler,
             attestation=self.attestation,
+            source=shlex.quote(self.source) if self.source else "",
             receipts_staging=staging(),
             receipts_framing=framing(),
             state_dir=state_dir(),

@@ -6,6 +6,12 @@ export PYTHONPATH={{ pythonpath }}
 # happened to export is dropped here on purpose rather than inherited without anyone deciding.
 unset PYTHONPATH
 {% endif %}
+{% if source %}
+# The tree this job was shipped from, as the dispatcher's own git spelled it. A mirror carries the
+# source and not the history, so this is the one line that lets a receipt name its commit, and a
+# `-dirty` suffix lands the row inadmissible exactly as a local dirty tree would.
+export MAINBOARD_SOURCE={{ source }}
+{% endif %}
 {% if attestation %}
 # What this machine looked like the instant before the command started, recorded into the job's
 # own receipts. It runs in the foreground and before the work, which is the only way the reading

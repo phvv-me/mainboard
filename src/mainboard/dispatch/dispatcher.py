@@ -315,6 +315,7 @@ class Dispatcher:
             container_command=container_command,
             sampler=sampler,
             attestation=attestation,
+            source=git("describe", "--always", "--dirty"),
         )
         script = self.write_job_script(
             spec, pbs=plan.profile.kind == "pbs", gpu_in_select=gpu_in_select

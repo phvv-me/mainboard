@@ -90,3 +90,11 @@ def test_the_rendered_body_quotes_the_command_and_owns_its_pythonpath() -> None:
     # The command's own status is kept and re-raised, so framing the receipts back after it
     # costs the job none of its exit code.
     assert contained.splitlines()[-1] == "exit $status"
+
+
+def test_a_dispatched_job_learns_which_source_it_is_and_only_when_one_was_declared() -> None:
+    stamped = spec(source="abc1234-dirty").render(pbs=False)
+    assert "export MAINBOARD_SOURCE=abc1234-dirty" in stamped
+    assert "unset PYTHONPATH" in stamped
+    silent = spec().render(pbs=False)
+    assert "MAINBOARD_SOURCE" not in silent
