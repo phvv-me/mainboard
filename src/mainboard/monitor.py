@@ -186,7 +186,8 @@ class Monitor:
             path = under / "receipts.ndjson"
             with path.open("a", encoding="utf-8") as opened:
                 opened.write("\n".join(harvested) + "\n")
-        logger.info("captured %d log lines for %s (%s)", transcript.count("\n"), record.handle, name)
+        lines = transcript.count("\n")
+        logger.info("captured %d log lines for %s (%s)", lines, record.handle, name)
 
     def once(self) -> MonitorReport:
         """Resolve every unsettled run once, harvest the newly terminal ones, report the changes.
