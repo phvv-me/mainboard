@@ -98,3 +98,11 @@ def test_a_dispatched_job_learns_which_source_it_is_and_only_when_one_was_declar
     assert "unset PYTHONPATH" in stamped
     silent = spec().render(pbs=False)
     assert "MAINBOARD_SOURCE" not in silent
+
+
+def test_a_hosts_exports_are_written_before_the_command_and_quoted_as_the_shell_needs() -> None:
+    """`HF_HUB_OFFLINE` on a cluster reaches the job as one export line, and a space survives."""
+    body = spec(exports={"HF_HUB_OFFLINE": "1", "NOTE": "two words"}).render(pbs=False)
+    assert "export HF_HUB_OFFLINE=1\n" in body
+    assert "export NOTE='two words'\n" in body
+    assert body.index("export HF_HUB_OFFLINE=1") < body.index("bash -c")

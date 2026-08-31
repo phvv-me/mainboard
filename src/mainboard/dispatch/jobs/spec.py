@@ -73,6 +73,8 @@ class JobSpec(FrozenModel):
     source: the dispatching tree's identity as `git describe --always --dirty` spells it, exported
         to the job as `MAINBOARD_SOURCE` so a receipt written on a mirror that has no history can
         still say which source it measured, and say `-dirty` when the shipped tree was.
+    exports: the host profile's `[hosts.<name>.exports]`, written as `export KEY=VALUE` lines
+        before the command so every job on that host runs in the world its profile declares.
     """
 
     cmd: str
@@ -90,6 +92,7 @@ class JobSpec(FrozenModel):
     sampler: str = ""
     attestation: str = ""
     source: str = ""
+    exports: dict[str, str] = {}
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
         """The job script text: a full PBS script when `pbs`, else a bash wrapper.
@@ -129,6 +132,7 @@ class JobSpec(FrozenModel):
             sampler=self.sampler,
             attestation=self.attestation,
             source=shlex.quote(self.source) if self.source else "",
+            exports=[(key, shlex.quote(value)) for key, value in self.exports.items()],
             receipts_staging=staging(),
             receipts_framing=framing(),
             state_dir=state_dir(),

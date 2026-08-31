@@ -38,4 +38,5 @@ class Resolver:
             env=chosen_env,
             container=base,
             vars={**self.manifest.vars, **profile.vars},
+            exports=profile.exports,
         )

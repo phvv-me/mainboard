@@ -340,6 +340,7 @@ class Dispatcher:
             sampler=sampler,
             attestation=attestation,
             source=source_of(cmd, self.root),
+            exports=plan.exports,
         )
         script = self.write_job_script(
             spec, pbs=plan.profile.kind == "pbs", gpu_in_select=gpu_in_select

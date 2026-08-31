@@ -443,3 +443,14 @@ def test_the_source_stamp_names_the_repository_that_owns_the_job_not_the_submitt
     fallback = dispatch_module.source_of("python -m foo", tmp_path)
     assert nested and "-dirty" not in nested
     assert fallback.endswith("-dirty")
+
+
+def test_a_token_naming_a_path_outside_any_repository_is_skipped_not_a_dead_end(
+    tmp_path: Path,
+) -> None:
+    """The first token can name a real path that git owns nothing of; the scan tries the next."""
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "plain" / "data.txt").write_text("not tracked by anything")
+    _repo(tmp_path / "repo", dirty=False)
+    found = dispatch_module.source_of("cmd plain/data.txt repo/tracked.py", tmp_path)
+    assert found and "-dirty" not in found

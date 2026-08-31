@@ -34,8 +34,16 @@ class HostProfile(Declared):
     Everything the previous generation scattered across `lote.toml` hints,
     global chefe `[modules]`, prose skill files, and userland constants: which
     scheduler kind, which env and container, the module stack, queue policies,
-    submit defaults, sync scope, and host variables. A profile inherits the
-    `[hosts.defaults]` table field-by-field before its own keys apply.
+    submit defaults, sync scope, host variables, and the environment every job
+    on the host exports. A profile inherits the `[hosts.defaults]` table
+    field-by-field before its own keys apply.
+
+    `vars` are read by this machine's backends (an hpc-ai API key, a rental's
+    parameters) and never leave it; `exports` are written into every job script
+    the host runs, `export KEY=VALUE` before the command, which is where a fact
+    about the host's world lives, such as `HF_HUB_OFFLINE = "1"` on a cluster
+    whose compute nodes must never ask the Hub for a gated checkpoint the shared
+    cache already holds.
     """
 
     kind: str = "auto"
@@ -47,6 +55,7 @@ class HostProfile(Declared):
     modules: dict[str, str] = {}
     scratch: str = ""
     vars: dict[str, str] = {}
+    exports: dict[str, str] = {}
     sync: Sync = Sync()
     queues: dict[str, QueuePolicy] = {}
     defaults: Defaults = Defaults()
@@ -61,6 +70,7 @@ class HostProfile(Declared):
         fields["sync"] = self.sync.merged(base.sync)
         fields["modules"] = {**base.modules, **self.modules}
         fields["vars"] = {**base.vars, **self.vars}
+        fields["exports"] = {**base.exports, **self.exports}
         fields["queues"] = {**base.queues, **self.queues}
         merged = {**base.model_dump(exclude_unset=True), **fields}
         return type(self).model_validate(merged)

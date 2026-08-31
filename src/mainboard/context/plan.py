@@ -19,6 +19,7 @@ class ExecutionPlan(FrozenModel):
     env: str
     container: Container | None = None
     vars: dict[str, str] = {}
+    exports: dict[str, str] = {}
 
     @property
     def containerized(self) -> bool:

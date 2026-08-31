@@ -14,6 +14,7 @@ _PROFILES = st.builds(
     kind=WORDS,
     modules=st.dictionaries(WORDS, WORDS, max_size=2),
     vars=st.dictionaries(WORDS, WORDS, max_size=2),
+    exports=st.dictionaries(WORDS, WORDS, max_size=2),
     queues=st.dictionaries(
         WORDS, st.builds(QueuePolicy, max_walltime=st.sampled_from(["", "01:00:00"])), max_size=2
     ),
@@ -32,6 +33,7 @@ def test_inheriting_never_drops_a_rule_and_an_empty_base_is_the_identity(
     assert landed.sync.exclude == list(dict.fromkeys([*base.sync.exclude, *child.sync.exclude]))
     assert landed.modules == {**base.modules, **child.modules}
     assert landed.vars == {**base.vars, **child.vars}
+    assert landed.exports == {**base.exports, **child.exports}
     assert landed.queues == {**base.queues, **child.queues}
     assert child.inheriting(HostProfile()) == child
     assert HostProfile().inheriting(base) == base
