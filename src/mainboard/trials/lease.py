@@ -16,6 +16,8 @@
 # be reclaimed by unlinking and retrying rather than by asking a human to find and kill a pid.
 
 import os
+import re
+import socket
 import time
 from pathlib import Path
 
@@ -24,8 +26,20 @@ from pathlib import Path
 DEFAULT_TTL_S = 24 * 3600.0
 
 # The one file a universe's root carries for this, a dotfile so it never mixes into a node listing
-# and never wants a directory of its own.
+# and never wants a directory of its own. IT IS NAMED FOR THE MACHINE, because a universe root on
+# a cluster is a shared filesystem: on 2026-08-31 nine PBS jobs on nine GH200 nodes shared one
+# `/work` root, and a job refused to start because the pid another node had written happened to
+# name a live process on its own node too. A card is a property of one host, and of one device
+# set when `CUDA_VISIBLE_DEVICES` narrows it, so the lease carries both in its name and two hosts
+# never read each other's.
 FILENAME = ".card.lock"
+
+
+def filename() -> str:
+    """The lease file for this host and its visible devices, `.card.lock.<host>[.<devices>]`."""
+    host = re.sub(r"[^A-Za-z0-9_.-]", "_", socket.gethostname())
+    devices = re.sub(r"[^A-Za-z0-9_-]", "-", os.environ.get("CUDA_VISIBLE_DEVICES", ""))
+    return f"{FILENAME}.{host}" + (f".{devices}" if devices else "")
 
 
 class Busy(RuntimeError):
@@ -63,7 +77,7 @@ class CardLease:
         root: the universe root the lease is scoped to. ttl: how long a lease may stand before a
             live pid behind it no longer excuses it.
         """
-        path = root / FILENAME
+        path = root / filename()
         path.parent.mkdir(parents=True, exist_ok=True)
         lease = cls(path)
         if lease._write():

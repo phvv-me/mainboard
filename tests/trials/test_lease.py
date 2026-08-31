@@ -14,10 +14,10 @@ _DEAD_PID = 2**31 - 1
 def test_a_free_root_grants_the_lease_naming_this_process(tmp_path: Path) -> None:
     """The ordinary case: nobody else is here, so the lease is just taken and recorded."""
     lease = CardLease.acquire(tmp_path)
-    pid, opened = (tmp_path / ".card.lock").read_text(encoding="utf-8").split()
+    pid, opened = (tmp_path / lease_module.filename()).read_text(encoding="utf-8").split()
     assert int(pid) == os.getpid()
     assert float(opened) == pytest.approx(time.time(), abs=5)
-    assert lease.path == tmp_path / ".card.lock"
+    assert lease.path == tmp_path / lease_module.filename()
 
 
 def test_release_removes_the_lease_and_tolerates_it_being_gone_already(tmp_path: Path) -> None:
@@ -29,7 +29,7 @@ def test_release_removes_the_lease_and_tolerates_it_being_gone_already(tmp_path:
 
 def test_a_live_holder_inside_its_ttl_refuses_naming_the_pid_and_the_age(tmp_path: Path) -> None:
     """A crashed session must not wedge every session after it, but a live one must be honoured."""
-    path = tmp_path / ".card.lock"
+    path = tmp_path / lease_module.filename()
     path.write_text(f"{os.getpid()} {time.time() - 5}", encoding="utf-8")
     with pytest.raises(Busy, match=f"held by pid {os.getpid()}") as raised:
         CardLease.acquire(tmp_path)
@@ -39,7 +39,7 @@ def test_a_live_holder_inside_its_ttl_refuses_naming_the_pid_and_the_age(tmp_pat
 
 
 def test_a_lease_past_its_ttl_is_reclaimed_even_with_a_live_pid_behind_it(tmp_path: Path) -> None:
-    path = tmp_path / ".card.lock"
+    path = tmp_path / lease_module.filename()
     path.write_text(f"{os.getpid()} {time.time() - 100}", encoding="utf-8")
     lease = CardLease.acquire(tmp_path, ttl=10)
     assert lease.path == path
@@ -47,7 +47,7 @@ def test_a_lease_past_its_ttl_is_reclaimed_even_with_a_live_pid_behind_it(tmp_pa
 
 
 def test_a_lease_naming_a_dead_pid_is_reclaimed_regardless_of_its_age(tmp_path: Path) -> None:
-    path = tmp_path / ".card.lock"
+    path = tmp_path / lease_module.filename()
     path.write_text(f"{_DEAD_PID} {time.time()}", encoding="utf-8")
     CardLease.acquire(tmp_path)
     assert path.read_text(encoding="utf-8").split()[0] == str(os.getpid())
@@ -55,7 +55,7 @@ def test_a_lease_naming_a_dead_pid_is_reclaimed_regardless_of_its_age(tmp_path: 
 
 def test_a_lease_file_that_cannot_be_read_as_a_pid_and_a_time_is_reclaimed(tmp_path: Path) -> None:
     """A torn or hand-edited lease file is not evidence of a live holder either."""
-    path = tmp_path / ".card.lock"
+    path = tmp_path / lease_module.filename()
     path.write_text("garbage", encoding="utf-8")
     CardLease.acquire(tmp_path)
     assert path.read_text(encoding="utf-8").split()[0] == str(os.getpid())
@@ -75,3 +75,22 @@ def test_alive_treats_a_permission_refusal_as_still_running(
 
     monkeypatch.setattr(os, "kill", refuse)
     assert lease_module._alive(1) is True
+
+
+def test_two_hosts_sharing_one_root_hold_separate_leases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cluster's universe root is one filesystem for every node, so a lease names its host."""
+    monkeypatch.setattr(lease_module.socket, "gethostname", lambda: "node-a")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    first = CardLease.acquire(tmp_path)
+    monkeypatch.setattr(lease_module.socket, "gethostname", lambda: "node-b")
+    second = CardLease.acquire(tmp_path)
+    assert first.path != second.path
+    assert first.path.name == ".card.lock.node-a.0"
+    assert second.path.name == ".card.lock.node-b.0"
+    monkeypatch.setattr(lease_module.socket, "gethostname", lambda: "node-a")
+    with pytest.raises(Busy):
+        CardLease.acquire(tmp_path)
+    first.release()
+    second.release()

@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 
 from mainboard.trials import Dataset, Declaration, pytest_plugin
+from mainboard.trials import lease as lease_module
 from mainboard.trials import session as session_module
 
 from .support import PROBED, Taken, declaration
@@ -342,14 +343,14 @@ def test_a_run_touching_no_gpu_marked_lane_never_takes_the_card_lease(
     """A session that never asked for the card must never be the one that locks it."""
     universe.makepyfile(**{"beta/test_law": "def test_reads(trial):\n    trial.validated('x')\n"})
     assert ran(universe, "beta/test_law.py").ret == 0
-    assert not (Path(universe.path) / ".card.lock").exists()
+    assert not (Path(universe.path) / lease_module.filename()).exists()
 
 
 def test_a_run_refuses_to_measure_beside_a_live_holder_of_the_card(
     universe: pytest.Pytester,
 ) -> None:
     """The race `clean_card` never noticed: a second campaign beside a live one refuses."""
-    lock = Path(universe.path) / ".card.lock"
+    lock = Path(universe.path) / lease_module.filename()
     lock.write_text(f"{os.getpid()} {time.time()}", encoding="utf-8")
     refused = ran(universe, "--paid")
     assert refused.ret != 0
@@ -361,7 +362,7 @@ def test_a_stale_card_lease_is_reclaimed_rather_than_wedging_every_run_after_it(
     universe: pytest.Pytester,
 ) -> None:
     """A crashed session's lease must not outlive it and block every session after it."""
-    lock = Path(universe.path) / ".card.lock"
+    lock = Path(universe.path) / lease_module.filename()
     lock.write_text(f"{2**31 - 1} {time.time()}", encoding="utf-8")
     assert ran(universe, "--paid").ret == 0
     assert not lock.exists()

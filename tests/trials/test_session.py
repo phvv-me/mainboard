@@ -18,6 +18,7 @@ from mainboard.trials import (
     Session,
     digested,
 )
+from mainboard.trials import lease as lease_module
 from mainboard.trials import session as session_module
 from mainboard.trials.session import WORD, lane_of, params_of
 
@@ -273,7 +274,7 @@ def test_claim_takes_the_card_lease_and_close_releases_it(
     session: Session, tmp_path: Path
 ) -> None:
     """A run that touches a card takes an exclusive hold on it and gives it back at the end."""
-    lock = tmp_path / ".card.lock"
+    lock = tmp_path / lease_module.filename()
     assert not lock.exists()
     session.claim()
     assert lock.read_text(encoding="utf-8").split()[0] == str(os.getpid())
@@ -287,12 +288,12 @@ def test_claim_is_a_no_op_off_a_host_with_no_card(tmp_path: Path, probed: None) 
     bare.common.update({"card": "", "card_name": "", "card_probed": str(Probed.ABSENT)})
     bare.claim()
     assert bare.leased is None
-    assert not (tmp_path / ".card.lock").exists()
+    assert not (tmp_path / lease_module.filename()).exists()
 
 
 def test_claim_refuses_to_measure_beside_a_live_holder(session: Session, tmp_path: Path) -> None:
     """The race `clean_card` never noticed: another session already has this card."""
-    lock = tmp_path / ".card.lock"
+    lock = tmp_path / lease_module.filename()
     lock.write_text(f"{os.getpid()} {time.time()}", encoding="utf-8")
     with pytest.raises(Busy, match=str(os.getpid())):
         session.claim()
