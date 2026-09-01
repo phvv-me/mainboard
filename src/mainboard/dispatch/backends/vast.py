@@ -484,9 +484,10 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             f"{staging()}\n{command}\nstatus=$?\n{framing()}\n"
             f"echo {_EXIT_SENTINEL}$status\nexit $status\n"
         )
+        container = plan.container
         body = {
             "client_id": "me",
-            "image": plan.container.image if plan.containerized else _DEFAULT_IMAGE,
+            "image": container.image if container is not None else _DEFAULT_IMAGE,
             "disk": self.disk_gb,
             "label": f"mainboard-{plan.host}",
             # `args` launch mode runs the image as it is, with `onstart` as the entrypoint and

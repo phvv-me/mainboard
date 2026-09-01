@@ -8,7 +8,7 @@ import json
 import shlex
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 from patos import Model
 from plumbum.commands.processes import ProcessExecutionError
@@ -73,7 +73,7 @@ def binary(machine: Machine) -> BaseCommand:
     return machine["pueue"]
 
 
-def _raise_as_daemon_down_when_dead(error: ProcessExecutionError) -> None:
+def _raise_as_daemon_down_when_dead(error: ProcessExecutionError) -> NoReturn:
     """Re-raise `error` as `DaemonDown` when its stderr names a dead daemon, else verbatim."""
     if is_daemon_failure(error.stderr or ""):
         raise DaemonDown("daemon down") from error

@@ -60,8 +60,11 @@ class RawActivity(KernelActivity, MemcpyActivity, Protocol):
 class DeviceProcess(Protocol):
     """One process's memory footprint on a device, from a snapshot."""
 
-    pid: int
-    used_bytes: int
+    @property
+    def pid(self) -> int: ...
+
+    @property
+    def used_bytes(self) -> int: ...
 
 
 class DeviceUtilization(Protocol):
@@ -84,7 +87,8 @@ class DeviceEnergy(Protocol):
 class DeviceThermal(Protocol):
     """Device thermal state."""
 
-    temperature_c: int
+    @property
+    def temperature_c(self) -> int: ...
 
     @property
     def is_throttling(self) -> bool: ...
@@ -116,7 +120,8 @@ class BusyDevice(Protocol):
 class DeviceSnapshot(Protocol):
     """One point-in-time reading of a device's sensors, as a probe backend reports it."""
 
-    unit_name: str
+    @property
+    def unit_name(self) -> str: ...
 
     @property
     def energy(self) -> DeviceEnergy: ...
@@ -141,10 +146,17 @@ class DeviceProbe(Protocol):
     peak_bandwidth_gbs: theoretical peak memory bandwidth, 0 when unknown.
     """
 
-    vendor: str
-    label: str
-    arch_key: str
-    peak_bandwidth_gbs: float
+    @property
+    def vendor(self) -> str: ...
+
+    @property
+    def label(self) -> str: ...
+
+    @property
+    def arch_key(self) -> str: ...
+
+    @property
+    def peak_bandwidth_gbs(self) -> float: ...
 
     @property
     def memory(self) -> DeviceMemory: ...

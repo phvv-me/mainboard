@@ -199,6 +199,7 @@ class Dispatcher:
             return self.state(handle)
         except HostUnreachable as down:
             logger.warning("%s unreachable, retrying: %s", handle.id, down)
+            return None
 
     def rsync_up(
         self,

@@ -1,9 +1,7 @@
 # Bounded SSH transport policy and its shared failure vocabulary. A transport fault is the ssh
 # link itself failing; it reads identically to a real failure (exit 255 with a stderr phrase).
 
-import os
 import shlex
-import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp/rsync options), not untrusted input since=2026-08-17
 from contextlib import suppress
 from math import ceil
@@ -53,15 +51,12 @@ _DAEMON_DOWN_MARKERS = ("connecting to the daemon", "connection refused", ".sock
 def terminate_process_tree(pid: int, *, force: bool = False) -> None:
     """Terminate one process tree with the operating system's native primitive.
 
-    POSIX process groups are the strongest boundary for OpenSSH and ProxyJump children. Windows
-    has no ``killpg``, so psutil supplies the equivalent recursive process-tree traversal.
+    psutil supplies one process-tree traversal on every platform, including ProxyJump children,
+    without maintaining separate POSIX-signal and Windows process APIs.
 
     pid: root process identifier.
     force: kill rather than request graceful termination.
     """
-    if os.name != "nt":
-        os.killpg(pid, signal.SIGKILL if force else signal.SIGTERM)
-        return
     root = psutil.Process(pid)
     processes = [*reversed(root.children(recursive=True)), root]
     for process in processes:
@@ -132,7 +127,7 @@ class SshTransport(FrozenModel):
         except subprocess.TimeoutExpired:
             SshTransport.__force_killpg(process)
 
-    def copy(self, source: str, *, destination: str, host: str) -> None:
+    def transfer(self, source: str, *, destination: str, host: str) -> None:
         """Copy one file through the bounded SSH policy."""
         self.run(("scp", *self.options, source, destination), host, operation="copy")
 
@@ -222,7 +217,7 @@ class BoundedShellSession(ShellSession):
 
     def close(self) -> None:
         process = self.proc
-        if process is not None and process.poll() is None:
+        if process is not None and process.pid is not None and process.poll() is None:
             with suppress(ProcessLookupError, PermissionError, psutil.Error):
                 terminate_process_tree(process.pid)
         super().close()
@@ -231,7 +226,7 @@ class BoundedShellSession(ShellSession):
 class BoundedSshMachine(SshMachine):
     """An SSH machine whose session owns its entire local transport group."""
 
-    def session(self, isatty: bool = False, *, new_session: bool = False) -> ShellSession:
+    def session(self, isatty: bool = False, new_session: bool = False) -> ShellSession:
         return BoundedShellSession(
             self.popen(["/bin/sh"], (["-tt"] if isatty else ["-T"]), new_session=new_session),
             self.custom_encoding,

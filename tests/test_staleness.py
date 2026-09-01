@@ -1,14 +1,11 @@
 import json
 import os
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from mainboard import staleness
 from mainboard.staleness import Snapshot, check, digest, tool_root
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 _RECEIPT = '[tool]\nrequirements = [{ name = "mainboard", extras = ["wandb"], directory = %s }]\n'
 
@@ -96,18 +93,53 @@ def test_refresh_runs_uv_inside_pixi_and_answers_its_exit_code(
 def test_windows_refresh_exits_before_pixi_replaces_the_running_snapshot(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The deferred Pixi process survives long enough for the locked launcher to exit."""
+    """A worker waits for the locked launcher before uv replaces its tool directory."""
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
+    monkeypatch.setattr("mainboard.staleness.os.getpid", lambda: 314)
     monkeypatch.setattr(
         "mainboard.staleness.PixiEngine.defer",
         lambda self, *args: calls.append(args),
     )
-    fix = ("exec", "--spec", "uv=0.12.7", "uv", "tool", "install", "mainboard")
+    source = Path("C:/source")
+    fix = (
+        "exec",
+        "--spec",
+        "uv=0.12.7",
+        "uv",
+        "tool",
+        "install",
+        "--from",
+        f"{source}[wandb]",
+        "mainboard",
+    )
 
     assert staleness.refresh(Snapshot(installed=True, stale=True, fix=fix)) == 0
-    assert calls == [fix]
-    assert "refresh scheduled outside the running Windows snapshot" in capsys.readouterr().err
+    assert calls == [
+        (
+            "exec",
+            "--spec",
+            "uv=0.12.7",
+            "--spec",
+            "python=3.14",
+            "--spec",
+            "psutil=7.2.2",
+            "--spec",
+            "cyclopts=4.23",
+            "python",
+            str(Path(staleness.__file__).with_name("_refresh.py")),
+            "314",
+            str(source / ".mainboard" / "self-update.log"),
+            "--",
+            "uv",
+            "tool",
+            "install",
+            "--from",
+            f"{source}[wandb]",
+            "mainboard",
+        )
+    ]
+    assert "after this Windows launcher exits" in capsys.readouterr().err
 
 
 def test_the_refresh_preserves_an_existing_durable_interpreter(snapshot: Path) -> None:

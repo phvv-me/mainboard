@@ -269,10 +269,13 @@ class ProviderBackend(Registry, abc.ABC):
         """
         if not resources.max_usd:
             raise MissionError("provider dispatch needs an explicit max-usd budget")
-        named = image_cuda(plan.container.image) if plan.containerized else None
+        container = plan.container
+        if container is None:
+            return
+        named = image_cuda(container.image)
         if named is not None and named < self.CUDA_FLOOR:
             raise MissionError(
-                f"image {plan.container.image!r} names CUDA {named}, below this house's CUDA "
+                f"image {container.image!r} names CUDA {named}, below this house's CUDA "
                 f"{self.CUDA_FLOOR} floor; rent a CUDA {self.CUDA_FLOOR} or newer image instead"
             )
 

@@ -128,7 +128,10 @@ class ProfileReport(FrozenModel):
             total_memcpy_ns=total_memcpy,
             total_memcpy_bytes=memcpy_bytes,
             device_busy_ns=busy_ns(
-                (span.start_ns, span.end_ns) for span in (*profile.kernels, *profile.memcpys)
+                [
+                    *((span.start_ns, span.end_ns) for span in profile.kernels),
+                    *((span.start_ns, span.end_ns) for span in profile.memcpys),
+                ]
             ),
             compute_pct=100.0 * total_kernel / denom,
             memcpy_pct=100.0 * total_memcpy / denom,

@@ -23,8 +23,9 @@ def mode_of(*, json_mode: bool, agent: bool) -> str | None:
     return "json" if json_mode else ("agent" if agent else None)
 
 
-@value_dispatch(kind="mode")
-def record(payload: Mapping[str, Node], *, fields: Sequence[str], title: str) -> None:
+def _record(
+    payload: Mapping[str, Node], *, fields: Sequence[str], title: str, mode: str | None = None
+) -> None:
     """Print one entity as a rich field/value table, the default when `mode` is unset.
 
     A single entity routinely has more fields than a terminal is wide, so it renders down
@@ -34,7 +35,11 @@ def record(payload: Mapping[str, Node], *, fields: Sequence[str], title: str) ->
     fields: the field names to keep, every field when empty.
     title: the table's heading.
     """
+    del mode
     human.render_table(pairs_of(to_row(payload), fields=fields or None), title=title)
+
+
+record = value_dispatch(_record, kind="mode")
 
 
 @record.register("json")
@@ -47,17 +52,26 @@ def _record_agent(payload: Mapping[str, Node], *, fields: Sequence[str], title: 
     print(tabular.encode(pairs_of(to_row(payload), fields=fields or None)))
 
 
-@value_dispatch(kind="mode")
-def rows(payloads: Sequence[Mapping[str, Node]], *, fields: Sequence[str], title: str) -> None:
+def _rows(
+    payloads: Sequence[Mapping[str, Node]],
+    *,
+    fields: Sequence[str],
+    title: str,
+    mode: str | None = None,
+) -> None:
     """Print many entities as a rich table, the default when `mode` is unset.
 
     payloads: the entities, each a field-name to value mapping.
     fields: the column names to keep, every field when empty.
     title: the table's heading.
     """
+    del mode
     human.render_table(
         [to_row(payload) for payload in payloads], fields=fields or None, title=title
     )
+
+
+rows = value_dispatch(_rows, kind="mode")
 
 
 @rows.register("json")

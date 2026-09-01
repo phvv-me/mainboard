@@ -96,22 +96,23 @@ def test_selected_environment_digests_follow_only_the_scopes_they_inherit(
         [envs.unrelated.deps]
         other = "1"
     """
-    edited = base.replace('root = "1"', 'root = "2"').replace(
-        'other = "1"', 'other = "2"'
-    )
+    edited = base.replace('root = "1"', 'root = "2"').replace('other = "1"', 'other = "2"')
 
     assert compiler_from(base).digest() != compiler_from(edited).digest()
-    assert compiler_from(base, environment="serving").digest() != compiler_from(
-        edited, environment="serving"
-    ).digest()
-    assert compiler_from(base, environment="isolated").digest() == compiler_from(
-        edited, environment="isolated"
-    ).digest()
+    assert (
+        compiler_from(base, environment="serving").digest()
+        != compiler_from(edited, environment="serving").digest()
+    )
+    assert (
+        compiler_from(base, environment="isolated").digest()
+        == compiler_from(edited, environment="isolated").digest()
+    )
     unrelated = base.replace('other = "1"', 'other = "2"')
     for environment in ("default", "serving", "isolated"):
-        assert compiler_from(base, environment=environment).digest() == compiler_from(
-            unrelated, environment=environment
-        ).digest()
+        assert (
+            compiler_from(base, environment=environment).digest()
+            == compiler_from(unrelated, environment=environment).digest()
+        )
 
 
 def test_staleness_starts_once_something_has_been_compiled_to_be_stale_against(

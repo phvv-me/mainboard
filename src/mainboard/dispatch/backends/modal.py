@@ -221,9 +221,10 @@ class ModalBackend(ProviderBackend, Account, LogSource):
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
         self.admit(plan, resources)
         modal = _modal()
+        container = plan.container
         image = (
-            modal.Image.from_registry(plan.container.image)
-            if plan.containerized
+            modal.Image.from_registry(container.image)
+            if container is not None
             else modal.Image.debian_slim()
         )
         kwargs = {

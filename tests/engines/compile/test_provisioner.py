@@ -102,9 +102,7 @@ def test_each_environment_compiles_into_an_independent_selected_manifest_shard(
     assert "serving" not in documents["default"].get("feature", {})
     assert set(documents["serving"].get("dependencies", {})) == {"root"}
     assert set(documents["serving"]["feature"]) == {"serving"}
-    assert documents["serving"]["environments"] == {
-        "serving": {"features": ["serving"]}
-    }
+    assert documents["serving"]["environments"] == {"serving": {"features": ["serving"]}}
     assert "dependencies" not in documents["isolated"]
     assert set(documents["isolated"]["feature"]) == {"isolated"}
     assert documents["isolated"]["environments"] == {
@@ -142,9 +140,7 @@ def test_an_environment_name_cannot_escape_or_alias_its_portable_shard_directory
     environment: str, manifest_from: Callable[[str], Manifest], tmp_path: Path
 ) -> None:
     """One conservative path-segment contract is enforced before any path is constructed."""
-    manifest = manifest_from(
-        f'[workspace]\nname = "w"\n[envs.{json.dumps(environment)}]\n'
-    )
+    manifest = manifest_from(f'[workspace]\nname = "w"\n[envs.{json.dumps(environment)}]\n')
     with pytest.raises(MissionError, match="cannot name a generated directory"):
         Provisioner(tmp_path, manifest).environment_dir(environment)
     assert not (tmp_path / ".mainboard").exists()
@@ -175,9 +171,7 @@ def test_environment_names_cannot_alias_on_a_case_insensitive_filesystem(
     manifest_from: Callable[[str], Manifest], tmp_path: Path
 ) -> None:
     """The same manifest keeps one shard per environment on all three operating systems."""
-    manifest = manifest_from(
-        '[workspace]\nname = "w"\n[envs.Train]\n[envs.train]\n'
-    )
+    manifest = manifest_from('[workspace]\nname = "w"\n[envs.Train]\n[envs.train]\n')
     with pytest.raises(MissionError, match="case-insensitive filesystem"):
         Provisioner(tmp_path, manifest)
 

@@ -98,9 +98,7 @@ def test_the_host_compiler_prefers_grace_clang_then_gpp_then_clang(
         pytest.param("nvcc", None, "/usr/bin/nvcc", id="path-nvcc"),
         pytest.param("cuda-nvcc", None, "/usr/bin/cuda-nvcc", id="path-cuda-nvcc"),
         pytest.param(None, "prefix/bin/nvcc", None, id="interpreter-prefix"),
-        pytest.param(
-            None, "prefix/Library/bin/nvcc.exe", None, id="windows-interpreter-prefix"
-        ),
+        pytest.param(None, "prefix/Library/bin/nvcc.exe", None, id="windows-interpreter-prefix"),
         pytest.param(None, "usr-local/cuda/bin/nvcc", None, id="toolkit-root"),
         pytest.param(None, "usr-local/cuda-13.0/bin/nvcc", None, id="versioned-toolkit-root"),
     ],

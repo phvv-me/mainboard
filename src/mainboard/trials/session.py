@@ -105,7 +105,7 @@ class Session:
         self.writers: dict[str, TrialReceipts] = {}
         self.lanes: tuple[LaneStatus, ...] = ()
         self.leaked: dict[str, str] = {}
-        self.staged = Stage("", resident=declared.resident)
+        self.staged: Stage = Stage("", resident=declared.resident)
         self.leased: CardLease | None = None
 
     @property

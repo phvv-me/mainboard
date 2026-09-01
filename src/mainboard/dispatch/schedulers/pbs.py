@@ -178,7 +178,7 @@ class Pbs:
         found = self.states(remote, root, [handle]).get(handle)
         return found if found is not None else self.autopsy(remote, root, handle=handle)
 
-    def states(self, remote: Machine, root: str, handles: list[str]) -> dict[str, JobState]:
+    def states(self, remote: Machine, root: str, handles: Sequence[str]) -> dict[str, JobState]:
         del root
         if not handles:
             return {}

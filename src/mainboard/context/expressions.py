@@ -1,9 +1,10 @@
 import ast
+from collections.abc import Callable
 
 from ..core.errors import MissionError
 
 _FUNCTIONS = {"min": min, "max": max}
-_OPERATORS = {
+_OPERATORS: dict[type[ast.operator], Callable[[float, float], float]] = {
     ast.Add: lambda a, b: a + b,
     ast.Sub: lambda a, b: a - b,
     ast.Mult: lambda a, b: a * b,

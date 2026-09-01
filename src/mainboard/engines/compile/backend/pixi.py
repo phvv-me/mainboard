@@ -81,7 +81,7 @@ class Pixi(Tool):
         environment separately, since binding them together is a convenience only a child
         process inherits.
         """
-        return Path(self.engine.command.executable)
+        return Path(self.engine.command.formulate()[0])
 
     @property
     def lock(self) -> Path:

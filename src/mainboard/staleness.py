@@ -13,6 +13,7 @@
 
 import hashlib
 import json
+import os
 import platform
 import sys
 import tomllib
@@ -37,6 +38,10 @@ _EXTRA = "wandb"
 # host-level prerequisite or a binary Mainboard searches for: Pixi resolves and runs this package
 # inside its own cached exec environment.
 _UV = "uv=0.12.7"
+
+# The helper has to outlive the launcher it replaces. Its Pixi exec environment is independent
+# of the uv tool directory, so these packages remain available while uv removes and rebuilds it.
+_DEFERRED_SPECS = ("python=3.14", "psutil=7.2.2", "cyclopts=4.23")
 
 
 class Snapshot(FrozenModel):
@@ -75,12 +80,35 @@ def refresh(found: Snapshot) -> int:
     if not found.fix:
         return 0
     if platform.system() == "Windows":
-        PixiEngine().defer(*found.fix)
+        worker = Path(__file__).with_name("_refresh.py")
+        command = ("uv", *found.fix[4:])
+        specs = tuple(token for spec in _DEFERRED_SPECS for token in ("--spec", spec))
+        PixiEngine().defer(
+            "exec",
+            "--spec",
+            _UV,
+            *specs,
+            "python",
+            str(worker),
+            str(os.getpid()),
+            str(_refresh_log(found.fix)),
+            "--",
+            *command,
+        )
         sys.stderr.write(
-            f"{Project().name}: refresh scheduled outside the running Windows snapshot\n"
+            f"{Project().name}: refresh scheduled after this Windows launcher exits\n"
         )
         return 0
     return PixiEngine().exit_code(*found.fix)
+
+
+def _refresh_log(fix: tuple[str, ...]) -> Path:
+    """Durable deferred-update log under the source workspace named by `fix`."""
+    try:
+        source = fix[fix.index("--from") + 1].partition("[")[0]
+    except ValueError, IndexError:
+        return Path.cwd() / Project().out_dir / "self-update.log"
+    return Path(source) / Project().out_dir / "self-update.log"
 
 
 def check(package: Path | None = None) -> Snapshot:

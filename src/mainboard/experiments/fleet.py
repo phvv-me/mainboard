@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     from typing import Unpack
 
-    from ..board import Board, Job
+    from ..board import Board, Run
     from ..dispatch.dispatcher import Handle, Verdict
     from ..dispatch.state.cache import Cache
     from .reporting import StudySummary
@@ -109,7 +109,7 @@ class Fleet:
 
     def resubmit(
         self, study: Study, failed_handles: Sequence[Handle], *, attempt: int
-    ) -> list[Job]:
+    ) -> list[Run]:
         """Re-dispatch each of `failed_handles`'s original commands at `attempt`.
 
         `Board.submit` evaluates an expression-valued resource default against `attempt`, so a
@@ -120,7 +120,7 @@ class Fleet:
             original host with its original command.
         """
         ledger = StudyLedger(self.board.root, study.study_id)
-        jobs: list[Job] = []
+        jobs: list[Run] = []
         for handle in failed_handles:
             origin = self._origins.pop(handle)
             job = self.board.on(origin.host).submit(
@@ -158,7 +158,7 @@ class Fleet:
         *,
         study: Study,
         **resource_overrides: Unpack[ResourceOverrides],
-    ) -> list[Job]:
+    ) -> list[Run]:
         """Dispatch every `(host, command)` pair as one of `study`'s trials.
 
         Each job carries `study_label(study.study_id)` as its name, the label a later reader
@@ -173,7 +173,7 @@ class Fleet:
         ledger = StudyLedger(self.board.root, study.study_id)
         if not ledger.path.is_file():
             ledger.created(study)
-        jobs: list[Job] = []
+        jobs: list[Run] = []
         for host, command in commands:
             job = self.board.on(host).submit(
                 command, name=study_label(study.study_id), **resource_overrides
@@ -185,7 +185,7 @@ class Fleet:
             jobs.append(job)
         return jobs
 
-    def wait_all(self, jobs: Sequence[Job]) -> dict[Handle, Verdict]:
+    def wait_all(self, jobs: Sequence[Run]) -> dict[Handle, Verdict]:
         """Block until every job in `jobs` is terminal, recording each verdict in its ledger.
 
         Delegates the actual polling to `Dispatcher.await_many`; no loop of its own, so the

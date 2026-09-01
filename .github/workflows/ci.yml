@@ -39,18 +39,13 @@ jobs:
         run: uv run ruff check .
       - if: runner.os == 'Linux'
         run: uv run ruff format --check .
-      # Reporting, not gating, and deliberately so. The bootstrap this file replaced failed before
-      # any check ran, so neither checker has ever executed here, and the first honest run found 28
-      # mypy and 21 pyrefly errors across the fused source. Several are third-party stub gaps and
-      # several are real design questions this package's owner should answer, so the count comes
-      # down in its own pass. The output stays in every run, and these two lose the flag the day
-      # they read zero.
+      # Both independent checkers gate the same source. Their distinct structural models caught
+      # different defects during the Windows port, so neither is a report-only substitute for the
+      # other, and types-psutil is declared in the standalone dev group they install from here.
       - if: runner.os == 'Linux'
         run: uv run mypy src
-        continue-on-error: true
       - if: runner.os == 'Linux'
         run: uv run pyrefly check
-        continue-on-error: true
       # Linux and macOS each meet the package's 100% branch-coverage gate. Windows runs that
       # same suite without the threshold because its deliberate Bash/rsync/symlink skips make
       # a per-host coverage total meaningless; it still exercises native path, process, shell

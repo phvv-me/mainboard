@@ -68,6 +68,7 @@ dev = [
     "pytest-cov>=5.0",
     "pytest-subprocess>=1.5",
     "ruff>=0.15",
+    "types-psutil>=7.2.2.20260130",
 ]
 
 # The contextual lane reads a hosted model, so it names one rather than inheriting the default

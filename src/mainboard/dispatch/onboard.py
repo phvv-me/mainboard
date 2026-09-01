@@ -4,7 +4,8 @@
 # dispatch already owns rather than a second, parallel way to reach a host.
 
 import shlex
-from typing import TYPE_CHECKING, Protocol
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from patos import FrozenModel, Resolution, Strategy, StrategyError
 
@@ -40,11 +41,8 @@ def facts_command() -> str:
     return f"{_TOOL} facts --json"
 
 
-class Watcher(Protocol):
-    """Announces the stage an onboarding has reached, so a long run never stands silent."""
-
-    def __call__(self, stage: str) -> None:
-        """stage: what the onboarding is doing now, as one human phrase."""
+type Watcher = Callable[[str], None]
+"""Announces the stage an onboarding has reached, so a long run never stands silent."""
 
 
 class HostSetup(FrozenModel):

@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from .catalog import Offer
 
@@ -9,6 +9,17 @@ if TYPE_CHECKING:
 # only collision in the feed today (`runpod`, `lambdalabs` and the rest already agree), so the
 # reconciliation stays an explicit map rather than an alias mechanism nothing else would use.
 _FEED_NAMES = {"vastai": "vast"}
+
+
+class CatalogRow(Protocol):
+    """One structurally typed row from gpuhunt's optional catalog dependency."""
+
+    provider: str
+    gpu_name: str
+    gpu_count: int
+    spot: bool
+    location: str | None
+    price: float | None
 
 
 def from_vast(rows: Iterable[dict], *, spot: bool = False) -> list[Offer]:
@@ -49,7 +60,7 @@ def catalog_provider(name: str) -> str:
     return _FEED_NAMES.get(name, name)
 
 
-def from_gpuhunt(rows: Iterable[object]) -> list[Offer]:
+def from_gpuhunt(rows: Iterable[CatalogRow]) -> list[Offer]:
     """gpuhunt catalog rows as `Offer`s, tagged imported and named as this workspace names them.
 
     rows: objects with provider, gpu_name, gpu_count, price, spot, location,
@@ -63,9 +74,9 @@ def from_gpuhunt(rows: Iterable[object]) -> list[Offer]:
             gpu_count=int(row.gpu_count),
             spot=bool(row.spot),
             region=str(row.location or ""),
-            rate_usd_hr=float(row.price),
+            rate_usd_hr=float(price),
             source="imported:gpuhunt",
         )
         for row in rows
-        if getattr(row, "price", None)
+        if (price := row.price) is not None
     ]

@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
+    from plumbum.commands.base import BaseCommand
+
 # Always skipped regardless of `.gitignore`. `.git` has no trailing slash so it also matches
 # a submodule's `.git` file, not just the superproject's `.git/` directory.
 ALWAYS_EXCLUDE = (".git", ".env", f"{state_dir()}/", ".mainboard/", ".pixi/", "__pycache__/")
@@ -158,7 +160,7 @@ def rsync(
         timeout=timeout,
         extra=extra,
     )
-    command = local[binary(mirror=mirror)][args]
+    command: BaseCommand = local[binary(mirror=mirror)][args]
     if cwd is not None:
         command = command.with_cwd(cwd)
     try:
@@ -179,7 +181,8 @@ def _absorb_or_raise(error: ProcessExecutionError, *, host: str, allow_vanished:
     output = str(error.stdout)
     _log_deletions(output)
     stderr = str(error.stderr)
-    if host and (is_transport_failure(error.retcode, stderr) or error.retcode == 30):
+    retcode = int(error.retcode) if error.retcode is not None else -1
+    if host and (is_transport_failure(retcode, stderr) or retcode == 30):
         lines = [line.strip() for line in stderr.splitlines() if line.strip()]
         detail = next(
             (
@@ -190,7 +193,7 @@ def _absorb_or_raise(error: ProcessExecutionError, *, host: str, allow_vanished:
             lines[-1] if lines else "transport timed out",
         )
         raise HostUnreachable(f"rsync to {host!r} failed: {detail}") from error
-    if error.retcode != 24 or not allow_vanished:
+    if retcode != 24 or not allow_vanished:
         raise error
     return output
 

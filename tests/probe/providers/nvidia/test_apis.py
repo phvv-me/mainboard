@@ -79,6 +79,7 @@ def test_a_binding_that_names_no_error_types_suppresses_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stripped public NVML module yields an empty suppression tuple."""
+
     def loader(name: str) -> ModuleType:
         if name == "cuda.bindings.nvml":
             return ModuleType("nvml")

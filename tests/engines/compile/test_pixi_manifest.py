@@ -289,9 +289,7 @@ def test_a_cleared_variable_reaches_an_environment_that_excludes_the_default_fea
         "[envs.vserve]\nno-default = true\n[envs.tools]\n"
     )
     matrix = PlatformMatrix.from_manifest(manifest)
-    vserve, _ = PixiManifest.features(
-        manifest, matrix, _PROJECT, environment="vserve"
-    )
+    vserve, _ = PixiManifest.features(manifest, matrix, _PROJECT, environment="vserve")
     tools, _ = PixiManifest.features(manifest, matrix, _PROJECT, environment="tools")
     assert vserve["vserve"].get("activation") == isolated
     assert tools["tools"].get("activation") == shared
@@ -313,9 +311,7 @@ def test_an_isolated_windows_environment_uses_the_native_unset_script(
         environment="vserve",
     )
     assert feature["vserve"]["activation"] == {"scripts": ["unset.sh"]}
-    assert feature["vserve"]["target"] == {
-        "win": {"activation": {"scripts": ["unset.bat"]}}
-    }
+    assert feature["vserve"]["target"] == {"win": {"activation": {"scripts": ["unset.bat"]}}}
 
 
 @settings(max_examples=10)
@@ -336,9 +332,7 @@ def test_every_declared_dependency_reaches_exactly_one_generated_table(
             "envs": {"serving": {"python": {"deps": served}}},
         }
     )
-    default = tomllib.loads(
-        PixiManifest.from_manifest(manifest, project_name=_PROJECT).to_toml()
-    )
+    default = tomllib.loads(PixiManifest.from_manifest(manifest, project_name=_PROJECT).to_toml())
     serving = tomllib.loads(
         PixiManifest.from_manifest(
             manifest, project_name=_PROJECT, environment="serving"
@@ -346,9 +340,7 @@ def test_every_declared_dependency_reaches_exactly_one_generated_table(
     )
     assert default.get("dependencies", {}).keys() == conda.keys()
     assert default.get("pypi-dependencies", {}).keys() == python.keys()
-    assert default.get("feature", {}).get("dev", {}).get("dependencies", {}).keys() == (
-        dev.keys()
-    )
+    assert default.get("feature", {}).get("dev", {}).get("dependencies", {}).keys() == (dev.keys())
     assert "serving" not in default.get("feature", {})
     assert serving.get("dependencies", {}).keys() == conda.keys()
     assert serving.get("pypi-dependencies", {}).keys() == python.keys()

@@ -338,7 +338,12 @@ class BottleneckReport(FrozenModel):
             total_kernel_ns=total_kernel,
             total_memcpy_ns=total_memcpy,
             total_memcpy_bytes=sum(m.bytes_moved for m in memcpys),
-            device_busy_ns=busy_ns((span.start_ns, span.end_ns) for span in (*kernels, *memcpys)),
+            device_busy_ns=busy_ns(
+                [
+                    *((span.start_ns, span.end_ns) for span in kernels),
+                    *((span.start_ns, span.end_ns) for span in memcpys),
+                ]
+            ),
             compute_pct=100.0 * total_kernel / denom,
             memcpy_pct=100.0 * total_memcpy / denom,
             hot_regions=cls._hot_regions(windows, kernels, total=total_kernel or 1, top=top),

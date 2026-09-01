@@ -29,9 +29,7 @@ def test_the_whole_compile_surface_renders_the_pinned_pixi_manifest(
     """
     source = (_FIXTURES / "kitchen.toml").read_text(encoding="utf-8")
     manifest = manifest_from(source)
-    default = tomllib.loads(
-        PixiManifest.from_manifest(manifest, project_name=_PROJECT).to_toml()
-    )
+    default = tomllib.loads(PixiManifest.from_manifest(manifest, project_name=_PROJECT).to_toml())
     serving = tomllib.loads(
         PixiManifest.from_manifest(
             manifest, project_name=_PROJECT, environment="serving"

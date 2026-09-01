@@ -64,9 +64,10 @@ class Interpolator:
         tree: the parsed TOML document.
         """
         scope = dict(self.globals)
-        scope["vars"] = self.__rendered_vars(tree, scope)
+        variables = self.__rendered_vars(tree, scope)
+        scope["vars"] = variables
         rendered = {key: self.__walk(value, scope, at=key) for key, value in tree.items()}
-        rendered["vars"] = scope["vars"]
+        rendered["vars"] = variables
         return rendered
 
     def __render(self, text: str, scope: Scope, *, at: str) -> str:

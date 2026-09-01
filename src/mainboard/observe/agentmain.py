@@ -92,7 +92,8 @@ def wrap(
         list(argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
     assert process.stdout is not None  # ruff:ignore[assert]  reason=guaranteed by stdout=PIPE just above since=2026-08-17
-    spool.append(_frame(spool.job, Kind.started, now(), {"argv": list(argv)}))
+    arguments: list[JSONValue] = [*argv]
+    spool.append(_frame(spool.job, Kind.started, now(), {"argv": arguments}))
     sampled_at = now()
     for line in process.stdout:
         spool.append(_frame(spool.job, Kind.line, now(), {"text": line.rstrip("\r\n")}))

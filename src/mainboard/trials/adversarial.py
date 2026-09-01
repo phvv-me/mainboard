@@ -127,7 +127,8 @@ class Hunt:
             hunted()
         except Breach:
             return self.broke(found[-1])
-        return self.held()
+        self.held()
+        return None
 
     def broke(self, witness: Breach) -> Breach:
         """Settle a find: the refuted word, the minimal witness, and the confirmation it owes.

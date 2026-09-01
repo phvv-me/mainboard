@@ -161,7 +161,7 @@ class Batch:
             publish(self.bus, self.id, Topic.PREPARED, job=prepared.job, data=payload(prepared))
         return measured
 
-    def refused(self, job: BatchJob, refusal: Exception) -> Dispatched:
+    def refused(self, job: BatchJob, refusal: BaseException) -> Dispatched:
         """Record one target's refusal as the receipt the batch keeps in place of a handle."""
         told = Dispatched(job=job.name, target=job.target, reason=str(refusal))
         publish(

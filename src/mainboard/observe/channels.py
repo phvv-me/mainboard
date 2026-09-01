@@ -3,7 +3,7 @@
 # channel takes its transport as an injected runner, so nothing here opens ssh itself.
 
 import json
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from patos import Strategy
 
@@ -109,7 +109,7 @@ class Channels:
         """
         if channel == _AUTO:
             self.last_resolution = self.strategy.cascade()
-            return self.last_resolution.implementation
+            return cast("Channel", self.last_resolution.implementation)
         return self.strategy.select(channel)
 
 

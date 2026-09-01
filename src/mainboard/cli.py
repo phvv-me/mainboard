@@ -583,12 +583,12 @@ def build(root: Path | None = None) -> App:
         """
         base = workspace_root()
         manifest = load(base / project.manifest)
-        payload = {
+        payload: dict[str, Node] = {
             "workspace": manifest.workspace.name,
-            "environments": sorted(manifest.envs),
-            "containers": sorted(manifest.containers),
-            "hosts": sorted(manifest.profiles()),
-            "tasks": sorted(manifest.tasks),
+            "environments": tuple(sorted(manifest.envs)),
+            "containers": tuple(sorted(manifest.containers)),
+            "hosts": tuple(sorted(manifest.profiles())),
+            "tasks": tuple(sorted(manifest.tasks)),
         }
         record(
             payload,

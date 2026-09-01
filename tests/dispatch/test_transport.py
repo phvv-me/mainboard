@@ -179,7 +179,7 @@ def test_every_ssh_this_policy_runs_reads_devnull_and_never_the_callers_own_stdi
     monkeypatch.setattr(subprocess, "Popen", record)
     policy = SshTransport()
     policy.warm("gold")
-    policy.copy("job.sh", destination="gold:/repo/job.sh", host="gold")
+    policy.transfer("job.sh", destination="gold:/repo/job.sh", host="gold")
     assert [call["stdin"] for call in opened] == [subprocess.DEVNULL, subprocess.DEVNULL]
 
 
@@ -214,7 +214,7 @@ def test_terminate_escalates_to_sigkill_and_tolerates_a_group_already_gone(
     assert gone.wait_calls == [2.0]
 
 
-def test_warm_and_copy_ride_the_same_policy_and_machine_opens_a_new_session(
+def test_warm_and_transfer_ride_the_same_policy_and_machine_opens_a_new_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[tuple[str, ...], str, str]] = []
@@ -244,7 +244,7 @@ def test_warm_and_copy_ride_the_same_policy_and_machine_opens_a_new_session(
     monkeypatch.setattr(transport_module, "BoundedSshMachine", FakeBoundedSshMachine)
     policy = SshTransport()
     policy.warm("gold")
-    policy.copy("a.txt", destination="gold:b.txt", host="gold")
+    policy.transfer("a.txt", destination="gold:b.txt", host="gold")
     policy.machine("gold")
     assert calls[0][0][:2] == ("ssh", "-o")
     assert calls[0][1:] == ("gold", "connect")
