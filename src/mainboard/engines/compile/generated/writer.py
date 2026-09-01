@@ -1,4 +1,5 @@
 import os
+import platform
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
@@ -6,6 +7,8 @@ from typing import TYPE_CHECKING
 from ....core import MissionError
 
 if TYPE_CHECKING:
+    from io import TextIOWrapper
+
     from filelock import FileLock
 
 
@@ -44,8 +47,21 @@ class Writer:
         with TemporaryDirectory(dir=path.parent, prefix=f".{path.name}.") as directory:
             temporary = Path(directory) / path.name
             with temporary.open("w", encoding="utf-8") as stream:
-                os.fchmod(stream.fileno(), 0o644)
+                self._make_portable(stream)
                 stream.write(text)
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary.replace(path)
+
+    @staticmethod
+    def _make_portable(stream: TextIOWrapper) -> None:
+        """Set a public generated-file mode without severing Windows ACL inheritance.
+
+        Python 3.14 implements the full chmod mode surface on Windows. Applying POSIX ``0644``
+        there creates a protected owner-only DACL rather than the ordinary inherited ACL of the
+        workspace directory, making a generated manifest unreadable to another process identity.
+        Windows files therefore keep the ACL inherited at creation; POSIX retains the explicit
+        mode that makes a generated artifact independent of the caller's umask.
+        """
+        if platform.system() != "Windows":
+            os.fchmod(stream.fileno(), 0o644)

@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 from filelock import FileLock
-
 from mainboard import MissionError
 from mainboard.engines.compile.generated import Writer
 
@@ -47,6 +46,25 @@ def test_a_file_is_replaced_only_once_its_complete_contents_reach_disk(tmp_path:
 
         writer.write(target, "second\n")
         assert target.stat().st_ino == second
+
+
+def test_windows_generated_files_keep_the_directorys_inherited_acl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POSIX modes must not become protected owner-only Windows DACLs."""
+    chmod_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "mainboard.engines.compile.generated.writer.platform.system", lambda: "Windows"
+    )
+    monkeypatch.setattr(
+        "mainboard.engines.compile.generated.writer.os.fchmod",
+        lambda descriptor, mode: chmod_calls.append((descriptor, mode)),
+    )
+    lock = FileLock(tmp_path / ".sync.lock")
+    with lock:
+        Writer(lock).write(tmp_path / "state.toml", "[envs]\n")
+
+    assert chmod_calls == []
 
 
 def test_remove_drops_a_generated_file_the_manifest_no_longer_asks_for(tmp_path: Path) -> None:
