@@ -5,11 +5,12 @@
 # the check needs no configuration: digest the source tree, remember what it looked like when
 # this snapshot first ran, and say one line the moment the tree moves past it.
 #
-# The digest is over names, sizes and mtimes rather than contents, which keeps the whole check
-# in the low milliseconds a CLI startup can afford, and it is recorded on the snapshot's first
-# run rather than at install because uv owns the install and offers no hook. The one blind spot
-# that buys is an edit landing between the install and the first run, which the next reinstall
-# clears.
+# The digest is over source and pyproject names, sizes and mtimes rather than contents, which
+# keeps the whole check in the low milliseconds a CLI startup can afford. Package metadata is
+# part of the snapshot because changing a runtime dependency changes what the installed command
+# can do even when no Python module moved. The digest is recorded on the snapshot's first run
+# rather than at install because uv owns the install and offers no hook. The one blind spot that
+# buys is an edit landing between the install and the first run, which the next reinstall clears.
 
 import hashlib
 import json
@@ -178,17 +179,23 @@ def _durable_interpreter(declared: str | None) -> Path | None:
 
 
 def digest(source: Path) -> str:
-    """One cheap digest of a source tree: every file's path, size and mtime, contents unread.
+    """One cheap digest of runtime source and package metadata, with contents unread.
 
     source: the tree to fingerprint.
     """
     fingerprint = hashlib.sha256()
-    files = sorted(
-        path for path in source.rglob("*") if path.is_file() and "__pycache__" not in path.parts
-    )
+    package = source.parent
+    files = [
+        *sorted(
+            path
+            for path in source.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        ),
+        *(metadata for metadata in (package / "pyproject.toml",) if metadata.is_file()),
+    ]
     for path in files:
         stat = path.stat()
-        line = f"{path.relative_to(source)}:{stat.st_size}:{stat.st_mtime_ns}\n"
+        line = f"{path.relative_to(package)}:{stat.st_size}:{stat.st_mtime_ns}\n"
         fingerprint.update(line.encode())
     return fingerprint.hexdigest()
 

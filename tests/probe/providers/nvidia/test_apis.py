@@ -1,3 +1,5 @@
+import sys
+from importlib import import_module
 from types import ModuleType
 
 import pytest
@@ -7,6 +9,15 @@ from mainboard.probe.providers.nvidia import apis as nvidia_apis_module
 from ...support import FakeError, FakeNvidiaApis, FakeNvml, FakeRuntime, FakeSystem
 
 type Loaded = FakeRuntime | FakeNvml | FakeSystem | ModuleType
+
+
+@pytest.mark.skipif(
+    sys.platform not in {"linux", "win32"}, reason="NVIDIA supports CUDA on Linux and Windows"
+)
+def test_the_base_install_carries_the_official_cuda_inventory_bindings() -> None:
+    """The core `facts` verb never depends on a caller choosing an optional GPU extra."""
+    assert import_module("cuda.bindings.runtime").__name__ == "cuda.bindings.runtime"
+    assert import_module("cuda.bindings.nvml").__name__ == "cuda.bindings.nvml"
 
 
 @pytest.mark.parametrize("has_cuda_core", [True, False], ids=["cuda-core", "no-cuda-core"])

@@ -16,6 +16,7 @@ def snapshot(tmp_path: Path) -> Path:
     source = tmp_path / "checkout"
     (source / "src" / "mainboard").mkdir(parents=True)
     (source / "src" / "mainboard" / "cli.py").write_text("code")
+    (source / "pyproject.toml").write_text('[project]\nname = "mainboard"\n', encoding="utf-8")
     (source / "src" / "mainboard" / "__pycache__").mkdir()
     (source / "src" / "mainboard" / "__pycache__" / "cli.pyc").write_text("bytecode")
     tool = tmp_path / "tool"
@@ -30,6 +31,20 @@ def touched(source: Path) -> None:
     edited = source / "src" / "mainboard" / "cli.py"
     stat = edited.stat()
     os.utime(edited, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+
+def test_package_metadata_moves_the_snapshot_even_when_runtime_source_does_not(
+    snapshot: Path,
+) -> None:
+    """A dependency edit must reinstall the tool rather than leaving its imports unchanged."""
+    check(snapshot)
+    metadata = snapshot.parents[2].parent / "checkout" / "pyproject.toml"
+    metadata.write_text(
+        '[project]\nname = "mainboard"\ndependencies = ["cuda-bindings"]\n',
+        encoding="utf-8",
+    )
+
+    assert check(snapshot).stale is True
 
 
 def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_moves(

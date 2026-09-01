@@ -12,8 +12,17 @@ license = "MIT"
 authors = [{ name = "Pedro Valois" }]
 dependencies = [
     "cyclopts>=3.0",
+    # Hardware inventory is a core Mainboard verb, so the official CUDA host bindings cannot be
+    # hidden behind an extra on the two platforms NVIDIA supports. The wheel depends only on
+    # cuda-pathfinder and locates installed CUDA/NVML libraries at runtime. macOS keeps its Apple
+    # provider and never tries to resolve an unsupported NVIDIA wheel.
+    "cuda-bindings>=13.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "filelock>=3.13",
     "jinja2>=3.1",
+    # cuda-bindings 13.3.1 imports NumPy from its NVML extension but does not declare it in the
+    # wheel metadata. Mainboard reads that official extension for inventory and sensors, so keep
+    # its actual runtime dependency beside the binding until NVIDIA declares it upstream.
+    "numpy>=2.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "packaging>=24.0",
     "patos>=0.0.13",
     "plumbum>=1.8",
@@ -39,7 +48,9 @@ dependencies = [
 # install rather than getting a `ModuleNotFoundError` from three frames down.
 adversarial = ["hypothesis>=6.100"]
 search = ["optuna>=4.0"]
-cuda = ["cuda-bindings>=13.0", "cuda-core>=1.1"]
+# CUDA Core adds the higher-level device facade. Low-level runtime and NVML inventory are base
+# functionality on NVIDIA's supported platforms, so the extra contains only this richer layer.
+cuda = ["cuda-core>=1.1; sys_platform == 'linux' or sys_platform == 'win32'"]
 modal = ["modal>=1.0"]
 # The tracking sink imports this lazily and refuses cleanly without it, so tracking is on by
 # default and the package still installs on a machine that never wanted the service.
