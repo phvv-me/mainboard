@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from functools import cached_property
@@ -80,17 +81,27 @@ class Compilers(FrozenModel):
 
     @cached_property
     def nvcc(self) -> Compiler:
-        """CUDA compiler from PATH, falling back to the conventional toolkit install roots."""
+        """CUDA compiler from PATH, declared toolkit homes, then conventional install roots."""
         if found := shutil.which("nvcc") or shutil.which("cuda-nvcc"):
             return Compiler(path=Path(found))
+        declared = (
+            Path(home) / "bin" / name
+            for variable in ("CUDA_PATH", "CUDA_HOME")
+            if (home := os.environ.get(variable))
+            for name in ("nvcc", "nvcc.exe")
+        )
         toolkits = (
+            *declared,
             Path(sys.prefix) / "bin" / "nvcc",
+            Path(sys.prefix) / "Library" / "bin" / "nvcc.exe",
             _CUDA_ROOT / "cuda" / "bin" / "nvcc",
             *sorted(_CUDA_ROOT.glob("cuda-*/bin/nvcc")),
         )
         if path := next((t for t in toolkits if t.exists()), None):
             return Compiler(path=path)
-        raise FileNotFoundError("No `nvcc` found on PATH or under the CUDA toolkit roots.")
+        raise FileNotFoundError(
+            "No `nvcc` found on PATH, under CUDA_PATH/CUDA_HOME, or in the toolkit roots."
+        )
 
     @cached_property
     def release_flags(self) -> tuple[str, ...]:

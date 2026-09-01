@@ -1,3 +1,4 @@
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Self
 
 import tomlkit
@@ -72,9 +73,23 @@ def rerooted(path: str) -> str:
     absolute path is already unambiguous and rides through, and an empty one names the
     workspace root itself.
     """
-    if path.startswith("/"):
+    if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
         return path
     return f"../{path}" if path else ".."
+
+
+def _platform_name(entry: Toml) -> str:
+    """Pixi platform name carried by a bare string or named descriptor."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict) and isinstance(name := entry.get("platform"), str):
+        return name
+    return ""
+
+
+def _table(value: Toml | None) -> dict[str, Toml]:
+    """Concrete table held by a recursive TOML value, empty for every scalar shape."""
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _reroot_source(spec: Toml) -> Toml:
@@ -181,7 +196,7 @@ class PixiManifest(FrozenModel):
     activation: dict[str, Toml] = {}
     dependencies: dict[str, Toml] = {}
     pypi_dependencies: dict[str, Toml] = Field(default_factory=dict, alias="pypi-dependencies")
-    pypi_options: dict[str, Toml] = Field(default_factory=dict, alias=_PYPI_OPTIONS)
+    pypi_options: dict[str, Toml] = Field(default_factory=dict, alias="pypi-options")
     target: dict[str, Toml] = {}
     feature: dict[str, Toml] = {}
     environments: dict[str, Toml] = {}
@@ -243,7 +258,13 @@ class PixiManifest(FrozenModel):
 
     @classmethod
     def declared_feature(
-        cls, name: str, env: Env, platforms: PlatformMatrix, *, clearing: bool = False
+        cls,
+        name: str,
+        env: Env,
+        platforms: PlatformMatrix,
+        *,
+        clearing: bool = False,
+        windows: bool = False,
     ) -> Toml:
         """One `[feature.<name>]` table: the env's own feature table, platforms and tasks.
 
@@ -257,8 +278,9 @@ class PixiManifest(FrozenModel):
         already source it there and are left alone.
 
         clearing: whether the workspace `[env]` table takes any variable away at all.
+        windows: whether this feature can run on a Windows target.
         """
-        return {
+        body: dict[str, Toml] = {
             **cls.feature_table(env),
             **(
                 {_PLATFORMS: platforms.environments[name]}
@@ -272,6 +294,13 @@ class PixiManifest(FrozenModel):
             ),
             **({"activation": {"scripts": [_UNSET_SH]}} if clearing and env.no_default else {}),
         }
+        if not (clearing and env.no_default and windows):
+            return body
+        targets = _table(body.get("target"))
+        windows_target = _table(targets.get("win"))
+        targets["win"] = {**windows_target, "activation": {"scripts": [_UNSET_BAT]}}
+        body["target"] = targets
+        return body
 
     @classmethod
     def feature_table(cls, env: Env) -> dict[str, Toml]:
@@ -304,8 +333,18 @@ class PixiManifest(FrozenModel):
         beside the runtime deps.
         """
         clearing = bool(cleared(m.env))
+        workspace_platforms = tuple(_platform_name(entry) for entry in platforms.workspace)
         feature: dict[str, Toml] = {
-            name: cls.declared_feature(name, env, platforms, clearing=clearing)
+            name: cls.declared_feature(
+                name,
+                env,
+                platforms,
+                clearing=clearing,
+                windows=any(
+                    platform.startswith("win-")
+                    for platform in (env.platforms or workspace_platforms)
+                ),
+            )
             for name, env in m.envs.items()
         }
         environments: dict[str, Toml] = {
@@ -343,12 +382,10 @@ class PixiManifest(FrozenModel):
         targets: dict[str, Toml] = {
             plat: dependency_tables(scope, over=m) for plat, scope in m.on.items()
         }
-        if any(
-            (entry.get("platform") if isinstance(entry, dict) else entry).startswith("win-")
-            for entry in platforms.workspace
-        ) and (windows_activation := cls.activation_table(m, windows=True)):
-            windows = targets.get("win", {})
-            targets["win"] = {**windows, "activation": windows_activation}
+        if any(_platform_name(entry).startswith("win-") for entry in platforms.workspace) and (
+            windows_activation := cls.activation_table(m, windows=True)
+        ):
+            targets["win"] = {**_table(targets.get("win")), "activation": windows_activation}
         payload: dict[str, Toml] = {
             "workspace": {
                 "name": m.workspace.name,

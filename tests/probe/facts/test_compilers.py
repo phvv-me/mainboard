@@ -33,6 +33,8 @@ def bare_toolchain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     answer_version(monkeypatch, _NVCC_BANNER)
     monkeypatch.setattr(compilers_mod.sys, "prefix", str(tmp_path / "prefix"))
     monkeypatch.setattr(compilers_mod, "_CUDA_ROOT", tmp_path / "usr-local")
+    monkeypatch.delenv("CUDA_PATH", raising=False)
+    monkeypatch.delenv("CUDA_HOME", raising=False)
     return tmp_path
 
 
@@ -96,6 +98,9 @@ def test_the_host_compiler_prefers_grace_clang_then_gpp_then_clang(
         pytest.param("nvcc", None, "/usr/bin/nvcc", id="path-nvcc"),
         pytest.param("cuda-nvcc", None, "/usr/bin/cuda-nvcc", id="path-cuda-nvcc"),
         pytest.param(None, "prefix/bin/nvcc", None, id="interpreter-prefix"),
+        pytest.param(
+            None, "prefix/Library/bin/nvcc.exe", None, id="windows-interpreter-prefix"
+        ),
         pytest.param(None, "usr-local/cuda/bin/nvcc", None, id="toolkit-root"),
         pytest.param(None, "usr-local/cuda-13.0/bin/nvcc", None, id="versioned-toolkit-root"),
     ],
@@ -122,6 +127,20 @@ def test_nvcc_is_taken_from_path_first_and_from_the_toolkit_roots_after(
     nvcc = Compilers(arch="x86_64", cpu="Xeon", cuda_arch="89").nvcc
     assert nvcc.path == (Path(expected) if expected else installed)
     assert nvcc.kind is CompilerKind.NVCC
+
+
+@pytest.mark.parametrize("variable", ["CUDA_PATH", "CUDA_HOME"])
+def test_nvcc_uses_the_declared_cross_platform_toolkit_home(
+    variable: str, bare_toolchain: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NVIDIA's and the ecosystem's toolkit-home variables both lead to their native binary."""
+    toolkit = bare_toolchain / variable.lower()
+    binary = toolkit / "bin" / "nvcc.exe"
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+    monkeypatch.setenv(variable, str(toolkit))
+
+    assert Compilers(arch="amd64", cpu="Ryzen", cuda_arch="120").nvcc.path == binary
 
 
 @pytest.mark.parametrize(

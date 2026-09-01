@@ -1,4 +1,3 @@
-import platform
 from contextlib import suppress
 from functools import cache
 from importlib import import_module
@@ -19,10 +18,9 @@ class NvidiaApis:
     """The public CUDA Python layers available to Mainboard's NVIDIA provider.
 
     NVML is the discovery and sensor layer on every platform. CUDA Runtime and CUDA Core add
-    visible-device mapping, runtime metadata, and coherent-memory detection where native
-    extension policy permits them. Windows currently keeps the ordinary control-plane probe on
-    NVML alone: that avoids importing unrelated runtime/compiler extensions during a facts read
-    while preserving the same provider interface.
+    visible-device mapping, runtime metadata, and coherent-memory detection where their optional
+    native extensions load. A missing or OS-policy-blocked optional layer degrades to NVML rather
+    than making platform identity decide which public CUDA APIs are attempted.
     """
 
     if TYPE_CHECKING:
@@ -36,8 +34,7 @@ class NvidiaApis:
         self.runtime = None
         self.system = None
         self.cuda_device_type = None
-        if platform.system() != "Windows":
-            self._load_optional_cuda_layers()
+        self._load_optional_cuda_layers()
         self.nvml_errors: tuple[type[Exception], ...] = tuple(
             error
             for name in (

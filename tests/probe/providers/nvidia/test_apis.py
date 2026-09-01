@@ -10,7 +10,7 @@ type Loaded = FakeRuntime | FakeNvml | FakeSystem | ModuleType
 
 
 @pytest.mark.parametrize("has_cuda_core", [True, False], ids=["cuda-core", "no-cuda-core"])
-def test_a_unix_stack_binds_public_nvml_and_each_optional_cuda_layer(
+def test_the_stack_binds_public_nvml_and_each_optional_cuda_layer(
     has_cuda_core: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Optional CUDA Core failure leaves public NVML and CUDA Runtime usable."""
@@ -31,7 +31,6 @@ def test_a_unix_stack_binds_public_nvml_and_each_optional_cuda_layer(
             raise ImportError("CXXABI_1.3.15 not found")
         raise ModuleNotFoundError(name)
 
-    monkeypatch.setattr(nvidia_apis_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(nvidia_apis_module, "import_module", loader)
     apis = nvidia_apis_module.NvidiaApis()
     assert apis.runtime is stack.runtime
@@ -41,10 +40,10 @@ def test_a_unix_stack_binds_public_nvml_and_each_optional_cuda_layer(
     assert set(apis.nvml_errors) == {FakeError}
 
 
-def test_windows_discovery_imports_only_public_cuda_python_nvml(
+def test_an_os_policy_blocking_optional_cuda_extensions_still_leaves_nvml(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A facts read does not pull runtime or compiler extensions into the control process."""
+    """Optional native-extension refusal is a capability result, never a platform special case."""
     stack = FakeNvidiaApis()
     loaded: list[str] = []
 
@@ -52,12 +51,11 @@ def test_windows_discovery_imports_only_public_cuda_python_nvml(
         loaded.append(name)
         if name == "cuda.bindings.nvml":
             return stack.nvml
-        raise AssertionError(f"unexpected Windows CUDA import: {name}")
+        raise ImportError(f"OS policy blocked {name}")
 
-    monkeypatch.setattr(nvidia_apis_module.platform, "system", lambda: "Windows")
     monkeypatch.setattr(nvidia_apis_module, "import_module", loader)
     apis = nvidia_apis_module.NvidiaApis()
-    assert loaded == ["cuda.bindings.nvml"]
+    assert loaded == ["cuda.bindings.nvml", "cuda.bindings.runtime"]
     assert apis.nvml is stack.nvml
     assert apis.runtime is None
     assert apis.has_cuda_core is False
@@ -81,6 +79,10 @@ def test_a_binding_that_names_no_error_types_suppresses_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stripped public NVML module yields an empty suppression tuple."""
-    monkeypatch.setattr(nvidia_apis_module.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(nvidia_apis_module, "import_module", lambda name: ModuleType("nvml"))
+    def loader(name: str) -> ModuleType:
+        if name == "cuda.bindings.nvml":
+            return ModuleType("nvml")
+        raise ImportError(name)
+
+    monkeypatch.setattr(nvidia_apis_module, "import_module", loader)
     assert nvidia_apis_module.NvidiaApis().nvml_errors == ()

@@ -62,7 +62,13 @@ def test_the_smallest_toml_for_a_spec_keeps_everything_it_declared(
 
 @pytest.mark.parametrize(
     ("declared", "compiled"),
-    [("packages/lote", "../packages/lote"), ("/opt/lote", "/opt/lote"), ("", "..")],
+    [
+        ("packages/lote", "../packages/lote"),
+        ("/opt/lote", "/opt/lote"),
+        (r"C:\work\lote", r"C:\work\lote"),
+        (r"\\server\share\lote", r"\\server\share\lote"),
+        ("", ".."),
+    ],
 )
 def test_rerooted_shifts_only_a_workspace_relative_location(declared: str, compiled: str) -> None:
     """One rule for every declared location, since they all resolve from `.mainboard/`."""
@@ -277,6 +283,22 @@ def test_a_cleared_variable_reaches_an_environment_that_excludes_the_default_fea
     feature, _ = PixiManifest.features(manifest, PlatformMatrix.from_manifest(manifest), _PROJECT)
     assert feature["vserve"].get("activation") == isolated
     assert feature["tools"].get("activation") == shared
+
+
+def test_an_isolated_windows_environment_uses_the_native_unset_script(
+    manifest_from: Callable[[str], Manifest],
+) -> None:
+    """A no-default feature must replace its POSIX clear on a Windows target too."""
+    manifest = manifest_from(
+        '[workspace]\nname = "w"\nplatforms = ["linux-64", "win-64"]\n'
+        "[env]\nOMP_NUM_THREADS = false\n"
+        "[envs.vserve]\nno-default = true\n"
+    )
+    feature, _ = PixiManifest.features(manifest, PlatformMatrix.from_manifest(manifest), _PROJECT)
+    assert feature["vserve"]["activation"] == {"scripts": ["unset.sh"]}
+    assert feature["vserve"]["target"] == {
+        "win": {"activation": {"scripts": ["unset.bat"]}}
+    }
 
 
 @settings(max_examples=10)
