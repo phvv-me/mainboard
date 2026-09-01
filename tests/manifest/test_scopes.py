@@ -37,6 +37,35 @@ def test_layering_a_spec_prefers_the_overlay_unless_it_is_a_wildcard(low: str, h
     assert (merged.model_extra or {}) == {"index": "b", "channel": "x"}
 
 
+@pytest.mark.parametrize(
+    ("base", "over", "expected"),
+    [
+        (
+            {"version": ">=0.4.7", "extras": ["cuda"]},
+            {"path": "../../packages/mainboard", "editable": True},
+            {
+                "version": "*",
+                "path": "../../packages/mainboard",
+                "editable": True,
+                "extras": ["cuda"],
+            },
+        ),
+        (
+            {"path": "packages/mainboard", "editable": True, "extras": ["cuda"]},
+            {"version": ">=0.4.8"},
+            {"version": ">=0.4.8", "extras": ["cuda"]},
+        ),
+    ],
+)
+def test_a_source_and_a_registry_version_replace_rather_than_merge(
+    base: dict[str, str | bool | list[str]],
+    over: dict[str, str | bool | list[str]],
+    expected: dict[str, str | bool | list[str]],
+) -> None:
+    """A platform may replace a published dependency with one exact development source."""
+    assert Spec.model_validate(over).merged(Spec.model_validate(base)).model_dump() == expected
+
+
 def test_an_ecosystem_entry_must_be_a_table_and_not_a_version_string() -> None:
     """`python = "3.14"` is a requirement in `[deps]`, never an ecosystem of its own."""
     with pytest.raises(ValueError, match="table with a deps key"):
