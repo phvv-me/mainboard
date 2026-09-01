@@ -73,6 +73,14 @@ class TemperatureSensor(Protocol):
     TEMPERATURE_GPU: int
 
 
+class DriverModel(Protocol):
+    """NVIDIA Windows driver models relevant to process attribution."""
+
+    DRIVER_WDDM: int
+    DRIVER_WDM: int
+    DRIVER_MCDM: int
+
+
 class ClocksEvent(Protocol):
     """The `nvmlClocksEventReasons` bits that mean the device is really being held back.
 
@@ -111,6 +119,7 @@ class Nvml(Protocol):
 
     ClockType: ClockDomain
     ClocksEventReasons: ClocksEvent
+    DriverModel: DriverModel
     TemperatureSensors: TemperatureSensor
 
     def device_get_count_v2(self) -> int: ...
@@ -120,6 +129,8 @@ class Nvml(Protocol):
     ) -> Sequence[ProcessInfo]: ...
 
     def device_get_cuda_compute_capability(self, handle: NvmlHandle) -> tuple[int, int]: ...
+
+    def device_get_driver_model_v2(self, handle: NvmlHandle) -> tuple[int, int]: ...
 
     def device_get_current_clocks_event_reasons(self, handle: NvmlHandle) -> int: ...
 

@@ -7,6 +7,7 @@ from mainboard.probe import GPU, NvidiaGPU, Vendor
 from mainboard.probe.providers.nvidia import apis as nvidia_apis_module
 
 from ...support import (
+    FakeDriverModel,
     FakeNvidiaApis,
     FakeSensorlessDevice,
     InstallNvidiaStack,
@@ -260,6 +261,19 @@ def test_a_snapshot_gathers_every_sensor_the_device_answers(nvidia_host: FakeNvi
     assert reading.thermal.temperature_c == 42
     assert reading.utilization.gpu_pct == 61
     assert [(item.pid, item.used_bytes) for item in reading.processes] == [(4242, 2 * _GIB)]
+
+
+def test_wddm_does_not_misreport_desktop_clients_as_compute_processes(
+    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """WDDM's mixed graphics list is an unavailable process sensor, not card contention."""
+    monkeypatch.setattr(
+        nvidia_host.nvml,
+        "device_get_driver_model_v2",
+        lambda handle: (FakeDriverModel.DRIVER_WDDM, FakeDriverModel.DRIVER_WDDM),
+    )
+
+    assert NvidiaGPU(index=0).processes() == ()
 
 
 def test_each_sensor_degrades_on_its_own_rather_than_sinking_the_reading(

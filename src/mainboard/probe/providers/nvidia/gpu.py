@@ -264,9 +264,21 @@ class NvidiaGPU(GPU):
         return 0.0
 
     def processes(self) -> tuple[UnitProcess, ...]:
-        """Every process holding a compute context here, empty when NVML will not say."""
+        """Every reliably attributed compute process, empty when NVML cannot distinguish them.
+
+        Windows WDDM reports ordinary desktop graphics clients through the compute-process query
+        and marks every process's memory as unavailable. Treating that list as contention makes
+        every Windows workstation permanently busy, so WDDM is an unsupported process sensor and
+        degrades to the same empty reading as any other unavailable sensor. Mainboard's card lease
+        still excludes concurrent Mainboard jobs across processes.
+        """
+        nvml = self.apis.nvml
+        with suppress(*self.apis.nvml_errors, AttributeError):
+            current, _pending = nvml.device_get_driver_model_v2(self.handle)
+            if current == nvml.DriverModel.DRIVER_WDDM:
+                return ()
         with suppress(*self.apis.nvml_errors):
-            running = self.apis.nvml.device_get_compute_running_processes_v3(self.handle)
+            running = nvml.device_get_compute_running_processes_v3(self.handle)
             return tuple(
                 UnitProcess(pid=item.pid, used_bytes=item.used_gpu_memory) for item in running
             )

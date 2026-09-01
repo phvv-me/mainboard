@@ -132,6 +132,14 @@ class FakeProcessInfo:
         self.used_gpu_memory = used_gpu_memory
 
 
+class FakeDriverModel:
+    """NVML's Windows driver-model enum."""
+
+    DRIVER_WDDM = 0
+    DRIVER_WDM = 1
+    DRIVER_MCDM = 2
+
+
 class FakePciInfo:
     """PCI identity in the normalized snake-case shape Mainboard consumes."""
 
@@ -152,6 +160,7 @@ class FakeNvml:
     GpuIsLostError = FakeError
     ClockType = FakeClockType
     ClocksEventReasons = FakeClocksEventReasons
+    DriverModel = FakeDriverModel
     TemperatureSensors = FakeTemperatureSensors
 
     def __init__(
@@ -170,6 +179,9 @@ class FakeNvml:
 
     def device_get_cuda_compute_capability(self, handle: str) -> tuple[int, int]:
         return (8, 9)
+
+    def device_get_driver_model_v2(self, handle: str) -> tuple[int, int]:
+        return (self.DriverModel.DRIVER_WDM, self.DriverModel.DRIVER_WDM)
 
     def device_get_current_clocks_event_reasons(self, handle: str) -> int:
         return self.clocks_event_reasons
