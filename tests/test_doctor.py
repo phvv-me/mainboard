@@ -12,6 +12,7 @@ from mainboard.compute import Access
 from mainboard.dispatch import HostSetup
 from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.engines.compile import Provisioner
+from mainboard.engines.compile.backend import CommandResult
 from mainboard.engines.compile.state import SyncState
 from mainboard.staleness import Snapshot
 
@@ -403,8 +404,18 @@ def test_the_snapshot_section_carries_the_staleness_check_into_the_exit_status(
     assert (section.verdict, section.detail, section.fix) == (verdict, found.detail, fix)
 
 
-def test_the_runner_bounds_the_probe_it_stages(workspace: Path) -> None:
+def test_the_runner_bounds_the_probe_it_stages(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A gate is reached through this workspace's own staged line, under its own deadline."""
+    seen: list[tuple[tuple[str, ...], str, float]] = []
+    monkeypatch.setattr(
+        Provisioner,
+        "capture",
+        lambda self, command, env, *, timeout: (
+            seen.append((tuple(command), env, timeout)) or CommandResult(0, "settled\n", "")
+        ),
+    )
     status, output = Doctor(Board(workspace)).through_runner("echo settled", 30.0)
-    assert status == 0
-    assert "settled" in output
+    assert (status, output) == (0, "settled\n")
+    assert seen == [(("echo", "settled"), "default", 30.0)]

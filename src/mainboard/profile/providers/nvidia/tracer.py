@@ -34,8 +34,7 @@ with suppress(ImportError):
     cupti = cast("Cupti", import_module("cupti.cupti"))  # the `cupti` package's `cupti` submodule
 
 cuda_runtime: CudaRuntime | None = None
-with suppress(ImportError):
-    cuda_runtime = cast("CudaRuntime", import_module("cuda.bindings.runtime"))
+_runtime_loaded = False
 
 _CONCURRENT_KERNEL = 10  # int(cupti.ActivityKind.CONCURRENT_KERNEL) — literal per CUPTI rule
 _MEMCPY = 1  # int(cupti.ActivityKind.MEMCPY)
@@ -77,8 +76,18 @@ _domain: dict[int, int] = {}  # kind int -> CallbackDomain, for cbid -> function
 
 def _sync() -> None:
     """Synchronize the device so all kernels land in the CUPTI buffer before a flush."""
-    if cuda_runtime is not None:
-        cuda_runtime.cudaDeviceSynchronize()
+    if runtime := _runtime():
+        runtime.cudaDeviceSynchronize()
+
+
+def _runtime() -> CudaRuntime | None:
+    """Load CUDA Runtime only when a deep trace actually needs its synchronization barrier."""
+    global cuda_runtime, _runtime_loaded
+    if not _runtime_loaded:
+        _runtime_loaded = True
+        with suppress(ImportError, OSError):
+            cuda_runtime = cast("CudaRuntime", import_module("cuda.bindings.runtime"))
+    return cuda_runtime
 
 
 def _cupti() -> Cupti:

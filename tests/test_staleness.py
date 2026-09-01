@@ -1,5 +1,7 @@
 import json
 import os
+import shlex
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,9 +12,7 @@ from mainboard.staleness import Snapshot, check, digest, tool_root
 if TYPE_CHECKING:
     from pathlib import Path
 
-_RECEIPT = (
-    '[tool]\nrequirements = [{ name = "mainboard", extras = ["wandb"], directory = "%s" }]\n'
-)
+_RECEIPT = '[tool]\nrequirements = [{ name = "mainboard", extras = ["wandb"], directory = %s }]\n'
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def snapshot(tmp_path: Path) -> Path:
     tool = tmp_path / "tool"
     package = tool / "lib" / "site-packages" / "mainboard"
     package.mkdir(parents=True)
-    (tool / "uv-receipt.toml").write_text(_RECEIPT % source)
+    (tool / "uv-receipt.toml").write_text(_RECEIPT % json.dumps(str(source)), encoding="utf-8")
     return package
 
 
@@ -66,9 +66,10 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
     assert check(snapshot).stale is False
 
 
-@pytest.mark.parametrize(("fix", "code"), [("true", 0), ("false", 1)])
-def test_refresh_runs_the_fix_command_and_answers_its_exit_code(fix: str, code: int) -> None:
+@pytest.mark.parametrize("code", [0, 1])
+def test_refresh_runs_the_fix_command_and_answers_its_exit_code(code: int) -> None:
     """The exact command the nag names, run here instead of copied by hand."""
+    fix = shlex.join([sys.executable, "-c", f"raise SystemExit({code})"])
     found = Snapshot(installed=True, stale=True, detail="drifted", fix=fix)
     assert staleness.refresh(found) == code
 
@@ -109,7 +110,9 @@ def test_a_receipt_that_cannot_vouch_for_a_source_is_installed_but_never_stale(
 def test_a_receipt_whose_directory_lost_its_source_tree_says_where_it_looked(
     snapshot: Path, tmp_path: Path
 ) -> None:
-    (snapshot.parents[2] / "uv-receipt.toml").write_text(_RECEIPT % (tmp_path / "gone"))
+    (snapshot.parents[2] / "uv-receipt.toml").write_text(
+        _RECEIPT % json.dumps(str(tmp_path / "gone")), encoding="utf-8"
+    )
     found = check(snapshot)
     assert found.stale is False
     assert "no source tree at" in found.detail
@@ -119,7 +122,9 @@ def test_a_receipt_without_extras_still_names_the_wandb_extra(snapshot: Path) ->
     """The extra is load-bearing, so the named command never drops it."""
     source = snapshot.parents[2].parent / "checkout"
     (snapshot.parents[2] / "uv-receipt.toml").write_text(
-        f'[tool]\nrequirements = [{{ name = "mainboard", directory = "{source}" }}]\n'
+        "[tool]\n"
+        f'requirements = [{{ name = "mainboard", directory = {json.dumps(str(source))} }}]\n',
+        encoding="utf-8",
     )
     check(snapshot)
     touched(source)

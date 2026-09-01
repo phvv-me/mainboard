@@ -9,6 +9,7 @@ from contextlib import suppress
 from math import ceil
 from typing import NoReturn
 
+import psutil
 from patos import FrozenModel
 from plumbum.machines.local import LocalMachine
 from plumbum.machines.session import ShellSession
@@ -47,6 +48,25 @@ _TRANSPORT_MARKERS = (
 # A dead scheduler daemon (pueue's `pueued`) refuses its own control socket, distinct from an
 # ssh transport fault, so it surfaces as `daemon down` and a revive restarts it.
 _DAEMON_DOWN_MARKERS = ("connecting to the daemon", "connection refused", ".socket")
+
+
+def terminate_process_tree(pid: int, *, force: bool = False) -> None:
+    """Terminate one process tree with the operating system's native primitive.
+
+    POSIX process groups are the strongest boundary for OpenSSH and ProxyJump children. Windows
+    has no ``killpg``, so psutil supplies the equivalent recursive process-tree traversal.
+
+    pid: root process identifier.
+    force: kill rather than request graceful termination.
+    """
+    if os.name != "nt":
+        os.killpg(pid, signal.SIGKILL if force else signal.SIGTERM)
+        return
+    root = psutil.Process(pid)
+    processes = [*reversed(root.children(recursive=True)), root]
+    for process in processes:
+        with suppress(psutil.Error):
+            (process.kill if force else process.terminate)()
 
 
 class HostUnreachable(Exception):
@@ -105,8 +125,8 @@ class SshTransport(FrozenModel):
     @staticmethod
     def terminate(process: subprocess.Popen[str]) -> None:
         """Terminate the whole SSH process group so ProxyJump children cannot remain."""
-        with suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGTERM)
+        with suppress(ProcessLookupError, PermissionError, psutil.Error):
+            terminate_process_tree(process.pid)
         try:
             process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
@@ -171,8 +191,8 @@ class SshTransport(FrozenModel):
     @staticmethod
     def __force_killpg(process: subprocess.Popen[str]) -> None:
         """Escalate to SIGKILL after a SIGTERM'd process group failed to exit in time."""
-        with suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGKILL)
+        with suppress(ProcessLookupError, PermissionError, psutil.Error):
+            terminate_process_tree(process.pid, force=True)
         process.wait()
 
     def __raise_after_terminating(
@@ -203,8 +223,8 @@ class BoundedShellSession(ShellSession):
     def close(self) -> None:
         process = self.proc
         if process is not None and process.poll() is None:
-            with suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGTERM)
+            with suppress(ProcessLookupError, PermissionError, psutil.Error):
+                terminate_process_tree(process.pid)
         super().close()
 
 

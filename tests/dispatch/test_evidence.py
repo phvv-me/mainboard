@@ -1,6 +1,7 @@
 import base64
 import json
 import shlex
+import shutil
 import subprocess
 
 import pytest
@@ -124,6 +125,7 @@ echo "epoch 1 loss 0.4"
         "an-exact-multiple-of-the-chunk-width",
     ],
 )
+@pytest.mark.skipif(shutil.which("bash") is None, reason="remote Bash protocol test needs Bash")
 def test_the_shell_that_really_runs_on_the_instance_frames_a_receipt_back_whole(pad: int):
     """The pipeline is six coreutils deep and runs where nothing can be inspected.
 
@@ -142,6 +144,7 @@ def test_the_shell_that_really_runs_on_the_instance_frames_a_receipt_back_whole(
 
 
 @pytest.mark.parametrize("code", [0, 7], ids=["a-command-that-succeeded", "one-that-failed"])
+@pytest.mark.skipif(shutil.which("bash") is None, reason="remote Bash protocol test needs Bash")
 def test_an_image_missing_the_tools_costs_its_receipts_and_never_the_jobs_exit_code(code: int):
     """A job script runs under `set -e`, where a failing command in an `if` body is not exempt.
 
@@ -165,6 +168,7 @@ exit $status
     assert receipts_in(bare.stdout) == ()
 
 
+@pytest.mark.skipif(shutil.which("bash") is None, reason="remote Bash protocol test needs Bash")
 def test_a_run_that_wrote_no_receipts_leaves_an_ordinary_log_exactly_as_it_was():
     """The framing must be invisible to every command that never writes a trial."""
     script = f'{staging()}\necho "epoch 1 loss 0.4"\n{framing()}\n'

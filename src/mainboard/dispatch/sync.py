@@ -1,12 +1,11 @@
 # Mirror a workspace onto a host: the `.gitignore` filter and the `rsync` command builder.
 
-import fcntl
 import hashlib
-from contextlib import ExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, TextIO
+from typing import TYPE_CHECKING, Self
 
 import pathspec
+from filelock import FileLock
 from patos import StrFlag
 from plumbum import CommandNotFound, local
 from plumbum.commands.processes import ProcessExecutionError
@@ -219,16 +218,12 @@ class SyncLock:
     def __init__(self, target: str, root: Path | None = None) -> None:
         digest = hashlib.blake2s(target.encode(), digest_size=8).hexdigest()
         self.path = state_path(root) / "locks" / f"sync-{digest}.lock"
-        self.file: TextIO | None = None
+        self.lock = FileLock(self.path)
 
     def __enter__(self) -> Self:
         """Wait for this target's mirror lock and hold it until context exit."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with ExitStack() as undo:
-            file = undo.enter_context(self.path.open("a+"))
-            fcntl.flock(file.fileno(), fcntl.LOCK_EX)
-            undo.pop_all()
-        self.file = file
+        self.lock.acquire()
         return self
 
     def __exit__(
@@ -239,12 +234,8 @@ class SyncLock:
     ) -> None:
         """Release the kernel lock even when rsync raises."""
         del exc_type, exc_value, traceback
-        file = self.file
-        if file is None:
-            return
-        self.file = None
-        with file:
-            fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+        if self.lock.is_locked:
+            self.lock.release()
 
 
 class GitignoreFilter:
@@ -290,7 +281,7 @@ class GitignoreFilter:
                 if gitignore in seen or not (self.root / gitignore).is_file():
                     continue
                 seen.add(gitignore)
-                files.append(str(gitignore))
+                files.append(gitignore.as_posix())
         return files
 
     def ignored(self, path: str | Path) -> bool:

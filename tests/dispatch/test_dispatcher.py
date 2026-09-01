@@ -335,7 +335,7 @@ def test_a_rendered_and_a_staged_script_are_both_content_addressed(
 def test_rsync_up_refuses_an_undeclared_include_and_warns_about_a_stale_one(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    instance = Dispatcher()
+    instance = Dispatcher(root=workdir)
     empty = HostProfile(kind="ssh", root="/repo", sync={"include": []})
     with pytest.raises(LookupError, match="nothing to sync"):
         instance.rsync_up(plan(profile=empty), "/repo")
@@ -446,11 +446,20 @@ def test_the_source_stamp_names_the_repository_that_owns_the_job_not_the_submitt
 
 
 def test_a_token_naming_a_path_outside_any_repository_is_skipped_not_a_dead_end(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The first token can name a real path that git owns nothing of; the scan tries the next."""
     (tmp_path / "plain").mkdir()
     (tmp_path / "plain" / "data.txt").write_text("not tracked by anything")
-    _repo(tmp_path / "repo", dirty=False)
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    (repository / "tracked.py").write_text("x = 1\n")
+
+    def git(*args: str) -> str:
+        if "rev-parse" in args:
+            return "" if args[1] == str(tmp_path / "plain") else str(repository)
+        return "clean-source"
+
+    monkeypatch.setattr(dispatch_module, "git", git)
     found = dispatch_module.source_of("cmd plain/data.txt repo/tracked.py", tmp_path)
-    assert found and "-dirty" not in found
+    assert found == "clean-source"

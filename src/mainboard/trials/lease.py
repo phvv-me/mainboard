@@ -21,6 +21,8 @@ import socket
 import time
 from pathlib import Path
 
+import psutil
+
 # How long a lease may be held before it counts as stale even with a live pid behind it, generous
 # enough for the longest GPU campaign this workspace runs and no more.
 DEFAULT_TTL_S = 24 * 3600.0
@@ -120,10 +122,4 @@ class CardLease:
 
 def _alive(pid: int) -> bool:
     """Whether `pid` still names a running process on this machine."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return psutil.pid_exists(pid)

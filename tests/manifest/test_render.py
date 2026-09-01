@@ -1,3 +1,6 @@
+import json
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,13 +31,17 @@ def test_the_vocabulary_covers_the_mise_names(
 
 
 def test_exec_returns_stdout_and_a_failure_names_the_command(tmp_path: Path) -> None:
-    """Shelling out is in the vocabulary, so a command that dies has to be readable."""
-    assert Interpolator(tmp_path).rendered({"who": "{{ exec('echo mission') }}"}) == {
+    """A shell-free command is in the vocabulary, so a failure still has to be readable."""
+    command = shlex.join((sys.executable, "-c", "print('mission')"))
+    template = f"{{{{ exec({json.dumps(command)}) }}}}"
+    assert Interpolator(tmp_path).rendered({"who": template}) == {
         "who": "mission",
         "vars": {},
     }
     with pytest.raises(MissionError, match="exec"):
-        Interpolator(tmp_path).rendered({"bad": "{{ exec('false') }}"})
+        Interpolator(tmp_path).rendered(
+            {"bad": "{{ exec('mainboard-command-that-does-not-exist') }}"}
+        )
 
 
 def test_vars_must_be_a_table(tmp_path: Path) -> None:

@@ -7,22 +7,11 @@ on:
 
 jobs:
   test:
-    # Linux only, because that is where this suite actually runs today.
-    #
-    # The matrix used to name macOS and Windows on the theory that each is a distinct real
-    # hardware setup worth probing, but the bootstrap failed before pytest on every leg, so
-    # nobody saw that neither one can run it. `tests/conftest.py` imports `fcntl`, which does
-    # not exist on Windows, so collection dies before the first test. On macOS the workspace
-    # snapshot asserts `linux-arm64` against a host that reports `macos-arm64`, and one submit
-    # test wants a container runtime no macOS runner has.
-    #
-    # Restoring them is real work on the suite, not on this file: make the snapshot read the
-    # host platform, skip the container test where no runtime exists, and put the POSIX-only
-    # imports behind a guard. The `runs-on` list comes back the day those pass.
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         # One interpreter, because `requires-python` is `>=3.14` and uv refuses anything below
         # it. A second entry here does not widen support, it only fails at bootstrap.
         python: ["3.14"]
@@ -50,7 +39,10 @@ jobs:
         continue-on-error: true
       - run: uv run pyrefly check
         continue-on-error: true
-      # The suite is hermetic and runs in full. The `integration` marker this step used to split
-      # on matches nothing in this repository, and `-m integration` therefore selected zero tests
-      # and exited 5, which is a failure.
-      - run: uv run pytest
+      # Linux keeps the coverage gate. Windows runs the same suite without a per-platform
+      # coverage threshold: its deliberate skips are remote Bash/rsync protocol tests already
+      # covered on Linux, while the lane exists to catch native path, process and shell behavior.
+      - if: runner.os == 'Linux'
+        run: uv run pytest
+      - if: runner.os == 'Windows'
+        run: uv run pytest --no-cov

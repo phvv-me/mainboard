@@ -1,11 +1,11 @@
 import os
 import platform
+import shlex
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=exec() launches an explicitly declared manifest command as argv without a shell
 import sys
 from collections.abc import Callable, Mapping
 from functools import cache
 from typing import TYPE_CHECKING
-
-from plumbum import local
 
 from ...core.errors import MissionError
 
@@ -108,8 +108,15 @@ def _os_name() -> str:
 
 
 def _exec(command: str) -> str:
-    """The stripped stdout of `command`, run through the shell with a hard cap."""
+    """The stripped stdout of `command`, parsed consistently and run without a shell."""
     try:
-        return str(local["bash"]["-c", command].run(timeout=_EXEC_TIMEOUT)[1]).strip()
-    except Exception as error:
+        result = subprocess.run(
+            shlex.split(command),
+            capture_output=True,
+            text=True,
+            timeout=_EXEC_TIMEOUT,
+            check=True,
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError) as error:
         raise MissionError(f"exec({command!r}) failed: {error}") from error

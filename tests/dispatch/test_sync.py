@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from contextlib import chdir
 from pathlib import Path
+from shutil import which
 from typing import NoReturn
 
 import pytest
@@ -149,6 +150,8 @@ def test_a_real_mirror_prunes_the_stale_and_the_ignored_while_protecting_the_rem
     tmp_path: Path,
 ) -> None:
     """The one end-to-end proof that the filter order above actually behaves as intended."""
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
     repo, host = tmp_path / "repo", tmp_path / "host"
     seed(repo, ".gitignore", "src/run.py", "src/local.scratch")
     (repo / ".gitignore").write_text("*.scratch\n")
@@ -176,6 +179,8 @@ def test_a_mirror_reads_its_sources_from_the_workspace_not_from_where_it_was_typ
     `--relative` rebuilds each source path under the destination, so a path read from a
     subdirectory would name a different file or none at all.
     """
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
     repo, host = tmp_path / "repo", tmp_path / "host"
     seed(repo, "src/run.py", "src/deep/nested.py")
     host.mkdir()
@@ -239,22 +244,23 @@ def test_the_sync_lock_releases_its_file_however_the_mirror_ends(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with SyncLock("gold", tmp_path) as lock:
-        assert lock.file is not None
+        assert lock.lock.is_locked
         assert lock.path.is_file()
-    assert lock.file is None
+    assert not lock.lock.is_locked
     lock.__exit__(None, None, None)
+    (tmp_path / "mainboard.toml").touch()
     monkeypatch.chdir(tmp_path)
     assert SyncLock("gold").path == tmp_path / STATE_DIR / "locks" / lock.path.name
-    handle = (tmp_path / "file").open("a+")
 
-    def refuse(fileno: int, operation: int) -> None:
+    def refuse(*, timeout: float | None = None, poll_interval: float = 0.05) -> None:
+        del timeout, poll_interval
         raise OSError("lock unavailable")
 
-    monkeypatch.setattr(sync_module.Path, "open", lambda self, mode: handle)
-    monkeypatch.setattr(sync_module.fcntl, "flock", refuse)
+    blocked = SyncLock("gold", tmp_path)
+    monkeypatch.setattr(blocked.lock, "acquire", refuse)
     with pytest.raises(OSError, match="lock unavailable"):
-        SyncLock("gold", tmp_path).__enter__()
-    assert handle.closed
+        blocked.__enter__()
+    assert not blocked.lock.is_locked
 
 
 def test_the_gitignore_filter_reads_the_root_rules_and_merges_the_nested_ones(

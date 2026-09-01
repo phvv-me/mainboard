@@ -1,9 +1,9 @@
-from pathlib import Path
+from pathlib import PurePosixPath
 
 from mainboard.engines import PixiPrefix
 from mainboard.manifest import Guardrail
 
-_PREFIX = Path("/prefix")
+_PREFIX = PurePosixPath("/prefix")
 
 
 def test_provision_argv_is_a_locked_pixi_install_whatever_interpreter_is_offered() -> None:

@@ -7,17 +7,17 @@
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum, auto
 from functools import partial
+from shlex import split
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
-from plumbum import local as localhost
 from plumbum.commands.processes import ProcessTimedOut
 
 from . import staleness
 from .compute import Access, Survey
 from .core.errors import MissionError
 from .core.project import Project
-from .engines.compile.backend import EnvironmentAudit, Process
+from .engines.compile.backend import EnvironmentAudit
 from .engines.compile.provisioner import Provisioner
 from .engines.compile.state import SyncState
 
@@ -333,8 +333,10 @@ class Doctor:
         command: the gate's command line.
         timeout: the gate's own deadline in seconds.
         """
-        staged = self.board.line(command, container="none")
-        result = Process.capture(localhost["bash"]["-lc", staged], timeout=timeout)
+        plan = self.board.plan(container="none")
+        result = Provisioner(self.board.root, self.board.manifest).capture(
+            split(command), plan.env, timeout=timeout
+        )
         return result.returncode, result.stdout
 
     @staticmethod

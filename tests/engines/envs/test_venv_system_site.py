@@ -1,11 +1,11 @@
-from pathlib import Path
+from pathlib import PurePosixPath
 
 import pytest
 
 from mainboard.engines import VenvSystemSite
 from mainboard.manifest import Guardrail
 
-_PREFIX = Path("/prefix")
+_PREFIX = PurePosixPath("/prefix")
 _SOURCE = 'source "/prefix/bin/activate"'
 
 

@@ -13,10 +13,11 @@ from .generated import ActivationScript, GeneratedFiles
 from .state import SyncState
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import Generator, Mapping, Sequence
     from pathlib import Path
 
     from ...manifest import Manifest
+    from .backend import CommandResult
 
 
 def task_line(manifest: Manifest, command: str, *, env: str) -> str:
@@ -71,7 +72,7 @@ class Provisioner:
         host's compiler is the last thing that belongs in a lock's dependency path.
         """
         paths = (self.pixi.manifest, self.pixi.lock, SyncState.path(self.out))
-        return tuple(str(path.relative_to(self.root)) for path in paths)
+        return tuple(path.relative_to(self.root).as_posix() for path in paths)
 
     def activate(self, env: str = "default", *, modules: Mapping[str, str] = {}) -> Path:
         """Write ``env``'s generated activation script for this host and return its path.
@@ -103,6 +104,27 @@ class Provisioner:
             installed = [str(directory) for directory in self.binaries(env)]
             with local.env(PATH=os.pathsep.join([*installed, str(local.env["PATH"])])):
                 yield
+
+    def run(self, command: Sequence[str], env: str = "default") -> int:
+        """Compile stale generated files, then let Pixi activate and run ``command``.
+
+        Local execution deliberately goes through Pixi instead of a host shell. Pixi already
+        owns the environment and a cross-platform task shell, so Windows and POSIX machines
+        execute the same manifest without mainboard maintaining a second command grammar.
+        """
+        with GeneratedFiles(directory=self.out).locked() as files:
+            if self.compiler.stale(env):
+                self.compiler.write(files, env)
+        return self.pixi.run(command, env)
+
+    def capture(
+        self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
+    ) -> CommandResult:
+        """Compile stale files, then capture a bounded command through Pixi."""
+        with GeneratedFiles(directory=self.out).locked() as files:
+            if self.compiler.stale(env):
+                self.compiler.write(files, env)
+        return self.pixi.capture(command, env, timeout=timeout)
 
     def binaries(self, env: str) -> list[Path]:
         """The second-stage binary directories that exist, in the order PATH should carry them.

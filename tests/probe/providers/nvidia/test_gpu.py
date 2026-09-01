@@ -92,6 +92,23 @@ def test_a_visible_device_reports_the_same_identity_through_either_layer(
     assert memory.unified is False
 
 
+def test_a_pure_nvml_windows_stack_reports_the_device_without_cuda_extensions(
+    install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Windows control plane needs facts without importing unsigned CUDA `.pyd` files."""
+    apis = install_nvidia_stack(has_cuda_core=False)
+    monkeypatch.setattr(apis, "runtime", None)
+
+    gpus = NvidiaGPU.all()
+    assert len(gpus) == 2
+    gpu = gpus[0]
+    assert gpu.label == "NVIDIA GeForce RTX 4090"
+    assert gpu.pci_bus_id == "0000:00:00.0"
+    assert gpu.runtime_version is None
+    assert gpu.coherent is False
+    assert gpu.memory.source == "nvml"
+
+
 @pytest.mark.parametrize("has_cuda_core", [True, False], ids=["cuda-core", "nvml"])
 def test_a_coherent_grace_hopper_pool_flags_its_memory_as_unified(
     has_cuda_core: bool, install_nvidia_stack: InstallNvidiaStack

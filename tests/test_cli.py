@@ -42,7 +42,12 @@ _RESOURCES = {
     [
         (
             ["run", "--on", "gold", "--env", "serving", "--", "python", "-c", "print(1)"],
-            ("run", "gold", ("python -c 'print(1)'",), {"env": "serving", "container": ""}),
+            (
+                "run",
+                "gold",
+                (("python", "-c", "print(1)"),),
+                {"env": "serving", "container": ""},
+            ),
         ),
         (
             ["submit", "--on", _MIYABI_G, "--queue", "short-g", "--mem-gb", "64", "true"],
@@ -240,7 +245,10 @@ def test_the_passthrough_verbs_hand_the_clis_own_flags_to_the_command_after_the_
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["submit", "--on", _MIYABI_G, "--", "python", flag])
     assert [call[0] for call in relayed] == ["run", "submit"]
-    assert [call[2] for call in relayed] == [(f"python {flag}",), (f"python {flag}",)]
+    assert [call[2] for call in relayed] == [
+        (("python", flag),),
+        (f"python {flag}",),
+    ]
 
 
 def test_a_passthrough_verb_still_documents_itself_before_the_delimiter(

@@ -67,7 +67,7 @@ def build(root: Path | None = None) -> App:
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
         """
-        return board(on).run(joined(command), env=env, container=container)
+        return board(on).run(command, env=env, container=container)
 
     @app.command(version_flags=[])
     def submit(

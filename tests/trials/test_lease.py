@@ -65,16 +65,12 @@ def test_a_lease_file_that_cannot_be_read_as_a_pid_and_a_time_is_reclaimed(tmp_p
     assert path.read_text(encoding="utf-8").split()[0] == str(os.getpid())
 
 
-def test_alive_treats_a_permission_refusal_as_still_running(
+def test_alive_delegates_platform_process_detection_to_psutil(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pid this process cannot signal still exists; only `ProcessLookupError` says otherwise."""
-
-    def refuse(pid: int, sig: int) -> None:
-        raise PermissionError
-
-    monkeypatch.setattr(os, "kill", refuse)
+    monkeypatch.setattr(lease_module.psutil, "pid_exists", lambda pid: pid == 1)
     assert lease_module._alive(1) is True
+    assert lease_module._alive(2) is False
 
 
 def test_two_hosts_sharing_one_root_hold_separate_leases(

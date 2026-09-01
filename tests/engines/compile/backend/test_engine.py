@@ -1,9 +1,10 @@
+import platform
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from plumbum import local
 from plumbum.commands.processes import CommandNotFound
 
 from mainboard import MissionError
@@ -11,8 +12,6 @@ from mainboard.engines.compile.backend import PixiEngine
 
 if TYPE_CHECKING:
     from pytest_subprocess import FakeProcess
-
-_SH = str(local.which("sh"))
 
 
 class _FakeLocalMissingPixi:
@@ -38,7 +37,7 @@ def test_command_prefers_pixi_on_path_and_falls_back_to_pixi_home(
     """A non-login remote shell can drop `PIXI_HOME/bin` from PATH without pixi being absent."""
     assert str(PixiEngine().command) == tool_paths["pixi"]
 
-    binary = isolated_pixi_home / "bin" / "pixi"
+    binary = PixiEngine.binary_path()
     binary.parent.mkdir(parents=True)
     binary.touch()
     monkeypatch.setattr("mainboard.engines.compile.backend.engine.local", _FakeLocalMissingPixi())
@@ -48,7 +47,7 @@ def test_command_prefers_pixi_on_path_and_falls_back_to_pixi_home(
 def test_installed_binary_bootstraps_only_when_missing(
     monkeypatch: pytest.MonkeyPatch, isolated_pixi_home: Path
 ) -> None:
-    binary = isolated_pixi_home / "bin" / "pixi"
+    binary = PixiEngine.binary_path()
     calls: list[bool] = []
     monkeypatch.setattr(PixiEngine, "bootstrap", lambda self: calls.append(True))
 
@@ -64,11 +63,13 @@ def test_installed_binary_bootstraps_only_when_missing(
 
 def test_bootstrap_runs_the_official_installer_and_raises_when_it_fails(fp: FakeProcess) -> None:
     """`pip install mainboard` brings no pixi binary, so the engine installs one on first use."""
-    fp.register([_SH, "-c", fp.any()], returncode=0)
+    command = PixiEngine.installer()
+    fp.register(command.formulate(), returncode=0)
     PixiEngine().bootstrap()
-    assert any("pixi.sh/install.sh" in str(arg) for call in fp.calls for arg in call)
+    suffix = "install.ps1" if platform.system() == "Windows" else "install.sh"
+    assert any(suffix in str(arg) for call in fp.calls for arg in call)
 
-    fp.register([_SH, "-c", fp.any()], returncode=1)
+    fp.register(command.formulate(), returncode=1)
     with pytest.raises(MissionError, match="pixi installer failed"):
         PixiEngine().bootstrap()
 
@@ -92,6 +93,7 @@ def test_the_appended_shell_file_matches_what_the_installer_would_edit(
 ) -> None:
     """The installer edits a personal startup file, so the engine can name which one."""
     monkeypatch.delenv("PIXI_NO_PATH_UPDATE", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     assert PixiEngine.appended_shell_file() == appended
@@ -113,10 +115,26 @@ def test_bootstrap_names_the_shell_file_the_installer_appends_to(
 ) -> None:
     """One printed line, so nobody discovers the edit by finding it in their own dotfile."""
     monkeypatch.delenv("PIXI_NO_PATH_UPDATE", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    monkeypatch.setattr("shutil.which", lambda name: sys.executable if name == "sh" else None)
     monkeypatch.setenv("SHELL", shell)
-    fp.register([_SH, "-c", fp.any()], returncode=0)
+    command = PixiEngine.installer()
+    fp.register(command.formulate(), returncode=0)
     PixiEngine().bootstrap()
     printed = capsys.readouterr().err
     assert "installing pixi engine" in printed
     assert ("adds a PATH line" in printed) == bool(notice)
     assert notice in printed
+
+
+def test_windows_installer_uses_powershell_and_edits_no_shell_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "C:/Windows/powershell.exe" if name == "powershell" else None
+    )
+    command = PixiEngine.installer().formulate()
+    assert Path(command[0]) == Path("C:/Windows/powershell.exe")
+    assert "install.ps1" in command[-1]
+    assert PixiEngine.appended_shell_file() == ""

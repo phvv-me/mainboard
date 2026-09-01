@@ -71,13 +71,23 @@ class Process:
         while chunk := stream.read1(4096):
             text = decoder.decode(chunk)
             chunks.append(text)
-            destination.write(text)
-            destination.flush()
+            Process._display(destination, text)
         if tail := decoder.decode(b"", final=True):
             chunks.append(tail)
-            destination.write(tail)
-            destination.flush()
+            Process._display(destination, tail)
         return "".join(chunks)
+
+    @staticmethod
+    def _display(destination: TextIO, text: str) -> None:
+        """Write text through the terminal's own encoding without losing captured evidence."""
+        terminal_encoding = destination.encoding
+        displayed = (
+            text.encode(terminal_encoding, errors="replace").decode(terminal_encoding)
+            if terminal_encoding
+            else text
+        )
+        destination.write(displayed)
+        destination.flush()
 
     @classmethod
     def foreground(cls, command: BaseCommand) -> bool:

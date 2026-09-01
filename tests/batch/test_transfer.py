@@ -102,7 +102,12 @@ def test_nothing_the_mirror_refuses_is_ever_counted(lab: Board) -> None:
 def test_a_symlink_is_never_followed_into_a_second_copy_of_the_tree(lab: Board) -> None:
     """A link back into the workspace would otherwise be measured again under its own name."""
     written(lab.root, "packages/core/train.py")
-    (lab.root / "packages/loop").symlink_to(lab.root / "packages/core")
+    try:
+        (lab.root / "packages/loop").symlink_to(
+            lab.root / "packages/core", target_is_directory=True
+        )
+    except OSError as fault:
+        pytest.skip(f"this Windows account cannot create symlinks: {fault}")
     (lab.root / "packages/dangling").symlink_to(lab.root / "packages/gone")
     assert measured(lab).files == 1
 

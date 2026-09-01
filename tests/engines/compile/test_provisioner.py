@@ -1,3 +1,4 @@
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -89,11 +90,17 @@ def test_activated_puts_a_second_stage_toolchains_binaries_ahead_of_the_env(
     provisioner = Provisioner(tmp_path, manifest_from(_NODE))
     linked = provisioner.out / "node_modules" / ".bin"
     linked.mkdir(parents=True)
-    env_bin = provisioner.pixi.env_prefix("default") / "bin"
+    env_bin = provisioner.pixi.env_prefix("default") / ("Scripts" if os.name == "nt" else "bin")
     env_bin.mkdir(parents=True)
 
     with provisioner.activated():
-        assert local.env["PATH"].startswith(f"{linked}:{env_bin}:")
+        assert local.env["PATH"].startswith(
+            os.pathsep.join(
+                (str(linked), str(provisioner.pixi.env_prefix("default")), str(env_bin))
+            )
+            if os.name == "nt"
+            else os.pathsep.join((str(linked), str(env_bin), ""))
+        )
 
 
 def test_activated_leaves_out_a_directory_nothing_has_installed_into(

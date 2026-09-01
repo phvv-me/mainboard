@@ -3,7 +3,6 @@ from functools import cached_property
 from importlib.metadata import distributions
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import unquote, urlparse
 
 from patos import FrozenOpenModel
 
@@ -49,7 +48,7 @@ class DirectUrl(FrozenOpenModel):
         """The local directory an editable was installed from, `None` for anything else."""
         if not self.editable or not self.url.startswith("file://"):
             return None
-        return Path(unquote(urlparse(self.url).path))
+        return Path.from_uri(self.url)
 
     @classmethod
     def beside(cls, distribution: Distribution) -> DirectUrl:
@@ -178,7 +177,13 @@ class EnvironmentAudit:
 
     def installed(self) -> Iterator[InstalledPackage]:
         """Every uv-installed distribution across the environment's site-packages trees."""
-        for site_packages in self.prefix.glob("lib/python*/site-packages"):
+        candidates = [
+            *self.prefix.glob("lib/python*/site-packages"),
+            self.prefix / "Lib" / "site-packages",
+        ]
+        for site_packages in candidates:
+            if not site_packages.is_dir():
+                continue
             for distribution in distributions(path=[str(site_packages)]):
                 if (distribution.read_text("INSTALLER") or "").strip() == _INSTALLER:
                     yield InstalledPackage(distribution, site_packages)

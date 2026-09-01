@@ -15,6 +15,7 @@ from mainboard.scaffold import Scaffold, Scaffolded
 # values are exactly the scalar kinds a flag parses into.
 type Owner = Board | Dependencies | Doctor | Monitor | Scaffold | Survey
 type Option = str | int | float | bool | dict[str, str] | None
+type Positional = str | tuple[str, ...]
 type Answer = (
     int
     | None
@@ -28,4 +29,4 @@ type Answer = (
     | list[Section]
     | Iterator[MonitorReport]
 )
-type Relayed = tuple[str, str, tuple[str, ...], dict[str, Option]]
+type Relayed = tuple[str, str, tuple[Positional, ...], dict[str, Option]]

@@ -1,12 +1,13 @@
 import os
 import shutil
 from pathlib import Path
+from tempfile import gettempdir
 
 from patos import FrozenModel
 
 # Node-local fast-scratch candidates, in cluster-convention order: PBS/SLURM env vars first,
 # then the bare local mounts. The first that exists and is writable wins.
-_SCRATCH_ENV = ("LOCALDIR", "PBS_LOCALDIR", "SLURM_TMPDIR", "TMPDIR")
+_SCRATCH_ENV = ("LOCALDIR", "PBS_LOCALDIR", "SLURM_TMPDIR", "TMPDIR", "TEMP", "TMP")
 _SCRATCH_DIRS = ("/local", "/scratch/local", "/tmp")  # noqa: S108  reason=fixed cluster-convention scratch roots, not attacker input since=2026-08-16
 
 
@@ -42,7 +43,11 @@ class Scratch(FrozenModel):
     def probe(cls) -> Scratch:
         """The first writable node-local scratch dir among the env vars then the local mounts."""
         env_candidates = [(key, os.environ[key]) for key in _SCRATCH_ENV if key in os.environ]
-        literal_candidates = [(candidate, candidate) for candidate in _SCRATCH_DIRS]
+        system_temp = gettempdir()
+        literal_candidates = [
+            *((candidate, candidate) for candidate in _SCRATCH_DIRS),
+            ("system-temp", system_temp),
+        ]
         for source, candidate in (*env_candidates, *literal_candidates):
             path = Path(candidate)
             if path.is_dir() and os.access(path, os.W_OK):

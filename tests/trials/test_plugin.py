@@ -55,6 +55,8 @@ class Configured:
 CONFTEST = """
 from pathlib import Path
 
+import pytest
+
 from mainboard.trials import Declaration, Flag, Universe, Vocabulary, Word
 from mainboard.trials.vocabulary import Stance
 
@@ -62,6 +64,11 @@ pytest_plugins = ["mainboard.trials.pytest_plugin"]
 
 HERE = Path(__file__).resolve().parent
 STATE = {"policy": "pinned"}
+
+
+@pytest.fixture(scope="session")
+def state():
+    return STATE
 
 
 def pytest_trials_declaration() -> Declaration:
@@ -87,21 +94,19 @@ def pytest_trials_declaration() -> Declaration:
 LANES = """
 import pytest
 
-from conftest import STATE
-
 
 @pytest.mark.parametrize("model", ["qwen", "llama"])
 def test_law_holds(trial, model):
     trial.validated("the law held", ratio=1.5)
 
 
-def test_law_moves_the_knob(trial):
-    STATE["policy"] = "default"
-    trial.refuted("it did not survive", seen=STATE["policy"])
+def test_law_moves_the_knob(trial, state):
+    state["policy"] = "default"
+    trial.refuted("it did not survive", seen=state["policy"])
 
 
-def test_law_reads_the_knob(trial):
-    trial.undecided("the separation is below the noise floor", seen=STATE["policy"])
+def test_law_reads_the_knob(trial, state):
+    trial.undecided("the separation is below the noise floor", seen=state["policy"])
 
 
 @pytest.mark.gpu
@@ -118,12 +123,10 @@ def test_costs_money(trial):
 LEAKS = """
 import pytest
 
-from conftest import STATE
-
 
 @pytest.fixture(scope="session", autouse=True)
-def moves_it():
-    STATE["policy"] = "default"
+def moves_it(state):
+    state["policy"] = "default"
 
 
 def test_reads(trial):
@@ -180,7 +183,13 @@ def ran(pytester: pytest.Pytester, *args: str) -> pytest.RunResult:
     already imported and says it can no longer rewrite its assertions, which is true and is about
     this suite rather than about anything under test.
     """
-    return pytester.runpytest_inprocess("-W", "ignore::pytest.PytestAssertRewriteWarning", *args)
+    return pytester.runpytest_inprocess(
+        "-p",
+        "no:cacheprovider",
+        "-W",
+        "ignore::pytest.PytestAssertRewriteWarning",
+        *args,
+    )
 
 
 def test_a_collected_adaptive_lane_has_its_driver_imported_before_any_trial_runs(

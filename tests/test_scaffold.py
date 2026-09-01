@@ -1,9 +1,12 @@
+import sys
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
+from plumbum import local
 
 from mainboard import Board, MissionError
+from mainboard.engines.compile.backend import PixiEngine
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,6 +24,12 @@ _HOME = "studies"
 
 _TASKS = "mainboard.tasks.toml"
 _ROWS = 'sc-baseline = { run = "python -m experiments.baseline.run execute" }\n'
+
+
+@pytest.fixture(autouse=True)
+def pixi_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give Pixi-routed scaffold calls a real cross-platform executable for fake Popen."""
+    monkeypatch.setattr(PixiEngine, "command", property(lambda self: local[sys.executable]))
 
 
 @pytest.fixture
@@ -60,7 +69,7 @@ def test_a_project_lands_under_its_templates_home_with_its_rows_read_back(
     assert made.tasks == str(workspace / _HOME / "scratch-probe" / _TASKS)
     assert made.snippet == _ROWS
     assert made.paste == f"{workspace / 'mainboard.toml'} [tasks]"
-    assert _FIRST in " ".join(fp.calls[0])
+    assert str(workspace / _FIRST) in " ".join(fp.calls[0])
 
 
 @pytest.mark.parametrize(
@@ -88,7 +97,8 @@ def test_where_a_template_resolves_from_decides_where_the_project_lands(
     rendering(fp, destination, tasks=False)
     made = Board(workspace).scaffold().render("probe", template=template)
     assert made.path == str(destination)
-    assert source in " ".join(fp.calls[0])
+    expected_source = source if source.startswith("gh:") else str(workspace / source)
+    assert expected_source in " ".join(fp.calls[0])
 
 
 @pytest.mark.parametrize(
@@ -146,7 +156,7 @@ def test_the_answers_come_from_the_name_the_workspace_and_the_caller(
     ("declared", "occupied", "refusal"),
     [
         (True, True, "already exists"),
-        (False, False, f"no project template at .*{_FIRST}"),
+        (False, False, r"no project template at .*templates[\\/]study"),
         (False, False, "declares no templates"),
     ],
     ids=[

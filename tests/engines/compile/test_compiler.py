@@ -108,6 +108,7 @@ def test_the_dotenv_loader_is_generated_only_when_the_workspace_asks_for_it(
     compiler = compiler_from(f'[workspace]\nname = "w"\n{declared}')
     compiler.write(files, "default")
     assert (compiler.out / "dotenv.sh").exists() is written
+    assert (compiler.out / "dotenv.bat").exists() is written
 
 
 def test_a_variable_declared_false_is_unset_rather_than_set_to_an_empty_string(
@@ -124,7 +125,9 @@ def test_a_variable_declared_false_is_unset_rather_than_set_to_an_empty_string(
     compiler = compiler_from(f"{declared}OMP_NUM_THREADS = false\nMKL_NUM_THREADS = false\n")
     compiler.write(files, "default")
     script = (compiler.out / "unset.sh").read_text(encoding="utf-8")
+    windows_script = (compiler.out / "unset.bat").read_text(encoding="utf-8")
     assert "unset -v OMP_NUM_THREADS" in script and "unset -v MKL_NUM_THREADS" in script
+    assert "set OMP_NUM_THREADS=" in windows_script and "set MKL_NUM_THREADS=" in windows_script
     assert "KEEP" not in script
     # Sourced after the dotenv loader, so an explicit clear beats a value `.env` filled in.
     compiled = tomllib.loads(compiler.pixi.manifest.read_text(encoding="utf-8"))
@@ -142,6 +145,7 @@ def test_a_workspace_that_clears_nothing_carries_no_unset_script(
     plain = compiler_from('[workspace]\nname = "w"\n[env]\nKEEP = "1"\n')
     plain.write(files, "default")
     assert not (plain.out / "unset.sh").exists()
+    assert not (plain.out / "unset.bat").exists()
 
 
 def test_env_refuses_the_one_boolean_that_says_nothing() -> None:

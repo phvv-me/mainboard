@@ -24,5 +24,6 @@ def test_find_root_walks_up_and_refuses_a_rootless_tree(tmp_path: Path) -> None:
     assert project.find_root(nested) == tmp_path
     orphan = tmp_path.parent / f"{tmp_path.name}-orphan"
     orphan.mkdir()
+    orphan_project = Project(name="missing-workspace")
     with pytest.raises(FileNotFoundError, match="run inside a workspace"):
-        project.find_root(orphan)
+        orphan_project.find_root(orphan)

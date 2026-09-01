@@ -44,12 +44,14 @@ _PYPI_OPTION_KEYS = (
 # The generated dotenv loader, sourced first by pixi activation when `workspace.dotenv` is on.
 # Activation scripts run from the manifest dir (`.mainboard/`), so `../.env` is the workspace
 # root.
-_DOTENV = "dotenv.sh"
+_DOTENV_SH = "dotenv.sh"
+_DOTENV_BAT = "dotenv.bat"
 
 # The generated unset script, sourced right after the dotenv loader so an explicit clear beats a
 # value `.env` filled in. pixi's own `[activation].env` is a string-to-string map with no way to
 # say "not set", so a clear has to be shell rather than a table entry.
-_UNSET = "unset.sh"
+_UNSET_SH = "unset.sh"
+_UNSET_BAT = "unset.bat"
 
 
 def cleared(env: dict[str, str | bool]) -> list[str]:
@@ -186,7 +188,7 @@ class PixiManifest(FrozenModel):
     tasks: dict[str, Toml] = {}
 
     @staticmethod
-    def activation_table(m: Manifest) -> dict[str, Toml]:
+    def activation_table(m: Manifest, *, windows: bool = False) -> dict[str, Toml]:
         """The `[activation]` table, exported env vars and the scripts pixi sources on entry.
 
         The generated dotenv loader lives beside the manifest and is sourced first, so a
@@ -196,8 +198,8 @@ class PixiManifest(FrozenModel):
         declared location.
         """
         scripts: list[Toml] = [
-            *([_DOTENV] if m.workspace.dotenv else []),
-            *([_UNSET] if cleared(m.env) else []),
+            *([_DOTENV_BAT if windows else _DOTENV_SH] if m.workspace.dotenv else []),
+            *([_UNSET_BAT if windows else _UNSET_SH] if cleared(m.env) else []),
             *(rerooted(script) for script in m.workspace.scripts),
         ]
         exported = {name: value for name, value in m.env.items() if isinstance(value, str)}
@@ -268,7 +270,7 @@ class PixiManifest(FrozenModel):
                 if env.tasks
                 else {}
             ),
-            **({"activation": {"scripts": [_UNSET]}} if clearing and env.no_default else {}),
+            **({"activation": {"scripts": [_UNSET_SH]}} if clearing and env.no_default else {}),
         }
 
     @classmethod
@@ -338,6 +340,15 @@ class PixiManifest(FrozenModel):
         """
         platforms = PlatformMatrix.from_manifest(m)
         feature, environments = cls.features(m, platforms, project_name)
+        targets: dict[str, Toml] = {
+            plat: dependency_tables(scope, over=m) for plat, scope in m.on.items()
+        }
+        if any(
+            (entry.get("platform") if isinstance(entry, dict) else entry).startswith("win-")
+            for entry in platforms.workspace
+        ) and (windows_activation := cls.activation_table(m, windows=True)):
+            windows = targets.get("win", {})
+            targets["win"] = {**windows, "activation": windows_activation}
         payload: dict[str, Toml] = {
             "workspace": {
                 "name": m.workspace.name,
@@ -348,7 +359,7 @@ class PixiManifest(FrozenModel):
             "activation": cls.activation_table(m),
             **dependency_tables(m),
             **({_PYPI_OPTIONS: options} if (options := pypi_options(m)) else {}),
-            "target": {plat: dependency_tables(scope, over=m) for plat, scope in m.on.items()},
+            "target": targets,
             "feature": feature,
             "environments": environments,
             "tasks": {name: cls.task(spec) for name, spec in m.tasks.items()},

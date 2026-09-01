@@ -3,15 +3,13 @@
 # module decides which template a name resolves to, where the project lands, what its answers
 # are, and what the workspace still has to do with the task rows a template writes out.
 
-import shlex
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
-from plumbum import local as localhost
 
 from .core.errors import MissionError
 from .core.project import Project
-from .engines.compile.backend import Process
+from .engines.compile.provisioner import Provisioner
 from .manifest.schema.template import Template
 
 if TYPE_CHECKING:
@@ -110,9 +108,9 @@ class Scaffold:
             for question, answer in answers.items()
             for token in ("--data", f"{question}={answer}")
         ]
-        command = shlex.join([_COPIER, "copy", "--defaults", *data, template, str(destination)])
-        staged = self.board.line(command, container="none")
-        result = Process.capture(localhost["bash"]["-lc", staged])
+        command = (_COPIER, "copy", "--defaults", *data, template, str(destination))
+        plan = self.board.plan(container="none")
+        result = Provisioner(self.board.root, self.board.manifest).capture(command, plan.env)
         if not result.succeeded:
             result.replay()
             raise MissionError(

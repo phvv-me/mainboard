@@ -1,3 +1,4 @@
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -11,16 +12,16 @@ if TYPE_CHECKING:
 
     from pytest_subprocess import FakeProcess
 
-_ECHO = str(local.which("echo"))
+_PYTHON = sys.executable
 
 
-class _EchoTool(Tool):
-    """A minimal `Tool` naming the real `echo` binary, for exercising the base class."""
+class _PythonTool(Tool):
+    """A minimal `Tool` naming a cross-platform executable for the base class."""
 
-    name = "echo"
+    name = _PYTHON
 
 
-class _Unavailable(_EchoTool):
+class _Unavailable(_PythonTool):
     """A tool whose guard says this workspace has no business running it."""
 
     def available(self) -> bool:
@@ -41,8 +42,8 @@ def test_a_tool_names_the_binary_it_runs_and_pins_nothing_by_default() -> None:
     A backend running through another tool names no binary, so the name is demanded at the
     one boundary that needs it rather than of every subclass.
     """
-    tool = _EchoTool()
-    assert str(tool.command) == _ECHO
+    tool = _PythonTool()
+    assert str(tool.command) == _PYTHON
     assert tool.scope() == ()
     assert tool.cwd() is None
     assert tool.available() is True
@@ -52,7 +53,7 @@ def test_a_tool_names_the_binary_it_runs_and_pins_nothing_by_default() -> None:
 
 
 def test_within_cwd_runs_in_the_declared_directory(tmp_path: Path) -> None:
-    class _ScopedTool(_EchoTool):
+    class _ScopedTool(_PythonTool):
         def cwd(self) -> Path:
             return tmp_path
 
@@ -69,15 +70,15 @@ def test_a_failed_run_raises_or_preserves_its_code_depending_on_who_asked(
     Raising keeps a failed install from being reported as green, while a transparent
     passthrough has to exit with whatever the wrapped command exited.
     """
-    fp.register([_ECHO, "hi"], returncode=0)
-    assert _EchoTool()("hi") is None
+    fp.register([_PYTHON, "hi"], returncode=0)
+    assert _PythonTool()("hi") is None
 
-    fp.register([_ECHO, "hi"], returncode=1)
-    with pytest.raises(MissionError, match="`echo hi` failed"):
-        _EchoTool()("hi")
+    fp.register([_PYTHON, "hi"], returncode=1)
+    with pytest.raises(MissionError, match="failed"):
+        _PythonTool()("hi")
 
-    fp.register([_ECHO, "hi"], returncode=9)
-    assert _EchoTool().exit_code("hi") == 9
+    fp.register([_PYTHON, "hi"], returncode=9)
+    assert _PythonTool().exit_code("hi") == 9
 
 
 def test_an_unavailable_tool_runs_nothing_and_reports_success(fp: FakeProcess) -> None:

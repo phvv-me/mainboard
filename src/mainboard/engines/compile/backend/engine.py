@@ -1,4 +1,6 @@
 import os
+import platform
+import shutil
 import sys
 from functools import cached_property
 from pathlib import Path, PurePath
@@ -15,8 +17,9 @@ if TYPE_CHECKING:
     from plumbum.commands.base import BaseCommand
 
 # mainboard's engine. `pip install mainboard` brings no `pixi` binary, so it installs one on
-# first use with the official script that drops `pixi` into `PIXI_HOME/bin`.
-_PIXI_INSTALLER = "curl -fsSL https://pixi.sh/install.sh | sh"
+# first use with the official installer for the current operating system.
+_POSIX_INSTALLER = "curl -fsSL https://pixi.sh/install.sh | sh"
+_WINDOWS_INSTALLER = "irm -useb https://pixi.sh/install.ps1 | iex"
 
 # The tool announcing the install, so nothing here spells its name.
 _TOOL = Project().name
@@ -60,7 +63,7 @@ class PixiEngine(Tool):
         Empty in the two cases where nothing is touched, `PIXI_NO_PATH_UPDATE` suppressing the
         edit and a `$SHELL` the installer has no rule for.
         """
-        if os.environ.get("PIXI_NO_PATH_UPDATE"):
+        if os.environ.get("PIXI_NO_PATH_UPDATE") or platform.system() == "Windows":
             return ""
         return _SHELL_RC.get(PurePath(os.environ.get("SHELL", "")).name, "")
 
@@ -80,14 +83,39 @@ class PixiEngine(Tool):
         sys.stderr.write(f"{_TOOL}: installing pixi engine…\n")
         if appended := self.appended_shell_file():
             sys.stderr.write(f"{_TOOL}: the pixi installer adds a PATH line to {appended}\n")
-        if not Process.foreground(local["sh"]["-c", _PIXI_INSTALLER]):
+        if not Process.foreground(self.installer()):
             raise MissionError(
                 "the pixi installer failed, install it manually from https://pixi.sh"
             )
 
+    @staticmethod
+    def installer() -> BaseCommand:
+        """Pixi's official installer command for this operating system."""
+        if platform.system() == "Windows":
+            executable = shutil.which("powershell") or shutil.which("pwsh")
+            if executable is None:
+                raise MissionError("PowerShell is required to install pixi on Windows")
+            return local[executable][
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                _WINDOWS_INSTALLER,
+            ]
+        executable = shutil.which("sh")
+        if executable is None:
+            raise MissionError("a POSIX shell is required to install pixi on this platform")
+        return local[executable]["-c", _POSIX_INSTALLER]
+
     def installed_binary(self) -> Path:
         """Return the fallback Pixi binary after bootstrapping it when absent."""
-        binary = self.home() / "bin" / "pixi"
+        binary = self.binary_path()
         if not binary.exists():
             self.bootstrap()
         return binary
+
+    @staticmethod
+    def binary_path() -> Path:
+        """The fallback Pixi executable path for this operating system."""
+        name = "pixi.exe" if platform.system() == "Windows" else "pixi"
+        return PixiEngine.home() / "bin" / name

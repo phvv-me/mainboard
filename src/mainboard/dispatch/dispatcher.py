@@ -9,7 +9,7 @@ from collections.abc import (
 )
 from contextlib import suppress
 from math import ceil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from time import sleep
 from typing import TYPE_CHECKING
 
@@ -170,7 +170,7 @@ class Dispatcher:
         target = self.local(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         rsync(
-            [f"{host}:{root}/{Path(path)}"],
+            [f"{host}:{root}/{PurePosixPath(path)}"],
             f"{target.parent}/",
             rsh=policy.rsync_shell,
             timeout=ceil(policy.deadline),
@@ -571,7 +571,7 @@ class Dispatcher:
         path = state_path(self.root) / "jobs" / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-        return str(path.relative_to(self.root))
+        return path.relative_to(self.root).as_posix()
 
     def _verdict(self, handle: Handle, state: JobState) -> Verdict:
         """Persist a terminal state to the cache and project it onto a `Verdict`.

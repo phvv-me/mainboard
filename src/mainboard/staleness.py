@@ -13,6 +13,7 @@
 
 import hashlib
 import json
+import shlex
 import tomllib
 from contextlib import suppress
 from pathlib import Path
@@ -68,7 +69,8 @@ def refresh(found: Snapshot) -> int:
     """
     if not found.fix:
         return 0
-    return foreground(localhost["bash"]["-lc", found.fix])
+    argv = shlex.split(found.fix)
+    return foreground(localhost[argv[0]][argv[1:]])
 
 
 def check(package: Path | None = None) -> Snapshot:

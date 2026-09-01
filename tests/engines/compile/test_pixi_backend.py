@@ -1,3 +1,4 @@
+import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -255,6 +256,25 @@ def test_the_backend_pins_every_call_to_the_workspace_it_owns(pixi: Pixi) -> Non
     assert pixi.env_prefix("serving") == pixi.manifest.parent / ".pixi" / "envs" / "serving"
 
 
+def test_run_preserves_each_argument_through_pixis_cross_platform_runner(
+    fp: FakeProcess, pixi: Pixi, tool_paths: Mapping[str, str]
+) -> None:
+    fp.register([fp.any()], returncode=7)
+    assert pixi.run(("python", "-c", "raise SystemExit(7)"), "serving") == 7
+    assert list(fp.calls[0]) == [
+        tool_paths["pixi"],
+        "run",
+        "--manifest-path",
+        str(pixi.manifest),
+        "--frozen",
+        "-e",
+        "serving",
+        "python",
+        "-c",
+        "raise SystemExit(7)",
+    ]
+
+
 def test_shell_hook_returns_the_activation_script_pixi_prints(
     fp: FakeProcess, pixi: Pixi, tool_paths: Mapping[str, str]
 ) -> None:
@@ -277,7 +297,7 @@ def test_shell_hook_returns_the_activation_script_pixi_prints(
 
 def test_activated_puts_the_env_bin_on_path_only_once_it_exists(pixi: Pixi) -> None:
     """A dry call before an install leaves PATH alone rather than exporting a dead entry."""
-    env_bin = pixi.env_prefix("default") / "bin"
+    env_bin = pixi.env_prefix("default") / ("Scripts" if os.name == "nt" else "bin")
     env_bin.mkdir(parents=True)
     with pixi.activated("default"):
         assert str(env_bin) in local.env["PATH"]

@@ -26,7 +26,7 @@ def test_load_renders_and_validates_the_full_fixture(loaded: Manifest) -> None:
     """One pass through tomllib, the `{{ }}` rendering, and the schema, in that order."""
     assert loaded.workspace.name == "lab"
     assert loaded.vars["scratch"] == "/scratch/lab"
-    assert loaded.vars["station"].startswith(("linux-", "macos-"))
+    assert loaded.vars["station"].startswith(("linux-", "macos-", "windows-"))
     assert loaded.containers["ngc"].binds == ["/scratch/lab"]
     assert loaded.containers["ngc"].env_mode is EnvMode.VENV_SYSTEM_SITE
     assert set(loaded.containers["ngc"].guardrails) == {

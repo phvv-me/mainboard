@@ -50,9 +50,9 @@ def make_drive(root: Path, name: str, *, sectors: str | None = None, **files: st
     device = root / name / "device"
     device.mkdir(parents=True, exist_ok=True)
     if sectors is not None:
-        (root / name / "size").write_text(sectors)
+        (root / name / "size").write_text(sectors, encoding="utf-8")
     for field, value in files.items():
-        (device / field).write_text(value)
+        (device / field).write_text(value, encoding="utf-8")
     return device
 
 
@@ -76,7 +76,7 @@ def test_the_drive_kind_comes_from_the_name_then_the_rotational_flag(
     make_drive(sys_block, name, sectors="2000000")
     if rotational is not None:
         (sys_block / name / "queue").mkdir()
-        (sys_block / name / "queue" / "rotational").write_text(rotational)
+        (sys_block / name / "queue" / "rotational").write_text(rotational, encoding="utf-8")
     assert DriveInfo(name=name).kind is expected
 
 

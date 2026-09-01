@@ -57,6 +57,7 @@ def test_the_compiler_reads_nothing_that_belongs_to_another_subsystem(workspace:
     ]
     # `[vars]` interpolation landed (`station` mixes `os_name()`/`arch()`), but only inside the
     # source manifest fields the compiler actually reads, never as a table of its own.
-    assert manifest.vars["station"] == f"linux-{platform.machine()}"
+    family = {"Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux")
+    assert manifest.vars["station"] == f"{family}-{platform.machine()}"
     for leaked in ("hosts", "containers", "vars", "ngc", "miyabi"):
         assert leaked not in compiled.to_toml()

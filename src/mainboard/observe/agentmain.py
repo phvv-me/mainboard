@@ -95,7 +95,7 @@ def wrap(
     spool.append(_frame(spool.job, Kind.started, now(), {"argv": list(argv)}))
     sampled_at = now()
     for line in process.stdout:
-        spool.append(_frame(spool.job, Kind.line, now(), {"text": line.rstrip("\n")}))
+        spool.append(_frame(spool.job, Kind.line, now(), {"text": line.rstrip("\r\n")}))
         moment = now()
         if (moment - sampled_at).total_seconds() >= sample_interval:
             spool.append(_frame(spool.job, Kind.sample, moment, {"rss": rss(process.pid)}))

@@ -25,7 +25,7 @@ from .core.shell import foreground
 from .deps import Dependencies
 from .dispatch import vocabulary
 from .dispatch.backends.base import Credentials, Delivery, LogSource, ProviderBackend, route
-from .dispatch.commandline import vetted
+from .dispatch.commandline import joined, vetted
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.jobs.spec import walltime_seconds
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
@@ -55,7 +55,7 @@ from .tracking import (
 from .verdicts import Verdicts
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
 
     from .batch.receipts import Bus
     from .batch.spec import BatchSpec
@@ -371,7 +371,13 @@ class Board:
         """The container argv builder for `plan`, None when the plan is bare."""
         if not plan.containerized or plan.container is None:
             return None
-        runtime = resolve(plan.container.runtime)()
+        runtime_name = plan.container.runtime
+        if runtime_name == "auto" and not self.local:
+            modules = plan.profile.modules
+            runtime_name = (
+                "apptainer" if "apptainer" in modules or "singularity" in modules else "docker"
+            )
+        runtime = resolve(runtime_name)()
         container = plan.container
         return lambda argv: runtime.command(container, prefix_bind=plan.prefix(root), argv=argv)
 
@@ -750,7 +756,7 @@ class Board:
             account=resolved.profile.account,
         )
 
-    def run(self, command: str, *, env: str = "", container: str = "") -> int:
+    def run(self, command: Sequence[str], *, env: str = "", container: str = "") -> int:
         """Run `command` through the host's activated plan, returning its exit code.
 
         Locally the wrapped line executes in place; remotely it rides one ssh
@@ -759,11 +765,14 @@ class Board:
         is resolved by pixi inside the generated workspace instead of by the
         shell, which is what makes `run test` and `run -- pytest -q` the same verb.
 
-        command: the shell command to run, or a declared task name and its arguments.
+        command: exact command argv, or a declared task name and its arguments.
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
         """
-        line = self.line(command, env=env, container=container)
+        plan = self.plan(env=env, container=container)
+        if self.local and not plan.containerized:
+            return Provisioner(self.root, self.manifest).run(command, plan.env)
+        line = self.line(joined(command), env=env, container=container)
         if self.local:
             return foreground(localhost["bash"]["-lc", line])
         with connection(self.host) as remote:

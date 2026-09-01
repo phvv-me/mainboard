@@ -1,5 +1,5 @@
 import os
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from threading import Event, Thread
 from time import sleep
 from types import TracebackType
@@ -80,6 +80,10 @@ class FakeProvisioner:
 
     def provision(self, env: str, *, resolve: bool) -> None:
         FakeProvisioner.calls.append(("provision", (env, resolve)))
+
+    def run(self, command: Sequence[str], env: str) -> int:
+        FakeProvisioner.calls.append(("run", (command, env)))
+        return {("true",): 0, ("false",): 1}.get(tuple(command), 0)
 
 
 class FakeCloud(ProviderBackend, Account, Delivery, LogSource):
@@ -215,9 +219,12 @@ def test_the_board_hands_out_each_subsystem_bound_to_this_workspace(
 
 @pytest.mark.parametrize(("command", "code"), [("true", 0), ("false", 1)])
 def test_a_local_run_executes_the_wrapped_line_and_answers_with_its_exit_code(
-    board: Board, command: str, code: int
+    board: Board, monkeypatch: pytest.MonkeyPatch, command: str, code: int
 ) -> None:
-    assert board.run(command) == code
+    FakeProvisioner.calls = []
+    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    assert board.run((command,)) == code
+    assert FakeProvisioner.calls[-1] == ("run", ((command,), "default"))
 
 
 def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
@@ -238,8 +245,8 @@ def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
 
     monkeypatch.setattr("mainboard.board.wrap", capture)
 
-    board.run("test --quiet")
-    board.run("pytest --quiet")
+    board.on(_MIYABI_G).line("test --quiet", container="none")
+    board.on(_MIYABI_G).line("pytest --quiet", container="none")
 
     assert staged == [
         "pixi run --manifest-path .mainboard/pixi.toml --frozen -e default test --quiet",
@@ -295,6 +302,11 @@ def test_submit_resolves_the_hosts_declared_resources(
         return Handle(id="77", host=plan.host, root=root, kind=plan.profile.kind)
 
     monkeypatch.setattr(board.dispatcher, "run", fake_run)
+    monkeypatch.setattr(
+        Board,
+        "containerizer",
+        lambda self, plan, root: (lambda argv: argv) if plan.containerized else None,
+    )
     job = board.on(_MIYABI_G).submit("python -m exp.run", **given)
     assert isinstance(job, Job) and job.handle.id == "77"
     assert seen == {**expected, "containerized": True, "root": _REMOTE_ROOT}

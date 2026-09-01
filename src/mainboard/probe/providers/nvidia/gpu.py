@@ -55,6 +55,8 @@ class NvidiaGPU(GPU):
         query degrades to False rather than raising.
         """
         runtime = self.apis.runtime
+        if runtime is None:
+            return False
         with suppress(*self.apis.nvml_errors, AttributeError):
             attrs = runtime.cudaDeviceAttr
             success = runtime.cudaError_t.cudaSuccess
@@ -85,21 +87,30 @@ class NvidiaGPU(GPU):
         return ""
 
     @cached_property
-    def runtime_version(self) -> tuple[int, int]:
+    def runtime_version(self) -> tuple[int, int] | None:
         """The CUDA runtime version this process links, e.g. `(13, 3)`."""
-        _, raw = self.apis.runtime.cudaRuntimeGetVersion()
+        runtime = self.apis.runtime
+        if runtime is None:
+            return None
+        _, raw = runtime.cudaRuntimeGetVersion()
         return (raw // 1000, (raw % 1000) // 10)
 
     @cached_property
     def handle(self) -> NvmlHandle:
         """NVML device handle resolved via PCI bus ID to respect `CUDA_VISIBLE_DEVICES`."""
-        self.apis.nvml.init_v2()
-        handle = self.apis.nvml.device_get_handle_by_pci_bus_id_v2(self.pci_bus_id)
+        nvml = self.apis.nvml
+        nvml.init_v2()
+        if self.apis.runtime is not None:
+            bus_id = self.pci_bus_id
+            handle = nvml.device_get_handle_by_pci_bus_id_v2(bus_id)
+        else:
+            handle = nvml.device_get_handle_by_index_v2(self.index)
+            bus_id = text(nvml.device_get_pci_info_v3(handle).bus_id)
         logger.debug(
             "GPU %s: %s (%s)",
             self.index,
-            self.apis.nvml.device_get_name(handle),
-            self.pci_bus_id,
+            nvml.device_get_name(handle),
+            bus_id,
         )
         return handle
 
@@ -141,11 +152,14 @@ class NvidiaGPU(GPU):
     def pci_bus_id(self) -> str:
         """PCI bus ID of the visible device, honoring `CUDA_VISIBLE_DEVICES`.
 
-        Read through `cuda.bindings.runtime` so it works even when the
-        optional `cuda.core` layer failed to import.
+        Prefer the CUDA Runtime so visible-device remapping is preserved. A pure-NVML
+        Windows stack reads the same identity from the physical handle instead.
         """
-        err, raw = self.apis.runtime.cudaDeviceGetPCIBusId(64, self.index)
-        if err != self.apis.runtime.cudaError_t.cudaSuccess:
+        runtime = self.apis.runtime
+        if runtime is None:
+            return text(self.apis.nvml.device_get_pci_info_v3(self.handle).bus_id)
+        err, raw = runtime.cudaDeviceGetPCIBusId(64, self.index)
+        if err != runtime.cudaError_t.cudaSuccess:
             raise RuntimeError(f"cudaDeviceGetPCIBusId({self.index}) failed: {err}")
         return text(raw).split("\x00", 1)[0].strip()
 
@@ -203,23 +217,30 @@ class NvidiaGPU(GPU):
         """Return all CUDA-visible devices ordered by visible index."""
         if not cls.is_available():
             return ()
-        api = apis.nvidia_apis()
-        _, count = api.runtime.cudaGetDeviceCount()
-        return tuple(cls(index=i) for i in range(count))
+        return tuple(cls(index=i) for i in range(cls.device_count()))
 
     @classmethod
     def device_count(cls) -> int:
-        """How many devices CUDA reports, 0 when the count call itself failed."""
+        """How many devices the runtime or NVML reports, 0 when its query failed."""
         api = apis.nvidia_apis()
-        err, count = api.runtime.cudaGetDeviceCount()
-        return count if err == api.runtime.cudaError_t.cudaSuccess else 0
+        if api.runtime is not None:
+            err, count = api.runtime.cudaGetDeviceCount()
+            return count if err == api.runtime.cudaError_t.cudaSuccess else 0
+        api.nvml.init_v2()
+        return api.nvml.device_get_count_v2()
 
     @classmethod
     def is_available(cls) -> bool:
         """Whether CUDA reports at least one NVIDIA device."""
         try:
-            return cls.device_count() > 0
+            api = apis.nvidia_apis()
         except ModuleNotFoundError, ImportError, OSError, RuntimeError:
+            return False
+        try:
+            return cls.device_count() > 0
+        except api.nvml_errors:
+            return False
+        except OSError, RuntimeError:
             return False
 
     def nvml_memory(self) -> Memory:
@@ -253,15 +274,18 @@ class NvidiaGPU(GPU):
 
     def runtime_memory(self) -> Memory:
         """Current memory state from CUDA Runtime when NVML memory is unsupported."""
-        err, current = self.apis.runtime.cudaGetDevice()
-        if err != self.apis.runtime.cudaError_t.cudaSuccess:
+        runtime = self.apis.runtime
+        if runtime is None:
+            raise RuntimeError("CUDA Runtime is unavailable and NVML refused its memory reading")
+        err, current = runtime.cudaGetDevice()
+        if err != runtime.cudaError_t.cudaSuccess:
             current = self.index
-        self.apis.runtime.cudaSetDevice(self.index)
+        runtime.cudaSetDevice(self.index)
         try:
-            err, free_bytes, total_bytes = self.apis.runtime.cudaMemGetInfo()
+            err, free_bytes, total_bytes = runtime.cudaMemGetInfo()
         finally:
-            self.apis.runtime.cudaSetDevice(current)
-        if err != self.apis.runtime.cudaError_t.cudaSuccess:
+            runtime.cudaSetDevice(current)
+        if err != runtime.cudaError_t.cudaSuccess:
             raise RuntimeError(f"cudaMemGetInfo({self.index}) failed: {err}")
         return Memory(
             scope="vram",

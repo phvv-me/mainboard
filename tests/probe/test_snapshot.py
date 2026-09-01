@@ -57,7 +57,7 @@ def test_collected_reads_every_probe_into_one_wire_portable_snapshot(
     facts = HostFacts.collected()
     assert facts.schema_version == 1
     assert (facts.cgroup.limit_bytes, facts.cgroup.capped) == (100 * _GIB, True)
-    assert (facts.scratch.path, facts.scratch.source) == ("/local", "LOCALDIR")
+    assert (facts.scratch.path, facts.scratch.source) == (str(Path("/local")), "LOCALDIR")
     assert facts.scratch.free_bytes == 50 * _GIB
     assert facts.memory_total_bytes == 200 * _GIB
     assert facts.cpu_name == machine.cpu.label

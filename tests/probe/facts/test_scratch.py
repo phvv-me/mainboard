@@ -14,6 +14,7 @@ def bare_host(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     for key in scratch_mod._SCRATCH_ENV:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(scratch_mod, "_SCRATCH_DIRS", ())
+    monkeypatch.setattr(scratch_mod, "gettempdir", lambda: "/nonexistent-system-temp")
     monkeypatch.setattr(
         scratch_mod.shutil, "disk_usage", lambda path: type("Usage", (), {"free": 500 * _GIB})()
     )

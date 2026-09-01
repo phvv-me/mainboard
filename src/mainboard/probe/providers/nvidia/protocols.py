@@ -96,6 +96,12 @@ class ProcessInfo(Protocol):
     used_gpu_memory: int
 
 
+class PciInfo(Protocol):
+    """PCI identity returned by NVML for one physical device."""
+
+    bus_id: bytes | str
+
+
 class Nvml(Protocol):
     """The NVML functions the provider calls (snake_case `cuda.bindings._nvml`).
 
@@ -107,6 +113,8 @@ class Nvml(Protocol):
     ClocksEventReasons: ClocksEvent
     TemperatureSensors: TemperatureSensor
 
+    def device_get_count_v2(self) -> int: ...
+
     def device_get_compute_running_processes_v3(
         self, handle: NvmlHandle
     ) -> Sequence[ProcessInfo]: ...
@@ -117,6 +125,8 @@ class Nvml(Protocol):
 
     def device_get_handle_by_pci_bus_id_v2(self, pci_bus_id: str) -> NvmlHandle: ...
 
+    def device_get_handle_by_index_v2(self, index: int) -> NvmlHandle: ...
+
     def device_get_max_clock_info(self, handle: NvmlHandle, clock: int) -> int: ...
 
     def device_get_memory_bus_width(self, handle: NvmlHandle) -> int: ...
@@ -126,6 +136,8 @@ class Nvml(Protocol):
     def device_get_name(self, handle: NvmlHandle) -> bytes | str: ...
 
     def device_get_power_usage(self, handle: NvmlHandle) -> int: ...
+
+    def device_get_pci_info_v3(self, handle: NvmlHandle) -> PciInfo: ...
 
     def device_get_temperature_v(self, handle: NvmlHandle, sensor: int) -> int: ...
 

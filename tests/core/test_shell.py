@@ -1,4 +1,5 @@
 import shlex
+import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -15,11 +16,11 @@ if TYPE_CHECKING:
     from string.templatelib import Template
 
 
-@pytest.mark.parametrize(("command", "code"), [("true", 0), ("false", 1)])
+@pytest.mark.parametrize("code", [0, 1])
 def test_foreground_runs_a_command_with_inherited_stdio_and_answers_its_exit_code(
-    command: str, code: int
+    code: int,
 ) -> None:
-    assert foreground(localhost["bash"]["-c", command]) == code
+    assert foreground(localhost[sys.executable]["-c", f"raise SystemExit({code})"]) == code
 
 
 @given(value=TEXT)

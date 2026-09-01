@@ -147,11 +147,15 @@ def test_a_timed_out_transfer_takes_its_whole_process_group_down_with_it(
     """A ProxyJump child outliving its parent is what leaves an orphaned ssh behind."""
     process = _FakeProcess(raise_timeout=True)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
-    killed: list[tuple[int, int]] = []
-    monkeypatch.setattr("os.killpg", lambda pid, sig: killed.append((pid, sig)))
+    killed: list[tuple[int, bool]] = []
+    monkeypatch.setattr(
+        transport_module,
+        "terminate_process_tree",
+        lambda pid, *, force=False: killed.append((pid, force)),
+    )
     with pytest.raises(HostUnreachable, match="timed out"):
         SshTransport().run(("ssh", "host", "true"), "host", operation="connect")
-    assert killed == [(process.pid, signal.SIGTERM)]
+    assert killed == [(process.pid, False)]
     assert process.wait_calls == [2.0]
 
 
@@ -190,16 +194,21 @@ def test_terminate_escalates_to_sigkill_and_tolerates_a_group_already_gone(
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=timeout)
 
     stubborn.wait = wait
-    killed: list[tuple[int, int]] = []
-    monkeypatch.setattr("os.killpg", lambda pid, sig: killed.append((pid, sig)))
+    killed: list[tuple[int, bool]] = []
+    monkeypatch.setattr(
+        transport_module,
+        "terminate_process_tree",
+        lambda pid, *, force=False: killed.append((pid, force)),
+    )
     SshTransport.terminate(stubborn)
-    assert killed == [(stubborn.pid, signal.SIGTERM), (stubborn.pid, signal.SIGKILL)]
+    assert killed == [(stubborn.pid, False), (stubborn.pid, True)]
     assert stubborn.wait_calls == [2.0, None]
 
-    def raise_lookup(pid: int, sig: int) -> None:
+    def raise_lookup(pid: int, *, force: bool = False) -> None:
+        del pid, force
         raise ProcessLookupError
 
-    monkeypatch.setattr("os.killpg", raise_lookup)
+    monkeypatch.setattr(transport_module, "terminate_process_tree", raise_lookup)
     gone = _FakeProcess()
     SshTransport.terminate(gone)
     assert gone.wait_calls == [2.0]
@@ -262,12 +271,16 @@ def test_closing_a_bounded_session_kills_only_a_group_that_is_still_alive(
 ) -> None:
     session = object.__new__(transport_module.BoundedShellSession)
     session.proc = process
-    killed: list[tuple[int, int]] = []
-    monkeypatch.setattr("os.killpg", lambda pid, sig: killed.append((pid, sig)))
+    killed: list[tuple[int, bool]] = []
+    monkeypatch.setattr(
+        transport_module,
+        "terminate_process_tree",
+        lambda pid, *, force=False: killed.append((pid, force)),
+    )
     closed: list[bool] = []
     monkeypatch.setattr(transport_module.ShellSession, "close", lambda self: closed.append(True))
     session.close()
-    assert killed == signalled
+    assert killed == [(pid, False) for pid, _signal in signalled]
     assert closed == [True]
 
 
@@ -277,10 +290,11 @@ def test_closing_a_bounded_session_tolerates_a_group_already_gone(
     session = object.__new__(transport_module.BoundedShellSession)
     session.proc = _FakeSshProcess(alive=True)
 
-    def raise_lookup(pid: int, sig: int) -> None:
+    def raise_lookup(pid: int, *, force: bool = False) -> None:
+        del pid, force
         raise ProcessLookupError
 
-    monkeypatch.setattr("os.killpg", raise_lookup)
+    monkeypatch.setattr(transport_module, "terminate_process_tree", raise_lookup)
     monkeypatch.setattr(transport_module.ShellSession, "close", lambda self: None)
     session.close()
 

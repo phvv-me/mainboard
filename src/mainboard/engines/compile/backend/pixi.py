@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,7 +15,7 @@ from .repair import EnvironmentAudit
 from .tool import Tool
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Sequence
 
     from plumbum.commands.base import BaseCommand
 
@@ -94,14 +95,20 @@ class Pixi(Tool):
 
     @contextmanager
     def activated(self, env: str = "default") -> Generator[None]:
-        """Prepend the provisioned env's `bin/` to PATH for the duration of the block.
+        """Prepend the provisioned environment's executable directories for the block.
 
-        The env may not exist yet (a dry call before install), in which case PATH is left
-        untouched.
+        Pixi's Windows prefixes expose commands from the root, ``Scripts`` and ``Library/bin``;
+        POSIX prefixes use ``bin``. The env may not exist yet, in which case PATH is untouched.
         """
-        binary = self.env_prefix(env) / "bin"
+        prefix = self.env_prefix(env)
+        candidates = (
+            (prefix, prefix / "Scripts", prefix / "Library" / "bin")
+            if platform.system() == "Windows"
+            else (prefix / "bin",)
+        )
+        binaries = [str(candidate) for candidate in candidates if candidate.is_dir()]
         path = local.env["PATH"]
-        with local.env(PATH=f"{binary}{os.pathsep}{path}" if binary.is_dir() else path):
+        with local.env(PATH=os.pathsep.join([*binaries, str(path)])):
             yield
 
     def env_prefix(self, env: str) -> Path:
@@ -164,6 +171,30 @@ class Pixi(Tool):
         existing prefix directory is not enough. An interrupted install leaves one behind.
         """
         return (self.env_prefix(env) / "conda-meta" / _FINGERPRINT).is_file()
+
+    def run(self, command: Sequence[str], env: str = "default") -> int:
+        """Run exact task or command argv through Pixi's cross-platform runner.
+
+        Pixi owns environment activation while each caller-owned token remains a distinct
+        process argument. No intermediate shell reparses quoting or operators.
+
+        command: task name and arguments, or an ad-hoc command argv.
+        env: generated environment in which to execute it.
+        """
+        return self.within_cwd(Process.passthrough, "run", "--frozen", "-e", env, *command)
+
+    def capture(
+        self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
+    ) -> CommandResult:
+        """Run through Pixi while capturing output under ``timeout`` seconds."""
+        return self.within_cwd(
+            lambda argv: Process.capture(argv, timeout=timeout),
+            "run",
+            "--frozen",
+            "-e",
+            env,
+            *command,
+        )
 
     def repair(self, env: str) -> None:
         """Reinstall whatever ``env`` still holds that can no longer be trusted to import.

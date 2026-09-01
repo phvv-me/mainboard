@@ -132,6 +132,13 @@ class FakeProcessInfo:
         self.used_gpu_memory = used_gpu_memory
 
 
+class FakePciInfo:
+    """PCI identity in the normalized snake-case shape Mainboard consumes."""
+
+    def __init__(self, bus_id: str) -> None:
+        self.bus_id = bus_id
+
+
 class FakeNvml:
     """Minimal `cuda.bindings.nvml` surface used by the provider.
 
@@ -148,12 +155,18 @@ class FakeNvml:
     TemperatureSensors = FakeTemperatureSensors
 
     def __init__(
-        self, clocks_event_reasons: int = FakeClocksEventReasons.EVENT_REASON_GPU_IDLE
+        self,
+        clocks_event_reasons: int = FakeClocksEventReasons.EVENT_REASON_GPU_IDLE,
+        device_count: int = 2,
     ) -> None:
         self.clocks_event_reasons = clocks_event_reasons
+        self.count = device_count
 
     def device_get_compute_running_processes_v3(self, handle: str) -> tuple[FakeProcessInfo, ...]:
         return (FakeProcessInfo(pid=4242, used_gpu_memory=2 * 1024**3),)
+
+    def device_get_count_v2(self) -> int:
+        return self.count
 
     def device_get_cuda_compute_capability(self, handle: str) -> tuple[int, int]:
         return (8, 9)
@@ -163,6 +176,9 @@ class FakeNvml:
 
     def device_get_handle_by_pci_bus_id_v2(self, bus_id: str) -> str:
         return f"handle:{bus_id}"
+
+    def device_get_handle_by_index_v2(self, index: int) -> str:
+        return f"handle:0000:0{index}:00.0"
 
     def device_get_max_clock_info(self, handle: str, clock: int) -> int:
         return 10501
@@ -178,6 +194,9 @@ class FakeNvml:
 
     def device_get_power_usage(self, handle: str) -> int:
         return 17_647
+
+    def device_get_pci_info_v3(self, handle: str) -> FakePciInfo:
+        return FakePciInfo(handle.removeprefix("handle:"))
 
     def device_get_temperature_v(self, handle: str, sensor: int) -> int:
         return 42
@@ -216,7 +235,7 @@ class FakeNvidiaApis:
     ) -> None:
         self.runtime = FakeRuntime(device_count, coherent=coherent)
         self.system = FakeSystem() if has_cuda_core else None
-        self.nvml = FakeNvml()
+        self.nvml = FakeNvml(device_count=device_count)
         self.cuda_device_type = (lambda index: object()) if has_cuda_core else None
         self.nvml_errors = (FakeError,)
 
