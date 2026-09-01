@@ -13,18 +13,14 @@
 
 import hashlib
 import json
-import sys
 import tomllib
 from contextlib import suppress
 from pathlib import Path
-from shutil import which
 
 from patos import FrozenModel
-from plumbum import local as localhost
 
-from .core import MissionError
 from .core.project import Project
-from .core.shell import foreground
+from .engines.compile.backend.engine import PixiEngine
 
 # The file uv writes beside every tool it installs, naming the source of the snapshot.
 _RECEIPT = "uv-receipt.toml"
@@ -34,6 +30,11 @@ _STATE = "source-state.json"
 
 # The extra a plain reinstall silently drops, so the named command always carries it.
 _EXTRA = "wandb"
+
+# The exact package Pixi supplies to the otherwise isolated self-update process. uv is never a
+# host-level prerequisite or a binary Mainboard searches for: Pixi resolves and runs this package
+# inside its own cached exec environment.
+_UV = "uv=0.12.7"
 
 
 class Snapshot(FrozenModel):
@@ -61,7 +62,7 @@ class Snapshot(FrozenModel):
 
 
 def refresh(found: Snapshot) -> int:
-    """Run the reinstall `found.fix` names, streaming its output, and return its exit code.
+    """Run the Pixi-owned reinstall `found.fix` names and return its exit code.
 
     The exact command the nag already computes, run here instead of copied by hand. Nothing to
     do, and nothing wrong, for a snapshot that is not stale: `found.fix` is empty and this
@@ -71,30 +72,7 @@ def refresh(found: Snapshot) -> int:
     """
     if not found.fix:
         return 0
-    executable = _executable(found.fix[0])
-    return foreground(localhost[str(executable)][found.fix[1:]])
-
-
-def _executable(name: str) -> Path:
-    """Resolve a refresh tool from PATH or beside the running launcher.
-
-    uv installs itself and its tool launchers into the same user binary directory, but GUI
-    applications on Windows commonly start without that directory on PATH. The running
-    `mainboard.exe` is still an exact anchor for its sibling `uv.exe`, so self-update remains
-    available without mutating the process environment or reconstructing a shell command.
-
-    name: executable basename or an already resolved path.
-    """
-    path = Path(name)
-    if path.is_absolute() and path.is_file():
-        return path
-    if found := which(name):
-        return Path(found)
-    launcher = Path(sys.argv[0]).resolve()
-    sibling = launcher.with_name(f"{name}{launcher.suffix}")
-    if sibling.is_file():
-        return sibling
-    raise MissionError(f"{name} is neither on PATH nor beside the running {launcher.name}")
+    return PixiEngine().exit_code(*found.fix)
 
 
 def check(package: Path | None = None) -> Snapshot:
@@ -120,10 +98,15 @@ def check(package: Path | None = None) -> Snapshot:
     if not source.is_dir():
         return Snapshot(installed=True, detail=f"no source tree at {source}")
     extras = ",".join(requirement.get("extras") or [_EXTRA])
+    interpreter = declared["tool"].get("python")
     fix = (
+        "exec",
+        "--spec",
+        _UV,
         "uv",
         "tool",
         "install",
+        *(("--python", str(interpreter)) if interpreter else ()),
         "--from",
         f"{requirement['directory']}[{extras}]",
         Project().name,

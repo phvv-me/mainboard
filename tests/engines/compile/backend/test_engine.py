@@ -1,3 +1,4 @@
+import os
 import platform
 import sys
 from collections.abc import Mapping
@@ -5,6 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from plumbum import local
+from plumbum.commands.base import BaseCommand
 from plumbum.commands.processes import CommandNotFound
 
 from mainboard import MissionError
@@ -17,10 +20,10 @@ if TYPE_CHECKING:
 class _FakeLocalMissingPixi:
     """A plumbum `local` stand-in where `pixi` is off PATH but any other name resolves."""
 
-    def __getitem__(self, key: str) -> str:
+    def __getitem__(self, key: str) -> BaseCommand:
         if key == "pixi":
             raise CommandNotFound("pixi", [])
-        return key
+        return local[key]
 
 
 def test_home_prefers_pixi_home_and_falls_back_to_the_users_own_directory(
@@ -41,7 +44,19 @@ def test_command_prefers_pixi_on_path_and_falls_back_to_pixi_home(
     binary.parent.mkdir(parents=True)
     binary.touch()
     monkeypatch.setattr("mainboard.engines.compile.backend.engine.local", _FakeLocalMissingPixi())
-    assert PixiEngine().command == str(binary)
+    assert Path(PixiEngine().command.executable) == binary
+
+
+def test_windows_pixi_commands_supply_the_real_home_when_the_shell_omits_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pixi exec children receive HOME without changing the calling process environment."""
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.delenv("HOME", raising=False)
+    command = PixiEngine().command
+
+    assert command.env["HOME"] == str(Path.home())
+    assert "HOME" not in os.environ
 
 
 def test_installed_binary_bootstraps_only_when_missing(

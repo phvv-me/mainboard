@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -57,6 +56,9 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
     assert stale.stale is True
     assert str(source) in stale.detail
     assert stale.fix == (
+        "exec",
+        "--spec",
+        "uv=0.12.7",
         "uv",
         "tool",
         "install",
@@ -74,25 +76,38 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
 
 
 @pytest.mark.parametrize("code", [0, 1])
-def test_refresh_runs_the_fix_command_and_answers_its_exit_code(code: int) -> None:
-    """The exact command the nag names, run here instead of copied by hand."""
-    fix = (sys.executable, "-c", f"raise SystemExit({code})")
-    found = Snapshot(installed=True, stale=True, detail="drifted", fix=fix)
-    assert staleness.refresh(found) == code
-
-
-def test_refresh_finds_uv_beside_a_windows_launcher_when_path_omits_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_refresh_runs_uv_inside_pixi_and_answers_its_exit_code(
+    code: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A GUI process can omit the uv tool bin from PATH while running its Mainboard sibling."""
-    launcher = tmp_path / "mainboard.exe"
-    uv = tmp_path / "uv.exe"
-    launcher.touch()
-    uv.touch()
-    monkeypatch.setattr(staleness, "which", lambda name: None)
-    monkeypatch.setattr(staleness.sys, "argv", [str(launcher)])
+    """The refresh delegates its exact argv to Pixi, never to a host-level uv binary."""
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        "mainboard.staleness.PixiEngine.exit_code",
+        lambda self, *args: calls.append(args) or code,
+    )
+    fix = ("exec", "--spec", "uv=0.12.7", "uv", "tool", "install", "mainboard")
+    found = Snapshot(installed=True, stale=True, detail="drifted", fix=fix)
 
-    assert staleness._executable("uv") == uv
+    assert staleness.refresh(found) == code
+    assert calls == [fix]
+
+
+def test_the_refresh_preserves_the_receipts_exact_python(snapshot: Path) -> None:
+    """A tool refresh reuses its recorded interpreter instead of rediscovering one."""
+    tool = snapshot.parents[2]
+    source = tool.parent / "checkout"
+    interpreter = source / "python.exe"
+    (tool / "uv-receipt.toml").write_text(
+        "[tool]\n"
+        f"python = {json.dumps(str(interpreter))}\n"
+        f'requirements = [{{ name = "mainboard", directory = {json.dumps(str(source))} }}]\n',
+        encoding="utf-8",
+    )
+    check(snapshot)
+    touched(source)
+
+    assert check(snapshot).fix[4:7] == ("tool", "install", "--python")
+    assert check(snapshot).fix[7] == str(interpreter)
 
 
 def test_refresh_does_nothing_for_a_snapshot_with_no_fix_to_run() -> None:
