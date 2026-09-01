@@ -7,7 +7,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum, auto
 from functools import partial
-from shlex import split
+from shlex import join, split
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -319,7 +319,7 @@ class Doctor:
         found = staleness.check()
         if found.stale:
             return Section(
-                section="snapshot", verdict=Verdict.FAIL, detail=found.detail, fix=found.fix
+                section="snapshot", verdict=Verdict.FAIL, detail=found.detail, fix=join(found.fix)
             )
         return Section(section="snapshot", verdict=Verdict.PASS, detail=found.detail)
 

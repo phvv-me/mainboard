@@ -383,7 +383,12 @@ def test_the_report_never_hands_the_dispatch_cache_to_a_thread_that_does_not_own
     ("found", "verdict", "fix"),
     [
         (
-            Snapshot(installed=True, stale=True, detail="the source moved", fix="reinstall it"),
+            Snapshot(
+                installed=True,
+                stale=True,
+                detail="the source moved",
+                fix=("reinstall", "it"),
+            ),
             Verdict.FAIL,
             "reinstall it",
         ),

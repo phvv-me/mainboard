@@ -363,7 +363,7 @@ def test_the_entry_point_says_the_staleness_line_before_anything_else(
     monkeypatch.setattr(
         "mainboard.cli.staleness.check",
         lambda: Snapshot(
-            installed=True, stale=True, detail="the source moved", fix="reinstall it"
+            installed=True, stale=True, detail="the source moved", fix=("reinstall", "it")
         ),
     )
     monkeypatch.chdir(depot)
@@ -390,7 +390,7 @@ def test_self_update_runs_the_fix_only_when_the_snapshot_is_stale(
     """A fresh or checked-out snapshot has nothing to reinstall and says so instead."""
     monkeypatch.setattr(
         "mainboard.cli.staleness.check",
-        lambda: Snapshot(installed=True, stale=stale, detail=detail, fix="do it"),
+        lambda: Snapshot(installed=True, stale=stale, detail=detail, fix=("do", "it")),
     )
     ran: list[Snapshot] = []
     monkeypatch.setattr("mainboard.cli.staleness.refresh", lambda found: ran.append(found) or 3)

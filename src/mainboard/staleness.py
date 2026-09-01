@@ -13,14 +13,16 @@
 
 import hashlib
 import json
-import shlex
+import sys
 import tomllib
 from contextlib import suppress
 from pathlib import Path
+from shutil import which
 
 from patos import FrozenModel
 from plumbum import local as localhost
 
+from .core import MissionError
 from .core.project import Project
 from .core.shell import foreground
 
@@ -47,7 +49,7 @@ class Snapshot(FrozenModel):
     installed: bool
     stale: bool = False
     detail: str = ""
-    fix: str = ""
+    fix: tuple[str, ...] = ()
 
     @property
     def warning(self) -> str:
@@ -69,8 +71,30 @@ def refresh(found: Snapshot) -> int:
     """
     if not found.fix:
         return 0
-    argv = shlex.split(found.fix)
-    return foreground(localhost[argv[0]][argv[1:]])
+    executable = _executable(found.fix[0])
+    return foreground(localhost[str(executable)][found.fix[1:]])
+
+
+def _executable(name: str) -> Path:
+    """Resolve a refresh tool from PATH or beside the running launcher.
+
+    uv installs itself and its tool launchers into the same user binary directory, but GUI
+    applications on Windows commonly start without that directory on PATH. The running
+    `mainboard.exe` is still an exact anchor for its sibling `uv.exe`, so self-update remains
+    available without mutating the process environment or reconstructing a shell command.
+
+    name: executable basename or an already resolved path.
+    """
+    path = Path(name)
+    if path.is_absolute() and path.is_file():
+        return path
+    if found := which(name):
+        return Path(found)
+    launcher = Path(sys.argv[0]).resolve()
+    sibling = launcher.with_name(f"{name}{launcher.suffix}")
+    if sibling.is_file():
+        return sibling
+    raise MissionError(f"{name} is neither on PATH nor beside the running {launcher.name}")
 
 
 def check(package: Path | None = None) -> Snapshot:
@@ -96,7 +120,15 @@ def check(package: Path | None = None) -> Snapshot:
     if not source.is_dir():
         return Snapshot(installed=True, detail=f"no source tree at {source}")
     extras = ",".join(requirement.get("extras") or [_EXTRA])
-    fix = f"uv tool install --from '{requirement['directory']}[{extras}]' {Project().name} --force"
+    fix = (
+        "uv",
+        "tool",
+        "install",
+        "--from",
+        f"{requirement['directory']}[{extras}]",
+        Project().name,
+        "--force",
+    )
     current = digest(source)
     recorded = _recorded(root / _STATE, marker=_marker(receipt), current=current)
     if recorded == current:

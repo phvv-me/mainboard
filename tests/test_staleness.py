@@ -1,6 +1,5 @@
 import json
 import os
-import shlex
 import sys
 from typing import TYPE_CHECKING
 
@@ -57,7 +56,15 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
     stale = check(snapshot)
     assert stale.stale is True
     assert str(source) in stale.detail
-    assert stale.fix == f"uv tool install --from '{source}[wandb]' mainboard --force"
+    assert stale.fix == (
+        "uv",
+        "tool",
+        "install",
+        "--from",
+        f"{source}[wandb]",
+        "mainboard",
+        "--force",
+    )
     assert stale.detail in stale.warning
     assert "mainboard self-update" in stale.warning
     receipt = tool / "uv-receipt.toml"
@@ -69,9 +76,23 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
 @pytest.mark.parametrize("code", [0, 1])
 def test_refresh_runs_the_fix_command_and_answers_its_exit_code(code: int) -> None:
     """The exact command the nag names, run here instead of copied by hand."""
-    fix = shlex.join([sys.executable, "-c", f"raise SystemExit({code})"])
+    fix = (sys.executable, "-c", f"raise SystemExit({code})")
     found = Snapshot(installed=True, stale=True, detail="drifted", fix=fix)
     assert staleness.refresh(found) == code
+
+
+def test_refresh_finds_uv_beside_a_windows_launcher_when_path_omits_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A GUI process can omit the uv tool bin from PATH while running its Mainboard sibling."""
+    launcher = tmp_path / "mainboard.exe"
+    uv = tmp_path / "uv.exe"
+    launcher.touch()
+    uv.touch()
+    monkeypatch.setattr(staleness, "which", lambda name: None)
+    monkeypatch.setattr(staleness.sys, "argv", [str(launcher)])
+
+    assert staleness._executable("uv") == uv
 
 
 def test_refresh_does_nothing_for_a_snapshot_with_no_fix_to_run() -> None:
@@ -128,7 +149,7 @@ def test_a_receipt_without_extras_still_names_the_wandb_extra(snapshot: Path) ->
     )
     check(snapshot)
     touched(source)
-    assert "[wandb]" in check(snapshot).fix
+    assert any("[wandb]" in argument for argument in check(snapshot).fix)
 
 
 def test_a_torn_state_file_and_an_unwritable_tool_directory_both_answer_fresh(
