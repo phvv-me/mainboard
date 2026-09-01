@@ -81,6 +81,11 @@ class Tool:
             return 0
         return self.within_cwd(Process.passthrough, verb, *args, **flags)
 
+    def defer(self, verb: str, *args: str, **flags: bool | str | None) -> None:
+        """Start a command that must outlive this process, doing nothing when unavailable."""
+        if self.available():
+            self.within_cwd(Process.detached, verb, *args, **flags)
+
     def scope(self) -> tuple[str, ...]:
         """Args injected after the verb to pin the command to this workspace (default none)."""
         return ()

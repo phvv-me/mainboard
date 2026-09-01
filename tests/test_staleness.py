@@ -81,6 +81,7 @@ def test_refresh_runs_uv_inside_pixi_and_answers_its_exit_code(
 ) -> None:
     """The refresh delegates its exact argv to Pixi, never to a host-level uv binary."""
     calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Linux")
     monkeypatch.setattr(
         "mainboard.staleness.PixiEngine.exit_code",
         lambda self, *args: calls.append(args) or code,
@@ -90,6 +91,23 @@ def test_refresh_runs_uv_inside_pixi_and_answers_its_exit_code(
 
     assert staleness.refresh(found) == code
     assert calls == [fix]
+
+
+def test_windows_refresh_exits_before_pixi_replaces_the_running_snapshot(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The deferred Pixi process survives long enough for the locked launcher to exit."""
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
+    monkeypatch.setattr(
+        "mainboard.staleness.PixiEngine.defer",
+        lambda self, *args: calls.append(args),
+    )
+    fix = ("exec", "--spec", "uv=0.12.7", "uv", "tool", "install", "mainboard")
+
+    assert staleness.refresh(Snapshot(installed=True, stale=True, fix=fix)) == 0
+    assert calls == [fix]
+    assert "refresh scheduled outside the running Windows snapshot" in capsys.readouterr().err
 
 
 def test_the_refresh_preserves_the_receipts_exact_python(snapshot: Path) -> None:

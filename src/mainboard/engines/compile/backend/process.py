@@ -1,7 +1,9 @@
 import codecs
+import platform
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from subprocess import PIPE
+from subprocess import DEVNULL, PIPE
 from typing import TYPE_CHECKING, TextIO, cast
 
 from ....core import MissionError
@@ -47,6 +49,25 @@ class Process:
         callers come here and trade the retained copy for a working terminal.
         """
         return command.popen(stdin=None, stdout=None, stderr=None).wait()
+
+    @staticmethod
+    def detached(command: BaseCommand) -> None:
+        """Start work that must outlive and release the calling executable.
+
+        Windows cannot replace a running executable. A self-update therefore launches Pixi with
+        no inherited terminal handles and returns immediately, allowing this process to exit
+        before Pixi's uv child replaces the tool directory. The POSIX shape is the equivalent
+        independent session for callers with the same lifetime requirement.
+        """
+        if platform.system() == "Windows":
+            command.popen(
+                stdin=DEVNULL,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+            )
+            return
+        command.popen(stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True)
 
     @staticmethod
     def output(command: BaseCommand, operation: str) -> str:

@@ -13,6 +13,8 @@
 
 import hashlib
 import json
+import platform
+import sys
 import tomllib
 from contextlib import suppress
 from pathlib import Path
@@ -71,6 +73,12 @@ def refresh(found: Snapshot) -> int:
     found: a snapshot from `check()`, this process's own by default.
     """
     if not found.fix:
+        return 0
+    if platform.system() == "Windows":
+        PixiEngine().defer(*found.fix)
+        sys.stderr.write(
+            f"{Project().name}: refresh scheduled outside the running Windows snapshot\n"
+        )
         return 0
     return PixiEngine().exit_code(*found.fix)
 

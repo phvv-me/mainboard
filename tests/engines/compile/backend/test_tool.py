@@ -5,7 +5,7 @@ import pytest
 from plumbum import local
 
 from mainboard import MissionError
-from mainboard.engines.compile.backend import Tool
+from mainboard.engines.compile.backend import Process, Tool
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -85,3 +85,16 @@ def test_an_unavailable_tool_runs_nothing_and_reports_success(fp: FakeProcess) -
     _Unavailable()("hi")
     assert _Unavailable().exit_code("hi") == 0
     assert not fp.calls
+
+
+def test_a_deferred_tool_builds_the_same_command_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr(Process, "detached", lambda command: seen.append(str(command)))
+
+    assert _PythonTool().defer("hi") is None
+    assert seen == [f"{_PYTHON} hi"]
+
+    _Unavailable().defer("ignored")
+    assert seen == [f"{_PYTHON} hi"]
