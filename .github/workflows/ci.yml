@@ -11,10 +11,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        # One interpreter, because `requires-python` is `>=3.14` and uv refuses anything below
-        # it. A second entry here does not widen support, it only fails at bootstrap.
-        python: ["3.14"]
+        include:
+          - os: ubuntu-latest
+            pytest_args: ""
+          - os: macos-latest
+            pytest_args: ""
+          - os: windows-latest
+            pytest_args: --no-cov
     steps:
       - uses: actions/checkout@v6
       # A published package stands on its own, so the bootstrap is the official uv action and
@@ -22,27 +25,35 @@ jobs:
       # itself to build itself, which is the one case that stays on plain `uv run`.
       - uses: astral-sh/setup-uv@v7
         with:
-          python-version: ${{ matrix.python }}
+          # One interpreter, because `requires-python` is `>=3.14` and uv refuses anything
+          # below it. setup-uv provisions it even when the runner image does not carry it.
+          python-version: "3.14"
           enable-cache: true
       # The dev tooling is a dependency group, which uv installs by default, so the sync needs
       # no flags. The `uv run` steps below reuse that environment without pruning it.
       - run: uv sync
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
+      # These read the checked-out source rather than the host operating system, so one Linux
+      # run is the whole static-analysis contract; repeating them on all three runners adds no
+      # platform evidence.
+      - if: runner.os == 'Linux'
+        run: uv run ruff check .
+      - if: runner.os == 'Linux'
+        run: uv run ruff format --check .
       # Reporting, not gating, and deliberately so. The bootstrap this file replaced failed before
       # any check ran, so neither checker has ever executed here, and the first honest run found 28
       # mypy and 21 pyrefly errors across the fused source. Several are third-party stub gaps and
       # several are real design questions this package's owner should answer, so the count comes
       # down in its own pass. The output stays in every run, and these two lose the flag the day
       # they read zero.
-      - run: uv run mypy src
-        continue-on-error: true
-      - run: uv run pyrefly check
-        continue-on-error: true
-      # Linux keeps the coverage gate. Windows runs the same suite without a per-platform
-      # coverage threshold: its deliberate skips are remote Bash/rsync protocol tests already
-      # covered on Linux, while the lane exists to catch native path, process and shell behavior.
       - if: runner.os == 'Linux'
-        run: uv run pytest
-      - if: runner.os == 'Windows'
-        run: uv run pytest --no-cov
+        run: uv run mypy src
+        continue-on-error: true
+      - if: runner.os == 'Linux'
+        run: uv run pyrefly check
+        continue-on-error: true
+      # Linux and macOS each meet the package's 100% branch-coverage gate. Windows runs that
+      # same suite without the threshold because its deliberate Bash/rsync/symlink skips make
+      # a per-host coverage total meaningless; it still exercises native path, process, shell
+      # and ACL-preserving generated-file behavior. Matrix data changes the option without
+      # duplicating the command.
+      - run: uv run pytest ${{ matrix.pytest_args }}
