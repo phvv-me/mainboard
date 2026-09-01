@@ -14,9 +14,6 @@ from ...strategies import WORDS
     [
         pytest.param(None, id="no-file-at-all"),
         pytest.param("not [ valid toml", id="a-file-that-is-not-valid-toml"),
-        pytest.param(
-            'solved_from = ""\nenvs = "not-a-table"\n', id="an-envs-key-of-the-wrong-shape"
-        ),
     ],
 )
 def test_an_unreadable_state_reads_as_stale_everywhere(
@@ -31,17 +28,19 @@ def test_an_unreadable_state_reads_as_stale_everywhere(
 # Ten examples rather than the profile's thirty, since this suite is the fast gate and the
 # round trip writes a file per example. The out-of-order pair is pinned by `@example` below.
 @settings(max_examples=10)
-@given(envs=st.dictionaries(WORDS, WORDS, max_size=4), solved_from=st.one_of(st.just(""), WORDS))
-@example(envs={"z-env": "1", "a-env": "2"}, solved_from="feedface")
+@given(environment=WORDS, compiled_from=WORDS, solved_from=st.one_of(st.just(""), WORDS))
+@example(environment="serving", compiled_from="cafebabe", solved_from="feedface")
 def test_a_state_survives_the_file_it_renders_in_a_deterministic_order(
-    envs: dict[str, str], solved_from: str, tmp_path: Path
+    environment: str, compiled_from: str, solved_from: str, tmp_path: Path
 ) -> None:
-    """One atomic replace has to carry every field back, and sorting keeps the file diffable."""
-    state = SyncState(envs=envs, solved_from=solved_from)
+    """One atomic replace carries the shard identity and its two freshness digests back."""
+    state = SyncState(
+        environment=environment, compiled_from=compiled_from, solved_from=solved_from
+    )
     text = state.render()
     SyncState.path(tmp_path).write_text(text)
     assert SyncState.load(tmp_path) == state
-    lines = text.splitlines()
-    assert lines[lines.index("[envs]") + 1 :] == [
-        f'{name} = "{envs[name]}"' for name in sorted(envs)
-    ]
+    assert text.endswith(
+        f'environment = "{environment}"\ncompiled_from = "{compiled_from}"\n'
+        f'solved_from = "{solved_from}"\n'
+    )

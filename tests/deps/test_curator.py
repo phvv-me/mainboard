@@ -54,7 +54,10 @@ class FakeProvisioner:
     def __init__(self, root: Path, manifest: Manifest) -> None:
         self.root = root
         self.manifest = manifest
-        self.pixi = FakePixi([dict(_BEFORE), dict(_AFTER)])
+        self._pixi = FakePixi([dict(_BEFORE), dict(_AFTER)])
+
+    def pixi_for(self, env: str) -> FakePixi:
+        return self._pixi
 
     def provision(self, env: str, *, resolve: bool = False, refresh: bool = False) -> None:
         FakeProvisioner.calls.append((env, resolve, refresh))

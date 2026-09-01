@@ -324,7 +324,7 @@ def build(root: Path | None = None) -> App:
         return staleness.refresh(found)
 
     @app.command
-    def doctor(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+    def doctor(env: str = "", *, json: bool = False, agent: bool = False, fields: str = "") -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
         Four questions asked at once and bounded: does the manifest still say something
@@ -333,12 +333,13 @@ def build(root: Path | None = None) -> App:
         repairs it, and only a genuinely broken workspace fails, so a sleeping host or a
         provider nobody has a key for is a word rather than a nonzero exit.
 
+        env: the environment to examine, the local profile's own when omitted.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over section/verdict/detail/fix.
         """
         with progress("examining the workspace"):
-            sections = board("local").doctor().sections()
+            sections = board("local").doctor(env).sections()
         rows(
             [section.model_dump() for section in sections],
             mode=mode_of(json_mode=json, agent=agent),

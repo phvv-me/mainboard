@@ -71,27 +71,37 @@ def climbed(workspace: Path, stage: str) -> None:
         return
     provisioner = Provisioner(workspace, Board(workspace).manifest)
     provisioner.out.mkdir(parents=True, exist_ok=True)
-    provisioner.pixi.manifest.write_text('[workspace]\nname = "lab"\n', encoding="utf-8")
-    provisioner.pixi.lock.write_text("version: 6\n", encoding="utf-8")
-    SyncState.path(provisioner.out).write_text(SyncState().render(), encoding="utf-8")
+
+    def compile(env: str) -> None:
+        directory = provisioner.environment_dir(env)
+        directory.mkdir(parents=True, exist_ok=True)
+        pixi = provisioner.pixi_for(env)
+        pixi.manifest.write_text('[workspace]\nname = "lab"\n', encoding="utf-8")
+        pixi.lock.write_text("version: 6\n", encoding="utf-8")
+        SyncState.path(directory).write_text(SyncState().render(), encoding="utf-8")
+
+    compile("default")
     if stage == "compiled":
         return
 
     def install(env: str) -> None:
-        prefix = provisioner.pixi.env_prefix(env)
+        prefix = provisioner.pixi_for(env).env_prefix(env)
         (prefix / "lib" / "python3.14" / "site-packages").mkdir(parents=True, exist_ok=True)
         (prefix / "conda-meta").mkdir(parents=True, exist_ok=True)
         (prefix / "conda-meta" / _FINGERPRINT).write_text("installed\n", encoding="utf-8")
 
     def bless(env: str) -> None:
-        state = SyncState.load(provisioner.out)
+        directory = provisioner.environment_dir(env)
+        compiler = provisioner.compiler_for(env)
+        state = SyncState.load(directory)
         current = state.model_copy(
             update={
-                "envs": {**state.envs, env: provisioner.compiler.digest()},
-                "solved_from": provisioner.compiler.resolution_digest(),
+                "environment": env,
+                "compiled_from": compiler.digest(),
+                "solved_from": compiler.resolution_digest(),
             }
         )
-        SyncState.path(provisioner.out).write_text(current.render(), encoding="utf-8")
+        SyncState.path(directory).write_text(current.render(), encoding="utf-8")
 
     install("default")
     if stage == "provisioned":
@@ -99,12 +109,13 @@ def climbed(workspace: Path, stage: str) -> None:
     bless("default")
     if stage == "blessed":
         return
+    compile("serving")
     install("serving")
     bless("serving")
     if stage == "whole":
         return
     metadata = (
-        provisioner.pixi.env_prefix("default")
+        provisioner.pixi_for("default").env_prefix("default")
         / "lib"
         / "python3.14"
         / "site-packages"
@@ -136,12 +147,17 @@ def test_a_manifest_that_will_not_load_is_the_whole_report(workspace: Path) -> N
 @pytest.mark.parametrize(
     ("stage", "verdict", "fragment", "fix"),
     [
-        ("bare", Verdict.WARN, "nothing compiled yet", "mainboard install --resolve"),
+        (
+            "bare",
+            Verdict.WARN,
+            "default: nothing compiled yet",
+            "mainboard install default --resolve",
+        ),
         (
             "compiled",
             Verdict.FAIL,
             "pixi.lock was not solved from this manifest",
-            "mainboard install --resolve",
+            "mainboard install default --resolve",
         ),
         (
             "provisioned",
@@ -149,9 +165,9 @@ def test_a_manifest_that_will_not_load_is_the_whole_report(workspace: Path) -> N
             "compiled before the current manifest: default",
             "mainboard install default --resolve",
         ),
-        ("blessed", Verdict.WARN, "never installed: serving", "mainboard install serving"),
-        ("whole", Verdict.PASS, "2 environments provisioned, fresh and whole", ""),
-        ("damaged", Verdict.FAIL, "needs reinstalling: ghost", "mainboard install --resolve"),
+        ("blessed", Verdict.PASS, "default is provisioned, fresh and whole", ""),
+        ("whole", Verdict.PASS, "default is provisioned, fresh and whole", ""),
+        ("damaged", Verdict.FAIL, "needs reinstalling: ghost", "mainboard install default"),
     ],
     ids=[
         "nothing was ever built here, a first step and not a broken state",
@@ -170,6 +186,27 @@ def test_the_environment_section_tells_apart_every_way_a_workspace_drifts(
     assert found.verdict is verdict
     assert fragment in found.detail
     assert found.fix == fix
+
+
+@pytest.mark.parametrize(
+    ("stage", "verdict", "fragment", "fix"),
+    [
+        (
+            "blessed",
+            Verdict.WARN,
+            "serving: nothing compiled yet",
+            "mainboard install serving --resolve",
+        ),
+        ("whole", Verdict.PASS, "serving is provisioned, fresh and whole", ""),
+    ],
+)
+def test_the_environment_section_audits_only_the_selected_shard(
+    workspace: Path, stage: str, verdict: Verdict, fragment: str, fix: str
+) -> None:
+    climbed(workspace, stage)
+    found = Doctor(Board(workspace), env="serving").environment()
+    assert (found.verdict, found.fix) == (verdict, fix)
+    assert fragment in found.detail
 
 
 @given(rows=st.lists(_ROWS, max_size=6))
@@ -204,15 +241,18 @@ def test_the_hosts_verdict_compares_each_recorded_digest_against_the_manifest_no
 ) -> None:
     """A host is provisioned once and the manifest can move any number of times after that."""
     board = Board(workspace)
-    current = Provisioner(board.root, board.manifest).compiler.digest()
+    provisioner = Provisioner(board.root, board.manifest)
+    current = provisioner.compiler_for("default").digest()
+    serving = provisioner.compiler_for("serving").digest()
     fresh = HostSetup(host="gold", root="/repo", digest=current)
+    fresh_serving = HostSetup(host="serve", root="/repo3", env="serving", digest=serving)
     stale = HostSetup(host="miyabi-g", root="/repo2", digest="not-the-current-digest")
     unrecorded = HostSetup(host="vast", root="/repo3")
     doctor = Doctor(board)
 
-    agreeing = doctor.hosts({"gold": fresh, "vast": unrecorded})
+    agreeing = doctor.hosts({"gold": fresh, "serve": fresh_serving, "vast": unrecorded})
     assert agreeing.verdict is Verdict.PASS
-    assert agreeing.detail == "2 onboarded, none diverged from the current manifest"
+    assert agreeing.detail == "3 onboarded, none diverged from the current manifest"
     assert agreeing.fix == ""
 
     diverged = doctor.hosts({"gold": fresh, "miyabi-g": stale, "vast": unrecorded})

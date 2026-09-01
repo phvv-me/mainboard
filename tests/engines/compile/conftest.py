@@ -12,9 +12,10 @@ from mainboard.engines.compile import Ecosystem, SecondStage
 from mainboard.engines.compile.backend import Pixi
 from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles, Writer
+from mainboard.engines.compile.pixi_manifest import selected_manifest
 from mainboard.manifest import Toolchain
 
-from .support import Bind, Record
+from .support import Bind, CompilerFrom, Record
 
 if TYPE_CHECKING:
     from mainboard.manifest.schema.spec import Json
@@ -126,13 +127,21 @@ def stage_from(
 @pytest.fixture
 def compiler_from(
     manifest_from: Callable[[str], Manifest], tmp_path: Path, pixi: Pixi
-) -> Callable[[str], Compiler]:
+) -> CompilerFrom:
     """A factory where `compiler_from(text)` builds the compiler of an inline manifest."""
 
-    def make(text: str) -> Compiler:
+    def make(text: str, *, environment: str = "default") -> Compiler:
         manifest = manifest_from(text)
+        projected = selected_manifest(manifest, environment)
         out = pixi.manifest.parent
-        return Compiler(tmp_path, manifest, out, pixi, SecondStage(tmp_path, manifest, out, pixi))
+        return Compiler(
+            tmp_path,
+            projected,
+            out,
+            pixi,
+            SecondStage(tmp_path, projected, out, pixi),
+            environment=environment,
+        )
 
     return make
 

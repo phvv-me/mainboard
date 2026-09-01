@@ -169,7 +169,11 @@ def test_onboarding_a_named_environment_verifies_that_environments_own_activatio
     ("artifact", "resolve", "installed"),
     [
         (
-            (".mainboard/pixi.toml", ".mainboard/pixi.lock", ".mainboard/state.toml"),
+            (
+                ".mainboard/envs/default/pixi.toml",
+                ".mainboard/envs/default/pixi.lock",
+                ".mainboard/envs/default/state.toml",
+            ),
             False,
             "mainboard install default --profile gold",
         ),

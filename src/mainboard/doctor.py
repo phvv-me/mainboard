@@ -75,16 +75,19 @@ class Doctor:
         self,
         board: Board,
         *,
+        env: str = "",
         survey: Survey | None = None,
         probe: Callable[[str, float], tuple[int, str]] | None = None,
     ) -> None:
         """board: the workspace being examined.
 
+        env: the environment to examine, the board profile's own when empty.
         survey: the fleet probe, the workspace's own when None.
         probe: runs a declared gate's command under its deadline and answers with its exit
             status and output, the workspace runner when None.
         """
         self.board = board
+        self.env = env
         self.survey = survey or Survey(board)
         self.probe = probe or self.through_runner
 
@@ -98,29 +101,34 @@ class Doctor:
         knows the package is recorded as installed.
         """
         provisioner = Provisioner(self.board.root, self.board.manifest)
-        pixi = provisioner.pixi
+        environment = self.board.plan(env=self.env, container="none").env
+        directory = provisioner.environment_dir(environment)
+        pixi = provisioner.pixi_for(environment)
+        compiler = provisioner.compiler_for(environment)
+        install = f"{_TOOL} install {environment}"
         if not pixi.manifest.exists():
             return Section(
                 section="environment",
                 verdict=Verdict.WARN,
-                detail="nothing compiled yet",
-                fix=f"{_TOOL} install --resolve",
+                detail=f"{environment}: nothing compiled yet",
+                fix=f"{install} --resolve",
             )
-        state = SyncState.load(provisioner.out)
-        declared = ["default", *sorted(self.board.manifest.envs)]
-        installed = [env for env in declared if pixi.ready(env)]
-        digest = provisioner.compiler.digest()
-        faults = []
-        if not pixi.lock.exists() or state.solved_from != provisioner.compiler.resolution_digest():
+        state = SyncState.load(directory)
+        installed = pixi.ready(environment)
+        faults: list[str] = []
+        stale = False
+        lock_stale = (
+            not pixi.lock.exists()
+            or state.environment != environment
+            or state.solved_from != compiler.resolution_digest()
+        )
+        if lock_stale:
             faults.append("pixi.lock was not solved from this manifest")
-        if stale := [env for env in installed if state.envs.get(env) != digest]:
-            faults.append(f"compiled before the current manifest: {', '.join(stale)}")
-        damaged = sorted(
-            {
-                package
-                for env in installed
-                for package in EnvironmentAudit(pixi.env_prefix(env)).suspect()
-            }
+        if installed and state.compiled_from != compiler.digest():
+            stale = True
+            faults.append(f"compiled before the current manifest: {environment}")
+        damaged = (
+            sorted(EnvironmentAudit(pixi.env_prefix(environment)).suspect()) if installed else []
         )
         if damaged:
             faults.append(f"needs reinstalling: {', '.join(damaged)}")
@@ -129,22 +137,19 @@ class Doctor:
                 section="environment",
                 verdict=Verdict.FAIL,
                 detail="; ".join(faults),
-                fix=f"{_TOOL} install {stale[0]} --resolve"
-                if stale
-                else f"{_TOOL} install --resolve",
+                fix=f"{install} --resolve" if stale or lock_stale else install,
             )
-        if absent := [env for env in declared if env not in installed]:
+        if not installed:
             return Section(
                 section="environment",
                 verdict=Verdict.WARN,
-                detail=f"{len(installed)} provisioned and fresh, never installed: "
-                f"{', '.join(absent)}",
-                fix=f"{_TOOL} install {absent[0]}",
+                detail=f"never installed: {environment}",
+                fix=install,
             )
         return Section(
             section="environment",
             verdict=Verdict.PASS,
-            detail=f"{len(installed)} environments provisioned, fresh and whole",
+            detail=f"{environment} is provisioned, fresh and whole",
         )
 
     def fleet(self, setups: Mapping[str, HostSetup] | None = None) -> Section:
@@ -195,10 +200,16 @@ class Doctor:
             inside the report's pool; the survey reads them itself when None.
         """
         setups = self.survey.onboarded() if setups is None else setups
-        current = Provisioner(self.board.root, self.board.manifest).compiler.digest()
-        diverged = sorted(
-            host for host, setup in setups.items() if setup.digest and setup.digest != current
-        )
+        provisioner = Provisioner(self.board.root, self.board.manifest)
+        diverged: list[str] = []
+        for host, setup in setups.items():
+            try:
+                current = provisioner.compiler_for(setup.env).digest()
+            except MissionError:
+                current = ""
+            if setup.digest and setup.digest != current:
+                diverged.append(host)
+        diverged.sort()
         if not diverged:
             return Section(
                 section="hosts",
@@ -333,7 +344,7 @@ class Doctor:
         command: the gate's command line.
         timeout: the gate's own deadline in seconds.
         """
-        plan = self.board.plan(container="none")
+        plan = self.board.plan(env=self.env, container="none")
         result = Provisioner(self.board.root, self.board.manifest).capture(
             split(command), plan.env, timeout=timeout
         )

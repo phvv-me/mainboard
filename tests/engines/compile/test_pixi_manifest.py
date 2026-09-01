@@ -1,5 +1,6 @@
 import tomllib
 from collections.abc import Callable, Mapping
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 import pytest
@@ -73,6 +74,13 @@ def test_the_smallest_toml_for_a_spec_keeps_everything_it_declared(
 def test_rerooted_shifts_only_a_workspace_relative_location(declared: str, compiled: str) -> None:
     """One rule for every declared location, since they all resolve from `.mainboard/`."""
     assert rerooted(declared) == compiled
+
+
+def test_rerooting_follows_the_generated_directorys_pathlib_depth() -> None:
+    """An environment shard lives three levels below the workspace, with no magic count."""
+    generated = PurePosixPath(".mainboard") / "envs" / "serving"
+    assert rerooted("packages/lab", generated_dir=generated) == "../../../packages/lab"
+    assert rerooted("", generated_dir=generated) == "../../.."
 
 
 @pytest.mark.parametrize(
@@ -280,9 +288,13 @@ def test_a_cleared_variable_reaches_an_environment_that_excludes_the_default_fea
         f'[workspace]\nname = "w"\n[env]\n{declared}\n'
         "[envs.vserve]\nno-default = true\n[envs.tools]\n"
     )
-    feature, _ = PixiManifest.features(manifest, PlatformMatrix.from_manifest(manifest), _PROJECT)
-    assert feature["vserve"].get("activation") == isolated
-    assert feature["tools"].get("activation") == shared
+    matrix = PlatformMatrix.from_manifest(manifest)
+    vserve, _ = PixiManifest.features(
+        manifest, matrix, _PROJECT, environment="vserve"
+    )
+    tools, _ = PixiManifest.features(manifest, matrix, _PROJECT, environment="tools")
+    assert vserve["vserve"].get("activation") == isolated
+    assert tools["tools"].get("activation") == shared
 
 
 def test_an_isolated_windows_environment_uses_the_native_unset_script(
@@ -294,7 +306,12 @@ def test_an_isolated_windows_environment_uses_the_native_unset_script(
         "[env]\nOMP_NUM_THREADS = false\n"
         "[envs.vserve]\nno-default = true\n"
     )
-    feature, _ = PixiManifest.features(manifest, PlatformMatrix.from_manifest(manifest), _PROJECT)
+    feature, _ = PixiManifest.features(
+        manifest,
+        PlatformMatrix.from_manifest(manifest),
+        _PROJECT,
+        environment="vserve",
+    )
     assert feature["vserve"]["activation"] == {"scripts": ["unset.sh"]}
     assert feature["vserve"]["target"] == {
         "win": {"activation": {"scripts": ["unset.bat"]}}
@@ -319,12 +336,24 @@ def test_every_declared_dependency_reaches_exactly_one_generated_table(
             "envs": {"serving": {"python": {"deps": served}}},
         }
     )
-    document = tomllib.loads(PixiManifest.from_manifest(manifest, project_name=_PROJECT).to_toml())
-    feature = document.get("feature", {})
-    assert document.get("dependencies", {}).keys() == conda.keys()
-    assert document.get("pypi-dependencies", {}).keys() == python.keys()
-    assert feature.get("dev", {}).get("dependencies", {}).keys() == dev.keys()
-    assert feature.get("serving", {}).get("pypi-dependencies", {}).keys() == served.keys()
+    default = tomllib.loads(
+        PixiManifest.from_manifest(manifest, project_name=_PROJECT).to_toml()
+    )
+    serving = tomllib.loads(
+        PixiManifest.from_manifest(
+            manifest, project_name=_PROJECT, environment="serving"
+        ).to_toml()
+    )
+    assert default.get("dependencies", {}).keys() == conda.keys()
+    assert default.get("pypi-dependencies", {}).keys() == python.keys()
+    assert default.get("feature", {}).get("dev", {}).get("dependencies", {}).keys() == (
+        dev.keys()
+    )
+    assert "serving" not in default.get("feature", {})
+    assert serving.get("dependencies", {}).keys() == conda.keys()
+    assert serving.get("pypi-dependencies", {}).keys() == python.keys()
+    assert "dev" not in serving.get("feature", {})
+    assert serving["feature"]["serving"].get("pypi-dependencies", {}).keys() == served.keys()
 
 
 def test_a_dependency_literally_named_path_keeps_its_version(

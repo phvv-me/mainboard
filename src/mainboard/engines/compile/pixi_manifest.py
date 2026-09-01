@@ -1,4 +1,4 @@
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Self
 
 import tomlkit
@@ -24,6 +24,7 @@ _DEP_TABLES = ("dependencies", "pypi-dependencies", "dependency-overrides")
 
 _PLATFORMS = "platforms"
 _PYPI_OPTIONS = "pypi-options"
+_DEFAULT_GENERATED_DIR = PurePosixPath(".mainboard")
 
 # pixi's own `[pypi-options]` fields, the uv settings that shape the Python solve. Anything
 # else declared beside `[python.deps]` configures something other than pixi (chefe's `indexes`
@@ -65,25 +66,29 @@ def cleared(env: dict[str, str | bool]) -> list[str]:
     return [name for name, value in env.items() if value is False]
 
 
-def rerooted(path: str) -> str:
-    """A workspace-relative path as the manifest generated under `.mainboard/` must spell it.
+def rerooted(path: str, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> str:
+    """A workspace-relative path as a generated Pixi manifest must spell it.
 
-    ``packages/lote`` resolves from there as ``../packages/lote``, the one shift every declared
-    location needs, a dependency source, a task working directory, an activation script. An
-    absolute path is already unambiguous and rides through, and an empty one names the
-    workspace root itself.
+    The generated directory's actual pathlib depth determines how many parents lead back to
+    the workspace, so moving a manifest from ``.mainboard/`` to
+    ``.mainboard/envs/serving/`` cannot leave a hand-counted ``../`` behind. An absolute path
+    is already unambiguous and rides through, and an empty one names the workspace root itself.
     """
     if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
         return path
-    return f"../{path}" if path else ".."
+    parents = ("..",) * len(generated_dir.parts)
+    root = PurePosixPath(*parents)
+    return (root / PurePosixPath(path)).as_posix() if path else root.as_posix()
 
 
 def _platform_name(entry: Toml) -> str:
     """Pixi platform name carried by a bare string or named descriptor."""
     if isinstance(entry, str):
         return entry
-    if isinstance(entry, dict) and isinstance(name := entry.get("platform"), str):
-        return name
+    if isinstance(entry, dict):
+        for field in ("name", "platform"):
+            if isinstance(name := entry.get(field), str):
+                return name
     return ""
 
 
@@ -92,17 +97,17 @@ def _table(value: Toml | None) -> dict[str, Toml]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _reroot_source(spec: Toml) -> Toml:
+def _reroot_source(spec: Toml, *, generated_dir: PurePath) -> Toml:
     """A single dep spec with a local ``path`` source shifted up out of the generated directory.
 
     A bare version string, or a table without ``path``, rides through untouched.
     """
     if isinstance(spec, dict) and isinstance(path := spec.get("path"), str):
-        return {**spec, "path": rerooted(path)}
+        return {**spec, "path": rerooted(path, generated_dir=generated_dir)}
     return spec
 
 
-def _reparent(value: Toml) -> Toml:
+def _reparent(value: Toml, *, generated_dir: PurePath) -> Toml:
     """Reroot local path deps in the compiled tables, leaving everything else as is.
 
     Only a ``path`` carried as a dependency *source* (a value under a ``dependencies`` or
@@ -111,13 +116,16 @@ def _reparent(value: Toml) -> Toml:
     """
     if isinstance(value, dict):
         return {
-            key: {name: _reroot_source(spec) for name, spec in item.items()}
+            key: {
+                name: _reroot_source(spec, generated_dir=generated_dir)
+                for name, spec in item.items()
+            }
             if key in _DEP_TABLES and isinstance(item, dict)
-            else _reparent(item)
+            else _reparent(item, generated_dir=generated_dir)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_reparent(item) for item in value]
+        return [_reparent(item, generated_dir=generated_dir) for item in value]
     return value
 
 
@@ -189,6 +197,35 @@ def pypi_options(scope: Scope) -> dict[str, Toml]:
     return {key: declared[key] for key in _PYPI_OPTION_KEYS if key in declared}
 
 
+def selected_manifest(manifest: Manifest, environment: str) -> Manifest:
+    """The compile-visible manifest projection for one logical environment.
+
+    The default environment is root plus dev. A named inherited environment is root plus that
+    environment, without dev. A ``no-default`` environment starts from its own scopes alone.
+    Unrelated named environments are always removed, so neither their dependencies nor their
+    local project metadata can enter this shard's manifest, state, or lock.
+
+    Non-compile tables are reset before validating the projection. They never reach a generated
+    file, and a host or engine may legitimately name an unrelated environment removed above.
+    Keeping those references would make a compile-only projection fail whole-manifest
+    referential validation even though no compiler reads them.
+    """
+    selected = manifest.environment(environment)
+    body = manifest.model_dump(mode="python", round_trip=True)
+    body["envs"] = {} if environment == "default" else {environment: body["envs"][environment]}
+    for field in manifest.uncompiled:
+        body.pop(field, None)
+    if environment != "default":
+        body["dev"] = {}
+    if selected.no_default:
+        body["deps"] = {}
+        body["on"] = {}
+        body["system"] = {}
+        for toolchain in manifest.toolchains():
+            body.pop(toolchain, None)
+    return type(manifest).model_validate(body)
+
+
 class PixiManifest(FrozenModel):
     """The compiled pixi manifest (`pixi.toml`) emitted into the generated env."""
 
@@ -203,7 +240,12 @@ class PixiManifest(FrozenModel):
     tasks: dict[str, Toml] = {}
 
     @staticmethod
-    def activation_table(m: Manifest, *, windows: bool = False) -> dict[str, Toml]:
+    def activation_table(
+        m: Manifest,
+        *,
+        windows: bool = False,
+        generated_dir: PurePath = _DEFAULT_GENERATED_DIR,
+    ) -> dict[str, Toml]:
         """The `[activation]` table, exported env vars and the scripts pixi sources on entry.
 
         The generated dotenv loader lives beside the manifest and is sourced first, so a
@@ -215,7 +257,7 @@ class PixiManifest(FrozenModel):
         scripts: list[Toml] = [
             *([_DOTENV_BAT if windows else _DOTENV_SH] if m.workspace.dotenv else []),
             *([_UNSET_BAT if windows else _UNSET_SH] if cleared(m.env) else []),
-            *(rerooted(script) for script in m.workspace.scripts),
+            *(rerooted(script, generated_dir=generated_dir) for script in m.workspace.scripts),
         ]
         exported = {name: value for name, value in m.env.items() if isinstance(value, str)}
         return {
@@ -237,7 +279,7 @@ class PixiManifest(FrozenModel):
         return rendered
 
     @staticmethod
-    def task(spec: Task) -> Toml:
+    def task(spec: Task, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> Toml:
         """Translate a manifest task into pixi's (`run` -> `cmd`, `depends` -> `depends-on`).
 
         A task that runs a command runs it from the repo root, one directory up from the
@@ -253,7 +295,7 @@ class PixiManifest(FrozenModel):
             renamed = {"run": "cmd", "depends": "depends-on", "dir": "cwd"}
             out = {renamed.get(key, key): value for key, value in spec.items()}
         if "cmd" in out:
-            out["cwd"] = rerooted(str(out.get("cwd", "")))
+            out["cwd"] = rerooted(str(out.get("cwd", "")), generated_dir=generated_dir)
         return out
 
     @classmethod
@@ -265,6 +307,7 @@ class PixiManifest(FrozenModel):
         *,
         clearing: bool = False,
         windows: bool = False,
+        generated_dir: PurePath = _DEFAULT_GENERATED_DIR,
     ) -> Toml:
         """One `[feature.<name>]` table: the env's own feature table, platforms and tasks.
 
@@ -288,7 +331,12 @@ class PixiManifest(FrozenModel):
                 else {}
             ),
             **(
-                {"tasks": {task: cls.task(spec) for task, spec in env.tasks.items()}}
+                {
+                    "tasks": {
+                        task: cls.task(spec, generated_dir=generated_dir)
+                        for task, spec in env.tasks.items()
+                    }
+                }
                 if env.tasks
                 else {}
             ),
@@ -323,37 +371,48 @@ class PixiManifest(FrozenModel):
 
     @classmethod
     def features(
-        cls, m: Manifest, platforms: PlatformMatrix, project_name: str
+        cls,
+        m: Manifest,
+        platforms: PlatformMatrix,
+        project_name: str,
+        *,
+        environment: str = "default",
+        generated_dir: PurePath = _DEFAULT_GENERATED_DIR,
     ) -> tuple[dict[str, Toml], dict[str, Toml]]:
-        """The `[feature]` and `[environments]` tables: one feature per declared env, plus ours.
+        """The features and sole logical environment carried by one Pixi shard.
 
-        Beyond the declared envs, the tool owns two synthetic features that the default
-        environment picks up: `<tool>-platforms` carries the workspace platform matrix, and
-        `dev` carries the `[dev.*]` deps so a provisioned default env installs dev tooling
-        beside the runtime deps.
+        The default shard owns the synthetic dev and platform-routing features. A named shard
+        owns only its named feature; Pixi implicitly layers the root default feature unless
+        that environment declared ``no-default``. No unrelated logical environment is emitted.
         """
         clearing = bool(cleared(m.env))
-        workspace_platforms = tuple(_platform_name(entry) for entry in platforms.workspace)
-        feature: dict[str, Toml] = {
-            name: cls.declared_feature(
-                name,
-                env,
-                platforms,
-                clearing=clearing,
-                windows=any(
-                    platform.startswith("win-")
-                    for platform in (env.platforms or workspace_platforms)
-                ),
+        workspace_platforms = tuple(
+            _platform_name(entry) for entry in cls.workspace_platforms(platforms, environment)
+        )
+        if environment != "default":
+            env = m.envs[environment]
+            return (
+                {
+                    environment: cls.declared_feature(
+                        environment,
+                        env,
+                        platforms,
+                        clearing=clearing,
+                        windows=any(
+                            platform.startswith("win-")
+                            for platform in (env.platforms or workspace_platforms)
+                        ),
+                        generated_dir=generated_dir,
+                    )
+                },
+                {
+                    environment: {
+                        "features": [environment],
+                        **({"no-default-feature": True} if env.no_default else {}),
+                    }
+                },
             )
-            for name, env in m.envs.items()
-        }
-        environments: dict[str, Toml] = {
-            name: {
-                "features": [name],
-                **({"no-default-feature": True} if env.no_default else {}),
-            }
-            for name, env in m.envs.items()
-        }
+
         owned: dict[str, Toml] = {
             **(
                 {f"{project_name}-platforms": {_PLATFORMS: platforms.default}}
@@ -362,28 +421,62 @@ class PixiManifest(FrozenModel):
             ),
             **({"dev": dev} if (dev := dependency_tables(m.dev)) else {}),
         }
-        feature.update(owned)
-        if owned:
-            environments["default"] = {"features": list(owned)}
-        return feature, environments
+        return owned, ({"default": {"features": list(owned)}} if owned else {})
+
+    @staticmethod
+    def workspace_platforms(platforms: PlatformMatrix, environment: str) -> list[Toml]:
+        """Only the platform descriptors the selected environment can actually solve.
+
+        Named floor variants are addressed by name from the environment's feature. When no
+        explicit route is needed, the matrix already contains only the shared bare platform
+        entries relevant to this selected-manifest projection.
+        """
+        names = (
+            platforms.default
+            if environment == "default" and platforms.default
+            else platforms.environments.get(environment, [])
+        )
+        if not names:
+            return platforms.workspace
+        selected = set(names)
+        return [entry for entry in platforms.workspace if _platform_name(entry) in selected]
 
     @classmethod
-    def from_manifest(cls, m: Manifest, *, project_name: str) -> Self:
-        """Build the pixi manifest from a validated mainboard `Manifest`.
+    def from_manifest(
+        cls,
+        m: Manifest,
+        *,
+        project_name: str,
+        environment: str = "default",
+        generated_dir: PurePath = _DEFAULT_GENERATED_DIR,
+    ) -> Self:
+        """Build one environment shard's Pixi manifest from a validated Mainboard manifest.
 
         `hosts`, `containers` and `vars` belong to other subsystems (remote dispatch, base
         images, template interpolation) and are never read here.
 
         project_name: the tool's own name (`Project().name`), naming the synthetic
             `<project_name>-platforms` feature so a rename never hardcodes it.
+        environment: the sole logical environment this shard carries.
+        generated_dir: workspace-relative directory containing the generated manifest.
         """
+        m = selected_manifest(m, environment)
         platforms = PlatformMatrix.from_manifest(m)
-        feature, environments = cls.features(m, platforms, project_name)
+        workspace_platforms = cls.workspace_platforms(platforms, environment)
+        feature, environments = cls.features(
+            m,
+            platforms,
+            project_name,
+            environment=environment,
+            generated_dir=generated_dir,
+        )
         targets: dict[str, Toml] = {
             plat: dependency_tables(scope, over=m) for plat, scope in m.on.items()
         }
-        if any(_platform_name(entry).startswith("win-") for entry in platforms.workspace) and (
-            windows_activation := cls.activation_table(m, windows=True)
+        if any(_platform_name(entry).startswith("win-") for entry in workspace_platforms) and (
+            windows_activation := cls.activation_table(
+                m, windows=True, generated_dir=generated_dir
+            )
         ):
             targets["win"] = {**_table(targets.get("win")), "activation": windows_activation}
         payload: dict[str, Toml] = {
@@ -391,17 +484,19 @@ class PixiManifest(FrozenModel):
                 "name": m.workspace.name,
                 "version": m.workspace.version,
                 "channels": m.workspace.channels,
-                _PLATFORMS: platforms.workspace,
+                _PLATFORMS: workspace_platforms,
             },
-            "activation": cls.activation_table(m),
+            "activation": cls.activation_table(m, generated_dir=generated_dir),
             **dependency_tables(m),
             **({_PYPI_OPTIONS: options} if (options := pypi_options(m)) else {}),
             "target": targets,
             "feature": feature,
             "environments": environments,
-            "tasks": {name: cls.task(spec) for name, spec in m.tasks.items()},
+            "tasks": {
+                name: cls.task(spec, generated_dir=generated_dir) for name, spec in m.tasks.items()
+            },
         }
-        return cls.model_validate(_reparent(payload))
+        return cls.model_validate(_reparent(payload, generated_dir=generated_dir))
 
     def to_toml(self) -> str:
         """Render to `pixi.toml` text (hyphenated table names via the field aliases)."""

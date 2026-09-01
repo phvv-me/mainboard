@@ -118,16 +118,26 @@ class FakeCloud(ProviderBackend, Account, Delivery, LogSource):
 
 @pytest.fixture
 def installed(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Board]:
-    """A board on its own workspace where `default` is provisioned and a stub `pixi` is on PATH.
+    """A board whose two environment shards are provisioned and a stub `pixi` is on PATH.
 
     pixi stamps the fingerprint only once an install completes, so writing it is what makes the
     workspace look provisioned, and the stub is what a shell would have been replaced by. The
     workspace is this test's own rather than the shared station, since both artifacts would
     otherwise outlive it and make a later test read an environment nobody installed.
     """
-    fingerprint = workspace / ".mainboard" / ".pixi" / "envs" / "default" / "conda-meta"
-    fingerprint.mkdir(parents=True)
-    (fingerprint / ".pixi-environment-fingerprint").write_text("installed\n")
+    for environment in ("default", "serving"):
+        fingerprint = (
+            workspace
+            / ".mainboard"
+            / "envs"
+            / environment
+            / ".pixi"
+            / "envs"
+            / environment
+            / "conda-meta"
+        )
+        fingerprint.mkdir(parents=True)
+        (fingerprint / ".pixi-environment-fingerprint").write_text("installed\n")
     bindir = workspace / "bin"
     bindir.mkdir()
     binary = bindir / "pixi"
@@ -249,7 +259,8 @@ def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
     board.on(_MIYABI_G).line("pytest --quiet", container="none")
 
     assert staged == [
-        "pixi run --manifest-path .mainboard/pixi.toml --frozen -e default test --quiet",
+        "pixi run --manifest-path .mainboard/envs/default/pixi.toml --frozen -e default "
+        "test --quiet",
         "pytest --quiet",
     ]
 
@@ -371,7 +382,11 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
         "host": host,
         "root": expected[1],
         "env": expected[0],
-        "artifact": (".mainboard/pixi.toml", ".mainboard/pixi.lock", ".mainboard/state.toml"),
+        "artifact": (
+            f".mainboard/envs/{expected[0]}/pixi.toml",
+            f".mainboard/envs/{expected[0]}/pixi.lock",
+            f".mainboard/envs/{expected[0]}/state.toml",
+        ),
         "resolve": False,
         "containerized": False,
         "sync_only": False,
@@ -433,7 +448,10 @@ def test_serve_refuses_an_undeclared_engine_naming_what_is_declared(
         board.serve("ghost")
 
 
-def test_shell_replaces_this_process_with_a_frozen_pixi_shell(installed: Board) -> None:
+@pytest.mark.parametrize("environment", ["default", "serving"])
+def test_shell_replaces_this_process_with_its_frozen_pixi_shard(
+    installed: Board, environment: str
+) -> None:
     """The terminal goes to `pixi shell`, pinned to the workspace and forbidden to solve."""
     seen: list[tuple[str, list[str]]] = []
 
@@ -442,11 +460,11 @@ def test_shell_replaces_this_process_with_a_frozen_pixi_shell(installed: Board) 
         raise Replaced
 
     with pytest.raises(Replaced):
-        installed.shell(replace=replace)
+        installed.shell(environment, replace=replace)
 
     binary = str(installed.root / "bin" / "pixi")
-    manifest = str(installed.root / ".mainboard" / "pixi.toml")
-    argv = [binary, "shell", "--manifest-path", manifest, "--frozen", "-e", "default"]
+    manifest = str(installed.root / ".mainboard" / "envs" / environment / "pixi.toml")
+    argv = [binary, "shell", "--manifest-path", manifest, "--frozen", "-e", environment]
     assert seen == [(binary, argv)]
 
 

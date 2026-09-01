@@ -106,7 +106,7 @@ def check(package: Path | None = None) -> Snapshot:
     if not source.is_dir():
         return Snapshot(installed=True, detail=f"no source tree at {source}")
     extras = ",".join(requirement.get("extras") or [_EXTRA])
-    interpreter = declared["tool"].get("python")
+    interpreter = _durable_interpreter(declared["tool"].get("python"))
     fix = (
         "exec",
         "--spec",
@@ -130,6 +130,23 @@ def check(package: Path | None = None) -> Snapshot:
         detail=f"the source at {source.parent} is newer than this installed snapshot",
         fix=fix,
     )
+
+
+def _durable_interpreter(declared: str | None) -> Path | None:
+    """An existing uv-tool interpreter that does not belong to generated project state.
+
+    Reusing uv's exact managed-Python path keeps updates deterministic and avoids another
+    interpreter download. A Pixi or Mainboard environment is different: it is replaceable
+    workspace output, so retaining it in the tool receipt makes the public launcher depend on a
+    shard that may move or be rebuilt. Missing interpreters are likewise left for uv to replace.
+    """
+    if not declared:
+        return None
+    interpreter = Path(declared)
+    generated = {".mainboard", ".pixi"}
+    if generated & {part.casefold() for part in interpreter.parts}:
+        return None
+    return interpreter if interpreter.is_file() else None
 
 
 def digest(source: Path) -> str:

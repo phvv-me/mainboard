@@ -28,7 +28,7 @@ def test_wrap_stages_cd_then_path_then_modules_before_the_environment() -> None:
     assert steps[0] == "cd /repo"
     assert steps[1] == f"export PATH={':'.join(_USER_BINS)}:$PATH"
     assert "if [ -f /repo/.mainboard/activate.sh ]" in steps[2]
-    assert "export PATH=/repo/.mainboard/.pixi/envs/default/bin:$PATH" in steps[2]
+    assert "export PATH=/repo/.mainboard/envs/default/.pixi/envs/default/bin:$PATH" in steps[2]
     assert steps[-1] == "python -m foo"
     assert "module" not in " && ".join(steps)
     moduled = wrap(
@@ -75,7 +75,7 @@ def test_the_activation_stage_tries_the_named_script_then_the_prefix_then_refuse
     assert activation("/repo", env="serving") == "/repo/.mainboard/activate-serving.sh"
     default = activation_stage(plan(), "/repo")
     assert "/repo/.chefe/activate.sh" in default
-    assert "elif [ -d /repo/.mainboard/.pixi/envs/default/bin ]" in default
+    assert "elif [ -d /repo/.mainboard/envs/default/.pixi/envs/default/bin ]" in default
     assert default.endswith("exit 1; fi")
     serving = activation_stage(plan(env="serving"), "/repo")
     assert "if [ -f /repo/.mainboard/activate-serving.sh ]" in serving
@@ -85,7 +85,10 @@ def test_the_activation_stage_tries_the_named_script_then_the_prefix_then_refuse
 
 def test_the_refusal_names_the_command_that_provisions_the_environment_where_it_ran() -> None:
     remote = activation_stage(plan(env="vserve"), "/repo")
-    assert "found no vserve environment at /repo/.mainboard/.pixi/envs/vserve on gold" in remote
+    assert (
+        "found no vserve environment at /repo/.mainboard/envs/vserve/.pixi/envs/vserve on gold"
+        in remote
+    )
     assert "mainboard install vserve --on gold" in remote
     here = activation_stage(plan(host="local", env="vserve"), "/repo")
     assert "mainboard install vserve`" in here

@@ -17,7 +17,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 def test_the_whole_compile_surface_renders_the_pinned_pixi_manifest(
     manifest_from: Callable[[str], Manifest],
 ) -> None:
-    """The kitchen manifest's rendered pair is pinned as text.
+    """The kitchen manifest separates default, inherited and isolated solve surfaces.
 
     `fixtures/kitchen.toml` declares every table shape the compiler emits, so a change in
     what pixi is handed shows up as a diff.
@@ -28,8 +28,32 @@ def test_the_whole_compile_surface_renders_the_pinned_pixi_manifest(
     environment that starts from nothing but itself.
     """
     source = (_FIXTURES / "kitchen.toml").read_text(encoding="utf-8")
-    compiled = PixiManifest.from_manifest(manifest_from(source), project_name=_PROJECT)
-    assert compiled.to_toml() == (_FIXTURES / "kitchen.pixi.toml").read_text(encoding="utf-8")
+    manifest = manifest_from(source)
+    default = tomllib.loads(
+        PixiManifest.from_manifest(manifest, project_name=_PROJECT).to_toml()
+    )
+    serving = tomllib.loads(
+        PixiManifest.from_manifest(
+            manifest, project_name=_PROJECT, environment="serving"
+        ).to_toml()
+    )
+    isolated = tomllib.loads(
+        PixiManifest.from_manifest(
+            manifest, project_name=_PROJECT, environment="isolated"
+        ).to_toml()
+    )
+
+    assert set(default["dependencies"]) == {"python", "path"}
+    assert set(default["feature"]) == {"mainboard-platforms", "dev"}
+    assert "serving" not in default["feature"]
+    assert set(serving["dependencies"]) == {"python", "path"}
+    assert set(serving["feature"]) == {"serving"}
+    assert serving["workspace"]["platforms"] == [
+        {"name": "linux-64-serving", "platform": "linux-64", "cuda": "13.0"}
+    ]
+    assert "dependencies" not in isolated
+    assert set(isolated["feature"]) == {"isolated"}
+    assert isolated["environments"]["isolated"]["no-default-feature"] is True
 
 
 def test_the_compiler_reads_nothing_that_belongs_to_another_subsystem(workspace: Path) -> None:
@@ -42,16 +66,20 @@ def test_the_compiler_reads_nothing_that_belongs_to_another_subsystem(workspace:
     compiled = PixiManifest.from_manifest(manifest, project_name=_PROJECT)
     document = tomllib.loads(compiled.to_toml())
 
-    # The root platforms ride bare, since no floor is declared workspace-wide, and `serving`'s
-    # own `cuda` floor adds one named variant per platform beside them.
+    # The default shard carries only the root platforms; serving's CUDA variants live in its
+    # own shard and cannot force the default lock to solve them.
     assert document["workspace"]["platforms"] == [
         "linux-64",
         "linux-aarch64",
-        {"name": "linux-64-serving", "platform": "linux-64", "cuda": "13.0"},
-        {"name": "linux-aarch64-serving", "platform": "linux-aarch64", "cuda": "13.0"},
     ]
     assert document["activation"] == {"scripts": ["dotenv.sh"]}
-    assert document["feature"]["serving"]["platforms"] == [
+    assert "serving" not in document.get("feature", {})
+    serving = tomllib.loads(
+        PixiManifest.from_manifest(
+            manifest, project_name=_PROJECT, environment="serving"
+        ).to_toml()
+    )
+    assert serving["feature"]["serving"]["platforms"] == [
         "linux-64-serving",
         "linux-aarch64-serving",
     ]

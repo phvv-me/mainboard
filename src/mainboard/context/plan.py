@@ -35,4 +35,4 @@ class ExecutionPlan(FrozenModel):
 
         root: the workspace root path on the executing machine.
         """
-        return f"{root}/.mainboard/.pixi/envs/{self.env}"
+        return f"{root}/.mainboard/envs/{self.env}/.pixi/envs/{self.env}"

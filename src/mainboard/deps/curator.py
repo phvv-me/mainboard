@@ -190,9 +190,10 @@ class Dependencies:
         """
         provisioner = Provisioner(self.board.root, manifest)
         target = env or _DEFAULT
-        before = provisioner.pixi.locked(target)
+        pixi = provisioner.pixi_for(target)
+        before = pixi.locked(target)
         provisioner.provision(target, resolve=True, refresh=refresh)
-        after = provisioner.pixi.locked(target)
+        after = pixi.locked(target)
         return [
             Change(
                 name=name,

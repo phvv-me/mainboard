@@ -1,15 +1,18 @@
 import os
+import re
 from contextlib import contextmanager
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from plumbum import local
 
-from ...core import Project
+from ...core import MissionError, Project
 from ...manifest.schema.environment import Env
 from .backend import Pixi
 from .compiler import Compiler
 from .ecosystems import SecondStage
 from .generated import ActivationScript, GeneratedFiles
+from .pixi_manifest import selected_manifest
 from .state import SyncState
 
 if TYPE_CHECKING:
@@ -18,6 +21,49 @@ if TYPE_CHECKING:
 
     from ...manifest import Manifest
     from .backend import CommandResult
+
+_ENVIRONMENT_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_WINDOWS_DEVICES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+
+
+def environment_segment(environment: str) -> str:
+    """Validate a logical environment name before using it as a generated path segment.
+
+    The contract is deliberately portable rather than host-dependent: a manifest accepted on
+    Linux must not become an invalid or aliased directory when the same lock reaches Windows.
+    Windows device names remain reserved even with an extension, so ``con.txt`` is rejected
+    beside the obvious traversal and separator spellings.
+    """
+    stem = environment.partition(".")[0].upper()
+    if (
+        not _ENVIRONMENT_SEGMENT.fullmatch(environment)
+        or environment.endswith((".", " "))
+        or stem in _WINDOWS_DEVICES
+    ):
+        raise MissionError(
+            f"environment {environment!r} cannot name a generated directory; use letters, "
+            "digits, dots, underscores or hyphens, starting with a letter or digit, and avoid "
+            "Windows device names"
+        )
+    return environment
+
+
+def validate_environment_roster(manifest: Manifest) -> None:
+    """Refuse logical names that alias the same portable shard directory."""
+    seen: dict[str, str] = {}
+    for environment in ("default", *manifest.envs):
+        segment = environment_segment(environment)
+        folded = segment.casefold()
+        if folded in seen and seen[folded] != segment:
+            raise MissionError(
+                f"environments {seen[folded]!r} and {segment!r} name the same directory on "
+                "a case-insensitive filesystem"
+            )
+        seen[folded] = segment
 
 
 def task_line(manifest: Manifest, command: str, *, env: str) -> str:
@@ -34,14 +80,34 @@ def task_line(manifest: Manifest, command: str, *, env: str) -> str:
     command: the command line as the caller wrote it.
     env: the environment the command runs in, whose own tasks join the workspace-wide ones.
     """
+    validate_environment_roster(manifest)
+    env = environment_segment(env)
     declared = {*manifest.tasks, *manifest.envs.get(env, Env()).tasks}
     if command.partition(" ")[0] not in declared:
         return command
-    generated = f"{Project().out_dir}/{Pixi.filename}"
+    generated = PurePosixPath(Project().out_dir) / "envs" / env / Pixi.filename
     # Frozen, or every task invocation could silently re-solve and rewrite the lock, which
     # on a remote host would overwrite the pair the workstation shipped. Locks change only
     # through an explicit resolve.
-    return f"pixi run --manifest-path {generated} --frozen -e {env} {command}"
+    return f"pixi run --manifest-path {generated.as_posix()} --frozen -e {env} {command}"
+
+
+class _EnvironmentShard:
+    """The compiler and installers bound to one generated environment directory."""
+
+    def __init__(self, root: Path, manifest: Manifest, directory: Path, environment: str) -> None:
+        projected = selected_manifest(manifest, environment)
+        self.directory = directory
+        self.pixi = Pixi(directory)
+        self.stage = SecondStage(root, projected, directory, self.pixi)
+        self.compiler = Compiler(
+            root,
+            projected,
+            directory,
+            self.pixi,
+            self.stage,
+            environment=environment,
+        )
 
 
 class Provisioner:
@@ -54,12 +120,49 @@ class Provisioner:
     """
 
     def __init__(self, root: Path, manifest: Manifest) -> None:
+        validate_environment_roster(manifest)
         self.root = root
         self.manifest = manifest
         self.out = root / Project().out_dir
-        self.pixi = Pixi(self.out)
-        self.stage = SecondStage(root, manifest, self.out, self.pixi)
-        self.compiler = Compiler(root, manifest, self.out, self.pixi, self.stage)
+        self._shards: dict[str, _EnvironmentShard] = {}
+
+    def _shard(self, environment: str = "default") -> _EnvironmentShard:
+        """The cached compile stack for one logical environment."""
+        environment = environment_segment(environment)
+        self.manifest.environment(environment)
+        if environment not in self._shards:
+            directory = self.out / "envs" / environment
+            self._shards[environment] = _EnvironmentShard(
+                self.root, self.manifest, directory, environment
+            )
+        return self._shards[environment]
+
+    def environment_dir(self, environment: str = "default") -> Path:
+        """The generated directory owned by one logical environment."""
+        return self._shard(environment).directory
+
+    def pixi_for(self, environment: str = "default") -> Pixi:
+        """The Pixi backend whose manifest and prefix belong to ``environment``."""
+        return self._shard(environment).pixi
+
+    def compiler_for(self, environment: str = "default") -> Compiler:
+        """The compiler whose projection and state belong to ``environment``."""
+        return self._shard(environment).compiler
+
+    @property
+    def pixi(self) -> Pixi:
+        """The default shard's Pixi backend, retained for default-environment callers."""
+        return self.pixi_for()
+
+    @property
+    def stage(self) -> SecondStage:
+        """The default shard's second-stage compiler."""
+        return self._shard().stage
+
+    @property
+    def compiler(self) -> Compiler:
+        """The default shard's compiler."""
+        return self.compiler_for()
 
     @property
     def artifact(self) -> tuple[str, ...]:
@@ -71,7 +174,16 @@ class Provisioner:
         solve reads dependency metadata, reading metadata builds source distributions, and a
         host's compiler is the last thing that belongs in a lock's dependency path.
         """
-        paths = (self.pixi.manifest, self.pixi.lock, SyncState.path(self.out))
+        return self.artifact_for("default")
+
+    def artifact_for(self, environment: str) -> tuple[str, ...]:
+        """The manifest, lock and state belonging to ``environment`` alone."""
+        shard = self._shard(environment)
+        paths = (
+            shard.pixi.manifest,
+            shard.pixi.lock,
+            SyncState.path(shard.directory),
+        )
         return tuple(path.relative_to(self.root).as_posix() for path in paths)
 
     def activate(self, env: str = "default", *, modules: Mapping[str, str] = {}) -> Path:
@@ -85,8 +197,9 @@ class Provisioner:
         activation another environment's commands still source.
         """
         self.out.mkdir(exist_ok=True)
+        shard = self._shard(env)
         path = self.root / Project().activation(env)
-        hook = self.pixi.shell_hook(env)
+        hook = shard.pixi.shell_hook(env)
         return ActivationScript(path, hook, self.binaries(env)).write(modules)
 
     @contextmanager
@@ -97,10 +210,11 @@ class Provisioner:
         into go ahead of it, so a tool installed by npm is reachable by name exactly like a
         conda one, the same order the generated `activate.sh` writes.
         """
+        shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
-            if self.compiler.stale(env):
-                self.compiler.write(files, env)
-        with self.pixi.activated(env):
+            if shard.compiler.stale():
+                shard.compiler.write(files)
+        with shard.pixi.activated(env):
             installed = [str(directory) for directory in self.binaries(env)]
             with local.env(PATH=os.pathsep.join([*installed, str(local.env["PATH"])])):
                 yield
@@ -112,19 +226,21 @@ class Provisioner:
         owns the environment and a cross-platform task shell, so Windows and POSIX machines
         execute the same manifest without mainboard maintaining a second command grammar.
         """
+        shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
-            if self.compiler.stale(env):
-                self.compiler.write(files, env)
-        return self.pixi.run(command, env)
+            if shard.compiler.stale():
+                shard.compiler.write(files)
+        return shard.pixi.run(command, env)
 
     def capture(
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
     ) -> CommandResult:
         """Compile stale files, then capture a bounded command through Pixi."""
+        shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
-            if self.compiler.stale(env):
-                self.compiler.write(files, env)
-        return self.pixi.capture(command, env, timeout=timeout)
+            if shard.compiler.stale():
+                shard.compiler.write(files)
+        return shard.pixi.capture(command, env, timeout=timeout)
 
     def binaries(self, env: str) -> list[Path]:
         """The second-stage binary directories that exist, in the order PATH should carry them.
@@ -132,7 +248,11 @@ class Provisioner:
         A directory nothing has installed into yet is left out rather than exported as a dead
         PATH entry, so an environment provisioned without a `[nodejs]` table exports nothing.
         """
-        return [directory for directory in self.stage.binary_dirs(env) if directory.is_dir()]
+        return [
+            directory
+            for directory in self._shard(env).stage.binary_dirs(env)
+            if directory.is_dir()
+        ]
 
     def provision(
         self, env: str = "default", *, resolve: bool = False, refresh: bool = False
@@ -153,9 +273,10 @@ class Provisioner:
         provision keeps whatever the lock already pins, since satisfying the manifest and being
         current are different questions and only the caller knows which one was asked.
         """
+        shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
-            self.compiler.write(files, env)
+            shard.compiler.write(files)
             if refresh:
-                self.pixi.update(env)
-            self.compiler.install_locked(files, env, resolve=resolve or refresh)
-            self.stage.install(env)
+                shard.pixi.update(env)
+            shard.compiler.install_locked(files, resolve=resolve or refresh)
+            shard.stage.install(env)

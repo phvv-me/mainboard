@@ -116,7 +116,7 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
     [generated] = (workdir / ".mainboard" / "dispatch" / "jobs").glob("job-*.sh")
     text = generated.read_text()
     assert "/repo/.mainboard/activate-serving.sh" in text
-    assert "/repo/.mainboard/.pixi/envs/serving/bin" in text
+    assert "/repo/.mainboard/envs/serving/.pixi/envs/serving/bin" in text
 
 
 def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(

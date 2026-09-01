@@ -389,9 +389,12 @@ class Board:
         """
         return Dependencies(self)
 
-    def doctor(self) -> Doctor:
-        """One verdict over this workspace, composed from the probes each subsystem owns."""
-        return Doctor(self)
+    def doctor(self, env: str = "") -> Doctor:
+        """One verdict over this workspace and one resolved environment.
+
+        env: the environment name, the bound host profile's own when empty.
+        """
+        return Doctor(self, env=env)
 
     def expectation(
         self,
@@ -512,10 +515,10 @@ class Board:
                 self.dispatcher,
                 plan,
                 root=plan.profile.root,
-                artifact=provisioner.artifact,
+                artifact=provisioner.artifact_for(plan.env),
                 resolve=resolve,
                 watch=watch,
-                digest=provisioner.compiler.digest(),
+                digest=provisioner.compiler_for(plan.env).digest(),
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
         activate = provisioner.activate(plan.env, modules=plan.profile.modules)
@@ -889,7 +892,7 @@ class Board:
                 f"`{self.project.name} interact --on {self.host}` for a session there."
             )
         plan = self.plan(env=env, container="none")
-        pixi = Provisioner(self.root, self.manifest).pixi
+        pixi = Provisioner(self.root, self.manifest).pixi_for(plan.env)
         if not pixi.ready(plan.env):
             raise MissionError(missing(plan, plan.prefix(str(self.root))))
         binary = str(pixi.executable)

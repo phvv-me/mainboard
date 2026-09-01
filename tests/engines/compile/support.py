@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Protocol
 from mainboard.engines.compile import Ecosystem
 
 if TYPE_CHECKING:
+    from mainboard.engines.compile.compiler import Compiler
     from mainboard.manifest.schema.spec import Json
 
 
@@ -28,3 +29,9 @@ class Record(Protocol):
         editable: bool = ...,
         files: list[str] | None = ...,
     ) -> Path: ...
+
+
+class CompilerFrom(Protocol):
+    """Build a compiler bound to one selected logical environment."""
+
+    def __call__(self, text: str, *, environment: str = ...) -> Compiler: ...

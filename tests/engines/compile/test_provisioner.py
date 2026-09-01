@@ -1,11 +1,15 @@
+import json
 import os
+import tomllib
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import pytest
 from plumbum import local
 
+from mainboard import MissionError
 from mainboard.engines.compile import Provisioner, task_line
+from mainboard.engines.compile.generated import GeneratedFiles
 from mainboard.engines.compile.state import SyncState
 
 if TYPE_CHECKING:
@@ -18,17 +22,17 @@ if TYPE_CHECKING:
 _BARE = '[workspace]\nname = "w"\n'
 _NODE = '[workspace]\nname = "w"\n[nodejs.deps]\nprettier = ">=3"\n'
 _PINNED = '[workspace]\nname = "w"\nplatforms = ["linux-64"]\n'
-_WRAPPED = "pixi run --manifest-path .mainboard/pixi.toml --frozen"
+_WRAPPED = "pixi run --manifest-path .mainboard/envs/{env}/pixi.toml --frozen"
 
 
-def _solvable(provisioner: Provisioner) -> None:
+def _solvable(provisioner: Provisioner, environment: str = "default") -> None:
     """Seed the lock a real `pixi install --resolve` would leave behind as it solves.
 
     The fake process writes nothing, so the recursive locked re-verify that follows a solve
     would find no lock to check.
     """
-    provisioner.out.mkdir(exist_ok=True)
-    provisioner.pixi.lock.write_text("version: 7\n")
+    provisioner.environment_dir(environment).mkdir(parents=True, exist_ok=True)
+    provisioner.pixi_for(environment).lock.write_text("version: 7\n")
 
 
 def test_provision_compiles_and_installs_under_one_lock(
@@ -40,7 +44,7 @@ def test_provision_compiles_and_installs_under_one_lock(
     """
     provisioner = Provisioner(tmp_path, manifest_from(_PINNED))
     assert provisioner.out == tmp_path / ".mainboard"
-    assert provisioner.pixi.manifest == provisioner.out / "pixi.toml"
+    assert provisioner.pixi.manifest == provisioner.out / "envs" / "default" / "pixi.toml"
     _solvable(provisioner)
     for _ in range(3):
         fp.register([fp.any()], stdout="environment ready\n")
@@ -50,7 +54,132 @@ def test_provision_compiles_and_installs_under_one_lock(
     provisioner.provision()
 
     assert provisioner.pixi.manifest.read_text() == compiled
-    assert SyncState.load(provisioner.out).envs.get("default") == provisioner.compiler.digest()
+    state = SyncState.load(provisioner.environment_dir())
+    assert state.environment == "default"
+    assert state.compiled_from == provisioner.compiler.digest()
+
+
+def test_each_environment_compiles_into_an_independent_selected_manifest_shard(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path
+) -> None:
+    """Default, inherited and isolated environments carry exactly their active scopes."""
+    provisioner = Provisioner(
+        tmp_path,
+        manifest_from(
+            """
+            [workspace]
+            name = "w"
+            [deps]
+            root = "*"
+            [python.deps]
+            local-root = { path = "packages/root", editable = true }
+            [dev.deps]
+            devtool = "*"
+            [tasks]
+            check = "python -m pytest"
+            [envs.serving.deps]
+            server = "*"
+            [envs.isolated]
+            no-default = true
+            [envs.isolated.deps]
+            kernel = "*"
+            """
+        ),
+    )
+
+    with GeneratedFiles(directory=provisioner.out).locked() as files:
+        for environment in ("default", "serving", "isolated"):
+            provisioner.compiler_for(environment).write(files)
+
+    documents = {
+        environment: tomllib.loads(
+            provisioner.pixi_for(environment).manifest.read_text(encoding="utf-8")
+        )
+        for environment in ("default", "serving", "isolated")
+    }
+    assert set(documents["default"].get("dependencies", {})) == {"root"}
+    assert set(documents["default"]["feature"]) == {"dev"}
+    assert "serving" not in documents["default"].get("feature", {})
+    assert set(documents["serving"].get("dependencies", {})) == {"root"}
+    assert set(documents["serving"]["feature"]) == {"serving"}
+    assert documents["serving"]["environments"] == {
+        "serving": {"features": ["serving"]}
+    }
+    assert "dependencies" not in documents["isolated"]
+    assert set(documents["isolated"]["feature"]) == {"isolated"}
+    assert documents["isolated"]["environments"] == {
+        "isolated": {"features": ["isolated"], "no-default-feature": True}
+    }
+    assert documents["default"]["pypi-dependencies"]["local-root"]["path"] == (
+        "../../../packages/root"
+    )
+    assert documents["default"]["tasks"]["check"]["cwd"] == "../../.."
+    assert provisioner.pixi_for("serving").env_prefix("serving") == (
+        provisioner.out / "envs" / "serving" / ".pixi" / "envs" / "serving"
+    )
+    assert provisioner.artifact_for("serving") == (
+        ".mainboard/envs/serving/pixi.toml",
+        ".mainboard/envs/serving/pixi.lock",
+        ".mainboard/envs/serving/state.toml",
+    )
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        "../escape",
+        "a/b",
+        r"a\b",
+        "a:b",
+        ".hidden",
+        "trailing.",
+        "CON",
+        "con.txt",
+        "LPT9",
+    ],
+)
+def test_an_environment_name_cannot_escape_or_alias_its_portable_shard_directory(
+    environment: str, manifest_from: Callable[[str], Manifest], tmp_path: Path
+) -> None:
+    """One conservative path-segment contract is enforced before any path is constructed."""
+    manifest = manifest_from(
+        f'[workspace]\nname = "w"\n[envs.{json.dumps(environment)}]\n'
+    )
+    with pytest.raises(MissionError, match="cannot name a generated directory"):
+        Provisioner(tmp_path, manifest).environment_dir(environment)
+    assert not (tmp_path / ".mainboard").exists()
+
+
+def test_environment_names_that_are_portable_segments_keep_their_logical_spelling(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path
+) -> None:
+    """Dots, underscores and hyphens remain available for ordinary logical names."""
+    provisioner = Provisioner(
+        tmp_path, manifest_from('[workspace]\nname = "w"\n[envs."py3.14_cuda-13"]\n')
+    )
+    assert provisioner.environment_dir("py3.14_cuda-13") == (
+        tmp_path / ".mainboard" / "envs" / "py3.14_cuda-13"
+    )
+
+
+def test_task_wrapping_validates_the_environment_before_interpolating_its_manifest_path(
+    manifest_from: Callable[[str], Manifest],
+) -> None:
+    """Remote command staging cannot manufacture an escaped shard path either."""
+    manifest = manifest_from('[workspace]\nname = "w"\n[tasks]\ncheck = "pytest"\n')
+    with pytest.raises(MissionError, match="cannot name a generated directory"):
+        task_line(manifest, "check", env="../escape")
+
+
+def test_environment_names_cannot_alias_on_a_case_insensitive_filesystem(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path
+) -> None:
+    """The same manifest keeps one shard per environment on all three operating systems."""
+    manifest = manifest_from(
+        '[workspace]\nname = "w"\n[envs.Train]\n[envs.train]\n'
+    )
+    with pytest.raises(MissionError, match="case-insensitive filesystem"):
+        Provisioner(tmp_path, manifest)
 
 
 def test_activated_never_compiles_a_workspace_that_was_never_provisioned(
@@ -88,7 +217,7 @@ def test_activated_puts_a_second_stage_toolchains_binaries_ahead_of_the_env(
 ) -> None:
     """A tool npm installed is reachable by name exactly like a conda one."""
     provisioner = Provisioner(tmp_path, manifest_from(_NODE))
-    linked = provisioner.out / "node_modules" / ".bin"
+    linked = provisioner.environment_dir() / "node_modules" / ".bin"
     linked.mkdir(parents=True)
     env_bin = provisioner.pixi.env_prefix("default") / ("Scripts" if os.name == "nt" else "bin")
     env_bin.mkdir(parents=True)
@@ -133,7 +262,7 @@ def test_activate_writes_the_script_a_bare_shell_gets_the_whole_runtime_from(
 ) -> None:
     """A remote job sourcing `activate.sh` gets the same PATH `activated` builds in process."""
     provisioner = Provisioner(tmp_path, manifest_from(_NODE))
-    linked = provisioner.out / "node_modules" / ".bin"
+    linked = provisioner.environment_dir() / "node_modules" / ".bin"
     linked.mkdir(parents=True)
     fp.register([fp.any()], stdout="export PATH=/env/bin:$PATH\n")
 
@@ -176,7 +305,7 @@ def test_provision_installs_the_second_stage_after_pixi(
 
     provisioner.provision(resolve=True)
 
-    assert "prettier" in (provisioner.out / "package.json").read_text()
+    assert "prettier" in (provisioner.environment_dir() / "package.json").read_text()
     assert [next(iter(call)) for call in fp.calls][-1] == npm
 
 
@@ -192,7 +321,7 @@ def test_a_refresh_asks_the_indexes_before_installing_and_blesses_the_result(
     provisioner.provision(refresh=True)
 
     assert "update" in fp.calls[0]
-    assert SyncState.load(provisioner.out).solved_from
+    assert SyncState.load(provisioner.environment_dir()).solved_from
 
 
 @pytest.mark.parametrize(
@@ -201,11 +330,14 @@ def test_a_refresh_asks_the_indexes_before_installing_and_blesses_the_result(
         pytest.param(
             "lint --fix",
             "default",
-            f"{_WRAPPED} -e default lint --fix",
+            f"{_WRAPPED.format(env='default')} -e default lint --fix",
             id="a-workspace-task-goes-to-pixi-with-its-arguments",
         ),
         pytest.param(
-            "serve", "serving", f"{_WRAPPED} -e serving serve", id="an-env-declares-its-own-tasks"
+            "serve",
+            "serving",
+            f"{_WRAPPED.format(env='serving')} -e serving serve",
+            id="an-env-declares-its-own-tasks",
         ),
         pytest.param("serve", "default", "serve", id="another-envs-task-is-not-a-task-here"),
         pytest.param(
@@ -217,7 +349,7 @@ def test_a_refresh_asks_the_indexes_before_installing_and_blesses_the_result(
         pytest.param(
             "lint",
             "undeclared",
-            f"{_WRAPPED} -e undeclared lint",
+            f"{_WRAPPED.format(env='undeclared')} -e undeclared lint",
             id="an-env-nobody-declared-still-resolves-the-workspace-tasks",
         ),
     ],

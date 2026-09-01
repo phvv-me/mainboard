@@ -3,7 +3,7 @@ name: GPU integration (self-hosted)
 # Real NVIDIA/Grace integration on a self-hosted runner (e.g. gold, a GB10).
 # One-time setup: on the GPU box, install the GitHub Actions runner from
 #   Settings -> Actions -> Runners -> New self-hosted runner
-# and give it the `gpu` label. Manual only, because a scheduled run with no runner
+# and give it the `linux` and `gpu` labels. Manual only, because a scheduled run with no runner
 # registered simply queues until the 24 hour limit cancels it, which reads as a red
 # workflow every week and says nothing about the code.
 
@@ -12,13 +12,13 @@ on:
 
 jobs:
   nvidia:
-    runs-on: [self-hosted, gpu]
+    runs-on: [self-hosted, linux, gpu]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
-      - run: uv sync
+      - run: uv sync --locked
       # the hermetic suite first, so a real-hardware failure below is unambiguous
       - run: uv run pytest --no-cov
       # then assert a GPU was actually detected on this box

@@ -110,11 +110,13 @@ def test_windows_refresh_exits_before_pixi_replaces_the_running_snapshot(
     assert "refresh scheduled outside the running Windows snapshot" in capsys.readouterr().err
 
 
-def test_the_refresh_preserves_the_receipts_exact_python(snapshot: Path) -> None:
-    """A tool refresh reuses its recorded interpreter instead of rediscovering one."""
+def test_the_refresh_preserves_an_existing_durable_interpreter(snapshot: Path) -> None:
+    """A uv-managed interpreter remains the exact self-update contract."""
     tool = snapshot.parents[2]
     source = tool.parent / "checkout"
-    interpreter = source / "python.exe"
+    interpreter = tool.parent / "uv" / "python" / "cpython-3.14.7" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("python")
     (tool / "uv-receipt.toml").write_text(
         "[tool]\n"
         f"python = {json.dumps(str(interpreter))}\n"
@@ -126,6 +128,27 @@ def test_the_refresh_preserves_the_receipts_exact_python(snapshot: Path) -> None
 
     assert check(snapshot).fix[4:7] == ("tool", "install", "--python")
     assert check(snapshot).fix[7] == str(interpreter)
+
+
+def test_the_refresh_does_not_retain_a_project_environment_interpreter(snapshot: Path) -> None:
+    """Replaceable generated state never becomes the public launcher's Python home."""
+    tool = snapshot.parents[2]
+    source = tool.parent / "checkout"
+    interpreter = source / ".mainboard" / "envs" / "tool" / ".pixi" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("python")
+    (tool / "uv-receipt.toml").write_text(
+        "[tool]\n"
+        f"python = {json.dumps(str(interpreter))}\n"
+        f'requirements = [{{ name = "mainboard", directory = {json.dumps(str(source))} }}]\n',
+        encoding="utf-8",
+    )
+    check(snapshot)
+    touched(source)
+
+    fix = check(snapshot).fix
+    assert "--python" not in fix
+    assert str(interpreter) not in fix
 
 
 def test_refresh_does_nothing_for_a_snapshot_with_no_fix_to_run() -> None:
