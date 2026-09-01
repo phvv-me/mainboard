@@ -121,10 +121,12 @@ class PlatformMatrix(FrozenModel):
         # compiles to a workspace pixi can actually install here.
         platforms = manifest.workspace.platforms or [current_platform()]
         root = cls.spread(manifest.system, "system", platforms)
+        # Spread the workspace floors again instead of indexing ``root``: an isolated
+        # environment may intentionally add a platform the default environment cannot solve.
         chosen = {
             name: cls.spread(env.system, name, env.platforms or platforms)
             if env.system and env.system != manifest.system
-            else {platform: root[platform] for platform in env.platforms or platforms}
+            else cls.spread(manifest.system, "system", env.platforms or platforms)
             for name, env in manifest.envs.items()
         }
         picked = [variant for selection in chosen.values() for variant in selection.values()]

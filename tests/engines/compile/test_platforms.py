@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 _LINUX64 = "linux-64"
 _AARCH64 = "linux-aarch64"
 _OSX = "osx-arm64"
+_WIN = "win-64"
 _LINUX_ONLY = [_LINUX64, _AARCH64]
 _BOTH_FAMILIES = [_LINUX64, _OSX]
 
@@ -99,6 +100,23 @@ platforms = ["linux-aarch64"]
             {"mac": [_LINUX64, "osx-arm64-mac"]},
             [_LINUX64, _OSX],
             id="an-env-raising-a-macos-floor-rides-the-bare-platform-where-it-reaches-nothing",
+        ),
+        pytest.param(
+            [_LINUX64],
+            '[system]\ncuda = "13.0"\nglibc = "2.34"\n'
+            '[envs.windows]\nplatforms = ["win-64"]\nno-default = true\n',
+            [
+                {
+                    "name": "linux-64-system",
+                    "platform": _LINUX64,
+                    "cuda": "13.0",
+                    "glibc": "2.34",
+                },
+                {"name": "win-64-system", "platform": _WIN, "cuda": "13.0"},
+            ],
+            {"windows": ["win-64-system"]},
+            ["linux-64-system"],
+            id="an-isolated-environment-can-add-a-platform-the-default-does-not-support",
         ),
     ],
 )
