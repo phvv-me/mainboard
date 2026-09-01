@@ -55,7 +55,7 @@ import os
 import platform
 from enum import StrEnum, auto
 from hashlib import blake2b
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, packages_distributions, version
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -186,11 +186,22 @@ def source(repo: Path, *, read: Callable[..., str] = git) -> Source:
 
 
 def installed(name: str) -> str:
-    """The installed version of one distribution, `absent` where this environment lacks it."""
+    """The installed version behind one logical package name, or `absent`.
+
+    A platform may publish the same import from a differently named distribution, as
+    `triton-windows` does for the `triton` package. The import-to-distribution index keeps the
+    receipt schema platform-independent without hard-coding either platform's spelling.
+    """
     try:
         return version(name)
     except PackageNotFoundError:
-        return "absent"
+        found: set[str] = set()
+        for distribution in packages_distributions().get(name, ()):
+            try:
+                found.add(version(distribution))
+            except PackageNotFoundError:
+                continue
+        return found.pop() if len(found) == 1 else "absent"
 
 
 class Card(FrozenModel):

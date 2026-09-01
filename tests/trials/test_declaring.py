@@ -1,9 +1,11 @@
 import subprocess
 from collections.abc import Callable, Mapping
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 
 import pytest
 
+import mainboard.trials.provenance as provenance
 from mainboard.trials import (
     SOURCE_VAR,
     Admissibility,
@@ -255,6 +257,24 @@ def test_a_preflight_derives_every_field_a_receipt_would_otherwise_retype(
     (registered / "cells.json").write_text('{"law_low": 0.9}')
     assert taken.baselines("alpha") == digest_of(registered)
     assert taken.baselines("beta") == ""
+
+
+def test_an_import_name_finds_a_platform_specific_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A logical receipt key survives a differently named platform distribution."""
+
+    def provider_version(name: str) -> str:
+        if name == "triton-windows":
+            return "3.7.1"
+        raise PackageNotFoundError(name)
+
+    monkeypatch.setattr(provenance, "version", provider_version)
+    monkeypatch.setattr(
+        provenance, "packages_distributions", lambda: {"triton": ["triton-windows"]}
+    )
+
+    assert provenance.installed("triton") == "3.7.1"
 
 
 def test_a_dirty_tree_is_inadmissible_rather_than_refused_and_an_untracked_lane_with_it(

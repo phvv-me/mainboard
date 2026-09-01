@@ -26,7 +26,7 @@ class Universe(FrozenModel):
         An axis is resolved from a trial's own parameters when it names one and from the run's
         probed provenance otherwise, so `model` comes off a parametrize grid and `card` off the
         machine without either being special-cased anywhere.
-    probed: the distributions whose version every receipt records.
+    probed: the logical packages whose provider distribution version every receipt records.
     nested: the receipt columns stored as JSON text rather than as parquet scalars.
     samples: how many passing receipts one cell owes before a lane is complete there. One suits a
         claim that is either true or false on this machine; a program whose subject is variance
