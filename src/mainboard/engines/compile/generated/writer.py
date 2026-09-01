@@ -1,8 +1,8 @@
 import os
 import platform
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from ....core import MissionError
 
@@ -44,14 +44,16 @@ class Writer:
             existing = None
         if existing == text:
             return
-        with TemporaryDirectory(dir=path.parent, prefix=f".{path.name}.") as directory:
-            temporary = Path(directory) / path.name
-            with temporary.open("w", encoding="utf-8") as stream:
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8") as stream:
                 self._make_portable(stream)
                 stream.write(text)
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _make_portable(stream: TextIOWrapper) -> None:
