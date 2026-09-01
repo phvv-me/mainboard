@@ -31,7 +31,7 @@ jobs:
           enable-cache: true
       # The dev tooling is a dependency group, which uv installs by default, so the sync needs
       # no flags. The `uv run` steps below reuse that environment without pruning it.
-      - run: uv sync
+      - run: uv sync --locked
       # These read the checked-out source rather than the host operating system, so one Linux
       # run is the whole static-analysis contract; repeating them on all three runners adds no
       # platform evidence.
