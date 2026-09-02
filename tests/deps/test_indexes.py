@@ -99,6 +99,14 @@ def test_python_reads_the_declared_index_before_falling_back_to_pypi(
     assert asked[1] == "https://pypi.org/simple/tqdm/"
 
 
+def test_a_python_requirement_with_an_extra_asks_the_index_about_the_bare_project(
+    answers: Callable[[Json | OSError], list[str]],
+) -> None:
+    asked = answers({"versions": ["0.5.0", "0.5.1"]})
+    assert Index.of("python").latest("numba-cuda-mlir[cu13]") == "0.5.1"
+    assert asked == ["https://pypi.org/simple/numba-cuda-mlir/"]
+
+
 def test_npm_rust_and_go_each_read_their_own_registry_document(
     answers: Callable[[Json | OSError], list[str]],
 ) -> None:

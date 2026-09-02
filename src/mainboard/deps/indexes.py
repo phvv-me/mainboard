@@ -99,7 +99,9 @@ class Python(Index):
     def latest(self, name: str) -> str:
         """The newest release the index lists, PyPI when the manifest declares no other."""
         index = self.sources[0] if self.sources else _PYPI
-        url = f"{index.rstrip('/')}/{name}/"
+        # An extra rides the requirement, never the project page: PyPI has no
+        # `numba-cuda-mlir[cu13]` and answers 404 for it.
+        url = f"{index.rstrip('/')}/{name.partition('[')[0]}/"
         listing = cast("dict[str, list[str]]", _fetched(url, accept=_SIMPLE))
         return _newest(listing.get("versions", []), name=name, where=index)
 
