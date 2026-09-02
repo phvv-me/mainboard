@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 
 import pytest
+from plumbum import CommandNotFound
 
 from mainboard.engines.compile.backend import Pixi
 
@@ -40,3 +41,22 @@ def test_command_vouches_declared_floors_through_its_environment(
     assert dict(pixi.command.env) == {}
     manifest_with_floors(pixi)
     assert dict(pixi.command.env) == {"CONDA_OVERRIDE_CUDA": "13.0"}
+
+
+def test_version_reads_the_engines_pixi_and_is_empty_where_none_resolves(
+    pixi: Pixi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Onboarding compares a host's pixi against this one, so a missing binary reads as empty."""
+
+    class Versioned:
+        def __getitem__(self, flag: str):
+            return lambda: "pixi 0.77.0\n"
+
+    class Missing:
+        def __getitem__(self, flag: str):
+            raise CommandNotFound("pixi", [])
+
+    monkeypatch.setattr(type(pixi.engine), "command", property(lambda self: Versioned()))
+    assert pixi.version() == "0.77.0"
+    monkeypatch.setattr(type(pixi.engine), "command", property(lambda self: Missing()))
+    assert pixi.version() == ""

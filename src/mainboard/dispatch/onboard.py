@@ -7,12 +7,15 @@ import shlex
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from packaging.version import Version
 from patos import FrozenModel, Resolution, Strategy, StrategyError
 
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..probe.snapshot import HostFacts
 from .schedulers.base import failure_reason
+from .schedulers.pueue import Pueue
+from .schedulers.registry import pick
 from .shared import logger
 from .targets import Facts, find_root, probe_capabilities
 from .wrapping import activation, connection, wrap
@@ -241,6 +244,8 @@ class Onboarding:
     watch: announces each stage as it begins.
     digest: the manifest digest this onboarding provisions from, stamped onto the recorded
         `HostSetup` so `doctor` can later tell this host apart from one the manifest outgrew.
+    solver: the pixi version that solved this workspace's locks, so a host carrying an older
+        pixi is refused before it fails on a manifest shape it cannot read; unchecked when empty.
     """
 
     def __init__(
@@ -253,6 +258,7 @@ class Onboarding:
         resolve: bool = False,
         watch: Watcher | None = None,
         digest: str = "",
+        solver: str = "",
     ) -> None:
         self.dispatcher = dispatcher
         self.plan = plan
@@ -261,11 +267,44 @@ class Onboarding:
         self.resolve = resolve
         self.watch = watch or _announce
         self.digest = digest
+        self.solver = solver
 
     @property
     def env(self) -> str:
         """The environment provisioned, the plan's own."""
         return self.plan.env
+
+    def verify_pixi(self, shell: RemoteShell, *, host: str) -> None:
+        """Refuse a host whose pixi is older than the one that solved this workspace's locks.
+
+        A compiled manifest uses the spec shapes the solver's pixi writes, and an older pixi on
+        the host fails on them inside the install with `expected a string, found table`; asking
+        for the version first turns that into a refusal naming its own fix.
+        """
+        if not self.solver:
+            return
+        theirs = shell.run("pixi --version").split()[-1]
+        if Version(theirs) < Version(self.solver):
+            raise MissionError(
+                f"{host!r} runs pixi {theirs}, older than the {self.solver} that solved this "
+                "workspace's locks; run `pixi self-update` there, then set the host up again"
+            )
+
+    def verify_queue(self, shell: RemoteShell, *, host: str) -> None:
+        """Make sure the queue daemon a plain ssh host dispatches through is answering.
+
+        pueue is assumed running on such a host and every later `submit` fails on its socket
+        when it is not, so the daemon is started here when it is down and the host refused,
+        naming the fix, when it still does not answer.
+        """
+        if not isinstance(pick(self.plan.profile), Pueue) or shell.ok("pueue status"):
+            return
+        shell.run("pueued -d")
+        if not shell.ok("pueue status"):
+            raise MissionError(
+                f"pueued is not answering on {host!r}; install pueue there and start it with "
+                "`pueued -d`, then set the host up again"
+            )
 
     def bootstrap(self, shell: RemoteShell) -> Resolution[Installer]:
         """Install the tool through the first route the host supports, keeping the rejections.
@@ -329,6 +368,9 @@ class Onboarding:
             )
             self.watch(f"installing {_TOOL} on {host}")
             winner = self.bootstrap(shell)
+            self.watch(f"checking pixi and the queue on {host}")
+            self.verify_pixi(shell, host=host)
+            self.verify_queue(shell, host=host)
             self.watch(f"provisioning {self.env} on {host}")
             self.provision(shell, host=host, root=root)
             self.watch(f"reading {host} back through its activation")

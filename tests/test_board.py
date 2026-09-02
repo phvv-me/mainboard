@@ -361,7 +361,7 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
     report = HostSetup(host=host, root="/repo", installer="uv")
 
     class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest):
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, solver):
             seen.update(
                 host=plan.host,
                 root=root,
@@ -402,7 +402,7 @@ def test_sync_only_reaches_the_onboarding_and_is_refused_on_this_machine(
     report = HostSetup(host=_GOLD, root="/repo", installer="uv")
 
     class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest):
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, solver):
             pass
 
         def run(self, *, sync_only: bool = False) -> HostSetup:
@@ -415,6 +415,31 @@ def test_sync_only_reaches_the_onboarding_and_is_refused_on_this_machine(
 
     with pytest.raises(MissionError, match="--sync-only"):
         board.install(sync_only=True)
+
+
+def test_a_stale_lock_is_refused_before_the_mirror_leaves_for_a_host(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The host would refuse the same lock after minutes of copying, so this machine asks first."""
+    reached: list[str] = []
+
+    class FakeOnboarding:
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, solver):
+            reached.append("onboarding")
+
+        def run(self, *, sync_only: bool = False) -> HostSetup:
+            return HostSetup(host=_GOLD, root="/repo", installer="uv")
+
+    def refuse(self) -> None:
+        raise MissionError("pixi.lock was not solved from this manifest")
+
+    monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
+    monkeypatch.setattr("mainboard.engines.compile.compiler.Compiler.vouch", refuse)
+    with pytest.raises(MissionError, match="not solved from this manifest"):
+        board.on(_GOLD).install()
+    assert reached == []
+    assert board.on(_GOLD).install(resolve=True).installer == "uv"
+    assert reached == ["onboarding"]
 
 
 _SERVING = Manifest(

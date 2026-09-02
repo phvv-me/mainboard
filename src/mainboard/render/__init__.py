@@ -1,10 +1,11 @@
 from .human import install_traceback, progress
 from .present import mode_of, record, rows
-from .values import totals
+from .values import plain, totals
 
 __all__ = [
     "install_traceback",
     "mode_of",
+    "plain",
     "progress",
     "record",
     "rows",

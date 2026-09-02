@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -74,3 +75,11 @@ def pairs_of(row: Row, *, fields: Sequence[str] | None) -> list[dict[str, Cell]]
         for key, value in row.items()
         if fields is None or key in fields
     ]
+
+
+_ESCAPES = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def plain(text: str) -> str:
+    """`text` with its ANSI escape sequences removed, colour and cursor codes alike."""
+    return _ESCAPES.sub("", text)

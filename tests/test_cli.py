@@ -202,6 +202,9 @@ def test_a_verdict_with_no_rows_says_why_on_stderr_rather_than_printing_a_bare_h
     [
         pytest.param("epoch 1\nepoch 2\n", 0, "epoch 2", id="a-run-whose-output-came-home"),
         pytest.param("   \n", 1, "no output on file", id="a-run-nothing-was-ever-captured-for"),
+        pytest.param(
+            "\x1b[1mI\x1b[0m| epoch 2\n", 0, "I| epoch 2", id="a-coloured-log-read-off-a-terminal"
+        ),
     ],
 )
 def test_the_logs_verb_prints_what_a_job_printed_or_says_nothing_was_kept(
@@ -218,6 +221,7 @@ def test_the_logs_verb_prints_what_a_job_printed_or_says_nothing_was_kept(
         build(depot)(["logs", "4242"])
     printed = capsys.readouterr()
     assert shown in (printed.out + printed.err)
+    assert "\x1b" not in printed.out
 
 
 @pytest.mark.parametrize(

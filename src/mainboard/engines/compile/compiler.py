@@ -75,12 +75,25 @@ class Compiler:
         from. Blessing happens only after a solve returned without raising, so a failed solve
         never leaves a lock that nothing on disk vouches for looking fresh.
         """
+        if not resolve:
+            self.vouch()
+        self.pixi.install(self.environment, resolve=resolve)
+        if resolve:
+            state = SyncState.load(self.out)
+            self.__persist_state(
+                files, state.model_copy(update={"solved_from": self.resolution_digest()})
+            )
+
+    def vouch(self) -> None:
+        """Refuse unless the lock on disk was solved from this manifest and package metadata.
+
+        The same question a host asks before installing from a shipped lock, asked here before
+        the mirror leaves, so a stale lock fails in a second on this machine rather than after
+        minutes of copying and a remote install.
+        """
         state = SyncState.load(self.out)
-        digest = self.resolution_digest()
-        if (
-            not resolve
-            and self.pixi.lock.exists()
-            and (state.environment != self.environment or state.solved_from != digest)
+        if self.pixi.lock.exists() and (
+            state.environment != self.environment or state.solved_from != self.resolution_digest()
         ):
             raise MissionError(
                 f"pixi.lock was not solved from this manifest and package metadata. Run "
@@ -88,9 +101,6 @@ class Compiler:
                 "machine, then "
                 "set this host up again."
             )
-        self.pixi.install(self.environment, resolve=resolve)
-        if resolve:
-            self.__persist_state(files, state.model_copy(update={"solved_from": digest}))
 
     def resolution_digest(self) -> str:
         """Hash everything a solve reads, so a lock can be checked against the tree it sits in.

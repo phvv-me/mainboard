@@ -28,7 +28,7 @@ class FakeRun:
     def __init__(self, step: int, options: Mapping[str, JsonValue]) -> None:
         self.options = options
         self.step = step
-        self.history: list[tuple[int | None, dict[str, JsonValue]]] = []
+        self.history: list[tuple[int, dict[str, JsonValue]]] = []
         self.config = Bag()
         self.summary = Bag()
         self.exit_code: int | None = None
@@ -39,8 +39,10 @@ class FakeRun:
         self.finished = True
         self.exit_code = exit_code
 
-    def log(self, data: Mapping[str, JsonValue], step: int | None = None) -> None:
-        self.history.append((step, dict(data)))
+    def log(self, data: Mapping[str, JsonValue]) -> None:
+        # The service keeps the cursor: each row lands at the next position after the resumed one.
+        self.history.append((self.step, dict(data)))
+        self.step += 1
 
 
 class FakeWandb:

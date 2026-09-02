@@ -1,0 +1,14 @@
+{
+  "os":  "Linux-6.8.0-138-generic-x86_64-with-glibc2.39",
+  "python":  "CPython 3.14.7",
+  "startedAt":  "2026-09-02T23:23:31.649764Z",
+  "program":  "<stdin>",
+  "git":  {
+    "remote":  "ssh://github.com/phvv-me/mainboard.git",
+    "commit":  "4a59196ce6a38790049c7d14c43f7a9526669ce0"
+  },
+  "root":  "/home/pedro/projects/packages/mainboard",
+  "host":  "pedro-cvlab",
+  "executable":  "/home/pedro/projects/packages/mainboard/.venv/bin/python3",
+  "writerId":  "0y51mcgg3f9sojc3p577rbra4u58tj8w"
+}

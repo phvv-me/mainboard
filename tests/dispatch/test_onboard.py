@@ -42,6 +42,7 @@ platform=Linux aarch64
 _HEALTHY: tuple[Rule, ...] = (
     ("MemTotal", 0, _CAPABILITIES),
     ("facts --json", 0, f"module chatter\n{_FACTS_JSON}\n"),
+    ("pixi --version", 0, "pixi 0.77.0\n"),
     ("--version", 0, "0.1.0\n"),
 )
 
@@ -142,7 +143,15 @@ def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
     assert dispatcher.cache.host("gold").root == "/repo"
     assert [record.host for record in dispatcher.cache.hosts()] == ["gold"]
     stages = [message.split()[0] for message in caplog.messages]
-    assert stages == ["probing", "mirroring", "installing", "provisioning", "reading", "onboarded"]
+    assert stages == [
+        "probing",
+        "mirroring",
+        "installing",
+        "checking",
+        "provisioning",
+        "reading",
+        "onboarded",
+    ]
     bare = HostSetup(host="gold", root="/repo")
     assert (bare.env, bare.rejected, bare.capabilities, bare.hardware) == (
         "default",
@@ -199,6 +208,7 @@ def test_onboarding_ships_the_compiled_artifact_unless_told_to_solve_on_the_host
         "probing",
         "mirroring",
         "installing",
+        "checking",
         "provisioning",
         "reading",
     ]
@@ -287,3 +297,45 @@ def test_sync_only_refuses_a_host_that_was_never_onboarded(
     setup, _ = onboarding(host, monkeypatch)
     with pytest.raises(LookupError, match="'gold' has never been set up"):
         setup.run(sync_only=True)
+
+
+def test_a_host_pixi_older_than_the_solver_is_refused_before_provisioning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An old pixi fails inside the install on a manifest shape it cannot read; ask first."""
+    host = machine_with(rules=[("pixi --version", 0, "pixi 0.59.0\n"), *_HEALTHY])
+    setup, _ = onboarding(host, monkeypatch, solver="0.77.0")
+    with pytest.raises(MissionError, match="pixi 0.59.0, older than the 0.77.0.*pixi self-update"):
+        setup.run()
+    assert not host.ran("install default")
+    unchecked, _ = onboarding(host, monkeypatch)
+    assert unchecked.run().host
+
+
+def test_a_dead_queue_daemon_is_started_once_and_refused_when_it_stays_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain ssh host dispatches through pueue, so its daemon has to answer before jobs do."""
+
+    class Reviving(RecordingMachine):
+        def answer(self, argv: list[str]) -> tuple[int, str]:
+            if "pueue status" in " ".join(argv):
+                self.calls.append(argv)
+                return (0 if self.ran("pueued -d") else 1), ""
+            return super().answer(argv)
+
+    revived = Reviving(rules=list(_HEALTHY))
+    setup, _ = onboarding(revived, monkeypatch, solver="0.77.0")
+    assert setup.run().host
+    assert revived.ran("pueued -d")
+
+    dead = machine_with(rules=[("pueue status", 1, ""), *_HEALTHY])
+    setup, _ = onboarding(dead, monkeypatch, solver="0.77.0")
+    with pytest.raises(MissionError, match="pueued is not answering.*pueued -d"):
+        setup.run()
+
+    scheduled = machine_with(rules=[("pueue status", 1, ""), *_HEALTHY])
+    setup, _ = onboarding(scheduled, monkeypatch, solver="0.77.0")
+    monkeypatch.setattr(onboard_module, "pick", lambda profile: object())
+    assert setup.run().host
+    assert not scheduled.ran("pueue status")

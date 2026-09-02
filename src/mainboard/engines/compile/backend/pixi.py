@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import TYPE_CHECKING, cast
 
-from plumbum import local
+from plumbum import CommandNotFound, local
 from plumbum.commands.base import BoundEnvCommand
 
 from ....core import MissionError, Project
@@ -67,6 +67,13 @@ class Pixi(Tool):
     def __init__(self, out: Path) -> None:
         self.engine = PixiEngine()
         self.manifest = out / self.filename
+
+    def version(self) -> str:
+        """The pixi that runs here as `X.Y.Z`, empty on a machine where none resolves."""
+        try:
+            return str(self.engine.command["--version"]()).split()[-1]
+        except CommandNotFound, MissionError, OSError:
+            return ""
 
     @property
     def command(self) -> BaseCommand:

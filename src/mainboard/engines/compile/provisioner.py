@@ -149,6 +149,10 @@ class Provisioner:
         """The compiler whose projection and state belong to ``environment``."""
         return self._shard(environment).compiler
 
+    def solver_version(self) -> str:
+        """The version of the pixi that solves here, empty on a machine that has none."""
+        return self._shard("default").pixi.version()
+
     @property
     def pixi(self) -> Pixi:
         """The default shard's Pixi backend, retained for default-environment callers."""

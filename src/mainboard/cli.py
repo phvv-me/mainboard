@@ -15,7 +15,7 @@ from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .doctor import Verdict
 from .manifest.loading import load
-from .render import install_traceback, mode_of, progress, record, rows, totals
+from .render import install_traceback, mode_of, plain, progress, record, rows, totals
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -937,7 +937,10 @@ def build(root: Path | None = None) -> App:
         if not captured.strip():
             print(f"no output on file for {handle}", file=sys.stderr)
             return 1
-        print(captured, end="" if captured.endswith("\n") else "\n")
+        # A job that coloured its output for a terminal it never had leaves escape codes in
+        # the capture; a pipe or a file gets the plain text, a terminal gets the colours.
+        shown = captured if sys.stdout.isatty() else plain(captured)
+        print(shown, end="" if shown.endswith("\n") else "\n")
         return 0
 
     @app.command

@@ -14,8 +14,8 @@
 #
 # THE IDENTITY. One run per job, and its wandb id is our own content-addressed digest over
 # (stream, job), so the process that dispatches a job and the sweep that settles it hours later
-# from another machine resume the same run instead of minting two. That is also why the step is
-# seeded from the run's own position on resume rather than from a counter this process keeps.
+# from another machine resume the same run instead of minting two. That is also why no step is
+# ever passed to `log`: the service's own cursor continues a resumed run where it stands.
 #
 # WHAT NEVER HAPPENS HERE. No key is read, printed or logged (`Credentials` merges the workspace
 # `.env` and this module only asks whether the variable is now set), and nothing raises out of
@@ -81,7 +81,7 @@ class Tracked(Protocol):
 
     def finish(self, exit_code: int | None = None) -> None: ...
 
-    def log(self, data: Mapping[str, JsonValue], step: int | None = None) -> None: ...
+    def log(self, data: Mapping[str, JsonValue]) -> None: ...
 
 
 class WandbSink(Tracker):
@@ -104,10 +104,9 @@ class WandbSink(Tracker):
     def __init__(
         self, stream: str, *, declared: Tracking, directory: Path, workspace: str = ""
     ) -> None:
-        """The stream this sink mirrors, with its runs, step cursors and context still empty."""
+        """The stream this sink mirrors, with its runs and context still empty."""
         super().__init__(stream, declared=declared, directory=directory, workspace=workspace)
         self.runs: dict[str, Tracked] = {}
-        self.steps: dict[str, int] = {}
         self.context: dict[str, JsonValue] = {}
 
     @property
@@ -156,7 +155,6 @@ class WandbSink(Tracker):
         Only ever reached with a run this sink just logged to, since `publish` opens the run
         before it reads the topic, so there is nothing here to guard against.
         """
-        self.steps.pop(job)
         self.runs.pop(job).finish(exit_code=exit_code)
 
     def publish(self, event: Event) -> None:
@@ -170,7 +168,7 @@ class WandbSink(Tracker):
             return
         run = self.run(event.job)
         measured = self.flattened(event)
-        run.log(measured, step=self.step(event.job))
+        run.log(measured)
         if event.topic is Topic.SUBMITTED:
             run.config.update(dict(event.data), allow_val_change=True)
         if event.topic in _SUMMARIZED:
@@ -183,9 +181,10 @@ class WandbSink(Tracker):
         """`job`'s run, resumed by its content-addressed id or opened here for the first time.
 
         The id is ours rather than the service's, which is the whole reason a dispatch here and a
-        sweep on another machine tomorrow write to one run. The step cursor is seeded from where
-        the resumed run already stands, so a second process continues the series instead of
-        rewriting its beginning.
+        sweep on another machine tomorrow write to one run. No step is ever passed to `log`: the
+        service advances its own cursor and continues a resumed run from where it stands, while
+        the `step` it reports at init reads zero for a resumed run and every explicit position
+        seeded from it was refused as "less than the current step".
         """
         if job in self.runs:
             return self.runs[job]
@@ -207,14 +206,7 @@ class WandbSink(Tracker):
             settings=service.Settings(silent=True),
         )
         self.runs[job] = opened
-        self.steps[job] = opened.step
         return opened
-
-    def step(self, job: str) -> int:
-        """`job`'s next history position, advancing the cursor this sink keeps for it."""
-        position = self.steps[job]
-        self.steps[job] = position + 1
-        return position
 
 
 def exit_code(event: Event) -> int:

@@ -511,6 +511,10 @@ class Board:
         plan = self.resolver.plan(profile or self.host, env=env, container="none")
         provisioner = Provisioner(self.root, self.manifest)
         if not self.local:
+            if not resolve:
+                # The host will refuse a lock this manifest did not solve; ask here first,
+                # before the mirror and the remote install spend minutes reaching that answer.
+                provisioner.compiler_for(plan.env).vouch()
             return Onboarding(
                 self.dispatcher,
                 plan,
@@ -519,6 +523,7 @@ class Board:
                 resolve=resolve,
                 watch=watch,
                 digest=provisioner.compiler_for(plan.env).digest(),
+                solver=provisioner.solver_version(),
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
         activate = provisioner.activate(plan.env, modules=plan.profile.modules)

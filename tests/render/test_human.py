@@ -82,3 +82,15 @@ def test_install_traceback_installs_a_rich_excepthook(monkeypatch: pytest.Monkey
     monkeypatch.setattr(sys, "excepthook", default)
     human.install_traceback()
     assert sys.excepthook is not default
+
+
+def test_a_wide_table_off_a_terminal_keeps_each_row_on_one_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A pipe has no width, so a ten-column row is never folded into five-character shreds."""
+    row = {f"column_{index}": f"value-{index:02d}-{'x' * 12}" for index in range(10)}
+    human.render_table([row], title="wide")
+    printed = capsys.readouterr().out
+    assert all(value in printed for value in row.values())
+    assert sum(line.count("value-") for line in printed.splitlines()) == 10
+    assert max(line.count("value-") for line in printed.splitlines()) == 10

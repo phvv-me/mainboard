@@ -7,6 +7,8 @@ from rich.traceback import install as install_rich_traceback
 
 from .values import columns_of
 
+_UNBOUNDED = 1 << 16
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
@@ -36,7 +38,14 @@ def render_table(
     for row in rows:
         cells = (row.get(column) for column in columns)
         table.add_row(*("" if cell is None else str(cell) for cell in cells))
-    Console(markup=False).print(table)
+    console = Console(markup=False)
+    if not console.is_terminal:
+        # Off a terminal rich assumes eighty columns and folds a ten-column table into
+        # five-character shreds; a log or a pipe has no width, so the table takes its own,
+        # measured on a console wide enough not to clip the measurement to eighty.
+        natural = Console(markup=False, width=_UNBOUNDED).measure(table).maximum
+        console = Console(markup=False, width=natural)
+    console.print(table)
 
 
 @contextmanager
