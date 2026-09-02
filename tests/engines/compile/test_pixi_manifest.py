@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 
 from mainboard.engines.compile.pixi_manifest import (
     PixiManifest,
+    _platform_name,
     dependency_tables,
     pypi_options,
     rerooted,
@@ -354,3 +355,10 @@ def test_a_dependency_literally_named_path_keeps_its_version(
     """Only a `path` carried as a dependency *source* is a location to be rerooted."""
     manifest = manifest_from('[workspace]\nname = "w"\n[deps]\npath = "*"\n')
     assert PixiManifest.from_manifest(manifest, project_name=_PROJECT).dependencies["path"] == "*"
+
+
+@pytest.mark.parametrize(
+    "entry", [{"cuda": "13.0"}, 3], ids=["descriptor-without-a-name", "not-a-descriptor"]
+)
+def test_a_platform_entry_naming_nothing_reads_as_no_platform(entry: object) -> None:
+    assert _platform_name(entry) == ""

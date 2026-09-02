@@ -55,6 +55,11 @@ class FakeWandb:
         self.runs.append(opened)
         return opened
 
+    @staticmethod
+    def Settings(**options: JsonValue) -> dict[str, JsonValue]:  # noqa: N802
+        """The service's settings object, kept as the plain options a test can read back."""
+        return dict(options)
+
 
 def keyed(monkeypatch: pytest.MonkeyPatch, *, key: str = "") -> None:
     """Put a credential in this process's environment, or take the one there away.

@@ -27,10 +27,42 @@ runtime_s = 30
 """
 
 
-def written(root: Path) -> str:
+_TEMPLATED = """
+name = "smoke-rep{{ vars.repetition }}"
+
+[vars]
+repetition = "0"
+
+[[jobs]]
+name = "gold-echo"
+target = "gold"
+command = "echo {{ vars.repetition }}"
+runtime_s = 30
+"""
+
+
+def written(root: Path, spec: str = _SPEC) -> str:
     """The spec file a verb is pointed at, workspace-relative the way a caller types it."""
-    (root / "smoke.toml").write_text(_SPEC)
+    (root / "smoke.toml").write_text(spec)
     return "smoke.toml"
+
+
+def test_a_typed_var_renders_the_spec_before_it_is_dispatched(
+    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One spec file serves every repetition, so the knob is typed at the verb, never copied."""
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["batch", "run", written(depot, _TEMPLATED), "--set", "repetition=3"])
+    identity = capsys.readouterr().out.splitlines()[0]
+    assert identity.startswith("smoke-rep3-")
+    assert relayed[0][:3] == ("submit", "gold", ("echo 3",))
+
+
+def test_a_typed_var_has_nowhere_to_land_on_a_batch_declared_without_a_file(
+    depot: Path,
+) -> None:
+    with pytest.raises(MissionError, match=r"--set fills a spec file's \[vars\]"):
+        build(depot)(["batch", "run", "--job", "gold:echo hi", "--set", "repetition=3"])
 
 
 def test_preparing_prints_what_each_job_ships_and_what_the_batch_ships(

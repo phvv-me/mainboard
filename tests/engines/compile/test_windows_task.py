@@ -346,3 +346,7 @@ def test_the_windows_runner_requires_a_generated_manifest(tmp_path: Path) -> Non
     """The restricted path reports a missing generated manifest as a Mainboard error."""
     with pytest.raises(MissionError, match="generated Pixi manifest does not exist"):
         WindowsTaskRunner(tmp_path / "missing.toml", "default")
+
+
+def test_a_quote_of_the_other_kind_inside_a_quoted_argument_is_plain_text() -> None:
+    WindowsTask._refuse_task_shell("greet", 'echo "it\'s fine" \'say "hi"\'')

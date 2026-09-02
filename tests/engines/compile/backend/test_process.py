@@ -1,4 +1,5 @@
 import io
+import subprocess
 import sys
 from typing import TYPE_CHECKING
 
@@ -91,3 +92,33 @@ def test_relay_keeps_unicode_evidence_when_the_console_cannot_encode_it() -> Non
 
     assert Process.relay(stream, destination, "utf-8") == "zebra�"
     assert raw_destination.getvalue() == b"zebra?"
+
+
+@pytest.mark.parametrize(
+    ("system", "expected"),
+    [
+        (
+            "Windows",
+            {
+                "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0)
+            },
+        ),
+        ("Linux", {"start_new_session": True}),
+    ],
+    ids=["windows-creation-flags", "posix-new-session"],
+)
+def test_a_detached_launch_outlives_its_caller_the_way_its_platform_allows(
+    monkeypatch: pytest.MonkeyPatch, system: str, expected: dict[str, object]
+) -> None:
+    """The Windows flags are read by name, so a Linux checker and this test both reach them."""
+    monkeypatch.setattr("platform.system", lambda: system)
+    launched: dict[str, object] = {}
+
+    class Command:
+        def popen(self, **options: object) -> None:
+            launched.update(options)
+
+    Process.detached(Command())  # type: ignore[arg-type]
+    assert {name: launched[name] for name in expected} == expected
+    assert all(launched[stream] is subprocess.DEVNULL for stream in ("stdin", "stdout", "stderr"))

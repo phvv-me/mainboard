@@ -11,9 +11,10 @@ from patos import FrozenModel
 from pydantic import ValidationError, model_validator
 
 from ..core.errors import MissionError
+from ..manifest.render.interpolate import Interpolator, Json
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
 # How a job typed at the command line names its target, `--job gold:python -m foo`. The first
@@ -87,6 +88,20 @@ class BatchJob(FrozenModel):
         )
 
 
+def _table(value: Json, *, at: str) -> dict[str, Json]:
+    """`value` as the table a spec declares at `at`, refusing any other shape by name."""
+    if not isinstance(value, dict):
+        raise MissionError(f"[{at}] must be a table")
+    return value
+
+
+def _tables(value: Json, *, at: str) -> list[dict[str, Json]]:
+    """`value` as the array of tables a spec declares at `at`, refusing any other shape."""
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise MissionError(f"[[{at}]] must be an array of tables")
+    return [item for item in value if isinstance(item, dict)]
+
+
 class BatchSpec(FrozenModel):
     """A whole batch declared as data: a name and the jobs it fans across the fleet.
 
@@ -122,14 +137,21 @@ class BatchSpec(FrozenModel):
         )
 
     @classmethod
-    def load(cls, path: Path) -> BatchSpec:
+    def load(cls, path: Path, overrides: Mapping[str, str] | None = None) -> BatchSpec:
         """The batch declared in the TOML file at `path`.
 
         A `[defaults]` table fills in every field a job leaves out, so a batch whose jobs share
         a walltime or an expected runtime says so once. The file's stem names the batch when its
         `name` key is absent.
 
+        A `[vars]` table declares the knobs a spec is written over, and every string in the
+        file may render them the way `mainboard.toml` does, `{{ vars.repetition }}`. A value
+        typed at the command line replaces the declared one, so one spec serves every
+        repetition of a campaign instead of a copy per run, and a name the file never declared
+        is refused rather than rendered blank.
+
         path: the spec file.
+        overrides: `[vars]` values replacing the declared ones, by name.
         """
         try:
             document = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -137,9 +159,17 @@ class BatchSpec(FrozenModel):
             raise MissionError(f"no batch spec at {path}") from None
         except tomllib.TOMLDecodeError as error:
             raise MissionError(f"{path} is not valid TOML: {error}") from None
-        defaults = document.get("defaults", {})
-        declared = [{**defaults, **job} for job in document.get("jobs", [])]
-        return cls.of(document.get("name", path.stem), declared)
+        declared_vars = document.get("vars", {})
+        if unknown := sorted(set(overrides or ()) - set(declared_vars)):
+            raise MissionError(
+                f"{path} declares no [vars] named {', '.join(unknown)}; "
+                f"it knows {', '.join(sorted(declared_vars)) or 'none'}"
+            )
+        document["vars"] = {**declared_vars, **(overrides or {})}
+        rendered = Interpolator(path.parent).rendered(document)
+        defaults = _table(rendered.get("defaults", {}), at="defaults")
+        jobs = _tables(rendered.get("jobs", []), at="jobs")
+        return cls.of(str(rendered.get("name", path.stem)), [{**defaults, **job} for job in jobs])
 
     @classmethod
     def of(cls, name: str, jobs: Sequence[dict[str, object]]) -> BatchSpec:

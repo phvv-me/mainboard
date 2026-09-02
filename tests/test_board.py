@@ -780,3 +780,21 @@ def test_job_rebuilds_a_dispatched_run_from_the_cache(
     assert job.handle.root == _REMOTE_ROOT
     assert job.handle.fetch_path == "results/run"
     assert job.board.host == _MIYABI_G
+
+
+def test_a_bound_board_picks_the_module_runtime_for_an_automatic_container(board: Board) -> None:
+    """A cluster that loads singularity as a module runs apptainer, whatever the profile said."""
+    bound = board.on(_MIYABI_G)
+    plan = bound.plan()
+    assert plan.containerized and plan.container is not None
+    containerize = bound.containerizer(plan, _REMOTE_ROOT)
+    assert containerize is not None
+    assert "python" in containerize(["python"])
+
+
+def test_a_local_containerized_run_goes_through_the_wrapped_line(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A container on the workstation is the one local case Pixi cannot activate directly."""
+    monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
+    assert board.run(("true",), container="ngc") == 7

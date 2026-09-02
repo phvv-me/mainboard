@@ -8,7 +8,8 @@ import pytest
 from plumbum import local
 
 from mainboard import MissionError
-from mainboard.engines.compile import Provisioner, task_line
+from mainboard.engines.compile import Provisioner, SecondStage, task_line
+from mainboard.engines.compile.backend import CommandResult, Pixi
 from mainboard.engines.compile.generated import GeneratedFiles
 from mainboard.engines.compile.state import SyncState
 
@@ -356,3 +357,69 @@ def test_task_line_hands_only_a_declared_task_to_pixi(
         f'{_BARE}[tasks]\nlint = "ruff check"\n[envs.serving.tasks]\nserve = "vllm serve"\n'
     )
     assert task_line(manifest, command, env=env) == line
+
+
+def test_the_default_shard_answers_for_its_stage_and_artifact(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path
+) -> None:
+    provisioner = Provisioner(tmp_path, manifest_from(_PINNED))
+    assert isinstance(provisioner.stage, SecondStage)
+    assert provisioner.artifact == provisioner.artifact_for("default")
+
+
+def test_run_and_capture_compile_a_stale_shard_before_handing_pixi_the_command(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    fp: FakeProcess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A manifest edited since the last provision is recompiled on the way to the command."""
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+    _solvable(provisioner)
+    for _ in range(2):
+        fp.register([fp.any()], stdout="environment ready\n")
+    provisioner.provision(resolve=True)
+    handed: list[tuple[str, tuple[str, ...], str]] = []
+    monkeypatch.setattr(
+        Pixi,
+        "run",
+        lambda self, command, env="default": handed.append(("run", tuple(command), env)) or 0,
+    )
+    monkeypatch.setattr(
+        Pixi,
+        "capture",
+        lambda self, command, env="default", *, timeout=None: (
+            handed.append(("capture", tuple(command), env)) or CommandResult(0, "", "")
+        ),
+    )
+
+    edited = Provisioner(tmp_path, manifest_from(f'{_BARE}[deps]\nripgrep = "*"\n'))
+    assert edited.run(("true",)) == 0
+    assert "ripgrep" in edited.pixi.manifest.read_text()
+    # Fresh again, so the second command runs without another compile.
+    assert edited.run(("false",)) == 0
+    again = Provisioner(tmp_path, manifest_from(f'{_BARE}[deps]\nfd-find = "*"\n'))
+    assert again.capture(("true",), timeout=1.0).succeeded
+    assert "fd-find" in again.pixi.manifest.read_text()
+    assert handed == [
+        ("run", ("true",), "default"),
+        ("run", ("false",), "default"),
+        ("capture", ("true",), "default"),
+    ]
+
+
+def test_provision_caches_the_windows_activation_once_the_environment_is_ready(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    fp: FakeProcess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provisioner = Provisioner(tmp_path, manifest_from(_PINNED))
+    _solvable(provisioner)
+    for _ in range(3):
+        fp.register([fp.any()], stdout="environment ready\n")
+    cached: list[str] = []
+    monkeypatch.setattr(Pixi, "ready", lambda self, env="default": True)
+    monkeypatch.setattr(Pixi, "cache_windows_activation", lambda self, env: cached.append(env))
+    provisioner.provision(resolve=True)
+    assert cached == ["default"]

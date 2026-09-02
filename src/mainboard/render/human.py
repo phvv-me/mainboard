@@ -30,7 +30,9 @@ def render_table(
     columns = columns_of(rows, fields)
     table = Table(title=title or None)
     for column in columns:
-        table.add_column(column)
+        # A handle or a digest is only useful whole, so a narrow terminal wraps a cell rather
+        # than cutting it to `e775…`, which is what rich does by default.
+        table.add_column(column, overflow="fold")
     for row in rows:
         cells = (row.get(column) for column in columns)
         table.add_row(*("" if cell is None else str(cell) for cell in cells))

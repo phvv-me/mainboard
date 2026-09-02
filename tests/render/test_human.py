@@ -31,6 +31,18 @@ def test_a_table_with_nothing_to_show_prints_nothing_and_an_empty_cell_prints_bl
     assert "None" not in capsys.readouterr().out
 
 
+def test_a_long_cell_wraps_rather_than_cut_to_an_ellipsis(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A handle or a digest is only useful whole, so a narrow table folds it instead."""
+    handle = "e775" * 40
+    human.render_table([{"handle": handle}], title="verdict")
+    printed = capsys.readouterr().out
+    assert "…" not in printed
+    # Folding only breaks lines, so the handle reads back whole once the box is stripped.
+    assert handle in "".join(character for character in printed if character.isalnum())
+
+
 def test_a_cell_in_square_brackets_survives_the_render(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

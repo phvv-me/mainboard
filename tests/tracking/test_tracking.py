@@ -124,6 +124,8 @@ def test_the_mapping_turns_one_stream_of_receipts_into_one_run_per_job(
     assert run.options["project"] == "lab"
     assert run.options["mode"] == TrackingMode.ONLINE
     assert run.options["resume"] == "allow"
+    # The receipts are the record, so the service's banner stays out of every command's output.
+    assert run.options["settings"] == {"silent": True}
     assert run.options["id"] == run.options["config"]["run_id"]
     assert run.options["config"]["name"] == "smoke"
     assert run.config.held["handle"] == "77" and run.config.options == {"allow_val_change": True}

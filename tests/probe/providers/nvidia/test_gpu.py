@@ -359,3 +359,25 @@ def test_a_base_install_without_the_cuda_extra_degrades_at_the_import_seam(
     assert NvidiaGPU.is_available() is False
     assert all(gpu.vendor is not Vendor.NVIDIA for gpu in GPU.all())
     assert all(gpu.vendor is not Vendor.NVIDIA for gpu in Machine().gpus)
+
+
+@pytest.mark.parametrize("failure", ["nvml", "os"], ids=["nvml-refuses", "driver-missing"])
+def test_a_device_count_that_fails_reads_as_no_device(
+    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    error = nvidia_host.nvml_errors[0]() if failure == "nvml" else OSError("no driver")
+
+    def refusing(cls: type[NvidiaGPU]) -> int:
+        raise error
+
+    monkeypatch.setattr(NvidiaGPU, "device_count", classmethod(refusing))
+    assert NvidiaGPU.is_available() is False
+
+
+def test_memory_without_nvml_or_a_runtime_says_which_tier_it_lacks(
+    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(nvidia_host, "runtime", None)
+    monkeypatch.setattr(NvidiaGPU, "system_device", FakeSensorlessDevice())
+    with pytest.raises(RuntimeError, match="CUDA Runtime is unavailable"):
+        _ = NvidiaGPU(index=0).memory

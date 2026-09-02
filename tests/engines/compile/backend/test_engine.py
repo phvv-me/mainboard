@@ -155,6 +155,22 @@ def test_windows_installer_uses_powershell_and_edits_no_shell_file(
         "shutil.which", lambda name: "C:/Windows/powershell.exe" if name == "powershell" else None
     )
     command = PixiEngine.installer().formulate()
-    assert Path(command[0]) == Path("C:/Windows/powershell.exe")
+    # plumbum resolves a bare path against the working directory, so on a Linux runner the
+    # fake Windows path lands under it; the choice of executable is what the test asserts.
+    assert Path(command[0]).name == "powershell.exe"
     assert "install.ps1" in command[-1]
     assert PixiEngine.appended_shell_file() == ""
+
+
+@pytest.mark.parametrize(
+    ("system", "message"),
+    [("Windows", "PowerShell is required"), ("Linux", "a POSIX shell is required")],
+    ids=["no-powershell", "no-sh"],
+)
+def test_the_installer_names_the_shell_it_cannot_find(
+    monkeypatch: pytest.MonkeyPatch, system: str, message: str
+) -> None:
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with pytest.raises(MissionError, match=message):
+        PixiEngine.installer()

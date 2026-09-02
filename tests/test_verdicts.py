@@ -306,6 +306,50 @@ def test_wait_sweeps_the_monitor_path_until_terminal_and_answers_from_the_receip
     assert settled.trials[0].verdict == "ok"
 
 
+def test_wait_on_a_batch_id_sweeps_until_every_job_settles_and_answers_the_batch_verdict(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One `wait` serves a handle and a batch alike, and a batch's answer is its whole verdict."""
+    stream = "smoke-1"
+    bus = Receipts(directory(board, stream) / "events.ndjson")
+    publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "1", "target": "gold"})
+    publish(bus, stream, Topic.SUBMITTED, job="b", data={"handle": "2", "target": "gold"})
+    publish(
+        bus, stream, Topic.SETTLED, job="a", data={"handle": "1", "verdict": "ok", "exit_code": 0}
+    )
+    passes: list[int] = []
+
+    def sweeping(monitor: Monitor) -> None:
+        passes.append(1)
+        if len(passes) == 2:
+            publish(
+                bus,
+                stream,
+                Topic.SETTLED,
+                job="b",
+                data={"handle": "2", "verdict": "failed", "exit_code": 1},
+            )
+
+    monkeypatch.setattr(Monitor, "once", sweeping)
+    settled = board.verdicts().wait(stream, interval=0.0, poll=lambda seconds: None)
+    assert len(passes) == 2
+    assert settled.stream == stream
+    assert [trial.verdict for trial in settled.trials] == ["ok", "failed"]
+    assert settled.code == 1
+
+
+def test_wait_on_a_batch_id_gives_up_at_the_deadline_with_the_batch_still_in_flight(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = "smoke-2"
+    bus = Receipts(directory(board, stream) / "events.ndjson")
+    publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "1", "target": "gold"})
+    monkeypatch.setattr(Monitor, "once", lambda monitor: None)
+    settled = board.verdicts().wait(stream, timeout=1e-6, interval=0.0, poll=lambda s: None)
+    assert settled.stream == stream
+    assert settled.code == 2
+
+
 def test_cancel_kills_through_the_backend_and_settles_the_record_in_the_same_pass(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:

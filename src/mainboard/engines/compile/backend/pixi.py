@@ -9,6 +9,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, cast
 
 from plumbum import local
+from plumbum.commands.base import BoundEnvCommand
 
 from ....core import MissionError, Project
 from .engine import PixiEngine
@@ -76,10 +77,10 @@ class Pixi(Tool):
         value the caller already exported always wins. Read per invocation rather than cached,
         since the floors live in the generated manifest the compiler may write moments earlier.
         """
-        command = self.engine.command
-        if overrides := self.overrides:
-            command = command.with_env(**overrides)
-        return command
+        # Bound outright rather than through `with_env`, which hands the bare command back
+        # when there is nothing to bind, so a caller reads one shape of environment on every
+        # platform: the floors, or nothing.
+        return BoundEnvCommand(self.engine.command, env=self.overrides)
 
     @property
     def executable(self) -> Path:

@@ -451,6 +451,36 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
+    def sync(
+        host: str,
+        *,
+        env: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Re-mirror a host already set up and re-provision it from the shipped lock.
+
+        The fast path back after source moved: the tool is not reinstalled and the hardware is
+        not probed again, so a Python edit reaches the host in the time the mirror takes. A
+        host never set up needs `setup` first, which is where the probe and the tool come from.
+
+        host: the host alias to bring up to date.
+        env: an environment name overriding the host profile's own.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the setup record's fields.
+        """
+        with progress(f"syncing {host}") as stage:
+            report = board(host).install(env, resolve=False, watch=stage, sync_only=True)
+        record(
+            report.model_dump(),
+            mode=mode_of(json_mode=json, agent=agent),
+            fields=_fields(fields),
+            title="sync",
+        )
+
+    @app.command
     def hosts(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
         """List the hosts already set up, newest first, from the dispatch state.
 
@@ -600,10 +630,17 @@ def build(root: Path | None = None) -> App:
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
 
-    def declared(spec: str, job: tuple[str, ...], name: str) -> BatchSpec:
-        """The batch the caller declared, a spec file or repeated `target:command` flags."""
+    def declared(
+        spec: str, job: tuple[str, ...], name: str, given: tuple[str, ...] = ()
+    ) -> BatchSpec:
+        """The batch the caller declared, a spec file or repeated `target:command` flags.
+
+        given: `name=value` pairs replacing the spec file's `[vars]`.
+        """
         if spec:
-            return BatchSpec.load(workspace_root() / spec)
+            return BatchSpec.load(workspace_root() / spec, _answers(given))
+        if given:
+            raise MissionError("--set fills a spec file's [vars]; a --job batch declares none")
         if not job:
             raise MissionError("declare a batch: a spec file, or --job target:command")
         return BatchSpec.inline(name or "batch", job)
@@ -614,6 +651,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        set_: Annotated[tuple[str, ...], Parameter(name="--set")] = (),
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -628,11 +666,12 @@ def build(root: Path | None = None) -> App:
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the transfer columns.
         """
-        batched = board("local").batch(declared(spec, job, name))
+        batched = board("local").batch(declared(spec, job, name, set_))
         with progress(f"measuring {batched.id}"):
             measured = [transfer.model_dump() for transfer in batched.prepare()]
         _tabled(
@@ -651,6 +690,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        set_: Annotated[tuple[str, ...], Parameter(name="--set")] = (),
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -666,11 +706,12 @@ def build(root: Path | None = None) -> App:
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the estimate columns.
         """
-        batched = board("local").batch(declared(spec, job, name))
+        batched = board("local").batch(declared(spec, job, name, set_))
         with progress(f"pricing {batched.id}"):
             priced = [row.model_dump() for row in batched.estimate().jobs]
         _tabled(
@@ -689,6 +730,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        set_: Annotated[tuple[str, ...], Parameter(name="--set")] = (),
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -702,11 +744,12 @@ def build(root: Path | None = None) -> App:
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over job/target/handle/kind/reason.
         """
-        batched = board("local").batch(declared(spec, job, name))
+        batched = board("local").batch(declared(spec, job, name, set_))
         mode = mode_of(json_mode=json, agent=agent)
         with progress(f"dispatching {batched.id}"):
             dispatched = batched.run()
@@ -751,6 +794,35 @@ def build(root: Path | None = None) -> App:
         with suppress(KeyboardInterrupt):
             for status in watcher.follow(interval):
                 _status(status, mode=mode, fields=chosen)
+
+    @batch.command(name="wait")
+    def batch_wait(
+        batch_id: str,
+        *,
+        timeout: float = 0.0,
+        interval: float = 0.0,
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> int:
+        """Block until every job of a batch settles, print the batch's verdict, exit its code.
+
+        The same durable sweep `wait` runs on one handle, over the whole batch: results are
+        pulled back and rentals released as each job lands, and the answer is read off the
+        batch's receipts, 0 when every job settled clean, 1 on any failure, 2 at the timeout
+        with work still in flight.
+
+        batch_id: the batch to wait on, as `run` printed it.
+        timeout: give up after this many seconds, exiting 2 with jobs still in flight; 0 waits
+            as long as it takes.
+        interval: seconds between sweeps, the dispatch default when 0.
+        json: print the verdict as canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the verdict columns.
+        """
+        return wait(
+            batch_id, timeout=timeout, interval=interval, json=json, agent=agent, fields=fields
+        )
 
     @app.command
     def attest(stream: str, *, job: str = "") -> None:
@@ -819,7 +891,8 @@ def build(root: Path | None = None) -> App:
         loses nothing. What prints at the end is read back off the on-disk receipts rather than
         remembered from the loop, which is what makes this the sanctioned completion check.
 
-        handle: the job to wait on, as `submit` printed it.
+        handle: the job to wait on, as `submit` printed it, or a batch id as `batch run`
+            printed it, which waits for every job of the batch.
         on: the host alias narrowing a handle recorded on several hosts.
         timeout: give up after this many seconds, exiting 2 with the job still in flight; 0
             waits as long as it takes.

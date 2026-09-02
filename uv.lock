@@ -780,9 +780,11 @@ name = "mainboard"
 version = "0.4.8"
 source = { editable = "." }
 dependencies = [
+    { name = "cuda-bindings", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "cyclopts" },
     { name = "filelock" },
     { name = "jinja2" },
+    { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "packaging" },
     { name = "pathspec" },
     { name = "patos" },
@@ -800,8 +802,7 @@ adversarial = [
     { name = "hypothesis" },
 ]
 cuda = [
-    { name = "cuda-bindings" },
-    { name = "cuda-core" },
+    { name = "cuda-core", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 modal = [
     { name = "modal" },
@@ -822,17 +823,19 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-subprocess" },
     { name = "ruff" },
+    { name = "types-psutil" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "cuda-bindings", marker = "extra == 'cuda'", specifier = ">=13.0" },
-    { name = "cuda-core", marker = "extra == 'cuda'", specifier = ">=1.1" },
+    { name = "cuda-bindings", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=13.0" },
+    { name = "cuda-core", marker = "(sys_platform == 'linux' and extra == 'cuda') or (sys_platform == 'win32' and extra == 'cuda')", specifier = ">=1.1" },
     { name = "cyclopts", specifier = ">=3.0" },
     { name = "filelock", specifier = ">=3.13" },
     { name = "hypothesis", marker = "extra == 'adversarial'", specifier = ">=6.100" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.0" },
+    { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=2.0" },
     { name = "optuna", marker = "extra == 'search'", specifier = ">=4.0" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pathspec", specifier = ">=0.12" },
@@ -857,6 +860,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "pytest-subprocess", specifier = ">=1.5" },
     { name = "ruff", specifier = ">=0.15" },
+    { name = "types-psutil", specifier = ">=7.2.2.20260130" },
 ]
 
 [[package]]
@@ -1607,6 +1611,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/52/68/943c3aeaf14624712a0357c4a67814dba5cea36d194f5c764dad7959a00c/types-certifi-2021.10.8.3.tar.gz", hash = "sha256:72cf7798d165bc0b76e1c10dd1ea3097c7063c42c21d664523b928e88b554a4f", size = 2095, upload-time = "2022-06-09T15:19:05.244Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b5/63/2463d89481e811f007b0e1cd0a91e52e141b47f9de724d20db7b861dcfec/types_certifi-2021.10.8.3-py3-none-any.whl", hash = "sha256:b2d1e325e69f71f7c78e5943d410e650b4707bb0ef32e4ddf3da37f54176e88a", size = 2136, upload-time = "2022-06-09T15:19:03.127Z" },
+]
+
+[[package]]
+name = "types-psutil"
+version = "7.2.2.20260827"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/89/ea/23a949b56d3a226a142b43c5c32404fae7044400296d18e8eda63d5d03a4/types_psutil-7.2.2.20260827.tar.gz", hash = "sha256:3c6067dba47c700495ca493f07b11e866ba13de223aabb26da555f9c86ae0b1f", size = 27294, upload-time = "2026-08-27T12:06:22.279Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/1b/7e0f5cfad4faa4a2e0845f69e9206eeefc6659dfa11d07da04e2fa47d08b/types_psutil-7.2.2.20260827-py3-none-any.whl", hash = "sha256:62364359cf85482aa698a62488e5420cae5c576e8acec450ce7fb3b91cdb3d96", size = 33365, upload-time = "2026-08-27T12:06:21.444Z" },
 ]
 
 [[package]]

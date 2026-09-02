@@ -113,3 +113,57 @@ def test_a_job_hands_the_board_only_the_resources_it_declares() -> None:
         "fetch": None,
         "node": "",
     }
+
+
+_TEMPLATED = """
+name = "shootout-rep{{ vars.repetition }}"
+
+[vars]
+repetition = "0"
+corpus = "data/en"
+
+[[jobs]]
+target = "miyabi-g"
+command = "python -m run --corpus {{ vars.corpus }} --repetition {{ vars.repetition }}"
+"""
+
+
+def test_a_spec_renders_its_vars_and_a_typed_value_replaces_a_declared_one(
+    tmp_path: Path,
+) -> None:
+    """One spec serves every repetition of a campaign, so the knob is typed, not copied."""
+    (tmp_path / "shootout.toml").write_text(_TEMPLATED)
+    declared = BatchSpec.load(tmp_path / "shootout.toml")
+    assert declared.name == "shootout-rep0"
+    assert declared.jobs[0].command == "python -m run --corpus data/en --repetition 0"
+    overridden = BatchSpec.load(tmp_path / "shootout.toml", {"repetition": "3"})
+    assert overridden.name == "shootout-rep3"
+    assert overridden.jobs[0].command == "python -m run --corpus data/en --repetition 3"
+
+
+def test_a_value_for_a_var_the_spec_never_declared_is_refused_by_name(tmp_path: Path) -> None:
+    """A typo in `--set` must not render blank, and the refusal says what the spec knows."""
+    (tmp_path / "shootout.toml").write_text(_TEMPLATED)
+    with pytest.raises(
+        MissionError, match=r"no \[vars\] named repetitions; it knows corpus, repetition"
+    ):
+        BatchSpec.load(tmp_path / "shootout.toml", {"repetitions": "3"})
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            'defaults = "fast"\n[[jobs]]\ntarget = "gold"\ncommand = "true"',
+            r"\[defaults\] must be a table",
+        ),
+        ('jobs = ["gold"]', r"\[\[jobs\]\] must be an array of tables"),
+    ],
+    ids=["defaults-not-a-table", "jobs-not-tables"],
+)
+def test_a_spec_whose_tables_have_the_wrong_shape_is_refused_by_name(
+    tmp_path: Path, body: str, message: str
+) -> None:
+    (tmp_path / "odd.toml").write_text(body)
+    with pytest.raises(MissionError, match=message):
+        BatchSpec.load(tmp_path / "odd.toml")

@@ -190,7 +190,8 @@ class WandbSink(Tracker):
         if job in self.runs:
             return self.runs[job]
         identity = run_id({"stream": self.stream, "job": job})
-        opened: Tracked = module().init(
+        service = module()
+        opened: Tracked = service.init(
             id=identity,
             name=job,
             group=self.stream,
@@ -201,6 +202,9 @@ class WandbSink(Tracker):
             config={"stream": self.stream, "job": job, "run_id": identity, **self.context},
             resume="allow",
             reinit="create_new",
+            # The receipts beside this run are the record, so the service's own banner has
+            # nothing to add to a command's output and only buries the table it printed.
+            settings=service.Settings(silent=True),
         )
         self.runs[job] = opened
         self.steps[job] = opened.step

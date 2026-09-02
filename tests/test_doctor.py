@@ -464,3 +464,30 @@ def test_the_runner_bounds_the_probe_it_stages(
     status, output = Doctor(Board(workspace)).through_runner("echo settled", 30.0)
     assert (status, output) == (0, "settled\n")
     assert seen == [(("echo", "settled"), "default", 30.0)]
+
+
+def test_a_host_provisioned_for_an_environment_the_manifest_lost_counts_as_diverged(
+    workspace: Path,
+) -> None:
+    board = Board(workspace)
+    ghost = HostSetup(host="ghost", root="/repo", env="vanished", digest="was-something")
+    diverged = Doctor(board).hosts({"ghost": ghost})
+    assert diverged.verdict is Verdict.WARN
+    assert diverged.detail == "diverged from the current manifest: ghost"
+
+
+def test_an_environment_compiled_and_solved_but_never_installed_is_a_warning(
+    workspace: Path,
+) -> None:
+    """The lock answers to the manifest, so the only thing missing is the install itself."""
+    climbed(workspace, "whole")
+    board = Board(workspace)
+    provisioner = Provisioner(board.root, board.manifest)
+    fingerprint = (
+        provisioner.pixi_for("serving").env_prefix("serving") / "conda-meta" / _FINGERPRINT
+    )
+    fingerprint.unlink()
+    found = Doctor(board, env="serving").environment()
+    assert found.verdict is Verdict.WARN
+    assert found.detail == "never installed: serving"
+    assert found.fix == "mainboard install serving"

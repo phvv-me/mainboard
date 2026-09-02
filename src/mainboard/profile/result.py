@@ -143,6 +143,10 @@ class Profile(FrozenModel):
         """Write a Perfetto/Chrome timeline (open at ui.perfetto.dev)."""
         write_trace(self, path)
 
+    def show(self) -> None:
+        """Print the report, every populated evidence section, to standard output."""
+        print(self.report())
+
     def report(self) -> str:
         """A plain-text report containing only populated evidence sections."""
         sections = []

@@ -60,12 +60,13 @@ class Process:
         independent session for callers with the same lifetime requirement.
         """
         if platform.system() == "Windows":
-            command.popen(
-                stdin=DEVNULL,
-                stdout=DEVNULL,
-                stderr=DEVNULL,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+            # Both flags exist only in a Windows build of the standard library, so they are
+            # looked up by name rather than spelled, which is what lets a Linux checker read
+            # this branch and a Linux test exercise it.
+            detached = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+                subprocess, "DETACHED_PROCESS", 0
             )
+            command.popen(stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, creationflags=detached)
             return
         command.popen(stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True)
 

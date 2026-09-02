@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from mainboard import staleness
+from mainboard.core.project import Project
 from mainboard.staleness import Snapshot, check, digest, tool_root
 
 _RECEIPT = '[tool]\nrequirements = [{ name = "mainboard", extras = ["wandb"], directory = %s }]\n'
@@ -297,3 +298,13 @@ def test_the_stale_state_survives_a_repeat_ask_without_rerecording(snapshot: Pat
     touched(snapshot.parents[2].parent / "checkout")
     assert staleness.check(snapshot).stale is True
     assert staleness.check(snapshot).stale is True
+
+
+def test_a_refresh_without_a_source_logs_beside_the_working_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fix that names no `--from` source still gets a durable log, next to where it ran."""
+    monkeypatch.chdir(tmp_path)
+    assert staleness._refresh_log(("uv", "tool", "install", "mainboard")) == (
+        tmp_path / Project().out_dir / "self-update.log"
+    )

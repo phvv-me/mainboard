@@ -92,9 +92,9 @@ total               1459   9507250    2468423
 $ mainboard batch estimate fleet.toml --agent     # what it will cost, nothing runs
 job      target  kind  hardware     wire_bytes  runtime_s  setup_p50_s  setup_p90_s  setup_samples  rate_usd_hr  expected_usd  p90_usd
 sweep-a  gold    ssh   129 GB RAM   33053       25.0       2.49         7.53         3              0.0          0.0           0.0
-$ mainboard batch run fleet.toml                  # every job to its own target
+$ mainboard batch run fleet.toml --set repetition=3   # every job to its own target, one knob typed
 fleet-db4af53f
-$ mainboard batch watch fleet-db4af53f --interval 5
+$ mainboard batch wait fleet-db4af53f             # block until every job settles, exit its verdict
 ```
 
 `prepare` measures the delta rather than the tree: a host already carries the

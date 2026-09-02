@@ -5,6 +5,7 @@ import pytest
 import tomlkit
 
 from mainboard import MissionError
+from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.pixi_manifest import PixiManifest
 from mainboard.engines.compile.state import SyncState
 from mainboard.manifest import Manifest
@@ -355,3 +356,13 @@ def test_install_locked_blesses_the_lock_after_a_successful_resolve(
     state = SyncState.load(compiler.out)
     assert state.environment == "default"
     assert state.solved_from == compiler.resolution_digest()
+
+
+def test_the_resolution_manifest_drops_per_target_activation_and_keeps_the_rest() -> None:
+    """A `[target.win.activation]` edit must not move the lock any more than a task rename."""
+    rendered = Compiler._resolution_manifest(
+        "[target.win.activation]\nscripts = ['a.bat']\n"
+        "[target.win.dependencies]\nx = '1'\n"
+        "[target]\nlinux-64 = 'bare'\n"
+    )
+    assert rendered["target"] == {"win": {"dependencies": {"x": "1"}}, "linux-64": "bare"}

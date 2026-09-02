@@ -66,3 +66,23 @@ def test_a_device_tag_is_a_slug_or_cpu(index: int) -> None:
 
     tag = device_tag(index)
     assert tag == "CPU" or ("_CC" in tag and " " not in tag)
+
+
+def test_extend_counts_only_the_new_rows_and_drop_where_forgets_their_keys(tmp_path: Path) -> None:
+    log = RowLog(tmp_path / "calls", id_fields=("model",))
+    assert (
+        log.extend([{"model": "a", "v": 1}, {"model": "b", "v": 2}, {"model": "a", "v": 3}]) == 2
+    )
+    log.drop_where(lambda row: row["model"] == "a")
+    assert [row["model"] for row in log.rows] == ["b"]
+    assert log.append({"model": "a", "v": 4}) is True
+
+
+def test_paths_give_plots_their_directory_and_keep_a_table_format_a_caller_named(
+    tmp_path: Path,
+) -> None:
+    paths = ExperimentPaths(name="shootout", root=tmp_path)
+    assert paths.plot("curve.png") == tmp_path / "shootout" / "plots" / "curve.png"
+    assert paths.plots_dir.is_dir()
+    assert paths.table("calls.csv").name == "calls.csv"
+    assert paths.table("Qwen3-1.7B").name == "Qwen3-1.7B.parquet"

@@ -89,6 +89,15 @@ def stub_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[
         executable = bindir / name
         executable.write_text("#!/bin/sh\n")
         executable.chmod(0o755)
+        # A Windows lookup finds `worker.exe` for `worker` through PATHEXT and a POSIX one
+        # does not, so the same stub also stands under its bare name there, and the path
+        # handed back is the one the lookup on this platform resolves to. The check reads
+        # the real platform, since a test may already be pretending to be Windows.
+        if os.name != "nt" and executable.suffix == ".exe":
+            bare = executable.with_suffix("")
+            bare.write_text("#!/bin/sh\n")
+            bare.chmod(0o755)
+            return str(bare)
         return str(executable)
 
     with local.env(PATH=f"{bindir}{os.pathsep}{local.env['PATH']}"):

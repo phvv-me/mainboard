@@ -157,3 +157,11 @@ def test_the_perfetto_export_lays_untraced_regions_out_sequentially(tmp_path: Pa
     empty = tmp_path / "e.json"
     perfetto.write_trace(Profile(), empty)
     assert json.loads(empty.read_text())["traceEvents"]
+
+
+def test_show_prints_the_same_report_the_profile_renders(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile = Profile()
+    profile.show()
+    assert capsys.readouterr().out == profile.report() + "\n"

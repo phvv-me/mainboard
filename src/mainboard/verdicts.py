@@ -44,6 +44,9 @@ _RECEIPT = "trial_receipt"
 # 0 ok, 1 failed, 2 still running or legitimately waiting, 3 vanished or unknown. A cancel exits
 # 1 because a completion check must never call a stopped run complete, however deliberate the
 # stop was; the word in the row is what says it was a decision rather than a crash.
+# The code a stream answers while any of its rows is still running or legitimately waiting,
+# named once because a waiter loops on exactly this answer.
+_IN_FLIGHT = 2
 _EXITS = {
     vocabulary.OK: 0,
     "passed": 0,
@@ -124,8 +127,8 @@ class StreamVerdict(FrozenModel):
         codes = {trial.code for trial in self.trials}
         if 1 in codes:
             return 1
-        if 2 in codes:
-            return 2
+        if _IN_FLIGHT in codes:
+            return _IN_FLIGHT
         if 3 in codes or not codes:
             return 3
         return 0
@@ -288,9 +291,10 @@ class Verdicts:
         Every pass is one `Monitor.once`, so waiting here pulls results back, releases rentals
         and writes receipts exactly as an unattended sweep would, and a wait killed halfway
         loses nothing. The answer is the receipts-derived outcome, so the exit code a caller
-        branches on is the job's own.
+        branches on is the job's own. A batch id waits for every job of the batch and answers
+        with the batch's verdict.
 
-        handle: the dispatched run to wait on.
+        handle: the dispatched run to wait on, or a batch id as `batch run` printed it.
         host: the alias narrowing a handle recorded on several hosts.
         timeout: give up after this many wall seconds, 0 to wait as long as it takes; the
             answer then reports the run still in flight and exits 2.
@@ -299,13 +303,19 @@ class Verdicts:
         """
         deadline = monotonic() + timeout if timeout else None
         monitor = self.board.monitor()
+        stream = (directory(self.board, handle) / "events.ndjson").is_file()
         while True:
             monitor.once()
-            record = self.record(handle, host=host)
-            if record.verdict in vocabulary.TERMINAL:
+            if stream:
+                # A batch settles when every job's row has, which is what its stream verdict
+                # already adds up, so the loop asks that rather than a record it has none of.
+                settled = self.of(handle)
+                if settled.code != _IN_FLIGHT:
+                    return settled
+            elif self.record(handle, host=host).verdict in vocabulary.TERMINAL:
                 return self.handled(handle, host=host)
             if deadline is not None and monotonic() >= deadline:
-                return self.handled(handle, host=host)
+                return self.of(handle) if stream else self.handled(handle, host=host)
             poll(interval)
 
 

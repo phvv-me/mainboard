@@ -101,6 +101,10 @@ _RESOURCES = {
             ["setup", "gold", "--sync-only"],
             ("install", "gold", ("",), {"resolve": False, "sync_only": True}),
         ),
+        (
+            ["sync", "gold", "--env", "serving"],
+            ("install", "gold", ("serving",), {"resolve": False, "sync_only": True}),
+        ),
         (["shell", "--env", "serving"], ("shell", "local", ("serving",), {})),
         (["serve", "vserve", "--on", "gold"], ("serve", "gold", ("vserve",), {})),
         (
@@ -113,6 +117,10 @@ _RESOURCES = {
         (
             ["wait", "4242", "--timeout", "60"],
             ("wait", "", ("4242",), {"host": "", "timeout": 60.0, "interval": 5.0}),
+        ),
+        (
+            ["batch", "wait", "smoke-1", "--timeout", "60"],
+            ("wait", "", ("smoke-1",), {"host": "", "timeout": 60.0, "interval": 5.0}),
         ),
         (["verdict", "smoke-1"], ("of", "", ("smoke-1",), {"host": "", "run": ""})),
         (["cancel", "4242", "--on", "gold"], ("cancel", "", ("4242",), {"host": "gold"})),
@@ -135,6 +143,7 @@ _RESOURCES = {
         "install on a host",
         "setup",
         "setup sync-only",
+        "sync",
         "shell",
         "serve",
         "interact",
@@ -142,6 +151,7 @@ _RESOURCES = {
         "monitor",
         "facts",
         "wait",
+        "batch wait",
         "verdict",
         "cancel",
         "logs",
