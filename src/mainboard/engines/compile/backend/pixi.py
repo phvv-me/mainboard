@@ -5,6 +5,7 @@ import tomllib
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 from typing import TYPE_CHECKING, cast
 
 from plumbum import local
@@ -14,6 +15,7 @@ from .engine import PixiEngine
 from .process import Process
 from .repair import EnvironmentAudit
 from .tool import Tool
+from .windows_task import WindowsTaskRunner
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
@@ -128,14 +130,18 @@ class Pixi(Tool):
         cleared: set[str] = set()
         for script in scripts:
             self._apply_generated_activation(script, exported, cleared)
-        with TemporaryDirectory(
-            prefix=".mainboard-run-", dir=temporary_root, ignore_cleanup_errors=True
-        ) as temporary, local.env(
-            **exported,
-            HOME=str(Path.home()),
-            TEMP=temporary,
-            TMP=temporary,
-        ), self.activated(env):
+        with (
+            TemporaryDirectory(
+                prefix=".mainboard-run-", dir=temporary_root, ignore_cleanup_errors=True
+            ) as temporary,
+            local.env(
+                **exported,
+                HOME=str(Path.home()),
+                TEMP=temporary,
+                TMP=temporary,
+            ),
+            self.activated(env),
+        ):
             for name in cleared:
                 if name in local.env:
                     del local.env[name]
@@ -207,21 +213,25 @@ class Pixi(Tool):
 
         Pixi owns environment activation while each caller-owned token remains a distinct
         process argument. No intermediate shell reparses quoting or operators. On Windows an
-        explicit argv executes directly from the installed prefix: Pixi 0.78 initializes its
-        default authentication store before starting a child, and that initialization cannot
-        resolve the profile directory in restricted Windows application sandboxes even when
-        ``HOME`` and ``USERPROFILE`` are correct. A declared task stays with Pixi because its
-        cross-platform task grammar, cwd, dependencies and environment belong there.
+        explicit argv executes directly from the installed prefix. A declared task is resolved
+        from the generated Pixi manifest and executed under the same cached activation: Pixi
+        0.78's authentication store cannot resolve the profile directory in restricted Windows
+        application sandboxes even when ``HOME`` and ``USERPROFILE`` are correct. The narrow
+        fallback keeps task cwd, dependencies, environment, argument forwarding, and exit codes
+        without starting Pixi before the child.
 
         command: task name and arguments, or an ad-hoc command argv.
         env: generated environment in which to execute it.
         """
-        if self._direct_windows_command(command, env):
+        if self._restricted_windows_command(command):
             if not self.ready(env):
                 raise MissionError(
                     f"environment {env!r} is not installed; run `{Project().name} install {env}`"
                 )
+            runner = WindowsTaskRunner(self.manifest, env)
             with self.direct_windows_environment(env):
+                if command[0] in runner.tasks:
+                    return runner.run(command, Process.stream).returncode
                 return Process.passthrough(local[command[0]][command[1:]])
         return self.within_cwd(Process.passthrough, "run", "--frozen", "-e", env, *command)
 
@@ -229,12 +239,21 @@ class Pixi(Tool):
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
     ) -> CommandResult:
         """Run through Pixi while capturing output under ``timeout`` seconds."""
-        if self._direct_windows_command(command, env):
+        if self._restricted_windows_command(command):
             if not self.ready(env):
                 raise MissionError(
                     f"environment {env!r} is not installed; run `{Project().name} install {env}`"
                 )
+            runner = WindowsTaskRunner(self.manifest, env)
             with self.direct_windows_environment(env):
+                if command[0] in runner.tasks:
+                    deadline = None if timeout is None else monotonic() + timeout
+
+                    def capture_task(argv: BaseCommand) -> CommandResult:
+                        remaining = None if deadline is None else max(deadline - monotonic(), 0.0)
+                        return Process.capture(argv, timeout=remaining)
+
+                    return runner.run(command, capture_task)
                 return Process.capture(local[command[0]][command[1:]], timeout=timeout)
         return self.within_cwd(
             lambda argv: Process.capture(argv, timeout=timeout),
@@ -245,27 +264,13 @@ class Pixi(Tool):
             *command,
         )
 
-    def _direct_windows_command(self, command: Sequence[str], env: str) -> bool:
-        """Whether explicit Windows argv can bypass Pixi's pre-child auth initialization."""
-        if (
-            platform.system() != "Windows"
-            or not command
-            or not self.windows_activation_cache.is_file()
-        ):
-            return False
-        try:
-            parsed = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return True
-        declared = set(parsed.get("tasks", {}))
-        selected = parsed.get("environments", {}).get(env, {})
-        features = parsed.get("feature", {})
-        if isinstance(selected, dict) and isinstance(features, dict):
-            for name in selected.get("features", []):
-                feature = features.get(name, {})
-                if isinstance(feature, dict):
-                    declared.update(feature.get("tasks", {}))
-        return command[0] not in declared
+    def _restricted_windows_command(self, command: Sequence[str]) -> bool:
+        """Whether a Windows command can use cached activation and explicit auth storage."""
+        return (
+            platform.system() == "Windows"
+            and bool(command)
+            and self.windows_activation_cache.is_file()
+        )
 
     @property
     def windows_activation_cache(self) -> Path:
@@ -325,7 +330,7 @@ class Pixi(Tool):
             location = next(
                 line.partition('"')[2].partition('"')[0]
                 for line in text.splitlines()
-                if line.strip().lower().startswith("if not exist \"")
+                if line.strip().lower().startswith('if not exist "')
             )
             dotenv = script.parent / location
             try:
