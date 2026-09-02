@@ -74,6 +74,8 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
         "uv",
         "tool",
         "install",
+        "--reinstall-package",
+        "mainboard",
         "--from",
         f"{source}[wandb]",
         "mainboard",
@@ -173,8 +175,14 @@ def test_the_refresh_preserves_an_existing_durable_interpreter(snapshot: Path) -
     check(snapshot)
     touched(source)
 
-    assert check(snapshot).fix[4:7] == ("tool", "install", "--python")
-    assert check(snapshot).fix[7] == str(interpreter)
+    assert check(snapshot).fix[4:10] == (
+        "tool",
+        "install",
+        "--reinstall-package",
+        "mainboard",
+        "--python",
+        str(interpreter),
+    )
 
 
 def test_the_refresh_does_not_retain_a_project_environment_interpreter(snapshot: Path) -> None:

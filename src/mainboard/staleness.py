@@ -143,6 +143,8 @@ def check(package: Path | None = None) -> Snapshot:
         "uv",
         "tool",
         "install",
+        "--reinstall-package",
+        Project().name,
         *(("--python", str(interpreter)) if interpreter else ()),
         "--from",
         f"{requirement['directory']}[{extras}]",
