@@ -121,19 +121,18 @@ class Pixi(Tool):
 
     @contextmanager
     def direct_windows_environment(self, env: str) -> Generator[None]:
-        """Activate a Windows prefix with accessible profile and per-run temporary storage."""
-        generated = next(
-            parent for parent in self.manifest.parents if parent.name == Project().out_dir
-        )
-        temporary_root = generated.parent
+        """Activate a Windows prefix with accessible profile and external temporary storage.
+
+        The temporary directory must not live in the workspace. Provenance is sampled after this
+        context opens, so even a successfully cleaned directory would make the working tree look
+        dirty while an experiment is running.
+        """
         exported, scripts = self._cached_windows_activation()
         cleared: set[str] = set()
         for script in scripts:
             self._apply_generated_activation(script, exported, cleared)
         with (
-            TemporaryDirectory(
-                prefix=".mainboard-run-", dir=temporary_root, ignore_cleanup_errors=True
-            ) as temporary,
+            TemporaryDirectory(prefix="mainboard-run-", ignore_cleanup_errors=True) as temporary,
             local.env(
                 **exported,
                 HOME=str(Path.home()),

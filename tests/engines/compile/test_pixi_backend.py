@@ -375,7 +375,8 @@ FROM_MANIFEST = "declared"
         prefix_scripts,
     ]
     assert environment["TEMP"] == environment["TMP"]
-    assert Path(environment["TEMP"]).parent == pixi.manifest.parent.parent
+    assert Path(environment["TEMP"]).parent != pixi.manifest.parent.parent
+    assert Path(environment["TEMP"]).name.startswith("mainboard-run-")
     assert not Path(environment["TEMP"]).exists()
     assert os.environ["HOME"] == "C:/sandbox/profile"
 
