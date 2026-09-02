@@ -41,4 +41,5 @@ def test_command_vouches_declared_floors_through_its_environment(
     expected = {"HOME": str(Path.home())} if platform.system() == "Windows" else {}
     assert dict(pixi.command.env) == expected
     manifest_with_floors(pixi)
-    assert dict(pixi.command.env) == {"CONDA_OVERRIDE_CUDA": "13.0"}
+    expected |= {"CONDA_OVERRIDE_CUDA": "13.0"}
+    assert dict(pixi.command.env) == expected

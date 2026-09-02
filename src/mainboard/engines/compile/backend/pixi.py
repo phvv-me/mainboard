@@ -73,13 +73,16 @@ class Pixi(Tool):
 
         Every declared virtual-package floor rides along as its `CONDA_OVERRIDE_*` variable, so
         a frozen install succeeds on a machine that cannot present the package itself, and a
-        value the caller already exported always wins. Read per invocation rather than cached,
-        since the floors live in the generated manifest the compiler may write moments earlier.
+        value the caller already exported always wins. Bind the complete overlay once so adding
+        a floor cannot discard Windows' required HOME binding. Read per invocation rather than
+        cached, since the floors live in a manifest the compiler may write moments earlier.
         """
-        command = self.engine.command
-        if overrides := self.overrides:
-            command = command.with_env(**overrides)
-        return command
+        engine = self.engine.command
+        environment = dict(engine.env) | self.overrides
+        if environment:
+            executable = Path(engine.formulate()[0])
+            return local[str(executable)].with_env(**environment)
+        return engine
 
     @property
     def executable(self) -> Path:
