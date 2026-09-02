@@ -8,6 +8,7 @@ from .profiler import Feature, Profiler
 from .report import Bound, ProfileReport
 from .result import DeviceEvidence, Profile, ProfileDiff
 from .stages import StageProfile, profile_stages
+from .store import profiles_dir
 from .study import Point, Row
 from .timeline import DeviceTimeline
 from .trace import (
@@ -58,4 +59,5 @@ __all__ = [
     "busy_ns",
     "compare",
     "profile_stages",
+    "profiles_dir",
 ]

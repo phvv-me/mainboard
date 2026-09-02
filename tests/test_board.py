@@ -564,6 +564,17 @@ def test_interact_asks_a_queued_host_for_an_allocation_before_the_terminal(
     assert staged.endswith("qsub -I -q debug-g -l walltime=00:30:00 -W group_list=xg25g007'")
 
 
+def test_a_kept_interactive_session_lives_in_tmux_on_the_far_side(board: Board) -> None:
+    """A dropped terminal leaves the allocation up, and asking again attaches to it."""
+    seen, replace = interacting()
+    with pytest.raises(Replaced):
+        board.on(_MIYABI_G).interact(keep=True, replace=replace)
+    [argv] = seen
+    staged = argv[3]
+    assert f"tmux new-session -A -s {board.project.name}-{_MIYABI_G} " in staged
+    assert "qsub -I" in staged
+
+
 def test_interact_prefers_the_declared_interactive_queue_over_the_batch_one(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:

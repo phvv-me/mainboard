@@ -95,6 +95,7 @@ sweep-a  gold    ssh   129 GB RAM   33053       25.0       2.49         7.53    
 $ mainboard batch run fleet.toml --set repetition=3   # every job to its own target, one knob typed
 fleet-db4af53f
 $ mainboard batch wait fleet-db4af53f             # block until every job settles, exit its verdict
+$ mainboard interact --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
 ```
 
 `prepare` measures the delta rather than the tree: a host already carries the

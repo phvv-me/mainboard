@@ -398,6 +398,7 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         queue: str = "",
         walltime: str = "",
+        keep: bool = False,
     ) -> NoReturn:
         """Open an interactive session on a host, inside its mirrored workspace.
 
@@ -411,8 +412,10 @@ def build(root: Path | None = None) -> App:
         env: an environment name overriding the profile's choice.
         queue: the queue the allocation targets, the profile's declared choice when omitted.
         walltime: the session's wall-clock limit, the profile's declared choice when omitted.
+        keep: hold the session in tmux on the far side so a dropped terminal leaves the
+            allocation up, and reattach to one already held.
         """
-        board(on).interact(*command, env=env, queue=queue, walltime=walltime)
+        board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
 
     @app.command
     def setup(

@@ -537,6 +537,7 @@ class Board:
         env: str = "",
         queue: str = "",
         walltime: str = "",
+        keep: bool = False,
         replace: Callable[[str, list[str]], NoReturn] = os.execvp,
     ) -> NoReturn:
         """Hand this terminal a session on the bound host, inside its mirrored workspace.
@@ -553,10 +554,15 @@ class Board:
         every other remote command gets, and nothing more, because whatever answers on the far
         side owns the activation.
 
+        A kept session runs inside a tmux session on the far side, named for this workspace
+        and host, so the terminal can drop and the allocation stays up on the cluster; asking
+        again with `keep` reattaches to it instead of asking the scheduler for another node.
+
         command: a command to run instead of handing over the terminal, its own flags included.
         env: an environment name overriding the profile's choice.
         queue: the queue the allocation targets, the profile's own when empty.
         walltime: the session's wall-clock limit, the profile's own when empty.
+        keep: hold the session in tmux on the far side and reattach to one already held.
         replace: the process-replacing exec, injectable so a test can read the argv it built.
         """
         if self.local:
@@ -587,6 +593,11 @@ class Board:
             env=plan.env, command=command, resources=resources
         )
         staged = wrap(plan, self.remote_root(), command=session, activate=False)
+        if keep:
+            # `new-session -A` attaches to the named session when it exists and only otherwise
+            # starts one, so the same verb both opens and returns to a held allocation.
+            held = f"{self.project.name}-{self.host}"
+            staged = f"tmux new-session -A -s {shlex.quote(held)} {shlex.quote(staged)}"
         # A bounded transport is what a poll wants and the opposite of what a session wants, so
         # the user's own ssh config owns this one connection. `-t` forces the pty the far side
         # needs, and the staged line is quoted whole because ssh joins its argv back into one

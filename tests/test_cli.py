@@ -109,7 +109,12 @@ _RESOURCES = {
         (["serve", "vserve", "--on", "gold"], ("serve", "gold", ("vserve",), {})),
         (
             ["interact", "--on", "gold", "--queue", "interact-g", "--", "pwd"],
-            ("interact", "gold", ("pwd",), {"env": "", "queue": "interact-g", "walltime": ""}),
+            (
+                "interact",
+                "gold",
+                ("pwd",),
+                {"env": "", "queue": "interact-g", "walltime": "", "keep": False},
+            ),
         ),
         (["compute"], ("paths", "", (), {})),
         (["monitor"], ("once", "", (), {})),

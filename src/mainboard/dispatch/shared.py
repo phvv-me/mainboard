@@ -70,16 +70,11 @@ def workspace(start: Path | None = None) -> Path:
     Dispatch state belongs to the workspace, not to whichever directory a command was typed in.
     Rooting it here is what keeps one database under the workspace root instead of an empty
     second one per subdirectory, which is the difference between a cron sweep that settles every
-    job and one that finds none. A directory under no workspace at all keeps its own state, so a
-    scratch tree stays self-contained rather than raising.
+    job and one that finds none.
 
     start: the directory the search begins in, the current one when None.
     """
-    here = start or Path.cwd()
-    try:
-        return Project().find_root(here)
-    except FileNotFoundError:
-        return here
+    return Project().workspace(start)
 
 
 def state_path(root: Path | None = None) -> Path:

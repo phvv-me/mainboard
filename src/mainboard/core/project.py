@@ -56,3 +56,17 @@ class Project(FrozenModel):
         raise FileNotFoundError(
             f"no {self.manifest} found from {start} upward; run inside a workspace"
         )
+
+    def workspace(self, start: Path | None = None) -> Path:
+        """The workspace `start` belongs to, or `start` itself under no workspace at all.
+
+        Generated state belongs to the workspace, not to whichever directory a command was
+        typed in, and a scratch tree under no manifest keeps its own rather than raising.
+
+        start: the directory the search begins in, the current one when None.
+        """
+        here = start or Path.cwd()
+        try:
+            return self.find_root(here)
+        except FileNotFoundError:
+            return here
