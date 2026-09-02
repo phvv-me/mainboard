@@ -280,3 +280,5 @@ class Provisioner:
                 shard.pixi.update(env)
             shard.compiler.install_locked(files, resolve=resolve or refresh)
             shard.stage.install(env)
+            if shard.pixi.ready(env):
+                shard.pixi.cache_windows_activation(env)

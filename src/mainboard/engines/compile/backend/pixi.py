@@ -4,6 +4,7 @@ import platform
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, cast
 
 from plumbum import local
@@ -23,6 +24,11 @@ if TYPE_CHECKING:
 
 # What pixi writes into a prefix's `conda-meta/` once an installation has finished.
 _FINGERPRINT = ".pixi-environment-fingerprint"
+
+# Pixi's own complete activation result, including conda package hooks. It is generated after a
+# successful Windows provision, while Pixi can still initialize its process-global auth store,
+# then consumed by explicit commands that run inside a restricted application sandbox.
+_WINDOWS_ACTIVATION = "activation-windows.json"
 
 # The env var conda tooling reads to vouch each virtual-package floor a platform descriptor can
 # carry. A machine that cannot present the package itself still installs the frozen lock its
@@ -111,6 +117,30 @@ class Pixi(Tool):
         with local.env(PATH=os.pathsep.join([*binaries, str(path)])):
             yield
 
+    @contextmanager
+    def direct_windows_environment(self, env: str) -> Generator[None]:
+        """Activate a Windows prefix with accessible profile and per-run temporary storage."""
+        generated = next(
+            parent for parent in self.manifest.parents if parent.name == Project().out_dir
+        )
+        temporary_root = generated.parent
+        exported, scripts = self._cached_windows_activation()
+        cleared: set[str] = set()
+        for script in scripts:
+            self._apply_generated_activation(script, exported, cleared)
+        with TemporaryDirectory(
+            prefix=".mainboard-run-", dir=temporary_root, ignore_cleanup_errors=True
+        ) as temporary, local.env(
+            **exported,
+            HOME=str(Path.home()),
+            TEMP=temporary,
+            TMP=temporary,
+        ), self.activated(env):
+            for name in cleared:
+                if name in local.env:
+                    del local.env[name]
+            yield
+
     def env_prefix(self, env: str) -> Path:
         """The provisioned pixi environment prefix for ``env``."""
         return self.manifest.parent / ".pixi" / "envs" / env
@@ -176,17 +206,36 @@ class Pixi(Tool):
         """Run exact task or command argv through Pixi's cross-platform runner.
 
         Pixi owns environment activation while each caller-owned token remains a distinct
-        process argument. No intermediate shell reparses quoting or operators.
+        process argument. No intermediate shell reparses quoting or operators. On Windows an
+        explicit argv executes directly from the installed prefix: Pixi 0.78 initializes its
+        default authentication store before starting a child, and that initialization cannot
+        resolve the profile directory in restricted Windows application sandboxes even when
+        ``HOME`` and ``USERPROFILE`` are correct. A declared task stays with Pixi because its
+        cross-platform task grammar, cwd, dependencies and environment belong there.
 
         command: task name and arguments, or an ad-hoc command argv.
         env: generated environment in which to execute it.
         """
+        if self._direct_windows_command(command, env):
+            if not self.ready(env):
+                raise MissionError(
+                    f"environment {env!r} is not installed; run `{Project().name} install {env}`"
+                )
+            with self.direct_windows_environment(env):
+                return Process.passthrough(local[command[0]][command[1:]])
         return self.within_cwd(Process.passthrough, "run", "--frozen", "-e", env, *command)
 
     def capture(
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
     ) -> CommandResult:
         """Run through Pixi while capturing output under ``timeout`` seconds."""
+        if self._direct_windows_command(command, env):
+            if not self.ready(env):
+                raise MissionError(
+                    f"environment {env!r} is not installed; run `{Project().name} install {env}`"
+                )
+            with self.direct_windows_environment(env):
+                return Process.capture(local[command[0]][command[1:]], timeout=timeout)
         return self.within_cwd(
             lambda argv: Process.capture(argv, timeout=timeout),
             "run",
@@ -194,6 +243,112 @@ class Pixi(Tool):
             "-e",
             env,
             *command,
+        )
+
+    def _direct_windows_command(self, command: Sequence[str], env: str) -> bool:
+        """Whether explicit Windows argv can bypass Pixi's pre-child auth initialization."""
+        if (
+            platform.system() != "Windows"
+            or not command
+            or not self.windows_activation_cache.is_file()
+        ):
+            return False
+        try:
+            parsed = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return True
+        declared = set(parsed.get("tasks", {}))
+        selected = parsed.get("environments", {}).get(env, {})
+        features = parsed.get("feature", {})
+        if isinstance(selected, dict) and isinstance(features, dict):
+            for name in selected.get("features", []):
+                feature = features.get(name, {})
+                if isinstance(feature, dict):
+                    declared.update(feature.get("tasks", {}))
+        return command[0] not in declared
+
+    @property
+    def windows_activation_cache(self) -> Path:
+        """Pixi's cached complete Windows activation result for this environment shard."""
+        return self.manifest.parent / _WINDOWS_ACTIVATION
+
+    def cache_windows_activation(self, env: str) -> None:
+        """Persist Pixi's full Windows activation, including every conda package hook."""
+        if platform.system() != "Windows":
+            return
+        text = self.within_cwd(
+            lambda command: Process.output(command, "pixi shell-hook --json"),
+            "shell-hook",
+            "--json",
+            "-e",
+            env,
+        )
+        json.loads(text)
+        self.windows_activation_cache.write_text(text, encoding="utf-8")
+
+    def _cached_windows_activation(self) -> tuple[dict[str, str], list[Path]]:
+        """Load the complete activation Pixi recorded when this prefix was provisioned."""
+        cache = self.windows_activation_cache
+        try:
+            if cache.stat().st_mtime_ns < self.manifest.stat().st_mtime_ns:
+                raise MissionError(
+                    f"Windows activation changed; run `{Project().name} install` outside the "
+                    "application sandbox"
+                )
+            decoded = json.loads(cache.read_text(encoding="utf-8"))
+        except FileNotFoundError as error:
+            raise MissionError(
+                f"Windows activation is not cached; run `{Project().name} install` outside the "
+                "application sandbox"
+            ) from error
+        variables = decoded.get("environment_variables", {})
+        scripts = decoded.get("activation_scripts", [])
+        if not isinstance(variables, dict) or not isinstance(scripts, list):
+            raise MissionError(f"Windows activation cache is invalid: {cache}")
+        exported = {
+            name.upper(): value
+            for name, value in variables.items()
+            if isinstance(name, str) and isinstance(value, str)
+        }
+        return exported, [Path(script) for script in scripts if isinstance(script, str)]
+
+    @staticmethod
+    def _apply_generated_activation(
+        script: Path, exported: dict[str, str], cleared: set[str]
+    ) -> None:
+        """Apply Mainboard's generated dotenv/unset batch scripts, refusing arbitrary ones."""
+        try:
+            text = script.read_text(encoding="utf-8")
+        except FileNotFoundError as error:
+            raise MissionError(f"Windows activation script does not exist: {script}") from error
+        if "Generated by mainboard's Provisioner" in text and script.name == "dotenv.bat":
+            location = next(
+                line.partition('"')[2].partition('"')[0]
+                for line in text.splitlines()
+                if line.strip().lower().startswith("if not exist \"")
+            )
+            dotenv = script.parent / location
+            try:
+                lines = dotenv.read_text(encoding="utf-8").splitlines()
+            except FileNotFoundError:
+                return
+            for line in lines:
+                if line.startswith("#") or "=" not in line:
+                    continue
+                name, _, value = line.partition("=")
+                if name and name not in os.environ and name not in exported:
+                    exported[name] = value
+            return
+        if "Generated by mainboard from the [env] table" in text and script.name == "unset.bat":
+            cleared.update(
+                line.removeprefix("set ").removesuffix("=")
+                for line in text.splitlines()
+                if line.lower().startswith("set ") and line.endswith("=")
+            )
+            return
+        raise MissionError(
+            f"restricted Windows execution cannot reproduce activation script {script}; "
+            "run this command outside the application sandbox"
         )
 
     def repair(self, env: str) -> None:

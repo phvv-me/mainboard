@@ -1,4 +1,6 @@
+import platform
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 
@@ -36,6 +38,7 @@ def test_command_vouches_declared_floors_through_its_environment(
     pixi: Pixi, tool_paths: Mapping[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("CONDA_OVERRIDE_CUDA", raising=False)
-    assert not pixi.command.env
+    expected = {"HOME": str(Path.home())} if platform.system() == "Windows" else {}
+    assert dict(pixi.command.env) == expected
     manifest_with_floors(pixi)
     assert dict(pixi.command.env) == {"CONDA_OVERRIDE_CUDA": "13.0"}

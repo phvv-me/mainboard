@@ -51,13 +51,13 @@ class PixiEngine(Tool):
         Prefer it on PATH, fall back to `PIXI_HOME/bin` when a non-login remote shell has
         dropped it, and bootstrap the engine when it is absent everywhere. Windows tools in a
         Pixi exec environment still follow the cross-platform ``HOME`` convention, so bind its
-        actual user-profile path when the host did not provide one.
+        actual user-profile path rather than trusting a launcher-specific inherited value.
         """
         try:
             command = local["pixi"]
         except CommandNotFound:
             command = local[str(self.installed_binary())]
-        if platform.system() == "Windows" and "HOME" not in os.environ:
+        if platform.system() == "Windows":
             return command.with_env(HOME=str(Path.home()))
         return command
 

@@ -44,19 +44,24 @@ def test_command_prefers_pixi_on_path_and_falls_back_to_pixi_home(
     binary.parent.mkdir(parents=True)
     binary.touch()
     monkeypatch.setattr("mainboard.engines.compile.backend.engine.local", _FakeLocalMissingPixi())
-    assert Path(PixiEngine().command.executable) == binary
+    assert Path(PixiEngine().command.formulate()[0]) == binary
 
 
-def test_windows_pixi_commands_supply_the_real_home_when_the_shell_omits_it(
+@pytest.mark.parametrize("inherited", [None, "C:/sandbox/profile"])
+def test_windows_pixi_commands_supply_the_real_home_regardless_of_the_launchers_value(
     monkeypatch: pytest.MonkeyPatch,
+    inherited: str | None,
 ) -> None:
-    """Pixi exec children receive HOME without changing the calling process environment."""
+    """Pixi receives the actual profile without changing the calling process environment."""
     monkeypatch.setattr("platform.system", lambda: "Windows")
-    monkeypatch.delenv("HOME", raising=False)
+    if inherited is None:
+        monkeypatch.delenv("HOME", raising=False)
+    else:
+        monkeypatch.setenv("HOME", inherited)
     command = PixiEngine().command
 
     assert command.env["HOME"] == str(Path.home())
-    assert "HOME" not in os.environ
+    assert os.environ.get("HOME") == inherited
 
 
 def test_installed_binary_bootstraps_only_when_missing(
