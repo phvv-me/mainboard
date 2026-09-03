@@ -1,6 +1,7 @@
 import io
 import sys
-from typing import TYPE_CHECKING
+from subprocess import DEVNULL
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from plumbum import local
@@ -9,6 +10,7 @@ from mainboard import MissionError
 from mainboard.engines.compile.backend import Process
 
 if TYPE_CHECKING:
+    from plumbum.commands.base import BaseCommand
     from pytest_subprocess import FakeProcess
 
 _PYTHON = sys.executable
@@ -91,3 +93,45 @@ def test_relay_keeps_unicode_evidence_when_the_console_cannot_encode_it() -> Non
 
     assert Process.relay(stream, destination, "utf-8") == "zebra�"
     assert raw_destination.getvalue() == b"zebra?"
+
+
+def test_detached_processes_release_terminal_handles_with_the_platform_lifetime_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The updater outlives its caller without inheriting that caller's terminal."""
+
+    class Command:
+        calls: list[dict[str, int]]
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def popen(self, **kwargs: int) -> None:
+            self.calls.append(kwargs)
+
+    command = Command()
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+
+    Process.detached(cast("BaseCommand", command))
+
+    assert command.calls == [
+        {
+            "stdin": DEVNULL,
+            "stdout": DEVNULL,
+            "stderr": DEVNULL,
+            "creationflags": 0x00000200 | 0x00000008,
+        }
+    ]
+
+    command.calls.clear()
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    Process.detached(cast("BaseCommand", command))
+
+    assert command.calls == [
+        {
+            "stdin": DEVNULL,
+            "stdout": DEVNULL,
+            "stderr": DEVNULL,
+            "start_new_session": True,
+        }
+    ]

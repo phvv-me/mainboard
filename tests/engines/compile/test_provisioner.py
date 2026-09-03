@@ -1,14 +1,16 @@
 import json
 import os
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 import pytest
 from plumbum import local
 
 from mainboard import MissionError
-from mainboard.engines.compile import Provisioner, task_line
+from mainboard.engines.compile import Provisioner, SecondStage, task_line
+from mainboard.engines.compile.backend import CommandResult, Pixi
+from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles
 from mainboard.engines.compile.state import SyncState
 
@@ -45,6 +47,8 @@ def test_provision_compiles_and_installs_under_one_lock(
     provisioner = Provisioner(tmp_path, manifest_from(_PINNED))
     assert provisioner.out == tmp_path / ".mainboard"
     assert provisioner.pixi.manifest == provisioner.out / "envs" / "default" / "pixi.toml"
+    assert provisioner.stage is provisioner.compiler.stage
+    assert provisioner.artifact == provisioner.artifact_for("default")
     _solvable(provisioner)
     for _ in range(3):
         fp.register([fp.any()], stdout="environment ready\n")
@@ -57,6 +61,73 @@ def test_provision_compiles_and_installs_under_one_lock(
     state = SyncState.load(provisioner.environment_dir())
     assert state.environment == "default"
     assert state.compiled_from == provisioner.compiler.digest()
+
+
+def test_run_and_capture_recompile_a_stale_environment_before_delegating(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both execution paths repair generated state before the backend can observe it."""
+    observed: list[tuple[str, tuple[str, ...], str, float | None]] = []
+
+    def run(pixi: Pixi, command: Sequence[str], env: str = "default") -> int:
+        observed.append(("run", tuple(command), env, None))
+        return 17
+
+    def capture(
+        pixi: Pixi,
+        command: Sequence[str],
+        env: str = "default",
+        *,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        observed.append(("capture", tuple(command), env, timeout))
+        return CommandResult(19, "out", "err")
+
+    monkeypatch.setattr(Pixi, "run", run)
+    monkeypatch.setattr(Pixi, "capture", capture)
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+    pixi = provisioner.pixi
+    pixi.manifest.parent.mkdir(parents=True)
+    pixi.manifest.write_text("stale")
+
+    assert provisioner.run(("tool", "run")) == 17
+    assert provisioner.run(("tool", "fresh")) == 17
+
+    edited = Provisioner(tmp_path, manifest_from(f'{_BARE}[deps]\nripgrep = "*"\n'))
+    assert edited.capture(("tool", "capture"), timeout=3.0) == CommandResult(19, "out", "err")
+    assert edited.capture(("tool", "fresh-capture")) == CommandResult(19, "out", "err")
+    assert observed == [
+        ("run", ("tool", "run"), "default", None),
+        ("run", ("tool", "fresh"), "default", None),
+        ("capture", ("tool", "capture"), "default", 3.0),
+        ("capture", ("tool", "fresh-capture"), "default", None),
+    ]
+
+
+def test_a_ready_environment_caches_its_windows_activation_after_provisioning(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cache is made only after every installer has completed successfully."""
+    observed: list[str] = []
+    monkeypatch.setattr(Compiler, "write", lambda self, files: observed.append("compile"))
+    monkeypatch.setattr(
+        Compiler,
+        "install_locked",
+        lambda self, files, *, resolve: observed.append("pixi"),
+    )
+    monkeypatch.setattr(SecondStage, "install", lambda self, env: observed.append("second-stage"))
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
+    monkeypatch.setattr(
+        Pixi, "cache_windows_activation", lambda self, env: observed.append("activation")
+    )
+
+    Provisioner(tmp_path, manifest_from(_BARE)).provision()
+
+    assert observed == ["compile", "pixi", "second-stage", "activation"]
 
 
 def test_each_environment_compiles_into_an_independent_selected_manifest_shard(

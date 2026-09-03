@@ -54,5 +54,5 @@ def main(parent: int, log: Path, *command: str) -> int:
     return after_parent(parent, command, log)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - console-script fallback
     app()

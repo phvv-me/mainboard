@@ -83,6 +83,18 @@ def test_rerooting_follows_the_generated_directorys_pathlib_depth() -> None:
     assert rerooted("", generated_dir=generated) == "../../.."
 
 
+def test_workspace_platform_selection_accepts_pixis_defensive_descriptor_shapes() -> None:
+    """A descriptor can name its platform after a non-string name; scalar junk matches none."""
+    descriptor: Toml = {"name": False, "platform": "win-64"}
+    matrix = PlatformMatrix(
+        workspace=[descriptor, {"name": False, "platform": False}, False],
+        environments={},
+        default=["win-64"],
+    )
+
+    assert PixiManifest.workspace_platforms(matrix, "default") == [descriptor]
+
+
 @pytest.mark.parametrize(
     ("body", "tables"),
     [

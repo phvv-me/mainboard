@@ -1,8 +1,11 @@
 import base64
 import json
+import os
 import shlex
 import shutil
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +14,33 @@ from mainboard.dispatch.evidence import RECEIPTS_VAR, framing, receipts_in, stag
 # One trial receipt long enough that vast's 500-character line limit would cut it in half, which
 # is the whole reason this channel exists.
 _RECEIPT = json.dumps({"trial_receipt": {"run_id": "r1", "outcome": "passed", "pad": "x" * 900}})
+
+
+@pytest.fixture(scope="module")
+def posix_bash() -> str:
+    """A real POSIX Bash, never Windows' WSL launcher shim.
+
+    GitHub's Windows image puts ``System32/bash.exe`` on PATH even when no WSL distribution
+    exists. Git for Windows ships the Bash and coreutils that can actually exercise this remote
+    POSIX protocol, so use that installation explicitly instead of trusting the ambiguous name.
+    """
+    if sys.platform != "win32":
+        if bash := shutil.which("bash"):
+            return bash
+        pytest.skip("remote Bash protocol test needs Bash")
+
+    roots = [Path(git).resolve().parent.parent] if (git := shutil.which("git")) else []
+    roots.extend(
+        Path(value) / "Git"
+        for name in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")
+        if (value := os.environ.get(name))
+    )
+    if bash := next(
+        (root / "bin" / "bash.exe" for root in roots if (root / "bin" / "bash.exe").is_file()),
+        None,
+    ):
+        return str(bash)
+    pytest.skip("remote Bash protocol test needs Git for Windows Bash")
 
 
 def block(receipts: str) -> str:
@@ -99,7 +129,7 @@ def test_a_log_with_no_receipts_in_it_harvests_nothing():
     assert receipts_in("epoch 1 loss 0.4\nepoch 2 loss 0.3\n") == ()
 
 
-def framed_by_the_shell(receipts: str) -> str:
+def framed_by_the_shell(receipts: str, bash: str) -> str:
     """What `staging` and `framing` really emit, run through a real shell rather than described.
 
     The one test that can catch a fault in the pipeline itself. Everything above reads a frame
@@ -111,7 +141,7 @@ printf '%s\\n' {shlex.quote(receipts)} >> "${RECEIPTS_VAR}"
 echo "epoch 1 loss 0.4"
 {framing()}
 """
-    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    done = subprocess.run([bash, "-c", script], capture_output=True, text=True, check=True)
     return done.stdout
 
 
@@ -125,8 +155,9 @@ echo "epoch 1 loss 0.4"
         "an-exact-multiple-of-the-chunk-width",
     ],
 )
-@pytest.mark.skipif(shutil.which("bash") is None, reason="remote Bash protocol test needs Bash")
-def test_the_shell_that_really_runs_on_the_instance_frames_a_receipt_back_whole(pad: int):
+def test_the_shell_that_really_runs_on_the_instance_frames_a_receipt_back_whole(
+    pad: int, posix_bash: str
+):
     """The pipeline is six coreutils deep and runs where nothing can be inspected.
 
     `tr` leaves the stream unterminated, so `fold` used to end its last chunk without a newline
@@ -137,15 +168,16 @@ def test_the_shell_that_really_runs_on_the_instance_frames_a_receipt_back_whole(
     receipt = json.dumps(
         {"trial_receipt": {"run_id": "r1", "outcome": "passed", "pad": "x" * pad}}
     )
-    emitted = framed_by_the_shell(receipt)
+    emitted = framed_by_the_shell(receipt, posix_bash)
     assert max(len(line) for line in emitted.splitlines()) < 500
     assert unframed(emitted) == f"{receipt}\n"
     assert receipts_in(emitted) == (receipt,)
 
 
 @pytest.mark.parametrize("code", [0, 7], ids=["a-command-that-succeeded", "one-that-failed"])
-@pytest.mark.skipif(shutil.which("bash") is None, reason="remote Bash protocol test needs Bash")
-def test_an_image_missing_the_tools_costs_its_receipts_and_never_the_jobs_exit_code(code: int):
+def test_an_image_missing_the_tools_costs_its_receipts_and_never_the_jobs_exit_code(
+    code: int, posix_bash: str
+):
     """A job script runs under `set -e`, where a failing command in an `if` body is not exempt.
 
     So a minimal container without `fold` would have taken the whole script down inside the
@@ -163,15 +195,16 @@ exit $status
 """
     # `base64`, `tr`, `fold` and `sed` are the four externals here, so emptying PATH after the
     # command has run is exactly an image that never carried them.
-    bare = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    bare = subprocess.run([posix_bash, "-c", script], capture_output=True, text=True, check=False)
     assert bare.returncode == code
     assert receipts_in(bare.stdout) == ()
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="remote Bash protocol test needs Bash")
-def test_a_run_that_wrote_no_receipts_leaves_an_ordinary_log_exactly_as_it_was():
+def test_a_run_that_wrote_no_receipts_leaves_an_ordinary_log_exactly_as_it_was(
+    posix_bash: str,
+):
     """The framing must be invisible to every command that never writes a trial."""
     script = f'{staging()}\necho "epoch 1 loss 0.4"\n{framing()}\n'
-    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True)
+    done = subprocess.run([posix_bash, "-c", script], capture_output=True, text=True, check=True)
     assert done.stdout == "epoch 1 loss 0.4\n"
     assert receipts_in(done.stdout) == ()

@@ -229,6 +229,24 @@ def test_the_resolution_digest_covers_what_a_solve_reads(
     assert (edited.resolution_digest() == before) is same
 
 
+def test_target_specific_activation_cannot_change_what_the_lock_resolves(
+    compiler_from: CompilerFrom, files: Writer
+) -> None:
+    """Platform activation is runtime state, just like workspace activation."""
+    base = '[workspace]\nname = "w"\nplatforms = ["linux-64", "win-64"]\n'
+    compiler = compiler_from(base)
+    compiler.write(files)
+    before = compiler.resolution_digest()
+
+    edited = compiler_from(f'{base}[on.win.env]\nMKL_THREADING_LAYER = "TBB"\n')
+    edited.write(files)
+
+    assert edited.resolution_digest() == before
+    assert type(compiler)._resolution_manifest('[target]\nlinux = "inherited"\n') == {
+        "target": {"linux": "inherited"}
+    }
+
+
 @pytest.mark.parametrize(
     ("edited", "same"),
     [

@@ -237,6 +237,54 @@ def test_a_local_run_executes_the_wrapped_line_and_answers_with_its_exit_code(
     assert FakeProvisioner.calls[-1] == ("run", ((command,), "default"))
 
 
+def test_a_local_container_run_executes_its_wrapped_shell_line(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened: list[str | tuple[str, str]] = []
+
+    class LocalShell:
+        def __getitem__(self, command: str | tuple[str, str]) -> LocalShell:
+            opened.append(command)
+            return self
+
+    def line(self: Board, command: str, **options: str) -> str:
+        del self, command, options
+        return "wrapped command"
+
+    monkeypatch.setattr(Board, "line", line)
+    monkeypatch.setattr("mainboard.board.localhost", LocalShell())
+    monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
+    assert board.run(("true",), container="ngc") == 7
+    assert opened == ["bash", ("-lc", "wrapped command")]
+
+
+def test_a_local_auto_container_asks_the_runtime_registry_to_choose(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resolved: list[str] = []
+
+    class Runtime:
+        @staticmethod
+        def command(container: Container, *, prefix_bind: str, argv: Sequence[str]) -> list[str]:
+            return [container.image, prefix_bind, *argv]
+
+    def resolve(name: str) -> type[Runtime]:
+        resolved.append(name)
+        return Runtime
+
+    monkeypatch.setattr("mainboard.board.resolve", resolve)
+    plan = board.plan(container="ngc")
+    wrap = board.containerizer(plan, str(board.root))
+    assert wrap is not None
+    assert wrap(["python", "train.py"]) == [
+        "nvcr.io/nvidia/pytorch:25.06-py3",
+        f"{board.root}/.mainboard/envs/default/.pixi/envs/default",
+        "python",
+        "train.py",
+    ]
+    assert resolved == ["auto"]
+
+
 def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:

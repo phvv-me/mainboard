@@ -160,3 +160,21 @@ def test_windows_installer_uses_powershell_and_edits_no_shell_file(
     assert Path(command[0]) == Path(powershell)
     assert "install.ps1" in command[-1]
     assert PixiEngine.appended_shell_file() == ""
+
+
+@pytest.mark.parametrize(
+    ("system", "message"),
+    [
+        pytest.param("Windows", "PowerShell is required", id="windows-without-powershell"),
+        pytest.param("Linux", "a POSIX shell is required", id="posix-without-sh"),
+    ],
+)
+def test_the_installer_names_the_required_shell_when_none_is_available(
+    monkeypatch: pytest.MonkeyPatch, system: str, message: str
+) -> None:
+    """A failed bootstrap identifies the one platform shell the official installer needs."""
+    monkeypatch.setattr("platform.system", lambda: system)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    with pytest.raises(MissionError, match=message):
+        PixiEngine.installer()

@@ -8,6 +8,7 @@ from mainboard.probe.providers.nvidia import apis as nvidia_apis_module
 
 from ...support import (
     FakeDriverModel,
+    FakeError,
     FakeNvidiaApis,
     FakeSensorlessDevice,
     InstallNvidiaStack,
@@ -340,6 +341,39 @@ def test_a_host_with_no_cuda_device_reports_nothing_instead_of_raising(
     setup(install_nvidia_stack, monkeypatch)
     assert NvidiaGPU.is_available() is False
     assert NvidiaGPU.all() == ()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [pytest.param(FakeError, id="nvml"), pytest.param(OSError, id="operating-system")],
+)
+def test_a_failed_device_count_degrades_to_no_available_device(
+    failure: type[Exception],
+    install_nvidia_stack: InstallNvidiaStack,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Detection contains both provider errors and host-level driver failures."""
+    install_nvidia_stack()
+
+    def fail(cls: type[NvidiaGPU]) -> NoReturn:
+        raise failure("device count failed")
+
+    monkeypatch.setattr(NvidiaGPU, "device_count", classmethod(fail))
+
+    assert NvidiaGPU.is_available() is False
+    assert NvidiaGPU.all() == ()
+
+
+def test_nvml_memory_refusal_without_a_runtime_surfaces_the_missing_last_resort(
+    install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An NVML-only stack cannot fabricate capacity when its sole sensor refuses."""
+    apis = install_nvidia_stack(has_cuda_core=False)
+    monkeypatch.setattr(apis, "runtime", None)
+    monkeypatch.setattr(apis.nvml, "device_get_memory_info_v2", raise_unsupported)
+
+    with pytest.raises(RuntimeError, match="CUDA Runtime is unavailable"):
+        _ = NvidiaGPU(index=0).memory
 
 
 def test_a_base_install_without_the_cuda_extra_degrades_at_the_import_seam(

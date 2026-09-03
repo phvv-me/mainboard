@@ -159,6 +159,24 @@ def test_windows_refresh_exits_before_pixi_replaces_the_running_snapshot(
     assert "after this Windows launcher exits" in capsys.readouterr().err
 
 
+def test_windows_refresh_falls_back_to_the_current_workspace_for_an_older_fix_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fix without ``--from`` still leaves its deferred worker a durable log."""
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
+    monkeypatch.setattr("mainboard.staleness.os.getpid", lambda: 314)
+    monkeypatch.setattr(
+        "mainboard.staleness.PixiEngine.defer",
+        lambda self, *args: calls.append(args),
+    )
+    fix = ("exec", "--spec", "uv=0.12.7", "uv", "tool", "install", "mainboard")
+
+    assert staleness.refresh(Snapshot(installed=True, stale=True, fix=fix)) == 0
+    assert str(tmp_path / ".mainboard" / "self-update.log") in calls[0]
+
+
 def test_the_refresh_preserves_an_existing_durable_interpreter(snapshot: Path) -> None:
     """A uv-managed interpreter remains the exact self-update contract."""
     tool = snapshot.parents[2]
