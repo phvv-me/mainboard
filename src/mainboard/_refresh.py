@@ -42,13 +42,15 @@ def after_parent(
     wait(parent)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("", encoding="utf-8")
-    for attempt, delay in enumerate((*_WINDOWS_UV_RETRY_DELAYS, None), start=1):
+    for attempt, delay in enumerate(_WINDOWS_UV_RETRY_DELAYS, start=1):
         result = execute(command)
         _record(log, attempt, result)
-        if delay is None or not _windows_uv_tool_lock(result):
+        if not _windows_uv_tool_lock(result):
             return result.returncode
         pause(delay)
-    raise AssertionError("the bounded refresh loop always returns")
+    result = execute(command)
+    _record(log, len(_WINDOWS_UV_RETRY_DELAYS) + 1, result)
+    return result.returncode
 
 
 def _record(log: Path, attempt: int, result: subprocess.CompletedProcess[str]) -> None:
