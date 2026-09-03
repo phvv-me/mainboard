@@ -86,7 +86,7 @@ def stub_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[
     bindir = tmp_path_factory.mktemp("stubs")
 
     def install(name: str) -> str:
-        executable = bindir / name
+        executable = bindir / (name.removesuffix(".exe") if os.name != "nt" else name)
         executable.write_text("#!/bin/sh\n")
         executable.chmod(0o755)
         return str(executable)

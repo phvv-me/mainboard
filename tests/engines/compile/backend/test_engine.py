@@ -14,6 +14,8 @@ from mainboard import MissionError
 from mainboard.engines.compile.backend import PixiEngine
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pytest_subprocess import FakeProcess
 
 
@@ -149,12 +151,12 @@ def test_bootstrap_names_the_shell_file_the_installer_appends_to(
 
 def test_windows_installer_uses_powershell_and_edits_no_shell_file(
     monkeypatch: pytest.MonkeyPatch,
+    stub_binary: Callable[[str], str],
 ) -> None:
+    powershell = stub_binary("powershell.exe")
     monkeypatch.setattr("platform.system", lambda: "Windows")
-    monkeypatch.setattr(
-        "shutil.which", lambda name: "C:/Windows/powershell.exe" if name == "powershell" else None
-    )
+    monkeypatch.setattr("shutil.which", lambda name: powershell if name == "powershell" else None)
     command = PixiEngine.installer().formulate()
-    assert Path(command[0]) == Path("C:/Windows/powershell.exe")
+    assert Path(command[0]) == Path(powershell)
     assert "install.ps1" in command[-1]
     assert PixiEngine.appended_shell_file() == ""

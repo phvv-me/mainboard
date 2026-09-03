@@ -1,6 +1,5 @@
 import codecs
 import platform
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from subprocess import DEVNULL, PIPE
@@ -13,6 +12,10 @@ if TYPE_CHECKING:
     from io import BufferedReader
 
     from plumbum.commands.base import BaseCommand
+
+# Stable Win32 process-creation flags. They are absent from subprocess on POSIX, where tests still
+# exercise this branch with a fake process to keep the three-platform behavior covered.
+_WINDOWS_DETACHED_FLAGS = 0x00000200 | 0x00000008
 
 
 class Process:
@@ -64,7 +67,7 @@ class Process:
                 stdin=DEVNULL,
                 stdout=DEVNULL,
                 stderr=DEVNULL,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+                creationflags=_WINDOWS_DETACHED_FLAGS,
             )
             return
         command.popen(stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True)

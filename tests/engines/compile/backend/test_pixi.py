@@ -39,7 +39,7 @@ def test_command_vouches_declared_floors_through_its_environment(
 ) -> None:
     monkeypatch.delenv("CONDA_OVERRIDE_CUDA", raising=False)
     expected = {"HOME": str(Path.home())} if platform.system() == "Windows" else {}
-    assert dict(pixi.command.env) == expected
+    assert dict(pixi.command.env or {}) == expected
     manifest_with_floors(pixi)
     expected |= {"CONDA_OVERRIDE_CUDA": "13.0"}
-    assert dict(pixi.command.env) == expected
+    assert dict(pixi.command.env or {}) == expected

@@ -31,7 +31,7 @@ _PROJECT = "mainboard"
 _EDITS: dict[str, Json] = {
     "workspace": {"name": "w", "version": "9.9.9"},
     "vars": {"where": "elsewhere"},
-    "system": {"cuda": "12.6"},
+    "system": {"archspec": "x86_64_v3"},
     "env": {"PYTHONPATH": "src"},
     "deps": {"ripgrep": "*"},
     "on": {"linux-64": {"deps": {"ripgrep": "*"}}},
