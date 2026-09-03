@@ -240,6 +240,11 @@ class PixiManifest(FrozenModel):
     tasks: dict[str, Toml] = {}
 
     @staticmethod
+    def platform_activation(scope: Scope) -> dict[str, Toml]:
+        """Environment values exported only while Pixi selects this target scope."""
+        return {"env": dict(scope.env)} if scope.env else {}
+
+    @staticmethod
     def activation_table(
         m: Manifest,
         *,
@@ -361,9 +366,16 @@ class PixiManifest(FrozenModel):
         if env.platforms:
             body[_PLATFORMS] = env.platforms
         target = {
-            platform: tables
+            platform: {
+                **dependency_tables(scope, over=env),
+                **(
+                    {"activation": activation}
+                    if (activation := cls.platform_activation(scope))
+                    else {}
+                ),
+            }
             for platform, scope in env.on.items()
-            if (tables := dependency_tables(scope, over=env))
+            if dependency_tables(scope, over=env) or scope.env
         }
         if target:
             body["target"] = target
@@ -471,14 +483,34 @@ class PixiManifest(FrozenModel):
             generated_dir=generated_dir,
         )
         targets: dict[str, Toml] = {
-            plat: dependency_tables(scope, over=m) for plat, scope in m.on.items()
+            platform: {
+                **dependency_tables(scope, over=m),
+                **(
+                    {"activation": activation}
+                    if (activation := cls.platform_activation(scope))
+                    else {}
+                ),
+            }
+            for platform, scope in m.on.items()
         }
         if any(_platform_name(entry).startswith("win-") for entry in workspace_platforms) and (
             windows_activation := cls.activation_table(
                 m, windows=True, generated_dir=generated_dir
             )
         ):
-            targets["win"] = {**_table(targets.get("win")), "activation": windows_activation}
+            windows_target = _table(targets.get("win"))
+            platform_activation = _table(windows_target.get("activation"))
+            windows_environment = {
+                **_table(windows_activation.get("env")),
+                **_table(platform_activation.get("env")),
+            }
+            targets["win"] = {
+                **windows_target,
+                "activation": {
+                    **windows_activation,
+                    **({"env": windows_environment} if windows_environment else {}),
+                },
+            }
         payload: dict[str, Toml] = {
             "workspace": {
                 "name": m.workspace.name,
