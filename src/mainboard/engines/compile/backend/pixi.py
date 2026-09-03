@@ -78,7 +78,7 @@ class Pixi(Tool):
         cached, since the floors live in a manifest the compiler may write moments earlier.
         """
         engine = self.engine.command
-        environment = dict(engine.env) | self.overrides
+        environment = dict(engine.env or {}) | self.overrides
         if environment:
             executable = Path(engine.formulate()[0])
             return local[str(executable)].with_env(**environment)

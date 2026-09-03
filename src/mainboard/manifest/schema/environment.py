@@ -1,7 +1,7 @@
 from pydantic import ConfigDict, Field
 
 from ...core.base import kebab
-from .scope import Scope
+from .scope import PlatformScope, Scope
 
 # A task is a bare command line, or a table of the keys pixi's own task takes: `run`, `dir`,
 # `depends` and friends as strings and string lists, plus an `env` table of variables the task
@@ -13,7 +13,7 @@ class Env(Scope):
     """A named environment: its own deps, overlays, tasks, and solve surface."""
 
     channels: list[str] = []
-    on: dict[str, Scope] = {}
+    on: dict[str, PlatformScope] = {}
     tasks: dict[str, Task] = {}
     model_config = ConfigDict(alias_generator=kebab, populate_by_name=True)
 

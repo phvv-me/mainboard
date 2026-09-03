@@ -15,7 +15,7 @@ from .toml import Toml
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
-    from ...manifest import Env, Manifest, Scope, Spec, Toolchain
+    from ...manifest import Env, Manifest, PlatformScope, Scope, Spec, Toolchain
     from ...manifest.schema.environment import Task
 
 # pixi tables whose values are dependency specs. A ``path`` *source* lives inside one of these
@@ -240,7 +240,7 @@ class PixiManifest(FrozenModel):
     tasks: dict[str, Toml] = {}
 
     @staticmethod
-    def platform_activation(scope: Scope) -> dict[str, Toml]:
+    def platform_activation(scope: PlatformScope) -> dict[str, Toml]:
         """Environment values exported only while Pixi selects this target scope."""
         return {"env": dict(scope.env)} if scope.env else {}
 

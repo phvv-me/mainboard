@@ -3,7 +3,16 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from mainboard import Manifest, MissionError
-from mainboard.manifest import Engine, Env, Header, HostProfile, Scope, Spec, Toolchain
+from mainboard.manifest import (
+    Engine,
+    Env,
+    Header,
+    HostProfile,
+    PlatformScope,
+    Scope,
+    Spec,
+    Toolchain,
+)
 
 from ..strategies import SPECS, WORDS
 
@@ -72,9 +81,9 @@ def test_an_ecosystem_entry_must_be_a_table_and_not_a_version_string() -> None:
         Toolchain.model_validate("3.14")
 
 
-def test_a_scope_discovers_its_ecosystem_tables_and_layers_them_over_a_base() -> None:
+def test_a_platform_scope_discovers_ecosystems_and_layers_activation_over_a_base() -> None:
     """Conda deps, each ecosystem and the plain extras all merge, and nothing else is a chain."""
-    base = Scope.model_validate(
+    base = PlatformScope.model_validate(
         {
             "deps": {"python": ">=3.13", "pueue": "*"},
             "env": {"SHARED": "base", "BASE_ONLY": "yes"},
@@ -82,7 +91,7 @@ def test_a_scope_discovers_its_ecosystem_tables_and_layers_them_over_a_base() ->
             "notes": {"freeform": "old"},
         }
     )
-    over = Scope.model_validate(
+    over = PlatformScope.model_validate(
         {
             "deps": {"python": ">=3.14"},
             "env": {"SHARED": "overlay", "OVERLAY_ONLY": "yes"},
