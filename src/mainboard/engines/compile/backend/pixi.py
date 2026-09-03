@@ -173,6 +173,7 @@ class Pixi(Tool):
         locked = not resolve
         result = self.environment_result("install", "-e", env, resolve=resolve)
         self._raise_on_lock_drift(result, locked=locked)
+        self._raise_on_inaccessible_windows_home(result, env=env, resolve=resolve)
         if result.returncode:
             raise MissionError("`pixi install` failed (see its output above)")
         # Known wart carried over from chefe: a resolve re-installs once more from the
@@ -439,6 +440,26 @@ class Pixi(Tool):
             raise MissionError(
                 f"the manifest drifted from pixi.lock. Run `{Project().name} install --resolve` "
                 "on a solve-capable machine, which is also what a host is then sent."
+            )
+
+    @staticmethod
+    def _raise_on_inaccessible_windows_home(
+        result: CommandResult, *, env: str, resolve: bool
+    ) -> None:
+        """Explain the one Pixi provisioning failure caused by a restricted Windows profile."""
+        failure = f"{result.stdout}\n{result.stderr}".casefold()
+        if (
+            result.returncode
+            and platform.system() == "Windows"
+            and "filestorageerror" in failure
+            and "could not determine the home directory" in failure
+        ):
+            environment = "" if env == "default" else f" {env}"
+            resolution = " --resolve" if resolve else ""
+            raise MissionError(
+                "Pixi could not access the Windows home/profile required for provisioning. "
+                f"Run `{Project().name} install{environment}{resolution}` from a regular "
+                "terminal outside the restricted application sandbox."
             )
 
     def _has_editable_paths(self) -> bool:
