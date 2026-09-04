@@ -1,6 +1,14 @@
 # `VastBackend` rents a Vast.ai machine for one command through their REST API. Auth is a console
 # API key sent as `Authorization: Bearer` on every call, and the transport is the same injected
 # callable the other pure-REST backend uses, so no test ever reaches the network.
+#
+# A rental comes in two shapes, and which one a dispatch gets is decided by the plan rather than
+# by a flag. A plan that names no container of its own rents a machine this workspace lands on:
+# `rent` creates it in the `ssh` runtype with the waiting entrypoint, and the ordinary mirror,
+# install, provision and pin path then puts the workspace, the tool and the environment on it
+# before the job starts. A plan that declares its own image keeps `submit`, which runs the raw
+# command as the container's entrypoint in `args` launch mode, because a prebuilt image is the one
+# case where the box already holds everything the command needs.
 
 import json
 import os
@@ -15,6 +23,9 @@ from ...core.errors import MissionError
 from ...costs.imports import from_vast
 from ..evidence import framing, staging
 from ..jobs.spec import walltime_seconds
+from ..rentals import LANDING_SECONDS, Identity, Rental, identity, reachable, waiting
+from ..shared import logger
+from ..transport import Endpoint
 from ..vocabulary import JobState
 from .base import (
     Account,
@@ -23,6 +34,7 @@ from .base import (
     LogSource,
     Market,
     ProviderBackend,
+    Rentable,
     Standing,
     forgotten,
     http_transport,
@@ -71,6 +83,15 @@ _LIVE_STATUSES = frozenset({"created", "loading", "running", "stopping"})
 # The card a price sample quotes. One card, always listed in volume, so the sample reads as a
 # real market rate rather than a quote for hardware nobody rents today.
 _SAMPLE_GPU = "RTX 4090"
+# The login every vast image hands out, and the `actual_status` a machine reaches before its ssh
+# daemon can answer at all.
+_SSH_USER = "root"
+_RUNNING = "running"
+# How long to wait for vast to pull the image, start the container and publish the proxy address
+# its ssh goes through. Ten minutes, because a cold CUDA base image is gigabytes and a machine
+# still pulling one is exactly the machine a landing must not knock at yet.
+_ADDRESS_ATTEMPTS = 60
+_ADDRESS_SECONDS = 10.0
 
 
 def exit_sentinel(log: str) -> int | None:
@@ -144,7 +165,7 @@ def api_key() -> str:
     return key
 
 
-class VastBackend(ProviderBackend, Account, LogSource, Market):
+class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
     """Rent a Vast.ai machine for one command, the container's own lifetime being the job's.
 
     Vast rents whole containers rather than running jobs, so `submit` picks a rentable offer
@@ -195,14 +216,34 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         self.sleeper = sleeper
 
     @staticmethod
-    def hourly_cap(resources: Resources) -> float:
+    def hourly_cap(resources: Resources, *, landing: int = 0) -> float:
         """The hourly ceiling `resources` implies, 0 when the request leaves the job open-ended.
 
         A spend cap only bounds an hourly rental once the job also says how long it may run, so a
         walltime-less request searches the whole market and leans on `max_usd` alone.
+
+        landing: seconds the rental bills before its job starts, which on a machine this
+            workspace lands on is the mirror, the tool install and the environment; 0 for a
+            prebuilt container that runs the command the moment it boots.
         """
         seconds = walltime_seconds(resources.walltime) if resources.walltime else 0
-        return resources.max_usd * 3600.0 / seconds if seconds else 0.0
+        return resources.max_usd * 3600.0 / (seconds + landing) if seconds else 0.0
+
+    def attach(self, handle: str, *, key: str) -> None:
+        """Put this workspace's public key on the rental, so the landing can log in.
+
+        Vast copies an account key onto a new instance on its own, and this says it again for the
+        one key this machine actually holds the private half of, which is the only key a landing
+        can use. A refusal here is fatal on purpose rather than warned about: an instance nobody
+        can log into is a rental that will bill for a landing that can never happen.
+        """
+        try:
+            self.request("POST", path=f"/instances/{handle}/ssh/", body={"ssh_key": key})
+        except HTTPError as refused:
+            raise MissionError(
+                f"vast refused the ssh key for instance {handle} ({refused}); add the key at "
+                "https://cloud.vast.ai/manage-keys/ and submit again"
+            ) from refused
 
     def cancel(self, handle: str) -> None:
         """Destroy the rental, tolerating an instance Vast has already forgotten.
@@ -227,6 +268,30 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         return from_vast(
             self.search(gpu_name=gpu_name, gpus=gpus, limit=limit or _SEARCH_LIMIT),
             spot=self.spot,
+        )
+
+    def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
+        """Where ssh reaches instance `handle`, waited for until vast publishes it and it runs.
+
+        A rental is created long before it is reachable: vast pulls the image, starts the
+        container, and only then publishes the proxy address and port its own ssh goes through.
+        So this reads the instance row until all three are true, and a machine that never gets
+        there is a refusal naming the id to look up rather than a landing knocking at an address
+        that does not exist yet.
+
+        handle: the contract id the rental was created under.
+        key: the private key file the connection uses, empty to leave that to ssh's own config.
+        """
+        for _ in range(_ADDRESS_ATTEMPTS):
+            instance = self.instance(handle)
+            address = str(instance.get("ssh_host") or "")
+            port = int(instance.get("ssh_port") or 0)
+            if address and port and str(instance.get("actual_status") or "") == _RUNNING:
+                return Endpoint(address=address, port=port, user=_SSH_USER, identity=key)
+            self.sleeper(_ADDRESS_SECONDS)
+        raise MissionError(
+            f"vast instance {handle} never came up with an ssh address; look it up at "
+            "https://cloud.vast.ai/instances/ and destroy it if it is still billing"
         )
 
     def exit_code(self, handle: str) -> int | None:
@@ -331,6 +396,67 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             "would boot, bill, and die at the first kernel launch with no kernel image for its "
             "own card. Maxwell, Pascal and Volta went with it; ask for Turing or newer."
         )
+
+    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+        """Rent a machine that answers ssh and hold its entrypoint until a dispatch lands on it.
+
+        The entrypoint waits rather than running the job, because the workspace, the tool and the
+        environment reach the box minutes after it boots and a command that starts before them
+        finds nothing to run (exit 127, three rentals, 2026-09-03). Those minutes are billed, so
+        they sit inside the ceiling the offer search filters on rather than outside anyone's
+        budget.
+
+        A rental that cannot be opened is ended here rather than left to the entrypoint's own
+        deadline, since this is the last place that still holds the handle.
+        """
+        self.admit(plan, resources)
+        key = identity(plan.profile.vars.get("ssh-key", ""))
+        offer = self.pick(
+            gpu_name=resources.gpu_name,
+            gpus=max(resources.gpus, 1),
+            max_usd_hr=self.hourly_cap(resources, landing=LANDING_SECONDS),
+        )
+        script = f"{waiting()}\necho {_EXIT_SENTINEL}$status\nexit $status\n"
+        handle = self.rented(offer, plan=plan, launch={"runtype": "ssh", "onstart": script})
+        opened = False
+        try:
+            endpoint = self.opened(handle, key=key)
+            opened = True
+        finally:
+            if not opened:
+                logger.warning("vast instance %s could not be opened, ending the rental", handle)
+                self.cancel(handle)
+        return Rental(handle=handle, endpoint=endpoint)
+
+    def opened(self, handle: str, *, key: Identity) -> Endpoint:
+        """Attach this workspace's key to `handle` and answer once ssh really lets us in."""
+        self.attach(handle, key=key.public)
+        return reachable(self.endpoint(handle, key=key.private), sleeper=self.sleeper)
+
+    def rented(self, offer: Mapping, *, plan: ExecutionPlan, launch: dict) -> str:
+        """Create the instance for `offer`, returning the contract id that starts the meter.
+
+        offer: the bundle row `pick` chose.
+        plan: the resolved execution context, whose own container image is rented when it
+            declares one and vast's base image otherwise.
+        launch: the launch-mode fields, either the `ssh` runtype's waiting onstart script for a
+            machine a dispatch lands on, or the `args` entrypoint for a prebuilt image.
+        """
+        container = plan.container
+        body = {
+            "client_id": "me",
+            "image": container.image if container is not None else _DEFAULT_IMAGE,
+            "disk": self.disk_gb,
+            "label": f"mainboard-{plan.host}",
+            # Fail the rent outright rather than parking a stopped instance we would still owe
+            # storage on when the offer is taken between the search and the create.
+            "cancel_unavail": True,
+            **launch,
+        }
+        if self.spot:
+            body["price"] = float(offer["min_bid"])
+        payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
+        return str(payload["new_contract"])
 
     def request(
         self, method: str, *, path: str, body: dict | None = None, query: dict | None = None
@@ -471,6 +597,13 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
         )
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+        """Run `command` as the container's own entrypoint, for a plan that brings its own image.
+
+        The raw-command shape, and the one case it is still right for: a prebuilt image already
+        holds everything its command needs, so there is nothing for a landing to install and a
+        one-shot container is both cheaper and simpler. Every other plan rents through `rent`,
+        because a bare image has no workspace, no tool and no environment to run anything with.
+        """
         self.admit(plan, resources)
         offer = self.pick(
             gpu_name=resources.gpu_name,
@@ -484,25 +617,13 @@ class VastBackend(ProviderBackend, Account, LogSource, Market):
             f"{staging()}\n{command}\nstatus=$?\n{framing()}\n"
             f"echo {_EXIT_SENTINEL}$status\nexit $status\n"
         )
-        container = plan.container
-        body = {
-            "client_id": "me",
-            "image": container.image if container is not None else _DEFAULT_IMAGE,
-            "disk": self.disk_gb,
-            "label": f"mainboard-{plan.host}",
-            # `args` launch mode runs the image as it is, with `onstart` as the entrypoint and
-            # `args` as its argv, which is how the official CLI spells a one-shot container.
-            "runtype": "args",
-            "onstart": "bash",
-            "args": ["-c", script],
-            # Fail the rent outright rather than parking a stopped instance we would still owe
-            # storage on when the offer is taken between the search and the create.
-            "cancel_unavail": True,
-        }
-        if self.spot:
-            body["price"] = float(offer["min_bid"])
-        payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
-        return str(payload["new_contract"])
+        # `args` launch mode runs the image as it is, with `onstart` as the entrypoint and `args`
+        # as its argv, which is how the official CLI spells a one-shot container.
+        return self.rented(
+            offer,
+            plan=plan,
+            launch={"runtype": "args", "onstart": "bash", "args": ["-c", script]},
+        )
 
     def uploaded(self, url: str) -> str:
         """The log body Vast uploaded at `url`, polled while the upload is still in flight.

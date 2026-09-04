@@ -7,11 +7,19 @@
 # verified live 2026-08-19: `/balance` carries `balance`, `availableBalance`,
 # `availableVoucherAmount` and `availableCreditAmount`, and the resource listing is the priced,
 # stock-aware catalog the console itself reads to fill its launch form.
+#
+# An instance is also an ssh box, and that is what a dispatch lands on. Their docs put the address
+# at `instanceSpecInfo.regionInfo.sshAddress`, the port in the `instanceSpecInfo.nodePorts` entry
+# for container port 22, and the login at `instanceMetadata.instanceUsername`, which is the
+# `ssh -p <nodePort> <user>@<address>` line their console prints. Unlike vast there is no endpoint
+# that attaches a key to a running instance, so the key the landing connects with is the one the
+# account already registered in the console, and a machine that never answers says so by name.
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
+from time import sleep
 from typing import TYPE_CHECKING
 from urllib.error import HTTPError
 from urllib.request import Request
@@ -19,6 +27,9 @@ from uuid import uuid4
 
 from ...core.errors import MissionError
 from ..evidence import framing, staging
+from ..rentals import Identity, Rental, identity, reachable, waiting
+from ..shared import logger
+from ..transport import Endpoint
 from ..vocabulary import JobState
 from .base import (
     Account,
@@ -26,12 +37,15 @@ from .base import (
     Delivery,
     LogSource,
     ProviderBackend,
+    Rentable,
     Standing,
     forgotten,
     http_transport,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from ...context.plan import ExecutionPlan
     from ...manifest.schema.host import HostProfile
     from ..vocabulary import Resources
@@ -50,6 +64,14 @@ _PAGE_SIZE = 50
 # HPC-AI spells its states in camel case (`Running`, `StartingFailed`). The set is the one their
 # list-instances doc publishes. A status outside this table (a new HPC-AI state) reads as
 # "unknown" rather than crashing.
+# Where an instance publishes the ssh endpoint a landing reaches it at, and the container port
+# whose mapping carries it. `Running` is the one status that can answer ssh at all.
+_SSH_PORT = 22
+_RUNNING = "Running"
+# How long to wait for an instance to pull its image and come up, ten minutes at this cadence.
+_ADDRESS_ATTEMPTS = 60
+_ADDRESS_SECONDS = 10.0
+
 _VERDICTS = {
     "initializing": "running",
     "pullingimage": "running",
@@ -96,7 +118,19 @@ def _required_var(profile: HostProfile, key: str) -> str:
         ) from None
 
 
-class HpcAiBackend(ProviderBackend, Account):
+def _mapped_port(rows: Sequence[Mapping]) -> int:
+    """The host port an instance maps container port 22 to, 0 when it publishes none.
+
+    A row names the container port under `port` and the port it is reachable at under
+    `nodePort`, which is the pair their console's own ssh line is built from.
+    """
+    for row in rows:
+        if int(row.get("port") or 0) == _SSH_PORT:
+            return int(row.get("nodePort") or 0)
+    return 0
+
+
+class HpcAiBackend(ProviderBackend, Account, Rentable):
     """Run a command on an HPC-AI instance, its own REST API standing in for a scheduler.
 
     HPC-AI reports instance-level status only (`instanceRuntimeInfo.status`), never a process
@@ -120,12 +154,20 @@ class HpcAiBackend(ProviderBackend, Account):
         "{handle} over ssh instead",
     }
 
-    def __init__(self, *, spot: bool = False, transport: Transport = http_transport) -> None:
+    def __init__(
+        self,
+        *,
+        spot: bool = False,
+        transport: Transport = http_transport,
+        sleeper: Callable[[float], None] = sleep,
+    ) -> None:
         """spot: whether created instances are spot (cost-optimized, preemptible).
         transport: sends a prepared `Request`, returning its response; injectable for tests.
+        sleeper: waits between instance polls, injected so a test drives it without real time.
         """
         self.spot = spot
         self.transport = transport
+        self.sleeper = sleeper
 
     def cancel(self, handle: str) -> None:
         """Stop the instance, then destroy it, so a cancelled run stops billing rather than idle.
@@ -195,6 +237,110 @@ class HpcAiBackend(ProviderBackend, Account):
                 return {}
             page += 1
 
+    def create(self, plan: ExecutionPlan, *, script: str) -> str:
+        """Create an instance whose initScript runs `script`, returning HPC-AI's instance id.
+
+        Every field their create endpoint calls required is sent, `billing` and `nodePorts`
+        included, since the validator rejects a body that omits one rather than defaulting it.
+        The returned handle is the provider's own `instanceId`, which is what `state`, `stop` and
+        `delete` address the rental by; the `name` is ours and is never an address.
+
+        HPC-AI reports instance status and never a process exit code, so `script` runs inside the
+        one redirect that puts its output and whatever it leaves in `$status` into the sentinel
+        pair on the instance's data disk, which is the only place a post-mortem can read either.
+
+        plan: the resolved execution context, whose `vars` name the type, image and region.
+        script: the initScript body, a command for a prebuilt image or the waiting entrypoint for
+            a machine a dispatch lands on.
+        """
+        payload = self.request(
+            "POST",
+            path="/instance/create",
+            body={
+                "name": f"mainboard-{uuid4().hex[:12]}",
+                "isSpotInstance": self.spot,
+                "instanceTypeId": _required_var(plan.profile, "instance-type-id"),
+                "imageId": _required_var(plan.profile, "image-id"),
+                "region": _required_var(plan.profile, "region"),
+                "billing": {"chargeMode": "perHour", "duration": 1},
+                "remoteStorages": [],
+                "instanceConfiguration": {
+                    "enableCommonData": False,
+                    "enableDocker": False,
+                    "initScript": (
+                        f"mkdir -p {_SENTINEL_DIR}\n"
+                        f"{{ {script}\n}} > {_LOG_PATH} 2>&1\n"
+                        f"echo $status > {_EXIT_PATH}\n"
+                    ),
+                },
+                "nodePorts": [],
+            },
+        )
+        return str(payload["instanceId"])
+
+    def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
+        """Where ssh reaches instance `handle`, waited for until it runs and publishes one.
+
+        An instance is created before it can be logged into: the image is pulled, the container
+        starts, and only a `Running` row carries the address, the mapped port and the login their
+        console's own ssh line is built from. A machine that never gets there is a refusal naming
+        the id, rather than a landing knocking at an address that does not exist yet.
+
+        handle: the instance id the rental was created under.
+        key: the private key file the connection uses, empty to leave that to ssh's own config.
+        """
+        for _ in range(_ADDRESS_ATTEMPTS):
+            entry = self.instance(handle)
+            spec = entry.get("instanceSpecInfo") or {}
+            address = str((spec.get("regionInfo") or {}).get("sshAddress") or "")
+            port = _mapped_port(spec.get("nodePorts") or [])
+            running = str((entry.get("instanceRuntimeInfo") or {}).get("status") or "") == _RUNNING
+            if running and address and port:
+                user = str((entry.get("instanceMetadata") or {}).get("instanceUsername") or "")
+                return Endpoint(address=address, port=port, user=user, identity=key)
+            self.sleeper(_ADDRESS_SECONDS)
+        raise MissionError(
+            f"hpc-ai instance {handle} never published an ssh endpoint; look it up in the "
+            "console and terminate it if it is still billing"
+        )
+
+    def opened(self, handle: str, *, key: Identity) -> Endpoint:
+        """Answer once ssh lets us onto `handle`, naming the console key when it never does.
+
+        HPC-AI attaches no key at create time, so the only way in is a key the account already
+        registered, and a machine that answers nothing is almost always this workspace's key
+        missing from that list rather than a machine that failed to boot.
+        """
+        try:
+            return reachable(self.endpoint(handle, key=key.private), sleeper=self.sleeper)
+        except MissionError as refused:
+            raise MissionError(
+                f"{refused}. Add the public half of {key.private} to the ssh keys in the HPC-AI "
+                "console, since an instance is only reachable with a key the account registered "
+                "before it was created."
+            ) from None
+
+    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+        """Rent an instance that answers ssh and hold its initScript until a dispatch lands on it.
+
+        The initScript waits rather than running the job, because the workspace, the tool and the
+        environment reach the box minutes after it boots and a command that starts before them
+        has nothing to run with. A rental that cannot be opened is ended here rather than left to
+        the initScript's own deadline, since this is the last place that still holds the handle.
+        """
+        self.admit(plan, resources)
+        key = identity(plan.profile.vars.get("ssh-key", ""))
+        handle = self.create(plan, script=f"{waiting()}\n")
+        opened = False
+        try:
+            endpoint = self.opened(handle, key=key)
+            opened = True
+        finally:
+            if not opened:
+                logger.warning("hpc-ai instance %s could not be opened, ending the rental", handle)
+                self.cancel(handle)
+        return Rental(handle=handle, endpoint=endpoint)
+
     def request(self, method: str, *, path: str, body: dict) -> dict:
         """An authenticated call to the instance API under the console API key.
 
@@ -236,43 +382,19 @@ class HpcAiBackend(ProviderBackend, Account):
         )
 
     def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
-        """Create an instance whose initScript runs `command`, returning HPC-AI's instance id.
+        """Run `command` as the instance's own initScript, for a plan that brings its own image.
 
-        Every field their create endpoint calls required is sent, `billing` and `nodePorts`
-        included, since the validator rejects a body that omits one rather than defaulting it.
-        The returned handle is the provider's own `instanceId`, which is what `state`, `stop` and
-        `delete` address the rental by; the `name` is ours and is never an address.
+        The raw-command shape, and the one case it is still right for: a prebuilt image already
+        holds everything its command needs, so there is nothing for a landing to install. Every
+        other plan rents through `rent`, because a bare image has no workspace, no tool and no
+        environment to run anything with.
         """
         self.admit(plan, resources)
         # The command's own status is captured before anything else runs, since the framing
         # below would otherwise be what `$?` reports. Receipts are framed into the same captured
         # log the sentinel pair already writes, so whoever reads that file by hand gets the
         # trials as well as the output.
-        init_script = (
-            f"mkdir -p {_SENTINEL_DIR}\n{staging()}\n"
-            f"{{ {command}\n}} > {_LOG_PATH} 2>&1\nstatus=$?\n"
-            f"{framing()} >> {_LOG_PATH}\necho $status > {_EXIT_PATH}\n"
-        )
-        payload = self.request(
-            "POST",
-            path="/instance/create",
-            body={
-                "name": f"mainboard-{uuid4().hex[:12]}",
-                "isSpotInstance": self.spot,
-                "instanceTypeId": _required_var(plan.profile, "instance-type-id"),
-                "imageId": _required_var(plan.profile, "image-id"),
-                "region": _required_var(plan.profile, "region"),
-                "billing": {"chargeMode": "perHour", "duration": 1},
-                "remoteStorages": [],
-                "instanceConfiguration": {
-                    "enableCommonData": False,
-                    "enableDocker": False,
-                    "initScript": init_script,
-                },
-                "nodePorts": [],
-            },
-        )
-        return str(payload["instanceId"])
+        return self.create(plan, script=f"{staging()}\n{command}\nstatus=$?\n{framing()}\n")
 
     @staticmethod
     def _hourly(kind: Mapping) -> float:

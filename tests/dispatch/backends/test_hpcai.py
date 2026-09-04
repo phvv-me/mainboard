@@ -1,14 +1,18 @@
 from contextlib import nullcontext
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import Capability, Delivery, HpcAiBackend, LogSource, api_key
+from mainboard.dispatch.backends import hpcai as hpcai_module
 from mainboard.dispatch.evidence import framing, staging
+from mainboard.dispatch.rentals import waiting
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import HostProfile
 
+from ..support import Naps, keypair
 from .support import FakeTransport, Reply, hpc_ai_backend, plan, refused
 
 # The API root every refusal a test queues is attributed to.
@@ -150,9 +154,9 @@ def test_submit_posts_every_field_their_create_validator_calls_required(spot: bo
             "enableCommonData": False,
             "enableDocker": False,
             "initScript": (
-                f"mkdir -p /root/dataDisk\n{staging()}\n"
-                "{ python train.py\n} > /root/dataDisk/mainboard.log 2>&1\nstatus=$?\n"
-                f"{framing()} >> /root/dataDisk/mainboard.log\n"
+                "mkdir -p /root/dataDisk\n"
+                f"{{ {staging()}\npython train.py\nstatus=$?\n{framing()}\n"
+                "\n} > /root/dataDisk/mainboard.log 2>&1\n"
                 "echo $status > /root/dataDisk/mainboard.exit\n"
             ),
         },
@@ -346,3 +350,55 @@ def test_a_declared_gap_names_the_sentinel_path_to_read_by_hand_instead(
     """An instance's output never leaves its own disk, so both gaps point at the same files."""
     advice = authed_backend().refusal(capability, handle="h1", path="out/results.json")
     assert advice == line
+
+
+def reachable_row(handle: str, *, port: int = 30022) -> dict:
+    """One instance row for a machine that is up and publishes the ssh line its console prints."""
+    row = listed(handle, "Running")
+    row["instanceMetadata"]["instanceUsername"] = "ubuntu"
+    row["instanceSpecInfo"] = {
+        "regionInfo": {"sshAddress": "gpu.hpc-ai.com"},
+        "nodePorts": [{"port": 8888, "nodePort": 30888}, {"port": 22, "nodePort": port}],
+    }
+    return row
+
+
+def test_a_rental_is_created_waiting_for_a_landing_and_read_back_off_its_ssh_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare instance has no workspace, no tool and no environment, so the job cannot start yet.
+
+    The initScript holds the machine still until the dispatch has put all three on it, and the
+    sentinel pair on the data disk stays exactly where it was, since that is the only place an
+    instance's own output can land. Where ssh reaches it is the address, the mapped port and the
+    login their console builds its own `ssh -p` line from.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    key = keypair(tmp_path)
+    monkeypatch.setattr(hpcai_module, "reachable", lambda endpoint, *, sleeper: endpoint)
+    backend = authed_backend(_CREATED, listing(reachable_row("notebook-42")))
+    rental = backend.rent(hpc_ai_plan(_VARS), Resources(max_usd=1.0, walltime="00:30:00"))
+    created, _ = backend.transport.bodies
+    script = created["instanceConfiguration"]["initScript"]
+    assert waiting() in script and "python" not in script
+    assert script.endswith(
+        "} > /root/dataDisk/mainboard.log 2>&1\necho $status > /root/dataDisk/mainboard.exit\n"
+    )
+    assert rental.handle == "notebook-42"
+    assert rental.endpoint.destination == "ubuntu@gpu.hpc-ai.com"
+    assert (rental.endpoint.port, rental.endpoint.identity) == (30022, str(key))
+
+
+def test_an_instance_that_publishes_no_ssh_endpoint_is_terminated_and_names_the_console_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HPC-AI attaches no key at create time, so the missing one is almost always the account's."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    keypair(tmp_path)
+    naps = Naps()
+    pages = [listing(listed("notebook-42", "PullingImage"))] * 60
+    backend = hpc_ai_backend(transport=FakeTransport(_CREATED, *pages, {}, {}), naps=naps)
+    with pytest.raises(MissionError, match="ssh keys in the HPC-AI console"):
+        backend.rent(hpc_ai_plan(_VARS), Resources(max_usd=1.0, walltime="00:30:00"))
+    assert backend.transport.urls[-1] == "https://www.hpc-ai.com/api/instance/terminate"
+    assert naps.waited == [10.0] * 60

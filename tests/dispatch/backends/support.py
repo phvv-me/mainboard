@@ -50,12 +50,11 @@ class BareBackend(ProviderBackend):
         return "bare-1"
 
 
-def hpc_ai_backend(*, transport: Transport, spot: bool = False) -> HpcAiBackend:
+def hpc_ai_backend(
+    *, transport: Transport, spot: bool = False, naps: Naps | None = None
+) -> HpcAiBackend:
     """An `HpcAiBackend` for tests, with fixed non-secret credentials and an injected transport."""
-    return HpcAiBackend(
-        spot=spot,
-        transport=transport,
-    )
+    return HpcAiBackend(spot=spot, transport=transport, sleeper=naps or Naps())
 
 
 def plan(**overrides: PlanField) -> ExecutionPlan:

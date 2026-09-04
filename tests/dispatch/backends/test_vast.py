@@ -1,5 +1,6 @@
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
@@ -8,6 +9,7 @@ from hypothesis import strategies as st
 
 from mainboard import MissionError
 from mainboard.dispatch.backends import Delivery, VastBackend
+from mainboard.dispatch.backends import vast as vast_module
 from mainboard.dispatch.backends.vast import (
     api_key,
     capability,
@@ -15,10 +17,12 @@ from mainboard.dispatch.backends.vast import (
     exit_sentinel,
 )
 from mainboard.dispatch.evidence import framing, staging
+from mainboard.dispatch.rentals import waiting
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
 from ...strategies import WORDS
+from ..support import keypair
 from .support import Naps, Reply, not_found, plan, refused, vast_backend
 
 # The v0 root their own CLI defaults to, which every request a test reads back hangs off.
@@ -693,3 +697,82 @@ def test_the_declared_delivery_gap_points_at_the_logs_verb_instead() -> None:
         "the instance, so have the command upload its own results and read `logs 4242` "
         "until that path lands"
     )
+
+
+def rental_backend(*responses: Reply, naps: Naps | None = None) -> VastBackend:
+    """A backend queued with a search, a create, a key attach and then instance rows."""
+    return vast_backend(_OFFERS, _CREATED, {"success": True}, *responses, naps=naps)
+
+
+def running(**extra: str | int) -> dict:
+    """One instance row for a machine that is up and publishes its proxy ssh endpoint."""
+    row = {"id": 4242, "actual_status": "running", "ssh_host": "ssh5.vast.ai", "ssh_port": 41022}
+    row.update(extra)
+    return {"instances": row}
+
+
+def test_a_rental_is_created_waiting_for_a_landing_rather_than_running_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare image has no workspace, no tool and no environment, so the job cannot start yet.
+
+    The entrypoint holds the machine still until the dispatch has put all three on it, and the
+    exit marker stays exactly where it was, since the log is still the only thing that leaves a
+    rental. The minutes that landing costs are inside the hourly ceiling the search filters on,
+    which is why the same budget buys a cheaper machine here than a prebuilt container would.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    key = keypair(tmp_path)
+    monkeypatch.setattr(vast_module, "reachable", lambda endpoint, *, sleeper: endpoint)
+    backend = rental_backend(running())
+    rental = backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00", gpus=1))
+    search, create, attach = backend.transport.bodies[:3]
+    assert search["dph_total"] == {"lte": pytest.approx(1.0 * 3600 / (1800 + 1800))}
+    assert create["runtype"] == "ssh" and "args" not in create
+    assert create["image"] == "vastai/base-image:cuda-13.3.1-auto"
+    assert waiting() in create["onstart"]
+    assert create["onstart"].endswith(f"echo {_MARKER}$status\nexit $status\n")
+    assert attach == {"ssh_key": "ssh-ed25519 AAAA me@here"}
+    assert backend.transport.urls[2] == f"{_ROOT}/instances/4242/ssh/"
+    assert rental.handle == "4242"
+    assert rental.endpoint.destination == "root@ssh5.vast.ai"
+    assert (rental.endpoint.port, rental.endpoint.identity) == (41022, str(key))
+
+
+def test_a_rental_that_never_comes_up_is_destroyed_rather_than_left_billing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Between the create and the launch this process is the only thing holding the handle."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    keypair(tmp_path)
+    naps = Naps()
+    loading = [{"instances": {"id": 4242, "actual_status": "loading"}}] * 60
+    backend = rental_backend(*loading, {}, naps=naps)
+    with pytest.raises(MissionError, match="never came up with an ssh address"):
+        backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"))
+    assert backend.transport.calls[-1].get_method() == "DELETE"
+    assert backend.transport.urls[-1] == f"{_ROOT}/instances/4242/"
+    assert naps.waited == [10.0] * 60
+
+
+def test_a_provider_that_will_not_take_the_key_refuses_before_anything_is_landed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An instance nobody can log into is a rental that bills for a landing that cannot happen."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    keypair(tmp_path)
+    backend = vast_backend(_OFFERS, _CREATED, refused(403), {})
+    with pytest.raises(MissionError, match="cloud.vast.ai/manage-keys"):
+        backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"))
+    assert backend.transport.calls[-1].get_method() == "DELETE"
+
+
+def test_a_workspace_holding_no_key_pair_never_reaches_the_market(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is free here and costs a whole rental one call later."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    backend = rental_backend(running())
+    with pytest.raises(MissionError, match="ssh-keygen"):
+        backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"))
+    assert backend.transport.calls == []

@@ -28,6 +28,7 @@ from pydantic import field_validator
 
 from ...core.errors import MissionError
 from ...core.project import Project
+from ..rentals import Rental
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -218,6 +219,28 @@ class Market(Capability):
         gpu_name: the provider's GPU name to narrow to, empty for the whole market.
         gpus: the GPU count per machine, 0 for any.
         limit: how many offers to bring back, 0 for the backend's own page size.
+        """
+
+
+class Rentable(Capability, abc.ABC):
+    """A provider whose rental answers ssh, so a dispatch lands on it the way it lands on a host.
+
+    The capability that turns a metered container into a place this workspace can actually run.
+    A bare rental has no workspace, no tool and no environment, which is how a dispatched
+    `mainboard run` died with `bash: mainboard: command not found` and billed for the boot anyway
+    (vast 49861190, exit 127, three times over on 2026-09-03). A backend that implements this
+    hands back a machine reachable over ssh with its entrypoint waiting, and the ordinary
+    mirror-install-provision-pin path does the rest; one that does not keeps running the raw
+    command as its container's entrypoint.
+    """
+
+    @abc.abstractmethod
+    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+        """Rent a machine for one job and return it once ssh answers on it.
+
+        The job is not started here. The rented entrypoint is waiting for the launch script a
+        landing writes once the workspace can run at all, so a caller that never lands must
+        cancel the handle it was given or the rental bills until the entrypoint gives up.
         """
 
 
