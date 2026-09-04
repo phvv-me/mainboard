@@ -11,6 +11,7 @@ from plumbum.commands.processes import ProcessExecutionError
 from mainboard import ExecutionPlan, MissionError
 from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, HostSetup, Verdict, shared
 from mainboard.dispatch import dispatcher as dispatch_module
+from mainboard.dispatch import snapshots as snapshots_module
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.schedulers import HostUnreachable, registry
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Resources
@@ -135,7 +136,7 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
     # The script activates through the snapshot this dispatch pinned, whose `.mainboard` is a
     # symlink back to the mirror, so the job gets the mirror's environment out of a tree whose
     # code no later sync can rewrite.
-    pinned = dispatcher.pinned("/repo", source="")
+    pinned = dispatcher.pinned("/repo", source=dispatcher.source())
     assert pinned.startswith("/repo/.mainboard/dispatch/sources/")
     assert f"{pinned}/.mainboard/activate-serving.sh" in text
     assert f"{pinned}/.mainboard/envs/serving/.pixi/envs/serving/bin" in text
@@ -222,7 +223,7 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     handle = dispatcher.run(
         plan(), "python -m foo", root="/repo", resources=Resources(), fetch="out/raw"
     )
-    pinned = dispatcher.pinned("/repo", source="")
+    pinned = dispatcher.pinned("/repo", source=dispatcher.source())
     [(root, _script, _args)] = [call for name, call in backend.calls if name == "submit"]
     assert root == pinned
     # The handle still names the mirror: the logs, the exit artifact and the results live there
@@ -238,6 +239,30 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     assert run.source == pinned.rsplit("/", maxsplit=1)[-1]
 
 
+def test_a_moving_working_tree_cannot_split_the_script_from_the_snapshot_it_runs_in(
+    dispatcher: Dispatcher,
+    backend: RecordingScheduler,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One reading of the tree decides both the rendered script and the tree it is pinned in.
+
+    A dirty tree names no commit, so its key digests the working-tree delta, and reading that
+    twice across a dispatch answers twice differently the moment anything moves: the script would
+    then activate from a snapshot the pin never created. A landing, which takes tens of minutes,
+    is where that first cost a whole rental (vast 49867368, 2026-09-04), and a batch dispatched
+    while a colleague commits is the same window on a queue.
+    """
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
+    monkeypatch.setattr(dispatch_module, "git", lambda *args: "abc1234-dirty")
+    deltas = iter("abcdefgh")
+    monkeypatch.setattr(snapshots_module, "git", lambda *args: next(deltas, "z"))
+    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources())
+    [(root, script, _)] = [call for name, call in backend.calls if name == "submit"]
+    assert "/sources/abc1234-dirty-" in str(root)
+    assert str(root) in (workdir / str(script)).read_text(encoding="utf-8")
+
+
 def test_two_dispatches_of_one_tree_share_a_snapshot_and_a_different_tree_gets_its_own(
     dispatcher: Dispatcher, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -248,10 +273,11 @@ def test_two_dispatches_of_one_tree_share_a_snapshot_and_a_different_tree_gets_i
         "git",
         lambda *args: "abc1234" if args[0] == "rev-parse" else described["value"],
     )
-    first = dispatcher.pinned("/repo", source=described["value"])
+    first = dispatcher.pinned("/repo", source=dispatcher.source())
     assert first == "/repo/.mainboard/dispatch/sources/v0.4.8"
-    assert dispatcher.pinned("/repo", source=described["value"]) == first
-    assert dispatcher.pinned("/repo", source="v0.4.9") != first
+    assert dispatcher.pinned("/repo", source=dispatcher.source()) == first
+    described["value"] = "v0.4.9"
+    assert dispatcher.pinned("/repo", source=dispatcher.source()) != first
 
 
 def test_the_sweep_drops_the_snapshots_no_job_still_owed_an_outcome_runs_from(

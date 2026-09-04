@@ -111,6 +111,26 @@ def source_of(command: str, root: Path) -> str:
     return git("-C", str(root), "describe", "--always", "--dirty")
 
 
+class Source(FrozenModel):
+    """The dispatching tree read once: what its receipts call it, and where its snapshot goes.
+
+    The two halves are read together on purpose. A dirty tree names no commit, so its key
+    carries a digest of the working-tree delta, and asking for that key twice across a slow
+    dispatch can answer twice differently. A job rendered against one key while its tree is
+    pinned under another is a job pointed at a directory nobody ever created, which is how a
+    rented run activated from `.../sources/<the key its render saw>` and found no environment
+    there, minutes after the landing had pinned the tree under the key the pin saw (vast
+    49867368, 2026-09-04). Reading both at once makes that disagreement unrepresentable.
+
+    identity: `git describe --always --dirty` for the tree the command's code lives in, the
+        string a job carries into its receipts as `MAINBOARD_SOURCE`.
+    key: the directory name that tree is pinned under on the host.
+    """
+
+    identity: str
+    key: str
+
+
 class Dispatcher:
     """Dispatch a job to a resolved host and hand back a `Handle` to poll/await/fetch.
 
@@ -191,17 +211,30 @@ class Dispatcher:
         given = Path(path).expanduser()
         return given if given.is_absolute() else self.root / given
 
-    def pinned(self, root: str, *, source: str) -> str:
+    def pinned(self, root: str, *, source: Source) -> str:
         """Where on `root`'s host a job dispatched from `source` runs: that tree's snapshot.
 
         Path arithmetic alone, so a dispatch can render the job script that activates and runs
         from this directory before it opens the connection that materialises it. `submit` is
-        what creates it, from the same key.
+        what creates it, from the very key this reading carries rather than from a second one
+        taken later.
 
         root: the workspace root on the host, the mirror the snapshot is taken from.
-        source: the dispatching tree's identity, as the job's receipts carry it.
+        source: the dispatching tree, read once by `source`.
         """
-        return Snapshots(root).path(source_key(self.root, source=source))
+        return Snapshots(root).path(source.key)
+
+    def source(self, command: str = "") -> Source:
+        """Read the dispatching tree once, as both its identity and its snapshot key.
+
+        The one place either is taken from, so every path derived from this dispatch agrees
+        about which tree it is. A command naming a file picks the repository that file lives in;
+        one naming none falls back to the workspace.
+
+        command: the shell command the job runs, empty for a caller submitting a written script.
+        """
+        identity = source_of(command, self.root)
+        return Source(identity=identity, key=source_key(self.root, source=identity))
 
     def probe(self, handle: Handle) -> JobState | None:
         """One non-blocking scheduler probe of `handle`, the read a status view wants.
@@ -392,7 +425,7 @@ class Dispatcher:
                     "builder was given"
                 )
             container_command = shlex.join(containerize(["bash", "-c", cmd]))
-        source = source_of(cmd, self.root)
+        source = self.source(cmd)
         spec = JobSpec(
             cmd=cmd,
             plan=plan,
@@ -406,7 +439,7 @@ class Dispatcher:
             container_command=container_command,
             sampler=sampler,
             attestation=attestation,
-            source=source,
+            source=source.identity,
             exports=plan.exports,
         )
         script = self.write_job_script(
@@ -484,7 +517,7 @@ class Dispatcher:
         fetch: str | None = None,
         name: str = "",
         node: str = "",
-        source: str = "",
+        source: Source | None = None,
         containerize: Callable[[list[str]], list[str]] | None = None,
     ) -> str:
         """Ship the workspace, pin the tree it runs from, dispatch `script`, return the handle.
@@ -501,9 +534,9 @@ class Dispatcher:
         the snapshot is what the job runs from, and it is immutable, so the next dispatch of
         another tree rewrites the mirror under nobody.
 
-        source: the dispatching tree's identity, the string the job's receipts carry; the
-            snapshot is keyed on it, so two dispatches of one tree share one. Derived from the
-            workspace when a caller submitting a hand-written script names none.
+        source: the dispatching tree as `source` read it, identity and snapshot key together;
+            two dispatches of one tree share one snapshot. Read from the workspace when a caller
+            submitting a hand-written script passes none.
         containerize: builds the container runtime argv around `["bash", "-c", verify]`; required
             when `plan.containerized`, so the verify preflight runs inside the same base image a
             job would.
@@ -514,8 +547,7 @@ class Dispatcher:
             walltime=resources.walltime or "",
             mem_gb=resources.mem_gb or 0,
         )
-        identity = source or source_of("", self.root)
-        key = source_key(self.root, source=identity)
+        key = (source or self.source()).key
         prepared, staged = self._prepare_script(script)
         shipped = self.rsync_up(plan, root, required=required, extra=staged)
         sha = git("rev-parse", "--short", "HEAD")

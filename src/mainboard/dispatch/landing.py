@@ -19,12 +19,12 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..core.errors import MissionError
 from .backends.base import ProviderBackend
-from .dispatcher import source_of
 from .jobs import JobSpec
 from .onboard import Bootstrap, RemoteShell, Watcher, announce
 from .rentals import Rental, handoff
+from .schedulers.base import failure_reason
 from .shared import logger
-from .snapshots import Snapshots, source_key
+from .snapshots import Snapshots
 from .targets import find_root
 from .transport import SshTransport
 from .wrapping import connection, wrap
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ..context.plan import ExecutionPlan
-    from .dispatcher import Dispatcher
+    from .dispatcher import Dispatcher, Source
     from .transport import Machine
     from .vocabulary import Resources
 
@@ -129,7 +129,9 @@ class Landing:
         """
         policy = SshTransport(endpoint=rental.endpoint)
         where = rental.endpoint.destination
-        source = source_of(command, self.dispatcher.root)
+        # Read once, minutes before the pin uses it: a dirty tree's key digests its own delta,
+        # and a landing is long enough for that delta to move under a second reading.
+        source = self.dispatcher.source(command)
         with connection(where, policy) as remote:
             root = self.plan.profile.root or find_root(remote)
             script = self.script(command, root=root, source=source)
@@ -152,11 +154,12 @@ class Landing:
             self.watch(f"pinning the source tree on {rental.handle}")
             pinned = Snapshots(root).pin(
                 remote,
-                key=source_key(self.dispatcher.root, source=source),
+                key=source.key,
                 sources=shipped,
                 filters=self.dispatcher.sync.filters,
                 exclude=[*self.dispatcher.sync.excludes, *self.plan.profile.sync.exclude],
             )
+            self.verify(remote, pinned)
             self.watch(f"starting the job on {rental.handle}")
             self.start(remote, pinned=pinned, script=f"{root}/{script}")
 
@@ -186,7 +189,26 @@ class Landing:
                 f"{str(err).strip()[-400:]}"
             )
 
-    def script(self, command: str, *, root: str, source: str) -> str:
+    def verify(self, remote: Machine, pinned: str) -> None:
+        """Prove the pinned tree activates before the entrypoint is asked to run a job from it.
+
+        The last cheap moment there is. The machine is ours, the meter is on our side of the
+        handoff and nothing has been started yet, so a tree the job could not have activated
+        from ends the rental here instead of being paid for in full and answering with its own
+        activation refusal (vast 49867368, exit 1, 2026-09-04).
+
+        remote: the open connection to the machine.
+        pinned: the snapshot the job will run from.
+        """
+        line = wrap(self.plan, pinned, command="true")
+        retcode, _, err = remote["bash"][["-lc", line]].run(retcode=None)
+        if retcode:
+            raise MissionError(
+                f"the pinned tree on the rental cannot run a command: "
+                f"{failure_reason(str(err), int(retcode))}"
+            )
+
+    def script(self, command: str, *, root: str, source: Source) -> str:
         """Render the job script this rental runs and stage it for the mirror to carry.
 
         The same bash script an ssh host runs, which is what makes a rented run's receipts, its
@@ -196,7 +218,7 @@ class Landing:
 
         command: the command the job runs.
         root: the workspace root on the machine.
-        source: the dispatching tree's identity, as the job's receipts carry it.
+        source: the dispatching tree as the dispatcher read it, whose key the pin below uses.
         """
         spec = JobSpec(
             cmd=command,
@@ -205,7 +227,7 @@ class Landing:
             walltime=self.resources.walltime or "",
             gpus=self.resources.gpus,
             mem_gb=self.resources.mem_gb,
-            source=source,
+            source=source.identity,
             exports=self.plan.exports,
         )
         return self.dispatcher.write_job_script(spec, pbs=False)

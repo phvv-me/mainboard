@@ -4,7 +4,9 @@ import pytest
 
 from mainboard import MissionError
 from mainboard.dispatch import Dispatcher, GitignoreFilter
+from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import landing as landing_module
+from mainboard.dispatch import snapshots as snapshots_module
 from mainboard.dispatch.landing import Landing, renter
 from mainboard.dispatch.rentals import LAUNCH, Rental
 from mainboard.dispatch.shared import state_dir
@@ -146,6 +148,52 @@ def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would
     assert "timeout --kill-after=30s 1800" in body
     assert "bash -c 'python train.py'" in body
     assert "MAINBOARD_RECEIPTS" in body and "mainboard-receipts-begin" in body
+
+
+def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dirty tree's snapshot key digests its own delta, and a landing takes tens of minutes.
+
+    Reading that key twice across one landing can answer twice differently, and a job rendered
+    against the first answer while its tree is pinned under the second is a job standing in a
+    directory nobody created: it activates from a path that does not exist and says it found no
+    environment there (vast 49867368, 2026-09-04). The tree is read once, so the launch and the
+    script it runs name the same snapshot however much the workspace moves underneath.
+    """
+    # The identity holds still and the working tree does not, which is the shape of a landing
+    # that outlives one reading: `git describe` keeps saying the same dirty commit while the
+    # delta the key digests moves under it.
+    deltas = iter("abcdefgh")
+    monkeypatch.setattr(dispatch_module, "git", lambda *args: "abc1234-dirty")
+    monkeypatch.setattr(snapshots_module, "git", lambda *args: next(deltas, "z"))
+    host = machine_with("/root/projects\n")
+    landed, _, dispatcher = landing(workdir, host, monkeypatch)
+    landed.land("python train.py")
+    (written,) = host.inputs
+    (_, (script,), _) = dispatcher.mirrored[0]
+    snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
+    assert f"{SOURCES}/abc1234-dirty-" in snapshot
+    assert snapshot in (dispatcher.root / script).read_text(encoding="utf-8")
+    assert host.ran(f"mb_snap={snapshot}")
+
+
+def test_a_pinned_tree_the_job_could_not_activate_from_ends_the_rental(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last cheap moment: the machine is ours and the entrypoint has been handed nothing.
+
+    A tree the job cannot activate from is caught here rather than paid for in full and answered
+    with the job's own activation refusal.
+    """
+    host = machine_with(
+        "/root/projects\n", rules=[("fi && true", 1, "found no default environment")]
+    )
+    landed, backend, _ = landing(workdir, host, monkeypatch)
+    with pytest.raises(MissionError, match="pinned tree on the rental cannot run a command"):
+        landed.land("python train.py")
+    assert backend.cancelled == ["4242"]
+    assert host.inputs == []
 
 
 def test_a_landing_that_fails_anywhere_ends_the_rental_it_was_holding(
