@@ -15,6 +15,7 @@ from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
+from .durable import schedule
 from .listing import Listing
 from .manifest.loading import load
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
@@ -523,7 +524,12 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def monitor(
-        *, watch: float = 0.0, json: bool = False, agent: bool = False, fields: str = ""
+        *,
+        every: str = "",
+        watch: float = 0.0,
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
     ) -> None:
         """Settle every dispatched job that ended since the last pass, then exit.
 
@@ -534,11 +540,22 @@ def build(root: Path | None = None) -> App:
         why and its jobs are left for the next pass, so no outcome ever depends on the process
         that dispatched the job still being alive.
 
+        `--every` is what makes that last sentence true of the schedule as well as of the pass.
+        It hands the sweep to this machine's own service manager, so the period outlives the
+        session that asked for it, and `--every 0` hands it back.
+
+        every: install the periodic pass at this period (`20m`), `0` removing what is installed.
         watch: seconds between repeated passes in the foreground, one pass and exit when 0.
         json: print the whole report as canonical JSON instead of the default rich table.
         agent: print the whole report in the compact tabular mode instead of the rich table.
         fields: a comma-separated projection over the report's fields.
         """
+        if every:
+            settling = schedule(workspace_root(), every)
+            print(f"{project.name}: {settling.detail}")
+            if settling.fix:
+                print(f"{project.name}: run `{settling.fix}`")
+            return
         sweep = board("local").monitor()
         mode = mode_of(json_mode=json, agent=agent)
         chosen = _fields(fields)

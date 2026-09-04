@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 from plumbum.commands.processes import ProcessTimedOut
 
-from . import staleness
+from . import durable, staleness
 from .compute import Access, Survey
 from .core.errors import MissionError
 from .core.project import Project
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from .board import Board
     from .dispatch.onboard import HostSetup
+    from .durable import Settler
 
 # The tool this workspace answers to, so no message below spells the binary's name.
 _TOOL = Project().name
@@ -78,6 +79,7 @@ class Doctor:
         env: str = "",
         survey: Survey | None = None,
         probe: Callable[[str, float], tuple[int, str]] | None = None,
+        settler: Settler | None = None,
     ) -> None:
         """board: the workspace being examined.
 
@@ -85,11 +87,13 @@ class Doctor:
         survey: the fleet probe, the workspace's own when None.
         probe: runs a declared gate's command under its deadline and answers with its exit
             status and output, the workspace runner when None.
+        settler: the machine's periodic runner, the one this platform offers when None.
         """
         self.board = board
         self.env = env
         self.survey = survey or Survey(board)
         self.probe = probe or self.through_runner
+        self.settler = settler or durable.settler()
 
     def environment(self) -> Section:
         """Whether what is installed answers to the manifest, and still imports.
@@ -272,6 +276,36 @@ class Doctor:
             fix=repair,
         )
 
+    def layout(self) -> Section:
+        """Whether a superseded environment root still sits beside the current one.
+
+        The generated tree keeps every pixi prefix under its own environment directory, and a
+        workspace provisioned before that layout keeps the root the old one wrote, holding
+        compiled extensions that no longer answer to this source. Nothing reads it, which is
+        exactly why it survives, and an operator who copies one artifact out of it loses the
+        round of the bisect that artifact was supposed to settle. The old root is named from
+        the current layout rather than spelled out here, so the check follows the layout.
+        """
+        provisioner = Provisioner(self.board.root, self.board.manifest)
+        prefix = provisioner.pixi_for().env_prefix("default")
+        held = prefix.relative_to(provisioner.environment_dir()).parts[0]
+        superseded = provisioner.out / held
+        if not superseded.is_dir():
+            return Section(
+                section="layout",
+                verdict=Verdict.PASS,
+                detail=f"only the current environment layout under {provisioner.out.name}",
+            )
+        return Section(
+            section="layout",
+            verdict=Verdict.WARN,
+            detail=(
+                f"{superseded} is a superseded environment root; what it holds was compiled "
+                "from a manifest this workspace has moved past"
+            ),
+            fix=f"rm -rf {superseded}",
+        )
+
     def manifest(self) -> Section:
         """Whether the workspace manifest still parses, interpolates and validates."""
         try:
@@ -312,13 +346,41 @@ class Doctor:
         setups = self.survey.onboarded()
         asked: list[Callable[[], Section]] = [
             self.environment,
+            self.layout,
             self.snapshot,
+            self.settling,
             partial(self.fleet, setups),
             partial(self.hosts, setups),
             *(partial(self.gate, name) for name in self.board.manifest.gates),
         ]
         with ThreadPoolExecutor(max_workers=len(asked)) as pool:
             return [manifest, *pool.map(lambda question: question(), asked)]
+
+    def settling(self) -> Section:
+        """Whether a periodic pass settles dispatched jobs with no session holding it open.
+
+        A sweep scheduled inside the terminal that dispatched the jobs dies with that terminal,
+        and an outcome must never depend on the agent that asked for it staying alive, so the
+        row asks this machine's own service manager whether the pass is installed, armed, and
+        when it last ran. One machine runs one pass, so a timer another workspace installed is
+        reported as the pass this workspace does not have rather than as one it does. Nothing
+        here fails: a workstation with no periodic pass is a machine to configure rather than a
+        workspace that is broken.
+        """
+        found = self.settler.state()
+        if found.installed and found.root != str(self.board.root):
+            return Section(
+                section="settling",
+                verdict=Verdict.WARN,
+                detail=f"the periodic pass sweeps {found.root}, not this workspace",
+                fix=f"{_TOOL} monitor --every 20m",
+            )
+        return Section(
+            section="settling",
+            verdict=Verdict.PASS if found.active else Verdict.WARN,
+            detail=found.detail,
+            fix=found.fix,
+        )
 
     def snapshot(self) -> Section:
         """Whether the installed CLI snapshot still answers for the source tree it was built from.
