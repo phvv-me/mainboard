@@ -106,10 +106,15 @@ def test_a_rental_gets_the_workspace_the_tool_and_the_environment_before_the_job
 def test_a_machine_that_ships_no_rsync_is_given_one_before_the_mirror_is_attempted(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """rsync runs on both ends, and a rented image often ships none of it at all."""
+    """rsync runs on both ends, and a rented image often ships none of it at all.
+
+    Both lines run on the bare connection, since the workspace they would otherwise `cd` into is
+    what the mirror underneath them is about to create.
+    """
     host = machine_with("/root/projects\n", rules=[("command -v rsync", 1, "")])
     landed, _, _ = landing(workdir, host, monkeypatch)
     landed.land("python train.py")
+    assert "command -v rsync" in host.lines
     assert host.ran("apt-get install -y -qq rsync")
     equipped = machine_with("/root/projects\n")
     landed, _, _ = landing(workdir, equipped, monkeypatch)
