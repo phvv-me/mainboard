@@ -364,15 +364,18 @@ def test_submit_prints_the_expectation_and_asks_once_at_a_terminal(
 
     The line goes to stderr so the handle on stdout stays a shell's to capture, a rented
     target shows the meter and its tail, owned hardware says so instead of a hollow zero, and
-    `--yes` is the script's way past the one question a terminal gets asked.
+    `--yes` is the script's way past the one question a terminal gets asked. The question itself
+    is on stderr for the same reason the line above it is.
     """
     monkeypatch.setattr(Board, "expectation", lambda self, command, **query: priced)
     monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("builtins.input", lambda prompt: answer)
+    monkeypatch.setattr("builtins.input", lambda: answer)
     argv = ["submit", "--on", _MIYABI_G, *(["--yes"] if yes else []), "true"]
     with pytest.raises(SystemExit, match="0" if dispatched else "1"):
         build(depot)(argv)
-    assert said in capsys.readouterr().err
+    printed = capsys.readouterr()
+    assert said in printed.err
+    assert not printed.out.startswith("dispatch?")
     assert [call[0] for call in relayed] == (["submit"] if dispatched else [])
 
 

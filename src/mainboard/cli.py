@@ -122,15 +122,7 @@ def build(root: Path | None = None) -> App:
             attempt=attempt,
         )
         print(_expected(priced), file=sys.stderr)
-        if (
-            not yes
-            and sys.stdin.isatty()
-            and input("dispatch? [y/N] ").strip().lower()
-            not in {
-                "y",
-                "yes",
-            }
-        ):
+        if not yes and sys.stdin.isatty() and not _agreed():
             raise SystemExit(1)
         with progress(f"submitting on {on}"):
             job = board(on).submit(
@@ -1149,6 +1141,16 @@ def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: st
     )
     if settled.note:
         print(settled.note, file=sys.stderr)
+
+
+def _agreed() -> bool:
+    """Ask once at the terminal whether to dispatch, and say what was typed back.
+
+    The question shares stderr with the expectation line it follows, since stdout belongs to the
+    handle or the document this verb prints once the dispatch has actually happened.
+    """
+    print("dispatch? [y/N] ", end="", file=sys.stderr, flush=True)
+    return input().strip().lower() in {"y", "yes"}
 
 
 def _exit_on_mission_error(error: MissionError) -> NoReturn:
