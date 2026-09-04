@@ -11,6 +11,7 @@ from mainboard import Board, ComputePath, HostFacts, Survey
 from mainboard.compute import Access
 from mainboard.dispatch import HostSetup
 from mainboard.doctor import Doctor, Section, Verdict
+from mainboard.durable import Settler, Settling
 from mainboard.engines.compile import Provisioner
 from mainboard.engines.compile.backend import CommandResult
 from mainboard.engines.compile.state import SyncState
@@ -45,6 +46,25 @@ _USABLE = {Access.HERE, Access.READY, Access.KEYED}
 def answering(status: int, output: str) -> Callable[[str, float], tuple[int, str]]:
     """A gate probe answering every command with one fixed exit status and output."""
     return lambda command, timeout: (status, output)
+
+
+class Reporting(Settler):
+    """A periodic runner answering with one fixed state, so no report touches a service manager."""
+
+    def __init__(self, answer: Settling) -> None:
+        self.answer = answer
+
+    def install(self, root: Path, every: object) -> Settling:
+        raise NotImplementedError
+
+    def remove(self) -> Settling:
+        raise NotImplementedError
+
+    def state(self) -> Settling:
+        return self.answer
+
+
+_SWEEPING = Reporting(Settling(installed=True, active=True, detail="the timer sweeps every 20m"))
 
 
 class FixedSurvey(Survey):
@@ -383,10 +403,22 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
 @pytest.mark.parametrize(
     ("manifest", "expected"),
     [
-        ("", ["manifest", "environment", "snapshot", "fleet", "hosts", _BARE, _REPORTING]),
+        (
+            "",
+            [
+                "manifest",
+                "environment",
+                "snapshot",
+                "settling",
+                "fleet",
+                "hosts",
+                _BARE,
+                _REPORTING,
+            ],
+        ),
         (
             '[workspace]\nname = "bare"\n',
-            ["manifest", "environment", "snapshot", "fleet", "hosts"],
+            ["manifest", "environment", "snapshot", "settling", "fleet", "hosts"],
         ),
     ],
     ids=["every gate the workspace declares", "a workspace that declares none"],
@@ -398,7 +430,9 @@ def test_the_sections_are_the_questions_asked_before_starting_work(
     if manifest:
         (workspace / "mainboard.toml").write_text(manifest)
     board = Board(workspace)
-    doctor = Doctor(board, survey=FixedSurvey(board, []), probe=answering(0, _SETTLED))
+    doctor = Doctor(
+        board, survey=FixedSurvey(board, []), probe=answering(0, _SETTLED), settler=_SWEEPING
+    )
     sections = doctor.sections()
     assert [found.section for found in sections] == expected
     assert all(isinstance(found, Section) for found in sections)
@@ -421,12 +455,12 @@ def test_the_report_never_hands_the_dispatch_cache_to_a_thread_that_does_not_own
         reach=lambda alias: "asleep",
         providers=[],
     )
-    doctor = Doctor(board, survey=offline, probe=answering(0, _SETTLED))
+    doctor = Doctor(board, survey=offline, probe=answering(0, _SETTLED), settler=_SWEEPING)
     assert [found.section for found in doctor.sections()][:4] == [
         "manifest",
         "environment",
         "snapshot",
-        "fleet",
+        "settling",
     ]
     assert board.dispatcher.cache.hosts() == []
 
@@ -503,3 +537,35 @@ def test_an_environment_compiled_and_solved_but_never_installed_is_a_warning(
     assert found.verdict is Verdict.WARN
     assert found.detail == "never installed: serving"
     assert found.fix == "mainboard install serving"
+
+
+@pytest.mark.parametrize(
+    ("state", "verdict"),
+    [
+        (Settling(installed=True, active=True, detail="sweeping every 20m"), Verdict.PASS),
+        (
+            Settling(installed=True, detail="installed but not armed", fix="systemctl --user x"),
+            Verdict.WARN,
+        ),
+        (
+            Settling(detail="no periodic pass installed", fix="mainboard monitor --every 20m"),
+            Verdict.WARN,
+        ),
+    ],
+    ids=[
+        "a machine that settles jobs on its own",
+        "an installed pass nothing armed still leaves outcomes owed",
+        "and so does a machine with no pass at all",
+    ],
+)
+def test_the_settling_row_says_whether_an_outcome_survives_this_session(
+    workspace: Path, state: Settling, verdict: Verdict
+) -> None:
+    """A sweep living in the terminal that dispatched the jobs dies with that terminal.
+
+    Nothing here fails: a workstation with no periodic pass is a machine to configure rather
+    than a workspace that is broken.
+    """
+    found = Doctor(Board(workspace), settler=Reporting(state)).settling()
+    assert found.verdict is verdict
+    assert (found.detail, found.fix) == (state.detail, state.fix)
