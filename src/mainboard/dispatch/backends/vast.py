@@ -58,8 +58,12 @@ _DEFAULT_IMAGE = "vastai/base-image:cuda-13.3.1-auto"
 _CUDA_FIELD = "cuda_max_good"
 _CAPABILITY_FIELD = "compute_cap"
 # Local disk per rental, in GB. It is also what an offer search prices storage at, so one number
-# keeps the quoted rate and the rented machine honest about each other.
-_DISK_GB = 16.0
+# keeps the quoted rate and the rented machine honest about each other. Sized for what a landing
+# actually puts on the box rather than for the workspace alone: the mirror is a few hundred
+# megabytes, and the environment installed beside it is a whole CUDA stack plus the package cache
+# it was linked from, which is tens of gigabytes. Storage is cents a month per gigabyte, so the
+# headroom costs a rounding error per hour and a rental that runs out of disk costs the whole job.
+_DISK_GB = 64.0
 # How many offers one search asks for. The query already orders by price, so this only bounds the
 # reply size a `catalog` refresh has to carry.
 _SEARCH_LIMIT = 32

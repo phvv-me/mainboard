@@ -39,7 +39,7 @@ _BASE_QUERY = {
     "rented": {"eq": False},
     "type": "on-demand",
     "order": [["dph_total", "asc"]],
-    "allocated_storage": 16.0,
+    "allocated_storage": 64.0,
     "limit": 32,
     "cuda_max_good": {"gte": 13.0},
     "compute_cap": {"gte": 750},
@@ -335,7 +335,7 @@ def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_c
     assert create == {
         "client_id": "me",
         "image": "vastai/base-image:cuda-13.3.1-auto",
-        "disk": 16.0,
+        "disk": 64.0,
         "label": "mainboard-provider-host",
         "runtype": "args",
         "onstart": "bash",
