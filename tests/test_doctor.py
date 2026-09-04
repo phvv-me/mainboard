@@ -408,6 +408,7 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
             [
                 "manifest",
                 "environment",
+                "layout",
                 "snapshot",
                 "settling",
                 "fleet",
@@ -418,7 +419,7 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
         ),
         (
             '[workspace]\nname = "bare"\n',
-            ["manifest", "environment", "snapshot", "settling", "fleet", "hosts"],
+            ["manifest", "environment", "layout", "snapshot", "settling", "fleet", "hosts"],
         ),
     ],
     ids=["every gate the workspace declares", "a workspace that declares none"],
@@ -459,8 +460,8 @@ def test_the_report_never_hands_the_dispatch_cache_to_a_thread_that_does_not_own
     assert [found.section for found in doctor.sections()][:4] == [
         "manifest",
         "environment",
+        "layout",
         "snapshot",
-        "settling",
     ]
     assert board.dispatcher.cache.hosts() == []
 
@@ -537,6 +538,37 @@ def test_an_environment_compiled_and_solved_but_never_installed_is_a_warning(
     assert found.verdict is Verdict.WARN
     assert found.detail == "never installed: serving"
     assert found.fix == "mainboard install serving"
+
+
+def test_a_superseded_environment_root_is_named_with_the_command_that_removes_it(
+    workspace: Path,
+) -> None:
+    """The trap the layout move left behind: a whole environment nothing reads any more.
+
+    Its compiled extensions were built from a manifest this workspace has moved past, and an
+    operator who copies one of them out costs the bisect round it was meant to settle. The
+    doctor never deletes anything, so the row is the exact removal command.
+    """
+    board = Board(workspace)
+    provisioner = Provisioner(board.root, board.manifest)
+    doctor = Doctor(board)
+
+    assert doctor.layout().verdict is Verdict.PASS
+    assert doctor.layout().fix == ""
+
+    prefix = provisioner.pixi_for().env_prefix("default")
+    superseded = provisioner.out / prefix.relative_to(provisioner.environment_dir()).parts[0]
+    (superseded / "envs" / "default").mkdir(parents=True)
+    found = doctor.layout()
+    assert found.verdict is Verdict.WARN
+    assert str(superseded) in found.detail
+    assert found.fix == f"rm -rf {superseded}"
+
+
+def test_the_current_layout_is_never_mistaken_for_the_superseded_one(workspace: Path) -> None:
+    """The old root is named from the current layout, so a provisioned workspace stays clean."""
+    climbed(workspace, "whole")
+    assert Doctor(Board(workspace)).layout().verdict is Verdict.PASS
 
 
 @pytest.mark.parametrize(

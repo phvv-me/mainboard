@@ -276,6 +276,36 @@ class Doctor:
             fix=repair,
         )
 
+    def layout(self) -> Section:
+        """Whether a superseded environment root still sits beside the current one.
+
+        The generated tree keeps every pixi prefix under its own environment directory, and a
+        workspace provisioned before that layout keeps the root the old one wrote, holding
+        compiled extensions that no longer answer to this source. Nothing reads it, which is
+        exactly why it survives, and an operator who copies one artifact out of it loses the
+        round of the bisect that artifact was supposed to settle. The old root is named from
+        the current layout rather than spelled out here, so the check follows the layout.
+        """
+        provisioner = Provisioner(self.board.root, self.board.manifest)
+        prefix = provisioner.pixi_for().env_prefix("default")
+        root = prefix.relative_to(provisioner.environment_dir()).parts[0]
+        superseded = provisioner.out / root
+        if not superseded.is_dir():
+            return Section(
+                section="layout",
+                verdict=Verdict.PASS,
+                detail=f"only the current environment layout under {provisioner.out.name}",
+            )
+        return Section(
+            section="layout",
+            verdict=Verdict.WARN,
+            detail=(
+                f"{superseded} is a superseded environment root; what it holds was compiled "
+                "from a manifest this workspace has moved past"
+            ),
+            fix=f"rm -rf {superseded}",
+        )
+
     def manifest(self) -> Section:
         """Whether the workspace manifest still parses, interpolates and validates."""
         try:
@@ -316,6 +346,7 @@ class Doctor:
         setups = self.survey.onboarded()
         asked: list[Callable[[], Section]] = [
             self.environment,
+            self.layout,
             self.snapshot,
             self.settling,
             partial(self.fleet, setups),
