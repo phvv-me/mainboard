@@ -122,10 +122,34 @@ class Compiler:
             project = self.root / declared / "pyproject.toml"
             digest.update(declared.encode())
             try:
-                digest.update(project.read_bytes())
+                metadata = self._resolution_metadata(project.read_text(encoding="utf-8"))
             except FileNotFoundError:
                 digest.update(b"\0")
+                continue
+            digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode())
         return digest.hexdigest()
+
+    @staticmethod
+    def _resolution_metadata(text: str) -> dict[str, Toml]:
+        """The tables of a local project's `pyproject.toml` a solve reads, and nothing else.
+
+        A resolver reads the build system, the project's own requirements and the resolver
+        tables under `tool`; a linter's word list, a type checker's interpreter path or a test
+        runner's options under `tool` cannot move which versions resolve, and hashing them
+        refused every host setup after a codespell edit. The project table is kept whole, since
+        its name, version, markers and extras all reach the resolver.
+        """
+        parsed = tomllib.loads(text)
+        tool = parsed.get("tool", {})
+        tables: dict[str, Toml] = {
+            name: parsed[name]
+            for name in ("build-system", "project", "dependency-groups")
+            if name in parsed
+        }
+        resolvers = {name: tool[name] for name in ("pixi", "uv") if name in tool}
+        if resolvers:
+            tables["tool"] = resolvers
+        return tables
 
     def stale(self) -> bool:
         """Whether this shard's generated env predates its selected manifest content.

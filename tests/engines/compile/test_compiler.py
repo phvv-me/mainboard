@@ -384,3 +384,30 @@ def test_the_resolution_manifest_drops_per_target_activation_and_keeps_the_rest(
         "[target]\nlinux-64 = 'bare'\n"
     )
     assert rendered["target"] == {"win": {"dependencies": {"x": "1"}}, "linux-64": "bare"}
+
+
+@pytest.mark.parametrize(
+    ("edit", "same"),
+    [
+        pytest.param(
+            '[tool.codespell]\nignore-words-list = "tha,vie"\n', True, id="a-linter-table"
+        ),
+        pytest.param(
+            '[tool.pyrefly]\npython-interpreter-path = "x"\n', True, id="a-checker-table"
+        ),
+        pytest.param(
+            '[tool.uv.sources]\nfoo = { path = "../foo" }\n', False, id="a-resolver-table"
+        ),
+        pytest.param('[project.optional-dependencies]\nfast = ["orjson"]\n', False, id="an-extra"),
+    ],
+)
+def test_a_local_projects_metadata_counts_only_where_a_solve_reads_it(
+    edit: str, *, same: bool
+) -> None:
+    """A word list or an interpreter path under `tool` cannot move which versions resolve."""
+    base = (
+        '[build-system]\nrequires = ["hatchling"]\n'
+        '[project]\nname = "p"\nversion = "0"\ndependencies = ["numpy"]\n'
+    )
+    before = Compiler._resolution_metadata(base)
+    assert (Compiler._resolution_metadata(base + edit) == before) is same
