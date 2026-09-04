@@ -84,6 +84,18 @@ def test_rerooting_follows_the_generated_directorys_pathlib_depth() -> None:
     assert rerooted("", generated_dir=generated) == "../../.."
 
 
+def test_workspace_platform_selection_accepts_pixis_defensive_descriptor_shapes() -> None:
+    """A descriptor can name its platform after a non-string name; scalar junk matches none."""
+    descriptor: Toml = {"name": False, "platform": "win-64"}
+    matrix = PlatformMatrix(
+        workspace=[descriptor, {"name": False, "platform": False}, False],
+        environments={},
+        default=["win-64"],
+    )
+
+    assert PixiManifest.workspace_platforms(matrix, "default") == [descriptor]
+
+
 @pytest.mark.parametrize(
     ("body", "tables"),
     [
@@ -252,6 +264,25 @@ def test_windows_replaces_generated_activation_scripts_with_batch_files(
     compiled = PixiManifest.from_manifest(manifest, project_name="mainboard")
     assert compiled.activation["scripts"] == ["dotenv.sh", "unset.sh"]
     assert compiled.target["win"]["activation"] == {"scripts": ["dotenv.bat", "unset.bat"]}
+
+
+def test_a_platform_environment_value_reaches_only_its_target(
+    manifest_from: Callable[[str], Manifest],
+) -> None:
+    """A Windows runtime repair must not change Linux or macOS activation."""
+    manifest = manifest_from(
+        '[workspace]\nname = "w"\nplatforms = ["linux-64", "osx-arm64", "win-64"]\n'
+        '[env]\nSHARED = "yes"\n'
+        '[on.win.env]\nMKL_THREADING_LAYER = "TBB"\n'
+    )
+    compiled = PixiManifest.from_manifest(manifest, project_name="mainboard")
+    assert compiled.activation["env"] == {"SHARED": "yes"}
+    assert compiled.target["win"]["activation"]["env"] == {
+        "SHARED": "yes",
+        "MKL_THREADING_LAYER": "TBB",
+    }
+    assert "activation" not in compiled.target.get("linux", {})
+    assert "activation" not in compiled.target.get("osx", {})
 
 
 @pytest.mark.parametrize(

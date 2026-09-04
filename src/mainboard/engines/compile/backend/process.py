@@ -1,6 +1,5 @@
 import codecs
 import platform
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from subprocess import DEVNULL, PIPE
@@ -13,6 +12,10 @@ if TYPE_CHECKING:
     from io import BufferedReader
 
     from plumbum.commands.base import BaseCommand
+
+# Stable Win32 process-creation flags. They are absent from subprocess on POSIX, where tests still
+# exercise this branch with a fake process to keep the three-platform behavior covered.
+_WINDOWS_DETACHED_FLAGS = 0x00000200 | 0x00000008
 
 
 class Process:
@@ -60,13 +63,12 @@ class Process:
         independent session for callers with the same lifetime requirement.
         """
         if platform.system() == "Windows":
-            # Both flags exist only in a Windows build of the standard library, so they are
-            # looked up by name rather than spelled, which is what lets a Linux checker read
-            # this branch and a Linux test exercise it.
-            detached = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
-                subprocess, "DETACHED_PROCESS", 0
+            command.popen(
+                stdin=DEVNULL,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+                creationflags=_WINDOWS_DETACHED_FLAGS,
             )
-            command.popen(stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, creationflags=detached)
             return
         command.popen(stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, start_new_session=True)
 

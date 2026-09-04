@@ -238,6 +238,13 @@ def test_typed_arguments_work_without_a_trailing_separator(tmp_path: Path) -> No
     )
     assert escaped.invocation(()) == (("python", "-c", 'print("ok")'), {})
 
+    nested = WindowsTask.parse(
+        "nested",
+        {"cmd": '''python -c "print('ok')"'''},
+        manifest=tmp_path / "pixi.toml",
+    )
+    assert nested.invocation(()) == (("python", "-c", "print('ok')"), {})
+
     empty = WindowsTask.parse(
         "empty",
         {"cmd": "   "},

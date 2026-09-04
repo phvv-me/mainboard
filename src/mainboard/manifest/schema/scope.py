@@ -56,3 +56,14 @@ class Scope(FlexModel):
             if isinstance(value, dict) and ("deps" in value or "dev" in value):
                 found[name] = Toolchain.model_validate(value)
         return found
+
+
+class PlatformScope(Scope):
+    """A platform dependency overlay and its target-local activation variables."""
+
+    env: dict[str, str] = {}
+
+    def merged(self, over: Self) -> Self:
+        """This platform scope layered over `over`, including activation variables."""
+        merged = super().merged(over)
+        return merged.model_copy(update={"env": dict(over.env) | dict(self.env)})

@@ -1,11 +1,16 @@
 import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=monkeypatches Popen for hermetic tests, never runs a real process since=2026-08-18
 
+import psutil
 import pytest
 
 from mainboard.dispatch import DaemonDown, HostUnreachable, SshTransport
 from mainboard.dispatch import transport as transport_module
-from mainboard.dispatch.transport import is_daemon_failure, is_transport_failure
+from mainboard.dispatch.transport import (
+    is_daemon_failure,
+    is_transport_failure,
+    terminate_process_tree,
+)
 
 # Mirrors transport.py's own private marker vocabulary, kept as a literal here rather than
 # imported so each new marker demands a deliberate new test case, not silent inherited coverage.
@@ -69,6 +74,31 @@ class _FakeSshProcess:
         return None if self.alive else 0
 
 
+class _TreeProcess:
+    """One native-process node recording the signal selected by the tree terminator."""
+
+    def __init__(self, pid: int, events: list[str], *, vanished: bool = False) -> None:
+        self.pid = pid
+        self.events = events
+        self.vanished = vanished
+        self.descendants: list[_TreeProcess] = []
+
+    def children(self, *, recursive: bool) -> list[_TreeProcess]:
+        assert recursive is True
+        return self.descendants
+
+    def terminate(self) -> None:
+        self._signal("terminate")
+
+    def kill(self) -> None:
+        self._signal("kill")
+
+    def _signal(self, action: str) -> None:
+        self.events.append(f"{action}:{self.pid}")
+        if self.vanished:
+            raise psutil.NoSuchProcess(self.pid)
+
+
 @pytest.mark.parametrize("marker", _TRANSPORT_MARKERS)
 def test_a_transport_fault_needs_both_the_ssh_exit_status_and_a_known_marker(marker: str) -> None:
     """A name that will not resolve is a host we cannot reach now, not a command that failed."""
@@ -100,6 +130,27 @@ def test_the_ssh_policy_overrides_liveness_and_leaves_every_alias_setting_intact
     assert policy.rsync_shell == "ssh -o ConnectTimeout=5 -o ServerAliveInterval=3 " + (
         "-o ServerAliveCountMax=2 -o BatchMode=yes"
     )
+
+
+def test_a_native_process_tree_is_signalled_children_first_and_tolerates_a_vanished_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    root = _TreeProcess(1, events)
+    root.descendants = [_TreeProcess(2, events), _TreeProcess(3, events, vanished=True)]
+    monkeypatch.setattr(transport_module.psutil, "Process", lambda pid: root)
+
+    terminate_process_tree(root.pid)
+    terminate_process_tree(root.pid, force=True)
+
+    assert events == [
+        "terminate:3",
+        "terminate:2",
+        "terminate:1",
+        "kill:3",
+        "kill:2",
+        "kill:1",
+    ]
 
 
 @pytest.mark.parametrize(

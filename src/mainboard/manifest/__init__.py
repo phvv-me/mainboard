@@ -6,7 +6,7 @@ from .schema.host import HostProfile, Sync
 from .schema.observe import Observe
 from .schema.queue import Defaults, QueuePolicy
 from .schema.root import Manifest
-from .schema.scope import Scope
+from .schema.scope import PlatformScope, Scope
 from .schema.spec import Spec
 from .schema.toolchain import Toolchain
 from .schema.tracking import Tracking, TrackingMode
@@ -23,6 +23,7 @@ __all__ = [
     "HostProfile",
     "Manifest",
     "Observe",
+    "PlatformScope",
     "QueuePolicy",
     "Scope",
     "Spec",

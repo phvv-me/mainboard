@@ -33,7 +33,7 @@ _SETTLED = json.dumps({"result": {"breakages": []}, "exit_status": 0})
 
 # The generated tree in every state the environment section tells apart, each step the one the
 # step before it makes sense on, so a case names its state and the ladder walks up to it.
-_LADDER = ("bare", "compiled", "provisioned", "blessed", "whole", "damaged")
+_LADDER = ("bare", "compiled", "solved", "provisioned", "blessed", "whole", "damaged")
 
 # The compute paths a fleet section is handed, one row of any shape at all.
 _ROWS = st.builds(ComputePath, name=WORDS, kind=WORDS, access=st.sampled_from(Access))
@@ -63,9 +63,10 @@ def climbed(workspace: Path, stage: str) -> None:
     """Walk the workspace's generated tree up to `stage` and stop there.
 
     bare is a workspace nothing ever compiled. compiled has a manifest and a lock no digest
-    vouches for. provisioned installs `default` without recording what it was built from,
-    blessed records those digests, whole does the same for `serving`, and damaged then takes an
-    installed wheel's import roots away underneath pixi.
+    vouches for. solved records the current digests without an installed prefix. provisioned
+    installs `default` without recording what it was built from, blessed records those digests,
+    whole does the same for `serving`, and damaged then takes an installed wheel's import roots
+    away underneath pixi.
     """
     if stage == "bare":
         return
@@ -103,6 +104,9 @@ def climbed(workspace: Path, stage: str) -> None:
         )
         SyncState.path(directory).write_text(current.render(), encoding="utf-8")
 
+    if stage == "solved":
+        bless("default")
+        return
     install("default")
     if stage == "provisioned":
         return
@@ -159,6 +163,7 @@ def test_a_manifest_that_will_not_load_is_the_whole_report(workspace: Path) -> N
             "pixi.lock was not solved from this manifest",
             "mainboard install default --resolve",
         ),
+        ("solved", Verdict.WARN, "never installed: default", "mainboard install default"),
         (
             "provisioned",
             Verdict.FAIL,
@@ -172,6 +177,7 @@ def test_a_manifest_that_will_not_load_is_the_whole_report(workspace: Path) -> N
     ids=[
         "nothing was ever built here, a first step and not a broken state",
         "a lock nothing on this disk vouches for is a broken workspace",
+        "a solved environment still needs its first installation",
         "what is installed is not what the manifest describes",
         "installing what you need is normal, so the unbuilt ones are a word",
         "every declared environment provisioned, current and importable",
@@ -248,6 +254,7 @@ def test_the_hosts_verdict_compares_each_recorded_digest_against_the_manifest_no
     fresh_serving = HostSetup(host="serve", root="/repo3", env="serving", digest=serving)
     stale = HostSetup(host="miyabi-g", root="/repo2", digest="not-the-current-digest")
     unrecorded = HostSetup(host="vast", root="/repo3")
+    missing_environment = HostSetup(host="lost", root="/repo4", env="gone", digest="recorded")
     doctor = Doctor(board)
 
     agreeing = doctor.hosts({"gold": fresh, "serve": fresh_serving, "vast": unrecorded})
@@ -259,6 +266,11 @@ def test_the_hosts_verdict_compares_each_recorded_digest_against_the_manifest_no
     assert diverged.verdict is Verdict.WARN
     assert diverged.detail == "diverged from the current manifest: miyabi-g"
     assert diverged.fix == "mainboard setup miyabi-g --sync-only"
+
+    missing = doctor.hosts({"lost": missing_environment})
+    assert missing.verdict is Verdict.WARN
+    assert missing.detail == "diverged from the current manifest: lost"
+    assert missing.fix == "mainboard setup lost --sync-only"
 
 
 @pytest.mark.parametrize(

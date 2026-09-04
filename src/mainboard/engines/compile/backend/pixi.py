@@ -81,13 +81,17 @@ class Pixi(Tool):
 
         Every declared virtual-package floor rides along as its `CONDA_OVERRIDE_*` variable, so
         a frozen install succeeds on a machine that cannot present the package itself, and a
-        value the caller already exported always wins. Read per invocation rather than cached,
-        since the floors live in the generated manifest the compiler may write moments earlier.
+        value the caller already exported always wins. Bind the complete overlay once so adding
+        a floor cannot discard Windows' required HOME binding. Read per invocation rather than
+        cached, since the floors live in a manifest the compiler may write moments earlier.
         """
         # Bound outright rather than through `with_env`, which hands the bare command back
         # when there is nothing to bind, so a caller reads one shape of environment on every
-        # platform: the floors, or nothing.
-        return BoundEnvCommand(self.engine.command, env=self.overrides)
+        # platform: what the engine already bound, the floors, or nothing.
+        engine = self.engine.command
+        environment = dict(engine.env or {}) | self.overrides
+        executable = Path(engine.formulate()[0])
+        return BoundEnvCommand(local[str(executable)], env=environment)
 
     @property
     def executable(self) -> Path:
@@ -178,6 +182,7 @@ class Pixi(Tool):
         locked = not resolve
         result = self.environment_result("install", "-e", env, resolve=resolve)
         self._raise_on_lock_drift(result, locked=locked)
+        self._raise_on_inaccessible_windows_home(result, env=env, resolve=resolve)
         if result.returncode:
             raise MissionError("`pixi install` failed (see its output above)")
         # Known wart carried over from chefe: a resolve re-installs once more from the
@@ -444,6 +449,26 @@ class Pixi(Tool):
             raise MissionError(
                 f"the manifest drifted from pixi.lock. Run `{Project().name} install --resolve` "
                 "on a solve-capable machine, which is also what a host is then sent."
+            )
+
+    @staticmethod
+    def _raise_on_inaccessible_windows_home(
+        result: CommandResult, *, env: str, resolve: bool
+    ) -> None:
+        """Explain the one Pixi provisioning failure caused by a restricted Windows profile."""
+        failure = f"{result.stdout}\n{result.stderr}".casefold()
+        if (
+            result.returncode
+            and platform.system() == "Windows"
+            and "filestorageerror" in failure
+            and "could not determine the home directory" in failure
+        ):
+            environment = "" if env == "default" else f" {env}"
+            resolution = " --resolve" if resolve else ""
+            raise MissionError(
+                "Pixi could not access the Windows home/profile required for provisioning. "
+                f"Run `{Project().name} install{environment}{resolution}` from a regular "
+                "terminal outside the restricted application sandbox."
             )
 
     def _has_editable_paths(self) -> bool:

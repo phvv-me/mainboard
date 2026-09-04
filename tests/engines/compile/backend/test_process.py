@@ -1,7 +1,7 @@
 import io
-import subprocess
 import sys
-from typing import TYPE_CHECKING
+from subprocess import DEVNULL
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from plumbum import local
@@ -10,6 +10,7 @@ from mainboard import MissionError
 from mainboard.engines.compile.backend import Process
 
 if TYPE_CHECKING:
+    from plumbum.commands.base import BaseCommand
     from pytest_subprocess import FakeProcess
 
 _PYTHON = sys.executable
@@ -94,31 +95,43 @@ def test_relay_keeps_unicode_evidence_when_the_console_cannot_encode_it() -> Non
     assert raw_destination.getvalue() == b"zebra?"
 
 
-@pytest.mark.parametrize(
-    ("system", "expected"),
-    [
-        (
-            "Windows",
-            {
-                "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                | getattr(subprocess, "DETACHED_PROCESS", 0)
-            },
-        ),
-        ("Linux", {"start_new_session": True}),
-    ],
-    ids=["windows-creation-flags", "posix-new-session"],
-)
-def test_a_detached_launch_outlives_its_caller_the_way_its_platform_allows(
-    monkeypatch: pytest.MonkeyPatch, system: str, expected: dict[str, object]
+def test_detached_processes_release_terminal_handles_with_the_platform_lifetime_boundary(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The Windows flags are read by name, so a Linux checker and this test both reach them."""
-    monkeypatch.setattr("platform.system", lambda: system)
-    launched: dict[str, object] = {}
+    """The updater outlives its caller without inheriting that caller's terminal."""
 
     class Command:
-        def popen(self, **options: object) -> None:
-            launched.update(options)
+        calls: list[dict[str, int]]
 
-    Process.detached(Command())  # type: ignore[arg-type]
-    assert {name: launched[name] for name in expected} == expected
-    assert all(launched[stream] is subprocess.DEVNULL for stream in ("stdin", "stdout", "stderr"))
+        def __init__(self) -> None:
+            self.calls = []
+
+        def popen(self, **kwargs: int) -> None:
+            self.calls.append(kwargs)
+
+    command = Command()
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+
+    Process.detached(cast("BaseCommand", command))
+
+    assert command.calls == [
+        {
+            "stdin": DEVNULL,
+            "stdout": DEVNULL,
+            "stderr": DEVNULL,
+            "creationflags": 0x00000200 | 0x00000008,
+        }
+    ]
+
+    command.calls.clear()
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+    Process.detached(cast("BaseCommand", command))
+
+    assert command.calls == [
+        {
+            "stdin": DEVNULL,
+            "stdout": DEVNULL,
+            "stderr": DEVNULL,
+            "start_new_session": True,
+        }
+    ]

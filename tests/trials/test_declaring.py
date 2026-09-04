@@ -271,7 +271,9 @@ def test_an_import_name_finds_a_platform_specific_provider(
 
     monkeypatch.setattr(provenance, "version", provider_version)
     monkeypatch.setattr(
-        provenance, "packages_distributions", lambda: {"triton": ["triton-windows"]}
+        provenance,
+        "packages_distributions",
+        lambda: {"triton": ["triton-ghost", "triton-windows"]},
     )
 
     assert provenance.installed("triton") == "3.7.1"

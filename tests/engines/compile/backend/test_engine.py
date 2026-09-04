@@ -14,6 +14,8 @@ from mainboard import MissionError
 from mainboard.engines.compile.backend import PixiEngine
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pytest_subprocess import FakeProcess
 
 
@@ -149,28 +151,30 @@ def test_bootstrap_names_the_shell_file_the_installer_appends_to(
 
 def test_windows_installer_uses_powershell_and_edits_no_shell_file(
     monkeypatch: pytest.MonkeyPatch,
+    stub_binary: Callable[[str], str],
 ) -> None:
+    powershell = stub_binary("powershell.exe")
     monkeypatch.setattr("platform.system", lambda: "Windows")
-    monkeypatch.setattr(
-        "shutil.which", lambda name: "C:/Windows/powershell.exe" if name == "powershell" else None
-    )
+    monkeypatch.setattr("shutil.which", lambda name: powershell if name == "powershell" else None)
     command = PixiEngine.installer().formulate()
-    # plumbum resolves a bare path against the working directory, so on a Linux runner the
-    # fake Windows path lands under it; the choice of executable is what the test asserts.
-    assert Path(command[0]).name == "powershell.exe"
+    assert Path(command[0]) == Path(powershell)
     assert "install.ps1" in command[-1]
     assert PixiEngine.appended_shell_file() == ""
 
 
 @pytest.mark.parametrize(
     ("system", "message"),
-    [("Windows", "PowerShell is required"), ("Linux", "a POSIX shell is required")],
-    ids=["no-powershell", "no-sh"],
+    [
+        pytest.param("Windows", "PowerShell is required", id="windows-without-powershell"),
+        pytest.param("Linux", "a POSIX shell is required", id="posix-without-sh"),
+    ],
 )
-def test_the_installer_names_the_shell_it_cannot_find(
+def test_the_installer_names_the_required_shell_when_none_is_available(
     monkeypatch: pytest.MonkeyPatch, system: str, message: str
 ) -> None:
+    """A failed bootstrap identifies the one platform shell the official installer needs."""
     monkeypatch.setattr("platform.system", lambda: system)
     monkeypatch.setattr("shutil.which", lambda name: None)
+
     with pytest.raises(MissionError, match=message):
         PixiEngine.installer()

@@ -8,7 +8,7 @@ from .engine import Engine
 from .environment import Env, Task
 from .gate import Gate
 from .host import HostProfile
-from .scope import Scope
+from .scope import PlatformScope, Scope
 from .template import Template
 from .tracking import Tracking
 from .workspace import Header
@@ -61,7 +61,7 @@ class Manifest(Scope):
     workspace: Header
     vars: dict[str, str] = {}
     system: dict[str, str] = {}
-    on: dict[str, Scope] = {}
+    on: dict[str, PlatformScope] = {}
     dev: Scope = Scope()
     envs: dict[str, Env] = {}
     env: dict[str, str | bool] = {}
