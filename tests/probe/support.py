@@ -192,6 +192,9 @@ class FakeNvml:
     def device_get_handle_by_index_v2(self, index: int) -> str:
         return f"handle:0000:0{index}:00.0"
 
+    def device_get_handle_by_uuid(self, uuid: bytes) -> str:
+        return f"handle:{uuid.decode()}"
+
     def device_get_max_clock_info(self, handle: str, clock: int) -> int:
         return 10501
 

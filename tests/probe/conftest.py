@@ -84,6 +84,8 @@ def install_nvidia_stack(monkeypatch: pytest.MonkeyPatch) -> InstallNvidiaStack:
     The three axes are the ones the provider branches on, how many devices are visible, whether
     the optional `cuda.core` layer loaded, and whether the device reports a coherent pool.
     """
+    # The workspace exports a CUDA mask for every run; the fakes enumerate every device.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     def install(
         *, device_count: int = 2, has_cuda_core: bool = True, coherent: bool = False

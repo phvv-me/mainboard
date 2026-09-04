@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import suppress
 from functools import cached_property
 
@@ -12,11 +13,30 @@ from .apis import NvidiaApis, text
 from .capability import ComputeCapability
 from .protocols import (  # ruff: ignore[typing-only-first-party-import] reason=keeps protocols.py's runtime import exercised for coverage since=2026-08-17
     CoreSystem,
+    Nvml,
     NvmlHandle,
     SystemDevice,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def visible_devices() -> list[str] | None:
+    """The entries of `CUDA_VISIBLE_DEVICES`, or None when the mask is unset.
+
+    CUDA reads the list up to its first entry that names no device, so the list is cut there
+    the same way; an empty mask hides every device.
+    """
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if mask is None:
+        return None
+    entries = [entry.strip() for entry in mask.split(",")]
+    kept: list[str] = []
+    for entry in entries:
+        if not entry or not (entry.startswith(("GPU-", "MIG-")) or entry.lstrip("-").isdigit()):
+            break
+        kept.append(entry)
+    return kept
 
 
 class NvidiaGPU(GPU):
@@ -104,7 +124,7 @@ class NvidiaGPU(GPU):
             bus_id = self.pci_bus_id
             handle = nvml.device_get_handle_by_pci_bus_id_v2(bus_id)
         else:
-            handle = nvml.device_get_handle_by_index_v2(self.index)
+            handle = self.__nvml_handle(nvml)
             bus_id = text(nvml.device_get_pci_info_v3(handle).bus_id)
         logger.debug(
             "GPU %s: %s (%s)",
@@ -147,6 +167,22 @@ class NvidiaGPU(GPU):
                 source="cuda-core-system",
             )
         return self.nvml_memory()
+
+    def __nvml_handle(self, nvml: Nvml) -> NvmlHandle:
+        """The NVML handle of this visible index under the same mask CUDA applies.
+
+        Without a runtime to remap for it, NVML enumerates every physical device, so the
+        visible index is read through `CUDA_VISIBLE_DEVICES` first: an entry naming a physical
+        index or a `GPU-`/`MIG-` UUID. A job pinned to the idle second card of a shared box
+        was judged by the first card's load before this, and its idle gate refused it.
+        """
+        visible = visible_devices()
+        if visible is None:
+            return nvml.device_get_handle_by_index_v2(self.index)
+        entry = visible[self.index]
+        if entry.startswith(("GPU-", "MIG-")):
+            return nvml.device_get_handle_by_uuid(entry.encode())
+        return nvml.device_get_handle_by_index_v2(int(entry))
 
     @cached_property
     def pci_bus_id(self) -> str:
@@ -227,7 +263,9 @@ class NvidiaGPU(GPU):
             err, count = api.runtime.cudaGetDeviceCount()
             return count if err == api.runtime.cudaError_t.cudaSuccess else 0
         api.nvml.init_v2()
-        return api.nvml.device_get_count_v2()
+        count = api.nvml.device_get_count_v2()
+        visible = visible_devices()
+        return count if visible is None else min(len(visible), count)
 
     @classmethod
     def is_available(cls) -> bool:

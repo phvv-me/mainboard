@@ -415,3 +415,36 @@ def test_memory_without_nvml_or_a_runtime_says_which_tier_it_lacks(
     monkeypatch.setattr(NvidiaGPU, "system_device", FakeSensorlessDevice())
     with pytest.raises(RuntimeError, match="CUDA Runtime is unavailable"):
         _ = NvidiaGPU(index=0).memory
+
+
+@pytest.mark.parametrize(
+    ("mask", "count", "handle"),
+    [
+        pytest.param(None, 2, "handle:0000:00:00.0", id="no-mask-reads-physical-index"),
+        pytest.param("1", 1, "handle:0000:01:00.0", id="an-index-remaps"),
+        pytest.param("GPU-abc", 1, "handle:GPU-abc", id="a-uuid-remaps"),
+        pytest.param("1,0", 2, "handle:0000:01:00.0", id="the-first-entry-is-visible-zero"),
+        pytest.param("", 0, None, id="an-empty-mask-hides-every-device"),
+    ],
+)
+def test_the_nvml_fallback_honors_the_cuda_mask(
+    install_nvidia_stack: InstallNvidiaStack,
+    monkeypatch: pytest.MonkeyPatch,
+    mask: str | None,
+    count: int,
+    handle: str | None,
+) -> None:
+    """Without a runtime to remap for it, the visible index is read through the mask.
+
+    A job pinned to the idle second card of a shared box was judged by the first card's load
+    before this, and its idle gate refused it.
+    """
+    apis = install_nvidia_stack(has_cuda_core=False)
+    apis.runtime = None
+    if mask is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+    assert NvidiaGPU.device_count() == count
+    if handle is not None:
+        assert NvidiaGPU(index=0).handle == handle
