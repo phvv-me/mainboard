@@ -36,19 +36,28 @@ class RecordingCommand:
         self.name = name
         self.machine = machine
         self.bound: list[str] = []
+        self.stdin = ""
 
     def __call__(self, *_, **__) -> str:
-        return self.machine.answer([self.name, *self.bound])[1]
+        return self.machine.answer([self.name, *self.bound], stdin=self.stdin)[1]
 
     def __getitem__(self, args: str | list[str] | tuple[str, ...]) -> RecordingCommand:
         extra = list(args) if isinstance(args, list | tuple) else [args]
-        child = RecordingCommand(self.name, self.machine)
-        child.bound = [*self.bound, *(str(a) for a in extra)]
-        return child
+        return self.__bound([*self.bound, *(str(a) for a in extra)], stdin=self.stdin)
+
+    def __lshift__(self, data: str) -> RecordingCommand:
+        """Bind stdin the way plumbum's `cmd << text` does, so a written file is readable here."""
+        return self.__bound(self.bound, stdin=str(data))
 
     def run(self, *_, **__) -> tuple[int, str, str]:
-        retcode, output = self.machine.answer([self.name, *self.bound])
+        retcode, output = self.machine.answer([self.name, *self.bound], stdin=self.stdin)
         return (retcode, output, "") if retcode == 0 else (retcode, "", output)
+
+    def __bound(self, args: list[str], *, stdin: str) -> RecordingCommand:
+        child = RecordingCommand(self.name, self.machine)
+        child.bound = list(args)
+        child.stdin = stdin
+        return child
 
 
 class RecordingMachine:
@@ -69,6 +78,7 @@ class RecordingMachine:
         faults: Sequence[Fault] = (),
     ) -> None:
         self.calls: list[list[str]] = []
+        self.inputs: list[str] = []
         self.outputs = list(outputs)
         self.rules = list(rules)
         self.faults = list(faults)
@@ -92,12 +102,15 @@ class RecordingMachine:
         """The trailing argument of every recorded call, the shell line each command carried."""
         return [argv[-1] for argv in self.calls if argv]
 
-    def answer(self, argv: list[str]) -> tuple[int, str]:
+    def answer(self, argv: list[str], *, stdin: str = "") -> tuple[int, str]:
         """The scripted `(retcode, output)` for `argv`, recording it as run.
 
         argv: the full command line, its binary first.
+        stdin: what the caller piped into it, recorded on `inputs` when there was any.
         """
         self.calls.append(argv)
+        if stdin:
+            self.inputs.append(stdin)
         joined = " ".join(argv)
         for marker, error in self.faults:
             if marker in joined:
@@ -128,6 +141,16 @@ def machine_with(
     faults: `(marker, error)` pairs raised instead of answering.
     """
     return RecordingMachine(outputs, rules=rules, faults=faults)
+
+
+def keypair(home: Path, name: str = "id_ed25519") -> Path:
+    """A key pair under `home`'s `.ssh`, the shape a rental's `identity` reads off a machine."""
+    ssh = home / ".ssh"
+    ssh.mkdir(parents=True, exist_ok=True)
+    private = ssh / name
+    private.write_text("PRIVATE\n", encoding="utf-8")
+    Path(f"{private}.pub").write_text("ssh-ed25519 AAAA me@here\n", encoding="utf-8")
+    return private
 
 
 class Naps:

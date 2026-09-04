@@ -13,7 +13,15 @@ from mainboard.batch import Topic
 from mainboard.board import ProviderJob
 from mainboard.deps import Dependencies
 from mainboard.dispatch import Handle, HostSetup, Verdict
-from mainboard.dispatch.backends import Account, Delivery, LogSource, ProviderBackend, Standing
+from mainboard.dispatch.backends import (
+    Account,
+    Delivery,
+    LogSource,
+    ProviderBackend,
+    Rentable,
+    Standing,
+)
+from mainboard.dispatch.rentals import Rental
 from mainboard.dispatch.schedulers import registry
 from mainboard.dispatch.state import RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
@@ -34,7 +42,7 @@ _REMOTE_ROOT = "/work/xg25g007/x10537/projects"
 
 # What a local install asks its provisioner for, the environment it compiled and the module
 # stack it activated, or the workspace root it was pointed at.
-type Provisioned = tuple[str, Path | tuple[str, dict[str, str]] | tuple[str, bool]]
+type Provisioned = tuple[str, Path | str | tuple[str, dict[str, str]] | tuple[str, bool]]
 
 
 class Replaced(Exception):
@@ -78,12 +86,65 @@ class FakeProvisioner:
         FakeProvisioner.calls.append(("activate", (env, dict(modules))))
         return f"/repo/.mainboard/{env}-activate.sh"
 
+    def artifact_for(self, env: str) -> tuple[str, ...]:
+        FakeProvisioner.calls.append(("artifact_for", env))
+        return (f".mainboard/envs/{env}/pixi.toml", f".mainboard/envs/{env}/pixi.lock")
+
+    def compiler_for(self, env: str) -> FakeCompiler:
+        return FakeCompiler(env)
+
     def provision(self, env: str, *, resolve: bool) -> None:
         FakeProvisioner.calls.append(("provision", (env, resolve)))
 
     def run(self, command: Sequence[str], env: str) -> int:
         FakeProvisioner.calls.append(("run", (command, env)))
         return {("true",): 0, ("false",): 1}.get(tuple(command), 0)
+
+
+class FakeCompiler:
+    """A compiler double whose `vouch` records that the lock was asked before anything rented."""
+
+    def __init__(self, env: str) -> None:
+        FakeProvisioner.calls.append(("compiler_for", env))
+        self.env = env
+
+    def vouch(self) -> None:
+        FakeProvisioner.calls.append(("vouch", self.env))
+
+
+class FakeRental(ProviderBackend, Rentable):
+    """A registered `fakerental`-kind backend: a provider whose rental is an ssh box.
+
+    Module-level so it registers exactly once.
+    """
+
+    name = "fakerental"
+
+    def cancel(self, handle: str) -> None:
+        return None
+
+    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+        raise AssertionError("a board test never rents a real machine")
+
+    def state(self, handle: str) -> JobState:
+        return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
+
+    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+        raise AssertionError("a rentable backend is landed on rather than handed a raw command")
+
+
+class FakeLanding:
+    """A `Landing` double recording what a rented dispatch was built with."""
+
+    calls: list[tuple[str, str, tuple[str, ...]]] = []
+
+    def __init__(self, dispatcher, backend, plan: ExecutionPlan, **fields) -> None:
+        self.plan = plan
+        self.fields = fields
+
+    def land(self, command: str) -> str:
+        FakeLanding.calls.append((self.plan.host, command, tuple(self.fields["artifact"])))
+        return "rental-1"
 
 
 class FakeCloud(ProviderBackend, Account, Delivery, LogSource):
@@ -761,6 +822,51 @@ def test_a_bound_board_reads_facts_and_runs_commands_over_one_connection(
     bound = board.on(_MIYABI_G)
     assert bound.facts().hostname == "fake-remote"
     assert bound.run("true", container="none") == 7
+
+
+def test_a_rentable_provider_is_landed_on_rather_than_handed_a_bare_command(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare rental has no workspace, no tool and no environment, so nothing raw can run on it.
+
+    The dispatch is a landing instead, carrying the artifact this workstation already solved so
+    the machine installs frozen rather than solving for itself, and refusing before the rental
+    opens when the lock cannot vouch for the manifest as it reads now. The run is recorded the
+    way every other provider run is, which is what lets the durable sweep end the rental.
+    """
+    FakeLanding.calls = []
+    FakeProvisioner.calls = []
+    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    monkeypatch.setattr("mainboard.board.Landing", FakeLanding)
+    manifest = board.manifest.model_copy(
+        update={
+            "hosts": {
+                **board.manifest.hosts,
+                "rentbox": board.manifest.profile(_GOLD).model_copy(update={"kind": "fakerental"}),
+            }
+        }
+    )
+    monkeypatch.setitem(board.shared, "manifest", manifest)
+    monkeypatch.setitem(board.shared, "resolver", None)
+    bound = board.on("rentbox")
+    run = bound.submit("python train.py", max_usd=0.5, walltime="00:30:00")
+    assert isinstance(run, ProviderJob)
+    # The environment is the host profile's own, so a rental provisions what that host declares.
+    env = bound.plan().env
+    assert FakeLanding.calls == [
+        (
+            "rentbox",
+            "python train.py",
+            (f".mainboard/envs/{env}/pixi.toml", f".mainboard/envs/{env}/pixi.lock"),
+        )
+    ]
+    assert ("vouch", env) in FakeProvisioner.calls
+    record = board.dispatcher.cache.run("rental-1")
+    assert (record.target, record.kind, record.script) == (
+        "rentbox",
+        "fakerental",
+        "python train.py",
+    )
 
 
 def test_a_provider_submit_is_recorded_so_a_later_process_rebuilds_the_rental(

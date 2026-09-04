@@ -28,6 +28,7 @@ from .dispatch.backends.base import Credentials, Delivery, LogSource, ProviderBa
 from .dispatch.commandline import joined, vetted
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.jobs.spec import walltime_seconds
+from .dispatch.landing import Landing, renter
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shared import logger
@@ -742,6 +743,41 @@ class Board:
             )
         return root
 
+    def rented(
+        self,
+        backend: ProviderBackend,
+        plan: ExecutionPlan,
+        *,
+        command: str,
+        resources: Resources,
+    ) -> str:
+        """Dispatch `command` to a machine this workspace rents, and return the provider's handle.
+
+        A rental is set up the way a declared host is, so it is shipped the same artifact
+        `install` ships gold: this workstation solved the lock and the machine installs frozen
+        against it. The lock is asked to vouch for the manifest here, before the rental opens,
+        since a refusal a minute later is a refusal that has already cost money. A plan that
+        brings its own container skips all of it, since a prebuilt image already holds everything
+        its command needs.
+
+        backend: the provider backend this dispatch resolved to.
+        plan: the resolved execution context for the provider host.
+        command: the command the job runs.
+        resources: the resolved request, whose spend cap and walltime bound the rental.
+        """
+        renting = renter(backend, plan)
+        if renting is None:
+            return backend.submit(plan, command, resources)
+        provisioner = Provisioner(self.root, self.manifest)
+        provisioner.compiler_for(plan.env).vouch()
+        return Landing(
+            self.dispatcher,
+            renting,
+            plan,
+            resources=resources,
+            artifact=provisioner.artifact_for(plan.env),
+        ).land(command)
+
     def resources(
         self,
         *,
@@ -1012,7 +1048,7 @@ class Board:
             run: Run = ProviderJob(
                 backend,
                 self.dispatcher.track(
-                    backend.submit(plan, command, resources),
+                    self.rented(backend, plan, command=command, resources=resources),
                     host=plan.host,
                     kind=plan.profile.kind,
                     command=command,

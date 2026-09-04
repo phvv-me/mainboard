@@ -319,11 +319,11 @@ def test_a_dead_queue_daemon_is_started_once_and_refused_when_it_stays_down(
     """A plain ssh host dispatches through pueue, so its daemon has to answer before jobs do."""
 
     class Reviving(RecordingMachine):
-        def answer(self, argv: list[str]) -> tuple[int, str]:
+        def answer(self, argv: list[str], *, stdin: str = "") -> tuple[int, str]:
             if "pueue status" in " ".join(argv):
                 self.calls.append(argv)
                 return (0 if self.ran("pueued -d") else 1), ""
-            return super().answer(argv)
+            return super().answer(argv, stdin=stdin)
 
     revived = Reviving(rules=list(_HEALTHY))
     setup, _ = onboarding(revived, monkeypatch, solver="0.77.0")

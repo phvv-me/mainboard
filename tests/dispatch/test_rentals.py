@@ -14,17 +14,7 @@ from mainboard.dispatch.rentals import (
 )
 from mainboard.dispatch.transport import Endpoint, HostUnreachable
 
-from .support import Naps
-
-
-def keypair(home: Path, name: str = "id_ed25519") -> Path:
-    """A key pair under `home`'s `.ssh`, the shape `identity` reads off a real machine."""
-    ssh = home / ".ssh"
-    ssh.mkdir(parents=True, exist_ok=True)
-    private = ssh / name
-    private.write_text("PRIVATE\n", encoding="utf-8")
-    Path(f"{private}.pub").write_text("ssh-ed25519 AAAA me@here\n", encoding="utf-8")
-    return private
+from .support import Naps, keypair
 
 
 def test_the_key_a_rental_is_opened_with_is_one_this_machine_holds_both_halves_of(
