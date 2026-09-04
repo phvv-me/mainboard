@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import sys
 from collections.abc import Callable, Sequence
 from getpass import getuser
@@ -550,13 +551,14 @@ class Systemd:
 class Recorded(Settler):
     """A settler recording what the verb asked of it, so the CLI seam is tested on its own."""
 
-    def __init__(self, answer: Settling) -> None:
+    def __init__(self, root: Path, answer: Settling) -> None:
+        super().__init__(root)
         self.answer = answer
-        self.installed: list[tuple[Path, str]] = []
+        self.installed: list[str] = []
         self.removed = 0
 
-    def install(self, root: Path, every: Every) -> Settling:
-        self.installed.append((root, every.written))
+    def install(self, every: Every) -> Settling:
+        self.installed.append(every.written)
         return self.answer
 
     def remove(self) -> Settling:
@@ -567,9 +569,9 @@ class Recorded(Settler):
         return self.answer
 
 
-def systemd(units: Path, manager: Systemd) -> SystemdUser:
-    """A user-timer settler over a temporary unit directory and a stand-in manager."""
-    return SystemdUser(units=units, shell=manager)
+def systemd(root: Path, units: Path, manager: Systemd) -> SystemdUser:
+    """A user-timer settler for `root` over a temporary unit directory and a stand-in manager."""
+    return SystemdUser(root, units=units, shell=manager)
 
 
 @pytest.mark.parametrize(
@@ -620,18 +622,20 @@ def test_installing_the_pass_writes_both_units_and_arms_them(
     root, units = tmp_path / "workspace", tmp_path / "units"
     root.mkdir()
     manager = Systemd(last_run="Thu 2026-09-04 09:20:31 JST", lingering=False)
-    found = systemd(units, manager).install(root, Every.parse("20m"))
-    service = (units / "mainboard-monitor.service").read_text(encoding="utf-8")
-    timer = (units / "mainboard-monitor.timer").read_text(encoding="utf-8")
+    settler = systemd(root, units, manager)
+    found = settler.install(Every.parse("20m"))
+    service = settler.service.read_text(encoding="utf-8")
+    timer = settler.timer.read_text(encoding="utf-8")
     log = root / ".mainboard" / "monitor.log"
+    assert re.fullmatch(r"mainboard-monitor-[0-9a-f]{8}\.service", settler.service.name)
     assert f"WorkingDirectory={root}" in service
     assert "ExecStart=/usr/bin/mainboard monitor --json" in service
     assert f"StandardOutput=append:{log}" in service
     assert "OnUnitActiveSec=20m" in timer
-    assert "Unit=mainboard-monitor.service" in timer
+    assert f"Unit={settler.service.name}" in timer
     assert "WantedBy=timers.target" in timer
     assert ("systemctl", "--user", "daemon-reload") in manager.calls
-    assert ("systemctl", "--user", "enable", "--now", "mainboard-monitor.timer") in manager.calls
+    assert ("systemctl", "--user", "enable", "--now", settler.timer.name) in manager.calls
     assert (found.installed, found.active, found.every) == (True, True, "20m")
     assert (found.last_run, found.log, found.root) == (
         "Thu 2026-09-04 09:20:31 JST",
@@ -647,7 +651,7 @@ def test_a_machine_with_no_periodic_pass_names_the_command_that_installs_one(
 ) -> None:
     """Nothing is asked of the manager, since a unit that is not there cannot be armed."""
     manager = Systemd()
-    found = systemd(tmp_path / "units", manager).state()
+    found = systemd(tmp_path / "workspace", tmp_path / "units", manager).state()
     assert (found.installed, found.active, found.detail.startswith("no periodic pass")) == (
         False,
         False,
@@ -663,10 +667,10 @@ def test_a_machine_with_no_periodic_pass_names_the_command_that_installs_one(
         (
             Systemd(active=False),
             False,
-            "systemctl --user enable --now mainboard-monitor.timer",
+            "systemctl --user enable --now {timer}",
             "installed but not armed",
         ),
-        (Systemd(), True, "systemctl --user enable --now mainboard-monitor.timer", ""),
+        (Systemd(), True, "systemctl --user enable --now {timer}", ""),
         (Systemd(last_run="Thu 2026-09-04 09:20:31 JST"), False, "", "last run Thu 2026-09-04"),
         (Systemd(), False, "", "last run never"),
     ],
@@ -692,12 +696,12 @@ def test_an_installed_timer_is_judged_by_what_the_manager_says_about_it(
     monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
     root, units = tmp_path / "workspace", tmp_path / "units"
     root.mkdir()
-    settler = systemd(units, manager)
-    settler.install(root, Every.parse("20m"))
+    settler = systemd(root, units, manager)
+    settler.install(Every.parse("20m"))
     manager.refusing = silent
     found = settler.state()
     assert found.installed
-    assert found.fix == fix
+    assert found.fix == fix.format(timer=settler.timer.name)
     assert fragment in found.detail
 
 
@@ -713,9 +717,9 @@ def test_a_manager_that_refuses_the_arming_refuses_the_install(
     monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
     root = tmp_path / "workspace"
     root.mkdir()
-    settler = systemd(tmp_path / "units", Systemd(enable=(1, output)))
+    settler = systemd(root, tmp_path / "units", Systemd(enable=(1, output)))
     with pytest.raises(MissionError, match=fragment):
-        settler.install(root, Every.parse("20m"))
+        settler.install(Every.parse("20m"))
 
 
 def test_a_workstation_with_no_snapshot_on_path_has_nothing_for_a_timer_to_run(
@@ -725,7 +729,7 @@ def test_a_workstation_with_no_snapshot_on_path_has_nothing_for_a_timer_to_run(
     root = tmp_path / "workspace"
     root.mkdir()
     with pytest.raises(MissionError, match="no mainboard on PATH"):
-        systemd(tmp_path / "units", Systemd()).install(root, Every.parse("20m"))
+        systemd(root, tmp_path / "units", Systemd()).install(Every.parse("20m"))
 
 
 def test_removing_the_pass_disarms_it_before_taking_its_units_away(
@@ -736,11 +740,12 @@ def test_removing_the_pass_disarms_it_before_taking_its_units_away(
     root, units = tmp_path / "workspace", tmp_path / "units"
     root.mkdir()
     manager = Systemd()
-    settler = systemd(units, manager)
-    settler.install(root, Every.parse("20m"))
+    settler = systemd(root, units, manager)
+    settler.install(Every.parse("20m"))
+    timer = settler.timer.name
     found = settler.remove()
     assert not settler.timer.exists() and not settler.service.exists()
-    assert ("systemctl", "--user", "disable", "--now", "mainboard-monitor.timer") in manager.calls
+    assert ("systemctl", "--user", "disable", "--now", timer) in manager.calls
     assert not found.installed
     assert found.fix == "mainboard monitor --every 20m"
     assert settler.remove().installed is False
@@ -753,8 +758,8 @@ def test_a_timer_whose_service_file_somebody_deleted_still_says_what_is_left(
     monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
     root, units = tmp_path / "workspace", tmp_path / "units"
     root.mkdir()
-    settler = systemd(units, Systemd())
-    settler.install(root, Every.parse("20m"))
+    settler = systemd(root, units, Systemd())
+    settler.install(Every.parse("20m"))
     settler.service.unlink()
     found = settler.state()
     assert found.installed and found.log == ""
@@ -776,12 +781,16 @@ def test_a_timer_whose_service_file_somebody_deleted_still_says_what_is_left(
     ],
 )
 def test_the_machine_picks_the_periodic_runner_it_can_actually_drive(
-    monkeypatch: pytest.MonkeyPatch, system: str, found: str | None, expected: type[Settler]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    system: str,
+    found: str | None,
+    expected: type[Settler],
 ) -> None:
     """The seam a second platform fills is one registration ahead of the null answer."""
     monkeypatch.setattr("mainboard.durable.platform.system", lambda: system)
     monkeypatch.setattr("mainboard.durable.which", lambda name: found)
-    assert isinstance(settler(), expected)
+    assert isinstance(settler(tmp_path), expected)
 
 
 def test_a_platform_with_no_periodic_runner_refuses_in_one_sentence_naming_itself(
@@ -789,8 +798,8 @@ def test_a_platform_with_no_periodic_runner_refuses_in_one_sentence_naming_itsel
 ) -> None:
     """Refusing beats pretending: an outcome nobody settles must not look settled."""
     monkeypatch.setattr("mainboard.durable.platform.system", lambda: "Darwin")
-    machine = Unsupported()
-    for asked in (lambda: machine.install(tmp_path, Every.parse("20m")), machine.remove):
+    machine = Unsupported(tmp_path)
+    for asked in (lambda: machine.install(Every.parse("20m")), machine.remove):
         with pytest.raises(MissionError, match="Darwin has no service manager mainboard"):
             asked()
     found = machine.state()
@@ -842,12 +851,12 @@ def test_the_monitor_verb_hands_the_pass_to_this_machine_and_takes_it_back(
 ) -> None:
     """`--every` is the whole of what the verb owns: the period reaches the machine's manager."""
     detail = "the timer sweeps every 20m" if fix else "nothing periodic runs here"
-    recorder = Recorded(Settling(detail=detail, fix=fix))
-    monkeypatch.setattr("mainboard.durable.settler", lambda: recorder)
+    recorder = Recorded(workspace, Settling(detail=detail, fix=fix))
+    monkeypatch.setattr("mainboard.durable.settler", lambda root: recorder)
     with pytest.raises(SystemExit, match="0"):
         build(workspace)(["monitor", "--every", every])
     out = capsys.readouterr().out
     assert all(line in out for line in lines)
     assert out.count("mainboard: ") == len(lines)
-    assert recorder.installed == ([(workspace, "20m")] if fix else [])
+    assert recorder.installed == (["20m"] if fix else [])
     assert recorder.removed == (0 if fix else 1)

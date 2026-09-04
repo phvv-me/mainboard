@@ -11,7 +11,7 @@ from mainboard import Board, ComputePath, HostFacts, Survey
 from mainboard.compute import Access
 from mainboard.dispatch import HostSetup
 from mainboard.doctor import Doctor, Section, Verdict
-from mainboard.durable import Settler, Settling
+from mainboard.durable import Every, Settler, Settling
 from mainboard.engines.compile import Provisioner
 from mainboard.engines.compile.backend import CommandResult
 from mainboard.engines.compile.state import SyncState
@@ -51,10 +51,11 @@ def answering(status: int, output: str) -> Callable[[str, float], tuple[int, str
 class Reporting(Settler):
     """A periodic runner answering with one fixed state, so no report touches a service manager."""
 
-    def __init__(self, answer: Settling) -> None:
+    def __init__(self, root: Path, answer: Settling) -> None:
+        super().__init__(root)
         self.answer = answer
 
-    def install(self, root: Path, every: object) -> Settling:
+    def install(self, every: Every) -> Settling:
         raise NotImplementedError
 
     def remove(self) -> Settling:
@@ -67,7 +68,8 @@ class Reporting(Settler):
 def sweeping(root: Path) -> Reporting:
     """A machine whose periodic pass sweeps `root`, which is what a passing row means."""
     return Reporting(
-        Settling(installed=True, active=True, root=str(root), detail="the timer sweeps every 20m")
+        root,
+        Settling(installed=True, active=True, root=str(root), detail="the timer sweeps every 20m"),
     )
 
 
@@ -585,10 +587,6 @@ def test_the_current_layout_is_never_mistaken_for_the_superseded_one(workspace: 
     [
         (Settling(installed=True, active=True, detail="sweeping every 20m"), Verdict.PASS),
         (
-            Settling(installed=True, active=True, root="/elsewhere", detail="sweeping elsewhere"),
-            Verdict.WARN,
-        ),
-        (
             Settling(installed=True, detail="installed but not armed", fix="systemctl --user x"),
             Verdict.WARN,
         ),
@@ -599,7 +597,6 @@ def test_the_current_layout_is_never_mistaken_for_the_superseded_one(workspace: 
     ],
     ids=[
         "a machine that settles jobs on its own",
-        "one machine runs one pass, and this one is another workspace's",
         "an installed pass nothing armed still leaves outcomes owed",
         "and so does a machine with no pass at all",
     ],
@@ -612,11 +609,6 @@ def test_the_settling_row_says_whether_an_outcome_survives_this_session(
     Nothing here fails: a workstation with no periodic pass is a machine to configure rather
     than a workspace that is broken.
     """
-    mine = state.model_copy(update={"root": state.root or str(workspace)})
-    found = Doctor(Board(workspace), settler=Reporting(mine)).settling()
+    found = Doctor(Board(workspace), settler=Reporting(workspace, state)).settling()
     assert found.verdict is verdict
-    if state.root:
-        assert found.detail == "the periodic pass sweeps /elsewhere, not this workspace"
-        assert found.fix == "mainboard monitor --every 20m"
-        return
-    assert (found.detail, found.fix) == (mine.detail, mine.fix)
+    assert (found.detail, found.fix) == (state.detail, state.fix)

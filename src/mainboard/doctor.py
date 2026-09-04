@@ -93,7 +93,7 @@ class Doctor:
         self.env = env
         self.survey = survey or Survey(board)
         self.probe = probe or self.through_runner
-        self.settler = settler or durable.settler()
+        self.settler = settler or durable.settler(board.root)
 
     def environment(self) -> Section:
         """Whether what is installed answers to the manifest, and still imports.
@@ -361,20 +361,12 @@ class Doctor:
 
         A sweep scheduled inside the terminal that dispatched the jobs dies with that terminal,
         and an outcome must never depend on the agent that asked for it staying alive, so the
-        row asks this machine's own service manager whether the pass is installed, armed, and
-        when it last ran. One machine runs one pass, so a timer another workspace installed is
-        reported as the pass this workspace does not have rather than as one it does. Nothing
-        here fails: a workstation with no periodic pass is a machine to configure rather than a
-        workspace that is broken.
+        row asks this workspace's own settler whether its pass is installed, armed, and when it
+        last ran. Each workspace has its own timer, so this is never another workspace's answer.
+        Nothing here fails: a workstation with no periodic pass is a machine to configure rather
+        than a workspace that is broken.
         """
         found = self.settler.state()
-        if found.installed and found.root != str(self.board.root):
-            return Section(
-                section="settling",
-                verdict=Verdict.WARN,
-                detail=f"the periodic pass sweeps {found.root}, not this workspace",
-                fix=f"{_TOOL} monitor --every 20m",
-            )
         return Section(
             section="settling",
             verdict=Verdict.PASS if found.active else Verdict.WARN,

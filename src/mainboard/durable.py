@@ -9,6 +9,7 @@ import platform
 import re
 from abc import ABC, abstractmethod
 from getpass import getuser
+from hashlib import blake2b
 from os import environ
 from pathlib import Path
 from shutil import which
@@ -123,14 +124,19 @@ class Settler(ABC):
 
     The seam a second platform fills. Everything above it is written in terms of these three
     answers, so a launchd or a Task Scheduler implementation joins by subclassing here and
-    registering itself in `SETTLERS` ahead of the null answer, and no caller changes.
+    registering itself in `SETTLERS` ahead of the null answer, and no caller changes. A settler
+    belongs to one workspace, fixed at construction, so one machine can settle several
+    workspaces at once, each through its own instance.
     """
 
-    @abstractmethod
-    def install(self, root: Path, every: Every) -> Settling:
-        """Install and arm the pass over `root` at `every`, answering with what now runs.
+    def __init__(self, root: Path) -> None:
+        """root: the workspace whose dispatched jobs this settler settles."""
+        self.root = root
 
-        root: the workspace whose dispatched jobs the pass settles.
+    @abstractmethod
+    def install(self, every: Every) -> Settling:
+        """Install and arm the pass at `every`, answering with what now runs.
+
         every: the period between passes.
         """
 
@@ -149,14 +155,19 @@ class SystemdUser(Settler):
     A user timer needs no root and outlives every terminal, but a user manager is torn down when
     its last session ends unless that user lingers, so the linger state rides in every answer
     rather than being left as a footnote nobody reads until a reboot loses a night of settling.
+    One machine may settle several workspaces, each through its own timer: the unit names carry
+    an eight-hex-digit stamp of this settler's root, which is what keeps them apart in
+    `systemctl --user list-timers`.
     """
 
-    def __init__(self, units: Path | None = None, shell: Shell = locally) -> None:
-        """units: the user unit directory, the XDG one when None.
+    def __init__(self, root: Path, units: Path | None = None, shell: Shell = locally) -> None:
+        """root: the workspace this settler belongs to, the source of the unit names' stamp.
 
+        units: the user unit directory, the XDG one when None.
         shell: runs one command and answers with its status and output, this machine's when
             left alone.
         """
+        super().__init__(root)
         self.units = (
             units
             or Path(environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user"
@@ -166,30 +177,36 @@ class SystemdUser(Settler):
     @property
     def service(self) -> Path:
         """The unit that runs one pass."""
-        return self.units / f"{_TOOL}-monitor.service"
+        return self.units / f"{_TOOL}-monitor-{self._stamp}.service"
 
     @property
     def timer(self) -> Path:
         """The unit that runs the service on a period."""
-        return self.units / f"{_TOOL}-monitor.timer"
+        return self.units / f"{_TOOL}-monitor-{self._stamp}.timer"
 
-    def available(self) -> bool:
+    @property
+    def _stamp(self) -> str:
+        """Eight hex digits of blake2b over the resolved root, apart from any other workspace's."""
+        return blake2b(str(self.root.resolve()).encode(), digest_size=4).hexdigest()
+
+    @staticmethod
+    def available() -> bool:
         """Whether this machine runs systemd, which is what makes a user timer installable."""
         return platform.system() == "Linux" and which("systemctl") is not None
 
-    def install(self, root: Path, every: Every) -> Settling:
+    def install(self, every: Every) -> Settling:
         """Write both units, reload the user manager and arm the timer.
 
-        Installing twice is installing once: the unit files are rewritten from `root` and
-        `every` and the enable is idempotent, so changing the period is the same command.
+        Installing twice is installing once: the unit files are rewritten from this settler's
+        root and `every` and the enable is idempotent, so changing the period is the same
+        command.
 
-        root: the workspace whose dispatched jobs the pass settles.
         every: the period between passes.
         """
-        log = root / Project().out_dir / _LOG
+        log = self.root / Project().out_dir / _LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         self.units.mkdir(parents=True, exist_ok=True)
-        self.service.write_text(self._service(root, log), encoding="utf-8")
+        self.service.write_text(self._service(log), encoding="utf-8")
         self.timer.write_text(self._timer(every), encoding="utf-8")
         self.shell(("systemctl", "--user", "daemon-reload"))
         status, output = self.shell(("systemctl", "--user", "enable", "--now", self.timer.name))
@@ -214,7 +231,7 @@ class SystemdUser(Settler):
 
         The period, the log and the workspace are read back out of the units on disk rather
         than remembered here, so the row describes what actually runs on this machine, including
-        a timer some earlier version of this tool wrote or another workspace installed.
+        a timer some earlier version of this tool wrote for this same workspace.
         """
         if not self.timer.is_file():
             return Settling(
@@ -280,8 +297,8 @@ class SystemdUser(Settler):
         pairs = (line.partition("=") for line in output.splitlines() if "=" in line)
         return {key: value.strip() for key, _, value in pairs}
 
-    def _service(self, root: Path, log: Path) -> str:
-        """The unit for one pass, run from `root` with everything it says appended to `log`."""
+    def _service(self, log: Path) -> str:
+        """The unit for one pass, run from this settler's root, appending what it says to `log`."""
         found = which(_TOOL)
         if found is None:
             raise MissionError(
@@ -290,11 +307,11 @@ class SystemdUser(Settler):
         return "\n".join(
             (
                 "[Unit]",
-                f"Description={_TOOL} durable job settling for {root}",
+                f"Description={_TOOL} durable job settling for {self.root}",
                 "",
                 "[Service]",
                 "Type=oneshot",
-                f"WorkingDirectory={root}",
+                f"WorkingDirectory={self.root}",
                 f"ExecStart={found} {' '.join(_PASS)}",
                 f"StandardOutput=append:{log}",
                 f"StandardError=append:{log}",
@@ -350,8 +367,8 @@ class Unsupported(Settler):
     since a pass a person believes is running and is not is worse than no pass at all.
     """
 
-    def install(self, root: Path, every: Every) -> Settling:
-        del root, every
+    def install(self, every: Every) -> Settling:
+        del every
         raise MissionError(self._refusal)
 
     def remove(self) -> Settling:
@@ -375,15 +392,17 @@ class Unsupported(Settler):
 
 
 # The platform registry, walked in order: the first implementation this machine can run wins,
-# and the null answer at the end catches every platform none of them claimed.
-SETTLERS: Strategy[Settler] = Strategy("settler")
-SETTLERS.factory("systemd", SystemdUser)
-SETTLERS.factory("none", Unsupported)
+# and the null answer at the end catches every platform none of them claimed. Registered by
+# class rather than by instance, since which one wins never depends on the workspace a caller
+# is asking for.
+SETTLERS: Strategy[type[Settler]] = Strategy("settler")
+SETTLERS.register("systemd", SystemdUser)
+SETTLERS.register("none", Unsupported)
 
 
-def settler() -> Settler:
-    """The periodic runner this machine offers, the refusing one where it offers none."""
-    return SETTLERS.first_available()
+def settler(root: Path) -> Settler:
+    """The periodic runner this machine offers `root`, the refusing one where it offers none."""
+    return SETTLERS.first_available()(root)
 
 
 def schedule(root: Path, every: str) -> Settling:
@@ -393,5 +412,5 @@ def schedule(root: Path, every: str) -> Settling:
     every: how often one pass runs, `20m`, or `0` to remove what is installed.
     """
     period = Every.parse(every)
-    machine = settler()
-    return machine.install(root, period) if period.seconds else machine.remove()
+    machine = settler(root)
+    return machine.install(period) if period.seconds else machine.remove()
