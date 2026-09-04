@@ -3,6 +3,7 @@
 # integer ids after a daemon restart), and its `hosts` table, one onboarding record per alias.
 
 import weakref
+from itertools import islice
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -108,6 +109,15 @@ class Cache:
             (setup.model_copy(update={"synced_at": now()}).model_dump_json(), alias),
         )
 
+    def live(self) -> list[RunRecord]:
+        """Every run that has not reached a terminal verdict, newest first.
+
+        Never truncated by a caller's limit, since a listing that hides half a dispatched wave is
+        what sends an operator to `qstat` by hand. A verdict lives inside each row's payload
+        rather than in a column, so the filter is here rather than in the query.
+        """
+        return [run for run in self.__records() if run.verdict not in vocabulary.TERMINAL]
+
     def recent(self, limit: int = 20) -> list[RunRecord]:
         """The most recent dispatched runs, newest first."""
         rows = self.connection.execute(
@@ -179,6 +189,15 @@ class Cache:
         )
         return stamped
 
+    def settled(self, limit: int) -> list[RunRecord]:
+        """The `limit` most recently dispatched runs whose verdict is terminal, newest first."""
+        landed = (run for run in self.__records() if run.verdict in vocabulary.TERMINAL)
+        return list(islice(landed, limit))
+
+    def total(self) -> int:
+        """How many runs this cache holds, the count a truncated listing measures against."""
+        return int(self.connection.execute("SELECT count(*) AS runs FROM runs").fetchone()["runs"])
+
     def tracked(self) -> list[RunRecord]:
         """Every run a durable sweep still owes an outcome for, newest first.
 
@@ -186,12 +205,15 @@ class Cache:
         reported, so a sweep never announces a settled run twice and never drops the one whose
         outcome no process ever recorded, the job whose dispatching agent died before it ended.
         """
+        return [
+            run
+            for run in self.__records()
+            if run.verdict not in vocabulary.TERMINAL or run.reported != run.verdict
+        ]
+
+    def __records(self) -> list[RunRecord]:
+        """Every recorded run, newest first, the whole table a verdict filter reads from."""
         rows = self.connection.execute(
             "SELECT data FROM runs ORDER BY submitted_at DESC"
         ).fetchall()
-        runs = [RunRecord.model_validate_json(row["data"]) for row in rows]
-        return [
-            run
-            for run in runs
-            if run.verdict not in vocabulary.TERMINAL or run.reported != run.verdict
-        ]
+        return [RunRecord.model_validate_json(row["data"]) for row in rows]

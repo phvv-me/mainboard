@@ -1,4 +1,6 @@
-from contextlib import contextmanager
+import os
+import sys
+from contextlib import contextmanager, redirect_stdout
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -8,6 +10,11 @@ from rich.traceback import install as install_rich_traceback
 from .values import columns_of
 
 _UNBOUNDED = 1 << 16
+
+# The two file descriptors every process is handed, named because the diversion below points one
+# at the other for this process and for every child it starts while a block runs.
+_STDOUT_FD = 1
+_STDERR_FD = 2
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -61,15 +68,42 @@ def progress(description: str) -> Iterator[Callable[[str], None]]:
     line instead, since a stage worth naming to a live viewer is a stage worth naming in the log
     nobody is watching live.
 
+    The block owns nothing on stdout: whatever it or a child process writes there is diverted to
+    stderr, so the verb's document is the only thing a reader parsing stdout ever sees.
+
     description: the label shown first, and beside the spinner on a terminal.
     """
     console = Console(stderr=True, markup=False)
-    if not console.is_terminal:
-        console.print(description)
-        yield console.print
-        return
-    with console.status(description) as status:
-        yield status.update
+    with diverted():
+        if not console.is_terminal:
+            console.print(description)
+            yield console.print
+            return
+        with console.status(description) as status:
+            yield status.update
+
+
+@contextmanager
+def diverted() -> Iterator[None]:
+    """Everything written to stdout inside the block goes to stderr instead.
+
+    Stdout belongs to the one document a verb prints when its work is done, which is what lets
+    `--json` be parsed whole instead of line by line. Work prints too, though, and none of it is
+    the document: a tracking SDK announces its credentials, rsync narrates a transfer, a library
+    greets the terminal it thinks it has. All of that is diverted here, at the descriptor as well
+    as at `sys.stdout`, so a child process is as quiet on stdout as this one is, and the document
+    is printed after the block on the stdout this hands back untouched.
+    """
+    sys.stdout.flush()
+    held = os.dup(_STDOUT_FD)
+    os.dup2(_STDERR_FD, _STDOUT_FD)
+    try:
+        with redirect_stdout(sys.stderr):
+            yield
+    finally:
+        sys.stdout.flush()
+        os.dup2(held, _STDOUT_FD)
+        os.close(held)
 
 
 def install_traceback() -> None:

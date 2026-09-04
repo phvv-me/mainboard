@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -9,8 +10,9 @@ from mainboard import Board, ComputePath, MissionError, Survey
 from mainboard.batch.estimate import JobEstimate
 from mainboard.cli import build, main
 from mainboard.dispatch.shared import db_file
-from mainboard.dispatch.state import Cache, RunRecord
+from mainboard.dispatch.state import Cache, MonitorReport, RunRecord
 from mainboard.dispatch.vocabulary import JobState
+from mainboard.monitor import Monitor
 from mainboard.staleness import Snapshot
 from mainboard.verdicts import StreamVerdict, Verdicts
 
@@ -401,15 +403,18 @@ def test_submit_prints_the_expectation_and_asks_once_at_a_terminal(
 
     The line goes to stderr so the handle on stdout stays a shell's to capture, a rented
     target shows the meter and its tail, owned hardware says so instead of a hollow zero, and
-    `--yes` is the script's way past the one question a terminal gets asked.
+    `--yes` is the script's way past the one question a terminal gets asked. The question itself
+    is on stderr for the same reason the line above it is.
     """
     monkeypatch.setattr(Board, "expectation", lambda self, command, **query: priced)
     monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: True))
-    monkeypatch.setattr("builtins.input", lambda prompt: answer)
+    monkeypatch.setattr("builtins.input", lambda: answer)
     argv = ["submit", "--on", _MIYABI_G, *(["--yes"] if yes else []), "true"]
     with pytest.raises(SystemExit, match="0" if dispatched else "1"):
         build(depot)(argv)
-    assert said in capsys.readouterr().err
+    printed = capsys.readouterr()
+    assert said in printed.err
+    assert not printed.out.startswith("dispatch?")
     assert [call[0] for call in relayed] == (["submit"] if dispatched else [])
 
 
@@ -620,6 +625,29 @@ def test_the_monitor_verb_watches_in_the_foreground_until_it_is_stopped(
 
 def _interrupt() -> None:
     raise KeyboardInterrupt
+
+
+def test_a_machine_readable_verb_leaves_stdout_to_its_document_alone(
+    depot: Path, capfd: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `--json` consumer parses stdout whole, so nothing the work says may land in front of it.
+
+    The two shapes that actually did land there are both here: a library greeting the terminal
+    through this process, and a child process narrating a transfer straight onto the descriptor.
+    """
+
+    def noisy(self: Monitor) -> MonitorReport:
+        print("wandb: [wandb.login()] Loaded credentials from netrc")
+        os.write(1, b"sending incremental file list\n")
+        return MonitorReport(running=1)
+
+    monkeypatch.setattr(Monitor, "once", noisy)
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["monitor", "--json"])
+    printed = capfd.readouterr()
+    assert json.loads(printed.out)["running"] == 1
+    assert "wandb: [wandb.login()]" in printed.err
+    assert "sending incremental file list" in printed.err
 
 
 @pytest.mark.parametrize(

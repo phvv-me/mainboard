@@ -230,6 +230,8 @@ def standing(state: JobState, *, submitted_at: str = "", host: str = "") -> str:
     if submitted_at:
         waited = since(submitted_at)
         parts.append(f"submitted {submitted_at}" + (f" ({waited} ago)" if waited else ""))
+    if state.estimated_start:
+        parts.append(f"estimated start {state.estimated_start}")
     if state.note:
         parts.append(state.note)
     return "; ".join(parts)

@@ -7,6 +7,7 @@ from mainboard.dispatch.schedulers import Pbs, build_qsub_flags
 from mainboard.dispatch.schedulers.pbs import (
     JobInfo,
     PbsState,
+    _instant,
     bare,
     parse_job_state,
     parse_qstat_full,
@@ -75,35 +76,45 @@ def test_qstat_full_reads_when_a_queued_job_will_start_and_rejoins_a_wrapped_com
     estimated.start_time = Thu Sep  4 14:00:00 2026
 """
     [queued] = parse_qstat_full(record)
-    assert queued.estimated_start == "Thu Sep  4 14:00:00 2026"
+    assert queued.estimated_start == _instant("Thu Sep  4 14:00:00 2026")
+    assert queued.estimated_start.startswith("2026-09-04T14:00:00")
     assert queued.comment == "Not Running: Insufficient amount of resource: ngpus (R: 8 A: 0 T: 8)"
 
 
 @pytest.mark.parametrize(
-    ("state", "estimated", "comment", "note"),
+    ("state", "estimated", "comment", "stage", "starts", "note"),
     [
+        ("Q", "Thu Sep  4 14:00:00 2026", "Not Running: ...", "queued", True, "Not Running: ..."),
         (
             "Q",
-            "Thu Sep  4 14:00:00 2026",
-            "Not Running: ...",
-            "estimated start Thu Sep  4 14:00:00 2026",
+            "",
+            "Not Running: Insufficient ngpus",
+            "queued",
+            False,
+            "Not Running: Insufficient ngpus",
         ),
-        ("Q", "", "Not Running: Insufficient ngpus", "Not Running: Insufficient ngpus"),
-        ("R", "Thu Sep  4 14:00:00 2026", "", ""),
+        ("R", "Thu Sep  4 14:00:00 2026", "", "running", False, ""),
     ],
 )
 def test_a_probe_carries_when_a_job_will_start_only_while_it_has_not_started(
-    state: str, estimated: str, comment: str, note: str
+    state: str, estimated: str, comment: str, stage: str, *, starts: bool, note: str
 ) -> None:
-    """A running job's estimate is history, so only a pending one answers "when"."""
+    """A running job's estimate is history, so only a pending one answers "when" and "why not"."""
     record = f"""Job Id: 3289319.opbs
     job_state = {state}
     queue = short-g
+    qtime = Thu Sep  4 05:12:44 2026
+    stime = Thu Sep  4 13:40:00 2026
     comment = {comment}
     estimated.start_time = {estimated}
 """
     remote = machine_with(record)
-    assert Pbs().state(remote, "/repo", handle="3289319").note == note
+    probed = Pbs().state(remote, "/repo", handle="3289319")
+    assert (probed.stage, probed.note) == (stage, note)
+    assert bool(probed.estimated_start) is starts
+    assert probed.since == _instant(
+        "Thu Sep  4 13:40:00 2026" if stage == "running" else "Thu Sep  4 05:12:44 2026"
+    )
 
 
 @given(

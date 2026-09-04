@@ -36,6 +36,7 @@ $ mainboard submit --on miyabi-g --attempt 2 -- python -m experiments.run
 2231259
 $ mainboard monitor --json          # one durable pass, what a cron runs
 {"running": 1, "finished": [], "failed": [], "unreachable_hosts": [], "changed": false}
+$ mainboard jobs                    # every live job as its own queue sees it right now
 $ mainboard compute --agent         # every path this workspace can run on
 name      kind      access       detail                 usd_hr  credit_usd
 local     local     here         1x RTX 4090, 135 GB RAM
@@ -49,6 +50,12 @@ machine, every declared host with whether it answers and whether it was set up,
 and every provider with whether its credentials are here and what the account
 has left. No credential is ever printed, only whether one was found.
 
+
+`jobs` shows every dispatched job still in flight before it shows any that
+settled, each with what its own scheduler says about it right now, and asks each
+host once for all of them: one `qstat`, one `squeue`, one `pueue status`. A
+listing that had to leave anything out says so rather than stopping quietly at a
+limit, and `--limit` bounds only the settled tail.
 
 `monitor` is the sweep that makes a dispatched job's outcome survive the
 process that dispatched it. Each pass probes every job still owed an outcome,
@@ -93,6 +100,8 @@ $ mainboard batch estimate fleet.toml --agent     # what it will cost, nothing r
 job      target  kind  hardware     wire_bytes  runtime_s  setup_p50_s  setup_p90_s  setup_samples  rate_usd_hr  expected_usd  p90_usd
 sweep-a  gold    ssh   129 GB RAM   33053       25.0       2.49         7.53         3              0.0          0.0           0.0
 $ mainboard batch run fleet.toml --set repetition=3   # every job to its own target, one knob typed
+fleet-db4af53f
+$ mainboard batch run fleet.toml --only "sweep-*"    # the jobs that are ready, the rest recorded skipped
 fleet-db4af53f
 $ mainboard batch wait fleet-db4af53f             # block until every job settles, exit its verdict
 $ mainboard interact --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line

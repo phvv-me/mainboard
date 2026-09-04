@@ -48,6 +48,12 @@ if TYPE_CHECKING:
 # The variable the service itself reads, and the only thing this module ever checks about it.
 _KEY = "WANDB_API_KEY"
 
+# The variable that keeps the service off stdout. `Settings(silent=True)` quiets an opened run,
+# but the lines before it (`wandb: [wandb.login()] Loaded credentials ...`) are printed while the
+# package is finding its credentials, and they landed in front of a `--json` document where every
+# consumer had to skip them. The service reads this at import, so it is set before the import.
+_SILENCE = "WANDB_SILENT"
+
 # What a topic's fields also belong on, the run's summary, so a finished run reads as a row
 # rather than as a series somebody has to scrub to the end of.
 _SUMMARIZED = frozenset({Topic.COST, Topic.ESTIMATED})
@@ -225,7 +231,12 @@ def module() -> ModuleType:
     The import is here rather than at the top of the file because tracking is on by default and
     this package must stay installable without the service, so a workspace that never wanted the
     lane pays nothing for it and a workspace that did is told exactly what to run.
+
+    The service is silenced on the way in, before its own import reads the variable. The receipts
+    beside a run are this workspace's record of it, so nothing the package says on stdout is
+    worth the `--json` document it would be printed in front of.
     """
+    os.environ[_SILENCE] = "true"
     try:
         return import_module("wandb")
     except ImportError:

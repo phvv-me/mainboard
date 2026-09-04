@@ -2,6 +2,7 @@
 
 import re
 import shlex
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,7 @@ from patos import Model
 
 from ...core.errors import MissionError
 from ...core.project import Project
+from .. import vocabulary
 from ..shared import state_dir
 from ..vocabulary import JobState, Resources
 from .base import login_run, read_log, within
@@ -76,6 +78,8 @@ class JobInfo(Model):
     state: PbsState | str
     queue: str
     exit_status: int | None = None  # set only for a finished job, else None
+    queued_at: str = ""
+    started_at: str = ""
     estimated_start: str = ""
     comment: str = ""
 
@@ -118,9 +122,23 @@ def _job_info(job_id: str, attributes: dict[str, str]) -> JobInfo:
         state=parse_job_state(attributes.get("job_state", PbsState.QUEUED)),
         queue=attributes.get("queue", ""),
         exit_status=int(exit_status) if exit_status is not None else None,
-        estimated_start=attributes.get("estimated.start_time", ""),
+        queued_at=_instant(attributes.get("qtime", "")),
+        started_at=_instant(attributes.get("stime", "")),
+        estimated_start=_instant(attributes.get("estimated.start_time", "")),
         comment=attributes.get("comment", ""),
     )
+
+
+def _instant(stamp: str) -> str:
+    """A  ctime stamp such as  as an ISO-8601 instant.
+
+    qstat prints server-local wall clock without a zone, which is the login node's own, so
+    the stamp is read in this process's local zone; anything else is passed through as it is.
+    """
+    try:
+        return datetime.strptime(stamp, "%a %b %d %H:%M:%S %Y").astimezone().isoformat()
+    except ValueError:
+        return stamp
 
 
 def bare(handle: str) -> str:
@@ -239,28 +257,21 @@ class Pbs:
 
     @staticmethod
     def __job_state(handle: str, job: JobInfo) -> JobState:
+        pending = job.state in _PBS_PENDING
+        running = job.state is PbsState.RUNNING
         return JobState(
             handle=handle,
             label=job.name or None,
             state=str(job.state),
             exit_code=job.exit_status,
             verdict=pbs_verdict(str(job.state), job.exit_status),
-            note=Pbs.__waiting(job),
+            stage=vocabulary.QUEUED if pending else vocabulary.RUNNING if running else "",
+            since=job.started_at if running else job.queued_at if pending else "",
+            estimated_start=job.estimated_start if pending else "",
+            # The comment is where PBS says which resource the queue is short of, an answer to
+            # "why not yet" that only a job still waiting has.
+            note=job.comment if pending else "",
         )
-
-    @staticmethod
-    def __waiting(job: JobInfo) -> str:
-        """Why a job that has not started has not started, empty once it is running.
-
-        The server's own estimate first, since a start time is what somebody watching an empty
-        log actually wants, and its comment otherwise, which is where PBS says which resource
-        the queue is short of.
-        """
-        if job.state not in _PBS_PENDING:
-            return ""
-        if job.estimated_start:
-            return f"estimated start {job.estimated_start}"
-        return job.comment
 
     def __query(
         self, remote: Machine, command: str, handles: Sequence[str]

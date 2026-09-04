@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 from cyclopts import App, Parameter
 
 from . import staleness
-from .batch.spec import BatchSpec
+from .batch.spec import BatchSpec, Selection
 from .board import Board
 from .context.resolver import Resolver
 from .core.errors import MissionError
@@ -15,6 +15,7 @@ from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
+from .listing import Listing
 from .manifest.loading import load
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
 
@@ -122,15 +123,7 @@ def build(root: Path | None = None) -> App:
             attempt=attempt,
         )
         print(_expected(priced), file=sys.stderr)
-        if (
-            not yes
-            and sys.stdin.isatty()
-            and input("dispatch? [y/N] ").strip().lower()
-            not in {
-                "y",
-                "yes",
-            }
-        ):
+        if not yes and sys.stdin.isatty() and not _agreed():
             raise SystemExit(1)
         with progress(f"submitting on {on}"):
             job = board(on).submit(
@@ -554,8 +547,14 @@ def build(root: Path | None = None) -> App:
                 report = sweep.once()
             _present(report, mode=mode, fields=chosen)
             return
-        with suppress(KeyboardInterrupt):
-            for report in sweep.watch(watch):
+        # Each pass is taken inside its own progress block rather than iterated over, so the
+        # sweep's own noise is diverted the way a single pass's is and each report still prints
+        # as a document of its own.
+        with suppress(KeyboardInterrupt, StopIteration):
+            passes = sweep.watch(watch)
+            while True:
+                with progress("sweeping dispatched jobs"):
+                    report = next(passes)
                 _present(report, mode=mode, fields=chosen)
 
     @app.command
@@ -655,6 +654,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        only: str = "",
         set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
         json: bool = False,
         agent: bool = False,
@@ -670,12 +670,16 @@ def build(root: Path | None = None) -> App:
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
+            plan when unset.
         set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the transfer columns.
         """
-        batched = board("local").batch(declared(spec, job, name, set_))
+        batched = board("local").batch(
+            declared(spec, job, name, set_), selection=Selection.of(only)
+        )
         with progress(f"measuring {batched.id}"):
             measured = [transfer.model_dump() for transfer in batched.prepare()]
         _tabled(
@@ -694,6 +698,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        only: str = "",
         set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
         json: bool = False,
         agent: bool = False,
@@ -710,12 +715,16 @@ def build(root: Path | None = None) -> App:
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
+            plan when unset.
         set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the estimate columns.
         """
-        batched = board("local").batch(declared(spec, job, name, set_))
+        batched = board("local").batch(
+            declared(spec, job, name, set_), selection=Selection.of(only)
+        )
         with progress(f"pricing {batched.id}"):
             priced = [row.model_dump() for row in batched.estimate().jobs]
         _tabled(
@@ -734,6 +743,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        only: str = "",
         set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
         json: bool = False,
         agent: bool = False,
@@ -745,15 +755,24 @@ def build(root: Path | None = None) -> App:
         fleet routinely meets one machine that is asleep or was never declared. Watch the batch
         by the id printed here.
 
+        `--only` dispatches part of the plan, which is what a plan worked through in waves needs:
+        the nine jobs whose data is ready go now, and the four that are not are recorded as
+        skipped so neither `batch watch` nor `monitor` ever waits for them. The batch keeps its
+        identity, so tomorrow's wave writes to the same receipts stream.
+
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
+            plan when unset.
         set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over job/target/handle/kind/reason.
         """
-        batched = board("local").batch(declared(spec, job, name, set_))
+        batched = board("local").batch(
+            declared(spec, job, name, set_), selection=Selection.of(only)
+        )
         mode = mode_of(json_mode=json, agent=agent)
         with progress(f"dispatching {batched.id}"):
             dispatched = batched.run()
@@ -795,8 +814,11 @@ def build(root: Path | None = None) -> App:
                 status = watcher.once()
             _status(status, mode=mode, fields=chosen)
             return
-        with suppress(KeyboardInterrupt):
-            for status in watcher.follow(interval):
+        with suppress(KeyboardInterrupt, StopIteration):
+            passes = watcher.follow(interval)
+            while True:
+                with progress(f"sweeping {batch_id}"):
+                    status = next(passes)
                 _status(status, mode=mode, fields=chosen)
 
     @batch.command(name="wait")
@@ -1012,7 +1034,8 @@ def build(root: Path | None = None) -> App:
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
-        settled = board("local").verdicts().of(target, host=on, run=run)
+        with progress(f"reading {target}"):
+            settled = board("local").verdicts().of(target, host=on, run=run)
         _settled(settled, json_mode=json, agent=agent, fields=fields)
         return settled.code
 
@@ -1020,30 +1043,30 @@ def build(root: Path | None = None) -> App:
     def jobs(
         *, limit: int = 20, json: bool = False, agent: bool = False, fields: str = ""
     ) -> None:
-        """List recently dispatched jobs from the shared dispatch cache.
+        """List every dispatched job still in flight, then the most recently settled ones.
 
-        limit: how many recent runs to show, newest first.
+        A live job is never left out and never answered from memory. Each host is asked once
+        about every run it still owes an answer on, one `qstat`, one `squeue`, one `pueue
+        status`, so a wave of thirty five says which of them are running and which are queued
+        behind them, since when, and where the scheduler estimates a start. The limit bounds only
+        the settled tail, and a listing that had to leave anything out says so on stderr rather
+        than stopping quietly at twenty rows.
+
+        limit: how many settled runs to show behind the live ones, newest first.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over state/host/name/handle/submitted_at.
+        fields: a comma-separated projection over state/host/name/handle/since/starts.
         """
-        recent = board("local").dispatcher.cache.recent(limit)
-        payloads = [
-            {
-                "state": run.state,
-                "host": run.target,
-                "name": run.name,
-                "handle": run.handle,
-                "submitted_at": run.submitted_at,
-            }
-            for run in recent
-        ]
+        with progress("asking every host about its live jobs"):
+            listed = Listing(board("local"), limit=limit).taken()
         rows(
-            payloads,
+            [row.model_dump() for row in listed.rows],
             mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
+            fields=_fields(fields) or _JOB_COLUMNS,
             title="jobs",
         )
+        if listed.note:
+            print(listed.note, file=sys.stderr)
 
     return app
 
@@ -1051,6 +1074,10 @@ def build(root: Path | None = None) -> App:
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
 _HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
+
+# The columns the job listing always carries, so a cache nobody has dispatched from still renders
+# its heading, and so a settled row's empty live columns line up under the live rows' own.
+_JOB_COLUMNS = ("state", "host", "name", "handle", "since", "starts", "submitted_at")
 
 # The columns each batch table carries, named here so an empty batch still renders its heading and
 # so the totals row is summed over the same shape the rows are printed in.
@@ -1154,6 +1181,16 @@ def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: st
     )
     if settled.note:
         print(settled.note, file=sys.stderr)
+
+
+def _agreed() -> bool:
+    """Ask once at the terminal whether to dispatch, and say what was typed back.
+
+    The question shares stderr with the expectation line it follows, since stdout belongs to the
+    handle or the document this verb prints once the dispatch has actually happened.
+    """
+    print("dispatch? [y/N] ", end="", file=sys.stderr, flush=True)
+    return input().strip().lower() in {"y", "yes"}
 
 
 def _exit_on_mission_error(error: MissionError) -> NoReturn:

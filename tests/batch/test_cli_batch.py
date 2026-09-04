@@ -41,6 +41,26 @@ runtime_s = 30
 """
 
 
+_PLAN = """
+name = "wave"
+
+[[jobs]]
+name = "python"
+target = "gold"
+command = "echo python"
+
+[[jobs]]
+name = "cpp"
+target = "gold"
+command = "echo cpp"
+
+[[jobs]]
+name = "markdown"
+target = "gold"
+command = "echo markdown"
+"""
+
+
 def written(root: Path, spec: str = _SPEC) -> str:
     """The spec file a verb is pointed at, workspace-relative the way a caller types it."""
     (root / "smoke.toml").write_text(spec)
@@ -127,6 +147,25 @@ def test_a_compact_run_prints_the_record_alone_with_the_id_inside_it(
     out = capsys.readouterr().out
     assert out.startswith("job\ttarget\thandle")
     assert "gold-echo\tgold\t4242\tpbs" in out
+
+
+def test_running_part_of_a_plan_dispatches_it_and_records_the_rest_as_skipped(
+    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The jobs whose data is ready go now; the plan keeps its identity for the next wave."""
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["batch", "run", written(depot, _PLAN), "--only", "python,mark*"])
+    out = capsys.readouterr().out
+    identity = out.splitlines()[0]
+    assert [call[2] for call in relayed] == [("echo python",), ("echo markdown",)]
+    assert "skipped: not named by --only" in out
+    lines = receipts(directory(Board(depot), identity))
+    assert [event.job for event in lines.replay() if event.topic is Topic.SKIPPED] == ["cpp"]
+
+
+def test_a_plan_selected_down_to_nothing_it_declares_is_refused(depot: Path) -> None:
+    with pytest.raises(MissionError, match="no job named 'rust'"):
+        build(depot)(["batch", "estimate", written(depot, _PLAN), "--only", "rust"])
 
 
 def test_watching_settles_every_target_in_one_table(
