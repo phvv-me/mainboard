@@ -176,10 +176,21 @@ class SystemDevice(Protocol):
 
     name: bytes | str
     uuid: bytes | str
+    index: int
+    pci_bus_id: bytes | str
     cuda_compute_capability: tuple[int, int]
     arch: ArchToken
     memory_info: MemoryInfo
     utilization: UtilizationInfo
+
+
+class SystemDeviceType(Protocol):
+    """The `cuda.core.system.Device` class: a constructor by physical index and the enumeration
+    of every physical device, which ignores `CUDA_VISIBLE_DEVICES`."""
+
+    def __call__(self, *, index: int) -> SystemDevice: ...
+
+    def get_all_devices(self) -> Sequence[SystemDevice]: ...
 
 
 class CoreSystem(Protocol):
@@ -187,7 +198,7 @@ class CoreSystem(Protocol):
 
     NotSupportedError: type[Exception]
 
-    def Device(self, index: int) -> SystemDevice: ...
+    Device: SystemDeviceType
 
 
 class CoreDevice(Protocol):

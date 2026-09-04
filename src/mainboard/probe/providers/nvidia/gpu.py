@@ -21,6 +21,13 @@ from .protocols import (  # ruff: ignore[typing-only-first-party-import] reason=
 logger = logging.getLogger(__name__)
 
 
+def _bus_key(bus_id: str) -> str:
+    """A PCI bus id with its domain normalized, since the runtime prints four hex digits of
+    domain (`0000:21:00.0`) and the system layer eight (`00000000:21:00.0`)."""
+    domain, _, rest = bus_id.strip().lower().partition(":")
+    return f"{int(domain or '0', 16):04x}:{rest}"
+
+
 def visible_devices() -> list[str] | None:
     """The entries of `CUDA_VISIBLE_DEVICES`, or None when the mask is unset.
 
@@ -225,8 +232,15 @@ class NvidiaGPU(GPU):
     def system_device(self) -> SystemDevice:
         """Stable `cuda.core.system.Device` instance for NVML-backed data.
 
-        Only reached behind `has_cuda_core`, so the optional module is present here.
+        Only reached behind `has_cuda_core`, so the optional module is present here. The system
+        layer enumerates physical devices and ignores `CUDA_VISIBLE_DEVICES`, so the device is
+        picked by the PCI bus id the runtime resolves for this visible index; a job pinned to
+        the idle second card of a shared box read the first card's load before this.
         """
+        bus_id = _bus_key(self.pci_bus_id)
+        for candidate in self.system_api.Device.get_all_devices():
+            if _bus_key(text(candidate.pci_bus_id)) == bus_id:
+                return candidate
         return self.system_api.Device(index=self.index)
 
     @property

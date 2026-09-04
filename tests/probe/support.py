@@ -1,5 +1,7 @@
 from typing import NoReturn, Protocol
 
+from mainboard.probe.providers.nvidia.gpu import visible_devices
+
 
 class FakeError(Exception):
     """Shared NVML/system error type for the fake CUDA stack."""
@@ -42,7 +44,10 @@ class FakeRuntime:
         return (CudaErrorT.cudaSuccess, 1 if self.coherent else 0)
 
     def cudaDeviceGetPCIBusId(self, length: int, index: int) -> tuple[int, bytes]:
-        return (CudaErrorT.cudaSuccess, f"0000:0{index}:00.0\x00".encode())
+        # The runtime honors `CUDA_VISIBLE_DEVICES`: a visible index names a physical one.
+        visible = visible_devices()
+        physical = index if visible is None else int(visible[index])
+        return (CudaErrorT.cudaSuccess, f"0000:0{physical}:00.0\x00".encode())
 
     def cudaRuntimeGetVersion(self) -> tuple[int, int]:
         return (CudaErrorT.cudaSuccess, 13010)
@@ -83,8 +88,15 @@ class FakeSystemDevice:
 
     def __init__(self, index: int = 0) -> None:
         self.index = index
+        # The system layer names physical devices, eight hex digits of PCI domain.
+        self.pci_bus_id = f"00000000:0{index}:00.0"
         self.memory_info = FakeMemoryInfo(24 * 1024**3, used=6 * 1024**3, free=18 * 1024**3)
         self.utilization = FakeUtilizationReading(gpu=61, memory=37)
+
+    @classmethod
+    def get_all_devices(cls) -> tuple[FakeSystemDevice, ...]:
+        """Every physical device, the way `cuda.core.system.Device.get_all_devices` answers."""
+        return tuple(cls(index=index) for index in range(2))
 
 
 class FakeUtilizationReading:

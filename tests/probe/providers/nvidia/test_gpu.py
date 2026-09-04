@@ -448,3 +448,17 @@ def test_the_nvml_fallback_honors_the_cuda_mask(
     assert NvidiaGPU.device_count() == count
     if handle is not None:
         assert NvidiaGPU(index=0).handle == handle
+
+
+def test_the_system_device_follows_the_cuda_mask_by_bus_id(
+    install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`cuda.core.system` enumerates physical devices, so visible index zero under a mask is
+    found by the bus id the runtime resolves, not by its own index."""
+    install_nvidia_stack(has_cuda_core=True)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    device = NvidiaGPU(index=0)
+    assert device.pci_bus_id == "0000:01:00.0"
+    assert device.system_device.index == 1
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert NvidiaGPU(index=0).system_device.index == 0
