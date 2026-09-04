@@ -7,15 +7,22 @@ from typing import TYPE_CHECKING
 import pytest
 from plumbum.commands.processes import ProcessExecutionError
 
-from mainboard import MissionError
-from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, Verdict, shared
+from mainboard import ExecutionPlan, MissionError
+from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, HostSetup, Verdict, shared
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.schedulers import HostUnreachable, registry
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
-from .support import RecordingScheduler, cache, machine_with, plan, run_record
+from .support import (
+    RecordingMachine,
+    RecordingScheduler,
+    cache,
+    machine_with,
+    plan,
+    run_record,
+)
 
 if TYPE_CHECKING:
     from mainboard.dispatch.transport import Machine
@@ -53,13 +60,22 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> RecordingScheduler:
 
 @pytest.fixture
 def dispatcher(workdir: Path, backend: RecordingScheduler) -> Dispatcher:
-    """A dispatcher whose mirror only records what it was asked to ship, on `instance.shipped`."""
+    """A dispatcher whose mirror only records what it was asked to ship, on `instance.shipped`.
+
+    The double answers the allowlist the real mirror would have shipped, since that file set is
+    what the snapshot of the mirror copies.
+    """
     del backend
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     instance.shipped: list[tuple[str, ...]] = []
-    instance.rsync_up = lambda execution, root, **kwargs: instance.shipped.append(
-        tuple(kwargs.get("extra", ()))
-    )
+
+    def mirror(execution: ExecutionPlan, root: str, **kwargs: object) -> list[str]:
+        del execution, root
+        extra = kwargs.get("extra", ())
+        instance.shipped.append(tuple(extra) if isinstance(extra, tuple | list) else ())
+        return ["src"]
+
+    instance.rsync_up = mirror
     return instance
 
 
@@ -115,8 +131,13 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
     dispatcher.run(plan(env="serving"), "python -m foo", root="/repo", resources=Resources())
     [generated] = (workdir / ".mainboard" / "dispatch" / "jobs").glob("job-*.sh")
     text = generated.read_text()
-    assert "/repo/.mainboard/activate-serving.sh" in text
-    assert "/repo/.mainboard/envs/serving/.pixi/envs/serving/bin" in text
+    # The script activates through the snapshot this dispatch pinned, whose `.mainboard` is a
+    # symlink back to the mirror, so the job gets the mirror's environment out of a tree whose
+    # code no later sync can rewrite.
+    pinned = dispatcher.pinned("/repo", source="")
+    assert pinned.startswith("/repo/.mainboard/dispatch/sources/")
+    assert f"{pinned}/.mainboard/activate-serving.sh" in text
+    assert f"{pinned}/.mainboard/envs/serving/.pixi/envs/serving/bin" in text
 
 
 def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
@@ -186,6 +207,80 @@ def test_submit_records_the_run_with_the_git_provenance_it_was_dispatched_from(
     [run] = dispatcher.cache.recent(10)
     assert (run.handle, run.target, run.git_sha, run.dirty) == (handle, "gold", "abc1234", dirty)
     assert run.args == "--x 1"
+
+
+def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror_itself(
+    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fault this exists for: a later sync of another tree rewrote the code under live jobs."""
+    machine = machine_with()
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+    monkeypatch.setattr(
+        dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else ""
+    )
+    handle = dispatcher.run(
+        plan(), "python -m foo", root="/repo", resources=Resources(), fetch="out/raw"
+    )
+    pinned = dispatcher.pinned("/repo", source="")
+    [(root, _script, _args)] = [call for name, call in backend.calls if name == "submit"]
+    assert root == pinned
+    # The handle still names the mirror: the logs, the exit artifact and the results live there
+    # and stay there once the snapshot is pruned.
+    assert handle.root == "/repo"
+    # The tree is materialised from the file set that transfer shipped, before anything is
+    # queued into it, and the declared results path is linked back to the mirror.
+    [built] = [line for line in machine.lines if "--link-dest" in line]
+    assert "src /repo/.mainboard/dispatch/sources/" in built
+    assert f"ln -s /repo/out/raw {pinned}/out/raw" in built
+    [run] = dispatcher.cache.recent(10)
+    assert run.source == pinned.rsplit("/", maxsplit=1)[-1]
+
+
+def test_two_dispatches_of_one_tree_share_a_snapshot_and_a_different_tree_gets_its_own(
+    dispatcher: Dispatcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Thirty five jobs off one commit must not pay for thirty five copies of the workspace."""
+    described = {"value": "v0.4.8"}
+    monkeypatch.setattr(
+        dispatch_module,
+        "git",
+        lambda *args: "abc1234" if args[0] == "rev-parse" else described["value"],
+    )
+    first = dispatcher.pinned("/repo", source=described["value"])
+    assert first == "/repo/.mainboard/dispatch/sources/v0.4.8"
+    assert dispatcher.pinned("/repo", source=described["value"]) == first
+    assert dispatcher.pinned("/repo", source="v0.4.9") != first
+
+
+def test_the_sweep_drops_the_snapshots_no_job_still_owed_an_outcome_runs_from(
+    dispatcher: Dispatcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of pinning: a host under an inode quota cannot keep every tree forever."""
+    machine = machine_with("live\nnewest\nolder\nancient\n")
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+    dispatcher.cache.save_host(
+        HostSetup(host="gold", root="/repo", synced_at="2026-09-04T00:00:00Z")
+    )
+    dispatcher.cache.record(run_record("H1", target="gold").model_copy(update={"source": "live"}))
+    assert dispatcher.prune_sources() == {"gold": ["ancient"]}
+    assert not any("live" in line for line in machine.lines if line.startswith("rm -rf"))
+
+
+def test_a_host_that_was_never_mirrored_is_not_connected_to_for_a_prune(
+    dispatcher: Dispatcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep runs on a cron over every onboarded host, so the quiet ones must stay quiet."""
+    reached: list[str] = []
+
+    def connect(host: str) -> RecordingMachine:
+        reached.append(host)
+        return machine_with()
+
+    monkeypatch.setattr(dispatch_module, "connection", connect)
+    dispatcher.cache.save_host(HostSetup(host="gold", root="/repo"))
+    dispatcher.cache.save_host(HostSetup(host="macmini", root=""))
+    assert dispatcher.prune_sources() == {}
+    assert reached == ["gold"]
 
 
 def test_git_reports_a_local_commands_stripped_stdout(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -11,7 +11,7 @@ from ...core.errors import MissionError
 from ...core.project import Project
 from ..shared import state_dir
 from ..vocabulary import JobState, Resources
-from .base import login_run, read_log
+from .base import login_run, read_log, within
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -198,11 +198,11 @@ class Pbs:
     ) -> str:
         del args  # PBS scripts are self-contained; qsub takes no free-form positional args.
         flags = build_qsub_flags(resources)
-        # qsub runs from the workspace root, not the login shell's home: the staged script path
-        # is workspace-relative, and the generated script cds to PBS_O_WORKDIR, which is wherever
-        # qsub was invoked. A host whose home happens to be the root hid this; Miyabi's /work
-        # root did not.
-        command = f"cd {shlex.quote(root)} && " + shlex.join(["qsub", *flags, script])
+        # qsub runs from the tree the dispatch pinned, not the login shell's home: the staged
+        # script path is workspace-relative, and the generated script cds to PBS_O_WORKDIR, which
+        # is wherever qsub was invoked. A host whose home happens to be the root hid this;
+        # Miyabi's /work root did not.
+        command = within(root, shlex.join(["qsub", *flags, script]))
         retcode, out, err = remote["bash"][["-lc", command]].run(retcode=None)
         handle = out.strip().splitlines()[-1] if out.strip() else ""
         if not handle[:1].isdigit():

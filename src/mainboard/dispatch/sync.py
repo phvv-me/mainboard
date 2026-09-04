@@ -74,20 +74,25 @@ class Rsync(StrFlag):
     STATS = "--stats"
 
 
-def _rsync_args(
+def rsync_argv(
     flags: Rsync | Sequence[Rsync],
     paths: Sequence[str],
     *,
-    include: Sequence[str],
-    exclude: Sequence[str],
-    protect: Sequence[str],
-    filters: Sequence[str],
-    rsh: str | None,
-    bwlimit: int | None,
-    timeout: int | None,
-    extra: Sequence[str],
+    include: Sequence[str] = (),
+    exclude: Sequence[str] = (),
+    protect: Sequence[str] = (),
+    filters: Sequence[str] = (),
+    rsh: str | None = None,
+    bwlimit: int | None = None,
+    timeout: int | None = None,
+    extra: Sequence[str] = (),
 ) -> list[str]:
-    """The rsync argv: combined flags, then filter rules in receiver order, then paths."""
+    """The rsync argv: combined flags, then filter rules in receiver order, then paths.
+
+    Public because a transfer is not the only thing that runs rsync: a host pinning a snapshot
+    of its own mirror builds the same argv with the same filter rules and runs it there, and one
+    builder is what keeps the two from drifting into different file sets.
+    """
     members = [*flags]
     short = "".join(member.string[1] for member in members if len(member.string) == 2)
     args: list[str] = [f"-{short}"] if short else []
@@ -148,7 +153,7 @@ def rsync(
     """
     paths = [*([sources] if isinstance(sources, str) else sources), dest]
     mirror = Rsync.DELETE in [*flags] and any(":" in path for path in paths)
-    args = _rsync_args(
+    args = rsync_argv(
         flags,
         paths,
         include=include,

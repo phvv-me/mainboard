@@ -3,13 +3,18 @@
 There is no queue and no persistent handle, so `submit` blocks until the job finishes and
 `state` can only report a vanished post-mortem. Use `Pueue` instead whenever a daemon is
 available, this is the bare fallback.
+
+Like every backend that runs out of a mirror it runs the script from the tree the dispatch
+pinned, since the staged script path is workspace-relative and the login shell's home is not the
+workspace.
 """
 
+import shlex
 from typing import TYPE_CHECKING
 
 from ..shared import logger
 from ..vocabulary import JobState, Resources
-from .base import read_log, workspace_session
+from .base import read_log, within, workspace_session
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -53,6 +58,8 @@ class Local:
         args: Sequence[str],
         resources: Resources,
     ) -> str:
-        del root, resources
-        remote["bash"][[script, *args]]()
+        del resources
+        arguments = " ".join(shlex.quote(argument) for argument in args)
+        command = f"bash {shlex.quote(script)} {arguments}".rstrip()
+        remote["bash"][["-lc", within(root, command)]]()
         return script

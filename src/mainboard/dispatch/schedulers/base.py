@@ -34,6 +34,22 @@ def login_run(remote: Machine, body: str) -> str:
     return out
 
 
+def within(root: str, command: str) -> str:
+    """`command` run from `root`, the one way a backend enters the tree a dispatch pinned it to.
+
+    Every scheduler reached over ssh takes its job's working directory from the directory it was
+    submitted in: PBS exports it as `PBS_O_WORKDIR` and the generated script cds there, sbatch
+    hands it to the job unless told otherwise, and a bare bash host simply is where it stands.
+    So the submitting shell is where a backend says which tree the job runs from, and saying it
+    once here is what keeps the three from drifting apart. pueue is the exception only in
+    spelling, since it takes the same directory as an explicit flag.
+
+    The root handed here is the dispatch's snapshot of the mirror rather than the mirror itself,
+    which is what makes the job's code immutable for as long as it runs.
+    """
+    return f"cd {shlex.quote(root)} && {command}"
+
+
 @runtime_checkable
 class Scheduler(Protocol):
     """A pluggable job backend dispatched to generically.
