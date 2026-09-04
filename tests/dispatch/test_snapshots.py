@@ -111,7 +111,7 @@ def test_pinning_copies_the_shipped_set_by_hardlink_and_links_the_rest_back(
     [program] = remote.lines
     assert "mb_root=/work/projects" in program
     assert f"mb_snap={pinned}" in program
-    assert f'if [ -f "$mb_snap/{STAMP}" ]; then exit 0; fi' in program
+    assert f'if [ ! -f "$mb_snap/{STAMP}" ]; then mkdir -p "$mb_snap"' in program
     assert "--link-dest=/work/projects/" in program
     assert "rsync -aR" in program
     assert "research/compression mainboard.toml" in program
