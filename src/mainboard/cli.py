@@ -553,8 +553,14 @@ def build(root: Path | None = None) -> App:
                 report = sweep.once()
             _present(report, mode=mode, fields=chosen)
             return
-        with suppress(KeyboardInterrupt):
-            for report in sweep.watch(watch):
+        # Each pass is taken inside its own progress block rather than iterated over, so the
+        # sweep's own noise is diverted the way a single pass's is and each report still prints
+        # as a document of its own.
+        with suppress(KeyboardInterrupt, StopIteration):
+            passes = sweep.watch(watch)
+            while True:
+                with progress("sweeping dispatched jobs"):
+                    report = next(passes)
                 _present(report, mode=mode, fields=chosen)
 
     @app.command
@@ -794,8 +800,11 @@ def build(root: Path | None = None) -> App:
                 status = watcher.once()
             _status(status, mode=mode, fields=chosen)
             return
-        with suppress(KeyboardInterrupt):
-            for status in watcher.follow(interval):
+        with suppress(KeyboardInterrupt, StopIteration):
+            passes = watcher.follow(interval)
+            while True:
+                with progress(f"sweeping {batch_id}"):
+                    status = next(passes)
                 _status(status, mode=mode, fields=chosen)
 
     @batch.command(name="wait")
@@ -1005,7 +1014,8 @@ def build(root: Path | None = None) -> App:
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
-        settled = board("local").verdicts().of(target, host=on, run=run)
+        with progress(f"reading {target}"):
+            settled = board("local").verdicts().of(target, host=on, run=run)
         _settled(settled, json_mode=json, agent=agent, fields=fields)
         return settled.code
 

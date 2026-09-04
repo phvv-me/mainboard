@@ -1,3 +1,4 @@
+import os
 import sys
 from typing import TYPE_CHECKING
 
@@ -215,6 +216,20 @@ def test_a_closing_receipt_ends_the_run_at_what_it_actually_says(
     topic: Topic, data: dict[str, object], expected: int
 ) -> None:
     assert exit_code(event(topic, **data)) == expected
+
+
+def test_the_service_is_silenced_before_it_is_ever_imported(
+    service: FakeWandb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The package greets stdout while it finds its credentials, in front of a `--json` document.
+
+    It reads the variable at import, so the silence has to be in the environment before the
+    import happens, and a workspace that asked for a louder one does not get to spend the
+    document on it.
+    """
+    monkeypatch.setenv("WANDB_SILENT", "false")
+    assert module() is service
+    assert os.environ["WANDB_SILENT"] == "true"
 
 
 def test_the_sink_refuses_cleanly_when_the_package_is_not_installed(

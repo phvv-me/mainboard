@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -8,6 +9,8 @@ import pytest
 from mainboard import Board, ComputePath, MissionError, Survey
 from mainboard.batch.estimate import JobEstimate
 from mainboard.cli import build, main
+from mainboard.dispatch.state import MonitorReport
+from mainboard.monitor import Monitor
 from mainboard.staleness import Snapshot
 from mainboard.verdicts import StreamVerdict, Verdicts
 
@@ -580,6 +583,29 @@ def test_the_monitor_verb_watches_in_the_foreground_until_it_is_stopped(
 
 def _interrupt() -> None:
     raise KeyboardInterrupt
+
+
+def test_a_machine_readable_verb_leaves_stdout_to_its_document_alone(
+    depot: Path, capfd: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `--json` consumer parses stdout whole, so nothing the work says may land in front of it.
+
+    The two shapes that actually did land there are both here: a library greeting the terminal
+    through this process, and a child process narrating a transfer straight onto the descriptor.
+    """
+
+    def noisy(self: Monitor) -> MonitorReport:
+        print("wandb: [wandb.login()] Loaded credentials from netrc")
+        os.write(1, b"sending incremental file list\n")
+        return MonitorReport(running=1)
+
+    monkeypatch.setattr(Monitor, "once", noisy)
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["monitor", "--json"])
+    printed = capfd.readouterr()
+    assert json.loads(printed.out)["running"] == 1
+    assert "wandb: [wandb.login()]" in printed.err
+    assert "sending incremental file list" in printed.err
 
 
 @pytest.mark.parametrize(
