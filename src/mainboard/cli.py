@@ -13,6 +13,7 @@ from .core.errors import MissionError
 from .core.project import Project
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
+from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .manifest.loading import load
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
@@ -927,16 +928,22 @@ def build(root: Path | None = None) -> App:
         durable sweep now keeps each settled run's tail beside that run's receipts, and this
         reads that copy first, falling back to the backend for a run still in flight.
 
-        Exits 1 when nothing was ever captured, so a script can tell an empty log from a missing
-        one.
+        An empty log has two entirely different causes, so a run that printed nothing answers
+        with where it stands instead: its verdict, the scheduler's own state word, how long it
+        has been waiting, and what the backend says about when it will run, which on PBS is the
+        estimated start time the server reports. That line is the difference between a job that
+        is queued behind a full cluster and one that started and said nothing.
+
+        Exits 0 having printed output, 2 for a run still in flight that has printed none, and 1
+        when nothing was captured and nothing is coming, so a script can tell the three apart.
 
         handle: the job to read, as `submit` printed it.
         on: the host alias narrowing a handle recorded on several hosts.
         """
-        captured = board("local").verdicts().captured(handle, host=on)
+        workspace = board("local")
+        captured = workspace.verdicts().captured(handle, host=on)
         if not captured.strip():
-            print(f"no output on file for {handle}", file=sys.stderr)
-            return 1
+            return _unprinted(workspace, handle, host=on)
         # A job that coloured its output for a terminal it never had leaves escape codes in
         # the capture; a pipe or a file gets the plain text, a terminal gets the colours.
         shown = captured if sys.stdout.isatty() else plain(captured)
@@ -1095,6 +1102,39 @@ def _expected(priced: JobEstimate) -> str:
         f"submit -> {where}: queue policy ok, ${priced.rate_usd_hr:.2f}/hr "
         f"({priced.rate_source}), expected ${priced.expected_usd:.2f} (p90 ${priced.p90_usd:.2f})"
     )
+
+
+def _unprinted(workspace: Board, handle: str, *, host: str) -> int:
+    """Say where a run that has printed nothing stands, and exit on whether it still might.
+
+    The registry row is what this stands on, since it is durable and always there for a real
+    handle, and the backend is asked on top of it for the state and the start time only a live
+    scheduler knows. A host that will not answer therefore still gets a line, built from what
+    was last recorded, rather than the bare "no output" that used to be the whole answer.
+
+    workspace: the board holding the run registry and the host profiles.
+    handle: the run that printed nothing.
+    host: the alias narrowing a handle recorded on several hosts.
+    """
+    absent = f"no output on file for {handle}"
+    try:
+        record = workspace.verdicts().record(handle, host=host)
+    except MissionError:
+        print(absent, file=sys.stderr)
+        return 1
+    state = vocabulary.JobState(
+        handle=record.handle,
+        state=record.state,
+        exit_code=record.exit_code,
+        verdict=record.verdict or vocabulary.RUNNING,
+    )
+    with suppress(HostUnreachable, MissionError, OSError):
+        state = workspace.job(record.handle, host=record.target).poll()
+    if state.verdict in vocabulary.TERMINAL:
+        print(absent, file=sys.stderr)
+        return 1
+    print(standing(state, submitted_at=record.submitted_at, host=record.target), file=sys.stderr)
+    return 2
 
 
 def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: str) -> None:

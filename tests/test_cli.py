@@ -8,6 +8,9 @@ import pytest
 from mainboard import Board, ComputePath, MissionError, Survey
 from mainboard.batch.estimate import JobEstimate
 from mainboard.cli import build, main
+from mainboard.dispatch.shared import db_file
+from mainboard.dispatch.state import Cache, RunRecord
+from mainboard.dispatch.vocabulary import JobState
 from mainboard.staleness import Snapshot
 from mainboard.verdicts import StreamVerdict, Verdicts
 
@@ -201,7 +204,9 @@ def test_a_verdict_with_no_rows_says_why_on_stderr_rather_than_printing_a_bare_h
     ("captured", "code", "shown"),
     [
         pytest.param("epoch 1\nepoch 2\n", 0, "epoch 2", id="a-run-whose-output-came-home"),
-        pytest.param("   \n", 1, "no output on file", id="a-run-nothing-was-ever-captured-for"),
+        pytest.param(
+            "   \n", 1, "no output on file", id="a-run-nothing-was-ever-dispatched-or-captured"
+        ),
         pytest.param(
             "\x1b[1mI\x1b[0m| epoch 2\n", 0, "I| epoch 2", id="a-coloured-log-read-off-a-terminal"
         ),
@@ -222,6 +227,41 @@ def test_the_logs_verb_prints_what_a_job_printed_or_says_nothing_was_kept(
     printed = capsys.readouterr()
     assert shown in (printed.out + printed.err)
     assert "\x1b" not in printed.out
+
+
+def test_a_job_that_has_not_started_says_where_it_stands_instead_of_only_no_output(
+    depot: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The empty log of a job queued behind a full cluster read exactly like a silent job's."""
+    monkeypatch.setattr(Verdicts, "captured", lambda self, handle, host="": "")
+    Cache(depot / db_file()).record(
+        RunRecord(
+            handle="3289319",
+            target=_MIYABI_G,
+            kind="pbs",
+            script="job.sh",
+            args="",
+            git_sha="abc1234",
+            dirty=0,
+            submitted_at="2026-09-04T09:12:04+00:00",
+        )
+    )
+    queued = JobState(
+        handle="3289319",
+        state="Q",
+        verdict="queued",
+        note="estimated start Thu Sep  4 14:00:00 2026",
+    )
+    monkeypatch.setattr(
+        Board, "job", lambda self, handle, host="": SimpleNamespace(poll=lambda: queued)
+    )
+    with pytest.raises(SystemExit, match="2"):
+        build(depot)(["logs", "3289319"])
+    printed = capsys.readouterr()
+    assert f"3289319 is queued on {_MIYABI_G}" in printed.err
+    assert "scheduler state Q" in printed.err
+    assert "submitted 2026-09-04T09:12:04+00:00" in printed.err
+    assert "estimated start Thu Sep  4 14:00:00 2026" in printed.err
 
 
 @pytest.mark.parametrize(
