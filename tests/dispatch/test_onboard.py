@@ -7,6 +7,7 @@ from mainboard import MissionError
 from mainboard.dispatch import HostSetup
 from mainboard.dispatch import onboard as onboard_module
 from mainboard.dispatch.onboard import (
+    Bootstrap,
     Onboarding,
     RemoteShell,
     facts_command,
@@ -101,8 +102,8 @@ def test_bootstrap_falls_through_to_pip_keeping_every_rejection_it_passed_over(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host = machine_with(rules=[("command -v uv", 1, ""), ("command -v curl", 1, "")])
-    setup, _ = onboarding(host, monkeypatch)
-    resolution = setup.bootstrap(RemoteShell(host, plan(), "/repo"))
+    onboarding(host, monkeypatch)
+    resolution = Bootstrap(RemoteShell(host, plan(), "/repo")).tool()
     assert resolution.winner == "pip"
     assert [name for name, _ in resolution.rejected] == ["uv", "uv-bootstrap"]
     assert host.ran("pip install --user")
@@ -112,9 +113,9 @@ def test_bootstrap_refuses_a_host_no_route_can_reach_before_anything_assumes_the
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host = machine_with(rules=[("command -v", 1, ""), ("pip --version", 1, "")])
-    setup, _ = onboarding(host, monkeypatch)
+    onboarding(host, monkeypatch)
     with pytest.raises(MissionError, match="cannot install mainboard on 'gold'"):
-        setup.bootstrap(RemoteShell(host, plan(), "/repo"))
+        Bootstrap(RemoteShell(host, plan(), "/repo")).tool()
 
 
 def test_read_facts_starts_at_the_first_brace_and_refuses_output_carrying_no_snapshot() -> None:

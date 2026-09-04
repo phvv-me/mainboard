@@ -200,6 +200,63 @@ def installers(shell: RemoteShell, source: str = _SOURCE) -> Strategy[Installer]
     return strategy
 
 
+class Bootstrap:
+    """Puts this workspace's tool and environment onto a machine that already answers ssh.
+
+    The half of onboarding that is about the machine rather than about the record kept of it:
+    install the tool from the synced source through the first route the machine supports, then
+    have that tool compile the synced manifest and install the environment from the lock this
+    workspace already solved. A declared host and a machine rented for one job need exactly these
+    two steps and differ in everything around them, so both drive this one class rather than two
+    copies drifting apart.
+
+    shell: the machine's shell both steps probe, install and provision through.
+    resolve: let the machine run its own dependency solve instead of installing the shipped lock.
+    """
+
+    def __init__(self, shell: RemoteShell, *, resolve: bool = False) -> None:
+        self.shell = shell
+        self.resolve = resolve
+
+    @property
+    def env(self) -> str:
+        """The environment being provisioned, the plan's own."""
+        return self.shell.plan.env
+
+    def tool(self) -> Resolution[Installer]:
+        """Install the tool through the first route the machine supports, keeping the rejections.
+
+        A machine that supports no route at all fails here, naming every route and why it was
+        refused, rather than failing later inside a provisioning step that assumed the tool.
+        """
+        host = self.shell.plan.host
+        routes = installers(self.shell)
+        try:
+            resolution = routes.cascade()
+        except StrategyError as refused:
+            raise MissionError(f"cannot install {_TOOL} on {host!r}: {refused}") from None
+        routes.select(resolution.winner).install()
+        return resolution
+
+    def environment(self) -> None:
+        """Have the machine's own tool compile the synced manifest and install `env` from it.
+
+        The machine is told which declared profile describes it, so the activation script it
+        generates carries that profile's module stack rather than this machine's.
+        """
+        host, root = self.shell.plan.host, self.shell.root
+        resolve = " --resolve" if self.resolve else ""
+        self.shell.run(
+            f"{_TOOL} install {shlex.quote(self.env)}{resolve} --profile {shlex.quote(host)}"
+        )
+        script = activation(root, env=self.env)
+        if not self.shell.ok(f"test -f {shlex.quote(script)}"):
+            raise MissionError(
+                f"{host!r} has no {script} after installing {self.env!r}; "
+                "the environment was not provisioned"
+            )
+
+
 def read_facts(text: str) -> HostFacts:
     """The `HostFacts` inside `text`, read from its first `{` so shell chatter above is ignored.
 
@@ -265,7 +322,7 @@ class Onboarding:
         self.root = root
         self.artifact = tuple(artifact)
         self.resolve = resolve
-        self.watch = watch or _announce
+        self.watch = watch or announce
         self.digest = digest
         self.solver = solver
 
@@ -306,45 +363,6 @@ class Onboarding:
                 "`pueued -d`, then set the host up again"
             )
 
-    def bootstrap(self, shell: RemoteShell) -> Resolution[Installer]:
-        """Install the tool through the first route the host supports, keeping the rejections.
-
-        A host that supports no route at all fails here, naming every route and why it was
-        refused, rather than failing later inside a provisioning step that assumed the tool.
-
-        shell: the host shell the routes probe and install through.
-        """
-        routes = installers(shell)
-        try:
-            resolution = routes.cascade()
-        except StrategyError as refused:
-            raise MissionError(
-                f"cannot install {_TOOL} on {self.plan.host!r}: {refused}"
-            ) from None
-        routes.select(resolution.winner).install()
-        return resolution
-
-    def provision(self, shell: RemoteShell, *, host: str, root: str) -> None:
-        """Have the host's own tool compile the synced manifest and install `env` from it.
-
-        The host is told which declared profile describes it, so the activation script it
-        generates carries that host's module stack rather than this machine's.
-
-        shell: the host shell the install runs through.
-        host: the alias whose declared profile the host provisions itself as.
-        root: the workspace root on the host.
-        """
-        resolve = " --resolve" if self.resolve else ""
-        shell.run(
-            f"{_TOOL} install {shlex.quote(self.env)}{resolve} --profile {shlex.quote(host)}"
-        )
-        script = activation(root, env=self.env)
-        if not shell.ok(f"test -f {shlex.quote(script)}"):
-            raise MissionError(
-                f"{host!r} has no {script} after installing {self.env!r}; "
-                "the environment was not provisioned"
-            )
-
     def run(self, *, sync_only: bool = False) -> HostSetup:
         """Onboard the host and return (and record) what it became.
 
@@ -362,17 +380,18 @@ class Onboarding:
             capabilities = probe_capabilities(remote, host)
             root = self.root or find_root(remote)
             shell = RemoteShell(remote, self.plan, root)
+            bootstrap = Bootstrap(shell, resolve=self.resolve)
             self.watch(f"mirroring the workspace to {host}:{root}")
             self.dispatcher.rsync_up(
                 self.plan, root, required=[self.artifact] if self.artifact else []
             )
             self.watch(f"installing {_TOOL} on {host}")
-            winner = self.bootstrap(shell)
+            winner = bootstrap.tool()
             self.watch(f"checking pixi and the queue on {host}")
             self.verify_pixi(shell, host=host)
             self.verify_queue(shell, host=host)
             self.watch(f"provisioning {self.env} on {host}")
-            self.provision(shell, host=host, root=root)
+            bootstrap.environment()
             self.watch(f"reading {host} back through its activation")
             hardware = read_facts(shell.run(facts_command(), activate=True))
             setup = HostSetup(
@@ -414,7 +433,7 @@ class Onboarding:
                 self.plan, root, required=[self.artifact] if self.artifact else []
             )
             self.watch(f"provisioning {self.env} on {host}")
-            self.provision(shell, host=host, root=root)
+            Bootstrap(shell, resolve=self.resolve).environment()
         fresh = self.dispatcher.cache.host(host)
         updated = self.dispatcher.cache.save_host(
             fresh.model_copy(
@@ -430,6 +449,6 @@ class Onboarding:
         return updated
 
 
-def _announce(stage: str) -> None:
+def announce(stage: str) -> None:
     """The default `Watcher`, logging each stage for a caller that renders no progress."""
     logger.info("%s", stage)
