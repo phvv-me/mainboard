@@ -51,8 +51,9 @@ class JobSpec(FrozenModel):
     plan: the resolved execution context, which names the host and the environment the script
         activates. Carrying the plan rather than a prefix and an environment name separately is
         what makes it impossible to render a script whose prefix and environment disagree.
-    root: the workspace root on the host, so the script activates through the same generated
-        activation a wrapped command does.
+    root: the tree on the host the script runs from, which is the snapshot of the mirror this
+        dispatch pinned. Its `.mainboard/` is a symlink back to the mirror, so activating
+        through it hands the job the mirror's environment while its code stays frozen.
     queue/select/gpus/account/mem_gb: PBS header values (ignored when rendering a bash wrapper).
     walltime: `HH:MM:SS` cap; empty means the bare `#PBS` requirement is unmet (a PBS render
         raises) or, on a schedulerless host, that the job runs uncapped.

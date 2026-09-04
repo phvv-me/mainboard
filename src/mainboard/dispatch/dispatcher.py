@@ -48,7 +48,9 @@ class Handle(FrozenModel):
         would otherwise fail validation deep inside a status poll.
     host: the ssh alias the job runs on, or the declared alias of the provider host it was
         rented for.
-    root: the workspace root on that host, empty for a provider that syncs no workspace.
+    root: the mirror's workspace root on that host, empty for a provider that syncs no
+        workspace. The mirror rather than the snapshot the job runs from, since this is what a
+        later log read, results pull and post-mortem address, and it outlives the snapshot.
     kind: the kind used at submit time, a scheduler's (`pbs` / `slurm` / `ssh` / `local`) or a
         provider's (`vast` / `hpc-ai` / `modal`), which is what routes a later probe back to
         whichever of the two answered for this run.
@@ -471,8 +473,7 @@ class Dispatcher:
         source: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
     ) -> str:
-        """Ship the workspace, pin the tree, admit the request, dispatch `script`, hand back its
-        handle.
+        """Ship the workspace, pin the tree it runs from, dispatch `script`, return the handle.
 
         Admission runs before any ssh connection, so a request the queue's declared policy
         would reject fails at once instead of after a round trip. `verify` then proves the

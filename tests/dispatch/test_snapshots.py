@@ -1,6 +1,8 @@
+import shutil
 from pathlib import Path
 
 import pytest
+from plumbum import local
 
 from mainboard.dispatch import snapshots as snapshots_module
 from mainboard.dispatch.snapshots import (
@@ -161,3 +163,69 @@ def test_pruning_a_host_with_nothing_to_drop_never_runs_a_removal() -> None:
     remote = machine_with("only\n")
     assert Snapshots("/work/projects").prune(remote, live=set()) == []
     assert not remote.ran("rm -rf")
+
+
+def _mirror(root: Path) -> None:
+    """A host mirror as a sync leaves one: shipped source, a data dir, an env, host artifacts."""
+    (root / "research/compression/pkg").mkdir(parents=True)
+    (root / "research/compression/pkg/mod.py").write_text("v1\n", encoding="utf-8")
+    (root / "research/compression/.gitignore").write_text("raw/\n", encoding="utf-8")
+    (root / "research/compression/raw").mkdir()
+    (root / "research/compression/raw/earlier.json").write_text("{}\n", encoding="utf-8")
+    (root / "research/data").mkdir()
+    (root / "research/data/corpus.txt").write_text("corpus\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (root / ".mainboard/envs/default").mkdir(parents=True)
+    (root / ".mainboard/envs/default/marker").write_text("env\n", encoding="utf-8")
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
+    committed: None, tmp_path: Path
+) -> None:
+    """The fault itself, run for real: a mirror sync must not reach the code of a live job."""
+    del committed
+    root = tmp_path / "projects"
+    _mirror(root)
+    pinned = Path(
+        Snapshots(str(root)).pin(
+            local,
+            key="abc1234",
+            sources=["research/compression"],
+            results="research/compression/raw",
+            filters=["merge,- .gitignore", ":- .gitignore"],
+            exclude=[".mainboard/"],
+        )
+    )
+    frozen = pinned / "research/compression/pkg/mod.py"
+    assert frozen.stat().st_ino == (root / "research/compression/pkg/mod.py").stat().st_ino
+    # The environment and the data directory are reached live, and the results path points back
+    # at the mirror, which is where the pull already looks.
+    assert (pinned / ".mainboard").is_symlink()
+    assert (pinned / ".mainboard/envs/default/marker").read_text(encoding="utf-8") == "env\n"
+    assert (pinned / "research/data").is_symlink()
+    assert (pinned / "research/compression/raw").resolve() == root / "research/compression/raw"
+
+    later = tmp_path / "later"
+    (later / "compression/pkg").mkdir(parents=True)
+    (later / "compression/pkg/mod.py").write_text("v2\n", encoding="utf-8")
+    # `-c` because the two files are seconds and bytes alike, which rsync's quick check reads
+    # as unchanged; a real edit differs in one or the other.
+    local["rsync"][["-ac", f"{later}/", f"{root}/research/"]]()
+    assert (root / "research/compression/pkg/mod.py").read_text(encoding="utf-8") == "v2\n"
+    assert frozen.read_text(encoding="utf-8") == "v1\n"
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding_it(
+    committed: None, tmp_path: Path
+) -> None:
+    """Thirty five jobs off one commit pay for one tree, and none of them waits for a rebuild."""
+    del committed
+    root = tmp_path / "projects"
+    _mirror(root)
+    snapshots = Snapshots(str(root))
+    pinned = Path(snapshots.pin(local, key="abc1234", sources=["research/compression"]))
+    (pinned / "research/compression/pkg/mod.py").unlink()
+    assert snapshots.pin(local, key="abc1234", sources=["research/compression"]) == str(pinned)
+    assert not (pinned / "research/compression/pkg/mod.py").exists()
