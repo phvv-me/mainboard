@@ -100,6 +100,7 @@ class Settling(FrozenModel):
 
     installed: whether the periodic pass exists on this machine at all.
     active: whether the service manager has it armed and running it.
+    root: the workspace the installed pass sweeps, empty when nothing is installed.
     every: the period between passes as the installed unit spells it, empty when none is.
     last_run: when a pass last ran, as the service manager reports it, empty when none ever did.
     log: where a pass appends what it settled, empty when nothing is installed.
@@ -109,6 +110,7 @@ class Settling(FrozenModel):
 
     installed: bool = False
     active: bool = False
+    root: str = ""
     every: str = ""
     last_run: str = ""
     log: str = ""
@@ -210,9 +212,9 @@ class SystemdUser(Settler):
     def state(self) -> Settling:
         """What the installed units and the user manager say together.
 
-        The period and the log are read back out of the units on disk rather than remembered
-        here, so the row describes what actually runs on this machine, including a timer some
-        earlier version of this tool wrote.
+        The period, the log and the workspace are read back out of the units on disk rather
+        than remembered here, so the row describes what actually runs on this machine, including
+        a timer some earlier version of this tool wrote or another workspace installed.
         """
         if not self.timer.is_file():
             return Settling(
@@ -225,6 +227,7 @@ class SystemdUser(Settler):
         shown = self._shown()
         every = self._setting(self.timer, "OnUnitActiveSec")
         log = self._setting(self.service, "StandardOutput").removeprefix("append:")
+        root = self._setting(self.service, "WorkingDirectory")
         active = shown.get("ActiveState") == "active"
         triggered = shown.get("LastTriggerUSec", "")
         last_run = "" if triggered in ("", "n/a") else triggered
@@ -234,6 +237,7 @@ class SystemdUser(Settler):
         return Settling(
             installed=True,
             active=active,
+            root=root,
             every=every,
             last_run=last_run,
             log=log,

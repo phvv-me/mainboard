@@ -633,7 +633,11 @@ def test_installing_the_pass_writes_both_units_and_arms_them(
     assert ("systemctl", "--user", "daemon-reload") in manager.calls
     assert ("systemctl", "--user", "enable", "--now", "mainboard-monitor.timer") in manager.calls
     assert (found.installed, found.active, found.every) == (True, True, "20m")
-    assert (found.last_run, found.log) == ("Thu 2026-09-04 09:20:31 JST", str(log))
+    assert (found.last_run, found.log, found.root) == (
+        "Thu 2026-09-04 09:20:31 JST",
+        str(log),
+        str(root),
+    )
     assert found.fix == f"loginctl enable-linger {getuser()}"
     assert "a reboot stops it" in found.detail
 
