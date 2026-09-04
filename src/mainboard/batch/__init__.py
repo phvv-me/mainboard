@@ -5,7 +5,7 @@
 from .estimate import BatchEstimate, Estimator, JobEstimate, platform
 from .receipts import Event, Mirrored, Receipts, Topic
 from .runner import Batch
-from .spec import BatchSpec
+from .spec import BatchSpec, Selection
 from .transfer import Transfer, TransferSet
 from .watch import BatchStatus, Watch
 
@@ -19,6 +19,7 @@ __all__ = [
     "JobEstimate",
     "Mirrored",
     "Receipts",
+    "Selection",
     "Topic",
     "Transfer",
     "TransferSet",

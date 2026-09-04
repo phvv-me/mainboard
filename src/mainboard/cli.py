@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 from cyclopts import App, Parameter
 
 from . import staleness
-from .batch.spec import BatchSpec
+from .batch.spec import BatchSpec, Selection
 from .board import Board
 from .context.resolver import Resolver
 from .core.errors import MissionError
@@ -661,6 +661,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        only: str = "",
         set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
         json: bool = False,
         agent: bool = False,
@@ -676,12 +677,16 @@ def build(root: Path | None = None) -> App:
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
+            plan when unset.
         set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the transfer columns.
         """
-        batched = board("local").batch(declared(spec, job, name, set_))
+        batched = board("local").batch(
+            declared(spec, job, name, set_), selection=Selection.of(only)
+        )
         with progress(f"measuring {batched.id}"):
             measured = [transfer.model_dump() for transfer in batched.prepare()]
         _tabled(
@@ -700,6 +705,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        only: str = "",
         set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
         json: bool = False,
         agent: bool = False,
@@ -716,12 +722,16 @@ def build(root: Path | None = None) -> App:
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
+            plan when unset.
         set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the estimate columns.
         """
-        batched = board("local").batch(declared(spec, job, name, set_))
+        batched = board("local").batch(
+            declared(spec, job, name, set_), selection=Selection.of(only)
+        )
         with progress(f"pricing {batched.id}"):
             priced = [row.model_dump() for row in batched.estimate().jobs]
         _tabled(
@@ -740,6 +750,7 @@ def build(root: Path | None = None) -> App:
         *,
         job: tuple[str, ...] = (),
         name: str = "",
+        only: str = "",
         set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
         json: bool = False,
         agent: bool = False,
@@ -751,15 +762,24 @@ def build(root: Path | None = None) -> App:
         fleet routinely meets one machine that is asleep or was never declared. Watch the batch
         by the id printed here.
 
+        `--only` dispatches part of the plan, which is what a plan worked through in waves needs:
+        the nine jobs whose data is ready go now, and the four that are not are recorded as
+        skipped so neither `batch watch` nor `monitor` ever waits for them. The batch keeps its
+        identity, so tomorrow's wave writes to the same receipts stream.
+
         spec: the batch spec file, relative to the workspace root.
         job: a `target:command` job, repeatable, for a batch declared without a file.
         name: the batch's name when declared with `--job` rather than a file.
+        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
+            plan when unset.
         set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over job/target/handle/kind/reason.
         """
-        batched = board("local").batch(declared(spec, job, name, set_))
+        batched = board("local").batch(
+            declared(spec, job, name, set_), selection=Selection.of(only)
+        )
         mode = mode_of(json_mode=json, agent=agent)
         with progress(f"dispatching {batched.id}"):
             dispatched = batched.run()

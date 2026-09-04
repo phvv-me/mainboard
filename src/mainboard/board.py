@@ -12,7 +12,7 @@ from plumbum import local as localhost
 from .batch.estimate import Estimator, JobEstimate
 from .batch.receipts import Receipts, Topic, publish
 from .batch.runner import Batch, directory
-from .batch.spec import BatchJob
+from .batch.spec import BatchJob, Selection
 from .batch.transfer import TransferSet
 from .batch.watch import Watch
 from .compute import Survey
@@ -347,15 +347,17 @@ class Board:
         stream, job = tracked
         return attesting_line(root=root, stream=stream, job=job)
 
-    def batch(self, spec: BatchSpec) -> Batch:
+    def batch(self, spec: BatchSpec, *, selection: Selection | None = None) -> Batch:
         """The declared batch over this workspace, ready to prepare, price and dispatch.
 
         Host-independent like `monitor`, since a batch names a target per job and fans across
         the fleet rather than running on whichever host a board happens to be bound to.
 
         spec: the declared batch.
+        selection: which of the plan's jobs to act on, all of them when None. The batch keeps its
+            identity and its receipts stream either way, so a plan sent out in waves is one batch.
         """
-        return Batch(self, spec, bus=self.receipts(spec.batch_id))
+        return Batch(self, spec, bus=self.receipts(spec.batch_id), selection=selection)
 
     def compute(self) -> Survey:
         """The survey of every compute path this workspace can reach, this machine included.

@@ -12,6 +12,7 @@ from ..core.project import Project
 from ..dispatch.transport import HostUnreachable
 from .estimate import Estimator
 from .receipts import Receipts, Topic, latest, payload, publish
+from .spec import Selection
 from .transfer import Transfer, TransferSet
 
 if TYPE_CHECKING:
@@ -32,6 +33,10 @@ _LABEL = "batch:"
 # the batch. A target that refuses one job says nothing about the next one, and a batch that dies
 # on its second job of five has already spent the first one's dispatch for nothing.
 _REFUSALS = (MissionError, HostUnreachable, OSError, LookupError, SystemExit)
+
+# What a job the selection left out is recorded as, the one sentence that keeps it apart from a
+# job a target refused: nothing happened to it, it was not asked for.
+_UNSELECTED = "skipped: not named by --only"
 
 
 class Dispatched(FrozenModel):
@@ -58,18 +63,33 @@ class Batch:
     stream and the three verbs write one log between them. That log is the only thing they share:
     `estimate` prices whatever `prepare` measured rather than measuring again, and `watch` finds
     every dispatched job in it by id alone, without the spec that declared them.
+
+    A selection narrows what a verb acts on without touching that identity, so a plan whose nine
+    ready jobs go out today and whose four remaining ones go out tomorrow is one batch and one
+    stream throughout, and the jobs left behind are recorded as skipped rather than left silent.
     """
 
-    def __init__(self, board: Board, spec: BatchSpec, *, bus: Bus | None = None) -> None:
+    def __init__(
+        self,
+        board: Board,
+        spec: BatchSpec,
+        *,
+        bus: Bus | None = None,
+        selection: Selection | None = None,
+    ) -> None:
         """board: the workspace the jobs are dispatched from.
 
         spec: the declared batch.
         bus: where receipts go, the batch's own NDJSON file when None.
+        selection: which of the plan's jobs this run acts on, all of them when None.
         """
         self.board = board
         self.spec = spec
         self.dir = directory(board, spec.batch_id)
         self.bus = bus or Receipts(self.dir / "events.ndjson")
+        self.selection = selection or Selection()
+        self.jobs = self.selection.chosen(spec.jobs)
+        self.skipped = tuple(job for job in spec.jobs if not self.selection.holds(job.name))
 
     @property
     def id(self) -> str:
@@ -113,9 +133,9 @@ class Batch:
             TransferSet.model_validate(prepared[job.name].data)
             if job.name in prepared
             else transfer.set_for(job)
-            for job in self.spec.jobs
+            for job in self.jobs
         ]
-        table = Estimator(self.board).table(self.id, self.spec.jobs, measured)
+        table = Estimator(self.board).table(self.id, self.jobs, measured)
         for row in table.jobs:
             publish(self.bus, self.id, Topic.ESTIMATED, job=row.job, data=payload(row))
         return table
@@ -156,7 +176,7 @@ class Batch:
         """
         self.open()
         transfer = Transfer(self.board)
-        measured = [transfer.set_for(job) for job in self.spec.jobs]
+        measured = [transfer.set_for(job) for job in self.jobs]
         for prepared in measured:
             publish(self.bus, self.id, Topic.PREPARED, job=prepared.job, data=payload(prepared))
         return measured
@@ -179,9 +199,32 @@ class Batch:
         One target refusing is that job's row and the next job still goes, since a batch spread
         over a fleet routinely meets one machine that is asleep, out of quota, or not declared,
         and the other four jobs are still worth running.
+
+        A job the selection left out is recorded as skipped rather than left unmentioned, so
+        every reader of this stream knows there is nothing coming for it.
         """
         self.open()
-        return [self.dispatch(job) for job in self.spec.jobs]
+        return [
+            *(self.dispatch(job) for job in self.jobs),
+            *(self.skip(job) for job in self.skipped),
+        ]
+
+    def skip(self, job: BatchJob) -> Dispatched:
+        """Record one job the selection left out, so nothing downstream waits for it.
+
+        A watch builds its rows out of these receipts, and a declared job with no line at all
+        reads exactly like one whose dispatch was lost. This is the line that says the difference:
+        nothing happened to it, it was not asked for.
+        """
+        told = Dispatched(job=job.name, target=job.target, reason=_UNSELECTED)
+        publish(
+            self.bus,
+            self.id,
+            Topic.SKIPPED,
+            job=job.name,
+            data={"target": job.target, "reason": told.reason},
+        )
+        return told
 
 
 def labelled_batch(label: str) -> str:

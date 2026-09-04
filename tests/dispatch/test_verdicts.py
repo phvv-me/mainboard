@@ -9,6 +9,7 @@ from mainboard.dispatch.vocabulary import (
     OK,
     QUEUED,
     RUNNING,
+    SKIPPED,
     TERMINAL,
     TIMEOUT,
     UNKNOWN,
@@ -21,10 +22,14 @@ _WORDS = st.sampled_from(sorted(VERDICTS))
 
 
 def test_the_table_declares_exactly_the_lifecycle_dispatch_promises() -> None:
-    """A cancel is reachable from both live states, since it never waits for the job to start."""
+    """A cancel is reachable from both live states, since it never waits for the job to start.
+
+    A skipped job is terminal from the start and reachable from nowhere: it was never dispatched,
+    so nothing about it can move.
+    """
     assert VERDICTS[QUEUED] == {RUNNING, VANISHED, CANCELLED}
     assert VERDICTS[RUNNING] == {OK, FAILED, VANISHED, TIMEOUT, CANCELLED}
-    assert {OK, FAILED, VANISHED, UNKNOWN, TIMEOUT, CANCELLED} == TERMINAL
+    assert {OK, FAILED, VANISHED, UNKNOWN, TIMEOUT, CANCELLED, SKIPPED} == TERMINAL
     assert QUEUED not in TERMINAL and RUNNING not in TERMINAL
     assert tracker().current == QUEUED
 

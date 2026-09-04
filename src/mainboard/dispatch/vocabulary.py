@@ -25,6 +25,10 @@ TIMEOUT = "timeout"
 # beside a crash teaches a reader to distrust the column. It is reachable from both live states,
 # since the whole point of cancelling is that it does not wait for the job to start.
 CANCELLED = "cancelled"
+# A job a plan declared and a run was told to leave out. Like `cancelled` it is a decision rather
+# than something that happened, and it is terminal from the start: nothing was ever dispatched, so
+# nothing about it can move and no watch may wait on it.
+SKIPPED = "skipped"
 
 # Declared edges: queued -> running/vanished/cancelled, running -> one terminal. Every terminal
 # maps to the empty set, so a further move (a stale `running` after `ok`) raises rather than
@@ -38,6 +42,7 @@ VERDICTS: dict[str, set[str]] = {
     UNKNOWN: set(),
     TIMEOUT: set(),
     CANCELLED: set(),
+    SKIPPED: set(),
 }
 
 

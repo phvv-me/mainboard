@@ -5,6 +5,7 @@
 
 import hashlib
 import tomllib
+from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, TypedDict
 
 from patos import FrozenModel
@@ -86,6 +87,50 @@ class BatchJob(FrozenModel):
             fetch=self.fetch or None,
             node=self.node,
         )
+
+
+class Selection(FrozenModel):
+    """Which of a plan's jobs a verb acts on, named or globbed over the plan's own job names.
+
+    A plan is written once and worked through in waves: nine corpora are ready and four are not,
+    and a batch that is all or nothing makes the nine wait for the four. What the operator picks
+    is what a verb was asked to do rather than part of what the batch is, so it lives here beside
+    the declaration instead of inside it, and the plan keeps its identity and its receipts stream
+    across every wave of it.
+
+    patterns: the job names or `fnmatch` globs typed at the verb, empty for the whole plan.
+    """
+
+    patterns: tuple[str, ...] = ()
+
+    @classmethod
+    def of(cls, typed: str) -> Selection:
+        """The selection typed as one comma-separated option, blank entries dropped."""
+        return cls(patterns=tuple(part.strip() for part in typed.split(",") if part.strip()))
+
+    def chosen(self, jobs: Sequence[BatchJob]) -> tuple[BatchJob, ...]:
+        """The declared jobs this selection names, in the plan's own order.
+
+        A pattern that names nothing at all is refused with what the plan does declare, since a
+        mistyped name is a wave that quietly goes out short and is noticed hours later.
+        """
+        if not self.patterns:
+            return tuple(jobs)
+        unmatched = [
+            pattern
+            for pattern in self.patterns
+            if not any(fnmatchcase(job.name, pattern) for job in jobs)
+        ]
+        if unmatched:
+            declared = ", ".join(job.name for job in jobs)
+            raise MissionError(
+                f"no job named {unmatched[0]!r} in this batch; it declares {declared}"
+            )
+        return tuple(job for job in jobs if self.holds(job.name))
+
+    def holds(self, name: str) -> bool:
+        """Whether `name` is one of the jobs this selection names."""
+        return not self.patterns or any(fnmatchcase(name, pattern) for pattern in self.patterns)
 
 
 def _table(value: Json, *, at: str) -> dict[str, Json]:

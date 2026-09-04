@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard import Board, MissionError
-from mainboard.batch import Batch, BatchStatus, Topic, Watch
+from mainboard.batch import Batch, BatchStatus, Selection, Topic, Watch
 from mainboard.batch.receipts import publish
 from mainboard.batch.watch import _epoch
 from mainboard.dispatch import Handle, HostUnreachable
@@ -164,6 +164,83 @@ def test_a_target_that_refuses_one_job_is_a_row_rather_than_the_end_of_the_batch
     assert event.data["target"] == "gold"
 
 
+def test_a_selection_dispatches_part_of_the_plan_and_records_the_rest_as_skipped(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nine ready corpora go out today without waiting on the four that are not ready.
+
+    The plan is unchanged, so the wave that follows tomorrow writes to this same stream, and the
+    jobs left behind are recorded rather than left silent, which is what keeps a watch from
+    waiting on a dispatch that is never coming.
+    """
+    batch = Batch(lab, spec(*_TWO), bus=bus, selection=Selection.of("gold-1"))
+    asked = dispatching(lab, monkeypatch, "77")
+    dispatched = batch.run()
+    assert asked == ["python -m a"]
+    assert [(entry.job, entry.handle, entry.reason) for entry in dispatched] == [
+        ("gold-1", "77", ""),
+        ("miyabi-g-2", "", "skipped: not named by --only"),
+    ]
+    assert [event.job for event in published(bus, Topic.SKIPPED)] == ["miyabi-g-2"]
+    assert batch.id == batched(lab, bus).id
+
+
+def test_a_selection_is_written_as_names_or_globs_over_the_plans_own_job_names(
+    lab: Board, bus: Recorder
+) -> None:
+    globbed = Batch(lab, spec(*_TWO), bus=bus, selection=Selection.of("gold-*"))
+    assert [job.name for job in globbed.jobs] == ["gold-1"]
+    assert [measured.job for measured in globbed.prepare()] == ["gold-1"]
+    named = Batch(lab, spec(*_TWO), bus=bus, selection=Selection.of(" miyabi-g-2 , gold-1 "))
+    assert [job.name for job in named.jobs] == ["gold-1", "miyabi-g-2"]
+
+
+def test_a_selection_naming_a_job_the_plan_never_declared_is_refused_with_what_it_does(
+    lab: Board, bus: Recorder
+) -> None:
+    """A mistyped name is a wave that quietly goes out short and is noticed hours later."""
+    with pytest.raises(MissionError, match="no job named 'markdown'.*gold-1, miyabi-g-2"):
+        Batch(lab, spec(*_TWO), bus=bus, selection=Selection.of("markdown"))
+
+
+def test_a_skipped_job_is_a_row_of_its_own_that_nothing_ever_waits_for(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The batch closes on the jobs it dispatched, and the plan is still legible against it."""
+    batch = Batch(lab, spec(*_TWO), bus=bus, selection=Selection.of("gold-1"))
+    dispatching(lab, monkeypatch, "77")
+    batch.run()
+    recorded(lab, "77", target="gold", verdict="ok")
+    sweeping(lab, monkeypatch, MonitorReport())
+    status = watching(lab, batch, bus).once()
+    assert [(job.job, job.verdict, job.detail) for job in status.jobs] == [
+        ("gold-1", "ok", ""),
+        ("miyabi-g-2", "skipped", "skipped: not named by --only"),
+    ]
+    assert status.settled
+    [closed] = published(bus, Topic.CLOSED)
+    assert closed.data == {"jobs": 2, "ok": 1, "failed": 0, "skipped": 1}
+
+
+def test_the_wave_that_follows_dispatches_what_the_last_one_skipped(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job's own dispatch is its story, so yesterday's skip is not a second row today."""
+    plan = spec(*_TWO)
+    dispatching(lab, monkeypatch, "77", "78")
+    Batch(lab, plan, bus=bus, selection=Selection.of("gold-1")).run()
+    batch = Batch(lab, plan, bus=bus, selection=Selection.of("miyabi-g-2"))
+    batch.run()
+    recorded(lab, "77", target="gold", verdict="ok")
+    recorded(lab, "78", target="miyabi-g", verdict="ok")
+    sweeping(lab, monkeypatch, MonitorReport())
+    status = watching(lab, batch, bus).once()
+    assert [(job.job, job.handle, job.verdict) for job in status.jobs] == [
+        ("gold-1", "77", "ok"),
+        ("miyabi-g-2", "78", "ok"),
+    ]
+
+
 def test_a_batch_keeps_its_receipts_in_its_own_directory(lab: Board) -> None:
     batch = Batch(lab, spec(_TWO[0]))
     assert batch.dir == lab.root / ".mainboard" / "batches" / batch.id
@@ -226,7 +303,7 @@ def test_a_settled_job_is_settled_once_and_carries_what_the_sweep_found(
     ]
     assert [event.job for event in published(bus, Topic.SETTLED)] == ["gold-1", "miyabi-g-2"]
     [closed] = published(bus, Topic.CLOSED)
-    assert closed.data == {"jobs": 2, "ok": 1, "failed": 1}
+    assert closed.data == {"jobs": 2, "ok": 1, "failed": 1, "skipped": 0}
     watch.once()
     assert len(published(bus, Topic.SETTLED)) == 2
     assert len(published(bus, Topic.CLOSED)) == 1

@@ -19,6 +19,8 @@
 #   job.submitted   {"handle", "target", "kind", "command"}       a scheduler or provider took it,
 #                   plus "node" (the ledger slug the run serves) only when one was declared
 #   job.refused     {"target", "reason"}                          the target would not take it
+#   job.skipped     {"target", "reason"}                          the run's selection left it out,
+#                   so nothing is coming for it and no reader should wait on it
 #   job.state       {"handle", "state", "verdict"}                published only when it changed
 #   job.attested    a machine reading plus "idle", taken in the foreground on the node itself the
 #                   instant before the command started, so a measurement can say what conditions
@@ -28,7 +30,7 @@
 #                   "actual_usd", "delta_usd"}, what the run was quoted at beside what it
 #                   came to, so the cost model learns from its own misses
 #   job.settled     {"handle", "verdict", "exit_code", "detail"}  terminal, once and last
-#   batch.closed    {"jobs", "ok", "failed"}                      every job settled, once
+#   batch.closed    {"jobs", "ok", "failed", "skipped"}           every job settled, once
 #
 # THE RULES that make the transport swappable. Every line is derived from durable state (the
 # dispatch cache and the lines already published), so a pass that dies republishes nothing and a
@@ -65,6 +67,7 @@ class Topic(StrEnum):
     ESTIMATED = "job.estimated"
     SUBMITTED = "job.submitted"
     REFUSED = "job.refused"
+    SKIPPED = "job.skipped"
     STATE = "job.state"
     ATTESTED = "job.attested"
     SAMPLE = "job.sample"

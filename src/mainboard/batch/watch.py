@@ -35,6 +35,10 @@ _COSTS = "costs"
 # forgotten reads as, so a row always says something.
 _UNKNOWN = "unknown"
 
+# The verdicts a closing count must not read as a failure: a clean end, and a job the run was
+# told to leave out, which never ran and therefore never failed.
+_UNFAILED = frozenset({vocabulary.OK, vocabulary.SKIPPED})
+
 
 class JobStatus(FrozenModel):
     """One batch job as the last sweep left it.
@@ -59,7 +63,7 @@ class BatchStatus(FrozenModel):
     """One pass over a batch: every job's row and what the batch adds up to.
 
     batch: the batch id.
-    jobs: one row per job the batch ever dispatched or was refused for.
+    jobs: one row per job the batch dispatched, was refused for, or was told to leave out.
     running: how many are still in flight.
     """
 
@@ -123,7 +127,8 @@ class Watch:
             data={
                 "jobs": len(status.jobs),
                 "ok": sum(1 for job in status.jobs if job.verdict == vocabulary.OK),
-                "failed": sum(1 for job in status.jobs if job.verdict != vocabulary.OK),
+                "failed": sum(1 for job in status.jobs if job.verdict not in _UNFAILED),
+                "skipped": sum(1 for job in status.jobs if job.verdict == vocabulary.SKIPPED),
             },
         )
 
@@ -226,7 +231,7 @@ class Watch:
         landed = [self.record(row, events) for row in rows]
         status = BatchStatus(
             batch=self.id,
-            jobs=tuple(rows),
+            jobs=(*rows, *self.unselected(events, dispatched={row.job for row in rows})),
             running=sum(1 for row in rows if row.verdict not in vocabulary.TERMINAL),
         )
         self.close(status, settled=any(landed))
@@ -291,6 +296,29 @@ class Watch:
             verdict=record.verdict or vocabulary.RUNNING,
             detail=self.detail(handle, swept),
         )
+
+    @staticmethod
+    def unselected(events: Sequence[Event], *, dispatched: set[str]) -> list[JobStatus]:
+        """Every job a run left out, as a row that is already over.
+
+        The rows are shown rather than dropped, because a plan worked through in waves is read
+        against the plan: a reader has to see that four of the thirteen were not asked for, not
+        wonder where they went. They take no part in what the batch settles, since a job that was
+        never dispatched has nothing to pull back, nothing to release and nothing to bill.
+
+        events: this batch's receipts.
+        dispatched: the jobs that already have a row, which a later wave's dispatch wins back.
+        """
+        return [
+            JobStatus(
+                job=job,
+                target=str(event.data["target"]),
+                verdict=vocabulary.SKIPPED,
+                detail=str(event.data["reason"]),
+            )
+            for job, event in latest(events, Topic.SKIPPED).items()
+            if job not in dispatched
+        ]
 
 
 def _epoch(stamp: str) -> float:
