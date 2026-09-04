@@ -129,14 +129,18 @@ def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would
 
     What it is handed is the staging every other host gets around the ordinary bash job script,
     so a rented run's receipts, its walltime cap and its source stamp are the ones gold produces.
+
+    The script is named by the absolute path the mirror carried it to, and the assertion below
+    is that those are the same path: a launch naming anything the transfer did not deliver is the
+    `No such file or directory` a landed rental answered with once already.
     """
     host = machine_with("/root/projects\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     landed.land("python train.py")
     (written,) = host.inputs
-    (_, (script,), _) = dispatcher.mirrored[0]
-    assert written.startswith(f"cd /root/projects/{SOURCES}/")
-    assert written.endswith(f"bash {script}\n")
+    (root, (script,), _) = dispatcher.mirrored[0]
+    assert written.startswith(f"cd {root}/{SOURCES}/")
+    assert written.endswith(f"bash {root}/{script}\n")
     assert "export PATH=" in written
     body = (dispatcher.root / script).read_text(encoding="utf-8")
     assert "timeout --kill-after=30s 1800" in body

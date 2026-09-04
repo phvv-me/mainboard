@@ -750,6 +750,7 @@ class Board:
         *,
         command: str,
         resources: Resources,
+        watch: Watcher | None = None,
     ) -> str:
         """Dispatch `command` to a machine this workspace rents, and return the provider's handle.
 
@@ -764,6 +765,8 @@ class Board:
         plan: the resolved execution context for the provider host.
         command: the command the job runs.
         resources: the resolved request, whose spend cap and walltime bound the rental.
+        watch: announces each landing stage as it begins, since a landing is minutes of mirror,
+            install and provisioning that would otherwise stand silent on a metered box.
         """
         renting = renter(backend, plan)
         if renting is None:
@@ -776,6 +779,7 @@ class Board:
             plan,
             resources=resources,
             artifact=provisioner.artifact_for(plan.env),
+            watch=watch,
         ).land(command)
 
     def resources(
@@ -997,6 +1001,7 @@ class Board:
         node: str = "",
         env: str = "",
         container: str = "",
+        watch: Watcher | None = None,
     ) -> Run:
         """Dispatch `command` as a job on this host and return it as a run.
 
@@ -1019,6 +1024,8 @@ class Board:
         attempt: the 1-based try number, feeding the default expressions.
         fetch: a results path recorded for `Job.pull`.
         node: the ledger slug this run serves, carried into its record and receipts.
+        watch: announces each stage of a rental's landing as it begins; a queued dispatch has no
+            stages to announce and ignores it.
         """
         # Before the plan, before the resources, and before any transport: a command a shell
         # cannot run costs a scheduler round trip on owned hardware and a whole rental on a
@@ -1048,7 +1055,7 @@ class Board:
             run: Run = ProviderJob(
                 backend,
                 self.dispatcher.track(
-                    self.rented(backend, plan, command=command, resources=resources),
+                    self.rented(backend, plan, command=command, resources=resources, watch=watch),
                     host=plan.host,
                     kind=plan.profile.kind,
                     command=command,

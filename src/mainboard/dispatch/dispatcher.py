@@ -263,8 +263,9 @@ class Dispatcher:
         naming what that lock was solved from, say): each group is required to exist locally as
         a whole, and is punched through the denylist with its own include filter. `extra` ships
         paths outside the sync allowlist that must still reach the host (typically the staged
-        job script). Fails fast when no include paths are declared or a required group is
-        incomplete.
+        job script), and is punched through the same way, since a group's remainder filter
+        covers everything under its directory that is not named. Fails fast when no include
+        paths are declared or a required group is incomplete.
 
         `ssh` decides where the transfer actually lands. A declared host is its own alias and the
         user's ssh config answers for it; a machine rented for one job has no alias at all, so a
@@ -297,10 +298,18 @@ class Dispatcher:
                 f"required path group(s) {incomplete} are incomplete; build them before "
                 "dispatching"
             )
+        named = [*(path for group in required for path in group), *extra]
         directories = dict.fromkeys(Path(path).parts[0] for group in required for path in group)
         include_filters = [
             *(f"/{directory}/" for directory in directories),
-            *(f"/{path}" for group in required for path in group),
+            # Every path shipped by name, `extra` included. A required group's remainder filter
+            # shadows the whole directory it protects, so the staged job script under the
+            # generated tree is dropped by the very rule that lets the compiled lock through
+            # unless it is named here as well. That is what left a landed rental running `bash
+            # .mainboard/dispatch/jobs/job-<digest>.sh` against a file the mirror never carried
+            # (vast 49865738, exit 127, 2026-09-04). The directories between a named path and its
+            # root need no rule, since rsync exempts the ones `--relative` implies.
+            *(f"/{path}" for path in named),
         ]
         remainder_filters = [f"/{directory}/***" for directory in directories]
         gitignore_files = self.sync.control_files(include)

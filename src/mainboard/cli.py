@@ -126,9 +126,10 @@ def build(root: Path | None = None) -> App:
         print(_expected(priced), file=sys.stderr)
         if not yes and sys.stdin.isatty() and not _agreed():
             raise SystemExit(1)
-        with progress(f"submitting on {on}"):
+        with progress(f"submitting on {on}") as stage:
             job = board(on).submit(
                 line,
+                watch=stage,
                 name=name,
                 queue=queue,
                 walltime=walltime,

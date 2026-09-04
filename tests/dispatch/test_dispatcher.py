@@ -2,6 +2,7 @@ import inspect
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
+from shutil import which
 from typing import TYPE_CHECKING
 
 import pytest
@@ -478,6 +479,46 @@ def test_rsync_up_punches_a_required_group_through_the_denylist_or_refuses_an_in
     assert "/.mainboard/" in sent["include"]
     assert "/.mainboard/***" in sent["exclude"]
     assert sent["allow_vanished"] is False
+
+
+def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one end-to-end proof that a dispatch shipping both actually delivers both.
+
+    A required group is punched through the denylist by naming its own directory and then
+    excluding everything under it that was not asked for, and the staged job script lives under
+    that same generated directory. Named only as a source it is dropped by that remainder rule,
+    which is how a landed rental was told to run a script the mirror never carried and answered
+    `No such file or directory`, exit 127 (vast 49865738, 2026-09-04). Nothing but a real
+    transfer can tell the two filter sets apart, so this runs one.
+    """
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
+    (workdir / "src").mkdir()
+    (workdir / "src/run.py").write_text("print(1)")
+    envdir = workdir / ".mainboard/envs/default"
+    envdir.mkdir(parents=True)
+    (envdir / "pixi.toml").write_text("x")
+    (envdir / "pixi.lock").write_text("y")
+    jobs = workdir / ".mainboard/dispatch/jobs"
+    jobs.mkdir(parents=True)
+    (jobs / "job-abc.sh").write_text("#!/bin/bash\nexit 0\n")
+    landed = workdir / "host-side"
+    real = dispatch_module.rsync
+    monkeypatch.setattr(
+        dispatch_module,
+        "rsync",
+        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
+    )
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
+    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
+    script = ".mainboard/dispatch/jobs/job-abc.sh"
+    instance.rsync_up(host, "/repo", required=[group], extra=[script])
+    assert (landed / "src/run.py").is_file()
+    assert (landed / group[0]).is_file()
+    assert (landed / script).is_file()
 
 
 @pytest.mark.parametrize(

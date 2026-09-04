@@ -158,7 +158,7 @@ class Landing:
                 exclude=[*self.dispatcher.sync.excludes, *self.plan.profile.sync.exclude],
             )
             self.watch(f"starting the job on {rental.handle}")
-            self.start(remote, pinned=pinned, script=script)
+            self.start(remote, pinned=pinned, script=f"{root}/{script}")
 
     def transferable(self, remote: Machine) -> None:
         """Make sure the machine can receive a mirror at all, since rsync runs on both ends.
@@ -213,14 +213,20 @@ class Landing:
     def start(self, remote: Machine, *, pinned: str, script: str) -> None:
         """Hand the waiting entrypoint the line that runs the job from the tree that was pinned.
 
-        A rented box has no queue to submit to, and must not have one: its own entrypoint owns the
-        log, the exit marker and the meter, so the job starts there or the run has no receipt
-        anyone can read afterwards. The line is the staging every other host gets, `cd`, PATH and
+        A rented box has no queue to submit to, and must not: its own entrypoint owns the log,
+        the exit marker and the meter, so the job starts there or the run has no receipt anyone
+        can read afterwards. The line is the staging every other host gets, `cd`, PATH and
         modules, around a script that does its own activation.
+
+        The script is named by its absolute path in the mirror rather than by a name relative to
+        the snapshot the job stands in. A snapshot reaches the mirror's generated tree through
+        links it builds itself, and a launch that leans on that shape fails as one that named a
+        path the snapshot could not resolve, which is exactly how a landed rental answered `No
+        such file or directory` with the mirror holding the script all along.
 
         remote: the open connection to the machine.
         pinned: the snapshot the job runs from.
-        script: the workspace-relative job script the mirror carried over.
+        script: the job script's absolute path on the machine.
         """
         line = wrap(self.plan, pinned, command=f"bash {shlex.quote(script)}", activate=False)
         retcode, _, err = (remote["bash"]["-c", handoff()] << f"{line}\n").run(retcode=None)
