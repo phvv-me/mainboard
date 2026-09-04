@@ -11,6 +11,7 @@ from patos import FrozenModel
 from .. import vocabulary
 from ..onboard import HostSetup
 from ..shared import db_file, now
+from ..vocabulary import Request
 from .storage import connect
 
 if TYPE_CHECKING:
@@ -46,6 +47,12 @@ class RunRecord(FrozenModel):
     reported: the verdict a durable monitor last surfaced for this run, the change cursor that
         keeps a periodic sweep reporting only jobs newly terminal since the last check. `None`
         means never reported, so the first sweep that finds it terminal announces it.
+    request: the dispatch as it was asked for, kept only while the run is `held`, so the sweep
+        that finds the target's quota open again can make the same request. `None` on every run
+        a target actually took, which is every run that has a handle to be asked about.
+    reason: why the row is in the state it is in, when the state cannot say it alone: the
+        refusal a target's quota answered a held dispatch with. Empty for every run that was
+        taken, whose outcome is read off its verdict and its exit code instead.
     """
 
     handle: str
@@ -64,6 +71,8 @@ class RunRecord(FrozenModel):
     exit_code: int | None = None
     verdict: str | None = None
     reported: str | None = None
+    request: Request | None = None
+    reason: str = ""
 
 
 class Cache:
@@ -76,6 +85,19 @@ class Cache:
         # than a caller's. Without this the connection is only reclaimed by interpreter exit,
         # which every short-lived cache in a suite reports as an unclosed database.
         weakref.finalize(self, self.connection.close)
+
+    def forget(self, run: RunRecord) -> None:
+        """Drop one run's row entirely, the only thing that ever leaves this table.
+
+        A dispatch a quota held is a row about a request rather than about a job, and the moment
+        the request goes through it is replaced by the real run under the handle the scheduler
+        gave it. Keeping both would tell every later reader that thirteen jobs were dispatched as
+        fourteen, so the placeholder goes rather than being settled into a verdict it never had.
+        """
+        self.connection.execute(
+            "DELETE FROM runs WHERE target = ? AND handle = ? AND submitted_at = ?",
+            (run.target, run.handle, run.submitted_at),
+        )
 
     def host(self, alias: str) -> HostSetup:
         """`alias`'s recorded onboarding, raising when the host was never set up."""

@@ -55,6 +55,10 @@ _EXITS = {
     vocabulary.TIMEOUT: 1,
     vocabulary.CANCELLED: 1,
     vocabulary.RUNNING: 2,
+    # A dispatch a target's quota is holding has not run, has not failed, and is not settled: the
+    # sweep is still offering it. A completion check must wait for it exactly as it waits for a
+    # queued job, which is what keeps a batch of thirteen from reading as a finished nine.
+    vocabulary.HELD: 2,
     "blocked": 2,
     "": 2,
     vocabulary.QUEUED: 2,
@@ -158,11 +162,23 @@ class Verdicts:
         already forgot does nothing, and a provider asked to end a rental twice is the expected
         case rather than the exceptional one.
 
+        A dispatch a quota is holding is the one run this verb stops without touching a machine,
+        since no machine has it: the row settles as cancelled and the sweep stops asking for it.
+
         handle: the dispatched run to stop.
         host: the alias narrowing a handle recorded on several hosts.
         """
         record = self.record(handle, host=host)
         if record.verdict in vocabulary.TERMINAL:
+            return self.handled(handle, host=host)
+        if record.verdict == vocabulary.HELD:
+            # Nothing ever took this one, so there is nothing to kill and no backend to ask.
+            # What exists is the request, and cancelling it is the sweep never offering it again.
+            cache = self.board.dispatcher.cache
+            cache.report(
+                cache.resolve(record, vocabulary.CANCELLED, None, vocabulary.CANCELLED),
+                vocabulary.CANCELLED,
+            )
             return self.handled(handle, host=host)
         run = self.board.job(record.handle, host=record.target)
         monitor = self.board.monitor()
@@ -323,15 +339,17 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
     """Every job's settled row out of one stream's event envelopes.
 
     The cursor logic is `latest` per topic per job, the same read every resumed pass uses, so a
-    re-dispatched job answers with its newest run and a refused job still has a row.
+    re-dispatched job answers with its newest run, and a job that was refused or is being held
+    on a target's quota still has a row rather than vanishing from the stream it was declared in.
     """
     recorded = list(events)
     submitted = latest(recorded, Topic.SUBMITTED)
     states = latest(recorded, Topic.STATE)
     settled = latest(recorded, Topic.SETTLED)
     refused = latest(recorded, Topic.REFUSED)
+    held = latest(recorded, Topic.HELD)
     attested = latest(recorded, Topic.ATTESTED)
-    jobs = list(dict.fromkeys([*submitted, *refused]))
+    jobs = list(dict.fromkeys([*submitted, *refused, *held]))
     return tuple(
         _joined(
             job,
@@ -339,6 +357,7 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
             state=states.get(job),
             ended=settled.get(job),
             refusal=refused.get(job),
+            holding=held.get(job),
             attestation=attested.get(job),
         )
         for job in jobs
@@ -492,12 +511,16 @@ def _joined(
     state: Event | None,
     ended: Event | None,
     refusal: Event | None,
+    holding: Event | None = None,
     attestation: Event | None = None,
 ) -> TrialVerdict:
     """One job's row folded from its latest line per topic.
 
-    A settled line wins the verdict, a state line stands in while the job flies, and a refusal
-    is terminal in its own words. A job submitted again after settling compares handles, so a
+    A settled line wins the verdict, a state line stands in while the job flies, a refusal is
+    terminal in its own words, and a hold is neither: the job has not been dispatched yet and
+    the sweep is still asking for it, so its row is in flight until a submission line lands.
+
+    A job submitted again after settling compares handles, so a
     stale settlement never silences the run of it that is still going. An attestation is carried
     onto every row the run has, since what the machine was doing at the start is as true of the
     finished measurement as it was of the running one.
@@ -506,6 +529,14 @@ def _joined(
     target = str(submitted.data.get("target", "")) if submitted else ""
     node = str(submitted.data.get("node", "")) if submitted else ""
     contended = contention(attestation)
+    if submitted is None and holding is not None:
+        return TrialVerdict(
+            job=job,
+            target=str(holding.data.get("target", "")),
+            state=vocabulary.HELD,
+            verdict=vocabulary.HELD,
+            detail=str(holding.data.get("reason", "")),
+        )
     if submitted is None and refusal is not None:
         return TrialVerdict(
             job=job,

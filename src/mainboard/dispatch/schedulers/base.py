@@ -166,6 +166,35 @@ _SIGNAL_EXITS = {
 }
 
 
+# What a scheduler says when it refuses a job for the count of jobs already in the queue rather
+# than for anything about the job itself. PBS answers rc=39 with `would exceed group <g>'s limit
+# on resource njobs-g` (measured on Miyabi 2026-09-04, which dropped four jobs of a thirteen job
+# wave), and SLURM refuses the same shape by naming the association or QOS limit it hit. Both are
+# "not now" rather than "no", so a dispatch that meets one is held and asked again.
+#
+# Every marker names a COUNT. A refusal about the request itself, a queue that does not exist, a
+# walltime over the queue's ceiling, an account without permission, is a real rejection and stays
+# one: re-asking would fail identically every twenty minutes forever.
+_QUOTA_MARKERS = (
+    "limit on resource njobs",
+    "max_queued",
+    "maximum number of jobs",
+    "qosmaxjobsperuserlimit",
+    "qosmaxsubmitjobperuserlimit",
+    "assocmaxjobslimit",
+    "assocmaxsubmitjoblimit",
+)
+
+
+def is_quota_refusal(reason: str) -> bool:
+    """Whether a scheduler refused this job for how many are already queued, not for what it is.
+
+    reason: the refusal text the backend raised, as the caller received it.
+    """
+    low = reason.lower()
+    return any(marker in low for marker in _QUOTA_MARKERS)
+
+
 def exit_reason(exit_code: int | None) -> str | None:
     """A human reason for an externally-imposed exit code, or None for a plain non-zero exit."""
     return _SIGNAL_EXITS.get(exit_code) if exit_code is not None else None

@@ -773,6 +773,11 @@ def build(root: Path | None = None) -> App:
         fleet routinely meets one machine that is asleep or was never declared. Watch the batch
         by the id printed here.
 
+        A target that refuses on its own count quota is the one refusal that is not final: the
+        row says `held`, the request stays in the run registry, and the durable sweep offers it
+        again every pass until the queue has room, so a wave is never quietly shorter than the
+        plan.
+
         `--only` dispatches part of the plan, which is what a plan worked through in waves needs:
         the nine jobs whose data is ready go now, and the four that are not are recorded as
         skipped so neither `batch watch` nor `monitor` ever waits for them. The batch keeps its
@@ -786,7 +791,7 @@ def build(root: Path | None = None) -> App:
         set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over job/target/handle/kind/reason.
+        fields: a comma-separated projection over job/target/state/handle/kind/reason.
         """
         batched = board("local").batch(
             declared(spec, job, name, set_), selection=Selection.of(only)
@@ -1115,7 +1120,7 @@ _ESTIMATE_COLUMNS = (
     "expected_usd",
     "p90_usd",
 )
-_DISPATCH_COLUMNS = ("job", "target", "handle", "kind", "reason")
+_DISPATCH_COLUMNS = ("job", "target", "state", "handle", "kind", "reason")
 _STATUS_COLUMNS = ("job", "target", "handle", "state", "verdict", "detail")
 _VERDICT_COLUMNS = (
     "job",
@@ -1302,8 +1307,27 @@ def _present(report: MonitorReport, *, mode: str | None, fields: tuple[str, ...]
 
 
 def _changes(report: MonitorReport) -> list[dict[str, str]]:
-    """Every job that settled this pass and every host that could not be reached, one row each."""
+    """What moved this pass: every job that settled, every dispatch a quota is still holding, and
+    every host that could not be reached, one row each.
+
+    A held dispatch is on the table because it is the one thing here that nobody else reports: it
+    has no handle a scheduler knows and no verdict to settle, so a sweep that says nothing about
+    it is a job waiting in silence.
+    """
     return [
+        *(
+            {
+                "host": run.target,
+                "handle": run.handle,
+                "outcome": "dispatched",
+                "detail": run.name,
+            }
+            for run in report.resumed
+        ),
+        *(
+            {"host": run.target, "handle": run.handle, "outcome": "held", "detail": run.reason}
+            for run in report.held
+        ),
         *(
             {
                 "host": job.target,

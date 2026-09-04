@@ -14,7 +14,7 @@ from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import snapshots as snapshots_module
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.schedulers import HostUnreachable, registry
-from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Resources
+from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
 from .support import (
@@ -626,3 +626,34 @@ def test_a_token_naming_a_path_outside_any_repository_is_skipped_not_a_dead_end(
     monkeypatch.setattr(dispatch_module, "git", git)
     found = dispatch_module.source_of("cmd plain/data.txt repo/tracked.py", tmp_path)
     assert found == "clean-source"
+
+
+def test_a_held_dispatch_is_one_durable_row_carrying_the_request_that_makes_it_again(
+    dispatcher: Dispatcher,
+) -> None:
+    """A request held only in the process that made it dies with that process.
+
+    So it goes into the same registry every dispatched run lives in, keyed by an id of our own
+    since no scheduler ever took it, and holding the same job twice keeps one row rather than
+    growing one per attempt. The row carries the ask itself, which is what lets a sweep on
+    another day make exactly the same dispatch.
+    """
+    asked = Request(
+        target="miyabi-g",
+        command="python -m foo",
+        name="batch:wave/shell",
+        queue="short-g",
+        walltime="06:00:00",
+        gpus=1,
+    )
+    held = dispatcher.hold(asked, reason="would exceed group xg25g007's limit on resource njobs-g")
+    assert held.handle.startswith("held-")
+    assert (held.verdict, held.state) == ("held", "held")
+    assert held.request == asked and "njobs-g" in held.reason
+    again = dispatcher.hold(asked, reason="still no room")
+    assert (again.handle, again.submitted_at) == (held.handle, held.submitted_at)
+    assert [run.handle for run in dispatcher.cache.live()] == [held.handle]
+    # The row is a placeholder for a request, so it leaves the table when the request goes
+    # through rather than settling into a verdict the job never had.
+    dispatcher.cache.forget(again)
+    assert dispatcher.cache.live() == []

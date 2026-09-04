@@ -15,9 +15,9 @@ from .dispatch import vocabulary
 from .dispatch.backends.base import route
 from .dispatch.dispatcher import Verdict
 from .dispatch.evidence import receipts_in
-from .dispatch.schedulers import HostUnreachable, short_reason
+from .dispatch.schedulers import HostUnreachable, is_quota_refusal, short_reason
 from .dispatch.shared import logger
-from .dispatch.state import DownHost, Failed, Finished, MonitorReport
+from .dispatch.state import DownHost, Failed, Finished, Held, MonitorReport, Resumed
 from .dispatch.vocabulary import JobState
 from .tracking import is_batched, streamed
 
@@ -31,6 +31,11 @@ if TYPE_CHECKING:
 # The routing answer for the schedulers reached over ssh, the one family whose whole host can be
 # asked about in a single query. A provider has no such listing and is asked run by run.
 _QUEUED = "ssh-family"
+
+# What a resubmission is allowed to fail with before it becomes this run's row rather than the
+# end of the sweep, the same set a batch dispatch absorbs: one target refusing says nothing about
+# the next run on it.
+_REFUSALS = (MissionError, HostUnreachable, OSError, LookupError, SystemExit)
 
 # How many meaningful lines of a settled run's output are kept beside its receipts. Enough that a
 # traceback and the work around it survive whole, bounded so a chatty training loop cannot fill
@@ -65,7 +70,10 @@ class Sweep:
         self.runs: dict[RunRecord, Run] = {}
         self.states: dict[RunRecord, JobState] = {}
         self.down: dict[str, str] = {}
-        for (target, kind), owned in self.grouped(records).items():
+        # A dispatch a quota is holding has no handle and no target that has heard of it, so it
+        # is not a thing to probe. `Monitor.held` is what asks its target for room again.
+        waiting = [record for record in records if record.verdict != vocabulary.HELD]
+        for (target, kind), owned in self.grouped(waiting).items():
             if target in self.down:
                 continue
             try:
@@ -189,6 +197,88 @@ class Monitor:
         lines = transcript.count("\n")
         logger.info("captured %d log lines for %s (%s)", lines, record.handle, name)
 
+    def asked(self, record: RunRecord) -> Run | None:
+        """Ask `record`'s target for its held dispatch again, None while the quota is still full.
+
+        A quota refusal is not a verdict, so a target that still has no room leaves the row
+        exactly as it was and the next sweep asks again. Any other refusal is: a queue that does
+        not exist and an account without permission answer the same way every twenty minutes
+        forever, so the row settles as failed with what the target said and stops asking.
+
+        record: the held run, whose `request` is the dispatch to make.
+        """
+        if record.request is None:
+            return None
+        try:
+            return self.board.dispatch(record.request)
+        except _REFUSALS as refusal:
+            if is_quota_refusal(str(refusal)):
+                return None
+            self.cache.report(
+                self.cache.resolve(record, vocabulary.FAILED, None, vocabulary.FAILED),
+                vocabulary.FAILED,
+            )
+            logger.warning("held dispatch for %s refused: %s", record.target, refusal)
+            return None
+
+    def held(self) -> tuple[list[Resumed], list[Held]]:
+        """Ask every quota-held dispatch's target for room again, in the order they were held.
+
+        This is what makes a hold a delay rather than a loss. A wave that meets a group's job
+        limit used to drop the jobs the queue would not take, and the four missing rows were
+        found by counting logs hours later (miyabi-g njobs-g, 2026-09-04); here the requests are
+        durable and every pass of the sweep the cron already runs offers them again.
+
+        A request that goes through replaces its own placeholder row: the run is recorded under
+        the handle the target gave it, the held row is dropped, and the batch that asked for it
+        is told through its own receipts, since the batch's watch reads submissions from there
+        and would otherwise never learn the job had gone.
+        """
+        resumed: list[Resumed] = []
+        waiting: list[Held] = []
+        for record in reversed(self.cache.live()):
+            if record.verdict != vocabulary.HELD:
+                continue
+            run = self.asked(record)
+            if run is None:
+                waiting.append(
+                    Held(handle=record.handle, target=record.target, reason=record.reason)
+                )
+                continue
+            self.cache.forget(record)
+            self.submitted(record, run)
+            resumed.append(Resumed(handle=run.handle.id, target=record.target, name=record.name))
+            logger.info("held dispatch went through as %s on %s", run.handle.id, record.target)
+        return resumed, waiting
+
+    def submitted(self, record: RunRecord, run: Run) -> None:
+        """Tell the stream that asked for `record` that its job finally went out.
+
+        A batch publishes every line about its own jobs, and this dispatch was made here rather
+        than by that batch, so the line it would have written is written here. Without it a watch
+        reading submissions out of the receipts would show the job as held forever while it ran.
+
+        record: the held run this sweep got through.
+        run: the dispatch it became.
+        """
+        if not is_batched(record.name):
+            return
+        stream, job = streamed(record.name, handle=run.handle.id)
+        bus = self.streams.setdefault(stream, self.board.receipts(stream))
+        publish(
+            bus,
+            stream,
+            Topic.SUBMITTED,
+            job=job,
+            data={
+                "handle": run.handle.id,
+                "target": record.target,
+                "kind": run.handle.kind,
+                "command": record.script,
+                **({"node": record.node} if record.node else {}),
+            },
+        )
+
     def once(self) -> MonitorReport:
         """Resolve every unsettled run once, harvest the newly terminal ones, report the changes.
 
@@ -224,6 +314,7 @@ class Monitor:
         running = 0
         finished: list[Finished] = []
         failed: list[Failed] = []
+        resumed, waiting = self.held()
         fleet = self.board.fleet()
         records = self.cache.tracked()
         resolved = Sweep(self.board, records)
@@ -261,7 +352,9 @@ class Monitor:
             self.cache.report(stored, state.verdict)
         self.board.dispatcher.prune_sources()
         return MonitorReport(
-            running=running,
+            running=running + len(waiting),
+            resumed=resumed,
+            held=waiting,
             finished=finished,
             failed=failed,
             unreachable_hosts=[

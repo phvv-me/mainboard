@@ -98,6 +98,43 @@ class Resources(FrozenModel):
     max_usd: float = 0.0
 
 
+class Request(FrozenModel):
+    """One dispatch as it was asked for, enough to ask for it again unchanged.
+
+    What a target refuses on a count or concurrency quota is not a rejection of the work, it is
+    "not now", so the request is what a workstation keeps rather than the refusal. A held
+    request is resubmitted by the durable sweep whenever the quota next has room, which is why
+    every field here is the caller's own ask and none of them is a resolved value: the profile's
+    defaults, the queue policy and the market price are all read again at the retry, so a
+    request held overnight lands under whatever the manifest says in the morning.
+
+    target: the host alias the job is for.
+    command: the command the job runs.
+    name / node / fetch: the run's label, the ledger slug it serves, and the results path to
+        pull back, exactly as the original dispatch gave them.
+    env / container: the environment and container overrides the dispatch asked for.
+    queue / walltime / mem_gb / gpus / gpu_name / max_usd / nodes: the resource request, unset
+        fields falling back to the host profile's declared defaults at retry time.
+    attempt: the 1-based try number the profile's expression defaults are evaluated against.
+    """
+
+    target: str
+    command: str
+    name: str = ""
+    node: str = ""
+    fetch: str | None = None
+    env: str = ""
+    container: str = ""
+    queue: str = ""
+    walltime: str = ""
+    mem_gb: int = 0
+    gpus: int = 0
+    gpu_name: str = ""
+    max_usd: float = 0.0
+    nodes: int = 1
+    attempt: int = 1
+
+
 class JobState(FrozenModel):
     """A job's post-mortem state, the unit reconcile compares against the cache.
 

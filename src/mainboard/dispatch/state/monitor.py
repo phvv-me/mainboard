@@ -42,6 +42,36 @@ class Failed(FrozenModel):
     pulled_path: str | None = None
 
 
+class Held(FrozenModel):
+    """A dispatch a target's quota would not take yet, kept at this workstation until it will.
+
+    A queue that is full has not rejected the job, so nothing about it is a verdict: the request
+    is waiting, and every sweep asks again until there is room. It is counted as in flight for
+    exactly that reason.
+
+    handle: the local id the held request is recorded under, ours rather than a scheduler's.
+    target: the host alias whose quota is full.
+    reason: what that target said when it refused.
+    """
+
+    handle: str
+    target: str
+    reason: str
+
+
+class Resumed(FrozenModel):
+    """A dispatch a quota had been holding that this sweep finally got through.
+
+    handle: the handle the target gave it once there was room.
+    target: the host alias that took it.
+    name: the run's label, which is what says which job of which batch just went.
+    """
+
+    handle: str
+    target: str
+    name: str = ""
+
+
 class DownHost(FrozenModel):
     """A host that could not be probed this sweep, so its jobs stay unresolved.
 
@@ -60,7 +90,11 @@ class MonitorReport(FrozenModel):
     folds it in explicitly; it is true exactly when this sweep harvested a job newly terminal
     since the last one, the cheap flag a cron branches on to skip a no-op tick.
 
-    running: how many tracked jobs are still in flight.
+    running: how many tracked jobs are still in flight, a dispatch a target's quota is holding
+        included, since a held request is work this workspace still owes an outcome for.
+    resumed: dispatches a quota had been holding that this sweep got through, each with the
+        handle the target finally gave it.
+    held: dispatches still waiting on a quota after this sweep asked again, each with why.
     finished: jobs newly `ok` this sweep, each with its pulled results path.
     failed: jobs newly `failed`/`vanished` this sweep, each with a reason and whatever partial
         results still came home.
@@ -68,6 +102,8 @@ class MonitorReport(FrozenModel):
     """
 
     running: int = 0
+    resumed: list[Resumed] = Field(default_factory=list)
+    held: list[Held] = Field(default_factory=list)
     finished: list[Finished] = Field(default_factory=list)
     failed: list[Failed] = Field(default_factory=list)
     unreachable_hosts: list[DownHost] = Field(default_factory=list)

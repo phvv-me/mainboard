@@ -9,7 +9,10 @@ from patos import FrozenModel
 
 from ..core.errors import MissionError
 from ..core.project import Project
+from ..dispatch import vocabulary
+from ..dispatch.schedulers import is_quota_refusal
 from ..dispatch.transport import HostUnreachable
+from ..dispatch.vocabulary import Request
 from .estimate import Estimator
 from .receipts import Receipts, Topic, latest, payload, publish
 from .spec import Selection
@@ -38,19 +41,26 @@ _REFUSALS = (MissionError, HostUnreachable, OSError, LookupError, SystemExit)
 # job a target refused: nothing happened to it, it was not asked for.
 _UNSELECTED = "skipped: not named by --only"
 
+# What a row's `state` column says about the request, one word per thing that can happen to it.
+DISPATCHED = "dispatched"
+
 
 class Dispatched(FrozenModel):
     """What one job's dispatch came to, whether or not a target took it.
 
     job: the job's name inside the batch.
     target: the alias it was sent to.
-    handle: the scheduler or provider handle, empty when the target refused it.
+    state: what happened to the request, `dispatched`, `held`, `refused` or `skipped`. Named in
+        its own column because the three that carry no handle used to read alike, and a job the
+        target's quota merely postponed is the one a reader must not file beside a rejection.
+    handle: the scheduler or provider handle, empty when the target did not take it.
     kind: how that target is reached.
-    reason: why it was refused, empty when it was accepted.
+    reason: why it was refused or held, empty when it was accepted.
     """
 
     job: str
     target: str
+    state: str = DISPATCHED
     handle: str = ""
     kind: str = ""
     reason: str = ""
@@ -97,11 +107,19 @@ class Batch:
         return self.spec.batch_id
 
     def dispatch(self, job: BatchJob) -> Dispatched:
-        """Send one job to its target, recording either its handle or the refusal."""
+        """Send one job to its target, recording its handle, its refusal, or its hold.
+
+        A target that refuses on its own count quota has not rejected the job, it has said the
+        queue is full right now, so the request is held at this workstation and the durable sweep
+        asks again rather than the job being dropped from the wave (four of thirteen, miyabi-g's
+        njobs-g limit, 2026-09-04). Every other refusal is still a refusal.
+        """
         bound = self.board.on(job.target)
         try:
             run = bound.submit(job.command, name=self.labelling(job.name), **job.submission())
         except _REFUSALS as refusal:
+            if is_quota_refusal(str(refusal)):
+                return self.held(job, refusal)
             return self.refused(job, refusal)
         kind = run.handle.kind
         publish(
@@ -181,9 +199,40 @@ class Batch:
             publish(self.bus, self.id, Topic.PREPARED, job=prepared.job, data=payload(prepared))
         return measured
 
+    def held(self, job: BatchJob, refusal: BaseException) -> Dispatched:
+        """Keep one job whose target had no room, so the next sweep asks for it again.
+
+        The request goes into the run registry, which is what makes the hold durable: the sweep
+        that resubmits it runs on a cron and knows nothing about the process that held it. The
+        receipt is published beside it so this batch's own watch has a row to show rather than a
+        gap where a job of the plan should be.
+        """
+        told = Dispatched(
+            job=job.name, target=job.target, state=vocabulary.HELD, reason=str(refusal)
+        )
+        self.board.dispatcher.hold(
+            Request(
+                target=job.target,
+                command=job.command,
+                name=self.labelling(job.name),
+                **job.submission(),
+            ),
+            reason=told.reason,
+        )
+        publish(
+            self.bus,
+            self.id,
+            Topic.HELD,
+            job=job.name,
+            data={"target": job.target, "reason": told.reason},
+        )
+        return told
+
     def refused(self, job: BatchJob, refusal: BaseException) -> Dispatched:
         """Record one target's refusal as the receipt the batch keeps in place of a handle."""
-        told = Dispatched(job=job.name, target=job.target, reason=str(refusal))
+        told = Dispatched(
+            job=job.name, target=job.target, state=vocabulary.VANISHED, reason=str(refusal)
+        )
         publish(
             self.bus,
             self.id,
@@ -216,7 +265,9 @@ class Batch:
         reads exactly like one whose dispatch was lost. This is the line that says the difference:
         nothing happened to it, it was not asked for.
         """
-        told = Dispatched(job=job.name, target=job.target, reason=_UNSELECTED)
+        told = Dispatched(
+            job=job.name, target=job.target, state=vocabulary.SKIPPED, reason=_UNSELECTED
+        )
         publish(
             self.bus,
             self.id,

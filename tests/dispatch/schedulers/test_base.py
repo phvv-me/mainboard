@@ -6,6 +6,7 @@ from mainboard.dispatch import HostUnreachable
 from mainboard.dispatch.schedulers import (
     exit_reason,
     failure_reason,
+    is_quota_refusal,
     log_excerpt,
     login_run,
     read_log,
@@ -213,3 +214,50 @@ def test_a_waiting_time_reads_compactly_and_never_from_a_stamp_that_is_not_one()
     # A naive stamp is read as UTC, since reading it locally would invent a timezone of waiting.
     assert since(now.replace(tzinfo=None).isoformat()).endswith("s")
     assert since("t0") == ""
+
+
+@pytest.mark.parametrize(
+    ("reason", "quota"),
+    [
+        pytest.param(
+            "qsub failed (rc=39): qsub: would exceed group xg25g007's limit on resource njobs-g",
+            True,
+            id="pbs-refuses-on-the-groups-job-count",
+        ),
+        pytest.param(
+            "qsub: would exceed complex's per-user limit on resource njobs",
+            True,
+            id="pbs-refuses-on-the-users-job-count",
+        ),
+        pytest.param(
+            "sbatch: error: Batch job submission failed: Job violates QOSMaxJobsPerUserLimit",
+            True,
+            id="slurm-refuses-on-the-qos-job-count",
+        ),
+        pytest.param(
+            "sbatch: error: AssocMaxSubmitJobLimit",
+            True,
+            id="slurm-refuses-on-the-association-submit-count",
+        ),
+        pytest.param("qsub: Maximum number of jobs already in queue", True, id="queue-is-full"),
+        pytest.param("qsub: Unknown queue: short-q", False, id="a-queue-that-does-not-exist"),
+        pytest.param(
+            "qsub: Job violates queue and/or server resource limits",
+            False,
+            id="a-request-the-queue-will-never-take",
+        ),
+        pytest.param("sbatch: error: invalid partition specified", False, id="a-bad-partition"),
+        pytest.param("Permission denied", False, id="an-account-without-permission"),
+    ],
+)
+def test_only_a_refusal_about_how_many_jobs_are_queued_is_worth_asking_again(
+    reason: str, *, quota: bool
+) -> None:
+    """A count quota is "not now" and everything else is "no".
+
+    Holding a rejection would re-ask it every twenty minutes forever, and dropping a quota
+    refusal loses the job, which is what cost a wave four of its thirteen (miyabi-g njobs-g,
+    2026-09-04). The line the scheduler printed is the only thing that tells them apart.
+    """
+    assert is_quota_refusal(reason) is quota
+    assert is_quota_refusal(reason.upper()) is quota

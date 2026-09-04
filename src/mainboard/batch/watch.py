@@ -228,6 +228,20 @@ class Watch:
             for job, event in latest(events, Topic.REFUSED).items()
             if job not in {row.job for row in rows}
         ]
+        # A job whose target had no room is still coming: the sweep above asks for it again on
+        # every pass, and until one gets through the row says so rather than leaving a gap in
+        # the plan. It counts as in flight, so a batch holding one never reads as settled.
+        rows += [
+            JobStatus(
+                job=job,
+                target=str(event.data["target"]),
+                state=vocabulary.HELD,
+                verdict=vocabulary.HELD,
+                detail=f"waiting on the target's quota: {event.data['reason']}",
+            )
+            for job, event in latest(events, Topic.HELD).items()
+            if job not in {row.job for row in rows}
+        ]
         landed = [self.record(row, events) for row in rows]
         status = BatchStatus(
             batch=self.id,

@@ -32,7 +32,7 @@ from .dispatch.landing import Landing, renter
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shared import logger
-from .dispatch.vocabulary import Resources
+from .dispatch.vocabulary import Request, Resources
 from .dispatch.wrapping import connection, missing, wrap
 from .doctor import Doctor
 from .engines.compile.provisioner import Provisioner, task_line
@@ -781,6 +781,33 @@ class Board:
             artifact=provisioner.artifact_for(plan.env),
             watch=watch,
         ).land(command)
+
+    def dispatch(self, asked: Request) -> Run:
+        """Make the dispatch `asked` describes, whichever host it names.
+
+        The one way a held request is asked for again, so a retry made by the durable sweep is
+        the same dispatch the batch made and not a second spelling of it. Every default is
+        resolved here rather than remembered from the first attempt, which is what makes a
+        request held overnight land under whatever the manifest says in the morning.
+
+        asked: the dispatch as it was originally requested.
+        """
+        return self.on(asked.target).submit(
+            asked.command,
+            name=asked.name,
+            queue=asked.queue,
+            walltime=asked.walltime,
+            mem_gb=asked.mem_gb,
+            gpus=asked.gpus,
+            gpu_name=asked.gpu_name,
+            max_usd=asked.max_usd,
+            nodes=asked.nodes,
+            attempt=asked.attempt,
+            fetch=asked.fetch,
+            node=asked.node,
+            env=asked.env,
+            container=asked.container,
+        )
 
     def resources(
         self,

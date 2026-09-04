@@ -26,7 +26,7 @@ from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
 from .transport import SshTransport
-from .vocabulary import JobState, Resources
+from .vocabulary import JobState, Request, Resources
 from .wrapping import connection, wrap
 
 if TYPE_CHECKING:
@@ -109,6 +109,19 @@ def source_of(command: str, root: Path) -> str:
         if top:
             return git("-C", top, "describe", "--always", "--dirty")
     return git("-C", str(root), "describe", "--always", "--dirty")
+
+
+def held_handle(asked: Request) -> str:
+    """The local id a held dispatch is recorded under, derived from the request itself.
+
+    A scheduler handle names a job a scheduler took, and nothing took this one, so the id is
+    ours and says so. Deriving it from the request is what makes holding the same job twice one
+    row instead of two, and what lets a later sweep replace it with the real handle.
+
+    asked: the dispatch being held.
+    """
+    seed = f"{asked.target}\n{asked.name}\n{asked.command}"
+    return f"held-{hashlib.blake2s(seed.encode(), digest_size=5).hexdigest()}"
 
 
 class Source(FrozenModel):
@@ -200,6 +213,49 @@ class Dispatcher:
             host=host,
         )
         logger.info("fetched %s from %s", path, host)
+
+    def hold(self, asked: Request, *, reason: str) -> RunRecord:
+        """Keep a dispatch a target's quota refused, so a later sweep can ask for it again.
+
+        The row goes into the same registry every dispatched run lives in, because that registry
+        is what the durable sweep reads and what `jobs`, `watch` and `verdict` answer from: a
+        request held only in the dispatching process is a job that disappears the moment that
+        process ends, which is exactly how four jobs of a thirteen job wave went missing until
+        someone counted the logs hours later (miyabi-g, njobs-g quota, 2026-09-04).
+
+        Its handle is this workstation's own, not a scheduler's, since no scheduler ever took the
+        job. It is derived from the request, so holding the same job twice keeps one row rather
+        than growing one per attempt, and the row is dropped outright once the request goes
+        through and the real handle takes its place.
+
+        asked: the dispatch to make again when the quota has room.
+        reason: what the target said when it refused, kept as the row's own detail.
+        """
+        handle = held_handle(asked)
+        try:
+            stamped = self.cache.run(handle, asked.target).submitted_at
+        except LookupError:
+            stamped = now()
+        record = RunRecord(
+            handle=handle,
+            target=asked.target,
+            kind="",
+            script=asked.command,
+            args="",
+            git_sha=git("rev-parse", "--short", "HEAD"),
+            dirty=int(bool(git("status", "--porcelain"))),
+            submitted_at=stamped,
+            fetch_path=asked.fetch,
+            name=asked.name,
+            node=asked.node,
+            state=vocabulary.HELD,
+            verdict=vocabulary.HELD,
+            request=asked,
+            reason=reason,
+        )
+        self.cache.record(record)
+        logger.warning("%s held for %s: %s", asked.command, asked.target, reason)
+        return record
 
     def local(self, path: str) -> Path:
         """`path` as a real file here: a workspace-relative name resolved against the root.

@@ -581,7 +581,17 @@ def test_the_monitor_verb_carries_the_counts_and_the_changed_flag_in_json(
 @pytest.mark.parametrize(
     ("flags", "expected"),
     [
-        (["--json"], {"running": 0, "finished": [], "failed": [], "unreachable_hosts": []}),
+        (
+            ["--json"],
+            {
+                "running": 0,
+                "resumed": [],
+                "held": [],
+                "finished": [],
+                "failed": [],
+                "unreachable_hosts": [],
+            },
+        ),
         ([], None),
     ],
     ids=["a quiet pass says exactly that", "a quiet pass still prints its heading"],

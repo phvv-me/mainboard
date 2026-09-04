@@ -10,6 +10,7 @@ from mainboard.batch.watch import _epoch
 from mainboard.dispatch import Handle, HostUnreachable
 from mainboard.dispatch.state import Failed, Finished, MonitorReport, RunRecord
 from mainboard.monitor import Monitor
+from mainboard.verdicts import StreamVerdict, Verdicts, eventful
 
 from .support import Recorder, published, spec
 
@@ -479,3 +480,115 @@ def test_following_a_batch_repeats_at_its_interval_until_the_last_job_settles(
         True,
     ]
     assert slept == [3.0]
+
+
+# What a PBS server answers when a group's job-count quota is full, as the dispatcher raises it.
+# Four jobs of a thirteen job wave were dropped on exactly this line (miyabi-g, 2026-09-04).
+_QUOTA = (
+    "submission to host 'miyabi-g' failed: qsub failed (rc=39): qsub: would exceed group "
+    "xg25g007's limit on resource njobs-g"
+)
+
+
+def relenting(monkeypatch: pytest.MonkeyPatch, *, refusals: int) -> list[str]:
+    """Refuse the first `refusals` submissions on the group's job count, then take every one."""
+    asked: list[str] = []
+
+    def submit(self: Board, command: str, **options: str | int | float | bool) -> SimpleNamespace:
+        asked.append(command)
+        if len(asked) <= refusals:
+            raise SystemExit(_QUOTA)
+        return SimpleNamespace(
+            handle=Handle(id=f"J{len(asked)}", host=self.host, root="/repo", kind="pbs")
+        )
+
+    monkeypatch.setattr(Board, "submit", submit)
+    return asked
+
+
+def test_a_job_a_quota_refused_is_held_and_the_next_sweep_gets_it_through(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queue that is full has said "not now", and the wave used to lose those jobs entirely.
+
+    Four of thirteen were recorded as refused and never asked for again, and the operator found
+    them hours later by counting logs. Here the request is held in the run registry, the batch
+    says so in its own rows and receipts, nothing about the batch reads as settled while it
+    waits, and the durable sweep offers it again until the group's limit has room.
+    """
+    asked = relenting(monkeypatch, refusals=2)
+    batch = batched(lab, bus)
+    dispatched = batch.run()
+    assert [row.state for row in dispatched] == ["held", "held"]
+    assert [row.handle for row in dispatched] == ["", ""]
+    assert all("njobs-g" in row.reason for row in dispatched)
+    assert [event.job for event in published(bus, Topic.HELD)] == [job.name for job in batch.jobs]
+    held = lab.dispatcher.cache.live()
+    assert [run.verdict for run in held] == ["held", "held"]
+    assert [run.request.target for run in held if run.request] == ["miyabi-g", "gold"]
+    assert StreamVerdict(stream=batch.id, trials=eventful(bus.replay())).code == 2
+
+    monitor = Monitor(lab)
+    monitor.streams[batch.id] = bus
+    report = monitor.once()
+    assert [row.name for row in report.resumed] == [
+        f"batch:{batch.id}/{job.name}" for job in batch.jobs
+    ]
+    assert report.held == [] and report.running == 0
+    assert lab.dispatcher.cache.live() == []
+    submitted = published(bus, Topic.SUBMITTED)
+    assert [event.job for event in submitted] == [job.name for job in batch.jobs]
+    assert [event.data["handle"] for event in submitted] == ["J3", "J4"]
+    assert [event.data["target"] for event in submitted] == [job.target for job in batch.jobs]
+    assert [event.data["command"] for event in submitted] == [job.command for job in batch.jobs]
+    assert [event.data["kind"] for event in submitted] == ["pbs", "pbs"]
+    assert asked == [job.command for job in batch.jobs] * 2
+    assert StreamVerdict(stream=batch.id, trials=eventful(bus.replay())).code == 2
+
+
+def test_a_held_job_is_shown_as_waiting_on_the_quota_rather_than_missing_from_the_plan(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch with a job in hold is not settled, and its watch says what it is waiting for."""
+    relenting(monkeypatch, refusals=9)
+    batch = batched(lab, bus)
+    batch.run()
+    sweeping(lab, monkeypatch, MonitorReport())
+    status = watching(lab, batch, bus).once()
+    assert [row.verdict for row in status.jobs] == ["held", "held"]
+    assert all("waiting on the target's quota" in row.detail for row in status.jobs)
+    assert status.running == 2 and not status.settled
+    assert published(bus, Topic.CLOSED) == []
+
+
+def test_a_refusal_that_is_not_a_quota_is_still_a_refusal(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queue that does not exist answers the same way every twenty minutes forever.
+
+    Holding it would retry a rejection until someone noticed, so only a count quota is held and
+    everything else stays the refusal it was.
+    """
+    refusing(monkeypatch, SystemExit("qsub failed (rc=1): qsub: Unknown queue: nope"))
+    batch = batched(lab, bus)
+    assert [row.state for row in batch.run()] == ["vanished", "vanished"]
+    assert published(bus, Topic.HELD) == []
+    assert lab.dispatcher.cache.live() == []
+
+
+def test_cancelling_a_held_dispatch_stops_the_sweep_offering_it_without_touching_a_machine(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No machine has this job, so giving up on it is settling the request rather than a kill."""
+    relenting(monkeypatch, refusals=2)
+    batch = batched(lab, bus)
+    batch.run()
+    [held, _] = lab.dispatcher.cache.live()
+    settled = Verdicts(lab).cancel(held.handle)
+    assert settled.code == 1
+    assert [run.verdict for run in lab.dispatcher.cache.live()] == ["held"]
+    monitor = Monitor(lab)
+    monitor.streams[batch.id] = bus
+    assert [row.name for row in monitor.once().resumed] == [
+        f"batch:{batch.id}/{batch.jobs[0].name}"
+    ]

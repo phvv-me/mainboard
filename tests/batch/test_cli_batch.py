@@ -145,8 +145,8 @@ def test_a_compact_run_prints_the_record_alone_with_the_id_inside_it(
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["batch", "run", written(depot), "--agent"])
     out = capsys.readouterr().out
-    assert out.startswith("job\ttarget\thandle")
-    assert "gold-echo\tgold\t4242\tpbs" in out
+    assert out.startswith("job\ttarget\tstate\thandle")
+    assert "gold-echo\tgold\tdispatched\t4242\tpbs" in out
 
 
 def test_running_part_of_a_plan_dispatches_it_and_records_the_rest_as_skipped(

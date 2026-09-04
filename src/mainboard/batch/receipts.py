@@ -19,6 +19,9 @@
 #   job.submitted   {"handle", "target", "kind", "command"}       a scheduler or provider took it,
 #                   plus "node" (the ledger slug the run serves) only when one was declared
 #   job.refused     {"target", "reason"}                          the target would not take it
+#   job.held        {"target", "reason"}                          the target's quota was full, so
+#                   the request is kept at this workstation and the durable sweep asks again;
+#                   a `job.submitted` for the same job later is what says it finally went
 #   job.skipped     {"target", "reason"}                          the run's selection left it out,
 #                   so nothing is coming for it and no reader should wait on it
 #   job.state       {"handle", "state", "verdict"}                published only when it changed
@@ -67,6 +70,7 @@ class Topic(StrEnum):
     ESTIMATED = "job.estimated"
     SUBMITTED = "job.submitted"
     REFUSED = "job.refused"
+    HELD = "job.held"
     SKIPPED = "job.skipped"
     STATE = "job.state"
     ATTESTED = "job.attested"
