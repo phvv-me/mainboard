@@ -267,3 +267,22 @@ def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors
     replacement.write_text("[workspace]\nname = 'pinned'\n", encoding="utf-8")
     replacement.replace(generated)
     assert generated.read_text(encoding="utf-8") != mirrored.read_text(encoding="utf-8")
+
+
+def test_the_program_never_exits_since_a_login_shells_exit_runs_its_logout_file() -> None:
+    """`exit` in a login shell runs `.bash_logout`, and a `clear_console` there fails without a
+    terminal; under `set -e` that becomes the status of a pin that had nothing to do."""
+    program = Snapshots("/mirror")._Snapshots__program(
+        "/mirror/.mainboard/dispatch/sources/k",
+        key="k",
+        sources=["a"],
+        results="",
+        filters=[],
+        exclude=[],
+    )
+    assert "exit" not in program
+    assert program.startswith("set -eu; ")
+    assert 'if [ ! -f "/mirror/.mainboard/dispatch/sources/k/' in program.replace(
+        '"$mb_snap/', '"/mirror/.mainboard/dispatch/sources/k/'
+    )
+    assert program.endswith("; fi")

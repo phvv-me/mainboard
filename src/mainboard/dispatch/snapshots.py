@@ -231,18 +231,22 @@ class Snapshots:
             exclude=exclude,
             extra=[f"--link-dest={self.root}/"],
         )
+        # The whole build sits inside one `if` rather than behind an early `exit`, because the
+        # program runs in a login shell, and a login shell's `exit` runs `.bash_logout`, whose
+        # `clear_console` fails without a terminal and under `set -e` becomes the shell's own
+        # status: a key already pinned then read as a failed pin. Measured on gold 2026-09-04.
         lines = [
             "set -eu",
             f"mb_root={shlex.quote(self.root)}",
             f"mb_snap={shlex.quote(path)}",
-            f'if [ -f "$mb_snap/{STAMP}" ]; then exit 0; fi',
-            'mkdir -p "$mb_snap"',
+            f'if [ ! -f "$mb_snap/{STAMP}" ]; then mkdir -p "$mb_snap"',
             'cd "$mb_root"',
             f'{shlex.join(["rsync", *argv])} || [ "$?" = 24 ]',
             self.__generated(),
             self.__filling(sources),
             *self.__results(results),
             f"printf '%s\\n' {shlex.quote(key)} > \"$mb_snap/{STAMP}\"",
+            "fi",
         ]
         return "; ".join(lines)
 
