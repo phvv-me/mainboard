@@ -7,6 +7,7 @@ import pytest
 from mainboard.dispatch import DaemonDown, HostUnreachable, SshTransport
 from mainboard.dispatch import transport as transport_module
 from mainboard.dispatch.transport import (
+    Endpoint,
     is_daemon_failure,
     is_transport_failure,
     terminate_process_tree,
@@ -381,3 +382,46 @@ def test_a_bounded_machine_opens_its_shell_in_a_dedicated_process_group(
     assert isinstance(result, FakeSession)
     assert opened == [(["/bin/sh"], flags, isatty)]
     assert (built["proc"], built["host"], built["isatty"]) == ("PROC", "gold", isatty)
+
+
+def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liveness_options() -> (
+    None
+):
+    """A rented box has no alias, so the address, port, login and key ride with the policy.
+
+    Its host key is new every time and never seen again, which is why the connection accepts it
+    on sight and keeps it out of `known_hosts` rather than failing verification against whatever
+    key some earlier rental had at a recycled address.
+    """
+    endpoint = Endpoint(address="ssh5.vast.ai", port=41022, user="root", identity="/keys/id")
+    policy = SshTransport(endpoint=endpoint)
+    assert endpoint.destination == "root@ssh5.vast.ai"
+    assert policy.destination("vast") == "root@ssh5.vast.ai"
+    assert policy.options[: len(policy.liveness)] == policy.liveness
+    assert policy.options[len(policy.liveness) :] == (
+        "-p",
+        "41022",
+        "-i",
+        "/keys/id",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+    )
+    assert "-p 41022" in policy.rsync_shell and "-i /keys/id" in policy.rsync_shell
+    assert Endpoint(address="a", identity="~/.ssh/id").identity.startswith("/")
+
+
+def test_an_unbound_policy_names_the_alias_and_a_bound_one_spells_the_port_scp_way() -> None:
+    """scp differs from ssh in one letter, and a declared host keeps its own config untouched."""
+    assert SshTransport().destination("gold") == "gold"
+    assert SshTransport().options == SshTransport().liveness
+    bare = Endpoint(address="1.2.3.4")
+    assert bare.destination == "1.2.3.4" and "-p" not in bare.options and "-i" not in bare.options
+    ported = Endpoint(address="1.2.3.4", port=2222)
+    assert ported.options[:2] == ("-p", "2222")
+    assert ported.scp_options[:2] == ("-P", "2222")

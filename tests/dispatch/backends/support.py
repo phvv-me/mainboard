@@ -16,6 +16,8 @@ from mainboard.dispatch.backends import (
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Container, HostProfile
 
+from ..support import Naps
+
 if TYPE_CHECKING:
     from urllib.request import Request
 
@@ -103,20 +105,6 @@ class FakeTransport:
     def urls(self) -> list[str]:
         """The full url of every recorded request, in the order the backend asked for them."""
         return [call.full_url for call in self.calls]
-
-
-class Naps:
-    """A sleeper that records how long it was asked to wait and never really waits.
-
-    A log poll retries on a schedule, so a test has to prove the wait was driven without paying
-    for it in wall time.
-    """
-
-    def __init__(self) -> None:
-        self.waited: list[float] = []
-
-    def __call__(self, seconds: float) -> None:
-        self.waited.append(seconds)
 
 
 def refused(status: int, url: str = "https://console.vast.ai/api/v0/instances/7/") -> HTTPError:

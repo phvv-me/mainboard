@@ -1,10 +1,15 @@
-# Bounded SSH transport policy and its shared failure vocabulary. A transport fault is the ssh
-# link itself failing; it reads identically to a real failure (exit 255 with a stderr phrase).
+# Bounded SSH transport policy, the machines it reaches, and its shared failure vocabulary. A
+# transport fault is the ssh link itself failing; it reads identically to a real failure (exit
+# 255 with a stderr phrase).
+#
+# A policy carries an `Endpoint` when the machine it opens is not in `~/.ssh/config` at all,
+# which is the whole difference between a declared host and one rented for a single job.
 
 import shlex
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp/rsync options), not untrusted input since=2026-08-17
 from contextlib import suppress
 from math import ceil
+from pathlib import Path
 from typing import NoReturn
 
 import psutil
@@ -12,7 +17,7 @@ from patos import FrozenModel
 from plumbum.machines.local import LocalMachine
 from plumbum.machines.session import ShellSession
 from plumbum.machines.ssh_machine import SshMachine
-from pydantic import Field
+from pydantic import Field, field_validator
 
 # ssh's own exit status when the transport fails, with the stderr phrases naming the fault. A
 # name that does not resolve belongs here too: the host cannot be reached right now (a dropped
@@ -85,13 +90,73 @@ class DaemonDown(HostUnreachable):
     """
 
 
+class Endpoint(FrozenModel):
+    """Where ssh reaches one machine `~/.ssh/config` has never heard of.
+
+    A declared host is an alias and the user's own config answers every question about it. A
+    machine rented for one job has no alias and no entry: it is an address, a port, a login and
+    a key, all four minted minutes ago, so they ride with the policy that opens the connection
+    instead of with a file nobody edited. Its host key is new by construction and will never be
+    seen again, so it is accepted on sight and kept out of `known_hosts`, which is also what
+    stops a recycled provider address from failing verification against the key some earlier
+    rental had at it.
+
+    address: the hostname or IP ssh connects to.
+    port: the ssh port, 0 for ssh's own default.
+    user: the login, empty for whatever ssh would choose.
+    identity: the private key file, empty to leave that to ssh's agent and config.
+    """
+
+    address: str
+    port: int = 0
+    user: str = ""
+    identity: str = ""
+
+    @field_validator("identity")
+    @classmethod
+    def expanded(cls, value: str) -> str:
+        """A key path with `~` resolved, since rsync's own `-e` parser honours no shell at all."""
+        return str(Path(value).expanduser()) if value else value
+
+    @property
+    def destination(self) -> str:
+        """The `user@address` every ssh, scp and rsync command names this machine by."""
+        return f"{self.user}@{self.address}" if self.user else self.address
+
+    @property
+    def options(self) -> tuple[str, ...]:
+        """The ssh options this machine needs beyond the liveness policy."""
+        port = ("-p", str(self.port)) if self.port else ()
+        key = ("-i", self.identity, "-o", "IdentitiesOnly=yes") if self.identity else ()
+        return (
+            *port,
+            *key,
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+        )
+
+    @property
+    def scp_options(self) -> tuple[str, ...]:
+        """`options` as scp spells them, which differs in one letter: its port flag is `-P`."""
+        return tuple("-P" if option == "-p" else option for option in self.options)
+
+
 class SshTransport(FrozenModel):
-    """One bounded OpenSSH policy while preserving user aliases and ProxyJump settings."""
+    """One bounded OpenSSH policy while preserving user aliases and ProxyJump settings.
+
+    An `endpoint` binds the policy to a machine that has no alias to preserve, which is what
+    lets a rented box ride the same mirror, install and pin path a declared host does.
+    """
 
     connect_timeout: float = Field(default=15.0, gt=0.0)
     server_alive_interval: float = Field(default=15.0, gt=0.0)
     server_alive_count: int = Field(default=3, ge=1)
     batch_mode: bool = True
+    endpoint: Endpoint | None = None
 
     @property
     def deadline(self) -> float:
@@ -99,7 +164,7 @@ class SshTransport(FrozenModel):
         return self.connect_timeout + self.server_alive_interval * self.server_alive_count + 5.0
 
     @property
-    def options(self) -> tuple[str, ...]:
+    def liveness(self) -> tuple[str, ...]:
         """Only the liveness overrides, leaving every alias setting intact."""
         return (
             "-o",
@@ -113,9 +178,18 @@ class SshTransport(FrozenModel):
         )
 
     @property
+    def options(self) -> tuple[str, ...]:
+        """The liveness overrides plus whatever the bound machine needs to be reached at all."""
+        return (*self.liveness, *(self.endpoint.options if self.endpoint else ()))
+
+    @property
     def rsync_shell(self) -> str:
         """rsync's remote shell under this same SSH policy."""
         return shlex.join(("ssh", *self.options))
+
+    def destination(self, host: str) -> str:
+        """`host` as ssh must spell it: the bound machine when there is one, else the alias."""
+        return self.endpoint.destination if self.endpoint else host
 
     @staticmethod
     def terminate(process: subprocess.Popen[str]) -> None:
@@ -129,7 +203,8 @@ class SshTransport(FrozenModel):
 
     def transfer(self, source: str, *, destination: str, host: str) -> None:
         """Copy one file through the bounded SSH policy."""
-        self.run(("scp", *self.options, source, destination), host, operation="copy")
+        scp = (*self.liveness, *(self.endpoint.scp_options if self.endpoint else ()))
+        self.run(("scp", *scp, source, destination), host, operation="copy")
 
     def machine(self, host: str) -> BoundedSshMachine:
         """A persistent SSH session with a dedicated local process group."""

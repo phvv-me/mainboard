@@ -130,6 +130,20 @@ def machine_with(
     return RecordingMachine(outputs, rules=rules, faults=faults)
 
 
+class Naps:
+    """A sleeper that records how long it was asked to wait and never really waits.
+
+    A log poll and a rental's ssh knock both retry on a schedule, so a test has to prove the wait
+    was driven without paying for it in wall time.
+    """
+
+    def __init__(self) -> None:
+        self.waited: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.waited.append(seconds)
+
+
 class RecordingScheduler:
     """A `Scheduler` double recording each call and replaying canned results."""
 

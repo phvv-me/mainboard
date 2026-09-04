@@ -265,6 +265,11 @@ class Dispatcher:
         paths outside the sync allowlist that must still reach the host (typically the staged
         job script). Fails fast when no include paths are declared or a required group is
         incomplete.
+
+        `ssh` decides where the transfer actually lands. A declared host is its own alias and the
+        user's ssh config answers for it; a machine rented for one job has no alias at all, so a
+        policy bound to that machine names it instead and the same mirror reaches a box this
+        workspace had never heard of a minute ago.
         """
         policy = ssh or SshTransport()
         scope = plan.profile.sync
@@ -304,7 +309,7 @@ class Dispatcher:
             try:
                 rsync(
                     [*include, *gitignore_files, *required_paths, *extra],
-                    f"{plan.host}:{root}/",
+                    f"{policy.destination(plan.host)}:{root}/",
                     RsyncFlags.ARCHIVE
                     | RsyncFlags.COMPRESS
                     | RsyncFlags.RELATIVE
