@@ -551,29 +551,57 @@ def test_an_environment_compiled_and_solved_but_never_installed_is_a_warning(
     assert found.fix == "mainboard install serving"
 
 
-def test_a_superseded_environment_root_is_named_with_the_command_that_removes_it(
-    workspace: Path,
-) -> None:
-    """The trap the layout move left behind: a whole environment nothing reads any more.
-
-    Its compiled extensions were built from a manifest this workspace has moved past, and an
-    operator who copies one of them out costs the bisect round it was meant to settle. The
-    doctor never deletes anything, so the row is the exact removal command.
-    """
-    board = Board(workspace)
-    provisioner = Provisioner(board.root, board.manifest)
-    doctor = Doctor(board)
-
+def test_a_superseded_root_with_no_environment_directories_is_clean(workspace: Path) -> None:
+    """Nothing to warn about until an old root actually holds an environment directory."""
+    provisioner = Provisioner(workspace, Board(workspace).manifest)
+    doctor = Doctor(Board(workspace))
     assert doctor.layout().verdict is Verdict.PASS
-    assert doctor.layout().fix == ""
 
-    prefix = provisioner.pixi_for().env_prefix("default")
-    superseded = provisioner.out / prefix.relative_to(provisioner.environment_dir()).parts[0]
-    (superseded / "envs" / "default").mkdir(parents=True)
-    found = doctor.layout()
+    old_envs = (
+        provisioner.out
+        / provisioner.pixi_for()
+        .env_prefix("default")
+        .relative_to(provisioner.environment_dir())
+        .parts[0]
+        / "envs"
+    )
+    old_envs.mkdir(parents=True)
+    assert doctor.layout().verdict is Verdict.PASS
+
+
+def test_an_old_root_names_one_rm_rf_per_environment_already_reprovisioned(
+    tmp_path: Path,
+) -> None:
+    """The old root can hold several environments; only the reprovisioned ones are safe to lose.
+
+    default and mcmr exist again under the current layout, so their old copies are superseded
+    and named one `rm -rf` each; serving is declared but never reprovisioned, and ghost is not
+    even declared any more, so both stay legacy, still served by their own activation script,
+    until `mainboard install <env>` reprovisions them.
+    """
+    (tmp_path / "mainboard.toml").write_text(
+        '[workspace]\nname = "lab"\n\n[envs.mcmr]\n\n[envs.serving]\n'
+    )
+    board = Board(tmp_path)
+    provisioner = Provisioner(board.root, board.manifest)
+    for env in ("default", "mcmr"):
+        provisioner.pixi_for(env).env_prefix(env).mkdir(parents=True)
+    held = (
+        provisioner.pixi_for()
+        .env_prefix("default")
+        .relative_to(provisioner.environment_dir())
+        .parts[0]
+    )
+    old_envs = provisioner.out / held / "envs"
+    for env in ("default", "mcmr", "serving", "ghost"):
+        (old_envs / env).mkdir(parents=True)
+
+    found = Doctor(board).layout()
+
     assert found.verdict is Verdict.WARN
-    assert str(superseded) in found.detail
-    assert found.fix == f"rm -rf {superseded}"
+    assert found.fix == f"rm -rf {old_envs / 'default'} && rm -rf {old_envs / 'mcmr'}"
+    assert "serving" in found.detail
+    assert "ghost" in found.detail
 
 
 def test_the_current_layout_is_never_mistaken_for_the_superseded_one(workspace: Path) -> None:

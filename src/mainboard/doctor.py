@@ -277,34 +277,58 @@ class Doctor:
         )
 
     def layout(self) -> Section:
-        """Whether a superseded environment root still sits beside the current one.
+        """Whether the old root still holds an environment directory, one line per name.
 
         The generated tree keeps every pixi prefix under its own environment directory, and a
-        workspace provisioned before that layout keeps the root the old one wrote, holding
-        compiled extensions that no longer answer to this source. Nothing reads it, which is
-        exactly why it survives, and an operator who copies one artifact out of it loses the
-        round of the bisect that artifact was supposed to settle. The old root is named from
-        the current layout rather than spelled out here, so the check follows the layout.
+        workspace provisioned before that layout keeps the old root's `envs/`, one directory per
+        environment it built there. An environment the current layout has since reproduced is
+        dead weight, safe to remove; one it has not is still what its own activation script
+        serves, and deleting it would take a working environment down rather than tidy anything.
+        The old root is named from the current layout rather than spelled out here, so the check
+        follows the layout.
         """
         provisioner = Provisioner(self.board.root, self.board.manifest)
         prefix = provisioner.pixi_for().env_prefix("default")
         held = prefix.relative_to(provisioner.environment_dir()).parts[0]
-        superseded = provisioner.out / held
-        if not superseded.is_dir():
+        old_envs = provisioner.out / held / "envs"
+        names = (
+            sorted(found.name for found in old_envs.iterdir() if found.is_dir())
+            if old_envs.is_dir()
+            else []
+        )
+        if not names:
             return Section(
                 section="layout",
                 verdict=Verdict.PASS,
                 detail=f"only the current environment layout under {provisioner.out.name}",
             )
+        superseded = [name for name in names if self._reprovisioned(provisioner, name)]
+        legacy = [name for name in names if name not in superseded]
+        notes = [f"superseded, safe to remove: {', '.join(superseded)}"] if superseded else []
+        if legacy:
+            notes.append(
+                f"legacy, still served by its own .mainboard/activate-<env>.sh: "
+                f"{', '.join(legacy)}; `{_TOOL} install <env>` reprovisions one under the "
+                "current layout, after which it joins the superseded ones"
+            )
         return Section(
             section="layout",
             verdict=Verdict.WARN,
-            detail=(
-                f"{superseded} is a superseded environment root; what it holds was compiled "
-                "from a manifest this workspace has moved past"
-            ),
-            fix=f"rm -rf {superseded}",
+            detail="; ".join(notes),
+            fix=" && ".join(f"rm -rf {old_envs / name}" for name in superseded),
         )
+
+    @staticmethod
+    def _reprovisioned(provisioner: Provisioner, name: str) -> bool:
+        """Whether `name` already exists again under the current layout.
+
+        A name the manifest no longer declares raises before any path is even built, and reads
+        the same as one still declared but not yet reinstalled: both are legacy either way.
+        """
+        try:
+            return provisioner.pixi_for(name).env_prefix(name).is_dir()
+        except MissionError:
+            return False
 
     def manifest(self) -> Section:
         """Whether the workspace manifest still parses, interpolates and validates."""
