@@ -68,8 +68,9 @@ _PAGE_SIZE = 50
 # whose mapping carries it. `Running` is the one status that can answer ssh at all.
 _SSH_PORT = 22
 _RUNNING = "Running"
-# How long to wait for an instance to pull its image and come up, ten minutes at this cadence.
-_ADDRESS_ATTEMPTS = 60
+# How long to wait for an instance to pull its image and come up, fifteen minutes at this
+# cadence.
+_ADDRESS_ATTEMPTS = 90
 _ADDRESS_SECONDS = 10.0
 
 _VERDICTS = {

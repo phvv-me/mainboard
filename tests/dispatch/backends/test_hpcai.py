@@ -396,9 +396,9 @@ def test_an_instance_that_publishes_no_ssh_endpoint_is_terminated_and_names_the_
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     keypair(tmp_path)
     naps = Naps()
-    pages = [listing(listed("notebook-42", "PullingImage"))] * 60
+    pages = [listing(listed("notebook-42", "PullingImage"))] * 90
     backend = hpc_ai_backend(transport=FakeTransport(_CREATED, *pages, {}, {}), naps=naps)
     with pytest.raises(MissionError, match="ssh keys in the HPC-AI console"):
         backend.rent(hpc_ai_plan(_VARS), Resources(max_usd=1.0, walltime="00:30:00"))
     assert backend.transport.urls[-1] == "https://www.hpc-ai.com/api/instance/terminate"
-    assert naps.waited == [10.0] * 60
+    assert naps.waited == [10.0] * 90

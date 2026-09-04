@@ -17,7 +17,7 @@ from mainboard.dispatch.backends.vast import (
     exit_sentinel,
 )
 from mainboard.dispatch.evidence import framing, staging
-from mainboard.dispatch.rentals import waiting
+from mainboard.dispatch.rentals import LANDING_SECONDS, waiting
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
@@ -727,7 +727,7 @@ def test_a_rental_is_created_waiting_for_a_landing_rather_than_running_the_comma
     backend = rental_backend(running())
     rental = backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00", gpus=1))
     search, create, attach = backend.transport.bodies[:3]
-    assert search["dph_total"] == {"lte": pytest.approx(1.0 * 3600 / (1800 + 1800))}
+    assert search["dph_total"] == {"lte": pytest.approx(1.0 * 3600 / (1800 + LANDING_SECONDS))}
     assert create["runtype"] == "ssh" and "args" not in create
     assert create["image"] == "vastai/base-image:cuda-13.3.1-auto"
     assert waiting() in create["onstart"]
@@ -746,13 +746,13 @@ def test_a_rental_that_never_comes_up_is_destroyed_rather_than_left_billing(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     keypair(tmp_path)
     naps = Naps()
-    loading = [{"instances": {"id": 4242, "actual_status": "loading"}}] * 60
+    loading = [{"instances": {"id": 4242, "actual_status": "loading"}}] * 90
     backend = rental_backend(*loading, {}, naps=naps)
     with pytest.raises(MissionError, match="never came up with an ssh address"):
         backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"))
     assert backend.transport.calls[-1].get_method() == "DELETE"
     assert backend.transport.urls[-1] == f"{_ROOT}/instances/4242/"
-    assert naps.waited == [10.0] * 60
+    assert naps.waited == [10.0] * 90
 
 
 def test_a_provider_that_will_not_take_the_key_refuses_before_anything_is_landed(

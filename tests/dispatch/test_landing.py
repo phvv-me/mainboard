@@ -103,6 +103,20 @@ def test_a_rental_gets_the_workspace_the_tool_and_the_environment_before_the_job
     assert host.ran("--profile vast")
 
 
+def test_a_machine_that_ships_no_rsync_is_given_one_before_the_mirror_is_attempted(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rsync runs on both ends, and a rented image often ships none of it at all."""
+    host = machine_with("/root/projects\n", rules=[("command -v rsync", 1, "")])
+    landed, _, _ = landing(workdir, host, monkeypatch)
+    landed.land("python train.py")
+    assert host.ran("apt-get install -y -qq rsync")
+    equipped = machine_with("/root/projects\n")
+    landed, _, _ = landing(workdir, equipped, monkeypatch)
+    landed.land("python train.py")
+    assert not equipped.ran("apt-get")
+
+
 def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would_run(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

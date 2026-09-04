@@ -135,6 +135,7 @@ class Landing:
             shell = RemoteShell(remote, self.plan, root)
             bootstrap = Bootstrap(shell)
             script = self.script(command, root=root, source=source)
+            self.transferable(shell)
             self.watch(f"mirroring the workspace to {where}:{root}")
             shipped = self.dispatcher.rsync_up(
                 self.plan,
@@ -157,6 +158,23 @@ class Landing:
             )
             self.watch(f"starting the job on {rental.handle}")
             self.start(remote, pinned=pinned, script=script)
+
+    def transferable(self, shell: RemoteShell) -> None:
+        """Make sure the machine can receive a mirror at all, since rsync runs on both ends.
+
+        A declared host has rsync because whoever set it up installed one. A rented image often
+        ships none, and a missing far-side rsync fails the transfer with `rsync: command not
+        found` on a box we own outright for the next half hour, so it is installed here through
+        the package manager every provider base image this house rents is built on. An image with
+        neither refuses with what the machine itself said, before the mirror rather than during
+        it.
+
+        shell: the rented machine's shell.
+        """
+        if shell.ok("command -v rsync"):
+            return
+        self.watch("installing rsync on the rental")
+        shell.run("apt-get update -qq && apt-get install -y -qq rsync")
 
     def script(self, command: str, *, root: str, source: str) -> str:
         """Render the job script this rental runs and stage it for the mirror to carry.

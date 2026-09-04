@@ -37,10 +37,12 @@ LAUNCH = "/tmp/mainboard-launch.sh"
 _PENDING = "/tmp/mainboard-launch.part"
 
 # How long a rented machine waits for a dispatch to land on it, and how long the spend cap has to
-# assume every rental bills before its job starts. A mirror of this workspace, a uv install of the
-# tool and a frozen environment install take minutes on a cold container, and the ceiling is
-# generous rather than tight because overrunning it throws away a rental that was nearly ready.
-LANDING_SECONDS = 1800
+# assume every rental bills before its job starts. An hour, because the slow step is not the
+# mirror (288 MB of this workspace measured 2026-09-04) but the environment: a workspace whose
+# default environment is a whole CUDA stack downloads and links gigabytes on a cold container. The
+# ceiling is generous rather than tight on purpose, since overrunning it throws away a rental that
+# was nearly ready, while a landing that finishes in ten minutes never pays for the other fifty.
+LANDING_SECONDS = 3600
 
 # How often the entrypoint looks for the launch script while it waits.
 _WAIT_SECONDS = 5

@@ -88,9 +88,9 @@ _SAMPLE_GPU = "RTX 4090"
 _SSH_USER = "root"
 _RUNNING = "running"
 # How long to wait for vast to pull the image, start the container and publish the proxy address
-# its ssh goes through. Ten minutes, because a cold CUDA base image is gigabytes and a machine
+# its ssh goes through. Fifteen minutes, because a cold CUDA base image is gigabytes and a machine
 # still pulling one is exactly the machine a landing must not knock at yet.
-_ADDRESS_ATTEMPTS = 60
+_ADDRESS_ATTEMPTS = 90
 _ADDRESS_SECONDS = 10.0
 
 
