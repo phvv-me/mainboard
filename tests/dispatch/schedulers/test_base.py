@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from mainboard.dispatch import HostUnreachable
@@ -8,6 +10,7 @@ from mainboard.dispatch.schedulers import (
     login_run,
     read_log,
     short_reason,
+    standing,
     verdict_line,
 )
 from mainboard.dispatch.schedulers.base import (
@@ -15,6 +18,7 @@ from mainboard.dispatch.schedulers.base import (
     meaningful_lines,
     workspace_session,
 )
+from mainboard.dispatch.shared import since
 from mainboard.dispatch.vocabulary import JobState, Resources
 
 from ..support import machine_with
@@ -164,3 +168,48 @@ def test_verdict_line_leads_with_the_handle_then_whatever_details_exist(
     state: JobState, age: str, expected: str
 ) -> None:
     assert verdict_line(state, submitted_age=age) == expected
+
+
+@pytest.mark.parametrize(
+    ("state", "submitted_at", "host", "expected"),
+    [
+        (
+            JobState(
+                handle="3289319",
+                state="Q",
+                verdict="queued",
+                note="estimated start Thu Sep  4 14:00:00 2026",
+            ),
+            "2026-09-04T09:12:04+00:00",
+            "miyabi-g",
+            "3289319 is queued on miyabi-g; scheduler state Q; "
+            "submitted 2026-09-04T09:12:04+00:00 ({age} ago); "
+            "estimated start Thu Sep  4 14:00:00 2026",
+        ),
+        (
+            JobState(handle="7", state="R", verdict="running"),
+            "",
+            "gold",
+            "7 is running on gold; scheduler state R",
+        ),
+        (JobState(handle="7", verdict="running"), "", "", "7 is running"),
+    ],
+)
+def test_a_job_that_printed_nothing_still_says_where_it_stands(
+    state: JobState, submitted_at: str, host: str, expected: str
+) -> None:
+    """An empty log is either a job that has not started or one that started and said nothing."""
+    assert standing(state, submitted_at=submitted_at, host=host) == expected.format(
+        age=since(submitted_at)
+    )
+
+
+def test_a_waiting_time_reads_compactly_and_never_from_a_stamp_that_is_not_one() -> None:
+    """The stamp comes off a durable record, which older workspaces wrote in other shapes."""
+    now = datetime.now(UTC)
+    assert since((now - timedelta(hours=3, minutes=12)).isoformat()) == "3h12m"
+    assert since((now - timedelta(days=2, hours=5)).isoformat()) == "2d5h"
+    assert since((now - timedelta(seconds=9)).isoformat()) == "9s"
+    # A naive stamp is read as UTC, since reading it locally would invent a timezone of waiting.
+    assert since(now.replace(tzinfo=None).isoformat()).endswith("s")
+    assert since("t0") == ""

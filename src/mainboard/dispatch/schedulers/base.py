@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ...core.project import Project
 from .. import vocabulary
-from ..shared import state_dir
+from ..shared import since, state_dir
 from ..transport import HostUnreachable, is_transport_failure
 from ..vocabulary import JobState, Resources
 
@@ -32,6 +32,22 @@ def login_run(remote: Machine, body: str) -> str:
     if is_transport_failure(retcode, err):
         raise HostUnreachable(err.strip()[-200:] or "ssh transport failure")
     return out
+
+
+def within(root: str, command: str) -> str:
+    """`command` run from `root`, the one way a backend enters the tree a dispatch pinned it to.
+
+    Every scheduler reached over ssh takes its job's working directory from the directory it was
+    submitted in: PBS exports it as `PBS_O_WORKDIR` and the generated script cds there, sbatch
+    hands it to the job unless told otherwise, and a bare bash host simply is where it stands.
+    So the submitting shell is where a backend says which tree the job runs from, and saying it
+    once here is what keeps the three from drifting apart. pueue is the exception only in
+    spelling, since it takes the same directory as an explicit flag.
+
+    The root handed here is the dispatch's snapshot of the mirror rather than the mirror itself,
+    which is what makes the job's code immutable for as long as it runs.
+    """
+    return f"cd {shlex.quote(root)} && {command}"
 
 
 @runtime_checkable
@@ -191,6 +207,32 @@ def short_reason(verdict: str, exit_code: int | None) -> str:
     if exit_code is not None:
         return f"exited {exit_code}"
     return "failed"
+
+
+def standing(state: JobState, *, submitted_at: str = "", host: str = "") -> str:
+    """Where a job that has printed nothing yet stands, in one line.
+
+    The answer a reader wants when a log is empty, because an empty log has two entirely
+    different causes and no way to tell them apart: the job has not started, or it started and
+    said nothing. So this leads with the verdict and the scheduler's own state word, says how
+    long the job has been waiting, and ends with whatever the backend says about when it will
+    run, which on PBS is the server's estimated start time and otherwise the resource its queue
+    is short of.
+
+    state: the job as its backend reports it now, or as the run registry last recorded it.
+    submitted_at: when the run was dispatched, from the durable record rather than the host.
+    host: the alias it was dispatched to.
+    """
+    where = f" on {host}" if host else ""
+    parts = [f"{state.handle} is {state.verdict}{where}"]
+    if state.state:
+        parts.append(f"scheduler state {state.state}")
+    if submitted_at:
+        waited = since(submitted_at)
+        parts.append(f"submitted {submitted_at}" + (f" ({waited} ago)" if waited else ""))
+    if state.note:
+        parts.append(state.note)
+    return "; ".join(parts)
 
 
 def verdict_line(state: JobState, *, submitted_age: str = "") -> str:

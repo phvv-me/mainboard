@@ -10,7 +10,7 @@ from patos import Model
 
 from ..shared import state_dir
 from ..vocabulary import JobState, Resources
-from .base import read_log
+from .base import read_log, within
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -247,7 +247,9 @@ class Slurm:
         resources: Resources,
     ) -> str:
         del args  # SLURM scripts are self-contained; sbatch takes no free-form positional args.
-        command = shlex.join(build_sbatch_flags(resources, script))
+        # sbatch gives the job the directory it was submitted from, so submitting from the tree
+        # this dispatch pinned is what makes the job run out of that tree and not the mirror.
+        command = within(root, shlex.join(build_sbatch_flags(resources, script)))
         retcode, out, err = remote["bash"][["-lc", command]].run(retcode=None)
         handle = Slurm._extract_job_id(out)
         if not handle.isdigit():

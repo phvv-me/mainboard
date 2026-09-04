@@ -34,6 +34,9 @@ class RunRecord(FrozenModel):
         back to the script's basename at render time.
     node: the ledger slug this run serves, carried into its receipts; empty when the dispatch
         declared none, which stays a valid run.
+    source: the key of the pinned source tree the run executes from, so a sweep knows which
+        snapshot on the host is still in use and which is garbage. Empty for a provider run,
+        which rents a fresh machine per job and pins nothing.
     state: the last resolved scheduler outcome, memoized so a finished job (whose verdict can
         never change) is read straight from the cache instead of re-probed over ssh. `None`
         means never resolved; a terminal verdict here is trusted without touching the host.
@@ -55,6 +58,7 @@ class RunRecord(FrozenModel):
     fetch_path: str | None = None
     name: str = ""
     node: str = ""
+    source: str = ""
     state: str | None = None
     exit_code: int | None = None
     verdict: str | None = None

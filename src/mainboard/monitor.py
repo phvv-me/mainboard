@@ -209,6 +209,11 @@ class Monitor:
         whose target could not be resolved has no state, which is the one reason to skip it here,
         and that target is named once in the report rather than once per run on it.
 
+        The pass ends by dropping every pinned source tree no run still owed an outcome runs
+        from. A dispatch freezes the code it ships so a later sync cannot rewrite it under a
+        running job, and this is the other half of that bargain: without a sweep that lets the
+        old trees go, a host under an inode quota fills up with them.
+
         The pull happens whatever the exit code said, and only the verdict the run reports is
         decided by it. A sweep of 500 trials that dies at 400 leaves 399 immutable receipt
         fragments on the host, which is exactly the crash safety the staged-and-renamed store
@@ -254,6 +259,7 @@ class Monitor:
             verdict = Verdict(verdict=state.verdict, exit_code=state.exit_code)
             fleet.settle({job.handle: verdict})
             self.cache.report(stored, state.verdict)
+        self.board.dispatcher.prune_sources()
         return MonitorReport(
             running=running,
             finished=finished,

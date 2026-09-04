@@ -11,7 +11,7 @@ from ...core.errors import MissionError
 from ...core.project import Project
 from ..shared import state_dir
 from ..vocabulary import JobState, Resources
-from .base import login_run, read_log
+from .base import login_run, read_log, within
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -51,6 +51,9 @@ _WORD_STATE_ALIASES: dict[str, PbsState] = {
 # PBS terminal states: the job has left the run queue.
 _PBS_FINISHED = {PbsState.FINISHED, PbsState.EXITING}
 
+# PBS states in which the job has not started, the ones an estimated start time is about.
+_PBS_PENDING = {PbsState.QUEUED, PbsState.HELD, PbsState.WAITING, PbsState.MOVED}
+
 
 def parse_job_state(value: str) -> PbsState | str:
     """Parse a PBS job-state token (single letter or full word)."""
@@ -61,45 +64,63 @@ def parse_job_state(value: str) -> PbsState | str:
 
 
 class JobInfo(Model):
-    """One `qstat`-parsed PBS job record."""
+    """One `qstat`-parsed PBS job record.
+
+    estimated_start / comment: what the server says about a job it has not started yet, the
+    scheduler's own answer to "when does this run". Both are empty on a server that reports
+    neither, which is the ordinary case for a job already running.
+    """
 
     job_id: str
     name: str
     state: PbsState | str
     queue: str
     exit_status: int | None = None  # set only for a finished job, else None
+    estimated_start: str = ""
+    comment: str = ""
 
 
 def parse_qstat_full(output: str) -> list[JobInfo]:
-    """Parse `qstat -f` output."""
+    """Parse `qstat -f` output into one record per job.
+
+    qstat wraps any attribute longer than its line width onto a continuation line beginning
+    with a tab, and it breaks mid-token, so a continuation is glued back on with nothing between
+    it and what came before. Without that, the one attribute long enough to wrap is `comment`,
+    which is exactly the attribute saying why a queued job has not started. An attribute with an
+    empty value is read as empty rather than skipped, since the key is what says it was reported.
+    """
     jobs: list[JobInfo] = []
-    current: JobInfo | None = None
+    attributes: dict[str, str] = {}
+    job_id = ""
+    field = ""
     for line in output.splitlines():
         if line.startswith("Job Id:"):
-            if current is not None:
-                jobs.append(current)
-            current = JobInfo(
-                job_id=line.split(":", maxsplit=1)[1].strip(),
-                name="",
-                state=PbsState.QUEUED,
-                queue="",
-            )
-            continue
-        if current is None or " = " not in line:
-            continue
-        key, value = line.strip().split(" = ", maxsplit=1)
-        match key:
-            case "Job_Name":
-                current.name = value
-            case "job_state":
-                current.state = parse_job_state(value)
-            case "Exit_status":
-                current.exit_status = int(value)
-            case "queue":
-                current.queue = value
-    if current is not None:
-        jobs.append(current)
+            if job_id:
+                jobs.append(_job_info(job_id, attributes))
+            job_id, attributes, field = line.split(":", maxsplit=1)[1].strip(), {}, ""
+        elif line.startswith("\t") and field:
+            attributes[field] += line.removeprefix("\t")
+        elif " = " in line:
+            key, _, value = line.partition(" = ")
+            field = key.strip()
+            attributes[field] = value
+    if job_id:
+        jobs.append(_job_info(job_id, attributes))
     return jobs
+
+
+def _job_info(job_id: str, attributes: dict[str, str]) -> JobInfo:
+    """One parsed job from its `qstat -f` attribute block."""
+    exit_status = attributes.get("Exit_status")
+    return JobInfo(
+        job_id=job_id,
+        name=attributes.get("Job_Name", ""),
+        state=parse_job_state(attributes.get("job_state", PbsState.QUEUED)),
+        queue=attributes.get("queue", ""),
+        exit_status=int(exit_status) if exit_status is not None else None,
+        estimated_start=attributes.get("estimated.start_time", ""),
+        comment=attributes.get("comment", ""),
+    )
 
 
 def bare(handle: str) -> str:
@@ -198,11 +219,11 @@ class Pbs:
     ) -> str:
         del args  # PBS scripts are self-contained; qsub takes no free-form positional args.
         flags = build_qsub_flags(resources)
-        # qsub runs from the workspace root, not the login shell's home: the staged script path
-        # is workspace-relative, and the generated script cds to PBS_O_WORKDIR, which is wherever
-        # qsub was invoked. A host whose home happens to be the root hid this; Miyabi's /work
-        # root did not.
-        command = f"cd {shlex.quote(root)} && " + shlex.join(["qsub", *flags, script])
+        # qsub runs from the tree the dispatch pinned, not the login shell's home: the staged
+        # script path is workspace-relative, and the generated script cds to PBS_O_WORKDIR, which
+        # is wherever qsub was invoked. A host whose home happens to be the root hid this;
+        # Miyabi's /work root did not.
+        command = within(root, shlex.join(["qsub", *flags, script]))
         retcode, out, err = remote["bash"][["-lc", command]].run(retcode=None)
         handle = out.strip().splitlines()[-1] if out.strip() else ""
         if not handle[:1].isdigit():
@@ -224,7 +245,22 @@ class Pbs:
             state=str(job.state),
             exit_code=job.exit_status,
             verdict=pbs_verdict(str(job.state), job.exit_status),
+            note=Pbs.__waiting(job),
         )
+
+    @staticmethod
+    def __waiting(job: JobInfo) -> str:
+        """Why a job that has not started has not started, empty once it is running.
+
+        The server's own estimate first, since a start time is what somebody watching an empty
+        log actually wants, and its comment otherwise, which is where PBS says which resource
+        the queue is short of.
+        """
+        if job.state not in _PBS_PENDING:
+            return ""
+        if job.estimated_start:
+            return f"estimated start {job.estimated_start}"
+        return job.comment
 
     def __query(
         self, remote: Machine, command: str, handles: Sequence[str]

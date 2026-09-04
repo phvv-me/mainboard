@@ -7,6 +7,12 @@
 # other verb is a `Capability` a backend opts into by inheriting it. A caller therefore asks
 # `isinstance(backend, LogSource)` before asking for a log, instead of calling and discovering
 # mid-sweep that this provider never had one.
+#
+# Nothing here pins a source tree, and that is not an omission. A provider rents a machine per
+# job and ships that job its own tree, which no later dispatch can reach, so the immutability the
+# ssh family buys with a per-dispatch snapshot of its mirror a provider already has by
+# construction. The snapshot machinery is therefore the mirror's, not the dispatch's, and lives
+# beside the mirror in `dispatch.snapshots`.
 
 import abc
 import os

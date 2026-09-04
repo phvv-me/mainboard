@@ -92,6 +92,10 @@ class JobState(FrozenModel):
     state: the backend's current state string, or None when the job vanished.
     exit_code: the process exit status, when the backend reports one.
     verdict: one word, `ok` / `failed` / `running` / `vanished` / `unknown` / `timeout`.
+    note: what the backend says about a job that has not started yet, such as the start time a
+        queue estimates or the resource it is short of. Empty for a job that is running, for one
+        that has finished, and for every backend that reports neither, since this is the answer
+        to "when", not to "what happened".
     """
 
     handle: HandleId
@@ -99,3 +103,4 @@ class JobState(FrozenModel):
     state: str | None = None
     exit_code: int | None = None
     verdict: str
+    note: str = ""

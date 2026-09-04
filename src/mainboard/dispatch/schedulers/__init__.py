@@ -7,6 +7,7 @@ from .base import (
     login_run,
     read_log,
     short_reason,
+    standing,
     verdict_line,
 )
 from .local import Local
@@ -32,5 +33,6 @@ __all__ = [
     "read_log",
     "short_reason",
     "slurm_verdict",
+    "standing",
     "verdict_line",
 ]

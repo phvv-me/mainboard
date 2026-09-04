@@ -64,6 +64,48 @@ Job Id: 2.opbs
     assert parse_qstat_full("") == []
 
 
+def test_qstat_full_reads_when_a_queued_job_will_start_and_rejoins_a_wrapped_comment() -> None:
+    """An empty log on a queued job says nothing; the server's own estimate says everything."""
+    record = """Job Id: 3289319.opbs
+    Job_Name = mainboard
+    job_state = Q
+    queue = short-g
+    comment = Not Running: Insufficient amount of resource: ngpus (R: 8 A: 0 T
+\t: 8)
+    estimated.start_time = Thu Sep  4 14:00:00 2026
+"""
+    [queued] = parse_qstat_full(record)
+    assert queued.estimated_start == "Thu Sep  4 14:00:00 2026"
+    assert queued.comment == "Not Running: Insufficient amount of resource: ngpus (R: 8 A: 0 T: 8)"
+
+
+@pytest.mark.parametrize(
+    ("state", "estimated", "comment", "note"),
+    [
+        (
+            "Q",
+            "Thu Sep  4 14:00:00 2026",
+            "Not Running: ...",
+            "estimated start Thu Sep  4 14:00:00 2026",
+        ),
+        ("Q", "", "Not Running: Insufficient ngpus", "Not Running: Insufficient ngpus"),
+        ("R", "Thu Sep  4 14:00:00 2026", "", ""),
+    ],
+)
+def test_a_probe_carries_when_a_job_will_start_only_while_it_has_not_started(
+    state: str, estimated: str, comment: str, note: str
+) -> None:
+    """A running job's estimate is history, so only a pending one answers "when"."""
+    record = f"""Job Id: 3289319.opbs
+    job_state = {state}
+    queue = short-g
+    comment = {comment}
+    estimated.start_time = {estimated}
+"""
+    remote = machine_with(record)
+    assert Pbs().state(remote, "/repo", handle="3289319").note == note
+
+
 @given(
     resources=st.builds(
         Resources,

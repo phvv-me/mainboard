@@ -21,6 +21,7 @@ from . import vocabulary
 from .jobs import JobSpec
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, db_file, git, logger, now, state_path, workspace
+from .snapshots import Snapshots, source_key
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
@@ -47,7 +48,9 @@ class Handle(FrozenModel):
         would otherwise fail validation deep inside a status poll.
     host: the ssh alias the job runs on, or the declared alias of the provider host it was
         rented for.
-    root: the workspace root on that host, empty for a provider that syncs no workspace.
+    root: the mirror's workspace root on that host, empty for a provider that syncs no
+        workspace. The mirror rather than the snapshot the job runs from, since this is what a
+        later log read, results pull and post-mortem address, and it outlives the snapshot.
     kind: the kind used at submit time, a scheduler's (`pbs` / `slurm` / `ssh` / `local`) or a
         provider's (`vast` / `hpc-ai` / `modal`), which is what routes a later probe back to
         whichever of the two answered for this run.
@@ -188,6 +191,18 @@ class Dispatcher:
         given = Path(path).expanduser()
         return given if given.is_absolute() else self.root / given
 
+    def pinned(self, root: str, *, source: str) -> str:
+        """Where on `root`'s host a job dispatched from `source` runs: that tree's snapshot.
+
+        Path arithmetic alone, so a dispatch can render the job script that activates and runs
+        from this directory before it opens the connection that materialises it. `submit` is
+        what creates it, from the same key.
+
+        root: the workspace root on the host, the mirror the snapshot is taken from.
+        source: the dispatching tree's identity, as the job's receipts carry it.
+        """
+        return Snapshots(root).path(source_key(self.root, source=source))
+
     def probe(self, handle: Handle) -> JobState | None:
         """One non-blocking scheduler probe of `handle`, the read a status view wants.
 
@@ -201,6 +216,35 @@ class Dispatcher:
             logger.warning("%s unreachable, retrying: %s", handle.id, down)
             return None
 
+    def prune_sources(self) -> dict[str, list[str]]:
+        """Drop every pinned source tree no job still owed an outcome runs from, host by host.
+
+        The counterpart of the pin, and the reason a snapshot is affordable: a tree is kept
+        while any run recorded against its host still owes a verdict, the newest few are kept
+        whatever the registry says (a job dispatched since the last sweep has no resolved record
+        yet), and the rest are removed. A host that will not answer keeps its trees and is tried
+        again next sweep, since deleting nothing is always the safe half of this operation.
+
+        Reads only durable state, so the sweep that runs it settles trees it never dispatched,
+        which is the point of running it from a cron rather than from the dispatching process.
+        """
+        live: dict[str, set[str]] = {}
+        for run in self.cache.tracked():
+            live.setdefault(run.target, set()).add(run.source)
+        removed: dict[str, list[str]] = {}
+        for setup in self.cache.hosts():
+            if not setup.mirrored_at or not setup.root:
+                continue
+            try:
+                with connection(setup.host) as remote:
+                    dropped = Snapshots(setup.root).prune(remote, live=live.get(setup.host, set()))
+            except (HostUnreachable, OSError) as quiet:
+                logger.warning("could not prune snapshots on %s: %s", setup.host, quiet)
+                continue
+            if dropped:
+                removed[setup.host] = dropped
+        return removed
+
     def rsync_up(
         self,
         plan: ExecutionPlan,
@@ -209,7 +253,7 @@ class Dispatcher:
         ssh: SshTransport | None = None,
         required: Sequence[Sequence[str]] = (),
         extra: Sequence[str] = (),
-    ) -> None:
+    ) -> list[str]:
         """Mirror the workspace to `plan.host`; git-ignored files and the denylist skipped.
 
         The workspace and nested `.gitignore` files are the primary send and delete boundary;
@@ -282,6 +326,7 @@ class Dispatcher:
                     error, plan.host, required_paths, extra=extra
                 )
         self.cache.mark_synced(plan.host)
+        return include
 
     def run(
         self,
@@ -303,6 +348,12 @@ class Dispatcher:
 
         Renders a PBS or bash job script (whichever `plan.profile.kind` calls for), wraps `cmd`
         in the container runtime when `plan.containerized`, submits it, and returns a `Handle`.
+
+        The script activates and runs from the snapshot of the mirror this dispatch pins, not
+        from the mirror itself, so a later dispatch of a different tree cannot change the code
+        underneath a job that is already queued or running. The handle still names the mirror,
+        which is where the logs and the results are and where they stay once the snapshot is
+        pruned.
 
         plan: the resolved execution context (host, profile, env, container).
         cmd: the command the generated job runs.
@@ -327,10 +378,11 @@ class Dispatcher:
                     "builder was given"
                 )
             container_command = shlex.join(containerize(["bash", "-c", cmd]))
+        source = source_of(cmd, self.root)
         spec = JobSpec(
             cmd=cmd,
             plan=plan,
-            root=root,
+            root=self.pinned(root, source=source),
             queue=resources.queue or "",
             walltime=resources.walltime or "",
             select=resources.nodes,
@@ -340,7 +392,7 @@ class Dispatcher:
             container_command=container_command,
             sampler=sampler,
             attestation=attestation,
-            source=source_of(cmd, self.root),
+            source=source,
             exports=plan.exports,
         )
         script = self.write_job_script(
@@ -356,6 +408,7 @@ class Dispatcher:
             fetch=fetch,
             name=name,
             node=node,
+            source=source,
             containerize=containerize,
         )
         return Handle(
@@ -417,9 +470,10 @@ class Dispatcher:
         fetch: str | None = None,
         name: str = "",
         node: str = "",
+        source: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
     ) -> str:
-        """Ship the workspace, admit the request, dispatch `script`, and return the handle.
+        """Ship the workspace, pin the tree it runs from, dispatch `script`, return the handle.
 
         Admission runs before any ssh connection, so a request the queue's declared policy
         would reject fails at once instead of after a round trip. `verify` then proves the
@@ -427,6 +481,15 @@ class Dispatcher:
         a clear diagnosis before the scheduler ever sees the job. The dispatched run is recorded
         with its git provenance, so a later poll resolves it without re-deriving anything.
 
+        Between the two, the mirror this transfer just brought up to date is snapshotted and the
+        scheduler is pointed at that snapshot rather than at the mirror. The mirror is what stays
+        cheap to sync and what every log read, results pull and post-mortem keeps addressing;
+        the snapshot is what the job runs from, and it is immutable, so the next dispatch of
+        another tree rewrites the mirror under nobody.
+
+        source: the dispatching tree's identity, the string the job's receipts carry; the
+            snapshot is keyed on it, so two dispatches of one tree share one. Derived from the
+            workspace when a caller submitting a hand-written script names none.
         containerize: builds the container runtime argv around `["bash", "-c", verify]`; required
             when `plan.containerized`, so the verify preflight runs inside the same base image a
             job would.
@@ -437,15 +500,25 @@ class Dispatcher:
             walltime=resources.walltime or "",
             mem_gb=resources.mem_gb or 0,
         )
+        identity = source or source_of("", self.root)
+        key = source_key(self.root, source=identity)
         prepared, staged = self._prepare_script(script)
-        self.rsync_up(plan, root, required=required, extra=staged)
+        shipped = self.rsync_up(plan, root, required=required, extra=staged)
         sha = git("rev-parse", "--short", "HEAD")
         dirty = bool(git("status", "--porcelain"))
         with connection(plan.host) as remote:
             self._verify(remote, plan, root, verify=verify, containerize=containerize)
+            pinned = Snapshots(root).pin(
+                remote,
+                key=key,
+                sources=shipped,
+                results=fetch or "",
+                filters=self.sync.filters,
+                exclude=[*self.sync.excludes, *plan.profile.sync.exclude],
+            )
             try:
                 handle = pick(plan.profile).submit(
-                    remote, root, script=prepared, args=args, resources=resources
+                    remote, pinned, script=prepared, args=args, resources=resources
                 )
             except SystemExit as error:
                 raise SystemExit(f"submission to host {plan.host!r} failed: {error}") from None
@@ -462,6 +535,7 @@ class Dispatcher:
                 fetch_path=fetch,
                 name=name,
                 node=node,
+                source=key,
             )
         )
         logger.info(

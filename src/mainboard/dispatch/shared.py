@@ -17,6 +17,28 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def since(stamp: str) -> str:
+    """How long ago `stamp` was, as a compact `3h12m`, empty when it names no instant.
+
+    A stamp with no offset is read as UTC rather than as this machine's local clock, since every
+    line this workspace writes is aware and reading one locally would invent a whole timezone's
+    worth of waiting.
+    """
+    try:
+        moment = datetime.fromisoformat(stamp)
+    except ValueError:
+        return ""
+    aware = moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    days, rest = divmod(max(0, int((datetime.now(UTC) - aware).total_seconds())), 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes}m"
+    return f"{minutes}m{seconds}s" if minutes else f"{seconds}s"
+
+
 def git(*args: str) -> str:
     """Stripped stdout of a local `git` command, the provenance of whatever is being recorded.
 

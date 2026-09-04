@@ -1,7 +1,9 @@
 """The default ssh backend: jobs go to `pueue` (queue + exit codes + captured logs).
 
-`submit` enqueues the rendered job script as one shell command with the host's workspace root as
-the working directory; `state` resolves a handle against a single `pueue status` snapshot.
+`submit` enqueues the rendered job script as one shell command with the tree the dispatch pinned
+as the working directory, which is how a pueue job runs from an immutable copy of the mirror
+rather than from the mirror itself; `state` resolves a handle against a single `pueue status`
+snapshot.
 """
 
 import json
