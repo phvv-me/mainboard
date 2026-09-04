@@ -726,14 +726,15 @@ def test_a_rental_is_created_waiting_for_a_landing_rather_than_running_the_comma
     monkeypatch.setattr(vast_module, "reachable", lambda endpoint, *, sleeper: endpoint)
     backend = rental_backend(running())
     rental = backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00", gpus=1))
-    search, create, attach = backend.transport.bodies[:3]
+    attached = backend.transport.urls.index(f"{_ROOT}/instances/4242/ssh/")
+    search, create = backend.transport.bodies[:2]
+    attach = backend.transport.bodies[attached]
     assert search["dph_total"] == {"lte": pytest.approx(1.0 * 3600 / (1800 + LANDING_SECONDS))}
     assert create["runtype"] == "ssh" and "args" not in create
     assert create["image"] == "vastai/base-image:cuda-13.3.1-auto"
     assert waiting() in create["onstart"]
     assert create["onstart"].endswith(f"echo {_MARKER}$status\nexit $status\n")
     assert attach == {"ssh_key": "ssh-ed25519 AAAA me@here"}
-    assert backend.transport.urls[2] == f"{_ROOT}/instances/4242/ssh/"
     assert rental.handle == "4242"
     assert rental.endpoint.destination == "root@ssh5.vast.ai"
     assert (rental.endpoint.port, rental.endpoint.identity) == (41022, str(key))
@@ -761,7 +762,7 @@ def test_a_provider_that_will_not_take_the_key_refuses_before_anything_is_landed
     """An instance nobody can log into is a rental that bills for a landing that cannot happen."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     keypair(tmp_path)
-    backend = vast_backend(_OFFERS, _CREATED, refused(403), {})
+    backend = vast_backend(_OFFERS, _CREATED, running(), refused(403), {})
     with pytest.raises(MissionError, match="cloud.vast.ai/manage-keys"):
         backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"))
     assert backend.transport.calls[-1].get_method() == "DELETE"

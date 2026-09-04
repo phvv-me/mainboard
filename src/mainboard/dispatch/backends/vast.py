@@ -433,9 +433,15 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         return Rental(handle=handle, endpoint=endpoint)
 
     def opened(self, handle: str, *, key: Identity) -> Endpoint:
-        """Attach this workspace's key to `handle` and answer once ssh really lets us in."""
+        """Answer once ssh really lets us onto `handle`, its key attached as soon as it is up.
+
+        The key goes on after the machine is running rather than at create time, because that is
+        when there is an instance to copy it into, and the knocking that follows is what absorbs
+        the seconds it takes to reach the container's own authorized keys.
+        """
+        endpoint = self.endpoint(handle, key=key.private)
         self.attach(handle, key=key.public)
-        return reachable(self.endpoint(handle, key=key.private), sleeper=self.sleeper)
+        return reachable(endpoint, sleeper=self.sleeper)
 
     def rented(self, offer: Mapping, *, plan: ExecutionPlan, launch: dict) -> str:
         """Create the instance for `offer`, returning the contract id that starts the meter.
