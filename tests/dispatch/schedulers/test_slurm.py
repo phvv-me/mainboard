@@ -193,3 +193,28 @@ def test_an_interactive_allocation_reuses_the_batch_flags_and_can_carry_a_comman
     assert Slurm().interactive(env="default", command=("pwd",), resources=Resources()) == (
         "srun --pty pwd"
     )
+
+
+@pytest.mark.parametrize(
+    ("state", "code", "verdict"),
+    [
+        ("COMPLETED", "0:0", "ok"),
+        ("FAILED", "1:0", "failed"),
+        ("TIMEOUT", "0:15", "failed"),
+        ("CANCELLED by 1000", "0:0", "failed"),
+        ("OUT_OF_MEMORY", "0:9", "failed"),
+    ],
+)
+def test_a_slurm_job_the_cluster_has_finished_reads_as_finished_and_not_as_its_token(
+    state: str, code: str, verdict: str
+) -> None:
+    """Every ending SLURM reports is the one moment a listing calls `finished`, not five words."""
+    probed = Slurm().state(machine_with(f"77|{state}|{code}\n"), "/repo", handle="77")
+    assert probed.verdict == verdict
+    assert probed.phase == "finished"
+
+
+def test_a_slurm_job_the_cluster_is_still_running_keeps_its_own_word() -> None:
+    """A backend that maps no stage still says more than nothing while the job is in flight."""
+    listed = Slurm().states(machine_with("78|train|RUNNING|gpu|00:01:00\n"), "/repo", ["78"])
+    assert listed["78"].phase == "RUNNING"

@@ -228,3 +228,22 @@ def test_an_interactive_allocation_reuses_the_batch_flags_and_takes_no_command()
     )
     with pytest.raises(MissionError, match="runs no command of its own"):
         Pbs().interactive(env="default", command=("true",), resources=resources)
+
+
+@pytest.mark.parametrize("state", ["F", "E"])
+def test_a_pbs_job_the_queue_has_finished_reads_as_finished_and_not_as_its_letter(
+    state: str,
+) -> None:
+    """`F` beside `queued` and `running` was read as failed by the operator it was shown to.
+
+    The queue is done with the job and the sweep has not settled it yet, which is one moment
+    with one name, so the letter never reaches a listing (handle 3294174, 2026-09-04).
+    """
+    record = f"""Job Id: 3294174.opbs
+    job_state = {state}
+    queue = short-g
+    Exit_status = 0
+"""
+    probed = Pbs().state(machine_with(record), "/repo", handle="3294174")
+    assert (probed.state, probed.verdict) == (state, "ok")
+    assert probed.phase == "finished"

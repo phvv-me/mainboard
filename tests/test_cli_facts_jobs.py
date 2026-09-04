@@ -216,6 +216,24 @@ def test_a_live_wave_is_shown_whole_and_its_host_asked_once_for_all_of_it(
     assert trips == [["L2", "L1", "L0"]]
 
 
+def test_a_live_job_its_queue_has_finished_is_named_rather_than_spelled_with_a_letter(
+    depot: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PBS job that finished clean showed as `F` beside `queued` and was read as failed.
+
+    The sweep has not settled it yet, which is a real and nameable moment, so the column says so
+    instead of handing the reader a backend's own letter to interpret (handle 3294174).
+    """
+    seed_run(
+        "3294174", submitted_at="2026-09-04T00:00:00", target=_CLUSTER, kind="pbs", verdict=None
+    )
+    answering(monkeypatch, JobState(handle="", state="F", exit_code=0, verdict="ok"))
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["jobs", "--json"])
+    [listed] = json.loads(capsys.readouterr().out)
+    assert listed["state"] == "finished"
+
+
 def test_a_listing_that_leaves_runs_out_says_so_instead_of_stopping_quietly(
     depot: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

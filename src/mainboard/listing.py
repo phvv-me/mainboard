@@ -92,12 +92,13 @@ class Listing:
     def flying(record: RunRecord, state: JobState | None) -> JobRow:
         """One live run's row, from what its host just said or from the cache when it went quiet.
 
-        The state column is the lifecycle's own live word where the backend maps onto it, since
-        `queued` and `running` are the distinction a person is reading this table for; the raw
-        state the backend spells it with stands in until then (`Q` on PBS, `Queued` in a pueue
-        status), and a host that answered nothing leaves the cache's memory of it.
+        The state column is the lifecycle's own live word, `queued`, `running`, or `finished`
+        for a job whose queue is done with it and whose sweep has not settled it yet, since those
+        are the distinctions a person is reading this table for. A backend that maps neither
+        stage onto the lifecycle leaves its own raw word (`Queued` in a pueue status), and a host
+        that answered nothing leaves the cache's memory of it.
         """
-        live = (state.stage or state.state or "") if state else ""
+        live = state.phase if state else ""
         return JobRow(
             state=live or record.state or vocabulary.UNKNOWN,
             host=record.target,

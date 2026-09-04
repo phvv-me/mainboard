@@ -175,3 +175,16 @@ def test_cancel_leaves_an_unknown_handle_and_a_state_this_codebase_never_heard_o
     untouched = machine_with(status_json())
     Pueue().cancel(untouched, "/repo", handle="0")
     assert untouched.calls == []
+
+
+@pytest.mark.parametrize(("result", "verdict"), [("Success", "ok"), ("Killed", "failed")])
+def test_a_pueue_task_the_daemon_has_finished_reads_as_finished_whatever_it_ended_as(
+    result: str, verdict: str
+) -> None:
+    """The same moment PBS spells `F` and SLURM spells `CD`, named the same way in the listing."""
+    listed = status_json({"id": 4, "label": "job", "status": {"Done": {"result": result}}})
+    probed = Pueue().state(machine_with(listed), "/repo", handle="4")
+    assert (probed.state, probed.verdict) == ("Done", verdict)
+    assert probed.phase == "finished"
+    live = status_json({"id": 5, "label": "job", "status": {"Running": {}}})
+    assert Pueue().state(machine_with(live), "/repo", handle="5").phase == "Running"

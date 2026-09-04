@@ -14,6 +14,11 @@ POLL_SECONDS = 5.0
 
 QUEUED = "queued"
 RUNNING = "running"
+# The third live word, and the only one no backend reports for itself: the queue is done with the
+# job and the durable sweep has not brought it home yet. Without it a listing printed whatever
+# letter the backend spells that moment with, so a PBS job that finished clean showed as `F`
+# beside `queued` and `running` and was read as failed (handle 3294174, 2026-09-04).
+FINISHED = "finished"
 OK = "ok"
 FAILED = "failed"
 VANISHED = "vanished"
@@ -25,15 +30,20 @@ TIMEOUT = "timeout"
 # beside a crash teaches a reader to distrust the column. It is reachable from both live states,
 # since the whole point of cancelling is that it does not wait for the job to start.
 CANCELLED = "cancelled"
+# A dispatch a target refused for having too many jobs already, kept at this workstation until
+# the quota has room. It is not a verdict about the work, which has not started: it is where the
+# request is waiting, so it stays out of `TERMINAL` and a sweep asks again on its next pass.
+HELD = "held"
 # A job a plan declared and a run was told to leave out. Like `cancelled` it is a decision rather
 # than something that happened, and it is terminal from the start: nothing was ever dispatched, so
 # nothing about it can move and no watch may wait on it.
 SKIPPED = "skipped"
 
-# Declared edges: queued -> running/vanished/cancelled, running -> one terminal. Every terminal
-# maps to the empty set, so a further move (a stale `running` after `ok`) raises rather than
-# mutates.
+# Declared edges: held -> queued once a quota lets it through, queued -> running/vanished/
+# cancelled, running -> one terminal. Every terminal maps to the empty set, so a further move (a
+# stale `running` after `ok`) raises rather than mutates.
 VERDICTS: dict[str, set[str]] = {
+    HELD: {QUEUED, RUNNING, FAILED, VANISHED, CANCELLED},
     QUEUED: {RUNNING, VANISHED, CANCELLED},
     RUNNING: {OK, FAILED, VANISHED, TIMEOUT, CANCELLED},
     OK: set(),
@@ -124,3 +134,24 @@ class JobState(FrozenModel):
     since: str = ""
     estimated_start: str = ""
     note: str = ""
+
+    @property
+    def phase(self) -> str:
+        """The one word a listing shows for a job it has just asked its backend about.
+
+        The backend's own `stage` while the job is in flight, since `queued` and `running` are
+        the distinction a person reads the table for. Past that every backend has a moment the
+        queue is done with the job and the sweep has not settled it yet, and each spells it with
+        a different letter, `F` or `E` on PBS, `CD`, `TO` or `CA` on SLURM, `Done` in a pueue
+        status. Printing the letter is how a job that finished clean was read as failed, so the
+        moment is named once here rather than mapped three times: a terminal verdict nobody has
+        brought home yet is `finished`, and the verdict itself lands on the row one sweep later.
+
+        A live state a backend reports no stage for keeps that backend's own word, which is
+        still more than nothing while a backend has yet to map its live states onto the two.
+        """
+        if self.stage:
+            return self.stage
+        if self.verdict in TERMINAL:
+            return FINISHED
+        return self.state or ""
