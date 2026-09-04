@@ -14,6 +14,7 @@ from .core.project import Project
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .doctor import Verdict
+from .listing import Listing
 from .manifest.loading import load
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
 
@@ -1023,30 +1024,30 @@ def build(root: Path | None = None) -> App:
     def jobs(
         *, limit: int = 20, json: bool = False, agent: bool = False, fields: str = ""
     ) -> None:
-        """List recently dispatched jobs from the shared dispatch cache.
+        """List every dispatched job still in flight, then the most recently settled ones.
 
-        limit: how many recent runs to show, newest first.
+        A live job is never left out and never answered from memory. Each host is asked once
+        about every run it still owes an answer on, one `qstat`, one `squeue`, one `pueue
+        status`, so a wave of thirty five says which of them are running and which are queued
+        behind them, since when, and where the scheduler estimates a start. The limit bounds only
+        the settled tail, and a listing that had to leave anything out says so on stderr rather
+        than stopping quietly at twenty rows.
+
+        limit: how many settled runs to show behind the live ones, newest first.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over state/host/name/handle/submitted_at.
+        fields: a comma-separated projection over state/host/name/handle/since/starts.
         """
-        recent = board("local").dispatcher.cache.recent(limit)
-        payloads = [
-            {
-                "state": run.state,
-                "host": run.target,
-                "name": run.name,
-                "handle": run.handle,
-                "submitted_at": run.submitted_at,
-            }
-            for run in recent
-        ]
+        with progress("asking every host about its live jobs"):
+            listed = Listing(board("local"), limit=limit).taken()
         rows(
-            payloads,
+            [row.model_dump() for row in listed.rows],
             mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
+            fields=_fields(fields) or _JOB_COLUMNS,
             title="jobs",
         )
+        if listed.note:
+            print(listed.note, file=sys.stderr)
 
     return app
 
@@ -1054,6 +1055,10 @@ def build(root: Path | None = None) -> App:
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
 _HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
+
+# The columns the job listing always carries, so a cache nobody has dispatched from still renders
+# its heading, and so a settled row's empty live columns line up under the live rows' own.
+_JOB_COLUMNS = ("state", "host", "name", "handle", "since", "starts", "submitted_at")
 
 # The columns each batch table carries, named here so an empty batch still renders its heading and
 # so the totals row is summed over the same shape the rows are printed in.

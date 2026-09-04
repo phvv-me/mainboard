@@ -86,12 +86,26 @@ class Resources(FrozenModel):
 class JobState(FrozenModel):
     """A job's post-mortem state, the unit reconcile compares against the cache.
 
+    The last three fields are what a listing shows about a job that has not ended yet. A verdict
+    says `running` for everything still in flight, which is the right word for a lifecycle and
+    the wrong one for a table: an operator watching a wave of thirty five needs to see that two
+    are running and thirty three are waiting behind them, and that is the same fact on PBS, on
+    SLURM and in a pueue queue. So the two live words, when each began, and where a backend
+    estimates a start, are named here once rather than parsed out of each backend's own spelling
+    by whoever reads it.
+
     handle: the backend's job handle (PBS job id, pueue task id, SLURM job id, a provider run
         id), always text even when its backend reports a bare number.
     label: the job's name/label, when the backend reports one.
     state: the backend's current state string, or None when the job vanished.
     exit_code: the process exit status, when the backend reports one.
     verdict: one word, `ok` / `failed` / `running` / `vanished` / `unknown` / `timeout`.
+    stage: `queued` or `running` for a job still in flight, the backend's own state word mapped
+        onto the two this vocabulary names; empty where a backend reports neither.
+    since: ISO-8601 instant the backend says the job entered that stage, empty where it says
+        nothing about when.
+    estimated_start: ISO-8601 instant the backend expects a queued job to start, empty where it
+        estimates none, which most backends do most of the time.
     """
 
     handle: HandleId
@@ -99,3 +113,6 @@ class JobState(FrozenModel):
     state: str | None = None
     exit_code: int | None = None
     verdict: str
+    stage: str = ""
+    since: str = ""
+    estimated_start: str = ""
