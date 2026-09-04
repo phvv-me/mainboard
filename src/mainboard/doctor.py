@@ -288,8 +288,8 @@ class Doctor:
         """
         provisioner = Provisioner(self.board.root, self.board.manifest)
         prefix = provisioner.pixi_for().env_prefix("default")
-        root = prefix.relative_to(provisioner.environment_dir()).parts[0]
-        superseded = provisioner.out / root
+        held = prefix.relative_to(provisioner.environment_dir()).parts[0]
+        superseded = provisioner.out / held
         if not superseded.is_dir():
             return Section(
                 section="layout",
