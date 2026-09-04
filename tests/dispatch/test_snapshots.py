@@ -128,7 +128,7 @@ def test_pinning_copies_the_shipped_set_by_hardlink_and_links_the_rest_back(
     assert (
         'ln -s "$mb_root"/research/compression/raw "$mb_snap"/research/compression/raw'
     ) in program
-    assert program.endswith(f"printf '%s\\n' abc1234 > \"$mb_snap/{STAMP}\"")
+    assert program.endswith(f"printf '%s\\n' abc1234 > \"$mb_snap/{STAMP}\"; fi")
 
 
 def test_pinning_a_tree_the_host_could_not_build_refuses_instead_of_dispatching_into_it(
