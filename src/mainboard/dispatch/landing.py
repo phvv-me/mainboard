@@ -174,8 +174,8 @@ class Landing:
 
         remote: the open connection to the machine.
         """
-        found, _, _ = remote["bash"][["-lc", "command -v rsync"]].run(retcode=None)
-        if not found:
+        retcode, _, _ = remote["bash"][["-lc", "command -v rsync"]].run(retcode=None)
+        if retcode == 0:
             return
         self.watch("installing rsync on the rental")
         install = "apt-get update -qq && apt-get install -y -qq rsync"
