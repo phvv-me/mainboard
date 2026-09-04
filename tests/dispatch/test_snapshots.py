@@ -109,22 +109,26 @@ def test_pinning_copies_the_shipped_set_by_hardlink_and_links_the_rest_back(
     )
     assert pinned == "/work/projects/.mainboard/dispatch/sources/abc1234"
     [program] = remote.lines
-    assert f"if [ -f {pinned}/{STAMP} ]; then exit 0; fi" in program
-    assert "cd /work/projects" in program
+    assert "mb_root=/work/projects" in program
+    assert f"mb_snap={pinned}" in program
+    assert f'if [ -f "$mb_snap/{STAMP}" ]; then exit 0; fi' in program
     assert "--link-dest=/work/projects/" in program
     assert "rsync -aR" in program
     assert "research/compression mainboard.toml" in program
-    # Every container directory the copy created is filled from the mirror, which is what puts
-    # `.mainboard/` (the environment, the logs, the staged script) back within the job's reach.
+    # The generated tree is rebuilt as this snapshot's own so a job recompiling its manifest
+    # writes here rather than over the description every other job on the host activates through.
+    assert 'mkdir -p "$mb_snap"/.mainboard/envs' in program
+    assert 'if [ -d "$e" ]; then ln -s "$e" "$mb_snap/$d/$n"; else ln "$e"' in program
+    # Every container directory the copy created is then filled from the mirror, which is what
+    # puts the data directories and the ancestor ignore files back within the job's reach.
     assert "for d in . research; do" in program
-    assert 'ln -s "$e"' in program
+    assert 'ln -s "$e" "$mb_snap/$d/$n"' in program
     # The declared results path is a symlink back to the mirror, so what the job writes there is
     # what the pull already goes looking for.
     assert (
-        f"ln -s /work/projects/research/compression/raw {pinned}/research/compression/raw"
-        in program
-    )
-    assert program.endswith(f"printf '%s\\n' abc1234 > {pinned}/{STAMP}")
+        'ln -s "$mb_root"/research/compression/raw "$mb_snap"/research/compression/raw'
+    ) in program
+    assert program.endswith(f"printf '%s\\n' abc1234 > \"$mb_snap/{STAMP}\"")
 
 
 def test_pinning_a_tree_the_host_could_not_build_refuses_instead_of_dispatching_into_it(
@@ -175,8 +179,12 @@ def _mirror(root: Path) -> None:
     (root / "research/data").mkdir()
     (root / "research/data/corpus.txt").write_text("corpus\n", encoding="utf-8")
     (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    (root / ".mainboard/envs/default").mkdir(parents=True)
-    (root / ".mainboard/envs/default/marker").write_text("env\n", encoding="utf-8")
+    (root / ".mainboard/envs/default/.pixi/envs/default").mkdir(parents=True)
+    (root / ".mainboard/envs/default/.pixi/envs/default/marker").write_text(
+        "env\n", encoding="utf-8"
+    )
+    (root / ".mainboard/envs/default/pixi.toml").write_text("[workspace]\n", encoding="utf-8")
+    (root / ".mainboard/dispatch/logs").mkdir(parents=True)
 
 
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
@@ -201,8 +209,15 @@ def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
     assert frozen.stat().st_ino == (root / "research/compression/pkg/mod.py").stat().st_ino
     # The environment and the data directory are reached live, and the results path points back
     # at the mirror, which is where the pull already looks.
-    assert (pinned / ".mainboard").is_symlink()
-    assert (pinned / ".mainboard/envs/default/marker").read_text(encoding="utf-8") == "env\n"
+    assert (pinned / ".mainboard/envs/default/.pixi").is_symlink()
+    assert (pinned / ".mainboard/dispatch").is_symlink()
+    marker = pinned / ".mainboard/envs/default/.pixi/envs/default/marker"
+    assert marker.read_text(encoding="utf-8") == "env\n"
+    # The generated manifest is hardlinked rather than symlinked, so the job's own tooling
+    # recompiles it into this snapshot instead of over the mirror's copy.
+    generated = pinned / ".mainboard/envs/default/pixi.toml"
+    assert not generated.is_symlink()
+    assert generated.stat().st_ino == (root / ".mainboard/envs/default/pixi.toml").stat().st_ino
     assert (pinned / "research/data").is_symlink()
     assert (pinned / "research/compression/raw").resolve() == root / "research/compression/raw"
 
@@ -229,3 +244,26 @@ def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding
     (pinned / "research/compression/pkg/mod.py").unlink()
     assert snapshots.pin(local, key="abc1234", sources=["research/compression"]) == str(pinned)
     assert not (pinned / "research/compression/pkg/mod.py").exists()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors(
+    committed: None, tmp_path: Path
+) -> None:
+    """A generated manifest carries the root it was compiled for, so a pinned tree recompiles one.
+
+    Which means the write has to land here. The mirror's copy is what every other job on the
+    host activates through, and the tools that write these files replace them rather than edit
+    them, so a hardlink is exactly the right shape: the snapshot's entry moves to its own inode
+    and nobody else's job notices.
+    """
+    del committed
+    root = tmp_path / "projects"
+    _mirror(root)
+    pinned = Path(Snapshots(str(root)).pin(local, key="abc1234", sources=["research/compression"]))
+    generated = pinned / ".mainboard/envs/default/pixi.toml"
+    mirrored = root / ".mainboard/envs/default/pixi.toml"
+    replacement = generated.with_suffix(".toml.tmp")
+    replacement.write_text("[workspace]\nname = 'pinned'\n", encoding="utf-8")
+    replacement.replace(generated)
+    assert generated.read_text(encoding="utf-8") != mirrored.read_text(encoding="utf-8")

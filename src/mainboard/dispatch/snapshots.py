@@ -9,6 +9,13 @@
 # and the dispatch's own results path are symlinks back to the mirror, so a job in a snapshot
 # activates the mirror's environment, writes its log where every later read already looks, and
 # leaves its results where the pull already goes.
+#
+# The generated tree is the one place those two worlds meet, and it is the one place a symlink
+# is not enough. A workspace's generated manifest carries the root it was compiled for, and the
+# tool resolves that manifest through the directory it is standing in, so a snapshot whose
+# generated tree were a symlink would send every task back to the mirror it points at and pin
+# nothing. Its directories are therefore real here, its files hardlinked, and only the installed
+# artifacts under them symlinked, which pins the tree while leaving one environment for the host.
 
 import hashlib
 import re
@@ -16,6 +23,7 @@ import shlex
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from ..core.project import Project
 from .shared import git, logger, state_dir
 from .sync import Rsync, rsync_argv
 from .transport import HostUnreachable, is_transport_failure
@@ -201,16 +209,16 @@ class Snapshots:
         filters: Sequence[str],
         exclude: Sequence[str],
     ) -> str:
-        """The shell that builds one snapshot: copy the source, link back everything else.
+        """The shell that builds one snapshot, in the order the phases have to happen.
 
-        Three phases in the order they have to happen. The shipped paths are hardlinked in with
-        the mirror as `--link-dest`, under the same filter rules the transfer used, so nothing
-        the host wrote beside the source is copied. Every directory that copy created is then
-        filled with symlinks to whatever the mirror holds there and the snapshot does not, which
-        is what puts `.mainboard/`, the data directories and the ancestor ignore files back
-        within reach. The declared results path is linked back last, so it survives whichever of
-        the first two phases also had an opinion about it. Only then is the stamp written, so a
-        build cut off halfway is redone rather than run from.
+        The shipped paths are hardlinked in with the mirror as `--link-dest`, under the same
+        filter rules the transfer used, so nothing the host wrote beside the source is copied.
+        The generated tree is rebuilt next, then every directory the copy created is filled with
+        symlinks to whatever the mirror holds there and the snapshot does not, which is what puts
+        the data directories and the ancestor ignore files back within reach. The declared
+        results path is linked back last, so it survives whichever earlier phase also had an
+        opinion about it. Only then is the stamp written, so a build cut off halfway is redone
+        rather than run from.
 
         A file that vanished mid-walk (rsync's code 24, which a concurrent mirror sync causes)
         is the one failure absorbed, since the mirror is a moving target. Every other rsync
@@ -223,40 +231,77 @@ class Snapshots:
             exclude=exclude,
             extra=[f"--link-dest={self.root}/"],
         )
-        stamp = shlex.quote(f"{path}/{STAMP}")
         lines = [
             "set -eu",
-            f"if [ -f {stamp} ]; then exit 0; fi",
-            f"mkdir -p {shlex.quote(path)}",
-            f"cd {shlex.quote(self.root)}",
+            f"mb_root={shlex.quote(self.root)}",
+            f"mb_snap={shlex.quote(path)}",
+            f'if [ -f "$mb_snap/{STAMP}" ]; then exit 0; fi',
+            'mkdir -p "$mb_snap"',
+            'cd "$mb_root"',
             f'{shlex.join(["rsync", *argv])} || [ "$?" = 24 ]',
-            self.__filling(path, sources),
-            *self.__results(path, results),
-            f"printf '%s\\n' {shlex.quote(key)} > {stamp}",
+            self.__generated(),
+            self.__filling(sources),
+            *self.__results(results),
+            f"printf '%s\\n' {shlex.quote(key)} > \"$mb_snap/{STAMP}\"",
         ]
         return "; ".join(lines)
 
-    def __filling(self, path: str, sources: Sequence[str]) -> str:
-        """The loop symlinking back whatever the mirror holds and the copy did not bring over."""
-        here = shlex.quote(path)
-        there = shlex.quote(self.root)
+    def __generated(self) -> str:
+        """The lines that rebuild the generated tree as this snapshot's own.
+
+        The environment is the mirror's and the code is the snapshot's, and the generated tree is
+        where those two meet, so it is neither copied nor symlinked whole. Its directories down
+        to each environment shard are real here, its files are hardlinked in, and everything
+        heavy under them, the installed environments, the node modules, the dispatch state and
+        the receipts, is a symlink back to the mirror.
+
+        That shape is what a job's own tooling needs. A workspace's generated manifest is
+        compiled with the workspace root written into it, so a job standing in a snapshot
+        recompiles one for the tree it is standing in, and every file that recompile writes is
+        replaced rather than edited in place. Hardlinked here, that lands in this snapshot and
+        the mirror's copy is untouched, which is what keeps one job from rewriting the
+        environment description every other job on the host activates through. The paths inside
+        it still name the mirror's installed environment, so nothing is installed twice.
+        """
+        out = shlex.quote(Project().out_dir)
         return (
-            f"for d in {shlex.join(containers(sources))}; do "
-            f'mkdir -p {here}/"$d"; '
-            f'for e in {there}/"$d"/* {there}/"$d"/.*; do '
+            f'mkdir -p "$mb_snap"/{out}/envs; '
+            f'for m in "$mb_root"/{out}/envs/*; do '
+            f'if [ -d "$m" ]; then mkdir -p "$mb_snap"/{out}/envs/"${{m##*/}}"; fi; '
+            "done; "
+            f'for m in "$mb_root"/{out} "$mb_root"/{out}/envs/*; do '
+            'if [ ! -d "$m" ]; then continue; fi; '
+            'd=${m#"$mb_root"/}; '
+            'for e in "$m"/* "$m"/.*; do '
             "n=${e##*/}; "
             'if [ "$n" = "." ] || [ "$n" = ".." ] || [ ! -e "$e" ]; then continue; fi; '
-            f'if [ -e {here}/"$d"/"$n" ]; then continue; fi; '
-            f'ln -s "$e" {here}/"$d"/"$n"; '
+            'if [ -e "$mb_snap/$d/$n" ]; then continue; fi; '
+            'if [ -d "$e" ]; then ln -s "$e" "$mb_snap/$d/$n"; else ln "$e" "$mb_snap/$d/$n"; fi; '
             "done; done"
         )
 
-    def __results(self, path: str, results: str) -> list[str]:
+    def __filling(self, sources: Sequence[str]) -> str:
+        """The loop symlinking back whatever the mirror holds and the copy did not bring over."""
+        return (
+            f"for d in {shlex.join(containers(sources))}; do "
+            'mkdir -p "$mb_snap/$d"; '
+            'for e in "$mb_root/$d"/* "$mb_root/$d"/.*; do '
+            "n=${e##*/}; "
+            'if [ "$n" = "." ] || [ "$n" = ".." ] || [ ! -e "$e" ]; then continue; fi; '
+            'if [ -e "$mb_snap/$d/$n" ]; then continue; fi; '
+            'ln -s "$e" "$mb_snap/$d/$n"; '
+            "done; done"
+        )
+
+    def __results(self, results: str) -> list[str]:
         """The lines that point the dispatch's declared results path back at the mirror."""
         relative = writable(results)
         if not relative:
             return []
-        mirrored = shlex.quote(f"{self.root}/{relative}")
-        inside = shlex.quote(f"{path}/{relative}")
-        parent = shlex.quote(str(PurePosixPath(f"{path}/{relative}").parent))
-        return [f"mkdir -p {mirrored} {parent}", f"rm -rf {inside}", f"ln -s {mirrored} {inside}"]
+        quoted = shlex.quote(relative)
+        parent = shlex.quote(str(PurePosixPath(relative).parent))
+        return [
+            f'mkdir -p "$mb_root"/{quoted} "$mb_snap"/{parent}',
+            f'rm -rf "$mb_snap"/{quoted}',
+            f'ln -s "$mb_root"/{quoted} "$mb_snap"/{quoted}',
+        ]

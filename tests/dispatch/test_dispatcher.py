@@ -231,7 +231,8 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     # queued into it, and the declared results path is linked back to the mirror.
     [built] = [line for line in machine.lines if "--link-dest" in line]
     assert "src /repo/.mainboard/dispatch/sources/" in built
-    assert f"ln -s /repo/out/raw {pinned}/out/raw" in built
+    assert f"mb_snap={pinned}" in built
+    assert 'ln -s "$mb_root"/out/raw "$mb_snap"/out/raw' in built
     [run] = dispatcher.cache.recent(10)
     assert run.source == pinned.rsplit("/", maxsplit=1)[-1]
 
