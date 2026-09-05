@@ -40,7 +40,9 @@ class GeneratedFiles(FrozenModel):
         """
         from filelock import FileLock
 
-        self.directory.mkdir(exist_ok=True)
+        # Parents included, since the first thing to take a shard's lock may be a question
+        # asked before anything has ever compiled into it.
+        self.directory.mkdir(parents=True, exist_ok=True)
         key = self.directory.resolve()
         lock = _LOCKS.setdefault(key, FileLock(key / ".sync.lock"))
         with lock:

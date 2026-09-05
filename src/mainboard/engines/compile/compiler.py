@@ -4,6 +4,7 @@ import tomllib
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
+from .generated import GeneratedFiles
 from .pixi_manifest import PixiManifest, cleared, rerooted, selected_manifest
 from .state import SyncState
 
@@ -90,17 +91,50 @@ class Compiler:
         The same question a host asks before installing from a shipped lock, asked here before
         the mirror leaves, so a stale lock fails in a second on this machine rather than after
         minutes of copying and a remote install.
+
+        Asked under the workspace lock, because the answer is computed from files another
+        process may be replacing right now: a compile landing between a solve and this read
+        makes the digest disagree with the blessing that solve had just written, and the refusal
+        then named the very command that had just succeeded. The lock is the one the compile
+        itself takes, and it is reentrant, so a caller already holding it is not blocked here.
         """
-        state = SyncState.load(self.out)
-        if self.pixi.lock.exists() and (
-            state.environment != self.environment or state.solved_from != self.resolution_digest()
-        ):
-            raise MissionError(
-                f"pixi.lock was not solved from this manifest and package metadata. Run "
-                f"`{Project().name} install {self.environment} --resolve` on a solve-capable "
-                "machine, then "
-                "set this host up again."
+        with GeneratedFiles(directory=self.out).locked():
+            state = SyncState.load(self.out)
+            if not self.pixi.lock.exists():
+                return
+            current = self.resolution_digest()
+            if state.environment == self.environment and state.solved_from == current:
+                return
+        raise MissionError(self.__unvouched(state, current))
+
+    def __unvouched(self, state: SyncState, current: str) -> str:
+        """Why the lock could not be vouched for, in terms of what disagreed and what was read.
+
+        Three faults reach the same refusal and only one of them is a stale lock. A workspace
+        that never solved has blessed nothing at all, a blessing may belong to another
+        environment, and a second process compiling into this workspace between the solve and
+        this read moves the digest under a blessing that was right when it was written. The
+        digest cannot tell the last two apart, since it is taken over the file on disk, so the
+        line names both digests, the file they were computed from, and both ways out.
+
+        state: the blessing the workspace recorded when it last solved.
+        current: the digest the compiled manifest and package metadata hash to now.
+        """
+        tool = Project().name
+        if state.environment and state.environment != self.environment:
+            return (
+                f"{self.pixi.lock} is blessed for environment {state.environment!r}, not "
+                f"{self.environment!r}. Run `{tool} install {self.environment} --resolve`."
             )
+        return (
+            f"{self.pixi.lock} was not solved from the manifest now compiled at "
+            f"{self.pixi.manifest}: that file and the package metadata beside it hash to "
+            f"{current[:12]}, while the lock is blessed for {state.solved_from[:12] or 'nothing'}."
+            f" Either the lock is stale, in which case `{tool} install {self.environment} "
+            "--resolve` on a solve-capable machine settles it, or another process compiled into "
+            "this workspace between that solve and now, in which case run it again with nothing "
+            "else writing here."
+        )
 
     def resolution_digest(self) -> str:
         """Hash everything a solve reads, so a lock can be checked against the tree it sits in.

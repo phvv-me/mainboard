@@ -6,6 +6,9 @@ import tomlkit
 
 from mainboard import MissionError
 from mainboard.engines.compile.compiler import Compiler
+from mainboard.engines.compile.generated.files import (
+    _LOCKS,  # ruff:ignore[private-member-access]  reason=one test asserts the shared per-directory lock is held while vouch reads since=2026-09-05
+)
 from mainboard.engines.compile.pixi_manifest import PixiManifest
 from mainboard.engines.compile.state import SyncState
 from mainboard.manifest import Manifest
@@ -316,7 +319,9 @@ def test_the_resolution_digest_follows_every_local_python_projects_own_metadata(
     ("solved", "refusal"),
     [
         pytest.param(
-            True, "was not solved from this manifest", id="a-lock-this-tree-never-solved"
+            True,
+            r"was not solved from the manifest now compiled at .*pixi\.toml",
+            id="a-lock-this-tree-never-solved",
         ),
         pytest.param(False, r"pixi\.lock is missing", id="no-lock-at-all-is-pixis-own-diagnosis"),
     ],
@@ -335,6 +340,71 @@ def test_install_locked_refuses_a_lock_nothing_on_disk_vouches_for(
         pixi.lock.write_text("version: 7\n")
     with pytest.raises(MissionError, match=refusal):
         compiler_from(_BARE).install_locked(files, resolve=False)
+
+
+def test_the_refusal_names_the_digests_and_the_file_they_were_read_from(
+    compiler_from: CompilerFrom, pixi: Pixi
+) -> None:
+    """A concurrent compile and a stale lock reach the same refusal, and only one is a stale lock.
+
+    The message used to name only `install --resolve`, the command that had just succeeded, so a
+    workspace another process was compiling into looked like one nobody had solved (miyabi-g,
+    `atpx = ">=0.0.7"` and `">=0.0.8"` alternating between consecutive commands, 2026-09-05).
+    """
+    pixi.manifest.write_text('[workspace]\nplatforms = ["linux-64"]\n', encoding="utf-8")
+    pixi.lock.write_text("version: 7\n", encoding="utf-8")
+    compiler = compiler_from(_BARE)
+
+    with pytest.raises(MissionError) as refused:
+        compiler.vouch()
+
+    said = str(refused.value)
+    assert str(pixi.manifest) in said and str(pixi.lock) in said
+    assert compiler.resolution_digest()[:12] in said
+    assert "blessed for nothing" in said
+    assert "another process compiled into this workspace" in said
+
+
+def test_vouch_reads_the_generated_files_under_the_lock_that_writes_them(
+    compiler_from: CompilerFrom, pixi: Pixi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer is computed from files another process may be replacing right now.
+
+    A compile landing between a solve and this read moves the digest under a blessing that was
+    right when it was written, so the read happens inside the lock the compile itself takes.
+    """
+    pixi.manifest.write_text('[workspace]\nplatforms = ["linux-64"]\n', encoding="utf-8")
+    pixi.lock.write_text("version: 7\n", encoding="utf-8")
+    compiler = compiler_from(_BARE)
+    held: list[bool] = []
+    reading = Compiler.resolution_digest
+
+    def watched(self: Compiler) -> str:
+        held.append(_LOCKS[compiler.out.resolve()].is_locked)
+        return reading(self)
+
+    monkeypatch.setattr(Compiler, "resolution_digest", watched)
+
+    with pytest.raises(MissionError):
+        compiler.vouch()
+
+    assert held == [True]
+
+
+def test_a_lock_blessed_for_another_environment_says_which_one(
+    compiler_from: CompilerFrom, pixi: Pixi
+) -> None:
+    """A blessing that belongs to a different shard is a different fault with a different fix."""
+    pixi.manifest.write_text("[workspace]\n", encoding="utf-8")
+    pixi.lock.write_text("version: 7\n", encoding="utf-8")
+    compiler = compiler_from(_BARE)
+    SyncState.path(compiler.out).write_text(
+        SyncState(environment="serving", solved_from="abc", compiled_from="abc").render(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MissionError, match="blessed for environment 'serving', not 'default'"):
+        compiler.vouch()
 
 
 def test_install_locked_accepts_a_lock_solved_somewhere_else_from_this_very_tree(
