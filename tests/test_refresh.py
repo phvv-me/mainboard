@@ -189,9 +189,26 @@ def test_the_worker_defaults_to_its_real_process_boundaries(
     assert executed == [("uv", "tool", "install")]
 
 
-def test_the_parent_wait_absorbs_only_a_process_that_already_vanished(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "fault",
+    [
+        pytest.param(None, id="a-parent-that-exited-while-we-waited"),
+        pytest.param(psutil.NoSuchProcess, id="a-parent-that-had-already-gone"),
+        pytest.param(psutil.TimeoutExpired, id="a-parent-still-alive-after-the-minute"),
+        pytest.param(psutil.AccessDenied, id="a-pid-this-user-may-not-watch"),
+    ],
+)
+def test_every_way_the_parent_wait_ends_leads_to_the_install(
+    fault: type[Exception] | None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """The wait is a courtesy and the install is the job.
+
+    Only a vanished parent was absorbed, so a parent still holding the launcher after the minute,
+    or a pid the system had handed to someone else, threw out of the worker before it had even
+    created its log: a deferred update that died in silence minutes after `self-update` had
+    exited 0, with nothing on disk to say so. uv's own retry ladder answers a directory that is
+    still genuinely locked.
+    """
     waited: list[float] = []
 
     class Process:
@@ -200,13 +217,24 @@ def test_the_parent_wait_absorbs_only_a_process_that_already_vanished(
 
         def wait(self, timeout: float) -> None:
             waited.append(timeout)
-            if self.pid == 2:
-                raise psutil.NoSuchProcess(self.pid)
+            if fault is not None:
+                raise fault(self.pid)
+
+    executed: list[Sequence[str]] = []
+
+    def execute(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        executed.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="installed\n", stderr="")
 
     monkeypatch.setattr(_refresh.psutil, "Process", Process)
-    _refresh._wait(1)
-    _refresh._wait(2)
-    assert waited == [60.0, 60.0]
+    monkeypatch.setattr(_refresh, "_execute", execute)
+    log = tmp_path / "refresh.log"
+
+    assert _refresh.after_parent(7, ("uv", "tool", "install"), log) == 0
+
+    assert waited == [60.0]
+    assert executed == [("uv", "tool", "install")]
+    assert "installed" in log.read_text(encoding="utf-8")
 
 
 def test_the_executor_runs_the_exact_argv_without_a_shell(

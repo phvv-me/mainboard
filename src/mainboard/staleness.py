@@ -52,13 +52,23 @@ class Snapshot(FrozenModel):
         its own source has nothing to be stale against.
     stale: whether the source tree has moved past what this snapshot was recorded against.
     detail: the one line behind the answer.
-    fix: the reinstall command that refreshes the snapshot, empty when nothing needs one.
+    fix: the reinstall command that refreshes the snapshot, as pixi runs it, empty when nothing
+        needs one.
+    uv: the same reinstall as the bare uv argv inside it, which is what the deferred Windows
+        worker runs once the launcher it replaces has exited. Carried rather than sliced back
+        out of `fix`: the slice that used to recover it knew the exec prefix by its length, and
+        one more flag on either side would have handed the worker a command missing its verb.
+    source: the package directory the snapshot was installed from, absolute, and the workspace
+        the deferred worker writes its log into. Read off the receipt here, where the receipt is
+        already open, rather than parsed back out of an argv token.
     """
 
     installed: bool
     stale: bool = False
     detail: str = ""
     fix: tuple[str, ...] = ()
+    uv: tuple[str, ...] = ()
+    source: Path | None = None
 
     @property
     def warning(self) -> str:
@@ -82,7 +92,6 @@ def refresh(found: Snapshot) -> int:
         return 0
     if platform.system() == "Windows":
         worker = Path(__file__).with_name("_refresh.py")
-        command = ("uv", *found.fix[4:])
         specs = tuple(token for spec in _DEFERRED_SPECS for token in ("--spec", spec))
         PixiEngine().defer(
             "exec",
@@ -92,9 +101,9 @@ def refresh(found: Snapshot) -> int:
             "python",
             str(worker),
             str(os.getpid()),
-            str(_refresh_log(found.fix)),
+            str(_refresh_log(found.source)),
             "--",
-            *command,
+            *found.uv,
         )
         sys.stderr.write(
             f"{Project().name}: refresh scheduled after this Windows launcher exits\n"
@@ -103,13 +112,17 @@ def refresh(found: Snapshot) -> int:
     return PixiEngine().exit_code(*found.fix)
 
 
-def _refresh_log(fix: tuple[str, ...]) -> Path:
-    """Durable deferred-update log under the source workspace named by `fix`."""
-    try:
-        source = fix[fix.index("--from") + 1].partition("[")[0]
-    except ValueError, IndexError:
-        return Path.cwd() / Project().out_dir / "self-update.log"
-    return Path(source) / Project().out_dir / "self-update.log"
+def _refresh_log(source: Path | None) -> Path:
+    """Durable deferred-update log under `source`'s workspace, beside this one when there is none.
+
+    The directory comes from the snapshot that computed the reinstall rather than from re-reading
+    its own `--from` token: that token carries the extras in brackets, and cutting them off at
+    the first `[` cut a source path holding one as well.
+
+    source: the package directory the snapshot was installed from, None when the receipt named
+        no source at all.
+    """
+    return (source or Path.cwd()) / Project().out_dir / "self-update.log"
 
 
 def check(package: Path | None = None) -> Snapshot:
@@ -131,15 +144,16 @@ def check(package: Path | None = None) -> Snapshot:
         )
     except OSError, tomllib.TOMLDecodeError, KeyError, StopIteration:
         return Snapshot(installed=True, detail="the uv receipt names no source directory")
-    source = root.joinpath(requirement["directory"]).resolve() / "src"
+    package = root.joinpath(requirement["directory"]).resolve()
+    source = package / "src"
     if not source.is_dir():
         return Snapshot(installed=True, detail=f"no source tree at {source}")
     extras = ",".join(requirement.get("extras") or [_EXTRA])
     interpreter = _durable_interpreter(declared["tool"].get("python"))
-    fix = (
-        "exec",
-        "--spec",
-        _UV,
+    # Absolute, because the deferred Windows worker runs it from wherever pixi's exec
+    # environment happens to stand rather than from the directory the receipt was written
+    # relative to.
+    uv = (
         "uv",
         "tool",
         "install",
@@ -147,7 +161,7 @@ def check(package: Path | None = None) -> Snapshot:
         Project().name,
         *(("--python", str(interpreter)) if interpreter else ()),
         "--from",
-        f"{requirement['directory']}[{extras}]",
+        f"{package}[{extras}]",
         Project().name,
         "--force",
     )
@@ -158,8 +172,10 @@ def check(package: Path | None = None) -> Snapshot:
     return Snapshot(
         installed=True,
         stale=True,
-        detail=f"the source at {source.parent} is newer than this installed snapshot",
-        fix=fix,
+        detail=f"the source at {package} is newer than this installed snapshot",
+        fix=("exec", "--spec", _UV, *uv),
+        uv=uv,
+        source=package,
     )
 
 

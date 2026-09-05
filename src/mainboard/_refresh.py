@@ -75,10 +75,21 @@ def _windows_uv_tool_lock(result: subprocess.CompletedProcess[str]) -> bool:
 
 
 def _wait(parent: int) -> None:
-    """Wait until `parent` releases the launcher, already released when it vanished."""
+    """Wait until `parent` releases the launcher, then install whatever the wait came to.
+
+    Every way this wait can end leads to the same place: the install is attempted. A parent that
+    vanished released the launcher, a parent still alive after the minute is one this worker has
+    waited long enough for, a pid the system has since handed to somebody else is not the parent
+    at all, and a process this user may not wait on cannot be watched any longer than this.
+
+    Only the first of those was caught. The other two escaped before the log was even created,
+    so a deferred update died in silence minutes after `self-update` had already exited 0, with
+    nothing on disk to say it had. Whatever the wait came to, uv is asked for the install and its
+    own retry ladder answers a directory that is genuinely still locked.
+    """
     try:
         psutil.Process(parent).wait(timeout=60.0)
-    except psutil.NoSuchProcess:
+    except psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied:
         return
 
 

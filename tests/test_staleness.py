@@ -120,19 +120,16 @@ def test_windows_refresh_exits_before_pixi_replaces_the_running_snapshot(
         lambda self, *args: calls.append(args),
     )
     source = Path("C:/source")
-    fix = (
-        "exec",
-        "--spec",
-        "uv=0.12.7",
-        "uv",
-        "tool",
-        "install",
-        "--from",
-        f"{source}[wandb]",
-        "mainboard",
+    uv = ("uv", "tool", "install", "--from", f"{source}[wandb]", "mainboard")
+    found = Snapshot(
+        installed=True,
+        stale=True,
+        fix=("exec", "--spec", "uv=0.12.7", *uv),
+        uv=uv,
+        source=source,
     )
 
-    assert staleness.refresh(Snapshot(installed=True, stale=True, fix=fix)) == 0
+    assert staleness.refresh(found) == 0
     assert calls == [
         (
             "exec",
@@ -160,10 +157,10 @@ def test_windows_refresh_exits_before_pixi_replaces_the_running_snapshot(
     assert "after this Windows launcher exits" in capsys.readouterr().err
 
 
-def test_windows_refresh_falls_back_to_the_current_workspace_for_an_older_fix_shape(
+def test_windows_refresh_falls_back_to_the_current_workspace_when_no_source_is_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A fix without ``--from`` still leaves its deferred worker a durable log."""
+    """A snapshot carrying no source still leaves its deferred worker a durable log."""
     calls: list[tuple[str, ...]] = []
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
@@ -172,9 +169,9 @@ def test_windows_refresh_falls_back_to_the_current_workspace_for_an_older_fix_sh
         "mainboard.staleness.PixiEngine.defer",
         lambda self, *args: calls.append(args),
     )
-    fix = ("exec", "--spec", "uv=0.12.7", "uv", "tool", "install", "mainboard")
+    uv = ("uv", "tool", "install", "mainboard")
 
-    assert staleness.refresh(Snapshot(installed=True, stale=True, fix=fix)) == 0
+    assert staleness.refresh(Snapshot(installed=True, stale=True, fix=uv, uv=uv)) == 0
     assert str(tmp_path / ".mainboard" / "self-update.log") in calls[0]
 
 
@@ -321,8 +318,47 @@ def test_the_stale_state_survives_a_repeat_ask_without_rerecording(snapshot: Pat
 def test_a_refresh_without_a_source_logs_beside_the_working_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A fix that names no `--from` source still gets a durable log, next to where it ran."""
+    """A snapshot that names no source still gets a durable log, next to where it ran."""
     monkeypatch.chdir(tmp_path)
-    assert staleness._refresh_log(("uv", "tool", "install", "mainboard")) == (
-        tmp_path / Project().out_dir / "self-update.log"
+    assert staleness._refresh_log(None) == tmp_path / Project().out_dir / "self-update.log"
+
+
+def test_a_reinstall_names_its_source_absolutely_and_the_worker_reads_it_off_the_snapshot(
+    snapshot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One reading of the receipt answers both callers, and a bracket in a path survives it.
+
+    The deferred worker used to recover its argv by slicing four tokens off the pixi command and
+    its log directory by cutting the `--from` token at the first `[`, which is the extras
+    separator and also an ordinary character in a directory name. Both now come off the snapshot
+    that read the receipt.
+    """
+    tool = snapshot.parents[2]
+    source = tool.parent / "check[out]"
+    (source / "src" / "mainboard").mkdir(parents=True)
+    (source / "src" / "mainboard" / "cli.py").write_text("code", encoding="utf-8")
+    (tool / "uv-receipt.toml").write_text(_RECEIPT % json.dumps(str(source)), encoding="utf-8")
+    check(snapshot)
+    touched(source)
+
+    found = check(snapshot)
+
+    assert found.stale is True
+    assert found.source == source
+    assert found.uv[0] == "uv" and found.uv[-1] == "--force"
+    assert f"{source}[wandb]" in found.uv
+    assert found.fix == ("exec", "--spec", staleness._UV, *found.uv)
+    assert staleness._refresh_log(found.source) == source / Project().out_dir / "self-update.log"
+
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
+    monkeypatch.setattr("mainboard.staleness.os.getpid", lambda: 7)
+    monkeypatch.setattr(
+        "mainboard.staleness.PixiEngine.defer", lambda self, *args: calls.append(args)
     )
+
+    assert staleness.refresh(found) == 0
+
+    handed = calls[0]
+    assert handed[handed.index("--") + 1 :] == found.uv
+    assert str(source / Project().out_dir / "self-update.log") in handed
