@@ -110,6 +110,10 @@ class Doctor:
         files it declared underneath pixi, which no lock ever notices because the lock only
         knows the package is recorded as installed.
 
+        A row carrying more than one of them names the command that repairs each, since they are
+        not the same command and a single one leaves the reader guessing which findings it was
+        meant to cover.
+
         env: the environment to examine, this report's own when empty.
         """
         provisioner = Provisioner(self.board.root, self.board.manifest)
@@ -127,31 +131,36 @@ class Doctor:
             )
         state = SyncState.load(directory)
         installed = pixi.ready(environment)
-        faults: list[str] = []
-        stale = False
+        damaged = (
+            sorted(EnvironmentAudit(pixi.env_prefix(environment)).suspect()) if installed else []
+        )
         lock_stale = (
             not pixi.lock.exists()
             or state.environment != environment
             or state.solved_from != compiler.resolution_digest()
         )
+        # Each finding beside the command that repairs THAT finding, because they are not the
+        # same command. A lock nothing on this disk solved needs the solve `--resolve` allows; a
+        # prefix built before an edit, and a wheel that lost its files, are both put right by the
+        # install the lock already describes. One command for the whole row named the strongest
+        # of them and left the reader to work out which findings it actually covered.
+        findings: list[tuple[str, str]] = []
         if lock_stale:
-            faults.append("pixi.lock was not solved from this manifest")
+            findings.append(
+                ("pixi.lock was not solved from this manifest", f"{install} --resolve")
+            )
         if installed and state.compiled_from != compiler.digest():
-            stale = True
-            faults.append(f"compiled before the current manifest: {environment}")
-        damaged = (
-            sorted(EnvironmentAudit(pixi.env_prefix(environment)).suspect()) if installed else []
-        )
+            findings.append((f"compiled before the current manifest: {environment}", install))
         if damaged:
-            faults.append(f"needs reinstalling: {', '.join(damaged)}")
-        if faults:
+            findings.append((f"needs reinstalling: {', '.join(damaged)}", install))
+        if findings:
             # Named, because the report now carries one row per declared environment and a row
             # that says only what is broken leaves the reader counting rows to find out where.
             return Section(
                 section="environment",
                 verdict=Verdict.FAIL,
-                detail=f"{environment}: " + "; ".join(faults),
-                fix=f"{install} --resolve" if stale or lock_stale else install,
+                detail=f"{environment}: " + "; ".join(fault for fault, _ in findings),
+                fix="; ".join(dict.fromkeys(repair for _, repair in findings)),
             )
         if not installed:
             return Section(

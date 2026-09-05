@@ -194,7 +194,7 @@ def test_a_manifest_that_will_not_load_is_the_whole_report(workspace: Path) -> N
             "provisioned",
             Verdict.FAIL,
             "compiled before the current manifest: default",
-            "mainboard install default --resolve",
+            "mainboard install default --resolve; mainboard install default",
         ),
         ("blessed", Verdict.PASS, "default is provisioned, fresh and whole", ""),
         ("whole", Verdict.PASS, "default is provisioned, fresh and whole", ""),
@@ -239,6 +239,26 @@ def test_the_environment_section_audits_only_the_selected_shard(
     found = Doctor(Board(workspace), env="serving").environment()
     assert (found.verdict, found.fix) == (verdict, fix)
     assert fragment in found.detail
+
+
+def test_a_row_carrying_several_findings_names_the_command_that_fixes_each(
+    workspace: Path,
+) -> None:
+    """The findings are unrelated, so one command for the row covers at most one of them.
+
+    A lock nothing on this disk solved needs the solve `--resolve` allows, and a wheel that lost
+    its files needs the install the lock already describes. Naming only the stronger left a
+    reader to work out whether it was meant to put the wheel back too.
+    """
+    climbed(workspace, "damaged")
+    Provisioner(workspace, Board(workspace).manifest).pixi_for("default").lock.unlink()
+    found = Doctor(Board(workspace)).environment()
+
+    assert found.verdict is Verdict.FAIL
+    assert found.detail == (
+        "default: pixi.lock was not solved from this manifest; needs reinstalling: ghost"
+    )
+    assert found.fix == "mainboard install default --resolve; mainboard install default"
 
 
 def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(

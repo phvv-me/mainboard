@@ -139,7 +139,11 @@ def test_a_native_editable_is_dated_by_its_compiled_sources_alone(
 def test_a_native_editable_whose_extension_vanished_is_rebuilt(
     audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
 ) -> None:
-    """A recorded extension nobody can find dates to nothing, so any source outranks it."""
+    """A recorded extension nobody can find is gone, and nothing absent is current.
+
+    Asked as its own question rather than through a clock, so it holds for a tree with no
+    source file whose mtime could have outranked a missing artifact's.
+    """
     source = tmp_path / "native-demo"
     source.mkdir()
     record(
@@ -152,6 +156,64 @@ def test_a_native_editable_whose_extension_vanished_is_rebuilt(
     source.joinpath("Cargo.toml").write_text("[package]\n")
 
     assert audit.suspect() == ("native-demo",)
+
+
+def test_a_build_configuration_clock_never_dates_an_extension_newer_than_its_sources(
+    audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
+) -> None:
+    """Packaging files are rewritten in place by everything that touches packaging.
+
+    cutoken's `pyproject.toml` and `CMakeLists.txt` read two days ahead of its own `.cpp` while
+    being byte-identical to the commit that last changed them (2026-09-05), and the doctor asked
+    for a reinstall of an extension newer than everything it was compiled from.
+    """
+    source = tmp_path / "config-demo"
+    source.mkdir()
+    record(
+        site_packages,
+        "config-demo",
+        url=source.as_uri(),
+        editable=True,
+        files=[f"config_demo/{_EXTENSION}"],
+    )
+    artifact = site_packages / "config_demo" / _EXTENSION
+    artifact.parent.mkdir()
+    artifact.write_bytes(b"compiled")
+    source.joinpath("core.cpp").write_text("void run() {}\n")
+    for packaging in ("pyproject.toml", "CMakeLists.txt"):
+        source.joinpath(packaging).write_text("touched, not edited\n")
+        aged(source / packaging, 9_000_000_000)
+    aged(source / "core.cpp", 1_000_000_000)
+    aged(artifact, 2_000_000_000)
+
+    assert audit.suspect() == ()
+
+
+def test_a_build_that_wrote_several_extensions_is_dated_by_the_one_it_finished_with(
+    audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
+) -> None:
+    """A build is over when its last artifact lands, so the sources it compiled are behind it.
+
+    Dating one against the first artifact written called every package with more than one
+    extension stale for the very sources that build had just consumed.
+    """
+    source = tmp_path / "many-demo"
+    source.mkdir()
+    files = [f"many_demo/first{_EXTENSION}", f"many_demo/second{_EXTENSION}"]
+    record(site_packages, "many-demo", url=source.as_uri(), editable=True, files=files)
+    site_packages.joinpath("many_demo").mkdir()
+    for at, name in enumerate(files):
+        artifact = site_packages / name
+        artifact.write_bytes(b"compiled")
+        aged(artifact, 1_000_000_000 + at * 2_000_000_000)
+    source.joinpath("core.cu").write_text("__global__ void run() {}\n")
+    aged(source / "core.cu", 2_000_000_000)
+
+    assert audit.suspect() == ()
+
+    aged(source / "core.cu", 4_000_000_000)
+
+    assert audit.suspect() == ("many-demo",)
 
 
 @pytest.mark.parametrize(

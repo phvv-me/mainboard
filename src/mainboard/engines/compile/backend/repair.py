@@ -14,7 +14,10 @@ if TYPE_CHECKING:
 # installer, so a conda-owned record belongs to another manager and is never touched here.
 _INSTALLER = "uv-pixi"
 _ARTIFACT_SUFFIXES = frozenset({".dylib", ".pyd", ".so"})
-_SOURCE_NAMES = frozenset({"CMakeLists.txt", "Cargo.toml", "meson.build", "pyproject.toml"})
+# What a compiler opens. Build configuration is deliberately not here: `pyproject.toml`,
+# `CMakeLists.txt` and their kind are rewritten in place by every tool that touches packaging,
+# so their clocks move without a single translation unit changing, while a `.cpp` whose clock
+# moved is a `.cpp` somebody wrote to.
 _SOURCE_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".pyx", ".rs"})
 # Directories a build writes into rather than compiles from. Descending into them would let a
 # vendored `.venv`, a `target/` of freshly unpacked crates, or a `build/` of copied headers
@@ -115,28 +118,40 @@ class InstalledPackage:
         return (self.site_packages / root).exists() or any(self.site_packages.glob(f"{root}.*"))
 
     def outdated(self) -> bool:
-        """Whether an editable's native sources are newer than the extensions it installed.
+        """Whether an editable's extensions are behind the sources they were compiled from.
+
+        Two ways an extension stops answering for its tree, asked as the two questions they are
+        rather than fused into one clock reading. A recorded extension nobody can find is gone,
+        and nothing absent can be current. An extension that is there is behind only when a file
+        a compiler opens is newer than the newest artifact this install wrote, which is when that
+        build finished; measuring against the oldest instead called a package with several
+        extensions stale for the very sources its own build was compiling.
+
+        What counts as a source is what a compiler opens, and build configuration is not it.
+        `pyproject.toml` and `CMakeLists.txt` are rewritten in place by anything that touches
+        packaging, so cutoken read as needing a reinstall on a clock two days ahead of its own
+        `.cpp` while being byte-identical to the commit that last changed it (2026-09-05) -- a
+        reinstall of an extension newer than everything it was built from.
 
         Only a package that compiled something can go out of date this way, so a pure Python
-        editable, which imports its sources directly, never comes back true. An extension the
-        distribution recorded but that no longer exists dates to zero, which makes every source
-        newer and asks for the rebuild that missing file needs.
+        editable, which imports its sources directly, never comes back true.
         """
         source = self.origin.source
-        if source is None:
-            return False
         artifacts = self.artifacts()
-        if not artifacts:
+        if source is None or not artifacts:
             return False
-        built = min((path.stat().st_mtime_ns for path in artifacts if path.exists()), default=0)
-        return InstalledPackage._newest_source(source) > built
+        if not all(path.exists() for path in artifacts):
+            return True
+        return InstalledPackage._newest_source(source) > max(
+            path.stat().st_mtime_ns for path in artifacts
+        )
 
     @staticmethod
     def _newest_source(tree: Path) -> int:
-        """The newest modification time, in nanoseconds, among the files a native build reads.
+        """The newest modification time, in nanoseconds, among the files a compiler would open.
 
         Dot directories and build output trees are skipped, and `0` comes back for a tree holding
-        nothing a compiler would open, which is every pure Python package.
+        nothing to compile, which is every pure Python package.
         """
         newest = 0
         for directory, subdirectories, filenames in tree.walk():
@@ -146,7 +161,7 @@ class InstalledPackage:
                 if not name.startswith(".") and name not in _IGNORED_DIRS
             ]
             for filename in filenames:
-                if filename in _SOURCE_NAMES or Path(filename).suffix in _SOURCE_SUFFIXES:
+                if Path(filename).suffix in _SOURCE_SUFFIXES:
                     newest = max(newest, (directory / filename).stat().st_mtime_ns)
         return newest
 
