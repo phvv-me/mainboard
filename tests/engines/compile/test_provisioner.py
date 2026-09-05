@@ -2,6 +2,7 @@ import json
 import os
 import tomllib
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,8 +16,6 @@ from mainboard.engines.compile.generated import GeneratedFiles
 from mainboard.engines.compile.state import SyncState
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from pytest_subprocess import FakeProcess
 
     from mainboard.manifest import Manifest
@@ -104,6 +103,75 @@ def test_run_and_capture_recompile_a_stale_environment_before_delegating(
         ("capture", ("tool", "capture"), "default", 3.0),
         ("capture", ("tool", "fresh-capture"), "default", None),
     ]
+
+
+def test_a_local_run_normalizes_the_working_directory_to_the_workspace_root(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`mainboard run` promises the repo root, whichever subdirectory it was typed in.
+
+    An ad-hoc command takes the cwd it is started in, so a command typed from a package
+    directory used to run there while a declared task still ran from the compiled root: the same
+    verb, two working directories, and the manifest's own contract broken for exactly the half
+    nobody had a task for.
+    """
+    seen: list[Path] = []
+    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": _cwd(seen))
+    monkeypatch.setattr(
+        Pixi,
+        "capture",
+        lambda self, command, env="default", *, timeout=None: CommandResult(_cwd(seen), "", ""),
+    )
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+    inside = tmp_path / "packages" / "mainboard"
+    inside.mkdir(parents=True)
+    with local.cwd(str(inside)):
+        provisioner.run(("python", "-c", "pass"))
+        provisioner.capture(("python", "-c", "pass"))
+        assert Path.cwd() == inside
+    assert seen == [tmp_path, tmp_path]
+
+
+def _cwd(seen: list[Path]) -> int:
+    """Record the directory a pixi child would have inherited, as its own exit code stand-in."""
+    seen.append(Path.cwd())
+    return 0
+
+
+def test_running_after_a_manifest_edit_retakes_the_activation_the_recompile_invalidated(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recompile makes the generated manifest newer than the cached Windows activation.
+
+    That cache is read as stale the moment it is older than the manifest, so an edit followed by
+    an ordinary `run` refused every command until someone reinstalled the whole environment. The
+    cache is Pixi's own answer about a prefix that is already installed, so it is retaken beside
+    the recompile, and only a prefix that is genuinely not installed still refuses.
+    """
+    observed: list[str] = []
+    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
+    monkeypatch.setattr(
+        Pixi, "cache_windows_activation", lambda self, env: observed.append("activation")
+    )
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+    provisioner.pixi.manifest.parent.mkdir(parents=True)
+    provisioner.pixi.manifest.write_text("stale")
+
+    provisioner.run(("python", "-c", "pass"))
+    assert observed == ["activation"]
+    # Nothing was stale the second time, so nothing was recompiled and nothing was retaken.
+    provisioner.run(("python", "-c", "pass"))
+    assert observed == ["activation"]
+
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: False)
+    edited = Provisioner(tmp_path, manifest_from(f'{_BARE}[deps]\nripgrep = "*"\n'))
+    edited.run(("python", "-c", "pass"))
+    assert observed == ["activation"]
 
 
 def test_a_ready_environment_caches_its_windows_activation_after_provisioning(
@@ -338,6 +406,32 @@ def test_activate_writes_the_script_a_bare_shell_gets_the_whole_runtime_from(
     assert ("module load singularity/4.2.1" in text) is loaded
     assert "export PATH=/env/bin:$PATH" in text
     assert str(linked) in text
+
+
+def test_the_generated_activation_is_bash_wherever_it_was_written(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    fp: FakeProcess,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`activate.sh` is sourced by bash whatever machine wrote it, so its PATH is colon-joined.
+
+    Joining with the writing machine's own separator put a Windows `;` into a script only bash
+    reads, which is a PATH of one unusable entry.
+    """
+    monkeypatch.setattr(os, "pathsep", ";")
+    provisioner = Provisioner(tmp_path, manifest_from(_NODE))
+    linked = provisioner.environment_dir() / "node_modules" / ".bin"
+    linked.mkdir(parents=True)
+    extra = provisioner.environment_dir() / "bin"
+    extra.mkdir(parents=True)
+    monkeypatch.setattr(Provisioner, "binaries", lambda self, env: [linked, extra])
+    fp.register([fp.any()], stdout="export PATH=/env/bin:$PATH\n")
+
+    text = provisioner.activate().read_text(encoding="utf-8")
+
+    [exported] = [line for line in text.splitlines() if str(linked) in line]
+    assert exported == f'export PATH={linked}:{extra}:"$PATH"'
 
 
 def test_activate_gives_a_named_environment_its_own_script(

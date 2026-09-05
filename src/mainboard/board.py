@@ -1,4 +1,5 @@
 import os
+import platform
 import shlex
 import time
 from importlib.metadata import version
@@ -529,15 +530,29 @@ class Board:
                 solver=provisioner.solver_version(),
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
-        activate = provisioner.activate(plan.env, modules=plan.profile.modules)
         return HostSetup(
             host=self.host,
             root=str(self.root),
             env=plan.env,
-            activate=str(activate),
+            activate=self.activation(provisioner, plan),
             installer="in-place",
             tool=version(self.project.name),
         )
+
+    def activation(self, provisioner: Provisioner, plan: ExecutionPlan) -> str:
+        """Write the shell script a bare shell activates this environment from, where one runs.
+
+        `activate.sh` is bash by construction, and nothing on Windows sources it: writing one
+        there hands the reader a script their own shell cannot run, with a PATH built for a
+        different world. A Windows workspace activates through the activation pixi cached when
+        it was provisioned, so this says so by writing nothing and naming nothing.
+
+        provisioner: the provisioner that has just installed the environment.
+        plan: the resolved execution context, whose profile carries this host's module stack.
+        """
+        if platform.system() == "Windows":
+            return ""
+        return str(provisioner.activate(plan.env, modules=plan.profile.modules))
 
     def interact(
         self,

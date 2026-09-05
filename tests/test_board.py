@@ -454,6 +454,25 @@ def test_installing_here_provisions_and_activates_in_place(
     assert setup.tool
 
 
+def test_installing_here_on_windows_writes_no_bash_activation_and_names_none(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`activate.sh` is bash by construction and nothing on Windows sources it.
+
+    Writing one there handed the reader a script their own shell cannot run, whose PATH was
+    built for a different world, and then named it as the way into the environment.
+    """
+    FakeProvisioner.calls = []
+    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    monkeypatch.setattr("mainboard.board.platform.system", lambda: "Windows")
+
+    setup = board.install()
+
+    assert setup.activate == ""
+    assert ("provision", ("default", False)) in FakeProvisioner.calls
+    assert not [call for call in FakeProvisioner.calls if call[0] == "activate"]
+
+
 @pytest.mark.parametrize(
     ("host", "env", "expected"),
     [

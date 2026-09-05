@@ -1,4 +1,3 @@
-import os
 import shlex
 from functools import cache
 from typing import TYPE_CHECKING
@@ -92,7 +91,11 @@ class ActivationScript:
                 module_init=module_init_snippet(),
                 modules=specs,
                 hook=self.hook.strip(),
-                binaries=os.pathsep.join(shlex.quote(str(path)) for path in self.binaries),
+                # A colon, always: this template is bash and the line it renders is `export
+                # PATH=...:"$PATH"`. Joining with the running machine's own separator wrote a
+                # Windows `;` into a script only bash reads, so the whole PATH arrived as one
+                # unusable entry.
+                binaries=":".join(shlex.quote(str(path)) for path in self.binaries),
             )
         )
 

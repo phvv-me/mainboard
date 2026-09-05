@@ -230,21 +230,39 @@ class Provisioner:
         owns the environment and a cross-platform task shell, so Windows and POSIX machines
         execute the same manifest without mainboard maintaining a second command grammar.
         """
-        shard = self._shard(env)
-        with GeneratedFiles(directory=self.out).locked() as files:
-            if shard.compiler.stale():
-                shard.compiler.write(files)
-        return shard.pixi.run(command, env)
+        shard = self.refreshed(env)
+        with local.cwd(str(self.root)):
+            return shard.pixi.run(command, env)
 
     def capture(
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
     ) -> CommandResult:
         """Compile stale files, then capture a bounded command through Pixi."""
+        shard = self.refreshed(env)
+        with local.cwd(str(self.root)):
+            return shard.pixi.capture(command, env, timeout=timeout)
+
+    def refreshed(self, env: str) -> _EnvironmentShard:
+        """``env``'s compile stack with its generated files current, ready to run a command in.
+
+        A recompile rewrites the generated manifest, and on Windows the cached activation is
+        read as stale the moment that file is newer than it, so a manifest edit followed by an
+        ordinary `run` used to recompile, invalidate the cache and then refuse every command
+        until someone reinstalled the whole environment. The cache is Pixi's own answer about a
+        prefix that is already installed, so it is retaken here beside the recompile that
+        invalidated it, and the refusal is kept for the one case it was written for: a prefix
+        that is genuinely not installed.
+
+        env: the environment whose generated files are being brought up to date.
+        """
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
-            if shard.compiler.stale():
-                shard.compiler.write(files)
-        return shard.pixi.capture(command, env, timeout=timeout)
+            if not shard.compiler.stale():
+                return shard
+            shard.compiler.write(files)
+        if shard.pixi.ready(env):
+            shard.pixi.cache_windows_activation(env)
+        return shard
 
     def binaries(self, env: str) -> list[Path]:
         """The second-stage binary directories that exist, in the order PATH should carry them.
