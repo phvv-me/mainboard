@@ -145,6 +145,37 @@ def test_the_newest_dispatch_line_decides_the_row_whatever_its_topic(board: Boar
     assert settled.code == 1
 
 
+def test_a_stream_reads_the_outcome_the_durable_sweep_already_settled(board: Board) -> None:
+    """A batched job's settled line has exactly one publisher, and it is not the sweep.
+
+    So a batch whose watching session died is probed, pulled and memoized by the cron pass with
+    nothing ever reaching its stream, and reading the stream alone left thirteen finished jobs
+    saying `running` beside their thirteen pulled logs (2026-09-04). The registry row is that
+    outcome, and it is joined onto the rows the receipts left in flight.
+    """
+    stream = "swept-batch"
+    bus = Receipts(directory(board, stream) / "events.ndjson")
+    publish(bus, stream, Topic.SUBMITTED, job="tex", data={"handle": "3294910", "target": "gold"})
+    # Nothing dispatched under that handle yet, so the row stands exactly as the stream left it.
+    assert (board.verdicts().of(stream).trials[0].verdict, board.verdicts().of(stream).code) == (
+        "running",
+        2,
+    )
+    recorded(board, "3294910", name=f"batch:{stream}/tex", verdict="ok")
+    settled = board.verdicts().of(stream)
+    assert settled.trials == (
+        TrialVerdict(
+            job="tex",
+            handle="3294910",
+            target="gold",
+            state="finished",
+            verdict="ok",
+            exit_code=0,
+        ),
+    )
+    assert settled.code == 0
+
+
 @pytest.mark.parametrize(
     ("attested", "flagged"),
     [

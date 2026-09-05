@@ -8,7 +8,10 @@
 # line, so a study's events stream and a harness's own receipts file answer through one verb. A
 # stream id reads the workspace's own `events.ndjson` for that stream. A handle resolves through
 # the run registry to the stream its dispatch was tracked under, and the registry row itself is
-# the floor the receipts overlay, so a run whose workspace tracks nothing still answers.
+# the floor the receipts overlay, so a run whose workspace tracks nothing still answers. That
+# floor is under every target rather than only under a handle: a row the receipts left in flight
+# is re-read from the registry, which is where the unattended sweep records an outcome nobody
+# was watching for.
 
 import json
 from time import monotonic, sleep
@@ -230,7 +233,7 @@ class Verdicts:
         recorded = eventful(Receipts(stream_file).replay()) if stream_file.is_file() else ()
         mine = [trial for trial in recorded if trial.handle == record.handle]
         harvested = harvest(under)
-        floor = tuple(mine) or (registered(record, job=job),)
+        floor = self.swept(tuple(mine)) or (registered(record, job=job),)
         return StreamVerdict(stream=stream, trials=(*floor, *harvested))
 
     def of(self, target: str, *, host: str = "", run: str = "") -> StreamVerdict:
@@ -252,7 +255,7 @@ class Verdicts:
         stream_file = under / "events.ndjson"
         if stream_file.is_file():
             recorded = eventful(Receipts(stream_file).replay())
-            found = (*recorded, *harvest(under))
+            found = (*self.swept(recorded), *harvest(under))
             return StreamVerdict(stream=target, trials=found, note=unreadable(stream_file, found))
         return self.handled(target, host=host)
 
@@ -292,6 +295,44 @@ class Verdicts:
             else f"{store.root} holds no receipts for run {chosen!r}; it holds {store.runs}"
         )
         return StreamVerdict(stream=f"{stream} run {chosen}", trials=trials, note=note)
+
+    def swept(self, trials: tuple[TrialVerdict, ...]) -> tuple[TrialVerdict, ...]:
+        """`trials` with every row still in flight re-read from the durable run registry.
+
+        A batch's own watch is the only thing that publishes a batched job's settled line, and
+        the unattended sweep deliberately writes none, so the two can never double each other.
+        Kill the session holding that watch and the sweep still does everything else: it probes
+        the job, pulls its log home beside the stream, and memoizes the terminal verdict in the
+        registry. Nothing tells the stream. So this verb read thirteen finished miyabi-g jobs as
+        running, with their thirteen pulled logs sitting in the same directory it was reading
+        (gigatoken-shootout rep92, 2026-09-04), and would have gone on saying it until a watch
+        nobody was going to start again said otherwise.
+
+        The registry row is that outcome written down, which is the same floor `handled` already
+        answers a receiptless run from, so it is joined on here too. Only onto rows the receipts
+        left in flight: a settled line carries a detail and an exit code the registry has no
+        column for, and it was written by the pass that read the same probe.
+
+        trials: the stream's own rows, in the order they will be reported.
+        """
+        return tuple(
+            self.__registered(trial) if trial.handle and trial.code == _IN_FLIGHT else trial
+            for trial in trials
+        )
+
+    def __registered(self, trial: TrialVerdict) -> TrialVerdict:
+        """`trial` under its registry row, unchanged when no dispatch was ever recorded for it."""
+        try:
+            record = self.board.dispatcher.cache.run(trial.handle, trial.target or None)
+        except LookupError:
+            return trial
+        return trial.model_copy(
+            update={
+                "state": record.state or trial.state,
+                "verdict": record.verdict or trial.verdict,
+                "exit_code": record.exit_code,
+            }
+        )
 
     def wait(
         self,
