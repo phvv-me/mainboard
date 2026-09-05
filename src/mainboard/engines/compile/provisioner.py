@@ -1,6 +1,6 @@
 import os
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -50,6 +50,11 @@ def environment_segment(environment: str) -> str:
             "Windows device names"
         )
     return environment
+
+
+# Where a generated environment records the lock and manifest its prefix was last brought in
+# line with, so the update pixi would otherwise perform inside every command happens once.
+_SYNCED = ".mainboard-synced"
 
 
 def validate_environment_roster(manifest: Manifest) -> None:
@@ -257,12 +262,42 @@ class Provisioner:
         """
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
-            if not shard.compiler.stale():
-                return shard
-            shard.compiler.write(files)
-        if shard.pixi.ready(env):
+            recompiled = shard.compiler.stale()
+            if recompiled:
+                shard.compiler.write(files)
+            self.synchronized(shard, env)
+        if recompiled and shard.pixi.ready(env):
             shard.pixi.cache_windows_activation(env)
         return shard
+
+    def synchronized(self, shard: _EnvironmentShard, env: str) -> None:
+        """Bring `env`'s prefix in line with its lock once, under the lock the caller holds.
+
+        pixi does this on the way into every command it runs, which is a race when nine jobs
+        start together out of one pinned tree: they share the prefix, each decides for itself
+        that it needs updating, and the loser meets the environment mid-write. Doing it here
+        makes it one process at a time, and stamping what was synced makes it happen once
+        rather than once per command: the stamp names the lock and the manifest the prefix was
+        brought in line with, so nothing runs again until one of them moves.
+
+        An environment nothing has installed is left alone, and so is one with no lock to be in
+        line with. A command in either is refused by the activation with the one line that names
+        the install to run, and syncing there would answer that question with pixi's words
+        instead.
+
+        shard: the environment's compile stack.
+        env: the environment being entered.
+        """
+        if not shard.pixi.ready(env) or not shard.pixi.lock.is_file():
+            return
+        stamp = shard.directory / _SYNCED
+        current = f"{shard.compiler.digest()}:{shard.pixi.lock.stat().st_mtime_ns}"
+        with suppress(OSError):
+            if stamp.read_text(encoding="utf-8") == current:
+                return
+        shard.pixi.sync(env)
+        with suppress(OSError):
+            stamp.write_text(current, encoding="utf-8")
 
     def binaries(self, env: str) -> list[Path]:
         """The second-stage binary directories that exist, in the order PATH should carry them.

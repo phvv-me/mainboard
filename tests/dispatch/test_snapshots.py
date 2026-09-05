@@ -124,11 +124,14 @@ def test_pinning_copies_the_shipped_set_by_hardlink_and_links_the_rest_back(
     assert "for d in . research; do" in program
     assert 'ln -s "$e" "$mb_snap/$d/$n"' in program
     # The declared results path is a symlink back to the mirror, so what the job writes there is
-    # what the pull already goes looking for.
+    # what the pull already goes looking for, and it is linked after the stamp closes rather
+    # than inside it, since the path belongs to this dispatch and the tree does not.
     assert (
-        'ln -s "$mb_root"/research/compression/raw "$mb_snap"/research/compression/raw'
+        'ln -sfn "$mb_root"/research/compression/raw "$mb_snap"/research/compression/raw'
     ) in program
-    assert program.endswith(f"printf '%s\\n' abc1234 > \"$mb_snap/{STAMP}\"; fi")
+    stamped = f"printf '%s\\n' abc1234 > \"$mb_snap/{STAMP}\"; fi"
+    assert stamped in program
+    assert program.index(stamped) < program.index("ln -sfn")
 
 
 def test_pinning_a_tree_the_host_could_not_build_refuses_instead_of_dispatching_into_it(
@@ -244,6 +247,56 @@ def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding
     (pinned / "research/compression/pkg/mod.py").unlink()
     assert snapshots.pin(local, key="abc1234", sources=["research/compression"]) == str(pinned)
     assert not (pinned / "research/compression/pkg/mod.py").exists()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+def test_two_batches_off_one_commit_each_get_their_own_results_link(
+    committed: None, tmp_path: Path
+) -> None:
+    """A snapshot is keyed on the source and a results path is not part of the source.
+
+    Two batches dispatched from one commit therefore share a tree while declaring different
+    results paths, and the second one used to get no link at all: its pull failed on a path that
+    did not exist while its receipts sat inside the snapshot (gh200-closure reusing
+    gh200-directed-tree's tree, 2026-09-05).
+    """
+    del committed
+    root = tmp_path / "projects"
+    _mirror(root)
+    (root / "research/compression/evidence").mkdir()
+    snapshots = Snapshots(str(root))
+
+    first = Path(
+        snapshots.pin(
+            local,
+            key="abc1234",
+            sources=["research/compression"],
+            results="research/compression/raw",
+        )
+    )
+    second = Path(
+        snapshots.pin(
+            local,
+            key="abc1234",
+            sources=["research/compression"],
+            results="research/compression/evidence",
+        )
+    )
+
+    assert second == first
+    assert (
+        first.joinpath("research/compression/raw").resolve() == root / "research/compression/raw"
+    )
+    assert (
+        first.joinpath("research/compression/evidence").resolve()
+        == root / "research/compression/evidence"
+    )
+    # Pinning again with the first path back does not double the link or lose the second.
+    snapshots.pin(
+        local, key="abc1234", sources=["research/compression"], results="research/compression/raw"
+    )
+    assert first.joinpath("research/compression/raw").is_symlink()
+    assert first.joinpath("research/compression/evidence").is_symlink()
 
 
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")

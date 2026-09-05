@@ -17,6 +17,7 @@ from patos import FrozenModel
 from plumbum.commands.processes import ProcessExecutionError
 
 from ..context.admission import admit
+from ..core.project import Project
 from . import vocabulary
 from .jobs import JobSpec
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
@@ -34,6 +35,9 @@ if TYPE_CHECKING:
 
     from ..context.plan import ExecutionPlan
     from .transport import Machine
+
+# The tool a host runs its own jobs through, so nothing below spells the binary's name.
+_TOOL = Project().name
 
 # How a finished verdict maps to a process exit code: 0 ok, 1 failed, 2 still running, 3
 # vanished/unknown. A caller can branch on this without re-deriving it.
@@ -618,6 +622,7 @@ class Dispatcher:
                 filters=self.sync.filters,
                 exclude=[*self.sync.excludes, *plan.profile.sync.exclude],
             )
+            self._prime(remote, plan, pinned)
             try:
                 handle = pick(plan.profile).submit(
                     remote, pinned, script=prepared, args=args, resources=resources
@@ -768,6 +773,39 @@ class Dispatcher:
             exit_code=state.exit_code,
             reason=failure_reason(log, state.exit_code),
         )
+
+    def _prime(self, remote: Machine, plan: ExecutionPlan, pinned: str) -> None:
+        """Take the environment update the first job out of `pinned` would otherwise race for.
+
+        pixi brings a prefix in line with its lock on the way into every command it runs, and a
+        wave of nine jobs starting together shares one prefix, so each of them decides for
+        itself that it needs updating and the losers meet the environment mid-write: `Failed to
+        update PyPI packages ... No such file or directory`, or an import of a package that has
+        vanished for the moment it takes to relink (miyabi-g, 2026-09-05, twice, exactly one
+        member of the wave each time).
+
+        A lock only serializes the machine holding it, and a wave of PBS jobs is a wave of
+        nodes, so the update is taken here instead: one process, before anything is queued,
+        through the tool the job itself will run. What it leaves behind is the stamp every one
+        of those jobs then reads, so the wave only activates.
+
+        Nothing here fails a dispatch. The environment was already proven to run by `_verify`,
+        and a machine that cannot answer this one costs its wave the serialization rather than
+        the dispatch, which is exactly what it had before. A containerized plan is skipped
+        outright: its environment is the image, which no lock on this host describes.
+
+        remote: the open connection to the host.
+        plan: the resolved execution context, whose environment is being brought current.
+        pinned: the snapshot the wave will run out of.
+        """
+        if plan.containerized:
+            return
+        body = wrap(plan, pinned, command=f"{_TOOL} run --env {shlex.quote(plan.env)} -- true")
+        retcode, _, err = remote["bash"][["-lc", body]].run(retcode=None)
+        if retcode:
+            logger.warning(
+                "could not prime %s on %s: %s", plan.env, plan.host, failure_reason(str(err))
+            )
 
     def _verify(
         self,

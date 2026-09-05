@@ -194,6 +194,29 @@ class Pixi(Tool):
         else:
             self.repair(env)
 
+    def sync(self, env: str) -> None:
+        """Bring the installed prefix in line with the lock, without touching the lock itself.
+
+        The update `pixi run` performs on its way into a command, taken deliberately instead of
+        as a side effect. For one command that side effect is fine; for a wave of nine jobs
+        starting together out of one pinned tree it is a race, since they share the prefix and
+        each one decides for itself that it needs updating. The loser sees the environment
+        mid-write: `Failed to update PyPI packages ... No such file or directory`, or an editable
+        package that has vanished for the moment it takes to relink (miyabi-g, 2026-09-05).
+
+        Frozen, because a job is never the place a lock gets solved. A failure is raised with
+        what pixi said, since an environment that cannot be brought current is not something to
+        run a command in.
+
+        env: the environment whose prefix is brought up to the lock.
+        """
+        result = self.within_cwd(Process.capture, "install", "--frozen", "-e", env)
+        if result.returncode:
+            raise MissionError(
+                f"could not bring environment {env!r} in line with its lock: "
+                f"{(result.stderr or result.stdout).strip()[-400:]}"
+            )
+
     def locked(self, env: str) -> dict[str, str]:
         """Every package the lock pins for ``env``, by name and version, without solving.
 

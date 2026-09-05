@@ -151,8 +151,11 @@ class Snapshots:
     ) -> str:
         """Materialise the snapshot for `key` on the host and answer the path a job runs from.
 
-        A key already pinned is answered without touching its tree, so a batch of thirty five
-        jobs from one commit pays for one snapshot and reuses it thirty four times.
+        A key already pinned is answered without rebuilding its tree, so a batch of thirty five
+        jobs from one commit pays for one snapshot and reuses it thirty four times. Its declared
+        results path is linked back on every dispatch all the same, since that path belongs to
+        the dispatch rather than to the tree and two batches off one commit routinely declare
+        different ones.
 
         remote: the open connection to the host.
         key: the tree's identity, from `source_key`.
@@ -244,9 +247,16 @@ class Snapshots:
             f'{shlex.join(["rsync", *argv])} || [ "$?" = 24 ]',
             self.__generated(),
             self.__filling(sources),
-            *self.__results(results),
             f"printf '%s\\n' {shlex.quote(key)} > \"$mb_snap/{STAMP}\"",
             "fi",
+            # Outside the stamp, because the tree is keyed on the source and a results path is
+            # not part of it: two batches off one commit share a snapshot and declare different
+            # results paths, and the second one used to get no link at all, so every pull failed
+            # on a path that did not exist while its receipts sat inside the snapshot (stream
+            # gh200-closure reusing gh200-directed-tree's tree, 2026-09-05). Every dispatch now
+            # links its own, which is idempotent for the one that pinned the tree in the first
+            # place.
+            *self.__results(results),
         ]
         return "; ".join(lines)
 
@@ -298,7 +308,13 @@ class Snapshots:
         )
 
     def __results(self, results: str) -> list[str]:
-        """The lines that point the dispatch's declared results path back at the mirror."""
+        """The lines that point the dispatch's declared results path back at the mirror.
+
+        Written on every dispatch rather than once per tree, so they only ever remove a link
+        they wrote: a real directory the snapshot copied is cleared once and replaced by the
+        link, and a link that is already there is replaced by an identical one. `-n` keeps that
+        replacement from being followed into the mirror and writing a link inside it.
+        """
         relative = writable(results)
         if not relative:
             return []
@@ -306,6 +322,6 @@ class Snapshots:
         parent = shlex.quote(str(PurePosixPath(relative).parent))
         return [
             f'mkdir -p "$mb_root"/{quoted} "$mb_snap"/{parent}',
-            f'rm -rf "$mb_snap"/{quoted}',
-            f'ln -s "$mb_root"/{quoted} "$mb_snap"/{quoted}',
+            f'if [ ! -L "$mb_snap"/{quoted} ]; then rm -rf "$mb_snap"/{quoted}; fi',
+            f'ln -sfn "$mb_root"/{quoted} "$mb_snap"/{quoted}',
         ]

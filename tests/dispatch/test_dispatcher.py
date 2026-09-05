@@ -234,9 +234,46 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     [built] = [line for line in machine.lines if "--link-dest" in line]
     assert "src /repo/.mainboard/dispatch/sources/" in built
     assert f"mb_snap={pinned}" in built
-    assert 'ln -s "$mb_root"/out/raw "$mb_snap"/out/raw' in built
+    assert 'ln -sfn "$mb_root"/out/raw "$mb_snap"/out/raw' in built
     [run] = dispatcher.cache.recent(10)
     assert run.source == pinned.rsplit("/", maxsplit=1)[-1]
+
+
+def test_a_dispatch_brings_the_pinned_environment_current_before_the_wave_starts(
+    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock only serializes the machine holding it, and a wave of PBS jobs is a wave of nodes.
+
+    So the update pixi performs on the way into a command is taken here, once, through the tool
+    the jobs themselves run, before anything is queued. A host that cannot answer costs its wave
+    the serialization rather than the dispatch, since the environment was already proven to run.
+    """
+    del backend
+    machine = machine_with()
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources())
+
+    [primed] = [line for line in machine.lines if "run --env" in line]
+    assert primed.startswith("cd /repo/.mainboard/dispatch/sources/")
+    assert primed.endswith("mainboard run --env default -- true")
+    assert primed.index("source") < primed.index("mainboard run")
+
+
+def test_a_host_that_will_not_prime_costs_its_wave_the_serialization_and_not_the_dispatch(
+    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The environment was proven to run a line earlier; this is the wave's head start."""
+    warned: list[tuple[str, tuple[object, ...]]] = []
+    machine = machine_with(rules=[("run --env", 1, "no pixi here")])
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+    monkeypatch.setattr(
+        dispatch_module.logger, "warning", lambda message, *args: warned.append((message, args))
+    )
+
+    handle = dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources())
+
+    assert handle.id == backend.submit_handle
+    assert [message for message, _ in warned] == ["could not prime %s on %s: %s"]
 
 
 def test_a_moving_working_tree_cannot_split_the_script_from_the_snapshot_it_runs_in(

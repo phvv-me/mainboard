@@ -140,6 +140,64 @@ def _cwd(seen: list[Path]) -> int:
     return 0
 
 
+def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pixi updates a prefix on the way into every command, which is a race for a whole wave.
+
+    Nine jobs starting together out of one pinned tree share the prefix, so each decides for
+    itself that it needs updating and the losers meet it mid-write (miyabi-g, 2026-09-05). The
+    update is taken here instead, inside the lock that already serializes the compile, and
+    stamped with the lock and manifest it was taken against so nothing repeats it until one of
+    them moves.
+    """
+    synced: list[str] = []
+    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
+    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+    provisioner.pixi.manifest.parent.mkdir(parents=True)
+    provisioner.pixi.lock.write_text("version: 7\n", encoding="utf-8")
+
+    provisioner.run(("python", "-c", "pass"))
+    provisioner.run(("python", "-c", "pass"))
+    provisioner.capture(("python", "-c", "pass"))
+
+    assert synced == ["default"]
+    # A lock that moved is the one thing that makes the prefix wrong again.
+    provisioner.pixi.lock.write_text("version: 8\n", encoding="utf-8")
+    provisioner.run(("python", "-c", "pass"))
+    assert synced == ["default", "default"]
+
+
+def test_an_environment_nothing_installed_is_never_synced_on_the_way_in(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A command there is refused by the activation, which names the install to run.
+
+    Syncing would answer that question with pixi's words instead, and a workspace with no lock
+    has nothing to be brought in line with at all.
+    """
+    synced: list[str] = []
+    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
+    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: False)
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+    provisioner.pixi.manifest.parent.mkdir(parents=True)
+    provisioner.pixi.lock.write_text("version: 7\n", encoding="utf-8")
+    provisioner.run(("python", "-c", "pass"))
+    assert synced == []
+
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
+    provisioner.pixi.lock.unlink()
+    provisioner.run(("python", "-c", "pass"))
+    assert synced == []
+
+
 def test_running_after_a_manifest_edit_retakes_the_activation_the_recompile_invalidated(
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
