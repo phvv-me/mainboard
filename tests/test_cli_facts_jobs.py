@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard.cli import build
+from mainboard.core.project import Project
 from mainboard.dispatch import HostSetup
 from mainboard.dispatch.dispatcher import Dispatcher
 from mainboard.dispatch.schedulers import HostUnreachable
@@ -34,6 +35,7 @@ _ROW = {
     "since": "",
     "starts": "",
     "submitted_at": "2026-08-01T00:00:00",
+    "cause": "",
 }
 
 
@@ -144,6 +146,27 @@ def test_the_setup_verb_shows_what_the_host_became(
         assert json.loads(out)["installer"] == "uv"
         return
     assert all(fragment in out for fragment in fragments)
+
+
+def test_a_settled_failure_carries_what_it_said_on_the_way_out(
+    depot: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A wave of identical `failed` rows says nothing, and the log that says it is already home.
+
+    So the listing reads it: one line per failed row, off the tail the sweep pulled back beside
+    that run's receipts, which is what thirty two GH200 jobs were missing on 2026-09-05.
+    """
+    seed_run("H9", verdict="failed")
+    stored = depot / Project().out_dir / "batches" / "train" / "H9.log"
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_text("Traceback:\n  frame\nRuntimeError: the gate failed\nexit=1\n")
+
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["jobs", "--json"])
+
+    [row] = json.loads(capsys.readouterr().out)
+    assert row["state"] == "failed"
+    assert row["cause"] == "RuntimeError: the gate failed"
 
 
 @pytest.mark.parametrize(

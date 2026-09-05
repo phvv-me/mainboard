@@ -33,15 +33,18 @@ from .dispatch.landing import Landing, renter
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shared import logger
+from .dispatch.snapshots import Snapshots
 from .dispatch.vocabulary import Request, Resources
 from .dispatch.wrapping import connection, missing, wrap
 from .doctor import Doctor
+from .engines.compile.prefixes import Prefixes, digest_of, prefix_path
 from .engines.compile.provisioner import Provisioner, task_line
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
 from .experiments.identity import run_id
 from .manifest.loading import load
 from .monitor import Monitor
+from .nodes import evidence_of
 from .probe.snapshot import HostFacts
 from .scaffold import Scaffold
 from .tracking import (
@@ -837,6 +840,58 @@ class Board:
             container=asked.container,
         )
 
+    def provide(self, env: str = "", source: str = "") -> Path:
+        """Build the immutable environment a dispatched job activates, once, and name it.
+
+        The verb a host runs for itself. A dispatch pins the digest of the compiled artifact it
+        ships into the snapshot the job runs from, and this is what turns that digest into a
+        built environment: one directory per lock, never written to again, so a wave queued
+        against one lock keeps it however many times the workspace re-solves while it waits.
+
+        Called again for an environment that is already built, it answers where it is and
+        touches nothing, which is what lets every job of a wave call it and one of them build.
+
+        env: the environment to build, the host profile's own when empty.
+        source: the directory holding the compiled artifact to build from, workspace-relative
+            or absolute; this workspace's own generated environment when empty.
+        """
+        plan = self.plan(env=env, container="none")
+        provisioner = Provisioner(self.root, self.manifest)
+        where = self.dispatcher.local(source) if source else provisioner.environment_dir(plan.env)
+        prefixes = Prefixes(self.root, self.manifest, plan.env)
+        built = prefixes.materialize(where, modules=plan.profile.modules)
+        # Building is also the moment to let go of what nothing names any more, since this is
+        # the machine that holds both the prefixes and the trees that point at them.
+        dropped = prefixes.prune(live=prefixes.referenced(Path(Snapshots(str(self.root)).base)))
+        if dropped:
+            logger.info(
+                "dropped %d unreferenced environment(s): %s", len(dropped), ", ".join(dropped)
+            )
+        return built
+
+    def addressed(self, plan: ExecutionPlan, root: str) -> str:
+        """Where on `root`'s host the immutable environment this dispatch pins is built.
+
+        Content-addressed from this workspace's own compiled artifact, which is the same bytes
+        the mirror ships and the snapshot hardlinks, so the digest the dispatch pins and the one
+        the host arrives at when it builds are the same number reached independently.
+
+        A workspace with nothing compiled has no environment to address and answers with
+        nothing, which leaves the dispatch reaching the mirror's own the way it always did.
+
+        plan: the resolved execution context whose environment is being addressed.
+        root: the workspace root on the host.
+        """
+        if plan.containerized:
+            return ""
+        where = Provisioner(self.root, self.manifest).environment_dir(plan.env)
+        try:
+            digest = digest_of(where)
+        except MissionError as unbuilt:
+            logger.warning("dispatching without an addressed environment: %s", unbuilt)
+            return ""
+        return prefix_path(root, plan.env, digest)
+
     def resources(
         self,
         *,
@@ -1077,7 +1132,8 @@ class Board:
         gpu_name: the GPU type a provider backend rents, ignored by the ssh family.
         max_usd: the spend cap a provider backend refuses to submit without.
         attempt: the 1-based try number, feeding the default expressions.
-        fetch: a results path recorded for `Job.pull`.
+        fetch: a results path recorded for `Job.pull`, the node's own evidence directory when
+            unset and the run serves one.
         node: the ledger slug this run serves, carried into its record and receipts.
         watch: announces the stages that happen on the far side and take long enough to be
             worth saying: every step of a rental's landing, and the priming of a queued host's
@@ -1087,6 +1143,7 @@ class Board:
         # cannot run costs a scheduler round trip on owned hardware and a whole rental on a
         # metered one, since a provider bills from boot and never learns the command never ran.
         command = vetted(command)
+        fetch = self.results(fetch, node=node) or None
         plan = self.plan(env=env, container=container)
         resources = self.resources(
             queue=queue,
@@ -1137,10 +1194,24 @@ class Board:
                     sampler=self.sampling(tracked, root=root, resources=resources),
                     attestation=self.attesting(tracked, root=root),
                     watch=watch,
+                    prefix=self.addressed(plan, root),
                 ),
             )
         self.announce(label, run, command=command, host=plan.host, node=node)
         return run
+
+    def results(self, fetch: str | None, *, node: str = "") -> str:
+        """What this dispatch pulls back: `fetch` when it names one, else `node`'s own evidence.
+
+        A run that named the ledger node it serves has already said where its receipts go, since
+        a node is a directory and its evidence is the directory inside it. Asking the caller to
+        repeat that as a `--fetch` is how a whole GH200 wave's receipts stayed on the cluster
+        (2026-09-05), so the node answers for itself and an explicit path still wins.
+
+        fetch: the results path the caller declared, None or empty for none.
+        node: the ledger slug this run serves, empty when it serves none.
+        """
+        return fetch or evidence_of(self.root, node)
 
     def verdicts(self) -> Verdicts:
         """The receipts-derived outcomes of this workspace's runs, the anti-fabrication read.

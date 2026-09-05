@@ -105,7 +105,8 @@ def build(root: Path | None = None) -> App:
         gpu_name: the GPU type to rent, for a metered provider host.
         max_usd: the spend cap a provider host refuses to submit without.
         attempt: the 1-based try number feeding expression defaults.
-        fetch: a results path recorded for later `pull`.
+        fetch: a results path recorded for later `pull`, the node's own evidence directory when
+            unset and `--node` names one.
         node: the ledger slug this run serves, carried into its record and receipts.
         yes: dispatch without asking, what a script passes.
         json: print the handle as canonical JSON instead of the bare id.
@@ -113,7 +114,8 @@ def build(root: Path | None = None) -> App:
         fields: a comma-separated projection over the handle's fields.
         """
         line = joined(command)
-        priced = board(on).expectation(
+        workspace = board(on)
+        priced = workspace.expectation(
             line,
             queue=queue,
             walltime=walltime,
@@ -123,11 +125,11 @@ def build(root: Path | None = None) -> App:
             max_usd=max_usd,
             attempt=attempt,
         )
-        print(_expected(priced), file=sys.stderr)
+        print(_expected(priced, results=workspace.results(fetch, node=node)), file=sys.stderr)
         if not yes and sys.stdin.isatty() and not _agreed():
             raise SystemExit(1)
         with progress(f"submitting on {on}") as stage:
-            job = board(on).submit(
+            job = workspace.submit(
                 line,
                 watch=stage,
                 name=name,
@@ -874,6 +876,30 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
+    def provide(env: str = "", *, source: str = "", json: bool = False) -> None:
+        """Build the immutable environment a dispatched job activates, and print where it is.
+
+        The verb a host runs for itself, and the one a dispatch runs on it after pinning a
+        source tree. An environment is addressed by the content of the compiled manifest and
+        the lock beside it, so a directory built for one lock is never written to again and a
+        wave queued against it keeps it however often the workspace re-solves meanwhile.
+
+        Building one that already exists touches nothing and prints the same path, which is
+        what lets every job of a wave ask and one of them build.
+
+        env: the environment to build, the host profile's own when empty.
+        source: the directory holding the compiled artifact, workspace-relative or absolute;
+            this workspace's own generated environment when empty.
+        json: print the path as canonical JSON instead of a bare line.
+        """
+        with progress(f"building the environment for {env or 'default'}"):
+            built = board("local").provide(env, source)
+        if not json:
+            print(built)
+            return
+        record({"prefix": str(built)}, mode="json", fields=(), title="prefix")
+
+    @app.command
     def attest(stream: str, *, job: str = "") -> None:
         """Record what this machine looks like right now into a stream's receipts, once.
 
@@ -1078,7 +1104,7 @@ def build(root: Path | None = None) -> App:
         limit: how many settled runs to show behind the live ones, newest first.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over state/host/name/handle/since/starts.
+        fields: a comma-separated projection over state/host/name/handle/since/starts/cause.
         """
         with progress("asking every host about its live jobs"):
             listed = Listing(board("local"), limit=limit).taken()
@@ -1100,7 +1126,7 @@ _HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
 
 # The columns the job listing always carries, so a cache nobody has dispatched from still renders
 # its heading, and so a settled row's empty live columns line up under the live rows' own.
-_JOB_COLUMNS = ("state", "host", "name", "handle", "since", "starts", "submitted_at")
+_JOB_COLUMNS = ("state", "host", "name", "handle", "since", "starts", "submitted_at", "cause")
 
 # The columns each batch table carries, named here so an empty batch still renders its heading and
 # so the totals row is summed over the same shape the rows are printed in.
@@ -1131,25 +1157,37 @@ _VERDICT_COLUMNS = (
     "settled",
     "exit_code",
     "detail",
+    "cause",
     "gates",
     "contended",
+    "commit",
+    "digest",
 )
 
 
-def _expected(priced: JobEstimate) -> str:
-    """One line saying where a submit lands and what the meter will read there.
+def _expected(priced: JobEstimate, *, results: str = "") -> str:
+    """One line saying where a submit lands, what it brings home, and what the meter will read.
 
     A rate means a rented target and carries its tail cost. No rate names why there is none, so
     a machine this workspace owns reads as `owned` while a provider nobody could get a price out
     of says that instead, and neither prints a bare zero that looks like a promise. Where the
     rate came from rides beside it for the same reason: a live offer can be rented at that price
     and a stored one is last week's.
+
+    What comes back is named here too, and its absence is named out loud: a run whose results
+    path is nothing pulls nothing home, and the only moment that is cheap to notice is before
+    the job goes out rather than after it has written a wave of receipts onto a cluster.
+
+    results: the path this dispatch pulls back, empty when it declared none.
     """
     where = f"{priced.target} ({priced.kind}{', ' + priced.hardware if priced.hardware else ''})"
+    pulled = f"results {results}" if results else "results NOT pulled back (no --fetch, no --node)"
     if not priced.rate_usd_hr:
-        return f"submit -> {where}: queue policy ok, {priced.rate_source}, expected $0.00"
+        return (
+            f"submit -> {where}: queue policy ok, {pulled}, {priced.rate_source}, expected $0.00"
+        )
     return (
-        f"submit -> {where}: queue policy ok, ${priced.rate_usd_hr:.2f}/hr "
+        f"submit -> {where}: queue policy ok, {pulled}, ${priced.rate_usd_hr:.2f}/hr "
         f"({priced.rate_source}), expected ${priced.expected_usd:.2f} (p90 ${priced.p90_usd:.2f})"
     )
 

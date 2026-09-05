@@ -39,6 +39,11 @@ class RunRecord(FrozenModel):
     source: the key of the pinned source tree the run executes from, so a sweep knows which
         snapshot on the host is still in use and which is garbage. Empty for a provider run,
         which rents a fresh machine per job and pins nothing.
+    commit: the whole commit of the tree that owns the dispatched code, which is not always the
+        workspace `git_sha` names: a monorepo dispatching a submodule's job records the
+        submodule's. Empty when git answered nothing.
+    digest: the content digest of that same tree, the number a run on a mirror with no history
+        seals itself against. Empty for the same reason `commit` is.
     state: the last resolved scheduler outcome, memoized so a finished job (whose verdict can
         never change) is read straight from the cache instead of re-probed over ssh. `None`
         means never resolved; a terminal verdict here is trusted without touching the host.
@@ -67,6 +72,8 @@ class RunRecord(FrozenModel):
     name: str = ""
     node: str = ""
     source: str = ""
+    commit: str = ""
+    digest: str = ""
     state: str | None = None
     exit_code: int | None = None
     verdict: str | None = None

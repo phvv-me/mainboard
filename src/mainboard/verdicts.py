@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from .batch.receipts import OFFERED, Event, Receipts, Topic, latest
 from .batch.runner import directory
 from .core.errors import MissionError
+from .diagnosis import reason
 from .dispatch import vocabulary
 from .dispatch.schedulers import short_reason
 from .dispatch.shared import logger
@@ -91,6 +92,14 @@ class TrialVerdict(FrozenModel):
     contended: what the machine was already doing when this run started, empty when it attested
         an idle node and empty when nothing attested at all. A cell here is the difference
         between a measurement and a measurement taken while another job held the GPU.
+    cause: why a failed run failed, its own last meaningful output line, empty for a run that
+        did not fail and for one whose output never came home. `detail` says a job failed and
+        with what status; this says what it said on the way out.
+    commit: the commit the dispatching tree was at, so a row measured on a mirror with no
+        history still names one. Empty for a run this workspace did not dispatch.
+    digest: the content digest of that tree, which is what a run seals against where there is no
+        git to ask: the mirror carries the bytes and not the history, so the claim a preflight
+        can still make is that these bytes are the ones the dispatch shipped.
     """
 
     job: str
@@ -102,9 +111,12 @@ class TrialVerdict(FrozenModel):
     settled: str = ""
     exit_code: int | None = None
     detail: str = ""
+    cause: str = ""
     gates: str = ""
     producer: str = ""
     contended: str = ""
+    commit: str = ""
+    digest: str = ""
 
     @property
     def code(self) -> int:
@@ -236,7 +248,7 @@ class Verdicts:
         recorded = eventful(Receipts(stream_file).replay()) if stream_file.is_file() else ()
         mine = [trial for trial in recorded if trial.handle == record.handle]
         harvested = harvest(under)
-        floor = self.swept(tuple(mine)) or (registered(record, job=job),)
+        floor = self.swept(tuple(mine)) or (self.__floor(record, job=job),)
         return StreamVerdict(stream=stream, trials=(*floor, *harvested))
 
     def of(self, target: str, *, host: str = "", run: str = "") -> StreamVerdict:
@@ -300,7 +312,8 @@ class Verdicts:
         return StreamVerdict(stream=f"{stream} run {chosen}", trials=trials, note=note)
 
     def swept(self, trials: tuple[TrialVerdict, ...]) -> tuple[TrialVerdict, ...]:
-        """`trials` with every row still in flight re-read from the durable run registry.
+        """`trials` joined onto the durable run registry: their provenance, and any in-flight
+        outcome the registry has already settled.
 
         A batch's own watch is the only thing that publishes a batched job's settled line, and
         the unattended sweep deliberately writes none, so the two can never double each other.
@@ -318,24 +331,45 @@ class Verdicts:
 
         trials: the stream's own rows, in the order they will be reported.
         """
-        return tuple(
-            self.__registered(trial) if trial.handle and trial.code == _IN_FLIGHT else trial
-            for trial in trials
-        )
+        return tuple(self.__registered(trial) if trial.handle else trial for trial in trials)
 
     def __registered(self, trial: TrialVerdict) -> TrialVerdict:
-        """`trial` under its registry row, unchanged when no dispatch was ever recorded for it."""
+        """`trial` under its registry row: its provenance always, its outcome while it flies.
+
+        The provenance is joined onto every dispatched row, settled ones included, because what
+        a row was measured from does not stop being true when the job ends and a mirror carries
+        no history to read it from later. The outcome is joined only where the receipts left the
+        row in flight, since a settled line carries a detail and an exit code this registry has
+        no column for and was written by the pass that read the same probe.
+        """
         try:
             record = self.board.dispatcher.cache.run(trial.handle, trial.target or None)
         except LookupError:
             return trial
-        return trial.model_copy(
-            update={
+        outcome = (
+            {
                 "state": record.state or trial.state,
                 "verdict": record.verdict or trial.verdict,
                 "exit_code": record.exit_code,
             }
+            if trial.code == _IN_FLIGHT
+            else {}
         )
+        joined = trial.model_copy(
+            update={"commit": record.commit, "digest": record.digest, **outcome}
+        )
+        if joined.code != 1:
+            return joined
+        return joined.model_copy(update={"cause": self.why(record)})
+
+    def __floor(self, record: RunRecord, *, job: str) -> TrialVerdict:
+        """`record`'s own row, the answer for a run whose stream holds no receipts at all."""
+        alone = registered(record, job=job)
+        return alone if alone.code != 1 else alone.model_copy(update={"cause": self.why(record)})
+
+    def why(self, record: RunRecord) -> str:
+        """Why `record` failed, off the log the sweep brought home; empty when it brought none."""
+        return reason(self.board, record)
 
     def wait(
         self,
@@ -533,6 +567,8 @@ def registered(record: RunRecord, *, job: str) -> TrialVerdict:
         state=record.state or "",
         verdict=record.verdict or vocabulary.RUNNING,
         exit_code=record.exit_code,
+        commit=record.commit,
+        digest=record.digest,
     )
 
 

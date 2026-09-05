@@ -1,11 +1,10 @@
-{% if synchronize %}
-# Bring the environment in line with its lock before activating it, under the workspace lock the
-# tool takes for exactly this. pixi does it on the way into any command anyway, but every job of
-# a wave shares one prefix and would do it at once, and a job that waited hours in a queue cannot
-# assume the reading its dispatch took still holds: a later dispatch from a newer commit replaces
-# the compiled manifest under the same prefix. Its failure is not this job's failure, so a broken
-# environment is still diagnosed by the activation below, in the words that name the install.
-{{ synchronize }} || echo "mainboard: could not bring the environment in line with its lock"
+{% if provide %}
+# Build the environment this job activates, unless the host already has it. It is addressed by
+# the content of the manifest and lock this job was dispatched with, so this is a stat on every
+# job but the one that builds it, and a wave whose prefix was pruned or interrupted rebuilds
+# exactly the one it was dispatched against rather than whatever the workspace holds now. Its
+# failure is not this job's failure: the activation below still refuses, in words that name it.
+{{ provide }} || echo "mainboard: could not build the environment this job was dispatched with"
 {% endif %}
 {{ activation }}
 {% if pythonpath %}
@@ -20,6 +19,18 @@ unset PYTHONPATH
 # source and not the history, so this is the one line that lets a receipt name its commit, and a
 # `-dirty` suffix lands the row inadmissible exactly as a local dirty tree would.
 export MAINBOARD_SOURCE={{ source }}
+{% endif %}
+{% if commit %}
+# The same tree, whole, so a run can say which revision produced it rather than which tag was
+# nearest. A mirror has no history to derive this from and no worktree to check, so this and the
+# digest below are what a preflight seals against here.
+export MAINBOARD_SOURCE_COMMIT={{ commit }}
+{% endif %}
+{% if digest %}
+# What the dispatching tree's tracked content hashed to. The claim a job can still make on a
+# machine with no git is that these bytes are the bytes the dispatch shipped, and this is the
+# number it makes it against.
+export MAINBOARD_SOURCE_DIGEST={{ digest }}
 {% endif %}
 {% for key, value in exports %}
 export {{ key }}={{ value }}

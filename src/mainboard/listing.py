@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from .diagnosis import reason
 from .dispatch import vocabulary
 from .monitor import Sweep
 
@@ -21,6 +22,11 @@ if TYPE_CHECKING:
     from .board import Board
     from .dispatch.state import RunRecord
     from .dispatch.vocabulary import JobState
+
+
+# The verdicts whose row is worth a reason. A cancel is a decision somebody made and a skip is a
+# job nobody dispatched, so neither has an output to explain itself with.
+_FAILURES = frozenset({vocabulary.FAILED, vocabulary.TIMEOUT})
 
 
 class JobRow(FrozenModel):
@@ -35,6 +41,8 @@ class JobRow(FrozenModel):
         dispatch time while the backend says nothing about when; empty once it has settled.
     starts: when the backend expects a queued run to start, empty where it estimates none.
     submitted_at: when the run was dispatched.
+    cause: why a settled run failed, its own last meaningful output line. Empty for a live run,
+        which has printed nothing home yet, and for one that ended clean.
     """
 
     state: str
@@ -44,6 +52,7 @@ class JobRow(FrozenModel):
     since: str = ""
     starts: str = ""
     submitted_at: str
+    cause: str = ""
 
 
 class Listed(FrozenModel):
@@ -109,15 +118,21 @@ class Listing:
             submitted_at=record.submitted_at,
         )
 
-    @staticmethod
-    def landed(record: RunRecord) -> JobRow:
-        """One settled run's row, read from the cache, since a terminal verdict cannot move."""
+    def landed(self, record: RunRecord) -> JobRow:
+        """One settled run's row, read from the cache, since a terminal verdict cannot move.
+
+        A failure carries what it said on the way out, off the log the sweep already brought
+        home. Thirty two GH200 jobs that all died on one loader line printed thirty two
+        identical `failed` rows here, and the line was on this disk the whole time.
+        """
+        verdict = record.verdict or vocabulary.UNKNOWN
         return JobRow(
-            state=record.verdict or vocabulary.UNKNOWN,
+            state=verdict,
             host=record.target,
             name=record.name or record.script,
             handle=record.handle,
             submitted_at=record.submitted_at,
+            cause=reason(self.board, record) if verdict in _FAILURES else "",
         )
 
     def note(self, *, shown: int, quiet: Mapping[str, str]) -> str:

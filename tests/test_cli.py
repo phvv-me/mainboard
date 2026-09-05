@@ -1,6 +1,7 @@
 import json
 import os
 from collections.abc import Sequence
+from shutil import rmtree
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -416,6 +417,38 @@ def test_submit_prints_the_expectation_and_asks_once_at_a_terminal(
     assert said in printed.err
     assert not printed.out.startswith("dispatch?")
     assert [call[0] for call in relayed] == (["submit"] if dispatched else [])
+
+
+def test_the_submit_expectation_names_what_comes_home_before_anything_moves(
+    depot: Path,
+    relayed: Sequence[Relayed],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A dispatch pulling nothing back is cheap to notice now and expensive to notice later.
+
+    The node names its own evidence, so a `--node` submit says which directory comes home; a
+    submit that names neither says that nothing does, in the one moment before a wave writes its
+    receipts onto a cluster nobody is going to rsync by hand.
+    """
+    priced = JobEstimate(job="j", target=_MIYABI_G, kind="pbs", rate_source="owned")
+    monkeypatch.setattr(Board, "expectation", lambda self, command, **query: priced)
+    node = depot / "experiments" / "recovery_cost_cards" / "evidence"
+    node.mkdir(parents=True)
+    try:
+        with pytest.raises(SystemExit, match="0"):
+            build(depot)(
+                ["submit", "--on", _MIYABI_G, "--yes", "--node", "recovery_cost_cards", "true"]
+            )
+        named = capsys.readouterr().err
+        with pytest.raises(SystemExit, match="0"):
+            build(depot)(["submit", "--on", _MIYABI_G, "--yes", "true"])
+        silent = capsys.readouterr().err
+    finally:
+        rmtree(depot / "experiments", ignore_errors=True)
+
+    assert "results experiments/recovery_cost_cards/evidence" in named
+    assert "results NOT pulled back (no --fetch, no --node)" in silent
 
 
 def test_the_entry_point_says_the_staleness_line_before_anything_else(

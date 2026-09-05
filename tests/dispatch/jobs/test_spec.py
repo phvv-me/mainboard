@@ -103,6 +103,43 @@ def test_a_dispatched_job_learns_which_source_it_is_and_only_when_one_was_declar
     assert "MAINBOARD_SOURCE" not in silent
 
 
+def test_a_dispatched_job_carries_the_provenance_a_mirror_cannot_derive() -> None:
+    """A snapshot has no `.git`, so a preflight there can read neither HEAD nor a worktree.
+
+    The dispatcher can read both, so it declares them: the commit says which revision this is,
+    and the digest says these exact bytes, which is what a run seals itself against where there
+    is no history to ask. Without them a runner has to be handed the number by hand at submit
+    time, which is what the reproducibility campaign's own `--expect-source` was (2026-09-05).
+    """
+    sealed = spec(source="e975499", commit="e975499f" * 5, digest="9a" * 32).render(pbs=False)
+
+    assert f"export MAINBOARD_SOURCE_COMMIT={'e975499f' * 5}" in sealed
+    assert f"export MAINBOARD_SOURCE_DIGEST={'9a' * 32}" in sealed
+    # Declared before the command, like every other fact about the run, so a preflight inside it
+    # can refuse before anything is measured.
+    assert sealed.index("MAINBOARD_SOURCE_DIGEST") < sealed.index("bash -c")
+    # And a dispatch that could read neither says neither, rather than exporting an empty claim.
+    assert "MAINBOARD_SOURCE_COMMIT" not in spec(source="e975499").render(pbs=False)
+
+
+def test_an_addressed_environment_is_activated_frozen_and_first_on_the_library_path() -> None:
+    """Thirty two GH200 jobs died importing sqlite3 against `/lib64`'s libstdc++.
+
+    The prefix's own `lib` was second on the loader's path, so a moment when the environment was
+    mid-reconciliation sent every one of them to the system library and a `CXXABI_1.3.15` that
+    is not in it. The prefix goes first here, and the activation is the prefix's own rather than
+    the workspace's, which is what stops a job asking pixi to reconcile anything at all.
+    """
+    prefix = "/repo/.mainboard/prefixes/default/abcd1234"
+    frozen = spec(prefix=prefix).render(pbs=False)
+
+    assert f"source {prefix}/activate.sh" in frozen
+    assert f"export LD_LIBRARY_PATH={prefix}/.pixi/envs/default/lib${{LD_LIBRARY_PATH:+" in frozen
+    assert "mainboard install" not in frozen
+    # The workspace's own activation is what a job with no addressed environment still gets.
+    assert "/repo/.mainboard/activate.sh" in spec().render(pbs=False)
+
+
 def test_a_hosts_exports_are_written_before_the_command_and_quoted_as_the_shell_needs() -> None:
     """`HF_HUB_OFFLINE` on a cluster reaches the job as one export line, and a space survives."""
     body = spec(exports={"HF_HUB_OFFLINE": "1", "NOTE": "two words"}).render(pbs=False)

@@ -22,7 +22,7 @@ from . import vocabulary
 from .jobs import JobSpec
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, Watcher, announce, db_file, git, logger, now, state_path, workspace
-from .snapshots import Snapshots, source_key
+from .snapshots import Snapshots, source_key, tree_digest
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
@@ -40,23 +40,30 @@ if TYPE_CHECKING:
 _TOOL = Project().name
 
 
-def synchronizing(plan: ExecutionPlan) -> str:
-    """The line that brings `plan`'s environment in line with its lock, empty when none can.
+def providing(plan: ExecutionPlan, *, root: str, pinned: str) -> str:
+    """The line that builds the immutable environment `pinned` activates, empty when it has none.
 
-    One spelling for the two places that need it: the dispatch takes it once after pinning, and
-    the job takes it again on the node before it activates, because a job that waited six hours
-    in a queue cannot assume the dispatch's reading still holds. It is the tool's own no-op
-    command, so what it actually runs is the provisioner's serialized sync, stamped, under the
-    workspace lock, rather than a second implementation of it out here.
+    One spelling for the two places that need it: the dispatch runs it after pinning, so a wave
+    finds its environment already built, and the job runs it again on the node, so a job whose
+    prefix was pruned or never finished builds it rather than dying in a half-installed one. It
+    is idempotent by construction, so the second call through the ninth cost a stat.
+
+    It runs from the mirror, because that is where a host keeps its built environments, while
+    the artifact it builds from is the snapshot's own hardlinked copy: the description a job
+    activates and the environment it gets are then the same content by construction.
 
     A containerized plan has no such environment: what it activates is the image, which no lock
     on this host describes.
 
-    plan: the resolved execution context whose environment is being brought current.
+    plan: the resolved execution context whose environment is being built.
+    root: the workspace root on the host, where the built environments live.
+    pinned: the snapshot whose compiled artifact describes the environment.
     """
     if plan.containerized:
         return ""
-    return f"{_TOOL} run --env {shlex.quote(plan.env)} -- true"
+    artifact = f"{pinned}/{Project().out_dir}/envs/{plan.env}"
+    build = f"{_TOOL} provide {shlex.quote(plan.env)} --source {shlex.quote(artifact)} >/dev/null"
+    return f"cd {shlex.quote(root)} && {build}"
 
 
 # How a finished verdict maps to a process exit code: 0 ok, 1 failed, 2 still running, 3
@@ -111,15 +118,14 @@ class Verdict(FrozenModel):
         return self.verdict == "ok"
 
 
-def source_of(command: str, root: Path) -> str:
-    """The identity of the repository that owns the code `command` runs, as git describes it.
+def repository_of(command: str, root: Path) -> str:
+    """The working tree that owns the code `command` runs, `root` itself when none does.
 
     A workspace can hold nested repositories, and the tree of record for a receipt is the one the
     job's code lives in, not the one the submitter happened to stand in: a monorepo carrying
     unrelated uncommitted work would otherwise stamp `-dirty` onto every receipt of a clean
     submodule. The first command token that names an existing path under `root` picks the
-    repository; a command naming no path falls back to `root` itself. Empty when git answers
-    nothing, which is what a mirror without history reads before it is told.
+    repository; a command naming no path falls back to `root` itself.
 
     command: the shell command the job runs.
     root: the local workspace root the dispatch is staged from.
@@ -131,8 +137,20 @@ def source_of(command: str, root: Path) -> str:
         where = candidate if candidate.is_dir() else candidate.parent
         top = git("-C", str(where), "rev-parse", "--show-toplevel")
         if top:
-            return git("-C", top, "describe", "--always", "--dirty")
-    return git("-C", str(root), "describe", "--always", "--dirty")
+            return top
+    return str(root)
+
+
+def source_of(command: str, root: Path) -> str:
+    """The identity of the repository that owns the code `command` runs, as git describes it.
+
+    Empty when git answers nothing, which is what a mirror without history reads before it is
+    told.
+
+    command: the shell command the job runs.
+    root: the local workspace root the dispatch is staged from.
+    """
+    return git("-C", repository_of(command, root), "describe", "--always", "--dirty")
 
 
 def held_handle(asked: Request) -> str:
@@ -162,10 +180,17 @@ class Source(FrozenModel):
     identity: `git describe --always --dirty` for the tree the command's code lives in, the
         string a job carries into its receipts as `MAINBOARD_SOURCE`.
     key: the directory name that tree is pinned under on the host.
+    commit: that tree's commit, whole, exported to the job as `MAINBOARD_SOURCE_COMMIT`.
+    digest: the content digest of that tree, exported as `MAINBOARD_SOURCE_DIGEST`. Together
+        those two are what a run seals against on a host that has no history to read: the
+        commit says which revision, the digest says these exact bytes, and a preflight that
+        can check neither locally can check both against what the dispatch declared.
     """
 
     identity: str
     key: str
+    commit: str = ""
+    digest: str = ""
 
 
 class Dispatcher:
@@ -313,8 +338,14 @@ class Dispatcher:
 
         command: the shell command the job runs, empty for a caller submitting a written script.
         """
-        identity = source_of(command, self.root)
-        return Source(identity=identity, key=source_key(self.root, source=identity))
+        where = repository_of(command, self.root)
+        identity = git("-C", where, "describe", "--always", "--dirty")
+        return Source(
+            identity=identity,
+            key=source_key(self.root, source=identity),
+            commit=git("-C", where, "rev-parse", "HEAD"),
+            digest=tree_digest(where),
+        )
 
     def probe(self, handle: Handle) -> JobState | None:
         """One non-blocking scheduler probe of `handle`, the read a status view wants.
@@ -471,6 +502,7 @@ class Dispatcher:
         attestation: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
         watch: Watcher | None = None,
+        prefix: str = "",
     ) -> Handle:
         """Render `cmd` into a job script for `plan`'s host and dispatch it.
 
@@ -497,8 +529,11 @@ class Dispatcher:
             none, recording what the machine looked like as the work started.
         containerize: builds the container runtime argv around `["bash", "-c", cmd]`; required
             when `plan.containerized`.
-        watch: announces the priming of the host's environment, the one stage of a dispatch that
-            happens on the far side and takes long enough to be worth saying.
+        watch: announces the building of the host's environment, the one stage of a dispatch
+            that happens on the far side and takes long enough to be worth saying.
+        prefix: the built environment this job activates on the host, addressed by the content
+            of the compiled artifact this dispatch ships; empty leaves the job activating the
+            workspace's own environment, which is what a workspace addressing none still does.
         """
         container_command = ""
         if plan.containerized:
@@ -509,10 +544,11 @@ class Dispatcher:
                 )
             container_command = shlex.join(containerize(["bash", "-c", cmd]))
         source = self.source(cmd)
+        pinned = self.pinned(root, source=source)
         spec = JobSpec(
             cmd=cmd,
             plan=plan,
-            root=self.pinned(root, source=source),
+            root=pinned,
             queue=resources.queue or "",
             walltime=resources.walltime or "",
             select=resources.nodes,
@@ -520,10 +556,13 @@ class Dispatcher:
             account=resources.account,
             mem_gb=resources.mem_gb,
             container_command=container_command,
-            synchronize=synchronizing(plan),
+            prefix=prefix,
+            provide=providing(plan, root=root, pinned=pinned),
             sampler=sampler,
             attestation=attestation,
             source=source.identity,
+            commit=source.commit,
+            digest=source.digest,
             exports=plan.exports,
         )
         script = self.write_job_script(
@@ -542,6 +581,7 @@ class Dispatcher:
             source=source,
             containerize=containerize,
             watch=watch,
+            prefix=prefix,
         )
         return Handle(
             id=handle, host=plan.host, root=root, kind=plan.profile.kind, fetch_path=fetch
@@ -605,6 +645,7 @@ class Dispatcher:
         source: Source | None = None,
         containerize: Callable[[list[str]], list[str]] | None = None,
         watch: Watcher | None = None,
+        prefix: str = "",
     ) -> str:
         """Ship the workspace, pin the tree it runs from, dispatch `script`, return the handle.
 
@@ -626,8 +667,9 @@ class Dispatcher:
         containerize: builds the container runtime argv around `["bash", "-c", verify]`; required
             when `plan.containerized`, so the verify preflight runs inside the same base image a
             job would.
-        watch: announces the one stage this has that nobody can see from here, the priming of
+        watch: announces the one stage this has that nobody can see from here, the building of
             the environment on the host.
+        prefix: the built environment the pinned tree activates, addressed by content.
         """
         admit(
             plan.profile,
@@ -635,7 +677,7 @@ class Dispatcher:
             walltime=resources.walltime or "",
             mem_gb=resources.mem_gb or 0,
         )
-        key = (source or self.source()).key
+        dispatched = source or self.source()
         prepared, staged = self._prepare_script(script)
         shipped = self.rsync_up(plan, root, required=required, extra=staged)
         sha = git("rev-parse", "--short", "HEAD")
@@ -644,13 +686,17 @@ class Dispatcher:
             self._verify(remote, plan, root, verify=verify, containerize=containerize)
             pinned = Snapshots(root).pin(
                 remote,
-                key=key,
+                key=dispatched.key,
                 sources=shipped,
                 results=fetch or "",
+                prefix=prefix,
+                environment=plan.env,
+                commit=dispatched.commit,
+                digest=dispatched.digest,
                 filters=self.sync.filters,
                 exclude=[*self.sync.excludes, *plan.profile.sync.exclude],
             )
-            self._prime(remote, plan, pinned, watch)
+            self._prime(remote, plan, pinned, root, watch)
             try:
                 handle = pick(plan.profile).submit(
                     remote, pinned, script=prepared, args=args, resources=resources
@@ -670,7 +716,9 @@ class Dispatcher:
                 fetch_path=fetch,
                 name=name,
                 node=node,
-                source=key,
+                source=dispatched.key,
+                commit=dispatched.commit,
+                digest=dispatched.digest,
             )
         )
         logger.info(
@@ -705,6 +753,7 @@ class Dispatcher:
         node: the ledger slug this run serves, recorded on the run and its receipts.
         fetch: a results path recorded for a later pull.
         """
+        dispatched = self.source(command)
         self.cache.record(
             RunRecord(
                 handle=handle,
@@ -718,6 +767,8 @@ class Dispatcher:
                 fetch_path=fetch,
                 name=name,
                 node=node,
+                commit=dispatched.commit,
+                digest=dispatched.digest,
             )
         )
         logger.info("%s -> %s on %s (%s)", command, handle, host, kind)
@@ -803,7 +854,12 @@ class Dispatcher:
         )
 
     def _prime(
-        self, remote: Machine, plan: ExecutionPlan, pinned: str, watch: Watcher | None = None
+        self,
+        remote: Machine,
+        plan: ExecutionPlan,
+        pinned: str,
+        root: str,
+        watch: Watcher | None = None,
     ) -> None:
         """Take the environment update the first job out of `pinned` would otherwise race for.
 
@@ -830,18 +886,18 @@ class Dispatcher:
         watch: announces the priming as it happens, so a batch dispatch says it took the update
             rather than leaving it to be confirmed by watching processes on the host.
         """
-        command = synchronizing(plan)
+        command = providing(plan, root=root, pinned=pinned)
         if not command:
             return
-        retcode, _, err = remote["bash"][["-lc", wrap(plan, pinned, command=command)]].run(
-            retcode=None
-        )
+        retcode, _, err = remote["bash"][
+            ["-lc", wrap(plan, root, command=command, activate=False)]
+        ].run(retcode=None)
         if retcode:
             logger.warning(
                 "could not prime %s on %s: %s", plan.env, plan.host, failure_reason(str(err))
             )
             return
-        told = f"primed {plan.env} on {plan.host} for {pinned}"
+        told = f"built {plan.env} on {plan.host} for {pinned}"
         logger.info("%s", told)
         (watch or announce)(told)
 

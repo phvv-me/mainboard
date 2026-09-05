@@ -200,15 +200,27 @@ def test_submit_records_the_run_with_the_git_provenance_it_was_dispatched_from(
     porcelain: str,
     dirty: int,
 ) -> None:
-    monkeypatch.setattr(
-        dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else porcelain
-    )
+    def answered(*args: str) -> str:
+        """git as this dispatch reads it: a commit, a tracked listing, or the tree's own delta."""
+        if "rev-parse" in args:
+            return "abc1234"
+        if "ls-files" in args:
+            return "100644 aaaa 0\ta.py"
+        return porcelain
+
+    monkeypatch.setattr(dispatch_module, "git", answered)
+    monkeypatch.setattr(snapshots_module, "git", answered)
     handle = dispatcher.submit(
         plan(), "/repo", script="train.sh", args=("--x", "1"), resources=Resources()
     )
     [run] = dispatcher.cache.recent(10)
     assert (run.handle, run.target, run.git_sha, run.dirty) == (handle, "gold", "abc1234", dirty)
     assert run.args == "--x 1"
+    # And the whole commit beside the short one, with the digest of the tree it was taken from:
+    # the mirror this job runs in has no history, so the registry is where a later reader learns
+    # what the run was measured from.
+    assert run.commit == "abc1234"
+    assert len(run.digest) == 64
 
 
 def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror_itself(
@@ -239,69 +251,40 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     assert run.source == pinned.rsplit("/", maxsplit=1)[-1]
 
 
-def test_a_dispatch_brings_the_pinned_environment_current_before_the_wave_starts(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A lock only serializes the machine holding it, and a wave of PBS jobs is a wave of nodes.
-
-    So the update pixi performs on the way into a command is taken here, once, through the tool
-    the jobs themselves run, before anything is queued. A host that cannot answer costs its wave
-    the serialization rather than the dispatch, since the environment was already proven to run.
-    """
-    del backend
-    machine = machine_with()
-    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-    announced: list[str] = []
-    dispatcher.run(
-        plan(), "python -m foo", root="/repo", resources=Resources(), watch=announced.append
-    )
-
-    [primed] = [line for line in machine.lines if "run --env" in line]
-    assert primed.startswith("cd /repo/.mainboard/dispatch/sources/")
-    assert primed.endswith("mainboard run --env default -- true")
-    assert primed.index("source") < primed.index("mainboard run")
-    # And it says so, since confirming it otherwise means watching processes on the host.
-    assert [told for told in announced if told.startswith("primed default on gold for /repo")]
-
-
-def test_every_job_brings_the_environment_in_line_before_it_activates(
+def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     dispatcher: Dispatcher,
     backend: RecordingScheduler,
     workdir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dispatch from a newer commit replaces the compiled manifest under the same prefix.
+    """A queued job used to get whatever the one shared prefix was when it started.
 
-    Every pinned tree symlinks its environment back to the one prefix in the mirror, so a wave
-    still queued when a later dispatch lands cannot rely on the reading its own dispatch took:
-    job 3296353 of five, primed at one commit, died updating a prefix a batch from another had
-    moved under it. So the job takes the same serialized sync itself, on the node, before it
-    activates anything, and a failure there is not the job's failure since the activation
-    diagnoses a broken environment in its own words.
+    Its tree names a built environment now, by the content of the manifest and lock it was
+    dispatched with, so the script builds exactly that one if the host lacks it and then
+    activates it and nothing else. The library path is ordered ahead of whatever the machine
+    exported, which is how thirty two jobs died importing sqlite3 against `/lib64`'s libstdc++.
     """
     machine = machine_with()
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-    described = {"value": "v1"}
-    monkeypatch.setattr(
-        dispatch_module,
-        "git",
-        lambda *args: "abc1234" if args[0] == "rev-parse" else described["value"],
-    )
+    prefix = "/repo/.mainboard/prefixes/default/abcd1234"
 
-    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources())
-    described["value"] = "v2"
-    dispatcher.run(plan(), "python -m bar", root="/repo", resources=Resources())
+    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources(), prefix=prefix)
 
-    waves = [call for name, call in backend.calls if name == "submit"]
-    assert len({root for root, _script, _args in waves}) == 2
-    for root, script, _args in waves:
-        body = (workdir / str(script)).read_text(encoding="utf-8")
-        assert "mainboard run --env default -- true || echo" in body
-        assert body.index("mainboard run --env default -- true") < body.index("activate.sh")
-        assert str(root) in body
+    [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
+    body = (workdir / str(script)).read_text(encoding="utf-8")
+    assert f"cd /repo && mainboard provide default --source {root}/.mainboard/envs/default" in body
+    assert f"source {prefix}/activate.sh" in body
+    assert f"export LD_LIBRARY_PATH={prefix}/.pixi/envs/default/lib${{LD_LIBRARY_PATH:+" in body
+    assert body.index("provide default") < body.index("activate.sh")
+    # Nothing in the job asks pixi to reconcile anything, which is what made a shared prefix a
+    # race in the first place.
+    assert "run --env" not in body
+    # And the tree points at that environment rather than at the mirror's mutable one.
+    [built] = [line for line in machine.lines if "mb_snap=" in line]
+    assert f"ln -s {prefix}/.pixi " in built
 
 
-def test_a_containerized_job_has_no_environment_of_its_own_to_bring_in_line(
+def test_a_containerized_job_has_no_environment_of_its_own_to_build(
     dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
     """What it activates is the image, which no lock on this host describes."""
@@ -313,21 +296,55 @@ def test_a_containerized_job_has_no_environment_of_its_own_to_bring_in_line(
         containerize=lambda argv: ["apptainer", "exec", "img.sif", *argv],
     )
     [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    assert "run --env" not in (workdir / str(script)).read_text(encoding="utf-8")
+    assert "provide" not in (workdir / str(script)).read_text(encoding="utf-8")
 
 
-def test_a_host_that_will_not_prime_costs_its_wave_the_serialization_and_not_the_dispatch(
+def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
     dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The environment was proven to run a line earlier; this is the wave's head start."""
+    """One process, before anything is queued, so a wave of nodes finds its environment built.
+
+    It runs from the mirror, where a host keeps its built environments, and builds from the
+    snapshot's own copy of the artifact, so what a job activates and what was built from are
+    the same content.
+    """
+    del backend
+    machine = machine_with()
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+    announced: list[str] = []
+    dispatcher.run(
+        plan(),
+        "python -m foo",
+        root="/repo",
+        resources=Resources(),
+        watch=announced.append,
+        prefix="/repo/.mainboard/prefixes/default/abcd1234",
+    )
+
+    [asked] = [line for line in machine.lines if "provide" in line]
+    assert asked.startswith("cd /repo && ")
+    assert "mainboard provide default --source /repo/.mainboard/dispatch/sources/" in asked
+    assert [told for told in announced if told.startswith("built default on gold for /repo")]
+
+
+def test_a_host_that_will_not_build_costs_its_wave_the_head_start_and_not_the_dispatch(
+    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The job builds its own environment if it has to, so this is only ever a head start."""
     warned: list[tuple[str, tuple[object, ...]]] = []
-    machine = machine_with(rules=[("run --env", 1, "no pixi here")])
+    machine = machine_with(rules=[("provide", 1, "no pixi here")])
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
     monkeypatch.setattr(
         dispatch_module.logger, "warning", lambda message, *args: warned.append((message, args))
     )
 
-    handle = dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources())
+    handle = dispatcher.run(
+        plan(),
+        "python -m foo",
+        root="/repo",
+        resources=Resources(),
+        prefix="/repo/.mainboard/prefixes/default/abcd1234",
+    )
 
     assert handle.id == backend.submit_handle
     assert [message for message, _ in warned] == ["could not prime %s on %s: %s"]

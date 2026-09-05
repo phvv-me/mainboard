@@ -8,6 +8,7 @@ from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from ..core.project import Project
+from ..engines.compile.prefixes import ACTIVATION
 from .transport import BoundedSshMachine, HostUnreachable, SshTransport
 
 if TYPE_CHECKING:
@@ -127,6 +128,43 @@ def activation_stage(plan: ExecutionPlan, root: str, *, optional: bool = False) 
         for index, (test, action) in enumerate(branches)
     )
     return f"{chain}; else {closing}; fi"
+
+
+def frozen_activation(prefix: str, env: str) -> str:
+    """The activation of one built environment, with nothing in it that could rebuild anything.
+
+    A dispatched job activates the environment its own snapshot names, by the absolute path the
+    dispatch pinned, and never asks pixi to reconcile it: the prefix is addressed by the content
+    of the manifest and lock it was built from, so there is nothing to bring in line and no lock
+    another process can move underneath it.
+
+    The library path is ordered ahead of whatever the machine already exported, which is the
+    other half of the same fault. A prefix being reconciled left `libstdc++.so.6` missing for an
+    instant, the loader fell through to `/lib64`, and thirty two jobs died importing sqlite3 with
+    `CXXABI_1.3.15 not found`. An environment that names its own libraries first cannot borrow
+    the system's, whatever else is on the path.
+
+    prefix: the built environment's directory on the host.
+    env: the environment inside it.
+    """
+    inside = f"{prefix}/.pixi/envs/{env}"
+    script, bindir, libdir = (
+        shlex.quote(f"{prefix}/{ACTIVATION}"),
+        shlex.quote(f"{inside}/bin"),
+        shlex.quote(f"{inside}/lib"),
+    )
+    tool = Project().name
+    absent = (
+        f"{tool} found no built environment at {prefix}. It is addressed by the content of the "
+        f"manifest and lock this job was dispatched with, so `{tool} provide {env}` rebuilds "
+        "exactly it."
+    )
+    return (
+        f"if [ -f {script} ]; then source {script}; "
+        f"elif [ -d {bindir} ]; then export PATH={bindir}:$PATH; "
+        f"else echo {shlex.quote(absent)} >&2; exit 1; fi; "
+        f"export LD_LIBRARY_PATH={libdir}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+    )
 
 
 def missing(plan: ExecutionPlan, prefix: str) -> str:

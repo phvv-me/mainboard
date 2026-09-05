@@ -75,6 +75,51 @@ def source_key(root: Path, *, source: str) -> str:
     return f"{named}-{hashlib.blake2s(delta.encode(), digest_size=4).hexdigest()}"
 
 
+def stamped(key: str, *, commit: str, digest: str) -> str:
+    """What a finished snapshot's stamp holds: the tree's key, and the provenance of that tree.
+
+    The key stays the first line and stays alone on it, because it is what the tree is named for
+    and what every earlier stamp on every host already holds. The provenance follows as `name
+    value` lines, which is what a job reads to say which commit it is running and what the
+    shipped bytes hashed to, on a machine that has no history to derive either from.
+
+    key: the tree's identity, from `source_key`.
+    commit / digest: the dispatching tree's commit and content digest, either empty when the
+        workspace has no git to answer with.
+    """
+    lines = [
+        key,
+        *(f"{name} {value}" for name, value in (("commit", commit), ("digest", digest)) if value),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def tree_digest(repository: str) -> str:
+    """A content digest of the tree at `repository`, empty when git cannot describe one.
+
+    WHAT A RUN SEALS AGAINST WHERE THERE IS NO GIT TO ASK. A dispatched job runs from a mirror
+    snapshot with no `.git` at all, so a preflight that wants to prove it is running the code
+    somebody registered cannot read HEAD, cannot check a clean worktree, and until this existed
+    had to be handed a digest computed by hand at the dispatching end (the reproducibility
+    runner's own `--expect-source`, 2026-09-05). The claim it can still make is that these bytes
+    are the bytes the dispatch shipped, and this is that number.
+
+    Taken over git's own object hashes rather than over the files, so a workspace carrying
+    gigabytes of data costs one command instead of a walk: `ls-files -s` lists every tracked
+    path with the blob hash of its content, which is a content digest of the tree by
+    construction. A dirty tree adds its delta, the same two reads `source_key` already
+    disambiguates a dirty snapshot with, so an uncommitted edit changes the digest exactly as it
+    changes the tree.
+
+    repository: the working tree to digest, the one that owns the dispatched job's code.
+    """
+    listed = git("-C", repository, "ls-files", "-s")
+    if not listed:
+        return ""
+    delta = git("-C", repository, "status", "--porcelain") + git("-C", repository, "diff", "HEAD")
+    return hashlib.sha256(f"{listed}\n{delta}".encode()).hexdigest()
+
+
 def containers(sources: Sequence[str]) -> list[str]:
     """Every directory a snapshot has to create to hold `sources`, the tree root included.
 
@@ -146,6 +191,10 @@ class Snapshots:
         key: str,
         sources: Sequence[str],
         results: str = "",
+        prefix: str = "",
+        environment: str = "default",
+        commit: str = "",
+        digest: str = "",
         filters: Sequence[str] = (),
         exclude: Sequence[str] = (),
     ) -> str:
@@ -163,6 +212,17 @@ class Snapshots:
         results: the dispatch's declared results path, symlinked back to the mirror so what the
             job writes there is what a later pull brings home; empty for a dispatch that
             declared none.
+        prefix: the immutable environment this tree activates, named by content. Written once,
+            when the tree is built, and never repointed: the environment belongs to the tree the
+            way its code does, so a wave queued against it keeps it however often the workspace
+            re-solves afterwards. Empty leaves the tree reaching the mirror's own environment,
+            which is what a workspace with no addressed prefixes still does.
+        environment: the environment `prefix` belongs to, which is the directory inside the
+            generated tree the link is written into.
+        commit / digest: the dispatching tree's own provenance, written into the stamp beside
+            the key so the tree on the host says which commit it is and what its content hashed
+            to. A mirror carries no history, so this file is the only place on that machine
+            where either can be read.
         filters / exclude: the same rules the mirror transfer used, so the snapshot holds the
             shipped file set and not the artifacts the host wrote beside it. A root-anchored
             merge rule is safe to repeat here because the transfer that just ran ships every
@@ -170,7 +230,15 @@ class Snapshots:
         """
         path = self.path(key)
         program = self.__program(
-            path, key=key, sources=sources, results=results, filters=filters, exclude=exclude
+            path,
+            key=key,
+            sources=sources,
+            results=results,
+            prefix=prefix,
+            environment=environment,
+            stamp=stamped(key, commit=commit, digest=digest),
+            filters=filters,
+            exclude=exclude,
         )
         retcode, _, err = remote["bash"][["-lc", program]].run(retcode=None)
         if is_transport_failure(int(retcode), str(err)):
@@ -209,6 +277,9 @@ class Snapshots:
         key: str,
         sources: Sequence[str],
         results: str,
+        prefix: str,
+        environment: str,
+        stamp: str,
         filters: Sequence[str],
         exclude: Sequence[str],
     ) -> str:
@@ -247,7 +318,8 @@ class Snapshots:
             f'{shlex.join(["rsync", *argv])} || [ "$?" = 24 ]',
             self.__generated(),
             self.__filling(sources),
-            f"printf '%s\\n' {shlex.quote(key)} > \"$mb_snap/{STAMP}\"",
+            *self.__environment(prefix, environment),
+            f"printf '%s' {shlex.quote(stamp)} > \"$mb_snap/{STAMP}\"",
             "fi",
             # Outside the stamp, because the tree is keyed on the source and a results path is
             # not part of it: two batches off one commit share a snapshot and declare different
@@ -293,6 +365,28 @@ class Snapshots:
             'if [ -d "$e" ]; then ln -s "$e" "$mb_snap/$d/$n"; else ln "$e" "$mb_snap/$d/$n"; fi; '
             "done; done"
         )
+
+    def __environment(self, prefix: str, environment: str) -> list[str]:
+        """The lines that point this tree's environment at the immutable prefix it names.
+
+        Inside the stamp, and this is the one line where that matters most: a results path
+        belongs to the dispatch and is rewritten every time, while the environment belongs to
+        the tree. Repointing it on a later dispatch would move a queued wave into an environment
+        nobody dispatched it against, which is the whole fault this addressing exists to end.
+
+        prefix: the built environment's directory on this host, empty for a workspace that
+            addresses none.
+        environment: the environment the link is written for.
+        """
+        if not prefix:
+            return []
+        out = shlex.quote(Project().out_dir)
+        where = f'"$mb_snap"/{out}/envs/{shlex.quote(environment)}'
+        return [
+            f"mkdir -p {where}",
+            f"rm -rf {where}/.pixi",
+            f"ln -s {shlex.quote(prefix)}/.pixi {where}/.pixi",
+        ]
 
     def __filling(self, sources: Sequence[str]) -> str:
         """The loop symlinking back whatever the mirror holds and the copy did not bring over."""

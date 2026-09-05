@@ -11,6 +11,8 @@ from mainboard.dispatch.snapshots import (
     Snapshots,
     containers,
     source_key,
+    stamped,
+    tree_digest,
     writable,
 )
 
@@ -53,6 +55,58 @@ def test_a_dirty_tree_keys_on_its_delta_so_a_later_edit_is_never_handed_the_earl
     assert source_key(tmp_path, source="abc1234-dirty") == first
     delta["value"] = "M a.py\nM b.py"
     assert source_key(tmp_path, source="abc1234-dirty") != first
+
+
+def test_a_tree_is_digested_from_gits_own_object_hashes_and_moves_when_it_is_edited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What a run seals against where there is no git: these bytes are the dispatched bytes.
+
+    Over `ls-files -s`, which already carries a blob hash per tracked path, so a workspace
+    holding gigabytes of data costs one command rather than a walk. A dirty tree adds its delta,
+    since an uncommitted edit changes the tree and has to change the number.
+    """
+    answers = {"ls-files": "100644 aaaa 0\ta.py\n", "status": "", "diff": ""}
+    monkeypatch.setattr(
+        snapshots_module, "git", lambda *args: answers[next(a for a in args if a in answers)]
+    )
+    clean = tree_digest(str(tmp_path))
+
+    assert len(clean) == 64
+    assert tree_digest(str(tmp_path)) == clean
+    answers["status"] = " M a.py"
+    assert tree_digest(str(tmp_path)) != clean
+    answers["ls-files"] = ""
+    # A tree git says nothing about has no digest to seal against, and says so with an empty
+    # cell rather than with the hash of an empty listing.
+    assert tree_digest(str(tmp_path)) == ""
+
+
+def test_a_snapshots_stamp_records_the_commit_and_digest_it_was_dispatched_from() -> None:
+    """A dispatched job's workspace is a mirror with no history, so this file is the history.
+
+    The key stays alone on the first line, which is what it has always been and what every stamp
+    already on every host holds; the provenance follows it as named lines.
+    """
+    stamp = stamped("e975499", commit="e975499f" * 5, digest="9a" * 32)
+
+    assert stamp.splitlines() == ["e975499", f"commit {'e975499f' * 5}", f"digest {'9a' * 32}"]
+    assert stamp.endswith("\n")
+    # A workspace git answered nothing for writes the key and nothing it cannot stand behind.
+    assert stamped("untracked", commit="", digest="") == "untracked\n"
+
+
+def test_a_pin_writes_that_provenance_into_the_tree_it_freezes() -> None:
+    """One write, inside the stamp guard, so the tree says what it is for as long as it stands."""
+    remote = machine_with()
+
+    Snapshots("/work/projects").pin(
+        remote, key="abc1234", sources=["a"], commit="c0ffee", digest="d1"
+    )
+
+    [program] = remote.lines
+    stamp = "printf '%s' 'abc1234\ncommit c0ffee\ndigest d1\n'"
+    assert program.endswith(f'{stamp} > "$mb_snap/{STAMP}"; fi')
 
 
 def test_a_workspace_with_no_git_at_all_still_gets_a_key(committed: None, tmp_path: Path) -> None:
@@ -129,7 +183,7 @@ def test_pinning_copies_the_shipped_set_by_hardlink_and_links_the_rest_back(
     assert (
         'ln -sfn "$mb_root"/research/compression/raw "$mb_snap"/research/compression/raw'
     ) in program
-    stamped = f"printf '%s\\n' abc1234 > \"$mb_snap/{STAMP}\"; fi"
+    stamped = f"printf '%s' 'abc1234\n' > \"$mb_snap/{STAMP}\"; fi"
     assert stamped in program
     assert program.index(stamped) < program.index("ln -sfn")
 
@@ -330,6 +384,9 @@ def test_the_program_never_exits_since_a_login_shells_exit_runs_its_logout_file(
         key="k",
         sources=["a"],
         results="",
+        prefix="",
+        environment="default",
+        stamp="k\n",
         filters=[],
         exclude=[],
     )

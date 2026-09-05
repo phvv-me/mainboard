@@ -1,5 +1,6 @@
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from shutil import rmtree
 from threading import Event, Thread
 from time import sleep
 from types import TracebackType
@@ -430,6 +431,35 @@ def test_submit_resolves_the_hosts_declared_resources(
     job = board.on(_MIYABI_G).submit("python -m exp.run", **given)
     assert isinstance(job, Job) and job.handle.id == "77"
     assert seen == {**expected, "containerized": True, "root": _REMOTE_ROOT}
+
+
+def test_a_dispatch_that_serves_a_node_brings_that_nodes_evidence_home(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `--node` run already said where its receipts go, since a node IS a directory.
+
+    Asking for it again as a `--fetch` is how a whole GH200 wave's receipts stayed on the
+    cluster and had to be rsynced back by hand (2026-09-05). An explicit path still wins, and a
+    dispatch that names neither still pulls nothing, which the submit expectation says out loud.
+    """
+    seen: list[str | None] = []
+
+    def fake_run(plan, cmd, *, root, resources, fetch=None, **extra):
+        seen.append(fetch)
+        return Handle(id="77", host=plan.host, root=root, kind=plan.profile.kind)
+
+    monkeypatch.setattr(board.dispatcher, "run", fake_run)
+    monkeypatch.setattr(Board, "containerizer", lambda self, plan, root: lambda argv: argv)
+    node = board.root / "experiments" / "recovery_cost_cards" / "evidence"
+    node.mkdir(parents=True)
+    try:
+        board.on(_MIYABI_G).submit("python -m exp.run", node="recovery_cost_cards")
+        board.on(_MIYABI_G).submit("python -m exp.run", node="recovery_cost_cards", fetch="out")
+        board.on(_MIYABI_G).submit("python -m exp.run")
+    finally:
+        rmtree(board.root / "experiments", ignore_errors=True)
+
+    assert seen == ["experiments/recovery_cost_cards/evidence", "out", None]
 
 
 @pytest.mark.parametrize(

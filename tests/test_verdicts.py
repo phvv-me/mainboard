@@ -23,6 +23,8 @@ def recorded(
     name: str = "",
     verdict: str | None = None,
     target: str = "gold",
+    commit: str = "",
+    digest: str = "",
 ) -> None:
     """One dispatched run in the registry, the durable floor a verdict reads from."""
     board.dispatcher.cache.record(
@@ -40,6 +42,8 @@ def recorded(
             state="finished" if verdict else None,
             exit_code=0 if verdict == "ok" else None,
             verdict=verdict,
+            commit=commit,
+            digest=digest,
         )
     )
 
@@ -421,6 +425,66 @@ def test_a_handle_answers_from_its_registry_row_when_the_workspace_tracked_nothi
         ),
     )
     assert settled.code == 0
+
+
+def test_a_failed_row_says_what_it_said_on_the_way_out(board: Board) -> None:
+    """Thirty two GH200 jobs printed thirty two identical `failed` rows (2026-09-05).
+
+    The line that told anyone anything was in the log the sweep had already brought home, one
+    directory over from the receipts this verb reads, and finding it meant knowing that. It is a
+    column now: the last thing the run said, which for a traceback is its exception and for a
+    loader failure is the symbol that was missing.
+    """
+    recorded(board, "9", name="doomed", verdict="failed")
+    stored = directory(board, "doomed") / "9.log"
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_text(
+        "Traceback (most recent call last):\n"
+        '  File "run.py", line 1, in <module>\n'
+        "    import sqlite3\n"
+        "ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found\n"
+        "exit=1\n",
+        encoding="utf-8",
+    )
+
+    [row] = board.verdicts().of("9").trials
+
+    assert row.cause == ("ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found")
+    # The frames above it and the wrapper's own exit stamp are not the cause: one is where and
+    # the other is a column of its own.
+    assert "File" not in row.cause
+    assert row.exit_code is None or "exit=" not in row.cause
+
+
+def test_a_clean_row_carries_no_cause_and_is_never_read_for_one(board: Board) -> None:
+    """A run that ended well has nothing to explain, and a live one has printed nothing home."""
+    recorded(board, "8", name="fine", verdict="ok")
+    stored = directory(board, "fine") / "8.log"
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_text("all good\n", encoding="utf-8")
+
+    assert board.verdicts().of("8").trials[0].cause == ""
+
+
+def test_every_dispatched_row_carries_the_provenance_its_mirror_could_not_derive(
+    board: Board,
+) -> None:
+    """A row measured on a host with no history still names the commit and the bytes it ran.
+
+    Joined onto settled rows as much as onto live ones, since what a run was measured from does
+    not stop being true when the job ends, and the mirror it ran in never knew it.
+    """
+    recorded(board, "3", name="sealed", verdict="ok", commit="e975499f" * 5, digest="9a" * 32)
+    recorded(board, "1", name=_STREAM, verdict="ok", commit="c0ffee" * 6, digest="7b" * 32)
+    published(board, _STREAM)
+
+    [alone] = board.verdicts().of("3").trials
+    receipted_row = next(row for row in board.verdicts().of(_STREAM).trials if row.handle == "1")
+
+    assert (alone.commit, alone.digest) == ("e975499f" * 5, "9a" * 32)
+    # And a row the receipts settled carries it too, joined from the registry, since the stream
+    # a batch writes has no column for what the dispatch was taken from.
+    assert (receipted_row.commit, receipted_row.digest) == ("c0ffee" * 6, "7b" * 32)
 
 
 def test_a_handle_prefers_its_own_receipts_rows_over_the_registry_floor(board: Board) -> None:

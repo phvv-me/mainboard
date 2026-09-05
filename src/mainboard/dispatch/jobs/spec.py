@@ -11,7 +11,7 @@ from patos import FrozenModel
 from ...context.plan import ExecutionPlan
 from ..evidence import framing, staging
 from ..shared import state_dir
-from ..wrapping import activation_stage
+from ..wrapping import activation_stage, frozen_activation
 
 if TYPE_CHECKING:
     from jinja2 import Environment
@@ -63,9 +63,13 @@ class JobSpec(FrozenModel):
         caller that deliberately relies on it.
     container_command: a preformatted shell command that already wraps the inner `cmd` in a
         container runtime invocation; when set, the body runs this instead of a bare `bash -c`.
-    synchronize: a preformatted shell line the script runs before it activates anything, which
-        brings the environment in line with its lock under the workspace lock. Empty for a job
-        whose environment is an image, and for a caller that renders a script by hand.
+    prefix: the built environment this job activates, addressed by the content of the manifest
+        and lock it was dispatched with. Set, the script activates exactly that directory and
+        asks nothing to reconcile it; empty, it falls back to the workspace's own activation,
+        which is what an interactive run and a hand-written script still want.
+    provide: a preformatted shell line the script runs before it activates anything, which
+        builds that environment when the host does not have it yet. Empty for a job whose
+        environment is an image, and for a caller that renders a script by hand.
     sampler: a preformatted shell line the script runs before the command, for a host that
         watches itself while the job runs. Opaque text here on purpose, since a job script is
         the one place that decision can be carried onto a machine that is not this one, and
@@ -77,6 +81,10 @@ class JobSpec(FrozenModel):
     source: the dispatching tree's identity as `git describe --always --dirty` spells it, exported
         to the job as `MAINBOARD_SOURCE` so a receipt written on a mirror that has no history can
         still say which source it measured, and say `-dirty` when the shipped tree was.
+    commit: that tree's whole commit, exported as `MAINBOARD_SOURCE_COMMIT`.
+    digest: that tree's content digest, exported as `MAINBOARD_SOURCE_DIGEST`. A preflight on a
+        mirror cannot read HEAD or check a clean worktree, so what it seals against is this pair,
+        declared by the dispatch that shipped the bytes.
     exports: the host profile's `[hosts.<name>.exports]`, written as `export KEY=VALUE` lines
         before the command so every job on that host runs in the world its profile declares.
     """
@@ -93,10 +101,13 @@ class JobSpec(FrozenModel):
     pythonpath: str = ""
     isolate_pythonpath: bool = True
     container_command: str = ""
-    synchronize: str = ""
+    prefix: str = ""
+    provide: str = ""
     sampler: str = ""
     attestation: str = ""
     source: str = ""
+    commit: str = ""
+    digest: str = ""
     exports: dict[str, str] = {}
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
@@ -132,12 +143,18 @@ class JobSpec(FrozenModel):
             account=self.account,
             pythonpath=shlex.quote(self.pythonpath) if self.pythonpath else "",
             isolate_pythonpath=self.isolate_pythonpath,
-            activation=activation_stage(self.plan, self.root),
+            activation=(
+                frozen_activation(self.prefix, self.plan.env)
+                if self.prefix
+                else activation_stage(self.plan, self.root)
+            ),
             container_command=self.container_command,
-            synchronize=self.synchronize,
+            provide=self.provide,
             sampler=self.sampler,
             attestation=self.attestation,
             source=shlex.quote(self.source) if self.source else "",
+            commit=shlex.quote(self.commit) if self.commit else "",
+            digest=shlex.quote(self.digest) if self.digest else "",
             exports=[(key, shlex.quote(value)) for key, value in self.exports.items()],
             receipts_staging=staging(),
             receipts_framing=framing(),
