@@ -39,13 +39,14 @@ from ...core import MissionError, Project
 from .backend import Pixi
 from .ecosystems import SecondStage
 from .generated import ActivationScript, GeneratedFiles
-from .pixi_manifest import selected_manifest
-from .state import SyncState
+from .pixi_manifest import anchored, selected_manifest
+from .provisioner import environment_shard
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
     from ...manifest import Manifest
+    from .generated import Writer
 
 # Where a workspace keeps its addressed environments, beside the generated tree rather than
 # inside `envs/`, so nothing that walks the mutable shards ever descends into a built prefix.
@@ -65,8 +66,9 @@ STAMP = ".mainboard-prefix"
 ACTIVATION = "activate.sh"
 
 # The files that define an environment, and therefore the ones its digest is taken over. The
-# state file rides along because a host installs frozen against it, but it names digests rather
-# than dependencies and cannot change what gets installed, so it is copied and not hashed.
+# rest of the generated shard is copied in beside them (see `Prefixes.__take`) but not hashed:
+# the state file names digests rather than dependencies, and an activation script or a second
+# stage's own manifest cannot change which packages the lock says land here.
 _DEFINING = ("pixi.toml", "pixi.lock")
 
 
@@ -165,10 +167,7 @@ class Prefixes:
             if self.built(digest):
                 return target
             target.mkdir(parents=True, exist_ok=True)
-            for name in (*_DEFINING, SyncState.path(source).name):
-                copied = source / name
-                if copied.is_file():
-                    files.write(target / name, copied.read_text(encoding="utf-8"))
+            self.__take(source, target, files)
             pixi = Pixi(target)
             pixi.install(self.environment)
             projected = selected_manifest(self.manifest, self.environment)
@@ -184,6 +183,43 @@ class Prefixes:
             ).write(modules)
             files.write(target / STAMP, f"{digest}\n")
         return target
+
+    def __take(self, source: Path, target: Path, files: Writer) -> None:
+        """Copy the compiled artifact into the prefix, anchored so the copy reads as it did.
+
+        EVERY generated file travels, not only the pair the digest is taken over. The manifest's
+        activation sources the dotenv loader and the unset script by name, and the second stage
+        installs from whatever its own managers read, so a prefix holding only the manifest and
+        the lock is activated without the variables the workspace declares and installed without
+        the packages a `[nodejs]` table asks for. What stays behind are the dotted entries: the
+        sync lock and the mutable environment's own stamps, which describe that environment
+        rather than this one, and the installed trees, which are directories and are what this
+        build is about to create for itself.
+
+        Each file is anchored on the way in, because a compile spells every declared location
+        relative to the environment shard it was written for and a prefix is not that directory.
+        The anchor is this machine's own workspace root, which is where those paths meant to
+        point and, on a host, the one root that outlives any pinned tree: a prefix is addressed
+        by content, so one of them serves every tree whose manifest and lock agree, while the
+        trees themselves are pruned a few deep. An editable install anchored into a swept tree
+        would be an import error in every later wave. The price is that such a package's source
+        follows the mirror rather than the snapshot, which is the one thing about a dispatched
+        job that a shared prefix cannot freeze.
+
+        Only the copy is rewritten. The source keeps the bytes its digest was taken over, so the
+        environment this prefix answers to is still addressed by content and not by where it
+        happens to have been built.
+
+        source: the directory holding the compiled artifact.
+        target: the prefix being built from it.
+        files: the writer holding the lock on the prefixes directory.
+        """
+        shard = environment_shard(self.environment)
+        for entry in sorted(source.iterdir()):
+            if entry.name.startswith(".") or not entry.is_file():
+                continue
+            text = entry.read_text(encoding="utf-8")
+            files.write(target / entry.name, anchored(text, root=self.root, generated_dir=shard))
 
     def referenced(self, sources: Path) -> set[str]:
         """Every environment digest a pinned tree under `sources` still activates.

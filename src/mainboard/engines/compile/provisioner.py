@@ -56,6 +56,21 @@ def environment_segment(environment: str) -> str:
 # line with, so the update pixi would otherwise perform inside every command happens once.
 _SYNCED = ".mainboard-synced"
 
+# The directory each logical environment's generated shard lives under, inside the generated
+# tree. One spelling, because its depth is also what every workspace-relative path inside a
+# compiled artifact is written against (see `pixi_manifest.rerooted`).
+_ENVS = "envs"
+
+
+def environment_shard(environment: str) -> PurePosixPath:
+    """The workspace-relative directory `environment`'s compiled artifact is generated into.
+
+    Path arithmetic alone, so a caller that has only a name, and no workspace to ask, still
+    knows where that environment's manifest and lock are written and how deep in the tree they
+    sit.
+    """
+    return PurePosixPath(Project().out_dir) / _ENVS / environment_segment(environment)
+
 
 def validate_environment_roster(manifest: Manifest) -> None:
     """Refuse logical names that alias the same portable shard directory."""
@@ -90,7 +105,7 @@ def task_line(manifest: Manifest, command: str, *, env: str) -> str:
     declared = {*manifest.tasks, *manifest.envs.get(env, Env()).tasks}
     if command.partition(" ")[0] not in declared:
         return command
-    generated = PurePosixPath(Project().out_dir) / "envs" / env / Pixi.filename
+    generated = environment_shard(env) / Pixi.filename
     # Frozen, or every task invocation could silently re-solve and rewrite the lock, which
     # on a remote host would overwrite the pair the workstation shipped. Locks change only
     # through an explicit resolve.
@@ -136,7 +151,7 @@ class Provisioner:
         environment = environment_segment(environment)
         self.manifest.environment(environment)
         if environment not in self._shards:
-            directory = self.out / "envs" / environment
+            directory = self.root / environment_shard(environment)
             self._shards[environment] = _EnvironmentShard(
                 self.root, self.manifest, directory, environment
             )

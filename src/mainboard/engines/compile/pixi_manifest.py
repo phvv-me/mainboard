@@ -1,3 +1,4 @@
+import re
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Self
 
@@ -79,6 +80,33 @@ def rerooted(path: str, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> 
     parents = ("..",) * len(generated_dir.parts)
     root = PurePosixPath(*parents)
     return (root / PurePosixPath(path)).as_posix() if path else root.as_posix()
+
+
+def anchored(
+    text: str, *, root: PurePath, generated_dir: PurePath = _DEFAULT_GENERATED_DIR
+) -> str:
+    """One generated file's text, with every workspace-relative spelling resolved against `root`.
+
+    The inverse of `rerooted`, for a generated file read from somewhere other than the directory
+    it was compiled into. A compile writes each declared location relative to that directory, so
+    the artifact is the same bytes on every machine and those bytes can address an environment.
+    Copy the pair anywhere else and every one of those spellings quietly means something else: a
+    prefix sits one directory deeper than the environment shard, so `path = "../../.."`, the way
+    a workspace that installs itself names its own root, arrived there meaning the workspace's
+    own generated directory, and pixi refused it as not a Python project.
+
+    Textual because the spellings are not only the manifest's: the lock beside it records the
+    same local sources, and the generated dotenv loader sources `.env` by the same route. A
+    workspace-relative spelling is exactly a path token beginning with the parents `rerooted`
+    writes, so that token becomes `root` wherever it stands and nothing else in the file moves.
+
+    root: the workspace root the file's relative paths were written against.
+    generated_dir: the workspace-relative directory it was compiled into, whose depth decides
+        how many parents a workspace-relative path is spelled with.
+    """
+    parents = re.escape(rerooted("", generated_dir=generated_dir))
+    workspace = re.compile(rf"(?<![\w./-]){parents}(?=/|[^\w./-]|$)")
+    return workspace.sub(lambda _: root.as_posix(), text)
 
 
 def _platform_name(entry: Toml) -> str:

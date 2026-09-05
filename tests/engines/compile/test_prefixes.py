@@ -32,6 +32,26 @@ def artifact(tmp_path: Path) -> Callable[[str], Path]:
 
 
 @pytest.fixture
+def self_installing(artifact: Callable[[str], Path]) -> Path:
+    """A compiled artifact for a workspace that installs its own root as an editable package.
+
+    Which is how a research repository ships its own `src/`, and the one shape whose every
+    declared location is written relative to the shard it was compiled into: the workspace root
+    itself, the same root in the lock beside it, and `.env` in the generated dotenv loader.
+    """
+    source = artifact("self")
+    (source / "pixi.toml").write_text(
+        f'{_WORKSPACE}\n[pypi-dependencies]\nw = {{ path = "../../..", editable = true }}\n',
+        encoding="utf-8",
+    )
+    (source / "pixi.lock").write_text(
+        "version: 7\npackages:\n- pypi: ../../..\n  name: w\n", encoding="utf-8"
+    )
+    (source / "dotenv.sh").write_text('. "../../../.env"\n', encoding="utf-8")
+    return source
+
+
+@pytest.fixture
 def prefixes(tmp_path: Path, manifest_from: Callable[[str], Manifest]) -> Prefixes:
     """The addressed environments of a workspace rooted in `tmp_path`."""
     return Prefixes(tmp_path, manifest_from(_WORKSPACE))
@@ -103,6 +123,65 @@ def test_a_second_lock_builds_beside_the_first_and_never_into_it(
     # And each carries the activation a job sources, naming itself rather than the mirror's
     # mutable environment.
     assert "export ONE=1" in (first / "activate.sh").read_text(encoding="utf-8")
+
+
+def test_a_workspace_that_installs_itself_is_built_against_its_root_and_not_the_prefix(
+    fp: FakeProcess,
+    prefixes: Prefixes,
+    self_installing: Path,
+    tmp_path: Path,
+    tool_paths: Mapping[str, str],
+) -> None:
+    """A compiled artifact names every location relative to the shard it was compiled into.
+
+    A prefix is not that shard, so a verbatim copy carried `path = "../../.."` one directory
+    deeper and pixi read the workspace as its own generated tree: `Failed to build
+    reproducibility @ .../.mainboard`, `does not appear to be a Python project`, four Miyabi jobs
+    dead on 2026-09-05, and every workspace with a self-install with them. So the copy is
+    anchored where it lands, in the manifest, in the lock that records the same local source,
+    and in the generated shell the activation sources by name and could not find at all.
+    """
+    fp.register([tool_paths["pixi"], "shell-hook", fp.any()], stdout="export ONE=1\n")
+    fp.register([fp.any()], stdout="environment ready\n", occurrences=8)
+    digest = digest_of(self_installing)
+
+    built = prefixes.materialize(self_installing)
+
+    root = tmp_path.as_posix()
+    assert f'path = "{root}"' in (built / "pixi.toml").read_text(encoding="utf-8")
+    assert f"- pypi: {root}\n" in (built / "pixi.lock").read_text(encoding="utf-8")
+    assert (built / "dotenv.sh").read_text(encoding="utf-8") == f'. "{root}/.env"\n'
+    # Nothing relative survives anywhere in the copy, whatever the artifact declared it for.
+    assert not [path for path in built.iterdir() if "../.." in path.read_text(encoding="utf-8")]
+    # And the environment is still addressed by what it was built from, not by where: the source
+    # keeps its bytes, so the digest a dispatch pinned is the one the host arrives at.
+    assert digest_of(self_installing) == digest == built.name
+
+
+def test_one_artifact_is_one_environment_at_every_root_that_builds_it(
+    fp: FakeProcess,
+    manifest_from: Callable[[str], Manifest],
+    self_installing: Path,
+    tmp_path: Path,
+    tool_paths: Mapping[str, str],
+) -> None:
+    """Two machines hold one lock at two paths, and a blessing has to travel between them.
+
+    So the identity stays over the artifact's own bytes and the absolute root enters only the
+    copy each workspace builds for itself, which is also what lets a job activate an environment
+    built from a pinned tree that no longer stands.
+    """
+    fp.register([tool_paths["pixi"], "shell-hook", fp.any()], stdout="export ONE=1\n")
+    fp.register([fp.any()], stdout="environment ready\n", occurrences=16)
+    here, there = (
+        Prefixes(tmp_path / name, manifest_from(_WORKSPACE)) for name in ("here", "there")
+    )
+
+    built_here, built_there = here.materialize(self_installing), there.materialize(self_installing)
+
+    assert built_here.name == built_there.name == digest_of(self_installing)
+    for prefix, root in ((built_here, here.root), (built_there, there.root)):
+        assert f'path = "{root.as_posix()}"' in (prefix / "pixi.toml").read_text(encoding="utf-8")
 
 
 def test_an_environment_already_built_is_answered_and_never_built_again(
