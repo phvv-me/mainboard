@@ -2,12 +2,21 @@
 # environment there, and read the host back through the activation that install just wrote. The
 # successor to the shell script the previous generation shipped, expressed over the transports
 # dispatch already owns rather than a second, parallel way to reach a host.
+#
+# How the tool gets onto the machine depends on the workspace rather than on the machine. A
+# workspace that vendors the tool's own source installs from that source, which is what keeps a
+# host from ever running a tool older than the manifest it is about to compile. A workspace that
+# consumes the tool from an index has no source to ship, so it installs the version it declares
+# from the index, or keeps the one the machine already runs when that already satisfies it.
+# Assuming the first shape is what refused to onboard a standalone workspace at all, blaming a
+# host whose uv, pip and mainboard were all present for a directory nobody had shipped it.
 
 import shlex
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from packaging.version import Version
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
 from patos import FrozenModel, Resolution, Strategy, StrategyError
 
 from ..core.errors import MissionError
@@ -157,44 +166,143 @@ class Installer:
         return self.shell.run(self.command)
 
 
-def installers(shell: RemoteShell, source: str = _SOURCE) -> Strategy[Installer]:
+def specifier(floor: str) -> str:
+    """The declared version as a requirement operator carries it, empty when nothing is declared.
+
+    A manifest writes a version the way its own resolver spells one, so `">=0.4.8"` arrives with
+    its operator and `"0.4.8"` arrives without: an unadorned version means that exact one.
+
+    floor: the version the workspace declares for the tool, `*` or empty for any.
+    """
+    if floor in {"", "*"}:
+        return ""
+    return floor if floor[0] in "<>=!~" else f"=={floor}"
+
+
+def satisfied_by(found: str, floor: str) -> bool:
+    """Whether the version `found` already meets what the workspace declares.
+
+    A workspace that declares no version is satisfied by any tool at all, since there is nothing
+    to compare against and the machine's own is what it asked for. A version neither side can
+    parse is not treated as satisfied, so the install happens rather than being skipped on a
+    string nobody understood.
+
+    found: the version the machine reports, empty when it runs no tool.
+    floor: the version the workspace declares.
+    """
+    if not found:
+        return False
+    wanted = specifier(floor)
+    if not wanted:
+        return True
+    try:
+        return SpecifierSet(wanted).contains(Version(found), prereleases=True)
+    except InvalidSpecifier, InvalidVersion:
+        return False
+
+
+class Existing(Installer):
+    """The route that installs nothing, because the machine already runs what was asked for.
+
+    Only ever offered to a workspace that vendors no source: one that does always reinstalls
+    from it, since the whole point of shipping the source is that the host runs the tool the
+    manifest was written against.
+    """
+
+    def __init__(self, shell: RemoteShell, *, floor: str) -> None:
+        """shell: the host shell the version is read through.
+
+        floor: the version the workspace declares for the tool.
+        """
+        super().__init__(shell, probe=f"command -v {_TOOL}", command="true")
+        self.floor = floor
+
+    def available(self) -> bool:
+        """Whether the machine's own tool already satisfies the declared version."""
+        return satisfied_by(installed_version(self.shell), self.floor)
+
+
+def installed_version(shell: RemoteShell) -> str:
+    """The tool version the machine already runs, empty when it runs none.
+
+    shell: the host shell the question is asked through.
+    """
+    try:
+        return shell.run(f"{_TOOL} --version").strip().split()[-1]
+    except MissionError, IndexError:
+        return ""
+
+
+def installers(
+    shell: RemoteShell, source: str = _SOURCE, *, vendored: bool = True, floor: str = ""
+) -> Strategy[Installer]:
     """The ordered install routes for `shell`'s host, best first.
 
     uv installs the tool as its own isolated tool environment, which is why it leads: it needs
     no interpreter on the host new enough to run the tool itself. Where uv is absent but the
     host can fetch it, bootstrapping uv beats falling back to a user-site pip install, which is
-    the last route and the only one bound to whatever `python3` the host happens to ship. Every
-    route installs from the synced source, so a host can never run a tool older than the
-    manifest it is about to compile.
+    the last route and the only one bound to whatever `python3` the host happens to ship.
+
+    Which family of routes is offered is a fact about the workspace. One that vendors the tool's
+    source installs from that source, so the host can never run a tool older than the manifest
+    it is about to compile. One that consumes the tool from an index installs the version it
+    declares, and is first offered the machine's own tool, since a machine already running what
+    the manifest asks for needs nothing installed at all.
 
     shell: the host shell each route probes and installs through.
     source: the tool's source directory inside the synced workspace.
+    vendored: whether that source is actually on the machine.
+    floor: the version the workspace declares for the tool, read from its own manifest.
     """
     strategy: Strategy[Installer] = Strategy(f"{_TOOL} installer")
-    present = f"[ -d {shlex.quote(source)} ]"
+    if vendored:
+        quoted = shlex.quote(source)
+        strategy.register(
+            "uv",
+            Installer(
+                shell,
+                probe="command -v uv",
+                command=f"uv tool install --force --editable {quoted}",
+            ),
+        )
+        strategy.register(
+            "uv-bootstrap",
+            Installer(
+                shell,
+                probe="command -v curl",
+                command=f"{_UV_INSTALLER} && uv tool install --force --editable {quoted}",
+            ),
+        )
+        strategy.register(
+            "pip",
+            Installer(
+                shell,
+                probe="python3 -m pip --version",
+                command="python3 -m pip install --user --break-system-packages "
+                f"--force-reinstall --editable {quoted}",
+            ),
+        )
+        return strategy
+    wanted = shlex.quote(f"{_TOOL}{specifier(floor)}")
+    strategy.register("present", Existing(shell, floor=floor))
     strategy.register(
-        "uv",
+        "uv-index",
+        Installer(shell, probe="command -v uv", command=f"uv tool install --force {wanted}"),
+    )
+    strategy.register(
+        "uv-bootstrap-index",
         Installer(
             shell,
-            probe=f"command -v uv && {present}",
-            command=f"uv tool install --force --editable {shlex.quote(source)}",
+            probe="command -v curl",
+            command=f"{_UV_INSTALLER} && uv tool install --force {wanted}",
         ),
     )
     strategy.register(
-        "uv-bootstrap",
+        "pip-index",
         Installer(
             shell,
-            probe=f"command -v curl && {present}",
-            command=f"{_UV_INSTALLER} && uv tool install --force --editable {shlex.quote(source)}",
-        ),
-    )
-    strategy.register(
-        "pip",
-        Installer(
-            shell,
-            probe=f"python3 -m pip --version && {present}",
-            command="python3 -m pip install --user --break-system-packages "
-            f"--force-reinstall --editable {shlex.quote(source)}",
+            probe="python3 -m pip --version",
+            command=f"python3 -m pip install --user --break-system-packages --upgrade {wanted}",
         ),
     )
     return strategy
@@ -212,11 +320,14 @@ class Bootstrap:
 
     shell: the machine's shell both steps probe, install and provision through.
     resolve: let the machine run its own dependency solve instead of installing the shipped lock.
+    floor: the version the workspace declares for the tool, used only when the workspace vendors
+        no source and the tool therefore comes from an index.
     """
 
-    def __init__(self, shell: RemoteShell, *, resolve: bool = False) -> None:
+    def __init__(self, shell: RemoteShell, *, resolve: bool = False, floor: str = "") -> None:
         self.shell = shell
         self.resolve = resolve
+        self.floor = floor
 
     @property
     def env(self) -> str:
@@ -226,17 +337,45 @@ class Bootstrap:
     def tool(self) -> Resolution[Installer]:
         """Install the tool through the first route the machine supports, keeping the rejections.
 
-        A machine that supports no route at all fails here, naming every route and why it was
-        refused, rather than failing later inside a provisioning step that assumed the tool.
+        The routes offered depend on whether the mirror actually carries the tool's source, which
+        is asked of the machine rather than assumed: a workspace that consumes the tool from an
+        index ships no such directory, and every route used to test for it, so all three refused
+        and the refusal blamed the host's tooling for something the workspace had never sent.
+
+        A machine that supports no route fails here rather than inside a provisioning step that
+        assumed the tool, and the refusal names the condition that actually decided it.
         """
         host = self.shell.plan.host
-        routes = installers(self.shell)
+        vendored = self.shell.ok(f"[ -d {shlex.quote(_SOURCE)} ]")
+        routes = installers(self.shell, vendored=vendored, floor=self.floor)
         try:
             resolution = routes.cascade()
         except StrategyError as refused:
-            raise MissionError(f"cannot install {_TOOL} on {host!r}: {refused}") from None
+            raise MissionError(
+                self.unreachable(host, vendored=vendored, refused=refused)
+            ) from None
         routes.select(resolution.winner).install()
         return resolution
+
+    def unreachable(self, host: str, *, vendored: bool, refused: StrategyError) -> str:
+        """Why no route could put the tool on `host`, in terms of what was actually missing.
+
+        The rejection log alone says every route reported itself unavailable, which reads as a
+        host with no tooling and was wrong about the one case it mattered: the routes were all
+        testing for a source directory the workspace never ships. So the line leads with which
+        family was being tried and why, and carries the log behind it.
+
+        host: the alias being onboarded.
+        vendored: whether the mirror carries the tool's own source.
+        refused: what the cascade said about each route it passed over.
+        """
+        where = (
+            f"installing from the source this workspace vendors at {_SOURCE}"
+            if vendored
+            else f"installing {_TOOL}{specifier(self.floor) or ' (no version declared)'} from an "
+            "index, since this workspace vendors no source"
+        )
+        return f"cannot install {_TOOL} on {host!r} by {where}: {refused}"
 
     def environment(self) -> None:
         """Have the machine's own tool compile the synced manifest and install `env` from it.
@@ -303,6 +442,8 @@ class Onboarding:
         `HostSetup` so `doctor` can later tell this host apart from one the manifest outgrew.
     solver: the pixi version that solved this workspace's locks, so a host carrying an older
         pixi is refused before it fails on a manifest shape it cannot read; unchecked when empty.
+    floor: the version this workspace declares for the tool itself, which is what a host with no
+        vendored source installs from an index; empty when the workspace declares none.
     """
 
     def __init__(
@@ -316,6 +457,7 @@ class Onboarding:
         watch: Watcher | None = None,
         digest: str = "",
         solver: str = "",
+        floor: str = "",
     ) -> None:
         self.dispatcher = dispatcher
         self.plan = plan
@@ -325,6 +467,7 @@ class Onboarding:
         self.watch = watch or announce
         self.digest = digest
         self.solver = solver
+        self.floor = floor
 
     @property
     def env(self) -> str:
@@ -380,7 +523,7 @@ class Onboarding:
             capabilities = probe_capabilities(remote, host)
             root = self.root or find_root(remote)
             shell = RemoteShell(remote, self.plan, root)
-            bootstrap = Bootstrap(shell, resolve=self.resolve)
+            bootstrap = Bootstrap(shell, resolve=self.resolve, floor=self.floor)
             self.watch(f"mirroring the workspace to {host}:{root}")
             self.dispatcher.rsync_up(
                 self.plan, root, required=[self.artifact] if self.artifact else []

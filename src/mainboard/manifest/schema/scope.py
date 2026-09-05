@@ -49,6 +49,24 @@ class Scope(FlexModel):
             found |= {name: spec for name, spec in chain.all_deps().items() if spec.is_path}
         return found
 
+    def requirement(self, name: str) -> Spec | None:
+        """The requirement this scope declares for `name`, in conda or any ecosystem, else None.
+
+        One question asked of the whole scope rather than of each table in turn, because a
+        workspace that depends on a package does not care which ecosystem it arrives through and
+        neither does anything that reads the answer. Conda first, since `[deps]` is the default
+        resolver, then each ecosystem in declaration order.
+
+        name: the package to look for.
+        """
+        if name in self.deps:
+            return self.deps[name]
+        for chain in self.toolchains().values():
+            found = chain.all_deps().get(name)
+            if found is not None:
+                return found
+        return None
+
     def toolchains(self) -> dict[str, Toolchain]:
         """Every ecosystem table this scope carries, by runtime name."""
         found: dict[str, Toolchain] = {}

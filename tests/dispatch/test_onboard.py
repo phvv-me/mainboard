@@ -1,3 +1,4 @@
+import shlex
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,7 @@ from mainboard.dispatch.onboard import (
     facts_command,
     installers,
     read_facts,
+    satisfied_by,
 )
 from mainboard.dispatch.state import Cache
 
@@ -96,6 +98,113 @@ def test_the_install_routes_are_offered_best_first_and_all_read_the_synced_sourc
     assert routes.names == ["uv", "uv-bootstrap", "pip"]
     assert all("packages/tool" in routes.select(name).command for name in routes.names)
     assert "astral.sh/uv" in routes.select("uv-bootstrap").command
+
+
+def test_a_workspace_that_vendors_no_source_installs_the_version_it_declares() -> None:
+    """A standalone workspace consumes the tool from an index and ships no source at all.
+
+    Every route used to test for that directory, so all three refused on a host whose uv, pip
+    and mainboard were all present, and the refusal blamed the host's tooling for something the
+    workspace had never sent (miyabi-g, 2026-09-05).
+    """
+    shell = RemoteShell(machine_with(), plan(), "/repo")
+    routes = installers(shell, "packages/tool", vendored=False, floor=">=0.4.8")
+
+    assert routes.names == ["present", "uv-index", "uv-bootstrap-index", "pip-index"]
+    assert all("packages/tool" not in routes.select(name).command for name in routes.names)
+    assert routes.select("uv-index").command == "uv tool install --force 'mainboard>=0.4.8'"
+    assert routes.select("pip-index").command.endswith("--upgrade 'mainboard>=0.4.8'")
+    assert "astral.sh/uv" in routes.select("uv-bootstrap-index").command
+    # A machine that already runs it installs nothing at all.
+    assert routes.select("present").command == "true"
+
+
+@pytest.mark.parametrize(
+    ("floor", "wanted"),
+    [
+        pytest.param(">=0.4.8", "mainboard>=0.4.8", id="a-declared-floor"),
+        pytest.param("0.4.8", "mainboard==0.4.8", id="a-bare-version-means-that-one"),
+        pytest.param("*", "mainboard", id="any-version-at-all"),
+        pytest.param("", "mainboard", id="a-workspace-that-declares-none"),
+    ],
+)
+def test_the_declared_version_reaches_the_index_command_the_way_a_requirement_spells_it(
+    floor: str, wanted: str
+) -> None:
+    """A manifest writes a version the way its own resolver spells one, operator or not."""
+    routes = installers(
+        RemoteShell(machine_with(), plan(), "/repo"), "packages/tool", vendored=False, floor=floor
+    )
+    assert routes.select("uv-index").command == f"uv tool install --force {shlex.quote(wanted)}"
+
+
+@pytest.mark.parametrize(
+    ("found", "floor", "satisfied"),
+    [
+        pytest.param("0.4.9", ">=0.4.8", True, id="newer-than-the-floor"),
+        pytest.param("0.4.8", ">=0.4.8", True, id="exactly-the-floor"),
+        pytest.param("0.4.7", ">=0.4.8", False, id="older-than-the-floor"),
+        pytest.param("0.4.8", "0.4.8", True, id="the-bare-version-it-names"),
+        pytest.param("0.4.9", "0.4.8", False, id="not-the-bare-version-it-names"),
+        pytest.param("0.4.9", "", True, id="anything-when-none-is-declared"),
+        pytest.param("", ">=0.4.8", False, id="a-machine-running-no-tool"),
+        pytest.param("nonsense", ">=0.4.8", False, id="a-version-nobody-can-parse"),
+    ],
+)
+def test_a_machine_keeps_its_own_tool_only_when_it_already_satisfies_the_workspace(
+    found: str, floor: str, *, satisfied: bool
+) -> None:
+    """Skipping the install is only right when the machine already runs what was asked for."""
+    assert satisfied_by(found, floor) is satisfied
+
+
+def test_a_host_already_running_the_declared_tool_is_onboarded_without_installing_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of the index family: a machine that needs nothing is left alone.
+
+    And it is still onboarded, since a setup that installs nothing still mirrors the workspace,
+    provisions the environment and records what the host became, which is the record `hosts`
+    and the snapshot pruner both read.
+    """
+    host = machine_with(
+        rules=[
+            # Ahead of the healthy set, whose bare `--version` rule answers an older tool.
+            ("mainboard --version", 0, "mainboard 0.4.9\n"),
+            ("[ -d packages/mainboard ]", 1, ""),
+            *_HEALTHY,
+        ]
+    )
+    setup, dispatcher = onboarding(host, monkeypatch, floor=">=0.4.8")
+
+    recorded = setup.run()
+
+    assert recorded.installer == "present"
+    assert not host.ran("uv tool install")
+    assert not host.ran("pip install")
+    assert dispatcher.cache.host("gold").installer == "present"
+    assert host.ran("mainboard install default")
+
+
+def test_a_host_that_can_reach_no_route_says_which_family_was_being_tried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`uv: reported unavailable` reads as a host with no tooling, which it was not.
+
+    The refusal names the condition that actually decided the routes: whether this workspace
+    ships the tool's source, and which version it asks for when it does not.
+    """
+    bare = machine_with(
+        rules=[("command -v", 1, ""), ("pip --version", 1, ""), ("-d packages", 1, "")]
+    )
+    setup, _ = onboarding(bare, monkeypatch, floor=">=0.4.8")
+    with pytest.raises(MissionError, match=r"installing mainboard>=0.4.8 from an index"):
+        Bootstrap(RemoteShell(bare, plan(), "/repo"), floor=">=0.4.8").tool()
+
+    vendoring = machine_with(rules=[("command -v", 1, ""), ("pip --version", 1, "")])
+    with pytest.raises(MissionError, match="source this workspace vendors at packages/mainboard"):
+        Bootstrap(RemoteShell(vendoring, plan(), "/repo")).tool()
+    del setup
 
 
 def test_bootstrap_falls_through_to_pip_keeping_every_rejection_it_passed_over(

@@ -81,6 +81,8 @@ class Landing:
     artifact: the compiled manifest, lock and state that ship with the mirror so the machine can
         install frozen rather than solving for itself.
     watch: announces each stage as it begins.
+    floor: the version this workspace declares for the tool, which is what a rental installs from
+        an index when the workspace vendors no source to install from.
     """
 
     def __init__(
@@ -92,6 +94,7 @@ class Landing:
         resources: Resources,
         artifact: Sequence[str] = (),
         watch: Watcher | None = None,
+        floor: str = "",
     ) -> None:
         self.dispatcher = dispatcher
         self.backend = backend
@@ -99,6 +102,7 @@ class Landing:
         self.resources = resources
         self.artifact = tuple(artifact)
         self.watch = watch or announce
+        self.floor = floor
 
     def land(self, command: str) -> str:
         """Rent a machine, land this workspace on it, start `command`, hand back the handle.
@@ -146,7 +150,7 @@ class Landing:
             )
             # Every command below stands in the workspace the mirror just created, which is why
             # nothing before this line may `cd` into a root that did not exist yet.
-            bootstrap = Bootstrap(RemoteShell(remote, self.plan, root))
+            bootstrap = Bootstrap(RemoteShell(remote, self.plan, root), floor=self.floor)
             self.watch(f"installing the tool on {rental.handle}")
             bootstrap.tool()
             self.watch(f"provisioning {self.plan.env} on {rental.handle}")

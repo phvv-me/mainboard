@@ -468,6 +468,17 @@ class Board:
             reply = remote["bash"]["-lc", line]()
         return read_facts(str(reply))
 
+    @property
+    def floor(self) -> str:
+        """The version this workspace declares for the tool itself, empty when it declares none.
+
+        A workspace that vendors the tool's source has the source and needs no version. One that
+        consumes it from an index says which one it needs in the same place it says everything
+        else it depends on, so a host with no vendored source installs exactly that.
+        """
+        declared = self.manifest.requirement(self.project.name)
+        return declared.version if declared is not None else ""
+
     def fleet(self) -> Fleet:
         """The many-jobs surface for simultaneous studies over this board."""
         return Fleet(self)
@@ -528,6 +539,7 @@ class Board:
                 watch=watch,
                 digest=provisioner.compiler_for(plan.env).digest(),
                 solver=provisioner.solver_version(),
+                floor=self.floor,
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
         return HostSetup(
@@ -795,6 +807,7 @@ class Board:
             resources=resources,
             artifact=provisioner.artifact_for(plan.env),
             watch=watch,
+            floor=self.floor,
         ).land(command)
 
     def dispatch(self, asked: Request) -> Run:
