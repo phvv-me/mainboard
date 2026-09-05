@@ -18,6 +18,13 @@ if TYPE_CHECKING:
 
 _TEMPLATE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 
+# What a declared placeholder is masked with while the command is split. A placeholder is written
+# with spaces inside its braces, and the split has to happen before any value is bound, so each
+# one becomes this stand-in first: it carries no whitespace, no quote and no escape, so `shlex`
+# moves it through as part of whichever token it was written in and the value that replaces it
+# afterwards is exactly one argv element however many spaces or backslashes it holds.
+_SLOT = "\x00mainboard-argument-{index}\x00"
+
 
 def _table(value: Json | None, *, field: str, task: str) -> dict[str, Json]:
     """Return one task table, refusing a generated manifest whose shape is not executable."""
@@ -78,38 +85,95 @@ class WindowsTask:
         )
 
     def invocation(self, argv: Sequence[str]) -> tuple[tuple[str, ...], dict[str, str]]:
-        """Bind typed arguments and return plain executable argv plus the task environment."""
-        if not self.arguments:
-            command = self.command
-            environment = self.env
-            trailing = tuple(argv)
-        else:
-            try:
-                separator = argv.index("--")
-            except ValueError:
-                values = tuple(argv)
-                trailing = ()
-            else:
-                values = tuple(argv[:separator])
-                trailing = tuple(argv[separator + 1 :])
-            if len(values) != len(self.arguments):
-                raise MissionError(
-                    f"task {self.name!r} needs {len(self.arguments)} arguments "
-                    f"({', '.join(self.arguments)}), got {len(values)}"
-                )
-            bindings = dict(zip(self.arguments, values, strict=True))
-            command = self._render(self.command, bindings)
-            environment = {key: self._render(value, bindings) for key, value in self.env.items()}
-        self._refuse_task_shell(self.name, command)
+        """Bind typed arguments and return plain executable argv plus the task environment.
+
+        The declared command is what is vetted and what is split, both before a single value is
+        bound, and each resulting token is rendered on its own afterwards. That order is the
+        whole contract: one binding is exactly one argv element.
+
+        Rendering first and splitting the result broke it twice over. A value with a space in it
+        (`--filter {{ pattern }}` bound to `not slow`) became two arguments, and a Windows path
+        lost its backslashes to the shell-quoting rules of a split that was never meant to read
+        user data. Vetting the rendered string was the same mistake from the other side: an
+        ordinary value carrying `*`, `&` or a glob failed the task for task-shell syntax the
+        manifest never contained.
+        """
+        bindings, trailing = self._bound(argv)
+        masked, slots = self._masked()
+        if "{{" in masked or "}}" in masked:
+            raise MissionError(
+                f"task {self.name!r} uses a template expression the restricted Windows "
+                "runner cannot reproduce"
+            )
+        self._refuse_task_shell(self.name, masked)
         try:
-            tokens = tuple(shlex.split(command, posix=True))
+            declared = tuple(shlex.split(masked, posix=True))
         except ValueError as error:
             raise MissionError(
                 f"task {self.name!r} has invalid command quoting ({error})"
             ) from error
-        if command and not tokens:
+        if self.command and not declared:
             raise MissionError(f"task {self.name!r} has an empty command")
+        tokens = tuple(self._filled(token, slots, bindings) for token in declared)
+        environment = {key: self._render(value, bindings) for key, value in self.env.items()}
         return (*tokens, *trailing), environment
+
+    def _masked(self) -> tuple[str, dict[str, str]]:
+        """The declared command with every placeholder replaced by a stand-in, and what each was.
+
+        The one preparation the split needs: `{{ suite }}` is four shlex tokens and its
+        stand-in is one, so masking is what lets the quoting rules apply to the manifest's own
+        text while the value bound into it is never split at all.
+        """
+        slots: dict[str, str] = {}
+
+        def mask(match: re.Match[str]) -> str:
+            slot = _SLOT.format(index=len(slots))
+            slots[slot] = match.group(1)
+            return slot
+
+        return _TEMPLATE.sub(mask, self.command), slots
+
+    def _filled(self, token: str, slots: dict[str, str], bindings: dict[str, str]) -> str:
+        """One split token with its stand-ins replaced by the values bound to them.
+
+        token: a token of the split, masked command.
+        slots: every stand-in in that command and the argument it stands for.
+        bindings: the values the caller bound to the declared arguments.
+        """
+        for slot, argument in slots.items():
+            if slot not in token:
+                continue
+            try:
+                token = token.replace(slot, bindings[argument])
+            except KeyError:
+                raise MissionError(
+                    f"task {self.name!r} refers to undeclared argument {argument!r}"
+                ) from None
+        return token
+
+    def _bound(self, argv: Sequence[str]) -> tuple[dict[str, str], tuple[str, ...]]:
+        """`argv` split into this task's declared argument values and whatever trails them.
+
+        A task that declares no arguments binds nothing and forwards every token, which is what
+        `run <task> extra` has always meant for a task with no typed surface.
+
+        argv: the tokens the caller typed after the task name.
+        """
+        if not self.arguments:
+            return {}, tuple(argv)
+        try:
+            separator = argv.index("--")
+        except ValueError:
+            values, trailing = tuple(argv), ()
+        else:
+            values, trailing = tuple(argv[:separator]), tuple(argv[separator + 1 :])
+        if len(values) != len(self.arguments):
+            raise MissionError(
+                f"task {self.name!r} needs {len(self.arguments)} arguments "
+                f"({', '.join(self.arguments)}), got {len(values)}"
+            )
+        return dict(zip(self.arguments, values, strict=True)), trailing
 
     def _render(self, value: str, bindings: dict[str, str]) -> str:
         """Render the simple named argument templates Mainboard's task schema accepts."""
@@ -132,7 +196,12 @@ class WindowsTask:
 
     @staticmethod
     def _refuse_task_shell(name: str, command: str) -> None:
-        """Reject syntax whose Deno task-shell meaning plain Windows argv cannot preserve."""
+        """Reject syntax whose Deno task-shell meaning plain Windows argv cannot preserve.
+
+        Only ever asked about the declared command. What a caller binds into it is data, and a
+        value holding a glob or an ampersand is an argument rather than a chain, so vetting it
+        would refuse the manifest for something the manifest does not say.
+        """
         message = (
             f"task {name!r} uses task-shell syntax unsupported by the restricted Windows "
             "runner; split shell chains into task dependencies or invoke one cross-platform "

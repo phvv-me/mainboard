@@ -254,6 +254,57 @@ def test_typed_arguments_work_without_a_trailing_separator(tmp_path: Path) -> No
         empty.invocation(())
 
 
+def test_one_bound_value_is_exactly_one_argument_however_it_is_written(
+    tmp_path: Path,
+) -> None:
+    """The value a caller binds is data, and a split can only be told about the manifest's text.
+
+    Rendering into the command string and splitting the result made `not slow` two arguments and
+    ate the backslashes out of a Windows path, which is a different command from the one the
+    task declared and the one the caller asked for.
+    """
+    task = WindowsTask.parse(
+        "check",
+        {
+            "cmd": "pytest -m {{ markers }} --rootdir {{ root }}",
+            "args": ["markers", "root"],
+            "env": {"SUITE": "{{ markers }}"},
+        },
+        manifest=tmp_path / "pixi.toml",
+    )
+
+    argv, environment = task.invocation(("not slow", r"C:\Users\me\work"))
+
+    assert argv == ("pytest", "-m", "not slow", "--rootdir", r"C:\Users\me\work")
+    assert environment == {"SUITE": "not slow"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("test_*", id="a-glob-the-runner-passes-through"),
+        pytest.param("a & b", id="an-ampersand-inside-a-value"),
+        pytest.param("$HOME/data", id="a-dollar-inside-a-value"),
+        pytest.param("one|two", id="a-pipe-inside-a-value"),
+    ],
+)
+def test_a_value_carrying_shell_punctuation_is_an_argument_and_not_a_chain(
+    value: str, tmp_path: Path
+) -> None:
+    """Vetting the rendered command blamed the manifest for what the caller typed.
+
+    Only the declared command can be task-shell syntax; what is bound into it reaches the child
+    as one argument whatever punctuation it holds.
+    """
+    task = WindowsTask.parse(
+        "check",
+        {"cmd": "pytest -k {{ pattern }}", "args": ["pattern"]},
+        manifest=tmp_path / "pixi.toml",
+    )
+
+    assert task.invocation((value,)) == (("pytest", "-k", value), {})
+
+
 @pytest.mark.parametrize(
     ("command", "message"),
     [
