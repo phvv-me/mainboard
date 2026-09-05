@@ -1,4 +1,6 @@
 import inspect
+import os
+import stat
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -692,6 +694,58 @@ def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
     assert (landed / "src/run.py").is_file()
     assert (landed / group[0]).is_file()
     assert (landed / script).is_file()
+
+
+def test_a_real_mirror_never_overrides_the_hosts_setgid_group(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`.mainboard/envs/<env>`, punched through the denylist, must inherit the host's group.
+
+    A directory made under a setgid parent inherits that parent's group and its own setgid bit
+    for free; `ARCHIVE`'s `-p`/`-g`/`-o` used to overwrite the first implied directory this
+    transfer creates with the workstation's own mode and group instead, undoing that inheritance
+    the instant it happened. An 8 GB prefix landed on the invoking user's personal group rather
+    than the shared project one this way and blew its inode quota (Miyabi, 2026-09-05).
+
+    Needs a second group the runner belongs to, to stand in for the shared project group a
+    setgid mirror root carries: skipped where there is only one to pick from.
+    """
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
+    groups = sorted({os.getgid(), *os.getgroups()})
+    if len(groups) < 2:
+        pytest.skip("the runner belongs to a single group, so no group mismatch can be shown")
+    project_gid = next(gid for gid in groups if gid != os.getgid())
+    (workdir / "src").mkdir()
+    (workdir / "src/run.py").write_text("print(1)")
+    envdir = workdir / ".mainboard/envs/default"
+    envdir.mkdir(parents=True)
+    (envdir / "pixi.toml").write_text("x")
+    (envdir / "pixi.lock").write_text("y")
+    landed = workdir / "host-side"
+    landed.mkdir()
+    os.chown(landed, -1, project_gid)
+    landed.chmod(landed.stat().st_mode | stat.S_ISGID)
+    real = dispatch_module.rsync
+    monkeypatch.setattr(
+        dispatch_module,
+        "rsync",
+        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
+    )
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
+    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
+    instance.rsync_up(host, "/repo", required=[group])
+    for made in (
+        landed / ".mainboard",
+        landed / ".mainboard/envs",
+        landed / ".mainboard/envs/default",
+    ):
+        found = made.stat()
+        assert found.st_gid == project_gid, (
+            f"{made} landed on group {found.st_gid}, not {project_gid}"
+        )
+        assert found.st_mode & stat.S_ISGID, f"{made} lost its inherited setgid bit"
 
 
 @pytest.mark.parametrize(

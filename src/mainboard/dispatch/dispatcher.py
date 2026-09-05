@@ -474,7 +474,25 @@ class Dispatcher:
                 rsync(
                     [*include, *gitignore_files, *required_paths, *extra],
                     f"{policy.destination(plan.host)}:{root}/",
-                    RsyncFlags.ARCHIVE
+                    # Not `ARCHIVE`: `-a` bundles `-p` (`--perms`) and `-g`/`-o`, which stamp every
+                    # directory this transfer creates with the workstation's own mode and group
+                    # instead of letting the host assign them. A directory made under a setgid
+                    # parent inherits that parent's group and its own setgid bit for free, but
+                    # `-p` overwrites the new directory with the workstation's mode right after,
+                    # which carries no setgid bit, so the inheritance is undone the instant it
+                    # happens; every directory rsync or this tool then makes underneath, setgid
+                    # parent or not, inherits nothing back. That is why `.mainboard/envs/<env>`
+                    # (punched through the denylist by `required` above, the first implied
+                    # directory under the mirror root this transfer creates) and everything the
+                    # generated tree builds under it landed on the invoking user's personal group
+                    # rather than the shared project group, exhausting its inode quota with one
+                    # 8 GB prefix (Miyabi, 2026-09-05). `-r`/`-l`/`-t` carry recursion, symlinks
+                    # and mtimes (so the size+mtime quick check still skips unchanged files); the
+                    # host's own umask and the setgid bit already on its directories decide what
+                    # a newly landed one becomes.
+                    RsyncFlags.RECURSIVE
+                    | RsyncFlags.LINKS
+                    | RsyncFlags.TIMES
                     | RsyncFlags.COMPRESS
                     | RsyncFlags.RELATIVE
                     | RsyncFlags.VERBOSE
