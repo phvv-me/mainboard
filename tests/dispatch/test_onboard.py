@@ -466,14 +466,14 @@ def test_a_host_on_another_pixi_is_brought_to_the_pin_and_refused_when_it_stays_
     """
 
     class Drifted(RecordingMachine):
-        """A host on 0.79 until the pinned installer has run here, on the pin afterwards."""
+        """A host above the pin until the pinned installer has run here, on the pin after."""
 
         def answer(self, argv: list[str], *, stdin: str = "") -> tuple[int, str]:
             if "pixi --version" not in " ".join(argv):
                 return super().answer(argv, stdin=stdin)
             self.calls.append(argv)
             settled = self.ran("pixi.sh/install.sh")
-            return 0, f"pixi {PIXI_VERSION}\n" if settled else "pixi 0.79.0\n"
+            return 0, f"pixi {PIXI_VERSION}\n" if settled else "pixi 0.80.0\n"
 
     drifted = Drifted(rules=list(_HEALTHY))
     setup, _ = onboarding(drifted, monkeypatch)
@@ -481,8 +481,8 @@ def test_a_host_on_another_pixi_is_brought_to_the_pin_and_refused_when_it_stays_
     assert setup.run().pixi == PIXI_VERSION
     assert drifted.ran(f"PIXI_VERSION={PIXI_VERSION}")
 
-    for answer, named in ((0, "0.79.0"), (1, "none")):
-        stuck = machine_with(rules=[("pixi --version", answer, "pixi 0.79.0\n"), *_HEALTHY])
+    for answer, named in ((0, "0.80.0"), (1, "none")):
+        stuck = machine_with(rules=[("pixi --version", answer, "pixi 0.80.0\n"), *_HEALTHY])
         refused, _ = onboarding(stuck, monkeypatch)
         with pytest.raises(
             MissionError, match=f"still runs pixi {named} after installing {PIXI_VERSION}"

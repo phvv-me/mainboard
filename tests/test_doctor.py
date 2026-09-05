@@ -267,12 +267,12 @@ def test_a_machine_off_the_fleets_pixi_is_a_finding_of_its_own(
     command that puts this machine back on the pin.
     """
     climbed(workspace, "whole")
-    monkeypatch.setattr(Provisioner, "solver_version", lambda self: "0.79.0")
+    monkeypatch.setattr(Provisioner, "solver_version", lambda self: "0.80.0")
 
     found = Doctor(Board(workspace)).environment()
 
     assert found.verdict is Verdict.FAIL
-    assert found.detail == f"default: pixi 0.79.0 here, and the fleet is pinned to {PIXI_VERSION}"
+    assert found.detail == f"default: pixi 0.80.0 here, and the fleet is pinned to {PIXI_VERSION}"
     assert found.fix == POSIX_INSTALLER
 
 

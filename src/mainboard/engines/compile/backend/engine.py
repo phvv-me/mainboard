@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # It is the version this workspace solves with, so a host installs exactly it rather than
 # whatever the installer's `latest` means on the day that host was set up. Raising it is a
 # deliberate act: bump it here, re-solve, and set every host up again.
-PIXI_VERSION = "0.77.0"
+PIXI_VERSION = "0.79.0"
 
 # mainboard's engine. `pip install mainboard` brings no `pixi` binary, so it installs one on
 # first use with the official installer for the current operating system, always at the pinned
