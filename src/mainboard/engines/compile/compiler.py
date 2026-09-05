@@ -7,15 +7,17 @@ from ...core import MissionError, Project
 from .generated import GeneratedFiles
 from .pixi_manifest import PixiManifest, cleared, rerooted, selected_manifest
 from .state import SyncState
+from .vendor import path_deps, relocated
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ...manifest import Manifest, Scope
+    from ...manifest import Manifest
     from .backend import Pixi
     from .ecosystems import SecondStage
     from .generated import Writer
     from .toml import Toml
+    from .vendor import Vendor
 
 # Freshness truth lives in one atomically-replaced state file (see `state.SyncState`), and the
 # compiler reads a coherent snapshot and writes the whole next snapshot in a single replace,
@@ -43,6 +45,7 @@ class Compiler:
         out: Path,
         pixi: Pixi,
         stage: SecondStage,
+        vendor: Vendor,
         *,
         environment: str = "default",
     ) -> None:
@@ -53,6 +56,7 @@ class Compiler:
         self.generated_dir = out.relative_to(root)
         self.pixi = pixi
         self.stage = stage
+        self.vendor = vendor
 
     def digest(self) -> str:
         """A content hash of the manifest, the key that decides whether a compile is current.
@@ -214,6 +218,9 @@ class Compiler:
         # The digest is taken before the translation, so an edit landing mid-compile leaves
         # the workspace stale rather than blessing output built from content nobody compiled.
         source_digest = self.digest()
+        # Before the manifest that names them is written, so a solve never reads a vendored
+        # location this compile was about to fill.
+        self.vendor.refresh(files)
         project = Project()
         compiled = PixiManifest.from_manifest(
             self.manifest,
@@ -264,23 +271,13 @@ class Compiler:
         own `pyproject.toml`, and that is the one ecosystem this port translates. The manifest
         was projected onto one environment at construction, so unrelated environments never
         enter this metadata digest.
+
+        Spelled the way the compiled manifest spells it, vendored location included, so the
+        number a lock is blessed with on the machine that solved is the number a host recomputes
+        from the copy the mirror carried. The declared location of a path that leaves the root
+        exists on one machine, and hashing that spelling refused every host it reached.
         """
-        scopes: list[Scope] = [self.manifest, self.manifest.dev, *self.manifest.on.values()]
-        for env in self.manifest.envs.values():
-            scopes.extend([env, *env.on.values()])
-        python_deps = (
-            spec
-            for scope in scopes
-            if (python := scope.toolchains().get("python"))
-            for spec in python.all_deps().values()
-        )
-        return sorted(
-            {
-                path
-                for spec in python_deps
-                if spec.is_path and isinstance(path := (spec.model_extra or {}).get("path"), str)
-            }
-        )
+        return sorted({relocated(name, path) for name, path in path_deps(self.manifest).items()})
 
     def _write_generated_files(self, files: Writer, *, compiled: str) -> None:
         """Write the compiled pixi manifest, the dotenv loader, and the second-stage files.

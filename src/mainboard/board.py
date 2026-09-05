@@ -921,6 +921,10 @@ class Board:
         code there and the package directory itself when it does not. That is read off this
         workspace, which is the tree every mirror and snapshot is a copy of.
 
+        A path dependency that lives outside the root is compiled at `.mainboard/vendor/<dist>`
+        (see `engines.compile.vendor`), which is inside it, so a vendored house package reaches
+        this roster with the workspace's own packages and needs nothing said about it here.
+
         plan: the resolved execution context whose environment is being dispatched.
         """
         where = Provisioner(self.root, self.manifest).environment_dir(plan.env)

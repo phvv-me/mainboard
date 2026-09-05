@@ -18,6 +18,7 @@ from plumbum.commands.processes import ProcessExecutionError
 
 from ..context.admission import admit
 from ..core.project import Project
+from ..engines.compile.vendor import vendor_root
 from . import vocabulary
 from .jobs import JobSpec
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
@@ -38,6 +39,12 @@ if TYPE_CHECKING:
 
 # The tool a host runs its own jobs through, so nothing below spells the binary's name.
 _TOOL = Project().name
+
+# What never belongs in a vendored path dependency's copy on a host: the caches and the
+# environments a package accumulates beside its sources, none of which a build reads and one
+# of which is gigabytes. Its own list because the mirror's denylist excludes the whole
+# generated tree the vendored copy lives in.
+_VENDOR_EXCLUDE = ("__pycache__/", "*.pyc", ".git", ".pixi/", ".venv/")
 
 
 def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") -> str:
@@ -512,8 +519,48 @@ class Dispatcher:
                 Dispatcher._raise_required_sync_failure(
                     error, plan.host, required_paths, extra=extra
                 )
+            self.__vendored(plan, root, policy=policy)
         self.cache.mark_synced(plan.host)
         return include
+
+    def __vendored(self, plan: ExecutionPlan, root: str, *, policy: SshTransport) -> None:
+        """Ship the vendored path dependencies, each link replaced by what it refers to.
+
+        A path dependency that leaves the workspace root is compiled at
+        `.mainboard/vendor/<distribution>`, so the manifest and the lock name one location that
+        is the same distance from the root on every machine (see `engines.compile.vendor`). On
+        the machine that has the source, that location is a real directory of links into it,
+        which is what keeps the editable install editable. A link is the one thing a mirror must
+        not carry: landed as a link on a host it points at a tree no transfer ever put there,
+        and the host installs an environment out of a directory that is not there.
+
+        `--copy-links` sends the referent instead, so a host receives the ordinary tree of real
+        files its own compile then leaves alone. Its own transfer because that switch is a
+        whole-run switch and the workspace's other symlinks are the workspace's business, and
+        `--delete` inside this one directory retires a distribution the manifest stopped
+        declaring without reaching anything beside it.
+        """
+        tree = vendor_root()
+        if not self.local(tree).is_dir():
+            return
+        rsync(
+            [tree],
+            f"{policy.destination(plan.host)}:{root}/",
+            RsyncFlags.RECURSIVE
+            | RsyncFlags.COPY_LINKS
+            | RsyncFlags.TIMES
+            | RsyncFlags.COMPRESS
+            | RsyncFlags.RELATIVE
+            | RsyncFlags.VERBOSE
+            | RsyncFlags.DELETE
+            | RsyncFlags.DELETE_AFTER,
+            exclude=_VENDOR_EXCLUDE,
+            rsh=policy.rsync_shell,
+            timeout=ceil(policy.deadline),
+            host=plan.host,
+            allow_vanished=False,
+            cwd=self.root,
+        )
 
     def run(
         self,

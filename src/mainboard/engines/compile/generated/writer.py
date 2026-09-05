@@ -1,5 +1,6 @@
 import os
 import platform
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -31,9 +32,32 @@ class Writer:
             )
 
     def remove(self, path: Path) -> None:
-        """Drop a generated file the manifest no longer asks for, if it is still there."""
+        """Drop what the manifest no longer asks for: a file, a link, or a whole tree.
+
+        A tree because a vendored path dependency is a directory of links, and a distribution
+        the manifest stopped declaring has to leave with the same call that retires a generated
+        script. A link is unlinked rather than followed, so retiring one never reaches the
+        source it points at.
+        """
         self.held()
-        path.unlink(missing_ok=True)
+        if path.is_symlink() or not path.is_dir():
+            path.unlink(missing_ok=True)
+            return
+        shutil.rmtree(path)
+
+    def link(self, path: Path, target: Path) -> None:
+        """Point one generated symlink at `target`, replacing whatever stands there now.
+
+        How a vendored path dependency reaches its source: the entry is a link, so an edit under
+        the source is seen by the next import with nothing to re-vendor, while the directory
+        holding it stays real and a resolver handed it cannot record somewhere else.
+        """
+        self.held()
+        if path.is_symlink() and path.readlink() == target:
+            return
+        self.remove(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.symlink_to(target, target_is_directory=target.is_dir())
 
     def write(self, path: Path, text: str) -> None:
         """Replace one generated text file only after its complete contents reach disk."""

@@ -64,6 +64,7 @@ class Rsync(StrFlag):
     CHECKSUM = "-c"  # compare by checksum, not size+mtime
     UPDATE = "-u"  # skip files newer on the receiver
     LINKS = "-l"
+    COPY_LINKS = "-L"  # send what a symlink refers to, never the symlink
     PERMS = "-p"
     TIMES = "-t"
     HUMAN = "-h"

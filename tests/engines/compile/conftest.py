@@ -13,6 +13,7 @@ from mainboard.engines.compile.backend import PIXI_VERSION, Pixi
 from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles, Writer
 from mainboard.engines.compile.pixi_manifest import selected_manifest
+from mainboard.engines.compile.vendor import Vendor
 from mainboard.manifest import Toolchain
 
 from .support import Bind, CompilerFrom, Record
@@ -162,6 +163,7 @@ def compiler_from(
             out,
             pixi,
             SecondStage(tmp_path, projected, out, pixi),
+            Vendor(tmp_path, manifest),
             environment=environment,
         )
 

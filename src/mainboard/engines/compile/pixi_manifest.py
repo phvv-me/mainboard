@@ -12,6 +12,7 @@ from .platforms import PlatformMatrix
 # `Toml` backs pydantic fields below, so it must resolve at class-creation time. See the
 # matching comment in platforms.py for why ruff's flake8-type-checking cannot tell.
 from .toml import Toml
+from .vendor import relocated
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
@@ -176,13 +177,17 @@ def _table(value: Toml | None) -> dict[str, Toml]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _reroot_source(spec: Toml, *, generated_dir: PurePath) -> Toml:
+def _reroot_source(name: str, spec: Toml, *, generated_dir: PurePath) -> Toml:
     """A single dep spec with a local ``path`` source shifted up out of the generated directory.
+
+    A path that leaves the workspace root is spelled at its vendored location first, so what a
+    compiled artifact records is inside the root and the same distance from it on every machine.
+    See `vendor` for why a path that resolves here resolves nowhere on a host.
 
     A bare version string, or a table without ``path``, rides through untouched.
     """
     if isinstance(spec, dict) and isinstance(path := spec.get("path"), str):
-        return {**spec, "path": rerooted(path, generated_dir=generated_dir)}
+        return {**spec, "path": rerooted(relocated(name, path), generated_dir=generated_dir)}
     return spec
 
 
@@ -196,7 +201,7 @@ def _reparent(value: Toml, *, generated_dir: PurePath) -> Toml:
     if isinstance(value, dict):
         return {
             key: {
-                name: _reroot_source(spec, generated_dir=generated_dir)
+                name: _reroot_source(name, spec, generated_dir=generated_dir)
                 for name, spec in item.items()
             }
             if key in _DEP_TABLES and isinstance(item, dict)

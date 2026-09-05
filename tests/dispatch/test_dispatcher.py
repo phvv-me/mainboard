@@ -311,13 +311,18 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
         "python -m foo",
         root="/repo",
         resources=Resources(),
-        imports=("src", "packages/lab-core/src"),
+        imports=("src", "packages/lab-core/src", ".mainboard/vendor/paleta-tsukuba/src"),
     )
 
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
     body = (workdir / str(script)).read_text(encoding="utf-8")
     assert pinned != "/repo"
-    assert f"export PYTHONPATH={pinned}/src:{pinned}/packages/lab-core/src" in body
+    # The vendored root rides with the workspace's own: a house package that lives outside the
+    # root is compiled inside it, so the tree a job is pinned to carries it like any other.
+    assert (
+        f"export PYTHONPATH={pinned}/src:{pinned}/packages/lab-core/src:"
+        f"{pinned}/.mainboard/vendor/paleta-tsukuba/src" in body
+    )
     assert "export PYTHONPATH=/repo/src" not in body
     assert "unset PYTHONPATH" not in body
 
@@ -694,6 +699,74 @@ def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
     assert (landed / "src/run.py").is_file()
     assert (landed / group[0]).is_file()
     assert (landed / script).is_file()
+
+
+def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refer_to(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A house package outside the workspace root is compiled at `.mainboard/vendor/<dist>`.
+
+    On the machine that has the source that directory holds links into it, which is what keeps
+    the editable install editable. A link is the one thing this transfer must not carry: landed
+    as a link on a host it points at a tree nothing ever put there, and every environment built
+    from the shipped lock dies on a path that is not a Python project. Only a real transfer can
+    say which of the two arrived.
+    """
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
+    (workdir / "src").mkdir()
+    (workdir / "src/run.py").write_text("print(1)")
+    envdir = workdir / ".mainboard/envs/default"
+    envdir.mkdir(parents=True)
+    (envdir / "pixi.toml").write_text("x")
+    (envdir / "pixi.lock").write_text("y")
+    source = workdir / "outside/paleta"
+    (source / "src/paleta").mkdir(parents=True)
+    (source / "src/paleta/__init__.py").write_text("SHADE = 'ai'\n")
+    (source / "pyproject.toml").write_text('[project]\nname = "paleta-tsukuba"\n')
+    vendored = workdir / ".mainboard/vendor/paleta-tsukuba"
+    vendored.mkdir(parents=True)
+    for entry in sorted(source.iterdir()):
+        (vendored / entry.name).symlink_to(entry)
+    (source / "src/paleta/__pycache__").mkdir()
+    (source / "src/paleta/__pycache__/stale.pyc").write_text("noise")
+    landed = workdir / "host-side"
+    real = dispatch_module.rsync
+    monkeypatch.setattr(
+        dispatch_module,
+        "rsync",
+        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
+    )
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
+    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
+
+    instance.rsync_up(host, "/repo", required=[group])
+
+    arrived = landed / ".mainboard/vendor/paleta-tsukuba"
+    assert arrived.is_dir() and not arrived.is_symlink()
+    assert not (arrived / "src").is_symlink()
+    assert (arrived / "src/paleta/__init__.py").read_text() == "SHADE = 'ai'\n"
+    assert (arrived / "pyproject.toml").is_file()
+    assert not (arrived / "src/paleta/__pycache__").exists()
+
+
+def test_a_workspace_with_nothing_vendored_ships_no_second_transfer(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rule costs a workspace that declares no outside dependency nothing at all."""
+    (workdir / "src").mkdir()
+    (workdir / "src/run.py").write_text("print(1)")
+    sent: list[Sequence[str]] = []
+    monkeypatch.setattr(
+        dispatch_module, "rsync", lambda sources, dest, flags, **k: sent.append(sources) or ""
+    )
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
+
+    instance.rsync_up(host, "/repo")
+
+    assert len(sent) == 1
 
 
 def test_a_real_mirror_never_overrides_the_hosts_setgid_group(

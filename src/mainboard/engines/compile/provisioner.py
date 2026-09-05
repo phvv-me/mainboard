@@ -14,6 +14,7 @@ from .ecosystems import SecondStage
 from .generated import ActivationScript, GeneratedFiles
 from .pixi_manifest import selected_manifest
 from .state import SyncState
+from .vendor import Vendor
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping, Sequence
@@ -113,7 +114,13 @@ def task_line(manifest: Manifest, command: str, *, env: str) -> str:
 
 
 class _EnvironmentShard:
-    """The compiler and installers bound to one generated environment directory."""
+    """The compiler and installers bound to one generated environment directory.
+
+    Everything here reads this environment's projection of the manifest, except the vendored
+    path dependencies, which are the workspace's rather than one environment's: they live beside
+    the shards, several environments may declare the same distribution, and a compile that saw
+    only its own projection would retire what the environment beside it depends on.
+    """
 
     def __init__(self, root: Path, manifest: Manifest, directory: Path, environment: str) -> None:
         projected = selected_manifest(manifest, environment)
@@ -126,6 +133,7 @@ class _EnvironmentShard:
             directory,
             self.pixi,
             self.stage,
+            Vendor(root, manifest),
             environment=environment,
         )
 

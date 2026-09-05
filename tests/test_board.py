@@ -521,17 +521,24 @@ def test_a_dispatch_names_the_pinned_trees_import_roots_and_not_the_mirrors(
         'lab-flat = { path = "../../../packages/lab-flat", editable = true }\n'
         'built = { path = "../../../packages/built" }\n'
         'elsewhere = { path = "/opt/elsewhere", editable = true }\n'
+        'paleta-tsukuba = { path = "../../../.mainboard/vendor/paleta-tsukuba", '
+        "editable = true }\n"
         "\n[feature.dev.pypi-dependencies]\n"
         'lab-self = { path = "../../..", editable = true }\n',
         encoding="utf-8",
     )
     (workspace / "packages/lab-core/src").mkdir(parents=True)
     (workspace / "packages/lab-flat").mkdir(parents=True)
+    (workspace / ".mainboard/vendor/paleta-tsukuba/src").mkdir(parents=True)
     (workspace / "src").mkdir()
 
+    # A house package that lives outside the workspace is compiled at its vendored location, so
+    # it reaches this roster as one of the workspace's own and the job imports the tree it was
+    # dispatched with rather than whatever the shared prefix installed editable.
     assert board.imports(board.plan(env="default", container="none")) == (
         "packages/lab-core/src",
         "packages/lab-flat",
+        ".mainboard/vendor/paleta-tsukuba/src",
         "src",
     )
 
