@@ -219,8 +219,7 @@ class Watch:
         swept = self.board.monitor().once()
         events = self.bus.replay()
         rows = [
-            self.answered(job, answer, swept)
-            for job, answer in latest(events, *OFFERED).items()
+            self.answered(job, answer, swept) for job, answer in latest(events, *OFFERED).items()
         ]
         landed = [self.record(row, events) for row in rows]
         status = BatchStatus(
