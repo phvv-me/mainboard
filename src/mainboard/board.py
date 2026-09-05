@@ -37,8 +37,11 @@ from .dispatch.snapshots import Snapshots
 from .dispatch.vocabulary import Request, Resources
 from .dispatch.wrapping import connection, missing, wrap
 from .doctor import Doctor
-from .engines.compile.prefixes import Prefixes, digest_of, prefix_path
-from .engines.compile.provisioner import Provisioner, task_line
+from .engines.compile.backend import PIXI_VERSION
+from .engines.compile.pixi_manifest import self_installed
+from .engines.compile.prefixes import MANIFEST, Prefixes, digest_of, prefix_path
+from .engines.compile.provisioner import Provisioner, environment_shard, task_line
+from .engines.compile.state import SyncState
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
 from .experiments.identity import run_id
@@ -541,7 +544,6 @@ class Board:
                 resolve=resolve,
                 watch=watch,
                 digest=provisioner.compiler_for(plan.env).digest(),
-                solver=provisioner.solver_version(),
                 floor=self.floor,
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
@@ -840,7 +842,7 @@ class Board:
             container=asked.container,
         )
 
-    def provide(self, env: str = "", source: str = "") -> Path:
+    def provide(self, env: str = "", source: str = "", expect: str = "") -> Path:
         """Build the immutable environment a dispatched job activates, once, and name it.
 
         The verb a host runs for itself. A dispatch pins the digest of the compiled artifact it
@@ -854,10 +856,15 @@ class Board:
         env: the environment to build, the host profile's own when empty.
         source: the directory holding the compiled artifact to build from, workspace-relative
             or absolute; this workspace's own generated environment when empty.
+        expect: the digest the dispatch pinned, refused when this machine reads the artifact as
+            a different environment; unchecked when empty, which is what a build nobody
+            dispatched still wants.
         """
         plan = self.plan(env=env, container="none")
         provisioner = Provisioner(self.root, self.manifest)
         where = self.dispatcher.local(source) if source else provisioner.environment_dir(plan.env)
+        if expect:
+            self.__pinned(where, expect, provisioner)
         prefixes = Prefixes(self.root, self.manifest, plan.env)
         built = prefixes.materialize(where, modules=plan.profile.modules)
         # Building is also the moment to let go of what nothing names any more, since this is
@@ -868,6 +875,64 @@ class Board:
                 "dropped %d unreferenced environment(s): %s", len(dropped), ", ".join(dropped)
             )
         return built
+
+    def __pinned(self, where: Path, expect: str, provisioner: Provisioner) -> None:
+        """Refuse to build when this machine reads the shipped artifact as another environment.
+
+        A prefix is addressed by the content of the manifest and lock it is built from, and both
+        sides reach that address from the same bytes, so the two numbers agree or something
+        rewrote the artifact between them. That something is pixi, which rewrites the lock it
+        reads and spells parts of it differently from version to version, so the refusal names
+        the pixi that solved the lock beside the one running here as well as the two addresses.
+        Building anyway would put a whole environment at a path no queued job will ever activate.
+
+        where: the compiled artifact this build would read.
+        expect: the digest the dispatch pinned.
+        provisioner: this workspace's compile stack, which knows the pixi running here.
+        """
+        arrived = digest_of(where)
+        if arrived == expect:
+            return
+        solved = SyncState.load(where).solved_by or "an unrecorded pixi"
+        raise MissionError(
+            f"{where} describes environment {arrived}, but the dispatch pinned {expect}. The "
+            f"artifact was solved by pixi {solved} and this machine runs pixi "
+            f"{provisioner.solver_version() or 'none'}: a pixi that is not the one the fleet is "
+            f"pinned to ({PIXI_VERSION}) rewrites the lock while provisioning and moves the "
+            f"address with it. Run `{self.project.name} setup {self.host}` from the dispatching "
+            "workspace, which puts the pinned pixi on this machine."
+        )
+
+    def imports(self, plan: ExecutionPlan) -> tuple[str, ...]:
+        """The workspace-relative directories a job imports this workspace's own packages from.
+
+        A prefix is addressed by content, so one serves every tree whose manifest and lock agree,
+        and its editable installs therefore point at the machine's own workspace root: the
+        mirror. A sync landing between two waves then moves that source under jobs already
+        queued or running, which is the one thing about a dispatched job a shared prefix cannot
+        freeze. Anchoring the prefix at the snapshot instead only trades it for a worse fault,
+        since snapshots are pruned a few deep while prefixes stand.
+
+        So the job freezes it rather than the prefix: the pinned tree's own import roots go on
+        `PYTHONPATH`, ahead of everything the environment adds, and what the prefix keeps of the
+        editable install is the dependency metadata, which is all it was needed for here.
+
+        An editable install puts one directory on `sys.path`: `src/` when the package keeps its
+        code there and the package directory itself when it does not. That is read off this
+        workspace, which is the tree every mirror and snapshot is a copy of.
+
+        plan: the resolved execution context whose environment is being dispatched.
+        """
+        where = Provisioner(self.root, self.manifest).environment_dir(plan.env)
+        try:
+            compiled = (where / MANIFEST).read_text(encoding="utf-8")
+        except OSError:
+            return ()
+        packages = self_installed(compiled, generated_dir=environment_shard(plan.env))
+        return tuple(
+            f"{package}/src".lstrip("/") if (self.root / package / "src").is_dir() else package
+            for package in packages
+        )
 
     def addressed(self, plan: ExecutionPlan, root: str) -> str:
         """Where on `root`'s host the immutable environment this dispatch pins is built.
@@ -1195,6 +1260,7 @@ class Board:
                     attestation=self.attesting(tracked, root=root),
                     watch=watch,
                     prefix=self.addressed(plan, root),
+                    imports=self.imports(plan),
                 ),
             )
         self.announce(label, run, command=command, host=plan.host, node=node)

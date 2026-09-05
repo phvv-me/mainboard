@@ -2,6 +2,7 @@ import platform
 
 from patos import FrozenOpenModel
 
+from ..engines.compile.backend import PixiEngine
 from .enums import Scheduler
 from .facts.fabric import Fabric, FabricPort
 from .machine import Machine
@@ -50,6 +51,9 @@ class HostFacts(FrozenOpenModel):
     cgroup: the enforced cgroup memory cap, the real OOM-kill ceiling for a job.
     scratch: the fastest writable node-local scratch tier with its free space.
     scheduler: the job scheduler available on the host's PATH.
+    pixi: the pixi this machine runs, empty when it runs none. Not hardware, but the one fact
+        about a machine that decides whether the environments it builds are the ones a dispatch
+        addressed, and until it was printed here nobody could see two hosts disagreeing.
     gpus: detected GPUs with name, memory capacity, and dispatch key, empty when none.
     fabric: detected InfiniBand/RoCE fabric ports, empty when none.
     """
@@ -62,6 +66,7 @@ class HostFacts(FrozenOpenModel):
     cgroup: CgroupCap = CgroupCap()
     scratch: ScratchInfo = ScratchInfo()
     scheduler: Scheduler = Scheduler.NONE
+    pixi: str = ""
     gpus: tuple[GpuFact, ...] = ()
     fabric: tuple[FabricPort, ...] = ()
 
@@ -83,6 +88,7 @@ class HostFacts(FrozenOpenModel):
                 source=scratch.source,
             ),
             scheduler=machine.environment.scheduler,
+            pixi=PixiEngine().version(),
             gpus=tuple(
                 GpuFact(
                     name=gpu.label,

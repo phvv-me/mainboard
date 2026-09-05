@@ -17,7 +17,7 @@ from . import durable, staleness
 from .compute import Access, Survey
 from .core.errors import MissionError
 from .core.project import Project
-from .engines.compile.backend import EnvironmentAudit
+from .engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER, EnvironmentAudit
 from .engines.compile.provisioner import Provisioner
 from .engines.compile.state import SyncState
 
@@ -145,6 +145,19 @@ class Doctor:
         # install the lock already describes. One command for the whole row named the strongest
         # of them and left the reader to work out which findings it actually covered.
         findings: list[tuple[str, str]] = []
+        solver = provisioner.solver_version()
+        if solver != PIXI_VERSION:
+            # The lock is pixi's file, and each version writes some of it differently. A machine
+            # off the fleet's one pixi rewrites the lock it is handed and builds an environment
+            # at an address nothing dispatched it against, which is a whole dead wave and no
+            # message anywhere: 2026-09-05, a workstation on 0.77 against a host on 0.79.
+            findings.append(
+                (
+                    f"pixi {solver or 'is not installed'} here, and the fleet is pinned to "
+                    f"{PIXI_VERSION}",
+                    POSIX_INSTALLER,
+                )
+            )
         if lock_stale:
             findings.append(
                 ("pixi.lock was not solved from this manifest", f"{install} --resolve")
@@ -172,7 +185,7 @@ class Doctor:
         return Section(
             section="environment",
             verdict=Verdict.PASS,
-            detail=f"{environment} is provisioned, fresh and whole",
+            detail=f"{environment} is provisioned, fresh and whole, on pixi {solver}",
         )
 
     def fleet(self, setups: Mapping[str, HostSetup] | None = None) -> Section:

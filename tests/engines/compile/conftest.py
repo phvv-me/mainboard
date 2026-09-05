@@ -9,7 +9,7 @@ from plumbum import local
 
 from mainboard import Manifest
 from mainboard.engines.compile import Ecosystem, SecondStage
-from mainboard.engines.compile.backend import Pixi
+from mainboard.engines.compile.backend import PIXI_VERSION, Pixi
 from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles, Writer
 from mainboard.engines.compile.pixi_manifest import selected_manifest
@@ -18,6 +18,8 @@ from mainboard.manifest import Toolchain
 from .support import Bind, CompilerFrom, Record
 
 if TYPE_CHECKING:
+    from pytest_subprocess import FakeProcess
+
     from mainboard.manifest.schema.spec import Json
 
 
@@ -58,6 +60,17 @@ def isolated_pixi_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "pixi-home"
     monkeypatch.setenv("PIXI_HOME", str(home))
     return home
+
+
+@pytest.fixture
+def solver_version(fp: FakeProcess, tool_paths: dict[str, str]) -> str:
+    """Answer `pixi --version` with the pinned version, which a successful solve records.
+
+    Registered before a test's own fakes so the probe is answered by this entry rather than
+    eating one of the generic `fp.any()` slots the test set aside for pixi itself.
+    """
+    fp.register([tool_paths["pixi"], "--version"], stdout=f"pixi {PIXI_VERSION}\n", occurrences=4)
+    return PIXI_VERSION
 
 
 @pytest.fixture

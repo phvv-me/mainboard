@@ -428,9 +428,18 @@ def test_install_locked_accepts_a_lock_solved_somewhere_else_from_this_very_tree
 
 
 def test_install_locked_blesses_the_lock_after_a_successful_resolve(
-    compiler_from: CompilerFrom, files: Writer, pixi: Pixi, fp: FakeProcess
+    compiler_from: CompilerFrom,
+    files: Writer,
+    pixi: Pixi,
+    fp: FakeProcess,
+    solver_version: str,
 ) -> None:
-    """Blessing happens only once a solve has returned without raising."""
+    """Blessing happens only once a solve has returned without raising.
+
+    And it records which pixi returned, since the lock is pixi's file and each version writes
+    parts of it differently, so a host arriving at another environment address can name the two
+    versions that disagreed rather than only the two numbers.
+    """
     # `resolve=True` recurses into a second, locked install to verify the freshly solved lock
     # (`Pixi.install`'s known double-install wart), so the lock must already exist by then.
     pixi.lock.write_text("version: 7\n")
@@ -444,6 +453,7 @@ def test_install_locked_blesses_the_lock_after_a_successful_resolve(
     state = SyncState.load(compiler.out)
     assert state.environment == "default"
     assert state.solved_from == compiler.resolution_digest()
+    assert state.solved_by == solver_version
 
 
 def test_the_resolution_manifest_drops_per_target_activation_and_keeps_the_rest() -> None:

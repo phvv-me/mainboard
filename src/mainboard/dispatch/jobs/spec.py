@@ -57,10 +57,14 @@ class JobSpec(FrozenModel):
     queue/select/gpus/account/mem_gb: PBS header values (ignored when rendering a bash wrapper).
     walltime: `HH:MM:SS` cap; empty means the bare `#PBS` requirement is unmet (a PBS render
         raises) or, on a schedulerless host, that the job runs uncapped.
-    pythonpath: explicit `PYTHONPATH` the job runs under, empty for an isolated default.
+    pythonpath: explicit `PYTHONPATH` the job runs under, empty for an isolated default. A
+        dispatch fills it with the pinned tree's own import roots, so a package this workspace
+        installs editable is imported from the snapshot the job was frozen at rather than from
+        the mirror the shared prefix's editable install points at.
     isolate_pythonpath: drop whatever `PYTHONPATH` the submitting shell exported, so a job's
         imports come only from its own environment; False keeps the inherited value for a
-        caller that deliberately relies on it.
+        caller that deliberately relies on it. An explicit `pythonpath` replaces the inherited
+        value outright and is therefore isolated the same way.
     container_command: a preformatted shell command that already wraps the inner `cmd` in a
         container runtime invocation; when set, the body runs this instead of a bare `bash -c`.
     prefix: the built environment this job activates, addressed by the content of the manifest

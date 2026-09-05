@@ -17,6 +17,7 @@ from mainboard.dispatch.onboard import (
     satisfied_by,
 )
 from mainboard.dispatch.state import Cache
+from mainboard.engines.compile.backend import PIXI_VERSION
 
 from .support import RecordingMachine, Rule, cache, machine_with, plan, run_record
 
@@ -45,7 +46,7 @@ platform=Linux aarch64
 _HEALTHY: tuple[Rule, ...] = (
     ("MemTotal", 0, _CAPABILITIES),
     ("facts --json", 0, f"module chatter\n{_FACTS_JSON}\n"),
-    ("pixi --version", 0, "pixi 0.77.0\n"),
+    ("pixi --version", 0, f"pixi {PIXI_VERSION}\n"),
     ("--version", 0, "0.1.0\n"),
 )
 
@@ -392,7 +393,7 @@ def test_onboarding_stamps_the_manifest_digest_it_was_given_onto_the_recorded_ho
 def test_sync_only_stamps_the_digest_it_was_given_and_keeps_the_old_one_when_given_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    host = machine_with()
+    host = machine_with(rules=list(_HEALTHY))
     setup, dispatcher = onboarding(host, monkeypatch, digest="cafe")
     dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", digest="stale"))
     assert setup.run(sync_only=True).digest == "cafe"
@@ -410,7 +411,7 @@ def test_sync_only_re_mirrors_and_re_provisions_without_bootstrap_or_hardware_pr
     Neither the tool nor the hardware changed, only the workspace and what compiles from it, so
     this must never reach the bootstrap cascade or the facts probe the way a full onboarding does.
     """
-    host = machine_with()
+    host = machine_with(rules=list(_HEALTHY))
     setup, dispatcher = onboarding(host, monkeypatch, root="")
     dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", installer="uv", tool="0.1.0"))
 
@@ -420,14 +421,22 @@ def test_sync_only_re_mirrors_and_re_provisions_without_bootstrap_or_hardware_pr
     assert host.ran("mainboard install default --profile gold")
     assert not host.ran("uv tool install")
     assert not host.ran("facts --json")
-    assert not host.ran("--version")
-    assert (report.root, report.installer, report.tool) == ("/repo", "uv", "0.1.0")
+    assert not host.ran("mainboard --version")
+    # The pixi is aligned here too, since a sync between two waves is exactly when a host that
+    # moved would otherwise rewrite the shipped lock under the wave already queued against it.
+    assert host.ran("pixi --version")
+    assert (report.root, report.installer, report.tool, report.pixi) == (
+        "/repo",
+        "uv",
+        "0.1.0",
+        PIXI_VERSION,
+    )
 
 
 def test_sync_only_prefers_a_given_root_over_the_recorded_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    host = machine_with()
+    host = machine_with(rules=list(_HEALTHY))
     setup, dispatcher = onboarding(host, monkeypatch)
     dispatcher.cache.save_host(HostSetup(host="gold", root="/other", installer="uv"))
     report = setup.run(sync_only=True)
@@ -444,17 +453,42 @@ def test_sync_only_refuses_a_host_that_was_never_onboarded(
         setup.run(sync_only=True)
 
 
-def test_a_host_pixi_older_than_the_solver_is_refused_before_provisioning(
+def test_a_host_on_another_pixi_is_brought_to_the_pin_and_refused_when_it_stays_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An old pixi fails inside the install on a manifest shape it cannot read; ask first."""
-    host = machine_with(rules=[("pixi --version", 0, "pixi 0.59.0\n"), *_HEALTHY])
-    setup, _ = onboarding(host, monkeypatch, solver="0.77.0")
-    with pytest.raises(MissionError, match="pixi 0.59.0, older than the 0.77.0.*pixi self-update"):
-        setup.run()
-    assert not host.ran("install default")
-    unchecked, _ = onboarding(host, monkeypatch)
-    assert unchecked.run().host
+    """A lock is pixi's file, so a host on another version rewrites it and builds elsewhere.
+
+    The check this replaces refused an older pixi and let a newer one through, which is exactly
+    the case that killed a Miyabi wave on 2026-09-05: the workstation solved on 0.77 and the
+    host provisioned on 0.79, one artifact reached two addresses and every job of the wave found
+    no built environment. Both directions are brought in line now, with pixi's own installer at
+    the pinned version, and a host that will not move is refused before anything is provisioned.
+    """
+
+    class Drifted(RecordingMachine):
+        """A host on 0.79 until the pinned installer has run here, on the pin afterwards."""
+
+        def answer(self, argv: list[str], *, stdin: str = "") -> tuple[int, str]:
+            if "pixi --version" not in " ".join(argv):
+                return super().answer(argv, stdin=stdin)
+            self.calls.append(argv)
+            settled = self.ran("pixi.sh/install.sh")
+            return 0, f"pixi {PIXI_VERSION}\n" if settled else "pixi 0.79.0\n"
+
+    drifted = Drifted(rules=list(_HEALTHY))
+    setup, _ = onboarding(drifted, monkeypatch)
+
+    assert setup.run().pixi == PIXI_VERSION
+    assert drifted.ran(f"PIXI_VERSION={PIXI_VERSION}")
+
+    for answer, named in ((0, "0.79.0"), (1, "none")):
+        stuck = machine_with(rules=[("pixi --version", answer, "pixi 0.79.0\n"), *_HEALTHY])
+        refused, _ = onboarding(stuck, monkeypatch)
+        with pytest.raises(
+            MissionError, match=f"still runs pixi {named} after installing {PIXI_VERSION}"
+        ):
+            refused.run()
+        assert not stuck.ran("mainboard install default")
 
 
 def test_a_dead_queue_daemon_is_started_once_and_refused_when_it_stays_down(
@@ -470,17 +504,17 @@ def test_a_dead_queue_daemon_is_started_once_and_refused_when_it_stays_down(
             return super().answer(argv, stdin=stdin)
 
     revived = Reviving(rules=list(_HEALTHY))
-    setup, _ = onboarding(revived, monkeypatch, solver="0.77.0")
+    setup, _ = onboarding(revived, monkeypatch)
     assert setup.run().host
     assert revived.ran("pueued -d")
 
     dead = machine_with(rules=[("pueue status", 1, ""), *_HEALTHY])
-    setup, _ = onboarding(dead, monkeypatch, solver="0.77.0")
+    setup, _ = onboarding(dead, monkeypatch)
     with pytest.raises(MissionError, match="pueued is not answering.*pueued -d"):
         setup.run()
 
     scheduled = machine_with(rules=[("pueue status", 1, ""), *_HEALTHY])
-    setup, _ = onboarding(scheduled, monkeypatch, solver="0.77.0")
+    setup, _ = onboarding(scheduled, monkeypatch)
     monkeypatch.setattr(onboard_module, "pick", lambda profile: object())
     assert setup.run().host
     assert not scheduled.ran("pueue status")

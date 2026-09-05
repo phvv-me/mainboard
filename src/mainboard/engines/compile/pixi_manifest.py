@@ -14,7 +14,7 @@ from .platforms import PlatformMatrix
 from .toml import Toml
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Iterator, Mapping
 
     from ...manifest import Env, Manifest, PlatformScope, Scope, Spec, Toolchain
     from ...manifest.schema.environment import Task
@@ -107,6 +107,57 @@ def anchored(
     parents = re.escape(rerooted("", generated_dir=generated_dir))
     workspace = re.compile(rf"(?<![\w./-]){parents}(?=/|[^\w./-]|$)")
     return workspace.sub(lambda _: root.as_posix(), text)
+
+
+def self_installed(
+    manifest: str, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR
+) -> list[str]:
+    """Every workspace-relative directory a compiled manifest installs as an editable package.
+
+    The packages whose own source a job imports rather than a copy of: an editable install puts
+    that source directory on `sys.path` instead of copying anything into the environment, so
+    where the directory is decides what the job imports. A workspace installing its own root
+    (`path = "."`, how a research repository ships its `src/`) is the case this exists for.
+
+    Read from the compiled manifest rather than from the workspace manifest, because this is the
+    file the environment is built from and the one the digest is taken over, so what a job puts
+    on its path and what its prefix installs can never be two different rosters. A path that is
+    not inside the workspace is left out: it does not travel with a mirror and no snapshot of
+    one freezes it.
+
+    manifest: the compiled `pixi.toml`'s text.
+    generated_dir: the directory it was compiled into, whose depth decides how a
+        workspace-relative path is spelled inside it.
+    """
+    parents = rerooted("", generated_dir=generated_dir)
+    declared = [
+        spec["path"]
+        for spec in _editable_specs(tomlkit.parse(manifest).unwrap())
+        if isinstance(spec.get("path"), str)
+    ]
+    inside = [path for path in declared if path == parents or path.startswith(f"{parents}/")]
+    return list(dict.fromkeys(path.removeprefix(parents).lstrip("/") for path in inside))
+
+
+def _editable_specs(value: Toml) -> Iterator[dict[str, Toml]]:
+    """Every editable dependency spec anywhere in a compiled manifest's tables.
+
+    Everywhere, because a dependency table stands under the workspace, under a feature and under
+    a platform target, and a workspace that installs itself for one platform installs itself.
+    """
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _DEP_TABLES and isinstance(item, dict):
+                yield from (
+                    spec
+                    for spec in item.values()
+                    if isinstance(spec, dict) and spec.get("editable")
+                )
+            else:
+                yield from _editable_specs(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _editable_specs(item)
 
 
 def _platform_name(entry: Toml) -> str:

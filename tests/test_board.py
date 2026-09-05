@@ -1,10 +1,10 @@
 import os
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from shutil import rmtree
 from threading import Event, Thread
 from time import sleep
 from types import TracebackType
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, ClassVar, NoReturn
 
 import pytest
 from plumbum import local
@@ -28,6 +28,8 @@ from mainboard.dispatch.state import RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.doctor import Doctor
 from mainboard.engines.compile import Provisioner
+from mainboard.engines.compile.prefixes import digest_of
+from mainboard.engines.compile.state import SyncState
 from mainboard.manifest import Container, Engine, Header, Manifest
 from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold
@@ -484,6 +486,122 @@ def test_installing_here_provisions_and_activates_in_place(
     assert setup.tool
 
 
+def compiled_artifact(board: Board) -> Path:
+    """A compiled artifact under `board`'s default environment, blessed by the pinned pixi."""
+    where = Provisioner(board.root, board.manifest).environment_dir("default")
+    where.mkdir(parents=True, exist_ok=True)
+    (where / "pixi.toml").write_text('[workspace]\nname = "lab"\n', encoding="utf-8")
+    (where / "pixi.lock").write_text("version: 7\n", encoding="utf-8")
+    SyncState.path(where).write_text(
+        SyncState(environment="default", solved_by="0.77.0").render(), encoding="utf-8"
+    )
+    return where
+
+
+def test_a_dispatch_names_the_pinned_trees_import_roots_and_not_the_mirrors(
+    workspace: Path,
+) -> None:
+    """A shared prefix installs a self-installing package editable, pointing at the mirror.
+
+    So the source a job imports follows the mirror, and a sync landing between two waves moves
+    it under jobs already queued. Anchoring the prefix at the snapshot instead only trades that
+    for a worse fault, since snapshots are pruned while prefixes stand, so the job carries the
+    roots itself. What an editable install puts on the path is `src/` when a package keeps one
+    and the package directory when it does not, and a path outside the workspace travels with
+    no mirror and is left alone.
+    """
+    board = Board(workspace)
+    where = Provisioner(workspace, board.manifest).environment_dir("default")
+    where.mkdir(parents=True, exist_ok=True)
+    (where / "pixi.toml").write_text(
+        '[workspace]\nname = "lab"\n'
+        'platforms = [{name = "linux-64-system", platform = "linux-64"}]\n'
+        "\n[pypi-dependencies]\n"
+        'lab-core = { path = "../../../packages/lab-core", editable = true }\n'
+        'lab-flat = { path = "../../../packages/lab-flat", editable = true }\n'
+        'built = { path = "../../../packages/built" }\n'
+        'elsewhere = { path = "/opt/elsewhere", editable = true }\n'
+        "\n[feature.dev.pypi-dependencies]\n"
+        'lab-self = { path = "../../..", editable = true }\n',
+        encoding="utf-8",
+    )
+    (workspace / "packages/lab-core/src").mkdir(parents=True)
+    (workspace / "packages/lab-flat").mkdir(parents=True)
+    (workspace / "src").mkdir()
+
+    assert board.imports(board.plan(env="default", container="none")) == (
+        "packages/lab-core/src",
+        "packages/lab-flat",
+        "src",
+    )
+
+
+class FakePrefixes:
+    """Where an addressed environment would be, without asking pixi to build one."""
+
+    swept: ClassVar[list[str]] = []
+
+    def __init__(self, root: Path, manifest: Manifest, environment: str = "default") -> None:
+        self.root = root
+        self.environment = environment
+
+    def materialize(self, source: Path, *, modules: Mapping[str, str] = {}) -> Path:
+        return self.root / "prefixes" / self.environment / digest_of(source)
+
+    def referenced(self, sources: Path) -> set[str]:
+        return set()
+
+    def prune(self, *, live: Iterable[str]) -> list[str]:
+        return list(FakePrefixes.swept)
+
+
+@pytest.mark.parametrize(
+    ("pinned", "swept"),
+    [
+        pytest.param(True, ["4e0f0670076776b1"], id="a-dispatch-pinned-the-address-it-expects"),
+        pytest.param(False, [], id="a-build-nobody-dispatched-with-nothing-to-let-go-of"),
+    ],
+)
+def test_providing_builds_the_environment_the_dispatch_pinned_and_sweeps_what_nothing_names(
+    pinned: bool, swept: list[str], workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verb a host runs for itself, and the moment the machine can let old prefixes go.
+
+    It holds both the prefixes and the trees that point at them, so nothing else is in a
+    position to know which of them a queued job still activates.
+    """
+    board = Board(workspace)
+    where = compiled_artifact(board)
+    monkeypatch.setattr("mainboard.board.Prefixes", FakePrefixes)
+    monkeypatch.setattr(FakePrefixes, "swept", swept)
+
+    built = board.provide("default", str(where), digest_of(where) if pinned else "")
+
+    assert built.name == digest_of(where)
+
+
+def test_providing_refuses_an_artifact_this_machine_reads_as_another_environment(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both sides address a prefix from the same bytes, so two numbers mean one side rewrote them.
+
+    That side is pixi, which rewrites the lock it reads and spells parts of it differently from
+    version to version, so the refusal names both pixis beside both addresses instead of leaving
+    a host to build a whole environment at a path no queued job will ever activate.
+    """
+    board = Board(workspace)
+    where = compiled_artifact(board)
+    monkeypatch.setattr(Provisioner, "solver_version", lambda self: "0.79.0")
+
+    with pytest.raises(MissionError) as refused:
+        board.provide("default", str(where), "4950b228a3eaf208")
+
+    said = str(refused.value)
+    assert f"describes environment {digest_of(where)}" in said
+    assert "the dispatch pinned 4950b228a3eaf208" in said
+    assert "solved by pixi 0.77.0 and this machine runs pixi 0.79.0" in said
+
+
 def test_installing_here_on_windows_writes_no_bash_activation_and_names_none(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -519,9 +637,7 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
     report = HostSetup(host=host, root="/repo", installer="uv")
 
     class FakeOnboarding:
-        def __init__(
-            self, dispatcher, plan, *, root, artifact, resolve, watch, digest, solver, floor
-        ):
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, floor):
             seen.update(
                 host=plan.host,
                 root=root,
@@ -562,9 +678,7 @@ def test_sync_only_reaches_the_onboarding_and_is_refused_on_this_machine(
     report = HostSetup(host=_GOLD, root="/repo", installer="uv")
 
     class FakeOnboarding:
-        def __init__(
-            self, dispatcher, plan, *, root, artifact, resolve, watch, digest, solver, floor
-        ):
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, floor):
             pass
 
         def run(self, *, sync_only: bool = False) -> HostSetup:
@@ -586,9 +700,7 @@ def test_a_stale_lock_is_refused_before_the_mirror_leaves_for_a_host(
     reached: list[str] = []
 
     class FakeOnboarding:
-        def __init__(
-            self, dispatcher, plan, *, root, artifact, resolve, watch, digest, solver, floor
-        ):
+        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, floor):
             reached.append("onboarding")
 
         def run(self, *, sync_only: bool = False) -> HostSetup:

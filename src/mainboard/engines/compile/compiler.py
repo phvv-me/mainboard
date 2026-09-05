@@ -75,6 +75,11 @@ class Compiler:
         as long as the manifest and package metadata it received are the ones that lock came
         from. Blessing happens only after a solve returned without raising, so a failed solve
         never leaves a lock that nothing on disk vouches for looking fresh.
+
+        The blessing records which pixi wrote the lock beside the digest it was solved from,
+        because the lock is pixi's file and each version writes some of it differently. That is
+        what lets a host that arrives at a different environment address say which two pixis
+        disagreed instead of only that two numbers did.
         """
         if not resolve:
             self.vouch()
@@ -82,7 +87,13 @@ class Compiler:
         if resolve:
             state = SyncState.load(self.out)
             self.__persist_state(
-                files, state.model_copy(update={"solved_from": self.resolution_digest()})
+                files,
+                state.model_copy(
+                    update={
+                        "solved_from": self.resolution_digest(),
+                        "solved_by": self.pixi.version(),
+                    }
+                ),
             )
 
     def vouch(self) -> None:

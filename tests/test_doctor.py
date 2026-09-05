@@ -13,13 +13,24 @@ from mainboard.dispatch import HostSetup
 from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.durable import Every, Settler, Settling
 from mainboard.engines.compile import Provisioner
-from mainboard.engines.compile.backend import CommandResult
+from mainboard.engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER, CommandResult
 from mainboard.engines.compile.state import SyncState
 from mainboard.staleness import Snapshot
 
 from .strategies import WORDS
 
 _FINGERPRINT = ".pixi-environment-fingerprint"
+
+
+@pytest.fixture(autouse=True)
+def pinned_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer the engine probe with the fleet's pinned pixi, whatever this machine runs.
+
+    A report says which pixi built the environment, and the runner's own is not what any row
+    here is about; without this every verdict below would be a fact about the machine.
+    """
+    monkeypatch.setattr(Provisioner, "solver_version", lambda self: PIXI_VERSION)
+
 
 # The two gates the fixture workspace declares: one that reports where its failures live, and one
 # plain command that speaks nothing but its exit status.
@@ -196,8 +207,8 @@ def test_a_manifest_that_will_not_load_is_the_whole_report(workspace: Path) -> N
             "compiled before the current manifest: default",
             "mainboard install default --resolve; mainboard install default",
         ),
-        ("blessed", Verdict.PASS, "default is provisioned, fresh and whole", ""),
-        ("whole", Verdict.PASS, "default is provisioned, fresh and whole", ""),
+        ("blessed", Verdict.PASS, f"fresh and whole, on pixi {PIXI_VERSION}", ""),
+        ("whole", Verdict.PASS, f"fresh and whole, on pixi {PIXI_VERSION}", ""),
         ("damaged", Verdict.FAIL, "needs reinstalling: ghost", "mainboard install default"),
     ],
     ids=[
@@ -229,7 +240,12 @@ def test_the_environment_section_tells_apart_every_way_a_workspace_drifts(
             "serving: nothing compiled yet",
             "mainboard install serving --resolve",
         ),
-        ("whole", Verdict.PASS, "serving is provisioned, fresh and whole", ""),
+        (
+            "whole",
+            Verdict.PASS,
+            f"serving is provisioned, fresh and whole, on pixi {PIXI_VERSION}",
+            "",
+        ),
     ],
 )
 def test_the_environment_section_audits_only_the_selected_shard(
@@ -239,6 +255,25 @@ def test_the_environment_section_audits_only_the_selected_shard(
     found = Doctor(Board(workspace), env="serving").environment()
     assert (found.verdict, found.fix) == (verdict, fix)
     assert fragment in found.detail
+
+
+def test_a_machine_off_the_fleets_pixi_is_a_finding_of_its_own(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lock is pixi's file, and a machine on another version rewrites what it is handed.
+
+    Which moves the address of the environment a dispatch already pinned, so a whole wave finds
+    nothing built and nothing anywhere says why. `doctor` names the two versions and the one
+    command that puts this machine back on the pin.
+    """
+    climbed(workspace, "whole")
+    monkeypatch.setattr(Provisioner, "solver_version", lambda self: "0.79.0")
+
+    found = Doctor(Board(workspace)).environment()
+
+    assert found.verdict is Verdict.FAIL
+    assert found.detail == f"default: pixi 0.79.0 here, and the fleet is pinned to {PIXI_VERSION}"
+    assert found.fix == POSIX_INSTALLER
 
 
 def test_a_row_carrying_several_findings_names_the_command_that_fixes_each(

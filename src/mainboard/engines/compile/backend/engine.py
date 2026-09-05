@@ -16,10 +16,27 @@ from .tool import Tool
 if TYPE_CHECKING:
     from plumbum.commands.base import BaseCommand
 
+# THE ONE PIXI THE WHOLE FLEET RUNS.
+#
+# pixi rewrites the lock it reads, and each version spells some of it differently: 0.77 labels a
+# named platform variant `p1`, 0.79 labels it with the manifest's own name. That is a difference
+# no workspace declares and none can see, and on 2026-09-05 it split one compiled artifact into
+# two environment addresses across a workstation on 0.77 and a Miyabi login node on 0.79, killing
+# every job of a wave with `found no built environment`. `pixi_lock.canonical` is what keeps such
+# a rewrite from moving an address; this constant is what keeps the rewrite from happening.
+#
+# It is the version this workspace solves with, so a host installs exactly it rather than
+# whatever the installer's `latest` means on the day that host was set up. Raising it is a
+# deliberate act: bump it here, re-solve, and set every host up again.
+PIXI_VERSION = "0.77.0"
+
 # mainboard's engine. `pip install mainboard` brings no `pixi` binary, so it installs one on
-# first use with the official installer for the current operating system.
-_POSIX_INSTALLER = "curl -fsSL https://pixi.sh/install.sh | sh"
-_WINDOWS_INSTALLER = "irm -useb https://pixi.sh/install.ps1 | iex"
+# first use with the official installer for the current operating system, always at the pinned
+# version, which the installer reads from its own `PIXI_VERSION`.
+POSIX_INSTALLER = f"curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION={PIXI_VERSION} sh"
+_WINDOWS_INSTALLER = (
+    f"$Env:PIXI_VERSION='{PIXI_VERSION}'; irm -useb https://pixi.sh/install.ps1 | iex"
+)
 
 # The tool announcing the install, so nothing here spells its name.
 _TOOL = Project().name
@@ -60,6 +77,23 @@ class PixiEngine(Tool):
         if platform.system() == "Windows":
             return command.with_env(HOME=str(Path.home()))
         return command
+
+    def version(self) -> str:
+        """The pixi this machine runs as `X.Y.Z`, empty when none resolves anywhere.
+
+        Never bootstraps. Asking a machine what it runs must not change what it runs, and this
+        is the question `facts`, `doctor` and every host alignment ask before deciding anything.
+        """
+        for candidate in ("pixi", str(self.binary_path())):
+            try:
+                return str(local[candidate]["--version"]()).split()[-1]
+            except CommandNotFound, MissionError, OSError:
+                continue
+        return ""
+
+    def aligned(self) -> bool:
+        """Whether this machine's pixi is the one the whole fleet is pinned to."""
+        return self.version() == PIXI_VERSION
 
     @staticmethod
     def appended_shell_file() -> str:
@@ -110,7 +144,7 @@ class PixiEngine(Tool):
         executable = shutil.which("sh")
         if executable is None:
             raise MissionError("a POSIX shell is required to install pixi on this platform")
-        return local[executable]["-c", _POSIX_INSTALLER]
+        return local[executable]["-c", POSIX_INSTALLER]
 
     def installed_binary(self) -> Path:
         """Return the fallback Pixi binary after bootstrapping it when absent."""

@@ -18,13 +18,19 @@ class SyncState(FrozenModel):
     `compiled_from` is that environment's selected-manifest digest, and `solved_from` is the
     resolution digest the lock beside it was solved from. The latter is written only when a
     solve succeeds, so staleness is a comparison against the lock rather than a flag somebody
-    has to remember to clear. Keeping all three beside one shard means no environment can
+    has to remember to clear. Keeping all four beside one shard means no environment can
     accidentally vouch for another one's generated files or lock.
+
+    `solved_by` is the pixi that produced the lock, recorded beside the blessing because a lock
+    is pixi's file rather than this package's and each version writes some of it differently.
+    The fleet is pinned to one pixi (`backend.PIXI_VERSION`) so that never varies; this is what
+    lets a machine say out loud that a lock in front of it came from another one.
     """
 
     environment: str = ""
     compiled_from: str = ""
     solved_from: str = ""
+    solved_by: str = ""
 
     @staticmethod
     def path(out: Path) -> Path:
@@ -47,6 +53,7 @@ class SyncState(FrozenModel):
             environment=str(data.get("environment", "")),
             compiled_from=str(data.get("compiled_from", "")),
             solved_from=str(data.get("solved_from", "")),
+            solved_by=str(data.get("solved_by", "")),
         )
 
     def render(self) -> str:
@@ -57,5 +64,6 @@ class SyncState(FrozenModel):
             f'environment = "{self.environment}"',
             f'compiled_from = "{self.compiled_from}"',
             f'solved_from = "{self.solved_from}"',
+            f'solved_by = "{self.solved_by}"',
         ]
         return "\n".join(lines) + "\n"

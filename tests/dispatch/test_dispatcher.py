@@ -273,6 +273,10 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
     body = (workdir / str(script)).read_text(encoding="utf-8")
     assert f"cd /repo && mainboard provide default --source {root}/.mainboard/envs/default" in body
+    # And it names the address the dispatch pinned, so a host that reads the shipped artifact as
+    # another environment says which two addresses and which two pixis instead of building one
+    # beside the one every job of the wave is waiting for.
+    assert "--expect abcd1234" in body
     assert f"source {prefix}/activate.sh" in body
     assert f"export LD_LIBRARY_PATH={prefix}/.pixi/envs/default/lib${{LD_LIBRARY_PATH:+" in body
     assert body.index("provide default") < body.index("activate.sh")
@@ -282,6 +286,38 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     # And the tree points at that environment rather than at the mirror's mutable one.
     [built] = [line for line in machine.lines if "mb_snap=" in line]
     assert f"ln -s {prefix}/.pixi " in built
+
+
+def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
+    dispatcher: Dispatcher,
+    backend: RecordingScheduler,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prefix is shared, so the editable install inside it points at the machine's mirror.
+
+    A sync landing between two waves then moves a job's own source while it is queued or
+    running, which is the one thing about a dispatched job a shared prefix cannot freeze. The
+    job freezes it instead: the pinned tree's import roots go on `PYTHONPATH` ahead of anything
+    the environment adds, and nothing the submitting shell exported survives.
+    """
+    machine = machine_with()
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+
+    dispatcher.run(
+        plan(),
+        "python -m foo",
+        root="/repo",
+        resources=Resources(),
+        imports=("src", "packages/lab-core/src"),
+    )
+
+    [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
+    body = (workdir / str(script)).read_text(encoding="utf-8")
+    assert pinned != "/repo"
+    assert f"export PYTHONPATH={pinned}/src:{pinned}/packages/lab-core/src" in body
+    assert "export PYTHONPATH=/repo/src" not in body
+    assert "unset PYTHONPATH" not in body
 
 
 def test_a_containerized_job_has_no_environment_of_its_own_to_build(

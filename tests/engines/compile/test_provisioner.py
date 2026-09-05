@@ -37,7 +37,10 @@ def _solvable(provisioner: Provisioner, environment: str = "default") -> None:
 
 
 def test_provision_compiles_and_installs_under_one_lock(
-    manifest_from: Callable[[str], Manifest], tmp_path: Path, fp: FakeProcess
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    fp: FakeProcess,
+    solver_version: str,
 ) -> None:
     """A second provision recompiles nothing.
 
@@ -386,7 +389,10 @@ def test_activated_never_compiles_a_workspace_that_was_never_provisioned(
 
 
 def test_activated_recompiles_a_provisioned_env_that_has_gone_stale(
-    manifest_from: Callable[[str], Manifest], tmp_path: Path, fp: FakeProcess
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    fp: FakeProcess,
+    solver_version: str,
 ) -> None:
     """`activated` only compiles under its lock, it never touches `pixi install`."""
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
@@ -394,12 +400,13 @@ def test_activated_recompiles_a_provisioned_env_that_has_gone_stale(
     for _ in range(2):
         fp.register([fp.any()], stdout="environment ready\n")
     provisioner.provision(resolve=True)
+    settled = len(fp.calls)
 
     edited = Provisioner(tmp_path, manifest_from(f'{_BARE}[deps]\nripgrep = "*"\n'))
     with edited.activated():
         pass
 
-    assert len(fp.calls) == 2  # no further pixi invocation happened during `activated`
+    assert len(fp.calls) == settled  # no further pixi invocation happened during `activated`
     assert "ripgrep" in edited.pixi.manifest.read_text()
 
 
@@ -510,6 +517,7 @@ def test_provision_installs_the_second_stage_after_pixi(
     tmp_path: Path,
     fp: FakeProcess,
     stub_binary: Callable[[str], str],
+    solver_version: str,
 ) -> None:
     """Every second-stage manager ships as a conda package, so pixi has to land first."""
     npm = stub_binary("npm")
@@ -526,8 +534,18 @@ def test_provision_installs_the_second_stage_after_pixi(
     assert [next(iter(call)) for call in fp.calls][-1] == npm
 
 
+def test_the_provisioner_says_which_pixi_solves_here(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path, solver_version: str
+) -> None:
+    """A blessing records it, and `doctor` compares it against what the fleet is pinned to."""
+    assert Provisioner(tmp_path, manifest_from(_BARE)).solver_version() == solver_version
+
+
 def test_a_refresh_asks_the_indexes_before_installing_and_blesses_the_result(
-    manifest_from: Callable[[str], Manifest], tmp_path: Path, fp: FakeProcess
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    fp: FakeProcess,
+    solver_version: str,
 ) -> None:
     """Satisfying the manifest and being current differ, so `update` runs before the install."""
     provisioner = Provisioner(tmp_path, manifest_from(_PINNED))
@@ -538,7 +556,9 @@ def test_a_refresh_asks_the_indexes_before_installing_and_blesses_the_result(
     provisioner.provision(refresh=True)
 
     assert "update" in fp.calls[0]
-    assert SyncState.load(provisioner.environment_dir()).solved_from
+    blessing = SyncState.load(provisioner.environment_dir())
+    assert blessing.solved_from
+    assert blessing.solved_by == solver_version
 
 
 @pytest.mark.parametrize(

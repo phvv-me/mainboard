@@ -8,6 +8,10 @@
 {% endif %}
 {{ activation }}
 {% if pythonpath %}
+# The import roots of the tree this job was pinned to, ahead of everything the environment adds
+# and instead of anything the submitting shell exported. A prefix is shared by every tree whose
+# manifest and lock agree, so the editable install inside it points at the mirror, and a sync
+# between two waves would otherwise move this job's own source while it runs.
 export PYTHONPATH={{ pythonpath }}
 {% elif isolate_pythonpath %}
 # A dispatched job imports from its own environment only, so a PYTHONPATH the submitting shell

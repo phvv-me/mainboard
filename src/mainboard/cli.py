@@ -876,7 +876,7 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
-    def provide(env: str = "", *, source: str = "", json: bool = False) -> None:
+    def provide(env: str = "", *, source: str = "", expect: str = "", json: bool = False) -> None:
         """Build the immutable environment a dispatched job activates, and print where it is.
 
         The verb a host runs for itself, and the one a dispatch runs on it after pinning a
@@ -890,10 +890,12 @@ def build(root: Path | None = None) -> App:
         env: the environment to build, the host profile's own when empty.
         source: the directory holding the compiled artifact, workspace-relative or absolute;
             this workspace's own generated environment when empty.
+        expect: the digest a dispatch pinned, refused when this machine reads the artifact as a
+            different environment rather than building one no queued job will activate.
         json: print the path as canonical JSON instead of a bare line.
         """
         with progress(f"building the environment for {env or 'default'}"):
-            built = board("local").provide(env, source)
+            built = board("local").provide(env, source, expect)
         if not json:
             print(built)
             return

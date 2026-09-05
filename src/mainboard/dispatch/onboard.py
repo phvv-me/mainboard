@@ -20,6 +20,7 @@ from patos import FrozenModel, Resolution, Strategy, StrategyError
 
 from ..core.errors import MissionError
 from ..core.project import Project
+from ..engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER
 from ..probe.snapshot import HostFacts
 from .schedulers.base import failure_reason
 from .schedulers.pueue import Pueue
@@ -66,6 +67,8 @@ class HostSetup(FrozenModel):
     installer: the install route that won, `in-place` when the tool was already running here.
     rejected: the routes passed over, each with the reason it was not usable.
     tool: the tool version the machine reports once installed.
+    pixi: the pixi version the machine runs, which every setup and sync brings to the fleet's
+        one pinned version, so a host that quietly moved shows here instead of in a dead wave.
     capabilities: the host as the bootstrap probe found it, None for an in-place install.
     hardware: the host's hardware snapshot, read back through the new activation.
     onboarded_at: ISO-8601 time the install finished.
@@ -83,6 +86,7 @@ class HostSetup(FrozenModel):
     installer: str = ""
     rejected: tuple[tuple[str, str], ...] = ()
     tool: str = ""
+    pixi: str = ""
     capabilities: Facts | None = None
     hardware: HostFacts | None = None
     onboarded_at: str = ""
@@ -224,6 +228,17 @@ def installed_version(shell: RemoteShell) -> str:
     """
     try:
         return shell.run(f"{_TOOL} --version").strip().split()[-1]
+    except MissionError, IndexError:
+        return ""
+
+
+def installed_pixi(shell: RemoteShell) -> str:
+    """The pixi version the machine runs as `X.Y.Z`, empty when it runs none.
+
+    shell: the host shell the question is asked through.
+    """
+    try:
+        return shell.run("pixi --version").strip().split()[-1]
     except MissionError, IndexError:
         return ""
 
@@ -435,8 +450,6 @@ class Onboarding:
     watch: announces each stage as it begins.
     digest: the manifest digest this onboarding provisions from, stamped onto the recorded
         `HostSetup` so `doctor` can later tell this host apart from one the manifest outgrew.
-    solver: the pixi version that solved this workspace's locks, so a host carrying an older
-        pixi is refused before it fails on a manifest shape it cannot read; unchecked when empty.
     floor: the version this workspace declares for the tool itself, which is what a host with no
         vendored source installs from an index; empty when the workspace declares none.
     """
@@ -451,7 +464,6 @@ class Onboarding:
         resolve: bool = False,
         watch: Watcher | None = None,
         digest: str = "",
-        solver: str = "",
         floor: str = "",
     ) -> None:
         self.dispatcher = dispatcher
@@ -461,7 +473,6 @@ class Onboarding:
         self.resolve = resolve
         self.watch = watch or announce
         self.digest = digest
-        self.solver = solver
         self.floor = floor
 
     @property
@@ -469,21 +480,41 @@ class Onboarding:
         """The environment provisioned, the plan's own."""
         return self.plan.env
 
-    def verify_pixi(self, shell: RemoteShell, *, host: str) -> None:
-        """Refuse a host whose pixi is older than the one that solved this workspace's locks.
+    def align_pixi(self, shell: RemoteShell, *, host: str) -> str:
+        """Put the fleet's one pixi on `host`, whichever one it runs now, and say which that is.
 
-        A compiled manifest uses the spec shapes the solver's pixi writes, and an older pixi on
-        the host fails on them inside the install with `expected a string, found table`; asking
-        for the version first turns that into a refusal naming its own fix.
+        A lock is pixi's file, not this package's, and every pixi version writes some of it
+        differently. A host on another version therefore rewrites the lock it was shipped while
+        provisioning, and an environment addressed by the content of that lock moves address
+        under a wave that was dispatched against the old one: on 2026-09-05 a workstation on
+        0.77 pinned 4950b228a3eaf208, this host on 0.79 built 4e0f0670076776b1, and every job
+        died with `found no built environment`.
+
+        So a host is brought in line rather than tolerated, in either direction. The older-is-
+        refused check this replaces let a newer pixi through, which is exactly the case that
+        happened. The installer is pixi's own, reading the pinned version from its `PIXI_VERSION`,
+        and it writes into `$HOME/.pixi/bin`, which every wrapped command already puts ahead of
+        the system PATH. A host that still disagrees afterwards is refused rather than provisioned
+        into a lock nothing here can predict.
+
+        shell: the host shell the version is read and the installer run through.
+        host: the alias being brought in line.
         """
-        if not self.solver:
-            return
-        theirs = shell.run("pixi --version").split()[-1]
-        if Version(theirs) < Version(self.solver):
+        theirs = installed_pixi(shell)
+        if theirs == PIXI_VERSION:
+            return theirs
+        self.watch(f"putting pixi {PIXI_VERSION} on {host}, which runs {theirs or 'none'}")
+        shell.run(POSIX_INSTALLER)
+        aligned = installed_pixi(shell)
+        if aligned != PIXI_VERSION:
             raise MissionError(
-                f"{host!r} runs pixi {theirs}, older than the {self.solver} that solved this "
-                "workspace's locks; run `pixi self-update` there, then set the host up again"
+                f"{host!r} still runs pixi {aligned or 'none'} after installing {PIXI_VERSION}; "
+                f"every lock this workspace ships was solved by {PIXI_VERSION}, and a host on "
+                "another one rewrites it while provisioning and builds a different environment "
+                "than the one a dispatch pins. Put that version on the host's PATH by hand, then "
+                "set it up again."
             )
+        return aligned
 
     def verify_queue(self, shell: RemoteShell, *, host: str) -> None:
         """Make sure the queue daemon a plain ssh host dispatches through is answering.
@@ -569,7 +600,7 @@ class Onboarding:
             self.watch(f"installing {_TOOL} on {host}")
             winner = bootstrap.tool()
             self.watch(f"checking pixi and the queue on {host}")
-            self.verify_pixi(shell, host=host)
+            pixi = self.align_pixi(shell, host=host)
             self.verify_queue(shell, host=host)
             self.watch(f"provisioning {self.env} on {host}")
             bootstrap.environment()
@@ -583,6 +614,7 @@ class Onboarding:
                 installer=winner.winner,
                 rejected=winner.rejected,
                 tool=shell.run(f"{_TOOL} --version").strip(),
+                pixi=pixi,
                 capabilities=capabilities,
                 hardware=hardware,
                 digest=self.digest,
@@ -603,6 +635,11 @@ class Onboarding:
         its own, mid-block, and building the saved record from a copy taken before that would
         overwrite the very stamp it just wrote.
 
+        THE PIXI IS ALIGNED HERE TOO, before the provision rather than only at setup. A sync is
+        what a campaign runs between waves, so a host whose pixi moved under it would otherwise
+        rewrite the shipped lock and build a different environment than the wave was dispatched
+        against, with nothing in between ever asking.
+
         host: the alias to sync, already recorded from a prior `run()`.
         """
         recorded = self.dispatcher.cache.host(host)
@@ -613,6 +650,7 @@ class Onboarding:
             self.dispatcher.rsync_up(
                 self.plan, root, required=[self.artifact] if self.artifact else []
             )
+            pixi = self.align_pixi(shell, host=host)
             self.watch(f"provisioning {self.env} on {host}")
             Bootstrap(shell, resolve=self.resolve).environment()
         fresh = self.dispatcher.cache.host(host)
@@ -622,6 +660,7 @@ class Onboarding:
                     "root": root,
                     "env": self.env,
                     "activate": activation(root, env=self.env),
+                    "pixi": pixi,
                     "digest": self.digest or fresh.digest,
                 }
             )

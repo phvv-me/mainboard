@@ -6,7 +6,13 @@ import pytest
 from plumbum import CommandNotFound
 
 from mainboard import MissionError
-from mainboard.engines.compile.backend import CommandResult, Pixi
+from mainboard.engines.compile.backend import (
+    PIXI_VERSION,
+    CommandResult,
+    Pixi,
+    PixiEngine,
+    engine,
+)
 
 
 def manifest_with_floors(pixi: Pixi) -> None:
@@ -103,20 +109,50 @@ def test_other_pixi_install_failures_keep_the_generic_diagnostic(
         pixi.install("default")
 
 
-def test_version_reads_the_engines_pixi_and_is_empty_where_none_resolves(
-    pixi: Pixi, monkeypatch: pytest.MonkeyPatch
+class _Answering:
+    """A resolved command answering one version string to any flag it is handed."""
+
+    def __init__(self, version: str) -> None:
+        self.version = version
+
+    def __getitem__(self, flag: str):
+        return lambda: f"pixi {self.version}\n"
+
+
+class _Machine:
+    """A `plumbum.local` that resolves exactly the binaries it was told about."""
+
+    def __init__(self, known: Mapping[str, str]) -> None:
+        self.known = known
+
+    def __getitem__(self, name: str):
+        if name not in self.known:
+            raise CommandNotFound(name, [])
+        return _Answering(self.known[name])
+
+
+@pytest.mark.parametrize(
+    ("resolves", "expected"),
+    [
+        pytest.param("pixi", PIXI_VERSION, id="on-the-path"),
+        pytest.param("", "0.79.0", id="only-in-pixi-home"),
+        pytest.param(None, "", id="nowhere-at-all"),
+    ],
+)
+def test_version_reads_the_pixi_this_machine_runs_and_never_installs_one(
+    resolves: str | None,
+    expected: str,
+    pixi: Pixi,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Onboarding compares a host's pixi against this one, so a missing binary reads as empty."""
+    """`facts`, `doctor` and every host alignment ask this before deciding anything.
 
-    class Versioned:
-        def __getitem__(self, flag: str):
-            return lambda: "pixi 0.77.0\n"
-
-    class Missing:
-        def __getitem__(self, flag: str):
-            raise CommandNotFound("pixi", [])
-
-    monkeypatch.setattr(type(pixi.engine), "command", property(lambda self: Versioned()))
-    assert pixi.version() == "0.77.0"
-    monkeypatch.setattr(type(pixi.engine), "command", property(lambda self: Missing()))
-    assert pixi.version() == ""
+    So it must never bootstrap: asking a machine what it runs cannot be what changes what it
+    runs, and the old spelling went through the engine's resolved command, which installs pixi
+    on a machine that has none. The empty name is pixi's own home, resolved here rather than at
+    collection because `PIXI_HOME` is read per call.
+    """
+    named = str(PixiEngine.binary_path()) if resolves == "" else resolves
+    monkeypatch.setattr(engine, "local", _Machine({named: expected} if named else {}))
+    assert pixi.version() == expected
+    assert PixiEngine().aligned() == (expected == PIXI_VERSION)

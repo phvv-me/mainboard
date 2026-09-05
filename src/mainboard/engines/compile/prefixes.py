@@ -39,6 +39,7 @@ from ...core import MissionError, Project
 from .backend import Pixi
 from .ecosystems import SecondStage
 from .generated import ActivationScript, GeneratedFiles
+from .pixi_lock import canonical
 from .pixi_manifest import anchored, selected_manifest
 from .provisioner import environment_shard
 
@@ -65,11 +66,12 @@ STAMP = ".mainboard-prefix"
 # What the activation a dispatched job sources is called inside a built prefix.
 ACTIVATION = "activate.sh"
 
-# The files that define an environment, and therefore the ones its digest is taken over. The
+# The two files that define an environment, and therefore the ones its digest is taken over. The
 # rest of the generated shard is copied in beside them (see `Prefixes.__take`) but not hashed:
 # the state file names digests rather than dependencies, and an activation script or a second
 # stage's own manifest cannot change which packages the lock says land here.
-_DEFINING = ("pixi.toml", "pixi.lock")
+MANIFEST = "pixi.toml"
+LOCK = "pixi.lock"
 
 
 def prefix_path(root: str, environment: str, digest: str) -> str:
@@ -93,18 +95,28 @@ def digest_of(source: Path) -> str:
     all and says so, since building from half an artifact is how a prefix ends up describing
     one lock and containing another.
 
+    The manifest is read as it stands, since this package writes it and writes it the same way
+    everywhere. The lock is read canonically, since pixi writes it and each pixi version writes
+    some of it differently: see `pixi_lock.canonical` for the rewrite that split one artifact
+    into two addresses and killed a whole wave.
+
     source: a directory holding a compiled `pixi.toml` and the `pixi.lock` solved from it.
     """
     fingerprint = hashlib.sha256()
-    for name in _DEFINING:
-        try:
-            fingerprint.update((source / name).read_bytes())
-        except OSError as missing:
-            raise MissionError(
-                f"{source / name} is missing, so the environment it describes has no identity; "
-                f"run `{Project().name} install --resolve` where that artifact is built"
-            ) from missing
+    fingerprint.update(_defining(source, MANIFEST).encode("utf-8"))
+    fingerprint.update(canonical(_defining(source, LOCK)).encode("utf-8"))
     return fingerprint.hexdigest()[:16]
+
+
+def _defining(source: Path, name: str) -> str:
+    """One of the compiled artifact's defining files, refusing a half-written artifact."""
+    try:
+        return (source / name).read_text(encoding="utf-8")
+    except OSError as missing:
+        raise MissionError(
+            f"{source / name} is missing, so the environment it describes has no identity; "
+            f"run `{Project().name} install --resolve` where that artifact is built"
+        ) from missing
 
 
 class Prefixes:

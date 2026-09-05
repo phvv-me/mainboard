@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 _TOOL = Project().name
 
 
-def providing(plan: ExecutionPlan, *, root: str, pinned: str) -> str:
+def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") -> str:
     """The line that builds the immutable environment `pinned` activates, empty when it has none.
 
     One spelling for the two places that need it: the dispatch runs it after pinning, so a wave
@@ -52,17 +52,28 @@ def providing(plan: ExecutionPlan, *, root: str, pinned: str) -> str:
     the artifact it builds from is the snapshot's own hardlinked copy: the description a job
     activates and the environment it gets are then the same content by construction.
 
+    The digest the dispatch pinned rides along, so the host builds the environment this job will
+    actually activate or says which two addresses it reached and which two pixis reached them.
+    Without it a host that read the shipped artifact differently built a whole environment
+    beside the one every job of the wave was waiting for and reported success.
+
     A containerized plan has no such environment: what it activates is the image, which no lock
     on this host describes.
 
     plan: the resolved execution context whose environment is being built.
     root: the workspace root on the host, where the built environments live.
     pinned: the snapshot whose compiled artifact describes the environment.
+    prefix: the built environment this dispatch pinned, whose last segment is that digest; empty
+        leaves the host to build whatever it reads.
     """
     if plan.containerized:
         return ""
     artifact = f"{pinned}/{Project().out_dir}/envs/{plan.env}"
-    build = f"{_TOOL} provide {shlex.quote(plan.env)} --source {shlex.quote(artifact)} >/dev/null"
+    expect = f" --expect {shlex.quote(prefix.rpartition('/')[2])}" if prefix else ""
+    build = (
+        f"{_TOOL} provide {shlex.quote(plan.env)} "
+        f"--source {shlex.quote(artifact)}{expect} >/dev/null"
+    )
     return f"cd {shlex.quote(root)} && {build}"
 
 
@@ -503,6 +514,7 @@ class Dispatcher:
         containerize: Callable[[list[str]], list[str]] | None = None,
         watch: Watcher | None = None,
         prefix: str = "",
+        imports: Sequence[str] = (),
     ) -> Handle:
         """Render `cmd` into a job script for `plan`'s host and dispatch it.
 
@@ -534,6 +546,9 @@ class Dispatcher:
         prefix: the built environment this job activates on the host, addressed by the content
             of the compiled artifact this dispatch ships; empty leaves the job activating the
             workspace's own environment, which is what a workspace addressing none still does.
+        imports: the workspace-relative import roots of every package this workspace installs
+            editable, resolved against the pinned tree so the job imports the source this
+            dispatch froze rather than the mirror the shared prefix points at.
         """
         container_command = ""
         if plan.containerized:
@@ -545,6 +560,7 @@ class Dispatcher:
             container_command = shlex.join(containerize(["bash", "-c", cmd]))
         source = self.source(cmd)
         pinned = self.pinned(root, source=source)
+        frozen = [f"{pinned}/{place}".rstrip("/") for place in imports]
         spec = JobSpec(
             cmd=cmd,
             plan=plan,
@@ -557,7 +573,8 @@ class Dispatcher:
             mem_gb=resources.mem_gb,
             container_command=container_command,
             prefix=prefix,
-            provide=providing(plan, root=root, pinned=pinned),
+            pythonpath=":".join(frozen),
+            provide=providing(plan, root=root, pinned=pinned, prefix=prefix),
             sampler=sampler,
             attestation=attestation,
             source=source.identity,
@@ -696,7 +713,7 @@ class Dispatcher:
                 filters=self.sync.filters,
                 exclude=[*self.sync.excludes, *plan.profile.sync.exclude],
             )
-            self._prime(remote, plan, pinned, root, watch)
+            self._prime(remote, plan, pinned, root, watch, prefix=prefix)
             try:
                 handle = pick(plan.profile).submit(
                     remote, pinned, script=prepared, args=args, resources=resources
@@ -860,6 +877,8 @@ class Dispatcher:
         pinned: str,
         root: str,
         watch: Watcher | None = None,
+        *,
+        prefix: str = "",
     ) -> None:
         """Take the environment update the first job out of `pinned` would otherwise race for.
 
@@ -885,8 +904,10 @@ class Dispatcher:
         pinned: the snapshot the wave will run out of.
         watch: announces the priming as it happens, so a batch dispatch says it took the update
             rather than leaving it to be confirmed by watching processes on the host.
+        prefix: the built environment this dispatch pinned, so the host builds that one or says
+            why it reached another.
         """
-        command = providing(plan, root=root, pinned=pinned)
+        command = providing(plan, root=root, pinned=pinned, prefix=prefix)
         if not command:
             return
         retcode, _, err = remote["bash"][
