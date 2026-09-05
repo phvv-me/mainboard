@@ -241,6 +241,42 @@ def test_the_environment_section_audits_only_the_selected_shard(
     assert fragment in found.detail
 
 
+def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
+    workspace: Path,
+) -> None:
+    """A workspace installs several environments and a report on `default` covers one.
+
+    The one a serving host actually runs is exactly the row somebody opens a doctor for, and it
+    was invisible until a command asked that environment for an interpreter.
+    """
+    climbed(workspace, "solved")
+    doctor = Doctor(Board(workspace))
+
+    assert doctor.examined() == ("default", "serving")
+    rows = [found for found in doctor.sections() if found.section == "environment"]
+    assert len(rows) == 2
+    assert "default" in rows[0].detail and "serving" not in rows[0].detail
+    assert "serving" in rows[1].detail and "default" not in rows[1].detail
+    # Naming one keeps the report to that environment, which is what `--env` has always meant.
+    assert Doctor(Board(workspace), env="serving").examined() == ("serving",)
+
+
+def test_a_gate_that_declares_shell_grammar_is_refused_rather_than_run_as_arguments(
+    workspace: Path,
+) -> None:
+    """A gate is argv, so `a && b` runs `a` with three arguments and reports what that came to.
+
+    A pipeline nobody ran reading as a gate that passed is the worst answer a report can give,
+    so the grammar is named and the fix is the one thing that can express it: a declared task.
+    """
+    doctor = Doctor(Board(workspace))
+
+    status, output = doctor.through_runner("pytest -q && ruff check .", 30.0)
+
+    assert status == 1
+    assert "&&" in output and "[tasks]" in output
+
+
 @given(rows=st.lists(_ROWS, max_size=6))
 @example(rows=[])
 @example(rows=[ComputePath(name="gold", kind="ssh", access=Access.REACHABLE)])
@@ -414,6 +450,7 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
             [
                 "manifest",
                 "environment",
+                "environment",
                 "layout",
                 "snapshot",
                 "settling",
@@ -468,8 +505,9 @@ def test_the_report_never_hands_the_dispatch_cache_to_a_thread_that_does_not_own
     doctor = Doctor(
         board, survey=offline, probe=answering(0, _SETTLED), settler=sweeping(workspace)
     )
-    assert [found.section for found in doctor.sections()][:4] == [
+    assert [found.section for found in doctor.sections()][:5] == [
         "manifest",
+        "environment",
         "environment",
         "layout",
         "snapshot",

@@ -35,6 +35,12 @@ _TOOL = Project().name
 # something the report has to say a word about.
 _USABLE = frozenset({Access.HERE, Access.READY, Access.KEYED})
 
+# What a gate cannot mean, because a gate is argv. The runner hands each token to the command as
+# an argument, so a declared `a && b` runs `a` with three arguments and reports whatever that
+# came to: the pipeline nobody ran reads as a gate that passed. These are refused by name, which
+# is the only way a gate can say what it meant and be told it cannot be said here.
+_SHELL_GRAMMAR = frozenset({"&&", "||", "|", ";", ">", ">>", "<", "&", "2>", "2>&1"})
+
 
 class Verdict(StrEnum):
     """How one section came back: fit, fit with something worth saying, or broken."""
@@ -95,7 +101,7 @@ class Doctor:
         self.probe = probe or self.through_runner
         self.settler = settler or durable.settler(board.root)
 
-    def environment(self) -> Section:
+    def environment(self, env: str = "") -> Section:
         """Whether what is installed answers to the manifest, and still imports.
 
         Three separate ways a workspace goes wrong and one line covering all three. The lock
@@ -103,9 +109,11 @@ class Doctor:
         been provisioned before an edit nobody re-installed, and a wheel may have lost the
         files it declared underneath pixi, which no lock ever notices because the lock only
         knows the package is recorded as installed.
+
+        env: the environment to examine, this report's own when empty.
         """
         provisioner = Provisioner(self.board.root, self.board.manifest)
-        environment = self.board.plan(env=self.env, container="none").env
+        environment = self.board.plan(env=env or self.env, container="none").env
         directory = provisioner.environment_dir(environment)
         pixi = provisioner.pixi_for(environment)
         compiler = provisioner.compiler_for(environment)
@@ -369,7 +377,7 @@ class Doctor:
             return [manifest]
         setups = self.survey.onboarded()
         asked: list[Callable[[], Section]] = [
-            self.environment,
+            *(partial(self.environment, name) for name in self.examined()),
             self.layout,
             self.snapshot,
             self.settling,
@@ -379,6 +387,18 @@ class Doctor:
         ]
         with ThreadPoolExecutor(max_workers=len(asked)) as pool:
             return [manifest, *pool.map(lambda question: question(), asked)]
+
+    def examined(self) -> tuple[str, ...]:
+        """Every environment this report covers: the one it was asked about, or all declared.
+
+        A workspace installs several and a report on `default` alone says nothing about the one
+        a serving host actually runs, which is exactly the row somebody opens a doctor for: an
+        environment nobody has provisioned since an edit is invisible until a command asks it
+        for an interpreter.
+        """
+        if self.env:
+            return (self.env,)
+        return ("default", *self.board.manifest.envs)
 
     def settling(self) -> Section:
         """Whether a periodic pass settles dispatched jobs with no session holding it open.
@@ -422,9 +442,16 @@ class Doctor:
         command: the gate's command line.
         timeout: the gate's own deadline in seconds.
         """
+        argv = split(command)
+        if grammar := [token for token in argv if token in _SHELL_GRAMMAR]:
+            return 1, (
+                f"`{command}` is run as argv, so its {' '.join(grammar)} reaches the command as "
+                f"an ordinary argument rather than as shell grammar; declare it as a [tasks] "
+                f"entry and point the gate at that task"
+            )
         plan = self.board.plan(env=self.env, container="none")
         result = Provisioner(self.board.root, self.board.manifest).capture(
-            split(command), plan.env, timeout=timeout
+            argv, plan.env, timeout=timeout
         )
         return result.returncode, result.stdout
 
