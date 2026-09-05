@@ -3,6 +3,7 @@
 
 import logging
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-18
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -112,3 +113,18 @@ def db_file(root: Path | None = None) -> Path:
 # One logger for the whole subsystem; every module imports this instead of calling
 # `logging.getLogger` itself, so a caller configuring `mainboard.dispatch` reaches every module.
 logger = logging.getLogger("mainboard.dispatch")
+
+
+type Watcher = Callable[[str], None]
+"""Announces the stage a long operation has reached, so a long run never stands silent.
+
+Here in the leaf rather than beside the first flow that needed one, because the flows that
+announce their stages, an onboarding, a rental's landing, a dispatch priming an environment,
+sit at three different levels of this package and a type they all name cannot live inside any
+one of them.
+"""
+
+
+def announce(stage: str) -> None:
+    """The default `Watcher`, logging each stage for a caller that renders no progress."""
+    logger.info("%s", stage)

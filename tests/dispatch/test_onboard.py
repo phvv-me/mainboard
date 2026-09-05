@@ -18,7 +18,7 @@ from mainboard.dispatch.onboard import (
 )
 from mainboard.dispatch.state import Cache
 
-from .support import RecordingMachine, Rule, cache, machine_with, plan
+from .support import RecordingMachine, Rule, cache, machine_with, plan, run_record
 
 if TYPE_CHECKING:
     from mainboard import ExecutionPlan
@@ -225,6 +225,41 @@ def test_bootstrap_refuses_a_host_no_route_can_reach_before_anything_assumes_the
     onboarding(host, monkeypatch)
     with pytest.raises(MissionError, match="cannot install mainboard on 'gold'"):
         Bootstrap(RemoteShell(host, plan(), "/repo")).tool()
+
+
+@pytest.mark.parametrize(
+    ("recorded", "verdict", "refused"),
+    [
+        pytest.param("older", "F1", True, id="a-changed-environment-under-a-queued-wave"),
+        pytest.param("current", "F1", False, id="the-same-environment-a-sync-reships-all-day"),
+        pytest.param("older", "ok", False, id="a-host-with-nothing-left-to-owe"),
+    ],
+)
+def test_a_host_owing_runs_is_never_given_a_different_environment_under_them(
+    monkeypatch: pytest.MonkeyPatch, recorded: str, verdict: str, *, refused: bool
+) -> None:
+    """Every pinned tree on a host symlinks its environment back to the one prefix in the mirror.
+
+    So shipping a compiled manifest that differs from the one a queued wave was pinned against
+    replaces what those jobs will activate, and the two waves then fight over the prefix: job
+    3296353 of five died exactly that way (2026-09-05). A sync that changes nothing is what a
+    campaign runs between waves all day and is left alone.
+    """
+    host = machine_with(rules=list(_HEALTHY))
+    setup, dispatcher = onboarding(host, monkeypatch, digest="current")
+    dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", digest=recorded))
+    dispatcher.cache.record(
+        run_record("F1", target="gold").model_copy(
+            update={"verdict": None if verdict == "F1" else verdict}
+        )
+    )
+
+    if not refused:
+        assert setup.run().host == "gold"
+        return
+    with pytest.raises(MissionError, match=r"still owes 1 run\(s\) an outcome \(F1\)"):
+        setup.run()
+    assert not host.ran("mainboard install")
 
 
 def test_read_facts_starts_at_the_first_brace_and_refuses_output_carrying_no_snapshot() -> None:

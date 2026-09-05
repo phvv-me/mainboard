@@ -20,10 +20,10 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from ..core.errors import MissionError
 from .backends.base import ProviderBackend
 from .jobs import JobSpec
-from .onboard import Bootstrap, RemoteShell, Watcher, announce
+from .onboard import Bootstrap, RemoteShell
 from .rentals import Rental, handoff
 from .schedulers.base import failure_reason
-from .shared import logger
+from .shared import Watcher, announce, logger
 from .snapshots import Snapshots
 from .targets import find_root
 from .transport import SshTransport

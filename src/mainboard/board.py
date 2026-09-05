@@ -62,8 +62,8 @@ if TYPE_CHECKING:
     from .batch.receipts import Bus
     from .batch.spec import BatchSpec
     from .context.plan import ExecutionPlan
-    from .dispatch.onboard import Watcher
     from .dispatch.schedulers import Scheduler
+    from .dispatch.shared import Watcher
     from .dispatch.vocabulary import JobState
     from .manifest.schema.root import Manifest
 
@@ -1079,8 +1079,9 @@ class Board:
         attempt: the 1-based try number, feeding the default expressions.
         fetch: a results path recorded for `Job.pull`.
         node: the ledger slug this run serves, carried into its record and receipts.
-        watch: announces each stage of a rental's landing as it begins; a queued dispatch has no
-            stages to announce and ignores it.
+        watch: announces the stages that happen on the far side and take long enough to be
+            worth saying: every step of a rental's landing, and the priming of a queued host's
+            environment.
         """
         # Before the plan, before the resources, and before any transport: a command a shell
         # cannot run costs a scheduler round trip on owned hardware and a whole rental on a
@@ -1135,6 +1136,7 @@ class Board:
                     containerize=self.containerizer(plan, root),
                     sampler=self.sampling(tracked, root=root, resources=resources),
                     attestation=self.attesting(tracked, root=root),
+                    watch=watch,
                 ),
             )
         self.announce(label, run, command=command, host=plan.host, node=node)

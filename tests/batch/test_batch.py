@@ -559,6 +559,30 @@ def relenting(monkeypatch: pytest.MonkeyPatch, *, refusals: int) -> list[str]:
     return asked
 
 
+def test_a_batch_hands_every_dispatch_the_watcher_that_prints_its_own_traffic(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The priming of a host's environment happens on the far side and takes long enough to say.
+
+    It was logged only on failure, so confirming a wave had been primed at all meant watching
+    processes on the host; the line now rides the same progress channel the batch already
+    prints its dispatching under.
+    """
+    seen: list[object] = []
+
+    def submit(self: Board, command: str, **options: object) -> SimpleNamespace:
+        seen.append(options.get("watch"))
+        return SimpleNamespace(handle=Handle(id="J1", host=self.host, root="/repo", kind="ssh"))
+
+    monkeypatch.setattr(Board, "submit", submit)
+    told: list[str] = []
+
+    batch = batched(lab, bus)
+    batch.run(watch=told.append)
+
+    assert seen == [told.append] * len(batch.jobs)
+
+
 def test_a_job_a_quota_refused_is_held_and_the_next_sweep_gets_it_through(
     lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
 ) -> None:

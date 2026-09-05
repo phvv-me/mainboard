@@ -12,7 +12,6 @@
 # host whose uv, pip and mainboard were all present for a directory nobody had shipped it.
 
 import shlex
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -25,7 +24,7 @@ from ..probe.snapshot import HostFacts
 from .schedulers.base import failure_reason
 from .schedulers.pueue import Pueue
 from .schedulers.registry import pick
-from .shared import logger
+from .shared import Watcher, announce, logger
 from .targets import Facts, find_root, probe_capabilities
 from .wrapping import activation, connection, wrap
 
@@ -51,10 +50,6 @@ _UV_INSTALLER = "curl -LsSf https://astral.sh/uv/install.sh | sh"
 def facts_command() -> str:
     """The command a machine answers with its own hardware snapshot as JSON."""
     return f"{_TOOL} facts --json"
-
-
-type Watcher = Callable[[str], None]
-"""Announces the stage an onboarding has reached, so a long run never stands silent."""
 
 
 class HostSetup(FrozenModel):
@@ -506,16 +501,59 @@ class Onboarding:
                 "`pueued -d`, then set the host up again"
             )
 
+    def undisturbed(self, host: str) -> None:
+        """Refuse to change the environment under runs `host` still owes an outcome for.
+
+        Every pinned tree on a host symlinks its environment back to the one prefix in the
+        mirror, so shipping a compiled manifest that differs from the one those runs were pinned
+        and primed against replaces that environment underneath them. Their own pixi then finds
+        a prefix that does not match the manifest they hold, the new wave's finds one that does
+        not match theirs, and the two fight over it: job 3296353 of a five-job wave died that
+        way while a batch from a newer commit was dispatched around it (2026-09-05).
+
+        Only a real change is refused. A host whose recorded digest already matches this
+        manifest is being re-mirrored rather than re-described, which is what a sync between two
+        waves of one campaign does all day, and a host with nothing owed can be told anything.
+
+        host: the alias about to be mirrored to.
+        """
+        if not self.digest:
+            return
+        try:
+            recorded = self.dispatcher.cache.host(host)
+        except LookupError:
+            return
+        if not recorded.digest or recorded.digest == self.digest:
+            return
+        owed = [run for run in self.dispatcher.cache.live() if run.target == host]
+        if not owed:
+            return
+        named = ", ".join(run.handle for run in owed[:4])
+        more = f" and {len(owed) - 4} more" if len(owed) > 4 else ""
+        raise MissionError(
+            f"{host!r} still owes {len(owed)} run(s) an outcome ({named}{more}) and this "
+            f"workspace's environment has changed since {host!r} was set up. Every one of those "
+            "runs activates the environment this would replace, so shipping it now would change "
+            f"what they run in while they wait. Let them settle (`{_TOOL} jobs`), or "
+            f"`{_TOOL} cancel <handle>` the ones you no longer need, then set the host up again."
+        )
+
     def run(self, *, sync_only: bool = False) -> HostSetup:
         """Onboard the host and return (and record) what it became.
 
         The mirror carries the compiled artifact alongside the sources, so the install step
         below has a lock this workspace already solved and never asks the host to solve one.
 
+        Refuses outright when the environment this would install differs from the one runs still
+        in flight on that host are activating, since they all share the one prefix the mirror
+        holds and nothing here can give them the environment they were dispatched with once it
+        has been replaced.
+
         sync_only: skip the bootstrap and the hardware probe, re-mirroring and re-provisioning
             an already onboarded host instead of onboarding it from nothing; see `_sync`.
         """
         host = self.plan.host
+        self.undisturbed(host)
         if sync_only:
             return self._sync(host)
         with connection(host) as remote:
@@ -590,8 +628,3 @@ class Onboarding:
         )
         logger.info("synced %s at %s", host, root)
         return updated
-
-
-def announce(stage: str) -> None:
-    """The default `Watcher`, logging each stage for a caller that renders no progress."""
-    logger.info("%s", stage)

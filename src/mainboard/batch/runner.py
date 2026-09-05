@@ -11,6 +11,7 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..dispatch import vocabulary
 from ..dispatch.schedulers import is_quota_refusal
+from ..dispatch.shared import Watcher
 from ..dispatch.transport import HostUnreachable
 from ..dispatch.vocabulary import Request
 from .estimate import Estimator
@@ -106,7 +107,7 @@ class Batch:
         """The batch identity, its spec's own."""
         return self.spec.batch_id
 
-    def dispatch(self, job: BatchJob) -> Dispatched:
+    def dispatch(self, job: BatchJob, *, watch: Watcher | None = None) -> Dispatched:
         """Send one job to its target, recording its handle, its refusal, or its hold.
 
         A target that refuses on its own count quota has not rejected the job, it has said the
@@ -116,7 +117,9 @@ class Batch:
         """
         bound = self.board.on(job.target)
         try:
-            run = bound.submit(job.command, name=self.labelling(job.name), **job.submission())
+            run = bound.submit(
+                job.command, name=self.labelling(job.name), watch=watch, **job.submission()
+            )
         except _REFUSALS as refusal:
             if is_quota_refusal(str(refusal)):
                 return self.held(job, refusal)
@@ -242,7 +245,7 @@ class Batch:
         )
         return told
 
-    def run(self) -> list[Dispatched]:
+    def run(self, *, watch: Watcher | None = None) -> list[Dispatched]:
         """Dispatch every job to its own target and publish what each dispatch came to.
 
         One target refusing is that job's row and the next job still goes, since a batch spread
@@ -251,10 +254,13 @@ class Batch:
 
         A job the selection left out is recorded as skipped rather than left unmentioned, so
         every reader of this stream knows there is nothing coming for it.
+
+        watch: announces what each dispatch does on the far side, which for a queued host is the
+            priming of the environment its wave will run in.
         """
         self.open()
         return [
-            *(self.dispatch(job) for job in self.jobs),
+            *(self.dispatch(job, watch=watch) for job in self.jobs),
             *(self.skip(job) for job in self.skipped),
         ]
 

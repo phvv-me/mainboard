@@ -63,6 +63,9 @@ class JobSpec(FrozenModel):
         caller that deliberately relies on it.
     container_command: a preformatted shell command that already wraps the inner `cmd` in a
         container runtime invocation; when set, the body runs this instead of a bare `bash -c`.
+    synchronize: a preformatted shell line the script runs before it activates anything, which
+        brings the environment in line with its lock under the workspace lock. Empty for a job
+        whose environment is an image, and for a caller that renders a script by hand.
     sampler: a preformatted shell line the script runs before the command, for a host that
         watches itself while the job runs. Opaque text here on purpose, since a job script is
         the one place that decision can be carried onto a machine that is not this one, and
@@ -90,6 +93,7 @@ class JobSpec(FrozenModel):
     pythonpath: str = ""
     isolate_pythonpath: bool = True
     container_command: str = ""
+    synchronize: str = ""
     sampler: str = ""
     attestation: str = ""
     source: str = ""
@@ -130,6 +134,7 @@ class JobSpec(FrozenModel):
             isolate_pythonpath=self.isolate_pythonpath,
             activation=activation_stage(self.plan, self.root),
             container_command=self.container_command,
+            synchronize=self.synchronize,
             sampler=self.sampler,
             attestation=self.attestation,
             source=shlex.quote(self.source) if self.source else "",

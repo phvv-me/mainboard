@@ -251,12 +251,69 @@ def test_a_dispatch_brings_the_pinned_environment_current_before_the_wave_starts
     del backend
     machine = machine_with()
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources())
+    announced: list[str] = []
+    dispatcher.run(
+        plan(), "python -m foo", root="/repo", resources=Resources(), watch=announced.append
+    )
 
     [primed] = [line for line in machine.lines if "run --env" in line]
     assert primed.startswith("cd /repo/.mainboard/dispatch/sources/")
     assert primed.endswith("mainboard run --env default -- true")
     assert primed.index("source") < primed.index("mainboard run")
+    # And it says so, since confirming it otherwise means watching processes on the host.
+    assert [told for told in announced if told.startswith("primed default on gold for /repo")]
+
+
+def test_every_job_brings_the_environment_in_line_before_it_activates(
+    dispatcher: Dispatcher,
+    backend: RecordingScheduler,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dispatch from a newer commit replaces the compiled manifest under the same prefix.
+
+    Every pinned tree symlinks its environment back to the one prefix in the mirror, so a wave
+    still queued when a later dispatch lands cannot rely on the reading its own dispatch took:
+    job 3296353 of five, primed at one commit, died updating a prefix a batch from another had
+    moved under it. So the job takes the same serialized sync itself, on the node, before it
+    activates anything, and a failure there is not the job's failure since the activation
+    diagnoses a broken environment in its own words.
+    """
+    machine = machine_with()
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+    described = {"value": "v1"}
+    monkeypatch.setattr(
+        dispatch_module,
+        "git",
+        lambda *args: "abc1234" if args[0] == "rev-parse" else described["value"],
+    )
+
+    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources())
+    described["value"] = "v2"
+    dispatcher.run(plan(), "python -m bar", root="/repo", resources=Resources())
+
+    waves = [call for name, call in backend.calls if name == "submit"]
+    assert len({root for root, _script, _args in waves}) == 2
+    for root, script, _args in waves:
+        body = (workdir / str(script)).read_text(encoding="utf-8")
+        assert "mainboard run --env default -- true || echo" in body
+        assert body.index("mainboard run --env default -- true") < body.index("activate.sh")
+        assert str(root) in body
+
+
+def test_a_containerized_job_has_no_environment_of_its_own_to_bring_in_line(
+    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
+) -> None:
+    """What it activates is the image, which no lock on this host describes."""
+    dispatcher.run(
+        plan(**_CONTAINERIZED),
+        "python -m foo",
+        root="/repo",
+        resources=Resources(),
+        containerize=lambda argv: ["apptainer", "exec", "img.sif", *argv],
+    )
+    [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
+    assert "run --env" not in (workdir / str(script)).read_text(encoding="utf-8")
 
 
 def test_a_host_that_will_not_prime_costs_its_wave_the_serialization_and_not_the_dispatch(

@@ -21,7 +21,7 @@ from ..core.project import Project
 from . import vocabulary
 from .jobs import JobSpec
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
-from .shared import HandleId, db_file, git, logger, now, state_path, workspace
+from .shared import HandleId, Watcher, announce, db_file, git, logger, now, state_path, workspace
 from .snapshots import Snapshots, source_key
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
@@ -38,6 +38,26 @@ if TYPE_CHECKING:
 
 # The tool a host runs its own jobs through, so nothing below spells the binary's name.
 _TOOL = Project().name
+
+
+def synchronizing(plan: ExecutionPlan) -> str:
+    """The line that brings `plan`'s environment in line with its lock, empty when none can.
+
+    One spelling for the two places that need it: the dispatch takes it once after pinning, and
+    the job takes it again on the node before it activates, because a job that waited six hours
+    in a queue cannot assume the dispatch's reading still holds. It is the tool's own no-op
+    command, so what it actually runs is the provisioner's serialized sync, stamped, under the
+    workspace lock, rather than a second implementation of it out here.
+
+    A containerized plan has no such environment: what it activates is the image, which no lock
+    on this host describes.
+
+    plan: the resolved execution context whose environment is being brought current.
+    """
+    if plan.containerized:
+        return ""
+    return f"{_TOOL} run --env {shlex.quote(plan.env)} -- true"
+
 
 # How a finished verdict maps to a process exit code: 0 ok, 1 failed, 2 still running, 3
 # vanished/unknown. A caller can branch on this without re-deriving it.
@@ -450,6 +470,7 @@ class Dispatcher:
         sampler: str = "",
         attestation: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
+        watch: Watcher | None = None,
     ) -> Handle:
         """Render `cmd` into a job script for `plan`'s host and dispatch it.
 
@@ -476,6 +497,8 @@ class Dispatcher:
             none, recording what the machine looked like as the work started.
         containerize: builds the container runtime argv around `["bash", "-c", cmd]`; required
             when `plan.containerized`.
+        watch: announces the priming of the host's environment, the one stage of a dispatch that
+            happens on the far side and takes long enough to be worth saying.
         """
         container_command = ""
         if plan.containerized:
@@ -497,6 +520,7 @@ class Dispatcher:
             account=resources.account,
             mem_gb=resources.mem_gb,
             container_command=container_command,
+            synchronize=synchronizing(plan),
             sampler=sampler,
             attestation=attestation,
             source=source.identity,
@@ -517,6 +541,7 @@ class Dispatcher:
             node=node,
             source=source,
             containerize=containerize,
+            watch=watch,
         )
         return Handle(
             id=handle, host=plan.host, root=root, kind=plan.profile.kind, fetch_path=fetch
@@ -579,6 +604,7 @@ class Dispatcher:
         node: str = "",
         source: Source | None = None,
         containerize: Callable[[list[str]], list[str]] | None = None,
+        watch: Watcher | None = None,
     ) -> str:
         """Ship the workspace, pin the tree it runs from, dispatch `script`, return the handle.
 
@@ -600,6 +626,8 @@ class Dispatcher:
         containerize: builds the container runtime argv around `["bash", "-c", verify]`; required
             when `plan.containerized`, so the verify preflight runs inside the same base image a
             job would.
+        watch: announces the one stage this has that nobody can see from here, the priming of
+            the environment on the host.
         """
         admit(
             plan.profile,
@@ -622,7 +650,7 @@ class Dispatcher:
                 filters=self.sync.filters,
                 exclude=[*self.sync.excludes, *plan.profile.sync.exclude],
             )
-            self._prime(remote, plan, pinned)
+            self._prime(remote, plan, pinned, watch)
             try:
                 handle = pick(plan.profile).submit(
                     remote, pinned, script=prepared, args=args, resources=resources
@@ -774,7 +802,9 @@ class Dispatcher:
             reason=failure_reason(log, state.exit_code),
         )
 
-    def _prime(self, remote: Machine, plan: ExecutionPlan, pinned: str) -> None:
+    def _prime(
+        self, remote: Machine, plan: ExecutionPlan, pinned: str, watch: Watcher | None = None
+    ) -> None:
         """Take the environment update the first job out of `pinned` would otherwise race for.
 
         pixi brings a prefix in line with its lock on the way into every command it runs, and a
@@ -797,15 +827,23 @@ class Dispatcher:
         remote: the open connection to the host.
         plan: the resolved execution context, whose environment is being brought current.
         pinned: the snapshot the wave will run out of.
+        watch: announces the priming as it happens, so a batch dispatch says it took the update
+            rather than leaving it to be confirmed by watching processes on the host.
         """
-        if plan.containerized:
+        command = synchronizing(plan)
+        if not command:
             return
-        body = wrap(plan, pinned, command=f"{_TOOL} run --env {shlex.quote(plan.env)} -- true")
-        retcode, _, err = remote["bash"][["-lc", body]].run(retcode=None)
+        retcode, _, err = remote["bash"][["-lc", wrap(plan, pinned, command=command)]].run(
+            retcode=None
+        )
         if retcode:
             logger.warning(
                 "could not prime %s on %s: %s", plan.env, plan.host, failure_reason(str(err))
             )
+            return
+        told = f"primed {plan.env} on {plan.host} for {pinned}"
+        logger.info("%s", told)
+        (watch or announce)(told)
 
     def _verify(
         self,

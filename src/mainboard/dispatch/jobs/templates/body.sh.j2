@@ -1,3 +1,12 @@
+{% if synchronize %}
+# Bring the environment in line with its lock before activating it, under the workspace lock the
+# tool takes for exactly this. pixi does it on the way into any command anyway, but every job of
+# a wave shares one prefix and would do it at once, and a job that waited hours in a queue cannot
+# assume the reading its dispatch took still holds: a later dispatch from a newer commit replaces
+# the compiled manifest under the same prefix. Its failure is not this job's failure, so a broken
+# environment is still diagnosed by the activation below, in the words that name the install.
+{{ synchronize }} || echo "mainboard: could not bring the environment in line with its lock"
+{% endif %}
 {{ activation }}
 {% if pythonpath %}
 export PYTHONPATH={{ pythonpath }}

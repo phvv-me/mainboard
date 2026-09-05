@@ -797,8 +797,8 @@ def build(root: Path | None = None) -> App:
             declared(spec, job, name, set_), selection=Selection.of(only)
         )
         mode = mode_of(json_mode=json, agent=agent)
-        with progress(f"dispatching {batched.id}"):
-            dispatched = batched.run()
+        with progress(f"dispatching {batched.id}") as stage:
+            dispatched = batched.run(watch=stage)
         if mode is None:
             print(batched.id)
         rows(
