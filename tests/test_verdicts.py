@@ -94,14 +94,16 @@ def dispatched(board: Board, stream: str, lines: tuple[tuple[str, Topic, str, st
     """
     bus = Receipts(directory(board, stream) / "events.ndjson")
     for at, topic, job, said in lines:
-        payload = {"target": "miyabi-g", "reason": said} if topic is not Topic.SUBMITTED else {}
+        taken = topic is Topic.SUBMITTED
         bus.publish(
             Event(
                 at=f"2026-09-04T{at}+00:00",
                 batch=stream,
                 topic=topic,
                 job=job,
-                data=payload or {"handle": said, "target": "miyabi-g"},
+                data={"handle": said, "target": "miyabi-g"}
+                if taken
+                else {"target": "miyabi-g", "reason": said},
             )
         )
 
@@ -143,6 +145,71 @@ def test_the_newest_dispatch_line_decides_the_row_whatever_its_topic(board: Boar
     # And a hold after one says the sweep is offering the job again, which is still in flight.
     assert (rows["math"].verdict, rows["math"].code) == ("held", 2)
     assert settled.code == 1
+
+
+def test_a_job_a_wave_left_out_gets_a_row_that_is_already_over(board: Board) -> None:
+    """A `--only` wave's unselected jobs were invisible to the verb that reports the batch.
+
+    They had no row at all, because the row set was built from the three answers a target gives
+    and nothing was ever offered to a target for these. Now the skip is the row, terminal from
+    the start: nothing dispatched cannot move, so the stream neither waits on it nor counts it
+    as a failure.
+    """
+    stream = "left-out"
+    dispatched(
+        board,
+        stream,
+        (
+            ("18:43:08", Topic.SUBMITTED, "shell", "3294907"),
+            ("18:43:30", Topic.SKIPPED, "python", "skipped: not named by --only"),
+            ("18:43:31", Topic.SKIPPED, "cpp", "skipped: not named by --only"),
+        ),
+    )
+    settled = board.verdicts().of(stream)
+    rows = {trial.job: trial for trial in settled.trials}
+    assert rows["python"] == TrialVerdict(
+        job="python",
+        target="miyabi-g",
+        state="skipped",
+        verdict="skipped",
+        detail="skipped: not named by --only",
+    )
+    assert rows["python"].exit_code is None
+    # Not in flight, so the one job that IS flying is the only thing holding the stream at 2.
+    assert (rows["python"].code, rows["cpp"].code) == (0, 0)
+    assert settled.code == 2
+
+    recorded(board, "3294907", name=f"batch:{stream}/shell", verdict="ok", target="miyabi-g")
+
+    assert board.verdicts().of(stream).code == 0
+
+
+def test_a_skip_never_outranks_a_dispatch_however_much_newer_it_is(board: Board) -> None:
+    """A skip says no offer was made in this wave, not that an earlier run unhappened.
+
+    Nine jobs of the rep92 batch ran at 13:43 and were left out of the 18:43 `--only` wave
+    (2026-09-04), so ranking the skip by its clock alone would have thrown nine outcomes away.
+    A skip decides a row exactly when nothing was ever dispatched for the job, which is also
+    what makes the other direction work: a wave that skips a job and then dispatches it reports
+    the dispatch.
+    """
+    stream = "waves"
+    dispatched(
+        board,
+        stream,
+        (
+            ("13:41:47", Topic.SUBMITTED, "ran-then-skipped", "3294189"),
+            ("18:43:30", Topic.SKIPPED, "ran-then-skipped", "skipped: not named by --only"),
+            ("13:41:48", Topic.SKIPPED, "skipped-then-ran", "skipped: not named by --only"),
+            ("18:43:08", Topic.SUBMITTED, "skipped-then-ran", "3294907"),
+        ),
+    )
+    recorded(board, "3294189", name=f"batch:{stream}/a", verdict="ok", target="miyabi-g")
+    recorded(board, "3294907", name=f"batch:{stream}/b", verdict="ok", target="miyabi-g")
+    rows = {trial.job: trial for trial in board.verdicts().of(stream).trials}
+
+    assert (rows["ran-then-skipped"].handle, rows["ran-then-skipped"].verdict) == ("3294189", "ok")
+    assert (rows["skipped-then-ran"].handle, rows["skipped-then-ran"].verdict) == ("3294907", "ok")
 
 
 def test_a_stream_reads_the_outcome_the_durable_sweep_already_settled(board: Board) -> None:

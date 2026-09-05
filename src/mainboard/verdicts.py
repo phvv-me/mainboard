@@ -46,7 +46,9 @@ _RECEIPT = "trial_receipt"
 # How a settled word maps to a process exit code, the same table `Verdict.code` answers from:
 # 0 ok, 1 failed, 2 still running or legitimately waiting, 3 vanished or unknown. A cancel exits
 # 1 because a completion check must never call a stopped run complete, however deliberate the
-# stop was; the word in the row is what says it was a decision rather than a crash.
+# stop was; the word in the row is what says it was a decision rather than a crash. A skip exits
+# 0 for the opposite reason: nothing was ever dispatched, so there is no run to be incomplete,
+# which is the same reading the batch's own closing count already takes of it.
 # The code a stream answers while any of its rows is still running or legitimately waiting,
 # named once because a waiter loops on exactly this answer.
 _IN_FLIGHT = 2
@@ -62,6 +64,7 @@ _EXITS = {
     # sweep is still offering it. A completion check must wait for it exactly as it waits for a
     # queued job, which is what keeps a batch of thirteen from reading as a finished nine.
     vocabulary.HELD: 2,
+    vocabulary.SKIPPED: 0,
     "blocked": 2,
     "": 2,
     vocabulary.QUEUED: 2,
@@ -383,9 +386,14 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
     re-dispatched job answers with its newest run, and a job that was refused or is being held
     on a target's quota still has a row rather than vanishing from the stream it was declared in.
     Which of those three the row settles on is decided by the clock alone, in `_joined`.
+
+    A job nothing was ever dispatched for answers from its skip instead, which is the one row
+    shape a target never spoke about. Every job the stream mentions therefore has a row, and a
+    `--only` wave's unselected jobs stop being invisible to the verb that reports the batch.
     """
     recorded = list(events)
     answers = latest(recorded, *OFFERED)
+    skipped = latest(recorded, Topic.SKIPPED)
     states = latest(recorded, Topic.STATE)
     settled = latest(recorded, Topic.SETTLED)
     attested = latest(recorded, Topic.ATTESTED)
@@ -397,7 +405,9 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
             ended=settled.get(job),
             attestation=attested.get(job),
         )
-        for job in answers
+        if job in answers
+        else _unselected(job, skipped[job])
+        for job in dict.fromkeys([*answers, *skipped])
     )
 
 
@@ -539,6 +549,33 @@ def contention(attestation: Event | None) -> str:
     if attestation is None or attestation.data.get("idle"):
         return ""
     return f"gpu {attestation.data.get('gpu_pct', 0)}% busy at start"
+
+
+def _unselected(job: str, skip: Event) -> TrialVerdict:
+    """One job a run was told to leave out, as the row that is already over.
+
+    A skip is not a fourth answer to an offer, it is the statement that no offer was made in
+    this wave, so it never outranks a dispatch however much newer it is. The nine jobs this
+    workspace ran at 13:43 and left out of an `--only` wave at 18:43 (2026-09-04) are nine runs
+    that happened, not nine that unhappened, and a rule ranking the skip by its clock alone
+    would have thrown their outcomes away. So the skip decides a row exactly when nothing was
+    ever dispatched for the job.
+
+    Shown rather than dropped, because a plan worked through in waves is read against the plan
+    and a reader has to see which jobs were not asked for rather than wonder where they went.
+    Terminal from the start, because nothing that was never dispatched can move, so a completion
+    check neither waits on it nor counts it as a failure.
+
+    job: the job's name inside the stream.
+    skip: its newest `job.skipped` line.
+    """
+    return TrialVerdict(
+        job=job,
+        target=str(skip.data.get("target", "")),
+        state=vocabulary.SKIPPED,
+        verdict=vocabulary.SKIPPED,
+        detail=str(skip.data.get("reason", "")),
+    )
 
 
 def _joined(
