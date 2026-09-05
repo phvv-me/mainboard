@@ -195,5 +195,18 @@ def payload(record: FrozenModel) -> dict[str, JsonValue]:
 
 
 def latest(events: Iterable[Event], topic: Topic) -> dict[str, Event]:
-    """The most recent event of `topic` per job, the cursor a resumed pass reads."""
-    return {event.job: event for event in events if event.topic is topic}
+    """The most recent event of `topic` per job, the cursor a resumed pass reads.
+
+    Recent by the envelope's own `at` rather than by where the line happened to land, because
+    the transport this contract is written for is a broker: a partition delivers at least once
+    and promises order per job at best, so a reader that simply took the last line it saw would
+    let a redelivered older line overwrite the newer one it already had. An ISO-8601 stamp sorts
+    as the instant it names, and a tie keeps the later arrival, which is what a file transport
+    appending twice inside one clock tick means.
+    """
+    newest: dict[str, Event] = {}
+    for event in events:
+        held = newest.get(event.job)
+        if event.topic is topic and (held is None or event.at >= held.at):
+            newest[event.job] = event
+    return newest

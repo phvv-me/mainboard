@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard import Board, Job, MissionError
-from mainboard.batch.receipts import Receipts, Topic, publish
+from mainboard.batch.receipts import Event, Receipts, Topic, publish
 from mainboard.batch.runner import directory
 from mainboard.dispatch.state import RunRecord
 from mainboard.monitor import Monitor
@@ -83,6 +83,66 @@ def published(board: Board, stream: str) -> None:
     )
     publish(bus, stream, Topic.REFUSED, job="c", data={"target": "vast", "reason": "no key"})
     publish(bus, stream, Topic.SUBMITTED, job="d", data={"handle": "4", "target": "gold"})
+
+
+def dispatched(board: Board, stream: str, lines: tuple[tuple[str, Topic, str, str], ...]) -> None:
+    """A stream of dispatch lines stamped by the test, in the order it wants them appended.
+
+    Written through the envelope rather than through `publish` because both halves of this are
+    about clocks: the stamps have to be chosen, and the file order has to be free to disagree
+    with them the way a broker's redelivery does.
+    """
+    bus = Receipts(directory(board, stream) / "events.ndjson")
+    for at, topic, job, said in lines:
+        payload = {"target": "miyabi-g", "reason": said} if topic is not Topic.SUBMITTED else {}
+        bus.publish(
+            Event(
+                at=f"2026-09-04T{at}+00:00",
+                batch=stream,
+                topic=topic,
+                job=job,
+                data=payload or {"handle": said, "target": "miyabi-g"},
+            )
+        )
+
+
+def test_the_newest_dispatch_line_decides_the_row_whatever_its_topic(board: Board) -> None:
+    """Taken, turned away and held on a quota are three answers to one request.
+
+    So the last answer is the true one. Four jobs miyabi-g's `njobs-g` limit refused at 13:43
+    went out at 18:43 under new handles (2026-09-04), and a fold that consulted the refusal
+    because it was a refusal buried the run that actually went. The stamps decide it rather than
+    the order the lines landed in, since the envelope contract promises no order at all and a
+    file is only accidentally in one.
+    """
+    stream = "superseded"
+    dispatched(
+        board,
+        stream,
+        (
+            ("13:43:14", Topic.REFUSED, "shell", "njobs-g full"),
+            ("18:43:08", Topic.SUBMITTED, "shell", "3294907"),
+            ("18:43:16", Topic.SUBMITTED, "sql", "3294908"),
+            ("18:43:23", Topic.REFUSED, "sql", "the queue was removed"),
+            ("18:43:22", Topic.SUBMITTED, "rust", "3294909"),
+            ("13:43:31", Topic.REFUSED, "rust", "njobs-g full"),
+            ("13:43:39", Topic.HELD, "tex", "njobs-g full"),
+            ("18:43:28", Topic.SUBMITTED, "tex", "3294910"),
+            ("13:00:00", Topic.SUBMITTED, "math", "3294206"),
+            ("18:43:42", Topic.HELD, "math", "njobs-g full"),
+        ),
+    )
+    settled = board.verdicts().of(stream)
+    rows = {trial.job: trial for trial in settled.trials}
+    # A re-dispatch supersedes the refusal that came before it, whichever line was appended last.
+    assert (rows["shell"].verdict, rows["shell"].handle) == ("running", "3294907")
+    assert (rows["rust"].verdict, rows["rust"].handle) == ("running", "3294909")
+    assert (rows["tex"].verdict, rows["tex"].handle) == ("running", "3294910")
+    # A refusal after a submission is terminal, in the target's own words.
+    assert (rows["sql"].verdict, rows["sql"].detail) == ("refused", "the queue was removed")
+    # And a hold after one says the sweep is offering the job again, which is still in flight.
+    assert (rows["math"].verdict, rows["math"].code) == ("held", 2)
+    assert settled.code == 1
 
 
 @pytest.mark.parametrize(

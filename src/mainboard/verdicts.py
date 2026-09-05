@@ -341,6 +341,7 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
     The cursor logic is `latest` per topic per job, the same read every resumed pass uses, so a
     re-dispatched job answers with its newest run, and a job that was refused or is being held
     on a target's quota still has a row rather than vanishing from the stream it was declared in.
+    Which of those three the row settles on is decided by the clock alone, in `_joined`.
     """
     recorded = list(events)
     submitted = latest(recorded, Topic.SUBMITTED)
@@ -516,33 +517,43 @@ def _joined(
 ) -> TrialVerdict:
     """One job's row folded from its latest line per topic.
 
-    A settled line wins the verdict, a state line stands in while the job flies, a refusal is
-    terminal in its own words, and a hold is neither: the job has not been dispatched yet and
-    the sweep is still asking for it, so its row is in flight until a submission line lands.
+    Taken, turned away, and kept waiting on a quota are three answers to the same request, so
+    the newest of the three is the one that stands and none of them outranks the others by being
+    a particular topic. A re-dispatch supersedes an earlier refusal, which is the whole of what
+    happened to four jobs miyabi-g's `njobs-g` limit turned away at 13:43 and took at 18:43
+    (2026-09-04): reading the refusal because it was a refusal buried the run that went out five
+    hours later. A refusal recorded after a submission is terminal for the same reason, in the
+    target's own words.
 
-    A job submitted again after settling compares handles, so a
-    stale settlement never silences the run of it that is still going. An attestation is carried
-    onto every row the run has, since what the machine was doing at the start is as true of the
-    finished measurement as it was of the running one.
+    Past the dispatch line, a settled line wins the verdict and a state line stands in while the
+    job flies. A job submitted again after settling compares handles, so a stale settlement never
+    silences the run of it that is still going. An attestation is carried onto every row the run
+    has, since what the machine was doing at the start is as true of the finished measurement as
+    it was of the running one.
     """
     handle = str(submitted.data.get("handle", "")) if submitted else ""
     target = str(submitted.data.get("target", "")) if submitted else ""
     node = str(submitted.data.get("node", "")) if submitted else ""
     contended = contention(attestation)
-    if submitted is None and holding is not None:
+    answer = max(
+        (line for line in (submitted, refusal, holding) if line is not None),
+        key=lambda line: line.at,
+        default=None,
+    )
+    if answer is not None and answer.topic is Topic.HELD:
         return TrialVerdict(
             job=job,
-            target=str(holding.data.get("target", "")),
+            target=str(answer.data.get("target", "")),
             state=vocabulary.HELD,
             verdict=vocabulary.HELD,
-            detail=str(holding.data.get("reason", "")),
+            detail=str(answer.data.get("reason", "")),
         )
-    if submitted is None and refusal is not None:
+    if answer is not None and answer.topic is Topic.REFUSED:
         return TrialVerdict(
             job=job,
-            target=str(refusal.data.get("target", "")),
+            target=str(answer.data.get("target", "")),
             verdict="refused",
-            detail=str(refusal.data.get("reason", "")),
+            detail=str(answer.data.get("reason", "")),
         )
     current = str(state.data.get("state", "")) if state else ""
     verdict = str(state.data.get("verdict", "")) if state else ""
