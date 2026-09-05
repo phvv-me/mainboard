@@ -257,6 +257,13 @@ def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
     assert len(rows) == 2
     assert "default" in rows[0].detail and "serving" not in rows[0].detail
     assert "serving" in rows[1].detail and "default" not in rows[1].detail
+    # Every row names its own environment, since one row per environment is only readable when
+    # the row says which one it is about.
+    assert all(
+        any(name in found.detail for name in doctor.examined())
+        for found in doctor.sections()
+        if found.section == "environment"
+    )
     # Naming one keeps the report to that environment, which is what `--env` has always meant.
     assert Doctor(Board(workspace), env="serving").examined() == ("serving",)
 

@@ -145,10 +145,12 @@ class Doctor:
         if damaged:
             faults.append(f"needs reinstalling: {', '.join(damaged)}")
         if faults:
+            # Named, because the report now carries one row per declared environment and a row
+            # that says only what is broken leaves the reader counting rows to find out where.
             return Section(
                 section="environment",
                 verdict=Verdict.FAIL,
-                detail="; ".join(faults),
+                detail=f"{environment}: " + "; ".join(faults),
                 fix=f"{install} --resolve" if stale or lock_stale else install,
             )
         if not installed:
