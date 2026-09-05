@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -313,6 +314,65 @@ def test_the_stale_state_survives_a_repeat_ask_without_rerecording(snapshot: Pat
     touched(snapshot.parents[2].parent / "checkout")
     assert staleness.check(snapshot).stale is True
     assert staleness.check(snapshot).stale is True
+
+
+def test_a_stale_snapshot_whose_source_is_dirty_says_so_instead_of_naming_the_reinstall(
+    snapshot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reinstall installs the tree as it stands, so it is advice only a clean tree earns.
+
+    Every invocation from a clean workspace printed `run self-update` while that source carried
+    another agent's uncommitted edits, and running it would have shipped an unfinished tree.
+    """
+    source = snapshot.parents[2].parent / "checkout"
+    check(snapshot)
+    touched(source)
+    asked: list[list[str]] = []
+
+    def git(argv: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+        asked.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=" M src/mainboard/cli.py\n", stderr="")
+
+    monkeypatch.setattr(staleness.subprocess, "run", git)
+    found = check(snapshot)
+
+    assert found.stale is True and found.dirty is True
+    assert asked == [["git", "-C", str(source), "status", "--porcelain"]]
+    assert "uncommitted work" in found.warning
+    assert "run `mainboard self-update`" not in found.warning
+
+
+def test_a_clean_source_keeps_the_reinstall_advice_and_a_fresh_one_asks_git_nothing(
+    snapshot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The git question costs a subprocess, so it is only asked once the answer can matter."""
+    asked: list[list[str]] = []
+
+    def git(argv: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+        asked.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(staleness.subprocess, "run", git)
+    fresh = check(snapshot)
+    assert fresh.stale is False and asked == []
+
+    touched(snapshot.parents[2].parent / "checkout")
+    found = check(snapshot)
+    assert found.stale is True and found.dirty is False
+    assert len(asked) == 1
+    assert found.warning.endswith("run `mainboard self-update` to fix it")
+
+
+def test_a_source_git_cannot_answer_for_is_not_called_dirty(
+    snapshot: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A machine with no git, or a source that is no repository, must not lose the nag."""
+    check(snapshot)
+    touched(snapshot.parents[2].parent / "checkout")
+    monkeypatch.setattr(
+        staleness.subprocess, "run", lambda argv, **options: (_ for _ in ()).throw(OSError("none"))
+    )
+    assert check(snapshot).dirty is False
 
 
 def test_a_refresh_without_a_source_logs_beside_the_working_directory(
