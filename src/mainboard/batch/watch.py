@@ -18,7 +18,7 @@ from ..costs import Ledger, Observation
 from ..dispatch import vocabulary
 from ..dispatch.shared import now
 from .estimate import platform
-from .receipts import Receipts, Topic, latest, publish
+from .receipts import OFFERED, Receipts, Topic, latest, publish
 from .runner import directory
 
 if TYPE_CHECKING:
@@ -211,36 +211,16 @@ class Watch:
         The sweep runs first and over the whole workspace rather than over this batch, since a
         rental this batch does not own still bills while this one watches, and settling it costs
         one probe that was going to happen anyway.
+
+        Each row is built from the newest of the three answers its target has given, which is
+        the same cursor and the same rule the settled read folds on, asked here through one
+        `latest` call rather than through three that then need ranking against each other.
         """
         swept = self.board.monitor().once()
         events = self.bus.replay()
         rows = [
-            self.status(job, event, swept)
-            for job, event in latest(events, Topic.SUBMITTED).items()
-        ]
-        rows += [
-            JobStatus(
-                job=job,
-                target=str(event.data["target"]),
-                verdict=vocabulary.VANISHED,
-                detail=str(event.data["reason"]),
-            )
-            for job, event in latest(events, Topic.REFUSED).items()
-            if job not in {row.job for row in rows}
-        ]
-        # A job whose target had no room is still coming: the sweep above asks for it again on
-        # every pass, and until one gets through the row says so rather than leaving a gap in
-        # the plan. It counts as in flight, so a batch holding one never reads as settled.
-        rows += [
-            JobStatus(
-                job=job,
-                target=str(event.data["target"]),
-                state=vocabulary.HELD,
-                verdict=vocabulary.HELD,
-                detail=f"waiting on the target's quota: {event.data['reason']}",
-            )
-            for job, event in latest(events, Topic.HELD).items()
-            if job not in {row.job for row in rows}
+            self.answered(job, answer, swept)
+            for job, answer in latest(events, *OFFERED).items()
         ]
         landed = [self.record(row, events) for row in rows]
         status = BatchStatus(
@@ -287,6 +267,39 @@ class Watch:
             data={"handle": row.handle, "verdict": row.verdict, "detail": row.detail},
         )
         return True
+
+    def answered(self, job: str, answer: Event, swept: MonitorReport) -> JobStatus:
+        """One job's row from the newest answer its target gave about it.
+
+        Taken, turned away and held on a quota are three answers to one offer, so the last of
+        them is the one the row says. Ranking them by topic instead left a job a target took and
+        then refused rendering as still flying, which is a table saying a batch is working on
+        something nothing is working on.
+
+        job: the job's name inside the batch.
+        answer: its newest `job.submitted`, `job.refused` or `job.held` line.
+        swept: this pass's sweep, which is where a dispatched row's detail comes from.
+        """
+        target = str(answer.data["target"])
+        if answer.topic is Topic.REFUSED:
+            return JobStatus(
+                job=job,
+                target=target,
+                verdict=vocabulary.VANISHED,
+                detail=str(answer.data["reason"]),
+            )
+        # A job whose target had no room is still coming: the sweep above asks for it again on
+        # every pass, and until one gets through the row says so rather than leaving a gap in
+        # the plan. It counts as in flight, so a batch holding one never reads as settled.
+        if answer.topic is Topic.HELD:
+            return JobStatus(
+                job=job,
+                target=target,
+                state=vocabulary.HELD,
+                verdict=vocabulary.HELD,
+                detail=f"waiting on the target's quota: {answer.data['reason']}",
+            )
+        return self.status(job, answer, swept)
 
     def status(self, job: str, submitted: Event, swept: MonitorReport) -> JobStatus:
         """One dispatched job's row, from the run registry and this pass's own sweep."""

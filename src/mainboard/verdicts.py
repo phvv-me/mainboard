@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 from pydantic import ValidationError
 
-from .batch.receipts import Event, Receipts, Topic, latest
+from .batch.receipts import OFFERED, Event, Receipts, Topic, latest
 from .batch.runner import directory
 from .core.errors import MissionError
 from .dispatch import vocabulary
@@ -385,24 +385,19 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
     Which of those three the row settles on is decided by the clock alone, in `_joined`.
     """
     recorded = list(events)
-    submitted = latest(recorded, Topic.SUBMITTED)
+    answers = latest(recorded, *OFFERED)
     states = latest(recorded, Topic.STATE)
     settled = latest(recorded, Topic.SETTLED)
-    refused = latest(recorded, Topic.REFUSED)
-    held = latest(recorded, Topic.HELD)
     attested = latest(recorded, Topic.ATTESTED)
-    jobs = list(dict.fromkeys([*submitted, *refused, *held]))
     return tuple(
         _joined(
             job,
-            submitted=submitted.get(job),
+            answer=answers[job],
             state=states.get(job),
             ended=settled.get(job),
-            refusal=refused.get(job),
-            holding=held.get(job),
             attestation=attested.get(job),
         )
-        for job in jobs
+        for job in answers
     )
 
 
@@ -549,53 +544,46 @@ def contention(attestation: Event | None) -> str:
 def _joined(
     job: str,
     *,
-    submitted: Event | None,
+    answer: Event,
     state: Event | None,
     ended: Event | None,
-    refusal: Event | None,
-    holding: Event | None = None,
     attestation: Event | None = None,
 ) -> TrialVerdict:
-    """One job's row folded from its latest line per topic.
+    """One job's row, folded from the newest answer about it and its latest line per topic.
 
-    Taken, turned away, and kept waiting on a quota are three answers to the same request, so
-    the newest of the three is the one that stands and none of them outranks the others by being
-    a particular topic. A re-dispatch supersedes an earlier refusal, which is the whole of what
-    happened to four jobs miyabi-g's `njobs-g` limit turned away at 13:43 and took at 18:43
-    (2026-09-04): reading the refusal because it was a refusal buried the run that went out five
-    hours later. A refusal recorded after a submission is terminal for the same reason, in the
-    target's own words.
+    Taken, turned away, and kept waiting on a quota are three answers to the same offer, so the
+    newest of the three is the one that stands and none of them outranks the others by being a
+    particular topic. That ranking is the shared `OFFERED` cursor's, so a re-dispatch supersedes
+    an earlier refusal here and in the live watch alike: four jobs miyabi-g's `njobs-g` limit
+    turned away at 13:43 went out at 18:43 (2026-09-04), and reading the refusal because it was
+    a refusal buried the run five hours younger than it. A refusal recorded after a submission
+    is terminal for the same reason, in the target's own words.
 
-    Past the dispatch line, a settled line wins the verdict and a state line stands in while the
-    job flies. A job submitted again after settling compares handles, so a stale settlement never
+    Past the answer, a settled line wins the verdict and a state line stands in while the job
+    flies. A job submitted again after settling compares handles, so a stale settlement never
     silences the run of it that is still going. An attestation is carried onto every row the run
     has, since what the machine was doing at the start is as true of the finished measurement as
     it was of the running one.
     """
-    handle = str(submitted.data.get("handle", "")) if submitted else ""
-    target = str(submitted.data.get("target", "")) if submitted else ""
-    node = str(submitted.data.get("node", "")) if submitted else ""
     contended = contention(attestation)
-    answer = max(
-        (line for line in (submitted, refusal, holding) if line is not None),
-        key=lambda line: line.at,
-        default=None,
-    )
-    if answer is not None and answer.topic is Topic.HELD:
+    target = str(answer.data.get("target", ""))
+    if answer.topic is Topic.HELD:
         return TrialVerdict(
             job=job,
-            target=str(answer.data.get("target", "")),
+            target=target,
             state=vocabulary.HELD,
             verdict=vocabulary.HELD,
             detail=str(answer.data.get("reason", "")),
         )
-    if answer is not None and answer.topic is Topic.REFUSED:
+    if answer.topic is Topic.REFUSED:
         return TrialVerdict(
             job=job,
-            target=str(answer.data.get("target", "")),
+            target=target,
             verdict="refused",
             detail=str(answer.data.get("reason", "")),
         )
+    handle = str(answer.data.get("handle", ""))
+    node = str(answer.data.get("node", ""))
     current = str(state.data.get("state", "")) if state else ""
     verdict = str(state.data.get("verdict", "")) if state else ""
     if ended is not None and str(ended.data.get("handle", "")) == handle:

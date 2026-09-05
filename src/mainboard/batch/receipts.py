@@ -80,6 +80,12 @@ class Topic(StrEnum):
     CLOSED = "batch.closed"
 
 
+# The three answers a target can give about one offered job. They are named together because no
+# reader wants them apart: a row's question is what the last word about this job was, not what
+# was submitted and separately what was refused, and `latest` over the three is that question.
+OFFERED = (Topic.SUBMITTED, Topic.REFUSED, Topic.HELD)
+
+
 class Event(FrozenModel):
     """One published line: where it belongs, what it says, and what it says it about.
 
@@ -194,8 +200,8 @@ def payload(record: FrozenModel) -> dict[str, JsonValue]:
     return json.loads(record.model_dump_json())
 
 
-def latest(events: Iterable[Event], topic: Topic) -> dict[str, Event]:
-    """The most recent event of `topic` per job, the cursor a resumed pass reads.
+def latest(events: Iterable[Event], *topics: Topic) -> dict[str, Event]:
+    """The most recent event of `topics` per job, the cursor a resumed pass reads.
 
     Recent by the envelope's own `at` rather than by where the line happened to land, because
     the transport this contract is written for is a broker: a partition delivers at least once
@@ -203,10 +209,16 @@ def latest(events: Iterable[Event], topic: Topic) -> dict[str, Event]:
     let a redelivered older line overwrite the newer one it already had. An ISO-8601 stamp sorts
     as the instant it names, and a tie keeps the later arrival, which is what a file transport
     appending twice inside one clock tick means.
+
+    Several topics read as one cursor, which is how a reader asks the question it actually has.
+    `job.submitted`, `job.refused` and `job.held` are three answers to a single offer, so what a
+    row wants is the newest of the three rather than the newest of each and a rule for ranking
+    them afterwards; asked here, the rule is the clock and there is only one copy of it.
     """
+    wanted = frozenset(topics)
     newest: dict[str, Event] = {}
     for event in events:
         held = newest.get(event.job)
-        if event.topic is topic and (held is None or event.at >= held.at):
+        if event.topic in wanted and (held is None or event.at >= held.at):
             newest[event.job] = event
     return newest

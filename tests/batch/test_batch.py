@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard import Board, MissionError
-from mainboard.batch import Batch, BatchStatus, Selection, Topic, Watch
+from mainboard.batch import Batch, BatchStatus, Event, Selection, Topic, Watch
 from mainboard.batch.receipts import publish
 from mainboard.batch.watch import _epoch
 from mainboard.dispatch import Handle, HostUnreachable
@@ -371,6 +371,59 @@ def test_a_job_dispatched_after_being_refused_is_reported_from_its_dispatch(
     sweeping(lab, monkeypatch, MonitorReport())
     status = watching(lab, batch, bus).once()
     assert [(job.job, job.handle, job.verdict) for job in status.jobs] == [("gold-1", "79", "ok")]
+
+
+def offered(bus: Recorder, batch: str, lines: tuple[tuple[str, Topic, str, str], ...]) -> None:
+    """A batch's dispatch answers, stamped by the test and appended in the order it names them.
+
+    Written as envelopes rather than through `publish` because the whole question is the clock:
+    the stamps have to be chosen, and the order they are appended in has to be free to disagree
+    with them the way a redelivering broker does.
+    """
+    for at, topic, job, said in lines:
+        taken = topic is Topic.SUBMITTED
+        bus.publish(
+            Event(
+                at=f"2026-09-04T{at}+00:00",
+                batch=batch,
+                topic=topic,
+                job=job,
+                data={"handle": said, "target": "miyabi-g", "kind": "pbs"}
+                if taken
+                else {"target": "miyabi-g", "reason": said},
+            )
+        )
+
+
+def test_the_newest_answer_about_a_job_decides_its_row_in_the_live_view(
+    lab: Board, bus: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The watch ranked the three answers by topic, so a submission always won.
+
+    A target that takes a job and then refuses the next offer of it left the table saying the
+    batch was working on something nothing was working on. The clock decides it here exactly as
+    it decides the settled read, off the one cursor both of them ask.
+    """
+    offered(
+        bus,
+        "smoke",
+        (
+            ("13:43:14", Topic.REFUSED, "shell", "njobs-g full"),
+            ("18:43:08", Topic.SUBMITTED, "shell", "3294907"),
+            ("18:43:16", Topic.SUBMITTED, "sql", "3294908"),
+            ("18:43:23", Topic.REFUSED, "sql", "the queue was removed"),
+        ),
+    )
+    recorded(lab, "3294907", target="miyabi-g", verdict="ok")
+    recorded(lab, "3294908", target="miyabi-g", verdict="ok")
+    sweeping(lab, monkeypatch, MonitorReport())
+    rows = {row.job: row for row in Watch(lab, "smoke", bus=bus).once().jobs}
+
+    # A re-dispatch supersedes the refusal before it, which already held.
+    assert (rows["shell"].handle, rows["shell"].verdict) == ("3294907", "ok")
+    # And a refusal after a submission is terminal, which did not.
+    assert (rows["sql"].handle, rows["sql"].verdict) == ("", "vanished")
+    assert rows["sql"].detail == "the queue was removed"
 
 
 def test_a_settled_run_that_was_seen_running_teaches_the_next_estimate_what_setup_costs(
