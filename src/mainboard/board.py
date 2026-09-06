@@ -33,6 +33,7 @@ from .dispatch.landing import Landing, renter
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shared import logger
+from .dispatch.shipment import Shipment
 from .dispatch.snapshots import Snapshots
 from .dispatch.vocabulary import Request, Resources
 from .dispatch.wrapping import connection, missing, wrap
@@ -45,6 +46,8 @@ from .engines.compile.state import SyncState
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
 from .experiments.identity import run_id
+from .jobs.closure import Closure
+from .jobs.target import Target
 from .manifest.loading import load
 from .monitor import Monitor
 from .nodes import evidence_of
@@ -780,11 +783,11 @@ class Board:
         backend: ProviderBackend,
         plan: ExecutionPlan,
         *,
-        command: str,
+        shipment: Shipment,
         resources: Resources,
         watch: Watcher | None = None,
     ) -> str:
-        """Dispatch `command` to a machine this workspace rents, and return the provider's handle.
+        """Dispatch `shipment` to a machine this workspace rents, and return the provider's handle.
 
         A rental is set up the way a declared host is, so it is shipped the same artifact
         `install` ships gold: this workstation solved the lock and the machine installs frozen
@@ -795,14 +798,21 @@ class Board:
 
         backend: the provider backend this dispatch resolved to.
         plan: the resolved execution context for the provider host.
-        command: the command the job runs.
+        shipment: what the job runs and ships. A job spelled by file needs a workspace to ship
+            its closure into, so a plan whose image is the whole environment refuses it.
         resources: the resolved request, whose spend cap and walltime bound the rental.
         watch: announces each landing stage as it begins, since a landing is minutes of mirror,
             install and provisioning that would otherwise stand silent on a metered box.
         """
         renting = renter(backend, plan)
         if renting is None:
-            return backend.submit(plan, command, resources)
+            if shipment.sealed:
+                raise MissionError(
+                    f"{shipment.spelling} is a job spelled by file, and host {plan.host!r} "
+                    "runs a prebuilt image that ships no workspace for its closure; run it as "
+                    "a command inside that image, or on a host that mirrors the workspace"
+                )
+            return backend.submit(plan, shipment.command, resources)
         provisioner = Provisioner(self.root, self.manifest)
         provisioner.compiler_for(plan.env).vouch()
         return Landing(
@@ -813,7 +823,7 @@ class Board:
             artifact=provisioner.artifact_for(plan.env),
             watch=watch,
             floor=self.floor,
-        ).land(command)
+        ).land(shipment)
 
     def dispatch(self, asked: Request) -> Run:
         """Make the dispatch `asked` describes, whichever host it names.
@@ -838,6 +848,7 @@ class Board:
             attempt=asked.attempt,
             fetch=asked.fetch,
             node=asked.node,
+            needs=asked.needs,
             env=asked.env,
             container=asked.container,
         )
@@ -1030,11 +1041,20 @@ class Board:
         is resolved by pixi inside the generated workspace instead of by the
         shell, which is what makes `run test` and `run -- pytest -q` the same verb.
 
-        command: exact command argv, or a declared task name and its arguments.
+        A job spelled `path/to/file.py::name` runs through the same runner a dispatched one
+        does, with its closure's import roots and its provenance exported the same way, so the
+        receipts it writes here are the receipts it would write on a node.
+
+        command: exact command argv, or a declared task name and its arguments, or a job.
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
         """
         plan = self.plan(env=env, container=container)
+        target = Target.spelled(command, self.root)
+        if target is not None:
+            shipment = self.sealed(target, plan)
+            listing = self.dispatcher.stage_listing(shipment)
+            command = shipment.locally(self.root, closure=listing)
         if self.local and not plan.containerized:
             return Provisioner(self.root, self.manifest).run(command, plan.env)
         line = self.line(joined(command), env=env, container=container)
@@ -1203,11 +1223,16 @@ class Board:
         attempt: int = 1,
         fetch: str | None = None,
         node: str = "",
+        needs: Sequence[str] = (),
         env: str = "",
         container: str = "",
         watch: Watcher | None = None,
     ) -> Run:
         """Dispatch `command` as a job on this host and return it as a run.
+
+        A command line ships the mirror; a job spelled `path/to/file.py::name` ships its closure
+        and runs through the runner. Both are one `Shipment`, read once, so everything below
+        agrees about what runs and what tree it is.
 
         Unset resources fall back to the host profile's declared defaults,
         with expression-valued defaults evaluated against `attempt` so a
@@ -1226,9 +1251,10 @@ class Board:
         gpu_name: the GPU type a provider backend rents, ignored by the ssh family.
         max_usd: the spend cap a provider backend refuses to submit without.
         attempt: the 1-based try number, feeding the default expressions.
-        fetch: a results path recorded for `Job.pull`, the node's own evidence directory when
-            unset and the run serves one.
+        fetch: a results path recorded for `Job.pull`, the job file's own declaration when
+            unset, then the node's own evidence directory when the run serves one.
         node: the ledger slug this run serves, carried into its record and receipts.
+        needs: data paths a job reads on the host, joining the ones its file declares.
         watch: announces the stages that happen on the far side and take long enough to be
             worth saying: every step of a rental's landing, and the priming of a queued host's
             environment.
@@ -1237,8 +1263,9 @@ class Board:
         # cannot run costs a scheduler round trip on owned hardware and a whole rental on a
         # metered one, since a provider bills from boot and never learns the command never ran.
         command = vetted(command)
-        fetch = self.results(fetch, node=node) or None
         plan = self.plan(env=env, container=container)
+        shipment = self.shipment(command, plan, needs=needs)
+        fetch = self.results(fetch or shipment.fetch, node=node) or None
         resources = self.resources(
             queue=queue,
             walltime=walltime,
@@ -1253,7 +1280,7 @@ class Board:
         # A run that arrived without a name is minted one, content-addressed over the target,
         # the command and this instant, so its receipts stream has a durable key and
         # `mainboard jobs` reads better for it too.
-        fingerprint = run_id({"host": plan.host, "command": command, "at": time.time()})
+        fingerprint = run_id({"host": plan.host, "command": shipment.spelling, "at": time.time()})
         label = name or f"{plan.host}-{fingerprint[:8]}"
         tracked = streamed(label, handle="")
         destination = route(plan.profile.kind)
@@ -1262,10 +1289,12 @@ class Board:
             run: Run = ProviderJob(
                 backend,
                 self.dispatcher.track(
-                    self.rented(backend, plan, command=command, resources=resources, watch=watch),
+                    self.rented(
+                        backend, plan, shipment=shipment, resources=resources, watch=watch
+                    ),
                     host=plan.host,
                     kind=plan.profile.kind,
-                    command=command,
+                    shipment=shipment,
                     name=label,
                     node=node,
                     fetch=fetch,
@@ -1282,7 +1311,7 @@ class Board:
                 self,
                 self.dispatcher.run(
                     plan,
-                    command,
+                    shipment,
                     root=root,
                     resources=resources,
                     name=label,
@@ -1293,12 +1322,44 @@ class Board:
                     attestation=self.attesting(tracked, root=root),
                     watch=watch,
                     prefix=self.addressed(plan, root),
-                    imports=self.imports(plan),
                     artifact=provisioner.artifact_for(plan.env),
                 ),
             )
-        self.announce(label, run, command=command, host=plan.host, node=node)
+        self.announce(label, run, command=shipment.spelling, host=plan.host, node=node)
         return run
+
+    def shipment(
+        self, command: str, plan: ExecutionPlan, *, needs: Sequence[str] = ()
+    ) -> Shipment:
+        """What `command` runs and ships: a job's closure when it spells one, else the mirror.
+
+        command: the vetted command line, a job spelled `path/to/file.py::name [args]` or not.
+        plan: the resolved execution context whose environment names the import roots.
+        needs: data paths declared at dispatch time, which only a job can take.
+        """
+        target = Target.spelled(shlex.split(command), self.root)
+        if target is not None:
+            return self.sealed(target, plan, needs=needs)
+        if needs:
+            raise MissionError(
+                f"--needs belongs to a job spelled by file; {command!r} is a command and "
+                "reaches the mirror as it is"
+            )
+        return Shipment.of_command(
+            command, source=self.dispatcher.source(command), imports=self.imports(plan)
+        )
+
+    def sealed(
+        self, target: Target, plan: ExecutionPlan, *, needs: Sequence[str] = ()
+    ) -> Shipment:
+        """The shipment of one job: its closure over this workspace's import roots, sealed.
+
+        target: the job as spelled.
+        plan: the resolved execution context whose environment names the import roots.
+        needs: data paths declared at dispatch time, joining the ones the job file declares.
+        """
+        closure = Closure.of(target, root=self.root, distributions=self.imports(plan), needs=needs)
+        return Shipment.of_closure(closure, root=self.root)
 
     def results(self, fetch: str | None, *, node: str = "") -> str:
         """What this dispatch pulls back: `fetch` when it names one, else `node`'s own evidence.

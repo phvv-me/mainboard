@@ -38,6 +38,7 @@ _RESOURCES = {
     "attempt": 1,
     "fetch": None,
     "node": "",
+    "needs": (),
     "env": "",
     "container": "",
 }
@@ -717,3 +718,16 @@ def test_the_entry_point_discovers_the_workspace_and_refuses_without_a_traceback
         main()
     printed = capsys.readouterr()
     assert fragment in (printed.out if code == "0" else printed.err)
+
+
+def test_submit_carries_every_need_it_was_given_to_the_board(
+    depot: Path, relayed: Sequence[Relayed]
+) -> None:
+    """`--needs` repeats, and each one reaches the dispatch as the job file's own would."""
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(
+            ["submit", "--on", _MIYABI_G, "--needs", "data/a", "--needs", "data/b", "true"]
+        )
+    [(verb, host, args, options)] = relayed
+    assert (verb, host, args) == ("submit", _MIYABI_G, ("true",))
+    assert options["needs"] == ("data/a", "data/b")

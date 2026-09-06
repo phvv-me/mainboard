@@ -1,5 +1,6 @@
 import os
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from pathlib import Path
 from shutil import rmtree
 from threading import Event, Thread
 from time import sleep
@@ -35,9 +36,10 @@ from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold
 
 from .dispatch.backends.support import BareBackend
+from .support import Lab
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from mainboard.dispatch.shipment import Shipment
 
 _GOLD = "gold"
 _MIYABI_G = "miyabi-g"
@@ -93,6 +95,12 @@ class FakeProvisioner:
         FakeProvisioner.calls.append(("artifact_for", env))
         return (f".mainboard/envs/{env}/pixi.toml", f".mainboard/envs/{env}/pixi.lock")
 
+    def environment_dir(self, env: str) -> Path:
+        return Path(f"/nowhere/.mainboard/envs/{env}")
+
+    def recompiled(self, env: str) -> None:
+        FakeProvisioner.calls.append(("recompiled", env))
+
     def compiler_for(self, env: str) -> FakeCompiler:
         return FakeCompiler(env)
 
@@ -145,8 +153,10 @@ class FakeLanding:
         self.plan = plan
         self.fields = fields
 
-    def land(self, command: str) -> str:
-        FakeLanding.calls.append((self.plan.host, command, tuple(self.fields["artifact"])))
+    def land(self, shipment: Shipment) -> str:
+        FakeLanding.calls.append(
+            (self.plan.host, shipment.spelling, tuple(self.fields["artifact"]))
+        )
         return "rental-1"
 
 
@@ -1165,3 +1175,84 @@ def test_a_local_containerized_run_goes_through_the_wrapped_line(
     """A container on the workstation is the one local case Pixi cannot activate directly."""
     monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
     assert board.run(("true",), container="ngc") == 7
+
+
+def test_a_job_spelled_by_file_ships_its_closure_and_declares_what_it_fetches(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One `Shipment`, read once: the closure, the declared needs and fetch, the runner's line."""
+    FakeProvisioner.calls = []
+    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    monkeypatch.setattr(Board, "containerizer", lambda self, plan, root: None)
+    board = Board(lab.root)
+    seen: dict[str, Shipment | str | None] = {}
+
+    def fake_run(plan, shipment, *, root, resources, fetch=None, **extra):
+        seen.update(shipment=shipment, fetch=fetch, root=root)
+        return Handle(id="77", host=plan.host, root=root, kind=plan.profile.kind)
+
+    monkeypatch.setattr(board.dispatcher, "run", fake_run)
+    job = board.on(_GOLD).submit(f"{Lab.JOB}::app --x 3", needs=("data/more",))
+    shipment = seen["shipment"]
+    assert isinstance(job, Job) and job.handle.id == "77"
+    assert shipment.sealed and shipment.spelling == f"{Lab.JOB}::app --x 3"
+    assert shipment.command.endswith(f"mainboard.jobs.call {Lab.JOB}::app -- --x 3")
+    assert shipment.needs == ("data/corpus", "data/more")
+    assert shipment.imports == ("research/camp",)
+    assert seen["fetch"] == "research/camp/experiments/node/evidence"
+    [run] = [call for call in FakeProvisioner.calls if call[0] == "recompiled"]
+    assert run == ("recompiled", "default")
+    # A command reaches the mirror as it is, so a need declared for one is a mistake, and an
+    # explicit fetch still beats the job's own declaration.
+    with pytest.raises(MissionError, match="--needs belongs to a job spelled by file"):
+        board.on(_GOLD).submit("python -m foo", needs=("data/more",))
+    board.on(_GOLD).submit(f"{Lab.JOB}::app", fetch="out")
+    assert seen["fetch"] == "out"
+
+
+def test_a_job_runs_here_through_the_same_runner_with_its_closure_exported(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local run and a dispatched one share the runner, the listing and the variables."""
+    FakeProvisioner.calls = []
+    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    board = Board(lab.root)
+
+    assert board.run([f"{Lab.JOB}::app", "--x", "3"]) == 0
+
+    [(_, (argv, env))] = [call for call in FakeProvisioner.calls if call[0] == "run"]
+    assert env == "default"
+    assert argv[:2] == ["env", f"PYTHONPATH={lab.root}/research/camp"]
+    listed = next(item for item in argv if item.startswith("MAINBOARD_CLOSURE="))
+    listing = Path(listed.removeprefix("MAINBOARD_CLOSURE="))
+    assert listing.is_relative_to(lab.root / ".mainboard/dispatch/jobs")
+    assert Lab.JOB in listing.read_text(encoding="utf-8")
+    # No compiled manifest names a distribution here, so the roster is the node's own root's.
+    assert "MAINBOARD_FIRST_PARTY=experiments" in argv
+    assert argv[-7:] == [
+        "python",
+        "-m",
+        "mainboard.jobs.call",
+        f"{Lab.JOB}::app",
+        "--",
+        "--x",
+        "3",
+    ]
+    # An ordinary command is handed to the provisioner exactly as typed.
+    board.run(["python", "-m", "foo"])
+    assert FakeProvisioner.calls[-1] == ("run", (["python", "-m", "foo"], "default"))
+
+
+def test_a_job_cannot_land_on_a_prebuilt_image_that_ships_no_workspace(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A closure needs a mirror to be pinned into; an image-only provider has none."""
+    FakeProvisioner.calls = []
+    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    board = Board(lab.root)
+    plan = board.plan()
+    sealed = board.shipment(f"{Lab.JOB}::app", plan)
+    with pytest.raises(MissionError, match="runs a prebuilt image that ships no workspace"):
+        board.rented(BareBackend(), plan, shipment=sealed, resources=Resources())
+    plain = board.shipment("python -m foo", plan)
+    assert board.rented(BareBackend(), plan, shipment=plain, resources=Resources()) == "bare-1"

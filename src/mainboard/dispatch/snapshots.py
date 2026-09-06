@@ -4,11 +4,17 @@
 # The mirror stays the rsync target, because an incremental transfer is what makes dispatching
 # cheap at all. What a job runs from is a snapshot of that mirror taken at submit time and named
 # for the source identity its own receipts carry, so two dispatches of one tree share a snapshot
-# and a dispatch of a different tree gets its own. A snapshot holds the shipped source and
-# nothing else: the compiled environment, the dispatch state, the workspace's data directories
-# and the dispatch's own results path are symlinks back to the mirror, so a job in a snapshot
-# activates the mirror's environment, writes its log where every later read already looks, and
-# leaves its results where the pull already goes.
+# and a dispatch of a different tree gets its own. A snapshot holds what its image says and
+# nothing else: the compiled environment, the dispatch state and the dispatch's own results path
+# are symlinks back to the mirror, so a job in a snapshot activates the mirror's environment,
+# writes its log where every later read already looks, and leaves its results where the pull
+# already goes.
+#
+# Two images exist. A command that ships the mirror pins the whole synced allowlist, and every
+# directory that copy created is filled with links back to whatever else the mirror holds there.
+# A job spelled by file pins its closure, the exact files it imports and nothing beside them: the
+# mirror is not reachable from that tree except through the environment, the data paths the job
+# declared it needs, and its results path.
 #
 # The generated tree is the one place those two worlds meet, and it is the one place a symlink
 # is not enough. A workspace's generated manifest carries the root it was compiled for, and the
@@ -17,14 +23,15 @@
 # nothing. Its directories are therefore real here, its files hardlinked, and only the installed
 # artifacts under them symlinked, which pins the tree while leaving one environment for the host.
 
-import hashlib
-import re
 import shlex
-from pathlib import Path, PurePosixPath
+from abc import ABC, abstractmethod
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from patos import FrozenModel
+
 from ..core.project import Project
-from .shared import git, logger, state_dir
+from .shared import logger, state_dir
 from .sync import Rsync, rsync_argv
 from .transport import HostUnreachable, is_transport_failure
 
@@ -46,34 +53,6 @@ STAMP = ".mainboard-source"
 # before a sweep still has its tree, small enough to sit inside an inode quota.
 KEEP = 3
 
-# What a key may hold, so a source identity can never name a path outside the sources
-# directory: git's text reaches the shell that builds and removes these trees, and a key of `..`
-# would aim both at the mirror. Leading dots go with it, so no key can spell a relative step.
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-def source_key(root: Path, *, source: str) -> str:
-    """The directory name the tree `source` identifies is pinned under.
-
-    `source` is the identity a job's receipts already carry in `MAINBOARD_SOURCE`, which is what
-    lets a row and the tree it was measured on be checked against each other by name alone. A
-    committed tree is fully named by it, so every dispatch of that commit shares one snapshot.
-
-    A dirty tree names no commit, so its key carries a digest of the working-tree delta (the
-    paths git reports changed or untracked, plus the tracked diff itself). That is what keeps
-    every job of one dirty batch on a single snapshot while refusing to hand a later,
-    differently dirty dispatch the earlier one's code. The one tree this cannot tell apart is a
-    workspace with no git at all, which has no identity to carry into a receipt either.
-
-    root: the local workspace root whose delta disambiguates a dirty identity.
-    source: the dispatching tree's identity as `git describe --always --dirty` spelled it.
-    """
-    named = _UNSAFE.sub("-", source)[:96].lstrip(".") or "untracked"
-    if source and not source.endswith("-dirty"):
-        return named
-    delta = git("-C", str(root), "status", "--porcelain") + git("-C", str(root), "diff", "HEAD")
-    return f"{named}-{hashlib.blake2s(delta.encode(), digest_size=4).hexdigest()}"
-
 
 def stamped(key: str, *, commit: str, digest: str) -> str:
     """What a finished snapshot's stamp holds: the tree's key, and the provenance of that tree.
@@ -83,7 +62,7 @@ def stamped(key: str, *, commit: str, digest: str) -> str:
     value` lines, which is what a job reads to say which commit it is running and what the
     shipped bytes hashed to, on a machine that has no history to derive either from.
 
-    key: the tree's identity, from `source_key`.
+    key: the tree's identity, the source's key.
     commit / digest: the dispatching tree's commit and content digest, either empty when the
         workspace has no git to answer with.
     """
@@ -94,34 +73,8 @@ def stamped(key: str, *, commit: str, digest: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def tree_digest(repository: str) -> str:
-    """A content digest of the tree at `repository`, empty when git cannot describe one.
-
-    WHAT A RUN SEALS AGAINST WHERE THERE IS NO GIT TO ASK. A dispatched job runs from a mirror
-    snapshot with no `.git` at all, so a preflight that wants to prove it is running the code
-    somebody registered cannot read HEAD, cannot check a clean worktree, and until this existed
-    had to be handed a digest computed by hand at the dispatching end (the reproducibility
-    runner's own `--expect-source`, 2026-09-05). The claim it can still make is that these bytes
-    are the bytes the dispatch shipped, and this is that number.
-
-    Taken over git's own object hashes rather than over the files, so a workspace carrying
-    gigabytes of data costs one command instead of a walk: `ls-files -s` lists every tracked
-    path with the blob hash of its content, which is a content digest of the tree by
-    construction. A dirty tree adds its delta, the same two reads `source_key` already
-    disambiguates a dirty snapshot with, so an uncommitted edit changes the digest exactly as it
-    changes the tree.
-
-    repository: the working tree to digest, the one that owns the dispatched job's code.
-    """
-    listed = git("-C", repository, "ls-files", "-s")
-    if not listed:
-        return ""
-    delta = git("-C", repository, "status", "--porcelain") + git("-C", repository, "diff", "HEAD")
-    return hashlib.sha256(f"{listed}\n{delta}".encode()).hexdigest()
-
-
 def containers(sources: Sequence[str]) -> list[str]:
-    """Every directory a snapshot has to create to hold `sources`, the tree root included.
+    """Every directory a mirrored snapshot has to create to hold `sources`, the tree root included.
 
     A snapshot fills each of these with symlinks back to the mirror for whatever it did not
     copy, which is how a job reaches the environment, the dispatch state and the data
@@ -145,6 +98,118 @@ def writable(path: str) -> str:
     if not path or posix.is_absolute() or ".." in posix.parts:
         return ""
     return posix.as_posix()
+
+
+class Image(ABC, FrozenModel):
+    """What one snapshot copies out of the mirror, and what it reaches back into the mirror for.
+
+    Both halves are shell text the pin runs on the host, in the order the phases have to
+    happen: the copy first, the generated tree next, then whatever the image links back.
+    """
+
+    @abstractmethod
+    def copied(self, root: str) -> str:
+        """The line that hardlinks the shipped set out of the mirror at `root` into `$mb_snap`."""
+
+    @abstractmethod
+    def filled(self) -> str:
+        """The lines that reach back into the mirror from inside the stamp, empty for none."""
+
+    @abstractmethod
+    def linked(self) -> list[str]:
+        """The lines run on every dispatch, outside the stamp, that link the mirror's data in."""
+
+
+class Mirrored(Image):
+    """The whole synced allowlist, what a command that ships the mirror runs from.
+
+    sources: the workspace-relative paths the mirror ships, the only thing copied.
+    filters / exclude: the same rules the mirror transfer used, so the snapshot holds the
+        shipped file set and not the artifacts the host wrote beside it. A root-anchored merge
+        rule is safe to repeat here because the transfer that just ran ships every ancestor
+        ignore file the rules read, so the rule and its file arrive together.
+    """
+
+    sources: tuple[str, ...]
+    filters: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+
+    def copied(self, root: str) -> str:
+        """The shipped paths hardlinked in with the mirror as `--link-dest`, under the same rules.
+
+        A file that vanished mid-walk (rsync's code 24, which a concurrent mirror sync causes)
+        is the one failure absorbed, since the mirror is a moving target. Every other rsync
+        failure means the tree is not whole, and a job must never start in one that is not.
+        """
+        argv = rsync_argv(
+            Rsync.ARCHIVE | Rsync.RELATIVE,
+            list(self.sources),
+            filters=self.filters,
+            exclude=self.exclude,
+            extra=[f"--link-dest={root}/"],
+        )
+        return f'{shlex.join(["rsync", *argv])} "$mb_snap"/ || [ "$?" = 24 ]'
+
+    def filled(self) -> str:
+        """The loop symlinking back whatever the mirror holds and the copy did not bring over."""
+        return (
+            f"for d in {shlex.join(containers(self.sources))}; do "
+            'mkdir -p "$mb_snap/$d"; '
+            'for e in "$mb_root/$d"/* "$mb_root/$d"/.*; do '
+            "n=${e##*/}; "
+            'if [ "$n" = "." ] || [ "$n" = ".." ] || [ ! -e "$e" ]; then continue; fi; '
+            'if [ -e "$mb_snap/$d/$n" ]; then continue; fi; '
+            'ln -s "$e" "$mb_snap/$d/$n"; '
+            "done; done"
+        )
+
+    def linked(self) -> list[str]:
+        """Nothing: a mirrored tree already reaches everything the mirror holds."""
+        return []
+
+
+class Sealed(Image):
+    """A job's closure and nothing beside it, what a job spelled by file runs from.
+
+    listing: the closure listing the mirror carries, workspace-relative, whose first column
+        names every shipped file. It rides with the job script, so the host copies exactly what
+        the dispatch digested and a job reads the same rows through `MAINBOARD_CLOSURE`.
+    needs: the workspace-relative data paths the job reads, each linked back to the mirror on
+        every dispatch. A need the mirror does not hold refuses the dispatch by name, since a
+        job that opens a dangling link fails after the queue rather than before it.
+    """
+
+    listing: str
+    needs: tuple[str, ...] = ()
+
+    def copied(self, root: str) -> str:
+        """The listed files hardlinked in with the mirror as `--link-dest`, no rules at all.
+
+        No filters, since the listing is exact: a rule that dropped a shipped file would leave a
+        job importing a module that is not there, and the mirror's own denylist covers the
+        vendored tree a closure legitimately reaches into.
+        """
+        argv = rsync_argv(Rsync.ARCHIVE, ["./"], extra=["--files-from=-", f"--link-dest={root}/"])
+        rsync = f'{shlex.join(["rsync", *argv])} "$mb_snap"/'
+        return f'cut -f1 "$mb_root"/{shlex.quote(self.listing)} | {rsync} || [ "$?" = 24 ]'
+
+    def filled(self) -> str:
+        """Nothing: a sealed tree reaches the mirror only through what it declared."""
+        return ""
+
+    def linked(self) -> list[str]:
+        """Each need checked on the mirror and linked into the tree, on every dispatch."""
+        lines: list[str] = []
+        for need in self.needs:
+            quoted = shlex.quote(need)
+            parent = shlex.quote(str(PurePosixPath(need).parent))
+            absent = shlex.quote(f"mainboard: the need {need} is not on the mirror")
+            lines += [
+                f'if [ ! -e "$mb_root"/{quoted} ]; then echo {absent} >&2; false; fi',
+                f'mkdir -p "$mb_snap"/{parent}',
+                f'ln -sfn "$mb_root"/{quoted} "$mb_snap"/{quoted}',
+            ]
+        return lines
 
 
 class Snapshots:
@@ -189,26 +254,24 @@ class Snapshots:
         remote: Machine,
         *,
         key: str,
-        sources: Sequence[str],
+        image: Image,
         results: str = "",
         prefix: str = "",
         environment: str = "default",
         commit: str = "",
         digest: str = "",
-        filters: Sequence[str] = (),
-        exclude: Sequence[str] = (),
     ) -> str:
         """Materialise the snapshot for `key` on the host and answer the path a job runs from.
 
         A key already pinned is answered without rebuilding its tree, so a batch of thirty five
         jobs from one commit pays for one snapshot and reuses it thirty four times. Its declared
-        results path is linked back on every dispatch all the same, since that path belongs to
-        the dispatch rather than to the tree and two batches off one commit routinely declare
-        different ones.
+        results path and its needs are linked back on every dispatch all the same, since those
+        belong to the dispatch rather than to the tree and two batches off one commit routinely
+        declare different ones.
 
         remote: the open connection to the host.
-        key: the tree's identity, from `source_key`.
-        sources: the workspace-relative paths the mirror ships, the only thing copied.
+        key: the tree's identity, the source's key.
+        image: what the snapshot copies out of the mirror and what it links back.
         results: the dispatch's declared results path, symlinked back to the mirror so what the
             job writes there is what a later pull brings home; empty for a dispatch that
             declared none.
@@ -223,22 +286,15 @@ class Snapshots:
             the key so the tree on the host says which commit it is and what its content hashed
             to. A mirror carries no history, so this file is the only place on that machine
             where either can be read.
-        filters / exclude: the same rules the mirror transfer used, so the snapshot holds the
-            shipped file set and not the artifacts the host wrote beside it. A root-anchored
-            merge rule is safe to repeat here because the transfer that just ran ships every
-            ancestor ignore file the rules read, so the rule and its file arrive together.
         """
         path = self.path(key)
         program = self.__program(
             path,
-            key=key,
-            sources=sources,
+            image=image,
             results=results,
             prefix=prefix,
             environment=environment,
             stamp=stamped(key, commit=commit, digest=digest),
-            filters=filters,
-            exclude=exclude,
         )
         retcode, _, err = remote["bash"][["-lc", program]].run(retcode=None)
         if is_transport_failure(int(retcode), str(err)):
@@ -274,37 +330,21 @@ class Snapshots:
         self,
         path: str,
         *,
-        key: str,
-        sources: Sequence[str],
+        image: Image,
         results: str,
         prefix: str,
         environment: str,
         stamp: str,
-        filters: Sequence[str],
-        exclude: Sequence[str],
     ) -> str:
         """The shell that builds one snapshot, in the order the phases have to happen.
 
-        The shipped paths are hardlinked in with the mirror as `--link-dest`, under the same
-        filter rules the transfer used, so nothing the host wrote beside the source is copied.
-        The generated tree is rebuilt next, then every directory the copy created is filled with
-        symlinks to whatever the mirror holds there and the snapshot does not, which is what puts
-        the data directories and the ancestor ignore files back within reach. The declared
-        results path is linked back last, so it survives whichever earlier phase also had an
-        opinion about it. Only then is the stamp written, so a build cut off halfway is redone
-        rather than run from.
-
-        A file that vanished mid-walk (rsync's code 24, which a concurrent mirror sync causes)
-        is the one failure absorbed, since the mirror is a moving target. Every other rsync
-        failure means the tree is not whole, and a job must never start in one that is not.
+        The image's shipped set is hardlinked in first. The generated tree is rebuilt next, then
+        the image reaches back into the mirror for whatever it wants within reach, and the
+        environment is pointed at the prefix it names. Only then is the stamp written, so a
+        build cut off halfway is redone rather than run from. The image's needs and the
+        declared results path are linked last and on every dispatch, so they survive whichever
+        earlier phase also had an opinion about them.
         """
-        argv = rsync_argv(
-            Rsync.ARCHIVE | Rsync.RELATIVE,
-            [*sources, f"{path}/"],
-            filters=filters,
-            exclude=exclude,
-            extra=[f"--link-dest={self.root}/"],
-        )
         # The whole build sits inside one `if` rather than behind an early `exit`, because the
         # program runs in a login shell, and a login shell's `exit` runs `.bash_logout`, whose
         # `clear_console` fails without a terminal and under `set -e` becomes the shell's own
@@ -315,9 +355,9 @@ class Snapshots:
             f"mb_snap={shlex.quote(path)}",
             f'if [ ! -f "$mb_snap/{STAMP}" ]; then mkdir -p "$mb_snap"',
             'cd "$mb_root"',
-            f'{shlex.join(["rsync", *argv])} || [ "$?" = 24 ]',
+            image.copied(self.root),
             self.__generated(),
-            self.__filling(sources),
+            image.filled(),
             *self.__environment(prefix, environment),
             f"printf '%s' {shlex.quote(stamp)} > \"$mb_snap/{STAMP}\"",
             "fi",
@@ -328,9 +368,10 @@ class Snapshots:
             # gh200-closure reusing gh200-directed-tree's tree, 2026-09-05). Every dispatch now
             # links its own, which is idempotent for the one that pinned the tree in the first
             # place.
+            *image.linked(),
             *self.__results(results),
         ]
-        return "; ".join(lines)
+        return "; ".join(line for line in lines if line)
 
     def __generated(self) -> str:
         """The lines that rebuild the generated tree as this snapshot's own.
@@ -339,7 +380,8 @@ class Snapshots:
         where those two meet, so it is neither copied nor symlinked whole. Its directories down
         to each environment shard are real here, its files are hardlinked in, and everything
         heavy under them, the installed environments, the node modules, the dispatch state and
-        the receipts, is a symlink back to the mirror.
+        the receipts, is a symlink back to the mirror. A directory the image already copied into
+        (a closure reaching into the vendored tree) is left as the image made it.
 
         That shape is what a job's own tooling needs. A workspace's generated manifest is
         compiled with the workspace root written into it, so a job standing in a snapshot
@@ -387,19 +429,6 @@ class Snapshots:
             f"rm -rf {where}/.pixi",
             f"ln -s {shlex.quote(prefix)}/.pixi {where}/.pixi",
         ]
-
-    def __filling(self, sources: Sequence[str]) -> str:
-        """The loop symlinking back whatever the mirror holds and the copy did not bring over."""
-        return (
-            f"for d in {shlex.join(containers(sources))}; do "
-            'mkdir -p "$mb_snap/$d"; '
-            'for e in "$mb_root/$d"/* "$mb_root/$d"/.*; do '
-            "n=${e##*/}; "
-            'if [ "$n" = "." ] || [ "$n" = ".." ] || [ ! -e "$e" ]; then continue; fi; '
-            'if [ -e "$mb_snap/$d/$n" ]; then continue; fi; '
-            'ln -s "$e" "$mb_snap/$d/$n"; '
-            "done; done"
-        )
 
     def __results(self, results: str) -> list[str]:
         """The lines that point the dispatch's declared results path back at the mirror.

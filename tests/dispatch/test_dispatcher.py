@@ -1,8 +1,7 @@
 import inspect
 import os
 import stat
-import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from shutil import which
 from typing import TYPE_CHECKING
@@ -13,9 +12,10 @@ from plumbum.commands.processes import ProcessExecutionError
 from mainboard import ExecutionPlan, MissionError
 from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, HostSetup, Verdict, shared
 from mainboard.dispatch import dispatcher as dispatch_module
-from mainboard.dispatch import snapshots as snapshots_module
+from mainboard.dispatch import provenance as provenance_module
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.schedulers import HostUnreachable, registry
+from mainboard.dispatch.shipment import Shipment
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
@@ -48,6 +48,34 @@ class _StubStrategy:
         return self.scheduler
 
 
+def answering(**told: str) -> Callable[..., str]:
+    """A `git` that answers each question by the flag or verb naming it, silence otherwise.
+
+    `told` keys are the distinguishing tokens (`toplevel`, `describe`, `HEAD`, `ls-files`,
+    `status`, `diff`), so a test says what a tree looks like and nothing else.
+    """
+
+    def git(*args: str) -> str:
+        if "--show-toplevel" in args:
+            return told.get("toplevel", "/repo")
+        if "describe" in args:
+            return told.get("describe", "")
+        if "HEAD" in args and "diff" not in args:
+            return told.get("HEAD", "abc1234")
+        if "ls-files" in args:
+            return told.get("ls_files", "")
+        if "status" in args:
+            return told.get("status", "")
+        return told.get("diff", "")
+
+    return git
+
+
+def shipped(dispatcher: Dispatcher, command: str, imports: tuple[str, ...] = ()) -> Shipment:
+    """`command` as a board ships it to the dispatcher: the mirror, under the tree's provenance."""
+    return Shipment.of_command(command, source=dispatcher.source(command), imports=imports)
+
+
 @pytest.fixture
 def backend(monkeypatch: pytest.MonkeyPatch) -> RecordingScheduler:
     """Pin the backend, the connection, git and the clock, every seam a dispatch reaches."""
@@ -58,6 +86,7 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> RecordingScheduler:
     monkeypatch.setattr(
         dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else ""
     )
+    monkeypatch.setattr(provenance_module, "git", answering())
     monkeypatch.setattr(dispatch_module, "sleep", lambda seconds: None)
     return scheduler
 
@@ -117,7 +146,11 @@ def test_run_renders_a_job_script_ships_it_and_hands_back_a_pollable_handle(
 ) -> None:
     resources = Resources(gpus=4, walltime="01:00:00", queue="gen-S", mem_gb=240)
     handle = dispatcher.run(
-        plan(), "python -m foo --shard 3", root="/repo", resources=resources, fetch="out/"
+        plan(),
+        shipped(dispatcher, "python -m foo --shard 3"),
+        root="/repo",
+        resources=resources,
+        fetch="out/",
     )
     assert (handle.id, handle.host, handle.kind, handle.fetch_path) == (
         "H1",
@@ -137,7 +170,12 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
     dispatcher: Dispatcher, workdir: Path
 ) -> None:
     """A job queued for `serving` must activate serving, not whatever was installed last."""
-    dispatcher.run(plan(env="serving"), "python -m foo", root="/repo", resources=Resources())
+    dispatcher.run(
+        plan(env="serving"),
+        shipped(dispatcher, "python -m foo"),
+        root="/repo",
+        resources=Resources(),
+    )
     [generated] = (workdir / ".mainboard" / "dispatch" / "jobs").glob("job-*.sh")
     text = generated.read_text()
     # The script activates through the snapshot this dispatch pinned, whose `.mainboard` is a
@@ -155,7 +193,9 @@ def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
     """No declared default and no resolved walltime is a clear error, never a site constant."""
     pbs = plan(profile=HostProfile(kind="pbs", root="/repo", sync={"include": ["src"]}))
     with pytest.raises(ValueError, match="explicit walltime"):
-        dispatcher.run(pbs, "python -m foo", root="/repo", resources=Resources())
+        dispatcher.run(
+            pbs, shipped(dispatcher, "python -m foo"), root="/repo", resources=Resources()
+        )
     assert dispatcher.shipped == []
     assert backend.calls == []
 
@@ -165,10 +205,15 @@ def test_run_containerized_wraps_the_command_via_the_builder_or_refuses_without_
 ) -> None:
     containerized = plan(**_CONTAINERIZED)
     with pytest.raises(LookupError, match="no container argv builder"):
-        dispatcher.run(containerized, "python -m foo", root="/repo", resources=Resources())
+        dispatcher.run(
+            containerized,
+            shipped(dispatcher, "python -m foo"),
+            root="/repo",
+            resources=Resources(),
+        )
     dispatcher.run(
         containerized,
-        "python -m foo",
+        shipped(dispatcher, "python -m foo"),
         root="/repo",
         resources=Resources(),
         containerize=lambda inner: ["apptainer", "exec", "image.sif", *inner],
@@ -207,16 +252,11 @@ def test_submit_records_the_run_with_the_git_provenance_it_was_dispatched_from(
     porcelain: str,
     dirty: int,
 ) -> None:
-    def answered(*args: str) -> str:
-        """git as this dispatch reads it: a commit, a tracked listing, or the tree's own delta."""
-        if "rev-parse" in args:
-            return "abc1234"
-        if "ls-files" in args:
-            return "100644 aaaa 0\ta.py"
-        return porcelain
-
-    monkeypatch.setattr(dispatch_module, "git", answered)
-    monkeypatch.setattr(snapshots_module, "git", answered)
+    monkeypatch.setattr(
+        provenance_module,
+        "git",
+        answering(describe="abc1234", ls_files="100644 aaaa 0\ta.py", status=porcelain),
+    )
     handle = dispatcher.submit(
         plan(), "/repo", script="train.sh", args=("--x", "1"), resources=Resources()
     )
@@ -240,7 +280,11 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
         dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else ""
     )
     handle = dispatcher.run(
-        plan(), "python -m foo", root="/repo", resources=Resources(), fetch="out/raw"
+        plan(),
+        shipped(dispatcher, "python -m foo"),
+        root="/repo",
+        resources=Resources(),
+        fetch="out/raw",
     )
     pinned = dispatcher.pinned("/repo", source=dispatcher.source())
     [(root, _script, _args)] = [call for name, call in backend.calls if name == "submit"]
@@ -251,7 +295,7 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     # The tree is materialised from the file set that transfer shipped, before anything is
     # queued into it, and the declared results path is linked back to the mirror.
     [built] = [line for line in machine.lines if "--link-dest" in line]
-    assert "src /repo/.mainboard/dispatch/sources/" in built
+    assert '--link-dest=/repo/ src "$mb_snap"/' in built
     assert f"mb_snap={pinned}" in built
     assert 'ln -sfn "$mb_root"/out/raw "$mb_snap"/out/raw' in built
     [run] = dispatcher.cache.recent(10)
@@ -275,7 +319,13 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
     prefix = "/repo/.mainboard/prefixes/default/abcd1234"
 
-    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources(), prefix=prefix)
+    dispatcher.run(
+        plan(),
+        shipped(dispatcher, "python -m foo"),
+        root="/repo",
+        resources=Resources(),
+        prefix=prefix,
+    )
 
     [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
     body = (workdir / str(script)).read_text(encoding="utf-8")
@@ -313,10 +363,13 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
 
     dispatcher.run(
         plan(),
-        "python -m foo",
+        shipped(
+            dispatcher,
+            "python -m foo",
+            imports=("src", "packages/lab-core/src", ".mainboard/vendor/paleta-tsukuba/src"),
+        ),
         root="/repo",
         resources=Resources(),
-        imports=("src", "packages/lab-core/src", ".mainboard/vendor/paleta-tsukuba/src"),
     )
 
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
@@ -338,7 +391,7 @@ def test_a_containerized_job_has_no_environment_of_its_own_to_build(
     """What it activates is the image, which no lock on this host describes."""
     dispatcher.run(
         plan(**_CONTAINERIZED),
-        "python -m foo",
+        shipped(dispatcher, "python -m foo"),
         root="/repo",
         resources=Resources(),
         containerize=lambda argv: ["apptainer", "exec", "img.sif", *argv],
@@ -362,7 +415,7 @@ def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
     announced: list[str] = []
     dispatcher.run(
         plan(),
-        "python -m foo",
+        shipped(dispatcher, "python -m foo"),
         root="/repo",
         resources=Resources(),
         watch=announced.append,
@@ -371,7 +424,12 @@ def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
 
     [asked] = [line for line in machine.lines if "provide" in line]
     assert asked.startswith("cd /repo && ")
-    assert "mainboard provide default --source /repo/.mainboard/dispatch/sources/" in asked
+    # In a subshell, so the directory it changes into never becomes the job's own.
+    assert (
+        "( cd /repo && mainboard provide default --source /repo/.mainboard/dispatch/sources/"
+        in asked
+    )
+    assert asked.endswith(" )")
     assert [told for told in announced if told.startswith("built default on gold for /repo")]
 
 
@@ -388,7 +446,7 @@ def test_a_host_that_will_not_build_costs_its_wave_the_head_start_and_not_the_di
 
     handle = dispatcher.run(
         plan(),
-        "python -m foo",
+        shipped(dispatcher, "python -m foo"),
         root="/repo",
         resources=Resources(),
         prefix="/repo/.mainboard/prefixes/default/abcd1234",
@@ -413,10 +471,19 @@ def test_a_moving_working_tree_cannot_split_the_script_from_the_snapshot_it_runs
     while a colleague commits is the same window on a queue.
     """
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
-    monkeypatch.setattr(dispatch_module, "git", lambda *args: "abc1234-dirty")
     deltas = iter("abcdefgh")
-    monkeypatch.setattr(snapshots_module, "git", lambda *args: next(deltas, "z"))
-    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources())
+
+    def moving(*args: str) -> str:
+        if "--show-toplevel" in args:
+            return "/repo"
+        if "describe" in args:
+            return "abc1234"
+        return next(deltas, "z")
+
+    monkeypatch.setattr(provenance_module, "git", moving)
+    dispatcher.run(
+        plan(), shipped(dispatcher, "python -m foo"), root="/repo", resources=Resources()
+    )
     [(root, script, _)] = [call for name, call in backend.calls if name == "submit"]
     assert "/sources/abc1234-dirty-" in str(root)
     assert str(root) in (workdir / str(script)).read_text(encoding="utf-8")
@@ -428,9 +495,9 @@ def test_two_dispatches_of_one_tree_share_a_snapshot_and_a_different_tree_gets_i
     """Thirty five jobs off one commit must not pay for thirty five copies of the workspace."""
     described = {"value": "v0.4.8"}
     monkeypatch.setattr(
-        dispatch_module,
+        provenance_module,
         "git",
-        lambda *args: "abc1234" if args[0] == "rev-parse" else described["value"],
+        lambda *args: answering(describe=described["value"], ls_files="100644 a 0\ta.py")(*args),
     )
     first = dispatcher.pinned("/repo", source=dispatcher.source())
     assert first == "/repo/.mainboard/dispatch/sources/v0.4.8"
@@ -860,53 +927,6 @@ def test_the_manifest_owns_the_walltime_default_never_the_dispatch_code() -> Non
     assert "00:30:00" not in source
 
 
-def _repo(path: Path, dirty: bool) -> None:
-    """A real git repository at `path` with one commit, optionally carrying uncommitted work."""
-    path.mkdir(parents=True, exist_ok=True)
-    run = lambda *args: subprocess.run(  # noqa: E731
-        ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
-    )
-    run("init", "-q")
-    run("config", "user.email", "t@t")
-    run("config", "user.name", "t")
-    (path / "tracked.py").write_text("x = 1\n")
-    run("add", "tracked.py")
-    run("commit", "-q", "-m", "one")
-    if dirty:
-        (path / "tracked.py").write_text("x = 2\n")
-
-
-def test_the_source_stamp_names_the_repository_that_owns_the_job_not_the_submitters_cwd(
-    tmp_path: Path,
-) -> None:
-    _repo(tmp_path, dirty=True)
-    _repo(tmp_path / "inner", dirty=False)
-    nested = dispatch_module.source_of("pytest inner/tracked.py -q", tmp_path)
-    fallback = dispatch_module.source_of("python -m foo", tmp_path)
-    assert nested and "-dirty" not in nested
-    assert fallback.endswith("-dirty")
-
-
-def test_a_token_naming_a_path_outside_any_repository_is_skipped_not_a_dead_end(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The first token can name a real path that git owns nothing of; the scan tries the next."""
-    (tmp_path / "plain").mkdir()
-    (tmp_path / "plain" / "data.txt").write_text("not tracked by anything")
-    repository = tmp_path / "repo"
-    repository.mkdir()
-    (repository / "tracked.py").write_text("x = 1\n")
-
-    def git(*args: str) -> str:
-        if "rev-parse" in args:
-            return "" if args[1] == str(tmp_path / "plain") else str(repository)
-        return "clean-source"
-
-    monkeypatch.setattr(dispatch_module, "git", git)
-    found = dispatch_module.source_of("cmd plain/data.txt repo/tracked.py", tmp_path)
-    assert found == "clean-source"
-
-
 def test_a_held_dispatch_is_one_durable_row_carrying_the_request_that_makes_it_again(
     dispatcher: Dispatcher,
 ) -> None:
@@ -957,7 +977,13 @@ def test_a_dispatch_ships_the_very_artifact_it_addressed_its_environment_by(
         ".mainboard/envs/default/state.toml",
     )
 
-    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources(), artifact=trio)
+    dispatcher.run(
+        plan(),
+        shipped(dispatcher, "python -m foo"),
+        root="/repo",
+        resources=Resources(),
+        artifact=trio,
+    )
 
     del backend, workdir
     assert dispatcher.required == [[list(trio)]]

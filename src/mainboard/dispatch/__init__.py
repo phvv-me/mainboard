@@ -2,8 +2,10 @@
 
 from .dispatcher import Dispatcher, Handle, Verdict
 from .onboard import HostSetup
+from .provenance import Source
 from .shared import now
-from .snapshots import Snapshots, source_key
+from .shipment import Shipment
+from .snapshots import Snapshots
 from .sync import GitignoreFilter, SyncLock
 from .targets import Facts, resolve, smallest_fit, ssh_hosts
 from .transport import DaemonDown, HostUnreachable, SshTransport
@@ -17,12 +19,14 @@ __all__ = [
     "HostSetup",
     "HostUnreachable",
     "Snapshots",
+    "Shipment",
+    "Snapshots",
+    "Source",
     "SshTransport",
     "SyncLock",
     "Verdict",
     "now",
     "resolve",
     "smallest_fit",
-    "source_key",
     "ssh_hosts",
 ]

@@ -146,3 +146,44 @@ def test_a_hosts_exports_are_written_before_the_command_and_quoted_as_the_shell_
     assert "export HF_HUB_OFFLINE=1\n" in body
     assert "export NOTE='two words'\n" in body
     assert body.index("export HF_HUB_OFFLINE=1") < body.index("bash -c")
+
+
+def test_a_sealed_job_exports_its_closure_and_the_first_party_roster_before_the_command() -> None:
+    """The runner refuses a first-party import the listing does not name, so both ride ahead."""
+    sealed = spec(
+        cmd="python -m mainboard.jobs.call a/run.py::app --",
+        closure="/repo/.mainboard/dispatch/sources/k/.mainboard/dispatch/jobs/closure-ab.tsv",
+        first_party="core:experiments",
+    ).render(pbs=False)
+
+    assert (
+        "export MAINBOARD_CLOSURE="
+        "/repo/.mainboard/dispatch/sources/k/.mainboard/dispatch/jobs/closure-ab.tsv"
+    ) in sealed
+    assert "export MAINBOARD_FIRST_PARTY=core:experiments" in sealed
+    assert sealed.index("MAINBOARD_FIRST_PARTY") < sealed.index("bash -c")
+    plain = spec().render(pbs=False)
+    assert "MAINBOARD_CLOSURE" not in plain and "MAINBOARD_FIRST_PARTY" not in plain
+
+
+def test_the_command_runs_from_the_pinned_tree_whatever_an_earlier_stage_changed_into() -> None:
+    """Provisioning changes directory into the mirror; a relative path must still name frozen code.
+
+    The build runs in a subshell so the change never leaks, and the body re-enters the tree it
+    was pinned to immediately before the command all the same.
+    """
+    text = spec(
+        cmd="python -m foo",
+        root="/repo/.mainboard/dispatch/sources/k",
+        provide="( cd /repo && mainboard provide default --source x >/dev/null )",
+    ).render(pbs=False)
+    lines = text.splitlines()
+    command = lines.index("bash -c 'python -m foo' || status=$?")
+    assert lines[command - 2] == "cd /repo/.mainboard/dispatch/sources/k"
+    assert (
+        lines.index(
+            "( cd /repo && mainboard provide default --source x >/dev/null ) || echo "
+            '"mainboard: could not build the environment this job was dispatched with"'
+        )
+        < command
+    )

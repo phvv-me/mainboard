@@ -36,6 +36,16 @@ export MAINBOARD_SOURCE_COMMIT={{ commit }}
 # number it makes it against.
 export MAINBOARD_SOURCE_DIGEST={{ digest }}
 {% endif %}
+{% if closure %}
+# What this job ships, one `path blob status` row per file, so a receipt can list what it ran on
+# and the runner can refuse a first-party import the closure never named.
+export MAINBOARD_CLOSURE={{ closure }}
+{% endif %}
+{% if first_party %}
+# The names the workspace's own import roots define, shipped or not: the runner answers an
+# import of one of these from the closure alone, never from the mirror an editable install names.
+export MAINBOARD_FIRST_PARTY={{ first_party }}
+{% endif %}
 {% for key, value in exports %}
 export {{ key }}={{ value }}
 {% endfor %}
@@ -56,6 +66,9 @@ export {{ key }}={{ value }}
 # command's own status is kept and re-raised below, so framing the receipts back afterwards costs
 # the job none of its exit code.
 {{ receipts_staging }}
+# The command runs from the tree this dispatch pinned and verified, whatever an earlier stage
+# changed into: a relative path in the job then names frozen code, never the mirror's.
+cd {{ root }}
 status=0
 {% if container_command %}
 {{ container_command }} || status=$?

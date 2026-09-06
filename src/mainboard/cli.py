@@ -63,9 +63,14 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         container: str = "",
     ) -> int:
-        """Run a command through the host's activated plan, exiting with its code.
+        """Run a command, or a job spelled `path/to/file.py::name`, through the host's plan.
 
-        command: the command tokens, everything after `--`, its own flags included.
+        A job runs through the same runner a dispatched one does, its closure computed and its
+        provenance exported the same way, so a receipt written here reads as one written on a
+        node. The exit code is the command's own.
+
+        command: the command tokens, everything after `--`, its own flags included; a job's
+            arguments follow `--` the same way.
         on: the host alias the command runs on, `local` for this machine.
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
@@ -86,6 +91,7 @@ def build(root: Path | None = None) -> App:
         attempt: int = 1,
         fetch: str = "",
         node: str = "",
+        needs: tuple[str, ...] = (),
         env: str = "",
         container: str = "",
         yes: bool = False,
@@ -93,14 +99,20 @@ def build(root: Path | None = None) -> App:
         agent: bool = False,
         fields: str = "",
     ) -> None:
-        """Dispatch a command as a job on a host, printing its handle.
+        """Dispatch a command, or a job spelled `path/to/file.py::name`, on a host.
+
+        A job ships exactly the code it imports and the directory it lives in, runs through the
+        one runner in the host's environment, and stamps its receipts with a provenance scoped
+        to those files. A command ships the mirror and keeps the whole-tree provenance. Either
+        way the handle is printed.
 
         The expectation prints first, the same manners a batch has: the resolved target, the
         queue policy's admission, and what the meter will say, a provider's rate for a rented
         host and zero for owned hardware. At a terminal the dispatch then asks once; in a
         script or under `--yes` it proceeds, and the line is printed either way.
 
-        command: the command tokens, everything after `--`.
+        command: the command tokens, or `path/to/file.py::name` and, after `--`, the arguments
+            the job's application takes.
         on: the host alias the job targets.
         gpu_name: the GPU type to rent, for a metered provider host.
         max_usd: the spend cap a provider host refuses to submit without.
@@ -108,6 +120,8 @@ def build(root: Path | None = None) -> App:
         fetch: a results path recorded for later `pull`, the node's own evidence directory when
             unset and `--node` names one.
         node: the ledger slug this run serves, carried into its record and receipts.
+        needs: a workspace-relative data path the job reads on the host, repeatable, joining
+            the ones the job file declares; refused for a command, which reaches the mirror.
         yes: dispatch without asking, what a script passes.
         json: print the handle as canonical JSON instead of the bare id.
         agent: print the handle in the compact tabular mode instead of the bare id.
@@ -142,6 +156,7 @@ def build(root: Path | None = None) -> App:
                 attempt=attempt,
                 fetch=fetch or None,
                 node=node,
+                needs=needs,
                 env=env,
                 container=container,
             )

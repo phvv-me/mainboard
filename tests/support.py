@@ -88,8 +88,10 @@ def build_lab(root: Path) -> Lab:
     lab.git("init", "-q")
     lab.write(
         "mainboard.toml",
-        '[workspace]\nname = "lab"\n\n[hosts.defaults]\nsync = { include = ["research", "packages"] }\n'
-        '\n[hosts.gold]\nkind = "ssh"\nroot = "/repo"\n\n[tracking]\nmode = "off"\n',
+        '[workspace]\nname = "lab"\n\n'
+        '[hosts.defaults]\nsync = { include = ["research", "packages"] }\n\n'
+        '[hosts.gold]\nkind = "ssh"\nroot = "/repo"\n\n'
+        '[tracking]\nmode = "off"\n',
     )
     lab.write(".gitignore", "data/\n__pycache__/\n*.pyc\n*_generated.py\n")
     lab.write("packages/core/src/core/__init__.py", "from .util import helper\n")

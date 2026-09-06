@@ -33,7 +33,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ..context.plan import ExecutionPlan
-    from .dispatcher import Dispatcher, Source
+    from .dispatcher import Dispatcher
+    from .shipment import Shipment
     from .transport import Machine
     from .vocabulary import Resources
 
@@ -104,20 +105,20 @@ class Landing:
         self.watch = watch or announce
         self.floor = floor
 
-    def land(self, command: str) -> str:
-        """Rent a machine, land this workspace on it, start `command`, hand back the handle.
+    def land(self, shipment: Shipment) -> str:
+        """Rent a machine, land this workspace on it, start the job, hand back the handle.
 
         The rental is ended the moment anything at all goes wrong, because between the create and
         the launch this process is the only thing that holds the handle: the machine's own
         entrypoint would otherwise wait out its deadline on the meter for a dispatch that already
         failed.
 
-        command: the command the job runs, once the machine can run it.
+        shipment: what the job runs and ships, once the machine can run it.
         """
         rental = self.backend.rent(self.plan, self.resources)
         started = False
         try:
-            self.equip(rental, command=command)
+            self.equip(rental, shipment=shipment)
             started = True
         finally:
             if not started:
@@ -125,20 +126,20 @@ class Landing:
                 self.backend.cancel(rental.handle)
         return rental.handle
 
-    def equip(self, rental: Rental, *, command: str) -> None:
+    def equip(self, rental: Rental, *, shipment: Shipment) -> None:
         """Mirror, install, provision, pin, launch: everything the machine needs, in that order.
 
         rental: the machine the provider just handed over, its entrypoint waiting.
-        command: the command the job runs.
+        shipment: what the job runs and ships, its provenance read once minutes before the pin
+            uses it, since a dirty tree's key digests its own delta and a landing is long enough
+            for that delta to move under a second reading.
         """
         policy = SshTransport(endpoint=rental.endpoint)
         where = rental.endpoint.destination
-        # Read once, minutes before the pin uses it: a dirty tree's key digests its own delta,
-        # and a landing is long enough for that delta to move under a second reading.
-        source = self.dispatcher.source(command)
         with connection(where, policy) as remote:
             root = self.plan.profile.root or find_root(remote)
-            script = self.script(command, root=root, source=source)
+            listing = self.dispatcher.stage_listing(shipment)
+            script = self.script(shipment, root=root, listing=listing)
             self.transferable(remote)
             self.watch(f"mirroring the workspace to {where}:{root}")
             shipped = self.dispatcher.rsync_up(
@@ -146,7 +147,7 @@ class Landing:
                 root,
                 ssh=policy,
                 required=[self.artifact] if self.artifact else [],
-                extra=[script],
+                extra=[script, *([listing] if listing else [])],
             )
             # Every command below stands in the workspace the mirror just created, which is why
             # nothing before this line may `cd` into a root that did not exist yet.
@@ -158,10 +159,8 @@ class Landing:
             self.watch(f"pinning the source tree on {rental.handle}")
             pinned = Snapshots(root).pin(
                 remote,
-                key=source.key,
-                sources=shipped,
-                filters=self.dispatcher.sync.filters,
-                exclude=[*self.dispatcher.sync.excludes, *self.plan.profile.sync.exclude],
+                key=shipment.source.key,
+                image=self.dispatcher.image(self.plan, shipment, listing=listing, shipped=shipped),
             )
             self.verify(remote, pinned)
             self.watch(f"starting the job on {rental.handle}")
@@ -212,7 +211,7 @@ class Landing:
                 f"{failure_reason(str(err), int(retcode))}"
             )
 
-    def script(self, command: str, *, root: str, source: Source) -> str:
+    def script(self, shipment: Shipment, *, root: str, listing: str) -> str:
         """Render the job script this rental runs and stage it for the mirror to carry.
 
         The same bash script an ssh host runs, which is what makes a rented run's receipts, its
@@ -220,18 +219,22 @@ class Landing:
         activates from the tree this dispatch is about to pin rather than from the mirror, so the
         path is arithmetic here and materialised on the machine a few lines later.
 
-        command: the command the job runs.
+        shipment: what the job runs and ships, whose source key the pin below uses.
         root: the workspace root on the machine.
-        source: the dispatching tree as the dispatcher read it, whose key the pin below uses.
+        listing: the staged closure listing, workspace-relative, empty for a command.
         """
+        pinned = self.dispatcher.pinned(root, source=shipment.source)
         spec = JobSpec(
-            cmd=command,
+            cmd=shipment.command,
             plan=self.plan,
-            root=self.dispatcher.pinned(root, source=source),
+            root=pinned,
             walltime=self.resources.walltime or "",
             gpus=self.resources.gpus,
             mem_gb=self.resources.mem_gb,
-            source=source.identity,
+            pythonpath=":".join(f"{pinned}/{place}".rstrip("/") for place in shipment.imports),
+            source=shipment.source.identity,
+            closure=f"{pinned}/{listing}" if listing else "",
+            first_party=":".join(shipment.first_party),
             exports=self.plan.exports,
         )
         return self.dispatcher.write_job_script(spec, pbs=False)

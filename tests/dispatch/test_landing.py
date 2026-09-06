@@ -6,10 +6,11 @@ from mainboard import MissionError
 from mainboard.dispatch import Dispatcher, GitignoreFilter
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import landing as landing_module
-from mainboard.dispatch import snapshots as snapshots_module
+from mainboard.dispatch import provenance as provenance_module
 from mainboard.dispatch.landing import Landing, renter
 from mainboard.dispatch.rentals import LAUNCH, Rental
 from mainboard.dispatch.shared import state_dir
+from mainboard.dispatch.shipment import Shipment
 from mainboard.dispatch.snapshots import SOURCES
 from mainboard.dispatch.transport import Endpoint
 from mainboard.dispatch.vocabulary import Resources
@@ -47,6 +48,11 @@ class FakeRenter:
         if self.fault is not None:
             raise self.fault
         return Rental(handle="4242", endpoint=_ENDPOINT)
+
+
+def shipped(dispatcher: Dispatcher, command: str) -> Shipment:
+    """`command` as a board ships it to a landing: the mirror, under the tree's provenance."""
+    return Shipment.of_command(command, source=dispatcher.source(command), imports=())
 
 
 def dispatcher_for(workdir: Path) -> Dispatcher:
@@ -92,7 +98,7 @@ def test_a_rental_gets_the_workspace_the_tool_and_the_environment_before_the_job
     """
     host = machine_with("/root/projects\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
-    assert landed.land("python train.py") == "4242"
+    assert landed.land(shipped(dispatcher, "python train.py")) == "4242"
     assert backend.asked == [("vast", "00:30:00")]
     root, extra, where = dispatcher.mirrored[0]
     assert (root, where) == ("/root/projects", "root@ssh5.vast.ai")
@@ -114,13 +120,13 @@ def test_a_machine_that_ships_no_rsync_is_given_one_before_the_mirror_is_attempt
     what the mirror underneath them is about to create.
     """
     host = machine_with("/root/projects\n", rules=[("command -v rsync", 1, "")])
-    landed, _, _ = landing(workdir, host, monkeypatch)
-    landed.land("python train.py")
+    landed, _, dispatcher = landing(workdir, host, monkeypatch)
+    landed.land(shipped(dispatcher, "python train.py"))
     assert "command -v rsync" in host.lines
     assert host.ran("apt-get install -y -qq rsync")
     equipped = machine_with("/root/projects\n")
-    landed, _, _ = landing(workdir, equipped, monkeypatch)
-    landed.land("python train.py")
+    landed, _, dispatcher = landing(workdir, equipped, monkeypatch)
+    landed.land(shipped(dispatcher, "python train.py"))
     assert not equipped.ran("apt-get")
 
 
@@ -138,7 +144,7 @@ def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would
     """
     host = machine_with("/root/projects\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
-    landed.land("python train.py")
+    landed.land(shipped(dispatcher, "python train.py"))
     (written,) = host.inputs
     (root, (script,), _) = dispatcher.mirrored[0]
     assert written.startswith(f"cd {root}/{SOURCES}/")
@@ -165,15 +171,19 @@ def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(
     # that outlives one reading: `git describe` keeps saying the same dirty commit while the
     # delta the key digests moves under it.
     deltas = iter("abcdefgh")
-    monkeypatch.setattr(dispatch_module, "git", lambda *args: "abc1234-dirty")
-    monkeypatch.setattr(snapshots_module, "git", lambda *args: next(deltas, "z"))
+    monkeypatch.setattr(dispatch_module, "git", lambda *args: "abc1234")
+    monkeypatch.setattr(
+        provenance_module,
+        "git",
+        lambda *args: "/repo" if "--show-toplevel" in args else next(deltas, "z"),
+    )
     host = machine_with("/root/projects\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
-    landed.land("python train.py")
+    landed.land(shipped(dispatcher, "python train.py"))
     (written,) = host.inputs
     (_, (script,), _) = dispatcher.mirrored[0]
     snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
-    assert f"{SOURCES}/abc1234-dirty-" in snapshot
+    assert "-dirty-" in snapshot
     assert snapshot in (dispatcher.root / script).read_text(encoding="utf-8")
     assert host.ran(f"mb_snap={snapshot}")
 
@@ -189,9 +199,9 @@ def test_a_pinned_tree_the_job_could_not_activate_from_ends_the_rental(
     host = machine_with(
         "/root/projects\n", rules=[("fi && true", 1, "found no default environment")]
     )
-    landed, backend, _ = landing(workdir, host, monkeypatch)
+    landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     with pytest.raises(MissionError, match="pinned tree on the rental cannot run a command"):
-        landed.land("python train.py")
+        landed.land(shipped(dispatcher, "python train.py"))
     assert backend.cancelled == ["4242"]
     assert host.inputs == []
 
@@ -201,9 +211,9 @@ def test_a_landing_that_fails_anywhere_ends_the_rental_it_was_holding(
 ) -> None:
     """Between the create and the launch this process is the only thing holding the handle."""
     host = machine_with("/root/projects\n", rules=[("mb_snap", 1, "no space left on device")])
-    landed, backend, _ = landing(workdir, host, monkeypatch)
+    landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     with pytest.raises(SystemExit, match="could not pin the source tree"):
-        landed.land("python train.py")
+        landed.land(shipped(dispatcher, "python train.py"))
     assert backend.cancelled == ["4242"]
     assert LAUNCH not in " ".join(host.lines)
 
@@ -213,9 +223,11 @@ def test_a_market_that_never_rented_anything_leaves_nothing_to_cancel(
 ) -> None:
     """A refusal before the create holds no handle, so there is no rental to end."""
     host = machine_with("/root/projects\n")
-    landed, backend, _ = landing(workdir, host, monkeypatch, fault=MissionError("no rentable"))
+    landed, backend, dispatcher = landing(
+        workdir, host, monkeypatch, fault=MissionError("no rentable")
+    )
     with pytest.raises(MissionError, match="no rentable"):
-        landed.land("python train.py")
+        landed.land(shipped(dispatcher, "python train.py"))
     assert backend.cancelled == [] and host.calls == []
 
 
@@ -226,7 +238,7 @@ def test_a_declared_root_is_honoured_and_a_bare_machine_is_asked_where_to_put_th
     host = machine_with("/root/projects\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     landed.plan = plan(host="vast", profile=HostProfile(kind="vast", root="/workspace"))
-    landed.land("python train.py")
+    landed.land(shipped(dispatcher, "python train.py"))
     assert dispatcher.mirrored[0][0] == "/workspace"
     assert not host.ran("ls -d /work/")
 

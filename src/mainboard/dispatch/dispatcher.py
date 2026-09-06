@@ -21,9 +21,11 @@ from ..core.project import Project
 from ..engines.compile.vendor import vendor_root
 from . import vocabulary
 from .jobs import JobSpec
+from .provenance import Source, commanded, tree_source
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, Watcher, announce, db_file, git, logger, now, state_path, workspace
-from .snapshots import Snapshots, source_key, tree_digest
+from .shipment import Shipment
+from .snapshots import Image, Mirrored, Sealed, Snapshots
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
@@ -57,7 +59,9 @@ def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") 
 
     It runs from the mirror, because that is where a host keeps its built environments, while
     the artifact it builds from is the snapshot's own hardlinked copy: the description a job
-    activates and the environment it gets are then the same content by construction.
+    activates and the environment it gets are then the same content by construction. It runs in
+    a subshell, so the directory it changes into never becomes the job's own: a relative path in
+    the command would otherwise name the mirror's mutable code under the snapshot's provenance.
 
     The digest the dispatch pinned rides along, so the host builds the environment this job will
     actually activate or says which two addresses it reached and which two pixis reached them.
@@ -81,7 +85,7 @@ def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") 
         f"{_TOOL} provide {shlex.quote(plan.env)} "
         f"--source {shlex.quote(artifact)}{expect} >/dev/null"
     )
-    return f"cd {shlex.quote(root)} && {build}"
+    return f"( cd {shlex.quote(root)} && {build} )"
 
 
 # How a finished verdict maps to a process exit code: 0 ok, 1 failed, 2 still running, 3
@@ -136,41 +140,6 @@ class Verdict(FrozenModel):
         return self.verdict == "ok"
 
 
-def repository_of(command: str, root: Path) -> str:
-    """The working tree that owns the code `command` runs, `root` itself when none does.
-
-    A workspace can hold nested repositories, and the tree of record for a receipt is the one the
-    job's code lives in, not the one the submitter happened to stand in: a monorepo carrying
-    unrelated uncommitted work would otherwise stamp `-dirty` onto every receipt of a clean
-    submodule. The first command token that names an existing path under `root` picks the
-    repository; a command naming no path falls back to `root` itself.
-
-    command: the shell command the job runs.
-    root: the local workspace root the dispatch is staged from.
-    """
-    for token in shlex.split(command):
-        candidate = root / token
-        if not candidate.exists():
-            continue
-        where = candidate if candidate.is_dir() else candidate.parent
-        top = git("-C", str(where), "rev-parse", "--show-toplevel")
-        if top:
-            return top
-    return str(root)
-
-
-def source_of(command: str, root: Path) -> str:
-    """The identity of the repository that owns the code `command` runs, as git describes it.
-
-    Empty when git answers nothing, which is what a mirror without history reads before it is
-    told.
-
-    command: the shell command the job runs.
-    root: the local workspace root the dispatch is staged from.
-    """
-    return git("-C", repository_of(command, root), "describe", "--always", "--dirty")
-
-
 def held_handle(asked: Request) -> str:
     """The local id a held dispatch is recorded under, derived from the request itself.
 
@@ -182,33 +151,6 @@ def held_handle(asked: Request) -> str:
     """
     seed = f"{asked.target}\n{asked.name}\n{asked.command}"
     return f"held-{hashlib.blake2s(seed.encode(), digest_size=5).hexdigest()}"
-
-
-class Source(FrozenModel):
-    """The dispatching tree read once: what its receipts call it, and where its snapshot goes.
-
-    The two halves are read together on purpose. A dirty tree names no commit, so its key
-    carries a digest of the working-tree delta, and asking for that key twice across a slow
-    dispatch can answer twice differently. A job rendered against one key while its tree is
-    pinned under another is a job pointed at a directory nobody ever created, which is how a
-    rented run activated from `.../sources/<the key its render saw>` and found no environment
-    there, minutes after the landing had pinned the tree under the key the pin saw (vast
-    49867368, 2026-09-04). Reading both at once makes that disagreement unrepresentable.
-
-    identity: `git describe --always --dirty` for the tree the command's code lives in, the
-        string a job carries into its receipts as `MAINBOARD_SOURCE`.
-    key: the directory name that tree is pinned under on the host.
-    commit: that tree's commit, whole, exported to the job as `MAINBOARD_SOURCE_COMMIT`.
-    digest: the content digest of that tree, exported as `MAINBOARD_SOURCE_DIGEST`. Together
-        those two are what a run seals against on a host that has no history to read: the
-        commit says which revision, the digest says these exact bytes, and a preflight that
-        can check neither locally can check both against what the dispatch declared.
-    """
-
-    identity: str
-    key: str
-    commit: str = ""
-    digest: str = ""
 
 
 class Dispatcher:
@@ -348,21 +290,44 @@ class Dispatcher:
         return Snapshots(root).path(source.key)
 
     def source(self, command: str = "") -> Source:
-        """Read the dispatching tree once, as both its identity and its snapshot key.
+        """Read the tree a command ships once, as both its identity and its snapshot key.
 
-        The one place either is taken from, so every path derived from this dispatch agrees
-        about which tree it is. A command naming a file picks the repository that file lives in;
-        one naming none falls back to the workspace.
+        The whole-tree provenance a command that ships the mirror gets, every nested
+        repository's dirt left out. A command naming a file picks the repository that file lives
+        in; one naming none falls back to the workspace. A job spelled by file never comes
+        here: its provenance is scoped to its closure and read by its shipment.
 
         command: the shell command the job runs, empty for a caller submitting a written script.
         """
-        where = repository_of(command, self.root)
-        identity = git("-C", where, "describe", "--always", "--dirty")
-        return Source(
-            identity=identity,
-            key=source_key(self.root, source=identity),
-            commit=git("-C", where, "rev-parse", "HEAD"),
-            digest=tree_digest(where),
+        return tree_source(commanded(command, self.root))
+
+    def stage_listing(self, shipment: Shipment) -> str:
+        """Write `shipment`'s closure listing under the jobs directory, empty for a command.
+
+        Content-addressed by the closure digest like the job script, so a wave off one closure
+        stages one file. The mirror carries it beside the script, the pin copies exactly the
+        files it names, and the job reads the same rows through `MAINBOARD_CLOSURE`.
+        """
+        if not shipment.sealed:
+            return ""
+        return self._stage(shipment.listing_name, shipment.listing.encode())
+
+    def image(
+        self, plan: ExecutionPlan, shipment: Shipment, *, listing: str, shipped: Sequence[str]
+    ) -> Image:
+        """What the snapshot of this dispatch copies: the closure listed, or the shipped mirror.
+
+        plan: the resolved execution context, whose profile names what the mirror excludes.
+        shipment: what the dispatch runs and ships.
+        listing: the staged closure listing, workspace-relative, empty for a command.
+        shipped: the allowlist the mirror transfer carried, what a command's snapshot copies.
+        """
+        if listing:
+            return Sealed(listing=listing, needs=shipment.needs)
+        return Mirrored(
+            sources=tuple(shipped),
+            filters=tuple(self.sync.filters),
+            exclude=(*self.sync.excludes, *plan.profile.sync.exclude),
         )
 
     def probe(self, handle: Handle) -> JobState | None:
@@ -565,7 +530,7 @@ class Dispatcher:
     def run(
         self,
         plan: ExecutionPlan,
-        cmd: str,
+        shipment: Shipment,
         *,
         root: str,
         resources: Resources,
@@ -579,13 +544,13 @@ class Dispatcher:
         containerize: Callable[[list[str]], list[str]] | None = None,
         watch: Watcher | None = None,
         prefix: str = "",
-        imports: Sequence[str] = (),
         artifact: Sequence[str] = (),
     ) -> Handle:
-        """Render `cmd` into a job script for `plan`'s host and dispatch it.
+        """Render `shipment` into a job script for `plan`'s host and dispatch it.
 
-        Renders a PBS or bash job script (whichever `plan.profile.kind` calls for), wraps `cmd`
-        in the container runtime when `plan.containerized`, submits it, and returns a `Handle`.
+        Renders a PBS or bash job script (whichever `plan.profile.kind` calls for), wraps the
+        command in the container runtime when `plan.containerized`, submits it, and returns a
+        `Handle`.
 
         The script activates and runs from the snapshot of the mirror this dispatch pins, not
         from the mirror itself, so a later dispatch of a different tree cannot change the code
@@ -594,7 +559,7 @@ class Dispatcher:
         pruned.
 
         plan: the resolved execution context (host, profile, env, container).
-        cmd: the command the generated job runs.
+        shipment: what the job runs and what it ships, its provenance read once.
         root: the workspace root on `plan.host`.
         resources: the scheduler resource request (queue/walltime/mem/gpus already resolved).
         verify: a preflight command proving the host's activated environment actually runs.
@@ -612,9 +577,6 @@ class Dispatcher:
         prefix: the built environment this job activates on the host, addressed by the content
             of the compiled artifact this dispatch ships; empty leaves the job activating the
             workspace's own environment, which is what a workspace addressing none still does.
-        imports: the workspace-relative import roots of every package this workspace installs
-            editable, resolved against the pinned tree so the job imports the source this
-            dispatch froze rather than the mirror the shared prefix points at.
         artifact: the compiled manifest, lock and state this dispatch addressed its environment
             by, shipped with the mirror so the tree it pins carries the very compile the pin was
             taken over. See `_raise_required_sync_failure`'s neighbours for why a group under
@@ -627,12 +589,11 @@ class Dispatcher:
                     f"plan for host {plan.host!r} is containerized but no container argv "
                     "builder was given"
                 )
-            container_command = shlex.join(containerize(["bash", "-c", cmd]))
-        source = self.source(cmd)
-        pinned = self.pinned(root, source=source)
-        frozen = [f"{pinned}/{place}".rstrip("/") for place in imports]
+            container_command = shlex.join(containerize(["bash", "-c", shipment.command]))
+        pinned = self.pinned(root, source=shipment.source)
+        listing = self.stage_listing(shipment)
         spec = JobSpec(
-            cmd=cmd,
+            cmd=shipment.command,
             plan=plan,
             root=pinned,
             queue=resources.queue or "",
@@ -643,13 +604,15 @@ class Dispatcher:
             mem_gb=resources.mem_gb,
             container_command=container_command,
             prefix=prefix,
-            pythonpath=":".join(frozen),
+            pythonpath=":".join(f"{pinned}/{place}".rstrip("/") for place in shipment.imports),
             provide=providing(plan, root=root, pinned=pinned, prefix=prefix),
             sampler=sampler,
             attestation=attestation,
-            source=source.identity,
-            commit=source.commit,
-            digest=source.digest,
+            source=shipment.source.identity,
+            commit=shipment.source.commit,
+            digest=shipment.source.digest,
+            closure=f"{pinned}/{listing}" if listing else "",
+            first_party=":".join(shipment.first_party),
             exports=plan.exports,
         )
         script = self.write_job_script(
@@ -665,7 +628,8 @@ class Dispatcher:
             fetch=fetch,
             name=name,
             node=node,
-            source=source,
+            shipment=shipment,
+            listing=listing,
             containerize=containerize,
             watch=watch,
             prefix=prefix,
@@ -730,7 +694,8 @@ class Dispatcher:
         fetch: str | None = None,
         name: str = "",
         node: str = "",
-        source: Source | None = None,
+        shipment: Shipment | None = None,
+        listing: str = "",
         containerize: Callable[[list[str]], list[str]] | None = None,
         watch: Watcher | None = None,
         prefix: str = "",
@@ -749,9 +714,11 @@ class Dispatcher:
         the snapshot is what the job runs from, and it is immutable, so the next dispatch of
         another tree rewrites the mirror under nobody.
 
-        source: the dispatching tree as `source` read it, identity and snapshot key together;
-            two dispatches of one tree share one snapshot. Read from the workspace when a caller
-            submitting a hand-written script passes none.
+        shipment: what the job runs and ships, its provenance read once so two dispatches of
+            one tree share one snapshot. A caller submitting a hand-written script passes none
+            and ships the mirror under the workspace's own provenance.
+        listing: the staged closure listing a sealed shipment's snapshot copies from, shipped
+            beside the script; empty for a command that ships the mirror.
         containerize: builds the container runtime argv around `["bash", "-c", verify]`; required
             when `plan.containerized`, so the verify preflight runs inside the same base image a
             job would.
@@ -765,24 +732,24 @@ class Dispatcher:
             walltime=resources.walltime or "",
             mem_gb=resources.mem_gb or 0,
         )
-        dispatched = source or self.source()
+        dispatched = shipment or Shipment.of_command(script, source=self.source(), imports=())
         prepared, staged = self._prepare_script(script)
-        shipped = self.rsync_up(plan, root, required=required, extra=staged)
+        shipped = self.rsync_up(
+            plan, root, required=required, extra=[*staged, *([listing] if listing else [])]
+        )
         sha = git("rev-parse", "--short", "HEAD")
-        dirty = bool(git("status", "--porcelain"))
+        dirty = dispatched.source.dirty
         with connection(plan.host) as remote:
             self._verify(remote, plan, root, verify=verify, containerize=containerize)
             pinned = Snapshots(root).pin(
                 remote,
-                key=dispatched.key,
-                sources=shipped,
+                key=dispatched.source.key,
+                image=self.image(plan, dispatched, listing=listing, shipped=shipped),
                 results=fetch or "",
                 prefix=prefix,
                 environment=plan.env,
-                commit=dispatched.commit,
-                digest=dispatched.digest,
-                filters=self.sync.filters,
-                exclude=[*self.sync.excludes, *plan.profile.sync.exclude],
+                commit=dispatched.source.commit,
+                digest=dispatched.source.digest,
             )
             self._prime(remote, plan, pinned, root, watch, prefix=prefix)
             try:
@@ -804,9 +771,9 @@ class Dispatcher:
                 fetch_path=fetch,
                 name=name,
                 node=node,
-                source=dispatched.key,
-                commit=dispatched.commit,
-                digest=dispatched.digest,
+                source=dispatched.source.key,
+                commit=dispatched.source.commit,
+                digest=dispatched.source.digest,
             )
         )
         logger.info(
@@ -820,7 +787,7 @@ class Dispatcher:
         *,
         host: str,
         kind: str,
-        command: str,
+        shipment: Shipment,
         name: str = "",
         node: str = "",
         fetch: str | None = None,
@@ -836,30 +803,29 @@ class Dispatcher:
         handle: the provider's own opaque run id.
         host: the alias the run was dispatched to.
         kind: the provider kind, which is how a later pass finds the backend again.
-        command: the command the run was launched with, kept as its provenance.
+        shipment: what the run was launched with, kept as its provenance.
         name: a human label for the run, a study's label when a study owns it.
         node: the ledger slug this run serves, recorded on the run and its receipts.
         fetch: a results path recorded for a later pull.
         """
-        dispatched = self.source(command)
         self.cache.record(
             RunRecord(
                 handle=handle,
                 target=host,
                 kind=kind,
-                script=command,
+                script=shipment.spelling,
                 args="",
                 git_sha=git("rev-parse", "--short", "HEAD"),
-                dirty=int(bool(git("status", "--porcelain"))),
+                dirty=int(shipment.source.dirty),
                 submitted_at=now(),
                 fetch_path=fetch,
                 name=name,
                 node=node,
-                commit=dispatched.commit,
-                digest=dispatched.digest,
+                commit=shipment.source.commit,
+                digest=shipment.source.digest,
             )
         )
-        logger.info("%s -> %s on %s (%s)", command, handle, host, kind)
+        logger.info("%s -> %s on %s (%s)", shipment.spelling, handle, host, kind)
         return Handle(id=handle, host=host, root="", kind=kind, fetch_path=fetch)
 
     def write_job_script(self, spec: JobSpec, *, pbs: bool, gpu_in_select: bool = True) -> str:

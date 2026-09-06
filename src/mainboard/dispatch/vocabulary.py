@@ -112,6 +112,7 @@ class Request(FrozenModel):
     command: the command the job runs.
     name / node / fetch: the run's label, the ledger slug it serves, and the results path to
         pull back, exactly as the original dispatch gave them.
+    needs: the data paths a job spelled by file was asked to reach on the host.
     env / container: the environment and container overrides the dispatch asked for.
     queue / walltime / mem_gb / gpus / gpu_name / max_usd / nodes: the resource request, unset
         fields falling back to the host profile's declared defaults at retry time.
@@ -123,6 +124,7 @@ class Request(FrozenModel):
     name: str = ""
     node: str = ""
     fetch: str | None = None
+    needs: tuple[str, ...] = ()
     env: str = ""
     container: str = ""
     queue: str = ""

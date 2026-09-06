@@ -42,13 +42,18 @@
 #
 # A MIRROR HAS THE SOURCE AND NOT THE HISTORY. A dispatch rsyncs the working tree onto a host and
 # the repository stays behind, so `git rev-parse` on a remote card answers nothing and every
-# receipt a dispatched job writes could name no commit. The dispatcher declares its own HEAD in
-# `MAINBOARD_SOURCE` instead, spelled as `git describe --always --dirty` spells it, and a row
-# written under it says `mirrored` so a declared commit is never read as a probed one. Refusing
-# outright would say no remote host may ever take a reading, which is the wrong answer to a
-# cross-architecture question. A mirror still digests the source it was handed, which is the one
-# identity that survives the trip, and a dispatcher declaring `-dirty` lands inadmissible for the
-# same reason a local dirty tree does.
+# receipt a dispatched job writes could name no commit. The dispatcher declares the tree instead:
+# `MAINBOARD_SOURCE` spelled as `git describe --always --dirty` spells it, the whole commit in
+# `MAINBOARD_SOURCE_COMMIT`, the digest of the shipped bytes in `MAINBOARD_SOURCE_DIGEST` and the
+# listing of what shipped in `MAINBOARD_CLOSURE`, and a row written under them says `mirrored` so
+# a declared commit is never read as a probed one. Refusing outright would say no remote host may
+# ever take a reading, which is the wrong answer to a cross-architecture question. A dispatcher
+# declaring `-dirty` lands inadmissible for the same reason a local dirty tree does.
+#
+# A DECLARATION WINS OVER A PROBE. A job run through the runner on this workstation stands in a
+# repository git can answer for, but the answer it gives is the whole tree's, submodule dirt and
+# all, while the declaration was scoped to exactly the files the job ships. So a declared source
+# is what the receipt carries wherever one was made, and git fills in what only it knows.
 
 import json
 import os
@@ -60,7 +65,8 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..dispatch.shared import git
+from ..dispatch.provenance import DIRTY
+from ..dispatch.shared import CLOSURE_VAR, COMMIT_VAR, DIGEST_VAR, SOURCE_VAR, git
 from ..probe.machine import Machine
 from .coverage import Probed
 
@@ -69,9 +75,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pydantic import JsonValue
-
-# The variable a mirrored run reads to learn which source it is, set by whatever dispatched it.
-SOURCE_VAR = "MAINBOARD_SOURCE"
 
 # What a claim's registered rows live under, one directory per node, and what counts as a source
 # file when the universe root is digested. Both are named here because the digest is taken here.
@@ -142,10 +145,12 @@ class Source(FrozenModel):
     commit: the FULL commit id, never the short one. A short hash is a display convenience that
         stopped being one the day a program's whole evidence base named the same seven characters.
     tree: the committed tree object the commit resolves to, empty on a mirror with no repository.
-    digest: the canonical digest of the source files actually on disk, untracked ones included,
-        which is the only identity a dirty tree or a mirror has.
-    dirty: whether the working tree carried uncommitted changes.
+    digest: the digest of the bytes the dispatch shipped, every file the closure names hashed
+        as it stood on disk, which is the only identity a dirty tree or a mirror has.
+    dirty: whether what the job ran on differed from the commit it names.
     mirrored: whether the commit was declared by a dispatcher rather than probed from a repo.
+    closure: the listing of what the job ran on, one `path blob status` row per shipped file,
+        where the dispatch wrote it; empty for a run that shipped no closure.
     """
 
     commit: str
@@ -153,6 +158,7 @@ class Source(FrozenModel):
     digest: str = ""
     dirty: bool = False
     mirrored: bool = False
+    closure: str = ""
 
     @property
     def admissibility(self) -> Admissibility:
@@ -167,21 +173,25 @@ def source(repo: Path, *, read: Callable[..., str] = git) -> Source:
     read: the git reader, the local `git` by default and a stand-in under test.
     """
     head = read("-C", str(repo), "rev-parse", "HEAD")
-    if head:
-        return Source(
-            commit=head,
-            tree=read("-C", str(repo), "rev-parse", "HEAD^{tree}"),
-            dirty=bool(read("-C", str(repo), "status", "--porcelain")),
-        )
     declared = os.environ.get(SOURCE_VAR, "")
-    if not declared:
+    if not head and not declared:
         raise RuntimeError(
             f"{repo} is not a git working tree and {SOURCE_VAR} is unset, so this reading could "
             f"name no source; a dispatched job sets {SOURCE_VAR} to the dispatcher's own "
             "`git describe --always --dirty`"
         )
+    tree = read("-C", str(repo), "rev-parse", "HEAD^{tree}") if head else ""
+    if not declared:
+        return Source(
+            commit=head, tree=tree, dirty=bool(read("-C", str(repo), "status", "--porcelain"))
+        )
     return Source(
-        commit=declared.removesuffix("-dirty"), dirty=declared.endswith("-dirty"), mirrored=True
+        commit=os.environ.get(COMMIT_VAR, "") or declared.removesuffix(DIRTY),
+        tree=tree,
+        digest=os.environ.get(DIGEST_VAR, ""),
+        dirty=declared.endswith(DIRTY),
+        mirrored=not head,
+        closure=os.environ.get(CLOSURE_VAR, ""),
     )
 
 
@@ -320,6 +330,8 @@ class Preflight:
             "commit": self.source.commit,
             "tree": self.source.tree,
             "source_digest": self.digest,
+            "shipped_digest": self.source.digest,
+            "closure": self.source.closure,
             "worktree_dirty": self.source.dirty,
             "mirrored": self.source.mirrored,
             "versions": self.versions,

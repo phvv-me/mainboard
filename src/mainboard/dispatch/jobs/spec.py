@@ -89,6 +89,11 @@ class JobSpec(FrozenModel):
     digest: that tree's content digest, exported as `MAINBOARD_SOURCE_DIGEST`. A preflight on a
         mirror cannot read HEAD or check a clean worktree, so what it seals against is this pair,
         declared by the dispatch that shipped the bytes.
+    closure: where the job finds its closure listing, exported as `MAINBOARD_CLOSURE`, so a
+        receipt can list what it ran on and the runner can refuse an import outside it. Empty
+        for a command that ships the mirror.
+    first_party: the top-level names the workspace's own import roots define, colon-joined,
+        exported as `MAINBOARD_FIRST_PARTY` beside the closure for the runner's finder.
     exports: the host profile's `[hosts.<name>.exports]`, written as `export KEY=VALUE` lines
         before the command so every job on that host runs in the world its profile declares.
     """
@@ -112,6 +117,8 @@ class JobSpec(FrozenModel):
     source: str = ""
     commit: str = ""
     digest: str = ""
+    closure: str = ""
+    first_party: str = ""
     exports: dict[str, str] = {}
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
@@ -159,6 +166,9 @@ class JobSpec(FrozenModel):
             source=shlex.quote(self.source) if self.source else "",
             commit=shlex.quote(self.commit) if self.commit else "",
             digest=shlex.quote(self.digest) if self.digest else "",
+            closure=shlex.quote(self.closure) if self.closure else "",
+            first_party=shlex.quote(self.first_party) if self.first_party else "",
+            root=shlex.quote(self.root),
             exports=[(key, shlex.quote(value)) for key, value in self.exports.items()],
             receipts_staging=staging(),
             receipts_framing=framing(),
