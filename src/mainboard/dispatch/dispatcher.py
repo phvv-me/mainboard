@@ -580,6 +580,7 @@ class Dispatcher:
         watch: Watcher | None = None,
         prefix: str = "",
         imports: Sequence[str] = (),
+        artifact: Sequence[str] = (),
     ) -> Handle:
         """Render `cmd` into a job script for `plan`'s host and dispatch it.
 
@@ -614,6 +615,10 @@ class Dispatcher:
         imports: the workspace-relative import roots of every package this workspace installs
             editable, resolved against the pinned tree so the job imports the source this
             dispatch froze rather than the mirror the shared prefix points at.
+        artifact: the compiled manifest, lock and state this dispatch addressed its environment
+            by, shipped with the mirror so the tree it pins carries the very compile the pin was
+            taken over. See `_raise_required_sync_failure`'s neighbours for why a group under
+            the generated tree has to be named to travel at all.
         """
         container_command = ""
         if plan.containerized:
@@ -664,6 +669,7 @@ class Dispatcher:
             containerize=containerize,
             watch=watch,
             prefix=prefix,
+            required=[artifact] if artifact else [],
         )
         return Handle(
             id=handle, host=plan.host, root=root, kind=plan.profile.kind, fetch_path=fetch

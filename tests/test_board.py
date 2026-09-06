@@ -606,7 +606,10 @@ def test_providing_refuses_an_artifact_this_machine_reads_as_another_environment
     said = str(refused.value)
     assert f"describes environment {digest_of(where)}" in said
     assert "the dispatch pinned 4950b228a3eaf208" in said
-    assert "solved by pixi 0.77.0 and this machine runs pixi 0.79.0" in said
+    assert "solved by pixi 0.77.0 while this machine runs pixi 0.79.0" in said
+    # And it says which of the two sides is behind, since a dispatch ships the artifact it
+    # pinned and the only way the two can disagree is that something wrote over it here.
+    assert "compile made on this machine rather than the one the dispatch shipped" in said
 
 
 def test_installing_here_on_windows_writes_no_bash_activation_and_names_none(

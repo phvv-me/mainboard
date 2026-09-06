@@ -72,11 +72,16 @@ def dispatcher(workdir: Path, backend: RecordingScheduler) -> Dispatcher:
     del backend
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     instance.shipped: list[tuple[str, ...]] = []
+    instance.required: list[list[list[str]]] = []
 
     def mirror(execution: ExecutionPlan, root: str, **kwargs: object) -> list[str]:
         del execution, root
         extra = kwargs.get("extra", ())
         instance.shipped.append(tuple(extra) if isinstance(extra, tuple | list) else ())
+        needed = kwargs.get("required", ())
+        instance.required.append(
+            [list(group) for group in needed] if isinstance(needed, tuple | list) else []
+        )
         return ["src"]
 
     instance.rsync_up = mirror
@@ -931,3 +936,28 @@ def test_a_held_dispatch_is_one_durable_row_carrying_the_request_that_makes_it_a
     # through rather than settling into a verdict the job never had.
     dispatcher.cache.forget(again)
     assert dispatcher.cache.live() == []
+
+
+def test_a_dispatch_ships_the_very_artifact_it_addressed_its_environment_by(
+    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
+) -> None:
+    """A submit used to pin an address and ship no artifact for anyone to reach it by.
+
+    The compiled pair lives under the generated tree, which every mirror denies, so only
+    `setup`, `sync` and a rental landing named it and only they carried it. A submit therefore
+    addressed the workstation's compile and left the host holding whatever its own last compile
+    had produced. On 2026-09-06 two task rows were added to the monorepo manifest and the
+    mirror's compile stayed at the morning's, missing `[tasks.head-paper]`: the workstation
+    pinned a9d234f5f0dd2e93, the host read db8171ec0bd191b2, and every job of the wave died at
+    environment prime with a mirror nobody had told to catch up.
+    """
+    trio = (
+        ".mainboard/envs/default/pixi.toml",
+        ".mainboard/envs/default/pixi.lock",
+        ".mainboard/envs/default/state.toml",
+    )
+
+    dispatcher.run(plan(), "python -m foo", root="/repo", resources=Resources(), artifact=trio)
+
+    del backend, workdir
+    assert dispatcher.required == [[list(trio)]]

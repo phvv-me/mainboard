@@ -234,6 +234,24 @@ class Provisioner:
         hook = shard.pixi.shell_hook(env)
         return ActivationScript(path, hook, self.binaries(env)).write(modules)
 
+    def recompiled(self, env: str = "default") -> None:
+        """Bring `env`'s generated artifact in line with the manifest, and touch nothing else.
+
+        What a dispatch needs and all it needs. `refreshed` would do the compile and then bring
+        this machine's own prefix in line with the lock, which is minutes of pixi for a command
+        that is about to run somewhere else entirely, and `provision` would install. A dispatch
+        addresses an environment by the content of this artifact and ships that same artifact to
+        the host, so the one thing it cannot do is read a compile older than the manifest it was
+        invoked under: a task row added this afternoon moved the workstation's address while the
+        host went on holding the morning's, and every job of that wave died at environment prime.
+
+        Unconditional, like `provision` and unlike `activated`, since `Compiler.stale` reads a
+        workspace with nothing compiled yet as fresh and the writer is already a no-op once the
+        generated file matches. A dispatch that compiled nothing would ship nothing.
+        """
+        with GeneratedFiles(directory=self.out).locked() as files:
+            self._shard(env).compiler.write(files)
+
     @contextmanager
     def activated(self, env: str = "default") -> Generator[None]:
         """Recompile ``env`` if stale, then expose everything it installed on PATH for the block.

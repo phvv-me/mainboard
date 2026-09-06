@@ -599,3 +599,53 @@ def test_task_line_hands_only_a_declared_task_to_pixi(
         f'{_BARE}[tasks]\nlint = "ruff check"\n[envs.serving.tasks]\nserve = "vllm serve"\n'
     )
     assert task_line(manifest, command, env=env) == line
+
+
+# A workspace as a dispatch finds one: it installs itself and it declares tasks, which is the
+# table an afternoon's edit touches most often and the one a compile carries into the artifact.
+_DISPATCHED = """
+[workspace]
+name = "life"
+
+[python.deps]
+life = {{ path = ".", editable = true }}
+
+[tasks]
+tok-paper = "tectonic paper.tex"
+{extra}
+"""
+
+
+def test_a_task_row_added_between_two_dispatches_moves_the_address_it_is_pinned_by(
+    tmp_path: Path,
+) -> None:
+    """A dispatch pins the compiled artifact and ships that same artifact, so it must compile.
+
+    Reading a compile older than the manifest the command was invoked under is how a workstation
+    came to pin a9d234f5f0dd2e93 while the mirror answered db8171ec0bd191b2 with no
+    `[tasks.head-paper]` in it at all. `recompiled` is what a dispatch runs before it addresses
+    anything, and after it the artifact on disk and the address taken over it are the same one
+    thing, which is what the mirror then carries.
+    """
+    from mainboard import Manifest
+    from mainboard.engines.compile import digest_of
+
+    root = tmp_path / "life"
+    (root / "src").mkdir(parents=True)
+
+    def compile_with(extra: str) -> None:
+        (root / "mainboard.toml").write_text(_DISPATCHED.format(extra=extra), encoding="utf-8")
+        manifest = Manifest.model_validate(
+            tomllib.loads((root / "mainboard.toml").read_text(encoding="utf-8"))
+        )
+        Provisioner(root, manifest).recompiled("default")
+
+    shard = root / ".mainboard" / "envs" / "default"
+    compile_with("")
+    (shard / "pixi.lock").write_text("version: 7\n", encoding="utf-8")
+    before = digest_of(shard)
+    compile_with('head-paper = "tectonic head.tex"')
+    after = digest_of(shard)
+
+    assert "head-paper" in (shard / "pixi.toml").read_text()
+    assert after != before

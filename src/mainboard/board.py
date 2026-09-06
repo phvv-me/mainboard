@@ -893,14 +893,39 @@ class Board:
         arrived = digest_of(where)
         if arrived == expect:
             return
-        solved = SyncState.load(where).solved_by or "an unrecorded pixi"
+        state = SyncState.load(where)
+        solved = state.solved_by or "an unrecorded pixi"
         raise MissionError(
-            f"{where} describes environment {arrived}, but the dispatch pinned {expect}. The "
-            f"artifact was solved by pixi {solved} and this machine runs pixi "
+            f"{where} describes environment {arrived}, but the dispatch pinned {expect}. That "
+            f"artifact was compiled for {state.compiled_at or 'an unrecorded root'} from "
+            f"manifest {state.compiled_from[:12] or 'nothing'}, so {self.__behind(state)}. It "
+            f"was solved by pixi {solved} while this machine runs pixi "
             f"{provisioner.solver_version() or 'none'}: a pixi that is not the one the fleet is "
             f"pinned to ({PIXI_VERSION}) rewrites the lock while provisioning and moves the "
-            f"address with it. Run `{self.project.name} setup {self.host}` from the dispatching "
-            "workspace, which puts the pinned pixi on this machine."
+            f"address with it too. Run `{self.project.name} setup {self.host}` from the "
+            "dispatching workspace, which ships this machine both the pinned pixi and the "
+            "compile the dispatch addressed."
+        )
+
+    def __behind(self, state: SyncState) -> str:
+        """Which side of a refused prime is holding the older compile, said in one clause.
+
+        A dispatch ships the artifact it pinned, so the two can only disagree when something
+        here wrote over it, and the root recorded beside it is what tells the two apart: the
+        dispatching workspace's root means the shipped compile arrived and this machine then
+        recompiled the mirror on top of it, and this machine's own root means the ship never
+        landed and what stands here is a local compile of whatever the mirror last held.
+
+        state: the blessing recorded beside the artifact that was read.
+        """
+        if state.compiled_at and Path(state.compiled_at) != self.root:
+            return (
+                "the dispatching workspace's own compile is what landed and something on this "
+                "machine has recompiled over it since"
+            )
+        return (
+            "this is a compile made on this machine rather than the one the dispatch shipped, "
+            "which is a mirror left behind by a manifest edit"
         )
 
     def imports(self, plan: ExecutionPlan) -> tuple[str, ...]:
@@ -1249,6 +1274,10 @@ class Board:
         else:
             root = self.remote_root()
             self.stage(root)
+            provisioner = Provisioner(self.root, self.manifest)
+            # Before the address is taken and before the mirror leaves, so the pin, the shipped
+            # artifact and the manifest this command was invoked under are one thing.
+            provisioner.recompiled(plan.env)
             run = Job(
                 self,
                 self.dispatcher.run(
@@ -1265,6 +1294,7 @@ class Board:
                     watch=watch,
                     prefix=self.addressed(plan, root),
                     imports=self.imports(plan),
+                    artifact=provisioner.artifact_for(plan.env),
                 ),
             )
         self.announce(label, run, command=command, host=plan.host, node=node)
