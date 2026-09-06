@@ -1,7 +1,9 @@
+import runpy
 import sys
 from pathlib import Path
 
 import pytest
+from cyclopts import App
 
 from mainboard.dispatch.provenance import listing
 from mainboard.dispatch.shared import CLOSURE_VAR, FIRST_PARTY_VAR
@@ -56,8 +58,16 @@ def test_a_function_gets_no_arguments_and_answers_its_return(
     with pytest.raises(SystemExit, match="takes no arguments"):
         call.main([f"{Lab.JOB}::plain", "--", "--x"])
     with pytest.raises(SystemExit, match="neither an application nor a function"):
-        call.main([f"{Lab.JOB}::THING_LESS"]) if False else call.called(3, "three", [])
+        call.called(3, "three", [])
     assert call.called(lambda: None, "none", []) == 0
+    # An application built to hand its answer back rather than exit with it is answered for:
+    # nothing is a clean exit, an int is the exit.
+    quiet = App(result_action="return_value")
+    quiet.default(lambda: None)
+    assert call.called(quiet, "quiet", []) == 0
+    loud = App(result_action="return_value")
+    loud.default(lambda: 5)
+    assert call.called(loud, "loud", []) == 5
 
 
 def test_the_runner_refuses_an_empty_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,6 +76,9 @@ def test_the_runner_refuses_an_empty_spelling(monkeypatch: pytest.MonkeyPatch) -
         call.main()
     with pytest.raises(SystemExit, match="usage"):
         call.main(["--", "x"])
+    # The module is what `python -m` runs, and it exits with what `main` answers.
+    with pytest.raises(SystemExit, match="usage"):
+        runpy.run_module("mainboard.jobs.call", run_name="__main__", alter_sys=True)
 
 
 def test_a_bare_script_is_imported_from_its_own_directory(

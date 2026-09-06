@@ -14,6 +14,7 @@ from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, HostSetup, V
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import provenance as provenance_module
 from mainboard.dispatch.jobs import JobSpec
+from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.schedulers import HostUnreachable, registry
 from mainboard.dispatch.shipment import Shipment
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
@@ -383,6 +384,55 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
     )
     assert "export PYTHONPATH=/repo/src" not in body
     assert "unset PYTHONPATH" not in body
+
+
+def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_is(
+    dispatcher: Dispatcher,
+    backend: RecordingScheduler,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The listing rides beside the script, the pin copies what it names, the job reads it."""
+    machine = machine_with()
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+    sealed = Shipment(
+        command="python -m mainboard.jobs.call a/run.py::app -- --x 1",
+        spelling="a/run.py::app --x 1",
+        source=Source(
+            identity="v1-dirty", key="v1-dirty-9f9f9f9f", commit="c" * 40, digest="9f" * 32
+        ),
+        imports=("research/camp", "packages/core/src"),
+        listing="a/run.py\tb1\tmodified\nmainboard.toml\tb2\tclean\n",
+        needs=("data/corpus",),
+        fetch="a/evidence",
+        first_party=("core", "experiments"),
+    )
+
+    handle = dispatcher.run(
+        plan(), sealed, root="/repo", resources=Resources(), fetch="a/evidence"
+    )
+
+    [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
+    listing = ".mainboard/dispatch/jobs/closure-9f9f9f9f9f9f.tsv"
+    assert (workdir / listing).read_text(encoding="utf-8") == sealed.listing
+    assert dispatcher.shipped == [(script, listing)]
+    body = (workdir / str(script)).read_text(encoding="utf-8")
+    assert f"export PYTHONPATH={pinned}/research/camp:{pinned}/packages/core/src" in body
+    assert f"export MAINBOARD_CLOSURE={pinned}/{listing}" in body
+    assert "export MAINBOARD_FIRST_PARTY=core:experiments" in body
+    assert "export MAINBOARD_SOURCE=v1-dirty" in body
+    assert f"cd {pinned}" in body
+    [built] = [line for line in machine.lines if "mb_snap=" in line]
+    assert f'cut -f1 "$mb_root"/{listing} | rsync -a --files-from=-' in built
+    assert 'ln -sfn "$mb_root"/data/corpus "$mb_snap"/data/corpus' in built
+    assert "for d in" not in built
+    [run] = dispatcher.cache.recent(10)
+    assert (run.handle, run.dirty, run.source, run.commit) == (
+        handle.id,
+        1,
+        sealed.source.key,
+        "c" * 40,
+    )
 
 
 def test_a_containerized_job_has_no_environment_of_its_own_to_build(

@@ -181,6 +181,11 @@ def test_a_command_ships_the_tree_owning_its_code_with_other_repositories_dirt_l
         "rev-parse", "HEAD", cwd=lab.root / "packages/sub"
     )
     assert commanded("cat missing.txt research/camp", lab.root) == commanded("", lab.root)
+    loose = lab.root.parent / "loose.txt"
+    loose.write_text("under no repository\n", encoding="utf-8")
+    assert commanded(f"cat {loose} packages/sub/src/sub/thing.py", lab.root) == Repository.owning(
+        lab.root / "packages/sub"
+    )
 
 
 def test_a_workspace_with_no_git_at_all_still_gets_a_key(tmp_path: Path) -> None:

@@ -155,6 +155,19 @@ def test_the_job_file_itself_reaches_its_home_root_even_when_nothing_else_is_imp
     )
 
 
+def test_an_import_root_the_workspace_does_not_hold_defines_nothing_and_ships_nothing(
+    lab: Lab,
+) -> None:
+    """A manifest can name a path dependency that is not checked out here; it is no root."""
+    target = Target.spelled([Lab.JOB], lab.root)
+    assert target is not None
+    closure = Closure.of(
+        target, root=lab.root, distributions=(*Lab.DISTRIBUTIONS, "packages/absent/src")
+    )
+    assert closure.first_party == ("core", "experiments", "sub")
+    assert closure.roots == ("research/camp", *Lab.DISTRIBUTIONS)
+
+
 def test_a_declared_resource_pins_a_file_or_a_whole_kept_directory(lab: Lab) -> None:
     lab.write("research/camp/templates/a.j2", "a\n")
     lab.write("research/camp/templates/b.j2", "b\n")
