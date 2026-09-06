@@ -32,7 +32,7 @@
 
 import hashlib
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
@@ -42,6 +42,7 @@ from .generated import ActivationScript, GeneratedFiles
 from .pixi_lock import canonical
 from .pixi_manifest import anchored, normalized, selected_manifest
 from .provisioner import environment_shard
+from .state import SyncState
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
@@ -102,20 +103,31 @@ def digest_of(source: Path) -> str:
     the same way the day a vendored dependency first named a directory under the root.
 
     The shard is named by the directory the artifact sits in, whose last segment is the
-    environment it was compiled for and whose depth says which directory above it is the
-    workspace root. Both are read off the artifact's own location rather than passed in, so
-    every caller addresses one artifact the one way, including the host reading a snapshot's
-    copy of it.
+    environment it was compiled for. The root it was compiled FOR is read from the state file
+    beside it rather than from where it is standing now, because a host reads this artifact out
+    of a pinned snapshot under its mirror and would otherwise take the snapshot for the
+    workspace, leave the machine root in, and address the very environment it was told to build
+    as a different one.
 
     source: a directory holding a compiled `pixi.toml` and the `pixi.lock` solved from it.
     """
     shard = environment_shard(source.name)
-    root = source.parents[len(shard.parts) - 1]
+    root = PurePosixPath(SyncState.load(source).compiled_at or _standing(source, shard))
     fingerprint = hashlib.sha256()
     for name in (MANIFEST, LOCK):
         text = normalized(_defining(source, name), root=root, generated_dir=shard)
         fingerprint.update((canonical(text) if name == LOCK else text).encode("utf-8"))
     return fingerprint.hexdigest()[:16]
+
+
+def _standing(source: Path, shard: PurePosixPath) -> str:
+    """Where an artifact that recorded no root must be standing, for one written before it did.
+
+    The directory the shard hangs under, which is the root for an artifact read where it was
+    compiled and is merely harmless anywhere else: a root that matches nothing in the text
+    rewrites nothing, which is the address such an artifact always had.
+    """
+    return source.parents[len(shard.parts) - 1].as_posix()
 
 
 def _defining(source: Path, name: str) -> str:

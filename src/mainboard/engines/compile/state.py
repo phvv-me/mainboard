@@ -25,12 +25,22 @@ class SyncState(FrozenModel):
     is pixi's file rather than this package's and each version writes some of it differently.
     The fleet is pinned to one pixi (`backend.PIXI_VERSION`) so that never varies; this is what
     lets a machine say out loud that a lock in front of it came from another one.
+
+    `compiled_at` is the absolute workspace root the artifact beside it was rendered for, and it
+    is the one thing about that artifact that belongs to a machine rather than to the workspace.
+    `{{ config_root }}` renders to the manifest's own directory so a host mirroring the
+    repository elsewhere exports its own root, so the compiled `[activation.env]` genuinely says
+    something different on each machine. A prefix is addressed by content, so without this the
+    address moved with the root and no host could build what a workstation pinned. Recorded
+    rather than derived, because the artifact is read from wherever it was copied to (a mirror,
+    a pinned snapshot under it) and only it knows which root its own text spells.
     """
 
     environment: str = ""
     compiled_from: str = ""
     solved_from: str = ""
     solved_by: str = ""
+    compiled_at: str = ""
 
     @staticmethod
     def path(out: Path) -> Path:
@@ -54,6 +64,7 @@ class SyncState(FrozenModel):
             compiled_from=str(data.get("compiled_from", "")),
             solved_from=str(data.get("solved_from", "")),
             solved_by=str(data.get("solved_by", "")),
+            compiled_at=str(data.get("compiled_at", "")),
         )
 
     def render(self) -> str:
@@ -65,5 +76,6 @@ class SyncState(FrozenModel):
             f'compiled_from = "{self.compiled_from}"',
             f'solved_from = "{self.solved_from}"',
             f'solved_by = "{self.solved_by}"',
+            f'compiled_at = "{self.compiled_at}"',
         ]
         return "\n".join(lines) + "\n"

@@ -238,7 +238,11 @@ class Compiler:
         self.__persist_state(
             files,
             state.model_copy(
-                update={"environment": self.environment, "compiled_from": source_digest}
+                update={
+                    "environment": self.environment,
+                    "compiled_from": source_digest,
+                    "compiled_at": str(self.root),
+                }
             ),
         )
 

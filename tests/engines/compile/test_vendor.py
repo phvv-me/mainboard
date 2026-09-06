@@ -10,6 +10,7 @@ from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles
 from mainboard.engines.compile.pixi_manifest import anchored, self_installed
 from mainboard.engines.compile.provisioner import environment_shard
+from mainboard.engines.compile.state import SyncState
 from mainboard.engines.compile.vendor import outside, vendor_root
 
 # A workspace that installs itself and depends on a house package two directories above its
@@ -405,6 +406,9 @@ def test_one_workspace_compiled_on_two_machines_is_one_environment(tmp_path: Pat
             _ROOTED_MANIFEST.format(root=root.as_posix()), encoding="utf-8"
         )
         (shard / "pixi.lock").write_text(_ROOTED_LOCK, encoding="utf-8")
+        SyncState.path(shard).write_text(
+            SyncState(environment="default", compiled_at=str(root)).render(), encoding="utf-8"
+        )
         digests.append(digest_of(shard))
 
     assert digests[0] == digests[1]
@@ -428,6 +432,42 @@ def test_an_export_the_workspace_really_changed_still_moves_the_address(tmp_path
             encoding="utf-8",
         )
         (shard / "pixi.lock").write_text(_ROOTED_LOCK, encoding="utf-8")
+        SyncState.path(shard).write_text(
+            SyncState(environment="default", compiled_at=str(tmp_path / level)).render(),
+            encoding="utf-8",
+        )
         digests.append(digest_of(shard))
 
     assert digests[0] != digests[1]
+
+
+def test_a_host_reading_a_pinned_snapshot_addresses_what_the_mirror_compiled(
+    tmp_path: Path,
+) -> None:
+    """A job's artifact is read out of a snapshot under the mirror, never where it was written.
+
+    So the root it was compiled FOR cannot be the directory it is standing in: the snapshot's
+    own root is `<mirror>/.mainboard/dispatch/sources/<key>`, which matches nothing in the text
+    and leaves the machine's root counting as content. That is how a host still read
+    fc4975ef2096b9ac against a pinned 136d5ed03c0f20a5 after the roots themselves had been
+    reconciled.
+    """
+    mirror = tmp_path / "work/xg25g007/x10537/projects"
+    for shard in (
+        mirror / ".mainboard/envs/default",
+        mirror / ".mainboard/dispatch/sources/7e145df6-dirty/.mainboard/envs/default",
+    ):
+        shard.mkdir(parents=True)
+        (shard / "pixi.toml").write_text(
+            _ROOTED_MANIFEST.format(root=mirror.as_posix()), encoding="utf-8"
+        )
+        (shard / "pixi.lock").write_text(_ROOTED_LOCK, encoding="utf-8")
+        SyncState.path(shard).write_text(
+            SyncState(environment="default", compiled_at=str(mirror)).render(), encoding="utf-8"
+        )
+
+    compiled, pinned = (
+        digest_of(mirror / ".mainboard/envs/default"),
+        digest_of(mirror / ".mainboard/dispatch/sources/7e145df6-dirty/.mainboard/envs/default"),
+    )
+    assert compiled == pinned
