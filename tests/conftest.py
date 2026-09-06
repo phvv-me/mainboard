@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -21,7 +22,7 @@ from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold, Scaffolded
 from mainboard.verdicts import StreamVerdict, TrialVerdict, Verdicts
 
-from .support import Answer, Option, Owner, Relayed
+from .support import Answer, Lab, Option, Owner, Relayed, build_lab
 
 # The trials plugin ships as a pytest entry point, so the only honest way to test its hooks is to
 # run pytest inside pytest, which is what `pytester` is for. It has to be named here because
@@ -162,6 +163,32 @@ def sealed_credentials() -> None:
     as on a bare one, and the loader's own tests unseal it onto a workspace they built.
     """
     Credentials().loaded = True
+
+
+@pytest.fixture(scope="session")
+def lab_source(tmp_path_factory: pytest.TempPathFactory) -> Lab:
+    """The lab built once: two `git init`s and a submodule add are the slow part of any test."""
+    return build_lab(tmp_path_factory.mktemp("lab") / "projects")
+
+
+@pytest.fixture
+def lab(lab_source: Lab, tmp_path: Path) -> Iterator[Lab]:
+    """A private copy of the lab, so a test can dirty it, and the modules it imported forgotten.
+
+    A copy keeps the submodule whole: its `.git` file points into the superproject's own
+    `.git/modules`, which travels with the tree. The runner imports the lab's packages for
+    real, so their names are dropped from `sys.modules` and its root from `sys.path` after.
+    """
+    root = tmp_path / "projects"
+    shutil.copytree(lab_source.root, root, symlinks=True)
+    yield Lab(root)
+    for name in [name for name in sys.modules if name.partition(".")[0] in _LAB_NAMES]:
+        del sys.modules[name]
+    sys.path[:] = [entry for entry in sys.path if not entry.startswith(str(root))]
+
+
+# The top-level names the lab's packages import as, forgotten after every test that ran one.
+_LAB_NAMES = frozenset({"experiments", "core", "sub"})
 
 
 @pytest.fixture
