@@ -1,5 +1,5 @@
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from shutil import copytree
 
 import pytest
@@ -251,3 +251,102 @@ def test_one_environments_compile_keeps_what_another_environment_declares(
     compile_at(root, "serving")
 
     assert (root / vendor_root() / "paleta-tsukuba" / "pyproject.toml").is_file()
+
+
+# Verbatim from research/reproducibility/.mainboard/envs/default/pixi.lock, solved by pixi
+# 0.79.0 on 2026-09-06 from a manifest spelling `../../../.mainboard/vendor/atpx`. pixi kept the
+# workspace's own root as the three parents it was handed and collapsed the vendored pair into
+# two, which is one directory written two ways and was read as two.
+_SOLVED_LOCK = """version: 7
+environments:
+  default:
+    packages:
+      linux-64:
+      - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
+      - pypi: ../../..
+      - pypi: ../../vendor/atpx
+      - pypi: ../../vendor/paleta-tsukuba
+packages:
+- pypi: ../../..
+  name: reproducibility
+  requires_python: '>=3.14'
+- pypi: ../../vendor/atpx
+  name: atpx
+  requires_dist:
+  - patos>=0.0.8
+- pypi: ../../vendor/paleta-tsukuba
+  name: paleta-tsukuba
+  requires_dist:
+  - cycler>=0.12
+"""
+
+# The same lock as pixi would have written it had it kept the spelling it was handed. One
+# artifact, two texts, and until 2026-09-06 two addresses.
+_HANDED_LOCK = _SOLVED_LOCK.replace("../../vendor/", "../../../.mainboard/vendor/")
+
+
+def test_a_prefix_resolves_the_spelling_pixi_chose_and_not_only_the_one_it_was_handed() -> None:
+    """The lock pixi actually wrote, taken into a prefix on a host, must name real directories.
+
+    `anchored` matched the exact three parents `rerooted` writes, which held for as long as the
+    only local source was the workspace root itself. pixi 0.79 normalised the vendored pair to
+    two parents, that token rode into the prefix untouched, and it resolved against the prefix
+    rather than the workspace: `error extracting extension from
+    /work/xg25g007/x10537/reproducibility/.mainboard/prefixes/default/e04076233b9a4bb3/../../vendor/atpx`,
+    `Failed to update PyPI packages for environment 'default'`, and Miyabi job 3299884 died with
+    no torch in the environment at all.
+    """
+    host = PurePosixPath("/work/xg25g007/x10537/reproducibility")
+    resolved = anchored(
+        _SOLVED_LOCK, root=host, generated_dir=environment_shard("default")
+    ).splitlines()
+
+    assert f"- pypi: {host}/.mainboard/vendor/atpx" in resolved
+    assert f"- pypi: {host}/.mainboard/vendor/paleta-tsukuba" in resolved
+    assert f"- pypi: {host}" in resolved
+    assert "../.." not in "\n".join(resolved)
+
+
+def test_two_spellings_of_one_vendored_directory_are_one_environment_address(
+    tmp_path: Path,
+) -> None:
+    """A rewrite that moves no package, version or hash may not move an address.
+
+    Which is the whole reason a digest is taken over a canonical lock rather than over the bytes
+    pixi last happened to write. A location it respells is that same rewrite: two texts, one
+    dependency, and a workstation and a host that pinned different environments over it.
+    """
+    shards = []
+    for side, lock in (("solved", _SOLVED_LOCK), ("handed", _HANDED_LOCK)):
+        shard = tmp_path / side / ".mainboard" / "envs" / "default"
+        shard.mkdir(parents=True)
+        (shard / "pixi.toml").write_text('[workspace]\nname = "lab"\n', encoding="utf-8")
+        (shard / "pixi.lock").write_text(lock, encoding="utf-8")
+        shards.append(shard)
+
+    assert digest_of(shards[0]) == digest_of(shards[1])
+
+
+@pytest.mark.parametrize(
+    "untouched",
+    [
+        "a run that took 3 s ... and then stopped",
+        "source /opt/site/lib/../share/env.sh",
+        "- pypi: ../../../../packages/paleta",
+        "- pypi: https://files.pythonhosted.org/packages/04/4b/h11-0.16.0-py3-none-any.whl",
+    ],
+)
+def test_only_a_token_that_reaches_inside_the_workspace_is_ever_rewritten(
+    untouched: str,
+) -> None:
+    """Prose, a path that merely contains a step, and one that climbs past the root all stand.
+
+    The last is the point: a location above the workspace names something no mirror carries, and
+    inventing a place for it on a host would hide exactly the fault vendoring exists to end.
+    """
+    assert (
+        anchored(
+            untouched, root=PurePosixPath("/work/lab"), generated_dir=environment_shard("default")
+        )
+        == untouched
+    )

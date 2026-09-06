@@ -15,7 +15,7 @@ from .toml import Toml
 from .vendor import relocated
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping
+    from collections.abc import Callable, Iterable, Iterator, Mapping
 
     from ...manifest import Env, Manifest, PlatformScope, Scope, Spec, Toolchain
     from ...manifest.schema.environment import Task
@@ -27,6 +27,11 @@ _DEP_TABLES = ("dependencies", "pypi-dependencies", "dependency-overrides")
 _PLATFORMS = "platforms"
 _PYPI_OPTIONS = "pypi-options"
 _DEFAULT_GENERATED_DIR = PurePosixPath(".mainboard")
+
+# One relative path token as a generated file spells it: leading parents and the segments
+# under them. The guards on both ends keep it from biting into a longer path (`/opt/a/../b`)
+# or into ordinary prose that merely begins the same way (`...`).
+_RELATIVE = re.compile(r"(?<![\w./+~@-])\.\.(?:/[\w.+~@-]+)*(?![\w./+~@-])")
 
 # pixi's own `[pypi-options]` fields, the uv settings that shape the Python solve. Anything
 # else declared beside `[python.deps]` configures something other than pixi (chefe's `indexes`
@@ -97,17 +102,80 @@ def anchored(
     own generated directory, and pixi refused it as not a Python project.
 
     Textual because the spellings are not only the manifest's: the lock beside it records the
-    same local sources, and the generated dotenv loader sources `.env` by the same route. A
-    workspace-relative spelling is exactly a path token beginning with the parents `rerooted`
-    writes, so that token becomes `root` wherever it stands and nothing else in the file moves.
+    same local sources, and the generated dotenv loader sources `.env` by the same route.
+
+    ANY spelling that lands inside the workspace, not only the one `rerooted` writes. This used
+    to match the exact parent prefix and nothing else, which held for as long as the only local
+    source was the workspace root itself. A vendored path dependency is the first location under
+    the root that a compile names, and pixi does not keep the spelling it was handed: 0.79 wrote
+    `path = "../../../.mainboard/vendor/atpx"` back into its lock as `../../vendor/atpx`, the
+    same directory with the `.mainboard` segment collapsed into one fewer parent. That token
+    began with two parents rather than three, rode into the prefix untouched, and resolved to
+    `<root>/.mainboard/prefixes/vendor/atpx`: `error extracting extension from ...`, then
+    `Failed to update PyPI packages`, and a whole Miyabi wave importing no torch at all
+    (2026-09-06).
 
     root: the workspace root the file's relative paths were written against.
     generated_dir: the workspace-relative directory it was compiled into, whose depth decides
-        how many parents a workspace-relative path is spelled with.
+        which relative spellings can reach the workspace at all.
     """
-    parents = re.escape(rerooted("", generated_dir=generated_dir))
-    workspace = re.compile(rf"(?<![\w./-]){parents}(?=/|[^\w./-]|$)")
-    return workspace.sub(lambda _: root.as_posix(), text)
+    return _rewritten(
+        text,
+        generated_dir=generated_dir,
+        spell=lambda inside: (root / inside).as_posix() if inside else root.as_posix(),
+    )
+
+
+def normalized(text: str, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> str:
+    """One generated file's text with every location inside the workspace spelled one way.
+
+    The form a digest is taken over, for the same reason `pixi_lock.canonical` exists: the lock
+    is pixi's file, and pixi rewrites a location it was handed into whatever spelling it
+    prefers. Two spellings of one directory are one dependency and must be one address, or the
+    machine that solved and the machine that builds pin different environments over a lock in
+    which not one package, version or hash has moved.
+
+    The one spelling is the one this package writes, so a workspace with no location under its
+    root but its own reaches exactly the digest it always did.
+    """
+    return _rewritten(
+        text,
+        generated_dir=generated_dir,
+        spell=lambda inside: rerooted(inside, generated_dir=generated_dir),
+    )
+
+
+def _rewritten(text: str, *, generated_dir: PurePath, spell: Callable[[str], str]) -> str:
+    """Every relative path token in `text` that reaches inside the workspace, respelled.
+
+    A token that climbs past the root is left exactly as it stands: it names something no mirror
+    carries and no rewrite can make portable, and inventing a location for it would hide that.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        inside = _inside(match[0], generated_dir=generated_dir)
+        return match[0] if inside is None else spell(inside)
+
+    return _RELATIVE.sub(replace, text)
+
+
+def _inside(token: str, *, generated_dir: PurePath) -> str | None:
+    """Where a relative token resolves under the workspace root, None once it climbs past it.
+
+    Pure arithmetic over the spelling, so the answer is the same on a machine where neither
+    location exists. An empty answer is the workspace root itself.
+    """
+    parts: list[str] = []
+    for part in (*generated_dir.parts, *PurePosixPath(token).parts):
+        if part == ".":
+            continue
+        if part != "..":
+            parts.append(part)
+        elif parts:
+            parts.pop()
+        else:
+            return None
+    return PurePosixPath(*parts).as_posix() if parts else ""
 
 
 def self_installed(

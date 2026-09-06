@@ -40,7 +40,7 @@ from .backend import Pixi
 from .ecosystems import SecondStage
 from .generated import ActivationScript, GeneratedFiles
 from .pixi_lock import canonical
-from .pixi_manifest import anchored, selected_manifest
+from .pixi_manifest import anchored, normalized, selected_manifest
 from .provisioner import environment_shard
 
 if TYPE_CHECKING:
@@ -95,16 +95,22 @@ def digest_of(source: Path) -> str:
     all and says so, since building from half an artifact is how a prefix ends up describing
     one lock and containing another.
 
-    The manifest is read as it stands, since this package writes it and writes it the same way
-    everywhere. The lock is read canonically, since pixi writes it and each pixi version writes
-    some of it differently: see `pixi_lock.canonical` for the rewrite that split one artifact
-    into two addresses and killed a whole wave.
+    Both files are read normalized, and the lock canonically on top of that, since pixi writes
+    the lock and each version writes some of it differently: see `pixi_lock.canonical` for the
+    platform relabelling that split one artifact into two addresses and killed a whole wave, and
+    `pixi_manifest.normalized` for the local locations pixi respells, which split one artifact
+    the same way the day a vendored dependency first named a directory under the root.
+
+    The shard is named by the directory the artifact sits in, whose last segment is the
+    environment it was compiled for, which is what says how many parents reach the workspace.
 
     source: a directory holding a compiled `pixi.toml` and the `pixi.lock` solved from it.
     """
+    shard = environment_shard(source.name)
     fingerprint = hashlib.sha256()
-    fingerprint.update(_defining(source, MANIFEST).encode("utf-8"))
-    fingerprint.update(canonical(_defining(source, LOCK)).encode("utf-8"))
+    for name in (MANIFEST, LOCK):
+        text = normalized(_defining(source, name), generated_dir=shard)
+        fingerprint.update((canonical(text) if name == LOCK else text).encode("utf-8"))
     return fingerprint.hexdigest()[:16]
 
 
