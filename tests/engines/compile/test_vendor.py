@@ -350,3 +350,84 @@ def test_only_a_token_that_reaches_inside_the_workspace_is_ever_rewritten(
         )
         == untouched
     )
+
+
+# Verbatim from /home/pedro/projects/.mainboard/envs/default/pixi.toml, the monorepo's own
+# compiled artifact. `{{ config_root }}` renders to the manifest's directory at load time, on
+# the promise the manifest states in as many words, that a host mirroring the repository
+# elsewhere still gets its own root. So this one line is the machine's rather than the
+# workspace's, and every other byte of the file is the same everywhere.
+_ROOTED_MANIFEST = """[workspace]
+name = "life"
+version = "0.1.0"
+channels = ["rapidsai", "conda-forge", "nvidia"]
+
+[activation]
+scripts = ["dotenv.sh", "unset.sh", "../../../scripts/activate.sh"]
+
+[activation.env]
+PYTHONPATH = "{root}:{root}/research:{root}/research/liereadout/src"
+LOG_LEVEL = "INFO"
+
+[pypi-dependencies.paleta-tsukuba]
+path = "../../../packages/paleta"
+editable = true
+"""
+
+# And from the lock beside it, which carries no machine path at all: every local source it
+# records is already relative, which is why the two machines' locks are byte-identical and only
+# the manifest split them.
+_ROOTED_LOCK = """version: 7
+platforms:
+- name: linux-64-system
+  subdir: linux-64
+packages:
+- pypi: ../../../packages/paleta
+  name: paleta-tsukuba
+"""
+
+
+def test_one_workspace_compiled_on_two_machines_is_one_environment(tmp_path: Path) -> None:
+    """A compile is machine-independent in everything but the root it renders, and that is fatal.
+
+    A prefix is addressed by the content of the artifact, so the one value that is this
+    machine's rather than this workspace's became an address of its own: the workstation pinned
+    a4c06131efc5808c, the host recompiled its own mirror and read fc4975ef2096b9ac, and Miyabi
+    jobs 3300221, 3300226, 3300241 and 3300249 all died at environment prime with no prefix ever
+    built under the monorepo mirror. The reproducibility workspace, whose compiled artifact
+    carries no machine path at all, went on dispatching throughout.
+    """
+    digests = []
+    for root in (tmp_path / "home/pedro/projects", tmp_path / "work/xg25g007/x10537/projects"):
+        shard = root / ".mainboard" / "envs" / "default"
+        shard.mkdir(parents=True)
+        (shard / "pixi.toml").write_text(
+            _ROOTED_MANIFEST.format(root=root.as_posix()), encoding="utf-8"
+        )
+        (shard / "pixi.lock").write_text(_ROOTED_LOCK, encoding="utf-8")
+        digests.append(digest_of(shard))
+
+    assert digests[0] == digests[1]
+
+
+def test_an_export_the_workspace_really_changed_still_moves_the_address(tmp_path: Path) -> None:
+    """Writing the machine's root out is not the same as ignoring what a workspace exports.
+
+    Stripping the activation table would have been the cheaper answer and the wrong one: a
+    workspace that genuinely changes what it exports would then keep being served a prefix built
+    before the change, whose own activation script was generated from the older text.
+    """
+    digests = []
+    for level in ("INFO", "DEBUG"):
+        shard = tmp_path / level / ".mainboard" / "envs" / "default"
+        shard.mkdir(parents=True)
+        (shard / "pixi.toml").write_text(
+            _ROOTED_MANIFEST.format(root=(tmp_path / level).as_posix()).replace(
+                'LOG_LEVEL = "INFO"', f'LOG_LEVEL = "{level}"'
+            ),
+            encoding="utf-8",
+        )
+        (shard / "pixi.lock").write_text(_ROOTED_LOCK, encoding="utf-8")
+        digests.append(digest_of(shard))
+
+    assert digests[0] != digests[1]

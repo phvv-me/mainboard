@@ -126,22 +126,50 @@ def anchored(
     )
 
 
-def normalized(text: str, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> str:
-    """One generated file's text with every location inside the workspace spelled one way.
+def normalized(
+    text: str, *, root: PurePath, generated_dir: PurePath = _DEFAULT_GENERATED_DIR
+) -> str:
+    """One generated file's text with every location in the workspace spelled one way.
 
-    The form a digest is taken over, for the same reason `pixi_lock.canonical` exists: the lock
-    is pixi's file, and pixi rewrites a location it was handed into whatever spelling it
-    prefers. Two spellings of one directory are one dependency and must be one address, or the
-    machine that solved and the machine that builds pin different environments over a lock in
-    which not one package, version or hash has moved.
+    The form a digest is taken over, and it has to answer for both ways a location reaches a
+    generated file as something other than the way this package writes it.
 
-    The one spelling is the one this package writes, so a workspace with no location under its
-    root but its own reaches exactly the digest it always did.
+    pixi rewrites a location it was handed into whatever spelling it prefers, and two spellings
+    of one directory are one dependency: `pixi_lock.canonical` exists for the same reason, one
+    level up.
+
+    And a compile is machine-independent in everything but one thing, `config_root`, which
+    renders to the manifest's own directory so that a host mirroring the repository elsewhere
+    exports its own root. The monorepo declares `PYTHONPATH = "{{ config_root }}:..."` on
+    exactly that promise, so its compiled `[activation.env]` carries `/home/pedro/projects` here
+    and `/work/xg25g007/x10537/projects` there. That is correct for the variable and fatal for
+    an address: the workstation pinned a4c06131efc5808c, the host recompiled and read
+    fc4975ef2096b9ac, and four Miyabi jobs died at environment prime with no prefix ever built
+    (2026-09-06). `Compiler._resolution_manifest` had already learned this about the lock's own
+    digest, in its own words, that leaving activation in would make it depend on where the
+    workspace happens to live and refuse every host whose root differs. An address owes the same.
+
+    Stripping activation instead would be the cheaper answer and the wrong one: a workspace that
+    really does change what it exports would then keep serving a prefix built before the change.
+    The machine's own root is written back out and everything else still counts.
+
+    root: the workspace root the file was compiled for, whose spelling is the one thing about it
+        that is this machine's rather than this workspace's.
     """
+    spelled = _unrooted(text, root=root, generated_dir=generated_dir)
     return _rewritten(
-        text,
+        spelled,
         generated_dir=generated_dir,
         spell=lambda inside: rerooted(inside, generated_dir=generated_dir),
+    )
+
+
+def _unrooted(text: str, *, root: PurePath, generated_dir: PurePath) -> str:
+    """`text` with every absolute location under `root` written the way `rerooted` writes one."""
+    here = re.escape(root.as_posix())
+    anchored_at = re.compile(rf"(?<![\w./+~@-]){here}((?:/[\w.+~@-]+)*)(?![\w./+~@-])")
+    return anchored_at.sub(
+        lambda match: rerooted(match[1].lstrip("/"), generated_dir=generated_dir), text
     )
 
 

@@ -102,14 +102,18 @@ def digest_of(source: Path) -> str:
     the same way the day a vendored dependency first named a directory under the root.
 
     The shard is named by the directory the artifact sits in, whose last segment is the
-    environment it was compiled for, which is what says how many parents reach the workspace.
+    environment it was compiled for and whose depth says which directory above it is the
+    workspace root. Both are read off the artifact's own location rather than passed in, so
+    every caller addresses one artifact the one way, including the host reading a snapshot's
+    copy of it.
 
     source: a directory holding a compiled `pixi.toml` and the `pixi.lock` solved from it.
     """
     shard = environment_shard(source.name)
+    root = source.parents[len(shard.parts) - 1]
     fingerprint = hashlib.sha256()
     for name in (MANIFEST, LOCK):
-        text = normalized(_defining(source, name), generated_dir=shard)
+        text = normalized(_defining(source, name), root=root, generated_dir=shard)
         fingerprint.update((canonical(text) if name == LOCK else text).encode("utf-8"))
     return fingerprint.hexdigest()[:16]
 
