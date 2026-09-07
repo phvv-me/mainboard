@@ -217,6 +217,9 @@ class Dispatcher:
         rsync(
             [f"{host}:{root}/{PurePosixPath(path)}"],
             f"{target.parent}/",
+            # A host can retain an older replica from before results became download-only.
+            # Do not replace newer local evidence when collecting its whole node directory.
+            RsyncFlags.ARCHIVE | RsyncFlags.COMPRESS | RsyncFlags.UPDATE,
             rsh=policy.rsync_shell,
             timeout=ceil(policy.deadline),
             host=host,

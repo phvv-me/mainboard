@@ -283,6 +283,19 @@ registrations and receipts remain valid records of their original instruments.
 Receipt parts stay immutable after settlement. Fetches merge run-specific paths
 without deleting another server's results and exclude temporary files and mutable
 `latest.jsonl` summaries. Use the query views for the combined current picture.
+Source sync excludes trial artifact and receipt directories; explicitly sealed
+input resources are still shipped. Result downloads use rsync's update rule so
+an older replica on another host cannot replace a newer local file. This relies
+on file timestamps, not distributed conflict resolution; divergent writes to one
+run path are unsupported. Final receipts supply artifact references when an event
+stream is incomplete, without inventing missing events or their timestamps.
+
+September 7 real-use validation covered local RTX 4090, Crimson's reserved RTX
+3090 through SSH/pueue, and Miyabi GH200 through PBS. On Crimson, live result
+collection and source sync overlapped a registered cache acquisition: its event
+inode survived and all byte offsets remained continuous through completion.
+This does not establish provider/rental behavior. Keep profiles attached to their
+Log provenance: the standalone profile host field remains unpopulated.
 
 ## Status
 
