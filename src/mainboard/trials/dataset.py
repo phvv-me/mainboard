@@ -42,11 +42,13 @@
 
 import json
 from datetime import UTC, datetime
+from io import BytesIO
 from itertools import chain
 from typing import TYPE_CHECKING
 
 import polars as pl
 
+from .artifacts import Artifact
 from .coverage import PROBED, Cell, LaneStatus
 from .ledger import NESTED, TrialReceipts, wire
 from .provenance import Admissibility
@@ -374,6 +376,48 @@ class Dataset:
         return [
             self.decoded(row) for row in frame.filter(pl.col("run") == chosen).collect().to_dicts()
         ]
+
+    def tables(self, root: Path, *, schema_name: str, run: str = "") -> pl.DataFrame:
+        """Read verified table artifacts across hardware without selecting a winning run.
+
+        root: the project root that artifact references are relative to.
+        schema_name: the scientific table schema, shared by compatible producers.
+        run: one explicit run, or every run when empty. `_trial` carries JSON provenance;
+            ordinary columns retain the experiment's data and units unchanged.
+        """
+        receipts = self.scan()
+        if not receipts.collect_schema().names():
+            return pl.DataFrame()
+        if run:
+            receipts = receipts.filter(pl.col("run") == run)
+        tables: list[pl.DataFrame] = []
+        for raw in receipts.collect().to_dicts():
+            receipt = self.decoded(raw)
+            references = receipt.get("artifacts")
+            if not isinstance(references, dict):
+                continue
+            for label, value in references.items():
+                if not isinstance(value, dict) or value.get("schema_name") != schema_name:
+                    continue
+                reference = Artifact.model_validate(value)
+                if reference.media_type != "application/vnd.apache.parquet":
+                    raise ValueError(f"{schema_name} names a non-Parquet artifact")
+                table = pl.read_parquet(BytesIO(reference.read(root)))
+                if "_trial" in table.columns:
+                    raise ValueError("table payload uses the reserved _trial provenance column")
+                metadata = {
+                    key: value
+                    for key, value in receipt.items()
+                    if key not in {"measured", "artifacts"}
+                }
+                metadata["artifact_name"] = label
+                metadata["artifact_sha256"] = reference.sha256
+                tables.append(
+                    table.with_columns(
+                        pl.lit(json.dumps(metadata, sort_keys=True)).alias("_trial")
+                    )
+                )
+        return pl.concat(tables, how="diagonal_relaxed") if tables else pl.DataFrame()
 
     def scan(self) -> pl.LazyFrame:
         """Every receipt this store has ever held, across every run, or an empty frame.

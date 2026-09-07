@@ -19,10 +19,15 @@ class Artifact(FrozenModel):
     schema_name: str = ""
 
     def read(self, root: Path) -> bytes:
-        """Read exactly the registered bytes, refusing escapes and changed inputs."""
-        resolved = (root / self.path).resolve()
-        resolved.relative_to(root.resolve())
-        data = resolved.read_bytes()
+        """Read pinned bytes through the project's logical storage mounts.
+
+        Dispatch mounts result directories outside its source snapshot. References remain
+        project-relative across that mount and after fetching; their hash verifies the bytes.
+        """
+        relative = Path(self.path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"artifact path must stay project-relative: {self.path}")
+        data = (root / relative).read_bytes()
         if len(data) != self.size or hashlib.sha256(data).hexdigest() != self.sha256:
             raise ValueError(f"artifact content changed: {self.path}")
         return data
@@ -32,8 +37,8 @@ class Artifacts:
     """One trial's content-addressed output directory, never an ambient latest store."""
 
     def __init__(self, root: Path, directory: Path) -> None:
-        self.root = root.resolve()
-        self.directory = directory.resolve()
+        self.root = Path(os.path.abspath(root))
+        self.directory = Path(os.path.abspath(directory))
         self.directory.relative_to(self.root)
 
     def write(self, data: bytes, *, media_type: str, schema_name: str = "") -> Artifact:

@@ -1369,7 +1369,7 @@ class Board:
         )
         return Shipment.of_closure(closure, root=self.root)
 
-    def results(self, fetch: str | None, *, node: str = "") -> str:
+    def results(self, fetch: str | None, *, node: str = "", command: str = "") -> str:
         """What this dispatch pulls back: `fetch` when it names one, else `node`'s own evidence.
 
         A run that named the ledger node it serves has already said where its receipts go, since
@@ -1380,6 +1380,10 @@ class Board:
         fetch: the results path the caller declared, None or empty for none.
         node: the ledger slug this run serves, empty when it serves none.
         """
+        if not fetch and command:
+            target = Target.spelled(shlex.split(command), self.root)
+            if target is not None:
+                fetch = target.declaration(self.root).fetch
         return fetch or evidence_of(self.root, node)
 
     def verdicts(self) -> Verdicts:

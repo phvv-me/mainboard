@@ -52,7 +52,9 @@ class Log:
         self.identity = f"{session.run}/{key}"
         self.context: dict[str, JsonValue] = {
             **session.common,
-            "project": session.declared.tree.name,
+            "project": universe.root.parent.name
+            if universe.root.name == "experiments"
+            else session.declared.tree.name,
             "node": node,
             "trial": trial.item.nodeid,
             "run": session.run,

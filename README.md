@@ -243,6 +243,14 @@ The facade is undergoing its first research pilots; remote behavior is not yet
 validated. Projects enforcing Parquet-only storage must permit the node-local
 `evidence/artifacts/` subtree for event journals and mixed-format payloads.
 
+For analysis, `Dataset(...).tables(project_root, schema_name="study.reading.v1")`
+reads every matching table artifact across runs, verifies its hash, and retains
+each row's receipt metadata in the `_trial` JSON column. It does not pick the
+newest host, discard failed outcomes, or change scientific units or thresholds.
+Use an explicit `run=` to restrict the read; acquisition inputs still use pinned
+`log.read_table(...)` references. Artifact paths remain project-relative through
+Mainboard's remote result mounts and after fetching.
+
 ## Status
 
 0.1.0. Validated live on x86 and Grace hosts over ssh and pueue; PBS and

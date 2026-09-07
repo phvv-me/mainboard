@@ -139,7 +139,10 @@ def build(root: Path | None = None) -> App:
             max_usd=max_usd,
             attempt=attempt,
         )
-        print(_expected(priced, results=workspace.results(fetch, node=node)), file=sys.stderr)
+        print(
+            _expected(priced, results=workspace.results(fetch, node=node, command=line)),
+            file=sys.stderr,
+        )
         if not yes and sys.stdin.isatty() and not _agreed():
             raise SystemExit(1)
         with progress(f"submitting on {on}") as stage:
