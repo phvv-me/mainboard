@@ -189,16 +189,16 @@ def _receipts(target: Path) -> list[dict[str, object]]:
     return [json.loads(line)["trial_receipt"] for line in lines]
 
 
-def test_a_clean_run_closes_quietly_and_compacts_what_it_wrote(
+def test_a_clean_run_closes_quietly_and_preserves_immutable_parts(
     session: Session, tmp_path: Path
 ) -> None:
-    """Compaction runs unconditionally, since a run's fragments are worth what they are worth."""
+    """Already fetched fragments must not be rewritten when their run closes."""
     store = session.declared.universe.dataset("alpha")
     for key in ("a", "b"):
         session.trial(Item(f"alpha/t.py::one[{key}]", tmp_path / "alpha" / "t.py")).validated("ok")
     assert len(store.parts) == 2
     assert session.close() == ""
-    assert len(store.parts) == 1
+    assert len(store.parts) == 2
     ledger = store.root / "latest.jsonl"
     assert all(row["run"] == session.run for row in _receipts(ledger))
 
@@ -330,11 +330,11 @@ def test_a_declaration_stamps_the_universe_root_unless_a_repository_is_named(
 def test_a_claims_residue_at_close_is_returned_and_everything_below_it_still_runs(
     declared: Declaration, probed: None, tmp_path: Path
 ) -> None:
-    """A residue used to escape `close` and take the compaction and the ledger with it.
+    """A residue used to escape `close` and prevent the ledger from being updated.
 
     The card reads 0 while the root opens and closes and the claim opens, then 4096 when the
     claim drops at close, so the claim is refused; the refusal must come back as text while the
-    fragments still compact and the ledger is still reminted.
+    fragments remain intact and the ledger is still reminted.
     """
     readings = chain([0, 0, 0], repeat(4096))
     restless = copy.copy(declared)
@@ -345,5 +345,5 @@ def test_a_claims_residue_at_close_is_returned_and_everything_below_it_still_run
         run.trial(Item(f"alpha/t.py::one[{key}]", tmp_path / "alpha" / "t.py")).validated("ok")
     refusal = run.close()
     assert "alpha did not release what it held: 4096 bytes" in refusal
-    assert len(store.parts) == 1
+    assert len(store.parts) == 2
     assert all(row["run"] == run.run for row in _receipts(store.root / "latest.jsonl"))

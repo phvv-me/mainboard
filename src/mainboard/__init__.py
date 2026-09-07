@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from .profile.result import Profile
     from .profile.spans import span
     from .profile.study import Study as ProfileStudy
+    from .results import Results
 
 # Where each exported name lives and what it is called there, which is the whole facade. The
 # second half of each pair is only ever different for the two `Study` classes, an experiment's
@@ -56,6 +57,7 @@ _HOMES: dict[str, tuple[str, str]] = {
     "Reach": (".profile.profiler", "Reach"),
     "RepoFile": (".experiments.data", "RepoFile"),
     "Resolver": (".context", "Resolver"),
+    "Results": (".results", "Results"),
     "Survey": (".compute", "Survey"),
     "gpu_busy": (".probe.gating", "gpu_busy"),
     "load": (".manifest", "load"),
@@ -95,6 +97,7 @@ __all__ = [
     "Profile",
     "span",
     "ProfileStudy",
+    "Results",
 ]
 
 

@@ -235,7 +235,7 @@ def test_a_session_with_no_declaration_stays_completely_inert(
     asked.stdout.fnmatch_lines(["*declared no trials*pytest_trials_declaration*"])
 
 
-def test_a_declared_run_settles_its_own_words_and_leaves_one_compacted_store(
+def test_a_declared_run_settles_its_own_words_and_leaves_immutable_parts(
     universe: pytest.Pytester,
 ) -> None:
     """A dead hypothesis exits zero, so the colour is the whole difference between the words.
@@ -254,7 +254,7 @@ def test_a_declared_run_settles_its_own_words_and_leaves_one_compacted_store(
     assert run.parseoutcomes() == {"validated": 4, "refuted": 1, "undecided": 1}
 
     taken = store(universe)
-    assert len(taken.parts) == 1
+    assert len(taken.parts) == 6
     rows = taken.rows()
     assert sorted(str(row["verdict"]) for row in rows) == [
         "refuted",

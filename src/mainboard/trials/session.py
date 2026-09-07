@@ -29,6 +29,7 @@
 # name was always wrong; the column is now spelled for what it holds, and the full node id stays
 # in `trial` where it always was.
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from time import time_ns
@@ -37,6 +38,8 @@ from uuid import uuid7
 
 from pydantic import JsonValue
 
+from ..dispatch.provenance import Row, Status, blob_of
+from .artifacts import Artifact, Artifacts
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import ADMISSIBILITY, LEDGER, OPENED, PARTIAL
 from .flags import moved, reading
@@ -103,6 +106,7 @@ class Session:
             **{f"session_{name}": value for name, value in self.baseline.items()},
         }
         self.writers: dict[str, TrialReceipts] = {}
+        self.manifests: dict[str, Artifact] = {}
         self.lanes: tuple[LaneStatus, ...] = ()
         self.leaked: dict[str, str] = {}
         self.staged: Stage = Stage("", resident=declared.resident)
@@ -159,10 +163,10 @@ class Session:
         return Cell(values=values, probing=probing)
 
     def close(self) -> str:
-        """Release the claim, the card, compact, remint each ledger, then say what must fail.
+        """Release the claim and card, remint each ledger, then say what must fail.
 
-        Compaction runs unconditionally, because a run that moved a flag still took every reading
-        it took and the fragments are worth exactly as much either way. The card lease releases
+        Receipt fragments remain immutable so concurrent fetches never observe a rewritten part.
+        The card lease releases
         before anything can raise below it, since a run that measured a card must give it back
         whether or not its own flags ended clean.
 
@@ -194,8 +198,7 @@ class Session:
             refusals.append(str(residue))
         if self.leased is not None:
             self.leased.release()
-        for node, writer in self.writers.items():
-            writer.compact()
+        for node in self.writers:
             store = self.declared.universe.dataset(node)
             if store.full(self.run):
                 store.as_jsonl(store.root / LEDGER)
@@ -237,8 +240,57 @@ class Session:
         self.enter(self.declared.universe.node_of(Path(str(item.path))))
         return Trial(item, self)
 
+    def manifest(self, path: Path) -> Artifact | None:
+        """Preserve one run manifest per node, using the dispatch's existing source listing.
+
+        Research Log trials require their adjacent committed node.md in that listing.
+        No experiment maintains another source list or computes a second source seal.
+        """
+        universe = self.declared.universe
+        if universe.root.name != "experiments":
+            return None
+        node = universe.node_of(path)
+        if node in self.manifests:
+            return self.manifests[node]
+        source = self.taken.source
+        if source.dirty or not source.commit or not source.closure:
+            raise RuntimeError("research logging requires a clean committed Mainboard job")
+        registration = path.parent / "node.md"
+        relative = registration.relative_to(Path.cwd()).as_posix()
+        listing = Path(source.closure).read_text(encoding="utf-8")
+        sources = [
+            Row(path=p, blob=b, status=Status(s))
+            for p, b, s in (line.split("\t") for line in listing.splitlines())
+        ]
+        registered = next((row for row in sources if row.path == relative), None)
+        if registered is None or registered.status is not Status.CLEAN:
+            raise RuntimeError(f"{relative} must be committed before this job is acquired")
+        if blob_of(registration) != registered.blob:
+            raise RuntimeError(f"{relative} changed after Mainboard prepared the job")
+        directory = universe.dataset(node).root.parent / "artifacts" / self.run
+        manifest = {
+            "run": self.run,
+            "registration": relative,
+            "source": source.model_dump(mode="json", exclude={"closure"}),
+            "files": [row.model_dump(mode="json") for row in sources],
+            "environment": self.taken.versions,
+            "inputs": {
+                key: value.model_dump(mode="json") for key, value in self.declared.inputs.items()
+            },
+            "hardware": self.taken.card.model_dump(mode="json"),
+            "arithmetic": self.baseline,
+            "opened_at_ns": self.opened,
+        }
+        reference = Artifacts(self.declared.tree, directory).write(
+            json.dumps(manifest).encode(),
+            media_type="application/json",
+            schema_name="mainboard.run.v1",
+        )
+        self.manifests[node] = reference
+        return reference
+
     def writer(self, node: str) -> TrialReceipts:
-        """One claim's store for this run, opened on first use and compacted at teardown.
+        """One claim's append-only store for this run, opened on first use.
 
         The claim's own registered rows are digested HERE rather than per trial, because
         `baselines/` is a fact about the claim and every receipt of it is scored against the same

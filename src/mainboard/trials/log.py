@@ -41,6 +41,9 @@ class Log:
         self.trial = trial
         session = trial.session
         universe = session.declared.universe
+        manifest = session.manifest(Path(str(trial.item.path)))
+        if manifest is not None:
+            trial.artifacts["run"] = manifest.model_dump(mode="json")
         node = universe.node_of(Path(str(trial.item.path)))
         key = hashlib.sha256(trial.item.nodeid.encode()).hexdigest()
         directory = universe.dataset(node).root.parent / "artifacts" / session.run / key
@@ -59,6 +62,7 @@ class Log:
             "trial": trial.item.nodeid,
             "run": session.run,
             "params": params_of(trial.item),
+            "manifest": manifest.model_dump(mode="json") if manifest is not None else None,
         }
         self.logger = logger.bind(mainboard_trial=self.identity)
         self.sink = logger.add(

@@ -131,7 +131,9 @@ class Spool:
         data = live.read_bytes()
         end = self.segment_start + len(data)
         archive = self.dir / f"{self.segment_start:020d}-{end:020d}.ndjson.zst"
-        archive.write_bytes(zstd.compress(data))
+        temporary = archive.with_suffix(".tmp")
+        temporary.write_bytes(zstd.compress(data))
+        temporary.replace(archive)
         live.unlink()
         self.segment_start = end
         self.handle = live.open("ab")

@@ -294,7 +294,7 @@ class Preflight:
     ) -> None:
         self.root = root
         self.source = source(repo, read=read)
-        self.digest = digest_of(root, SOURCES)
+        self.digest = self.source.digest or digest_of(root, SOURCES)
         listed = (
             ""
             if self.source.mirrored
@@ -330,7 +330,6 @@ class Preflight:
             "commit": self.source.commit,
             "tree": self.source.tree,
             "source_digest": self.digest,
-            "shipped_digest": self.source.digest,
             "closure": self.source.closure,
             "worktree_dirty": self.source.dirty,
             "mirrored": self.source.mirrored,

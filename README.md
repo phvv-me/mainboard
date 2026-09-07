@@ -193,7 +193,7 @@ not install a project's source package or make mutable input data immutable.
 The opt-in `mainboard.trials.pytest_plugin` supplies `trial`, `run`, and `stage`
 fixtures after the project provides its trials declaration. Trials own
 scientific receipts; a refuted hypothesis is distinct from a failed instrument.
-There is no injected `log` fixture yet.
+The injected `log` fixture adds diagnostics, metrics, artifacts, and profiling to those trials.
 
 The profiling entry point remains independent of trials:
 
@@ -239,8 +239,8 @@ Tables are Parquet; other artifacts are content-addressed bytes. Inputs are
 explicit `Declaration(inputs={alias: Artifact(...)})` references:
 `log.read(alias)` verifies size and SHA-256, and `log.read_table(alias)` reads
 Parquet. There is no ambient “latest” lookup or automatic producer execution.
-The facade is undergoing its first research pilots; remote behavior is not yet
-validated. Projects enforcing Parquet-only storage must permit the node-local
+The facade has research pilots on RTX 4090 and Miyabi GH200; this does not establish
+coverage for every experiment or provider. Projects enforcing Parquet-only storage permit the node-local
 `evidence/artifacts/` subtree for event journals and mixed-format payloads.
 
 For analysis, `Dataset(...).tables(project_root, schema_name="study.reading.v1")`
@@ -250,6 +250,39 @@ newest host, discard failed outcomes, or change scientific units or thresholds.
 Use an explicit `run=` to restrict the read; acquisition inputs still use pinned
 `log.read_table(...)` references. Artifact paths remain project-relative through
 Mainboard's remote result mounts and after fetching.
+
+### One query surface across machines
+
+```console
+mainboard monitor --json
+mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
+mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY at DESC LIMIT 20"
+mainboard query "SELECT server, handle, state, verdict FROM jobs"
+```
+
+`monitor` pulls published results from running jobs as well as finished ones. Run
+repeated passes to refresh remote data; a query itself has no network side effects.
+DuckDB reads the collected Parquet fragments and event journals directly. There is
+no shared database file for different servers to lock, and no database service to deploy.
+Each query sees a fresh inventory; it is not a transaction across all servers.
+
+The views are `jobs`, `runs`, `trials`, `events`, `metrics`, and `artifacts`.
+Project, run, host, hardware, and source remain explicit; combining storage never
+means combining scientific conclusions. `Results(root).table(schema, project=...)`
+reads matching published tables with provenance in `_trial`, even before the trial
+settles. Missing artifact bytes remain an error, not a silently complete table.
+Acquisition dependencies still use explicit pinned `log.read_table(...)` inputs.
+
+Research `log` trials preserve one manifest per node/run from Mainboard's existing
+shipped-file listing, including the adjacent committed `node.md`, environment,
+inputs, and hardware. Commit the registration and code before running. The pilot
+experiments no longer maintain a second source-file list or a hash of another seal.
+Artifact checksums remain useful for verifying transferred bytes. Historical
+registrations and receipts remain valid records of their original instruments.
+
+Receipt parts stay immutable after settlement. Fetches merge run-specific paths
+without deleting another server's results and exclude temporary files and mutable
+`latest.jsonl` summaries. Use the query views for the combined current picture.
 
 ## Status
 

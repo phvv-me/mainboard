@@ -1,0 +1,155 @@
+"""One query surface over project-owned results, including work still running."""
+
+import json
+import sqlite3
+from compression import zstd
+from io import BytesIO
+from pathlib import Path
+
+import duckdb
+import polars as pl
+
+from .dispatch.shared import db_file
+from .observe.frames import parse_tail
+from .trials.artifacts import Artifact
+
+
+class Results:
+    """Read the files we already collect; no server writes into a shared DuckDB file."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+
+    def query(self, sql: str = "SELECT * FROM runs", *, project: str = "") -> pl.DataFrame:
+        """Query a fresh local snapshot of runs, trials, events, artifacts, and dispatch jobs.
+
+        project: a research directory name; omitted means all projects, still labeled.
+        Network refresh belongs to Mainboard monitor, not to an implicit SQL side effect.
+        """
+        with duckdb.connect() as connection:
+            self._views(connection, project)
+            statements = connection.extract_statements(sql)
+            if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
+                raise ValueError("results queries must be one SELECT statement")
+            result = connection.execute(sql)
+            return pl.DataFrame(
+                result.fetchall(),
+                schema=[column[0] for column in result.description],
+                orient="row",
+                infer_schema_length=None,
+            )
+
+    def table(self, schema: str, *, project: str = "") -> pl.DataFrame:
+        """Read matching Parquet artifacts, including those published before trial settlement."""
+        artifacts = self.query("SELECT * FROM artifacts", project=project)
+        frames = []
+        for row in artifacts.iter_rows(named=True):
+            reference = Artifact.model_validate_json(row["reference"])
+            if reference.schema_name != schema:
+                continue
+            if reference.media_type != "application/vnd.apache.parquet":
+                raise ValueError(f"{schema} contains a non-Parquet artifact")
+            root = Path(row["root"])
+            prefix = root.relative_to(self.root).as_posix()
+            if prefix != "." and reference.path.startswith(f"{prefix}/"):
+                root = self.root
+            frame = pl.read_parquet(BytesIO(reference.read(root)))
+            if "_trial" in frame.columns:
+                raise ValueError("artifact payload reserves the _trial provenance column")
+            frames.append(frame.with_columns(pl.lit(row["context"]).alias("_trial")))
+        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+    def _projects(self, project: str) -> list[Path]:
+        candidates = sorted((self.root / "research").glob("*/datasets/experiments"))
+        own = self.root / "datasets/experiments"
+        if own.is_dir():
+            candidates.append(own)
+        return [path for path in candidates if not project or path.parents[1].name == project]
+
+    def _views(self, connection: duckdb.DuckDBPyConnection, project: str) -> None:
+        roots = self._projects(project)
+        # Explicit file inventory per query is the snapshot. Temporary rsync/Parquet files
+        # never match; a later query sees newly published immutable fragments automatically.
+        parts = [
+            str(path)
+            for root in roots
+            for path in root.glob("*/evidence/receipts/run=*/part-*.parquet")
+        ]
+        if parts:
+            connection.read_parquet(
+                parts, union_by_name=True, hive_partitioning=False, filename=True
+            ).create_view("_trials")
+            connection.execute("""
+                CREATE VIEW trials AS SELECT DISTINCT
+                    regexp_extract(filename, '([^/]+)/datasets/experiments/', 1) AS project,
+                    * EXCLUDE(filename) FROM _trials
+            """)
+        else:
+            connection.execute(
+                "CREATE TABLE trials(project VARCHAR, run VARCHAR, trial VARCHAR, "
+                "verdict VARCHAR, artifacts JSON, host VARCHAR, card_name VARCHAR, commit VARCHAR)"
+            )
+        events = []
+        for root in roots:
+            owner = root.parents[1]
+            for path in sorted(root.glob("*/evidence/artifacts/*/*/events/*.ndjson*")):
+                raw = path.read_bytes()
+                if path.suffix == ".zst":
+                    raw = zstd.decompress(raw)
+                for frame in parse_tail(raw.decode()):
+                    events.append(
+                        json.dumps(
+                            {
+                                "project": owner.name,
+                                "root": str(owner),
+                                **frame.model_dump(mode="json"),
+                            }
+                        )
+                    )
+        connection.execute(
+            """
+            CREATE TABLE events AS SELECT DISTINCT
+                row->>'project' AS project, row->>'root' AS root,
+                row->>'job' AS stream, (row->>'offset')::UBIGINT AS offset,
+                (row->>'at')::TIMESTAMPTZ AS at,
+                row->'payload'->>'trial' AS trial,
+                row->'payload'->>'topic' AS topic,
+                row->'payload'->'metadata' AS metadata,
+                row->'payload'->'data' AS data
+            FROM unnest(?::JSON[]) AS records(row)
+        """,
+            [events],
+        )
+        connection.execute("""
+            CREATE VIEW runs AS SELECT DISTINCT project,
+                data->>'run' AS run, data->>'host' AS host,
+                data->>'card_name' AS hardware, data->>'commit' AS commit
+                FROM events WHERE topic = 'started'
+                UNION SELECT DISTINCT project, run, host, card_name AS hardware, commit
+                FROM trials;
+            CREATE VIEW artifacts AS SELECT DISTINCT e.project, e.stream,
+                coalesce(s.data->>'repository', e.root) AS root,
+                s.data AS context, e.data->>'name' AS name,
+                json_merge_patch(e.data, '{"name":null}') AS reference
+            FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
+            WHERE e.topic = 'artifact' AND s.topic = 'started';
+            CREATE VIEW metrics AS SELECT e.project, s.data->>'run' AS run,
+                e.trial, e.at, e.metadata, e.data
+            FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
+            WHERE e.topic = 'metrics' AND s.topic = 'started';
+        """)
+        jobs = []
+        path = db_file(self.root)
+        if path.is_file():
+            with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as state:
+                jobs = [row[0] for row in state.execute("SELECT data FROM runs")]
+        connection.execute(
+            """
+            CREATE TABLE jobs AS SELECT row->>'target' AS server,
+                row->>'handle' AS handle, row->>'submitted_at' AS submitted_at,
+                row->>'state' AS state, row->>'verdict' AS verdict,
+                row->>'fetch_path' AS results, row AS metadata
+            FROM unnest(?::JSON[]) AS records(row)
+        """,
+            [jobs],
+        )

@@ -325,6 +325,8 @@ class Monitor:
             job = resolved.runs[record]
             stored = self.cache.resolve(record, state.state, state.exit_code, state.verdict)
             if state.verdict not in vocabulary.TERMINAL:
+                if state.stage == vocabulary.RUNNING:
+                    self.pull(job)
                 self.track(record, state, detail="")
                 running += 1
                 continue
@@ -363,7 +365,7 @@ class Monitor:
         )
 
     def pull(self, job: Run) -> str | None:
-        """Bring a settled job's recorded results back, returning where they landed.
+        """Bring a running or settled job's recorded results back, returning where they landed.
 
         Whatever its verdict was. A crashed run has written everything it wrote before it
         crashed, and the receipt store stages and renames each fragment precisely so that

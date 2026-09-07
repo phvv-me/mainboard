@@ -220,6 +220,7 @@ class Dispatcher:
             rsh=policy.rsync_shell,
             timeout=ceil(policy.deadline),
             host=host,
+            exclude=("*.tmp", "latest.jsonl", "partial-*.jsonl"),
         )
         logger.info("fetched %s from %s", path, host)
 
