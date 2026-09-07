@@ -73,6 +73,8 @@ def test_the_denylist_covers_git_env_and_every_generated_directory() -> None:
         ".mainboard/",
         ".pixi/",
         "__pycache__/",
+        "*/evidence/artifacts/***",
+        "*/evidence/receipts/***",
     ) == ALWAYS_EXCLUDE
 
 

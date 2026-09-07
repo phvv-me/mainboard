@@ -21,7 +21,18 @@ if TYPE_CHECKING:
 
 # Always skipped regardless of `.gitignore`. `.git` has no trailing slash so it also matches
 # a submodule's `.git` file, not just the superproject's `.git/` directory.
-ALWAYS_EXCLUDE = (".git", ".env", f"{state_dir()}/", ".mainboard/", ".pixi/", "__pycache__/")
+ALWAYS_EXCLUDE = (
+    ".git",
+    ".env",
+    f"{state_dir()}/",
+    ".mainboard/",
+    ".pixi/",
+    "__pycache__/",
+    # Published trial output travels down only. Uploading a fetched live segment replaces
+    # the remote writer's open inode and loses its subsequent events.
+    "*/evidence/artifacts/***",
+    "*/evidence/receipts/***",
+)
 
 # macOS ships Apple's openrsync as /usr/bin/rsync; upstream rsync usually arrives via Homebrew
 # or MacPorts at these roots, searched after PATH.

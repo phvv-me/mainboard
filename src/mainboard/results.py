@@ -129,7 +129,7 @@ class Results:
                 FROM events WHERE topic = 'started'
                 UNION SELECT DISTINCT project, run, host, card_name AS hardware, commit
                 FROM trials;
-            CREATE VIEW artifacts AS SELECT DISTINCT e.project, e.stream,
+            CREATE VIEW emitted_artifacts AS SELECT DISTINCT e.project, e.stream,
                 coalesce(s.data->>'repository', e.root) AS root,
                 json_merge_patch(s.data, json_object('verdict',
                     coalesce(t.verdict, v.data->>'verdict'))) AS context,
@@ -145,6 +145,38 @@ class Results:
                 e.trial, e.recorded_at, e.metadata, e.data
             FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
             WHERE e.topic = 'metrics' AND s.topic = 'started';
+        """)
+        # Final receipts own artifact references even when a live event stream was interrupted.
+        # Preserve surviving events verbatim; this fallback does not invent their lost times.
+        connection.execute(
+            """
+            CREATE TABLE receipt_artifacts AS SELECT DISTINCT
+                t.project,
+                regexp_extract(t.artifacts::JSON->>'events',
+                    'artifacts/([^/]+/[^/]+)/events$', 1) AS stream,
+                p.row->>'root' AS root, to_json(t) AS context,
+                a.key AS name, a.value AS reference
+            FROM trials t, json_each(t.artifacts::JSON) a,
+                unnest(?::JSON[]) AS p(row)
+            WHERE t.project = p.row->>'project'
+                AND json_type(a.value) = 'OBJECT'
+                AND a.value->>'media_type' IS NOT NULL
+                AND a.value->>'path' IS NOT NULL;
+            """,
+            [
+                [
+                    json.dumps({"project": root.parents[1].name, "root": str(root.parents[1])})
+                    for root in roots
+                ]
+            ],
+        )
+        connection.execute("""
+            CREATE VIEW artifacts AS SELECT * FROM emitted_artifacts
+            UNION ALL SELECT r.* FROM receipt_artifacts r
+            WHERE NOT EXISTS (
+                SELECT 1 FROM emitted_artifacts e WHERE e.project = r.project
+                    AND e.reference->>'path' = r.reference->>'path'
+            );
         """)
         jobs = []
         path = db_file(self.root)
