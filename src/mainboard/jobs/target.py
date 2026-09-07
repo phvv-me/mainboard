@@ -105,8 +105,13 @@ class Target(FrozenModel):
         return PurePosixPath(self.file).parent.as_posix()
 
     def declaration(self, root: Path) -> Declaration:
-        """What the target declared beyond its imports, read off the file's syntax."""
-        return declared(parsed(root / self.file), self.name)
+        """What the target declared beyond its imports, read off the file's syntax.
+
+        A pytest node id names its function through the class and the parameters it is run
+        with, and the declaration sits on the function behind both: `Class::test_case[1]`
+        declares what `test_case` declared.
+        """
+        return declared(parsed(root / self.file), self.name.partition("[")[0])
 
     @staticmethod
     def __relative(spelling: str, root: Path) -> str:

@@ -38,6 +38,45 @@ from tests.helpers import mark
 @pytest.mark.parametrize("number", [1, 2])
 def test_runs(field, number):
     mark(f"{number}:{field}")
+
+
+def test_imports_a_stray_module(field):
+    import importlib
+
+    importlib.import_module("tests.test_" + "stray")
+
+
+def test_fails():
+    value = 41
+    assert value == 42
+"""
+
+# A module carrying its metadata where the file declares it, on a parametrized function and on
+# a method inside a class, the two node-id spellings a dispatch must see through.
+_DECLARED = """import pytest
+
+from mainboard.jobs import job
+
+from tests.helpers import mark
+
+
+@job(needs=("data/corpus",), resources=("templates/t.j2",), fetch="evidence")
+@pytest.mark.parametrize("number", [1])
+def test_declared(number):
+    mark(f"{number}")
+
+
+class TestCases:
+    @job(needs=("data/other",))
+    @pytest.mark.parametrize("number", [1])
+    def test_method(self, number):
+        mark(f"class{number}")
+
+
+class TestOther:
+    @job(needs=("data/distinct",))
+    def test_method(self):
+        mark("other")
 """
 
 _GROUP = """from tests.helpers import mark
@@ -73,6 +112,9 @@ def pytest_lab(tmp_path: Path) -> Lab:
     lab.write("tests/jobs/__init__.py", "")
     lab.write("tests/jobs/test_sample.py", _SAMPLE)
     lab.write("tests/jobs/test_group.py", _GROUP)
+    lab.write("tests/jobs/test_declared.py", _DECLARED)
+    lab.write("tests/test_stray.py", "STRAY = 1\n")
+    lab.write("templates/t.j2", "t\n")
     lab.write("pytest.ini", "[pytest]\ntestpaths = tests\n")
     lab.commit("a test tree")
     return lab
@@ -98,9 +140,11 @@ def sealed(lab: Lab, spelling: str, *args: str) -> subprocess.CompletedProcess[s
         if name not in {CLOSURE_VAR, FIRST_PARTY_VAR, DEFERRED_VAR}
     }
     env.update(
-        PYTHONPATH=":".join(str(lab.root / place) for place in closure.roots),
-        CLOSURE_VAR=str(written),
-        FIRST_PARTY_VAR=":".join(closure.first_party),
+        {
+            "PYTHONPATH": ":".join(str(lab.root / place) for place in closure.roots),
+            CLOSURE_VAR: str(written),
+            FIRST_PARTY_VAR: ":".join(closure.first_party),
+        }
     )
     return subprocess.run(
         [sys.executable, "-m", "mainboard.jobs.call", spelling, *args],
@@ -142,6 +186,16 @@ def test_a_class_node_id_fits_the_target_spelling_and_runs(pytest_lab: Lab) -> N
     done = sealed(pytest_lab, "tests/jobs/test_group.py::TestGroup::test_method")
     assert done.returncode == 0, done.stderr
     assert (pytest_lab.root / "marks.txt").read_text(encoding="utf-8") == "group\n"
+
+
+def test_same_named_methods_keep_their_own_declarations(pytest_lab: Lab) -> None:
+    """Class qualification is part of the identity, not discarded before reading metadata."""
+    for owner, needs in (("TestCases", "data/other"), ("TestOther", "data/distinct")):
+        target = Target.spelled(
+            [f"tests/jobs/test_declared.py::{owner}::test_method"], pytest_lab.root
+        )
+        assert target is not None
+        assert target.declaration(pytest_lab.root).needs == (needs,)
 
 
 def test_a_bare_test_file_spelling_means_the_whole_file(pytest_lab: Lab) -> None:
@@ -200,3 +254,62 @@ def test_a_literal_plugins_list_joins_the_closure(pytest_lab: Lab) -> None:
     pytest_lab.commit("a literal plugin")
     closure = closure_of(pytest_lab, "tests/jobs/test_sample.py::test_runs[2]")
     assert "tests/plugins.py" in closure.files
+
+
+def test_an_unshipped_test_module_is_refused_through_the_rewrite_hook(pytest_lab: Lab) -> None:
+    """The hook answers test_-named names from wherever the environment points; judged, a
+    module the closure never carried is refused before it can execute, mirror or not."""
+    done = sealed(pytest_lab, "tests/jobs/test_sample.py::test_imports_a_stray_module")
+    assert done.returncode != 0
+    assert "first-party code outside this job's closure" in done.stdout + done.stderr
+
+
+def test_assertion_introspection_survives_the_judged_hook(pytest_lab: Lab) -> None:
+    """Rewriting is untouched: a failing assert still reports the values it compared."""
+    done = sealed(pytest_lab, "tests/jobs/test_sample.py::test_fails")
+    assert done.returncode == 1
+    assert "assert 41 == 42" in done.stdout
+
+
+def test_a_plugin_argument_naming_a_test_module_is_refused(pytest_lab: Lab) -> None:
+    """Early plugin loading obeys the same origin boundary as later test collection."""
+    done = sealed(pytest_lab, "tests/jobs/test_sample.py::test_runs[2]", "-p", "tests.test_stray")
+    assert done.returncode != 0
+    assert "first-party code outside this job's closure" in done.stderr
+
+
+@pytest.mark.parametrize("source", ["config", "addopts", "plugins", "conftest"])
+def test_early_imports_cannot_bypass_the_boundary(
+    pytest_lab: Lab, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    """Config, environment, and initial conftests must not execute unshipped test modules."""
+    if source == "config":
+        pytest_lab.write("pytest.ini", "[pytest]\naddopts = -p tests.test_stray\n")
+    elif source == "addopts":
+        monkeypatch.setenv("PYTEST_ADDOPTS", "-p tests.test_stray")
+    elif source == "plugins":
+        monkeypatch.setenv("PYTEST_PLUGINS", "tests.test_stray")
+    else:
+        pytest_lab.write(
+            "tests/conftest.py",
+            "import importlib\nimportlib.import_module('tests.test_' + 'stray')\n",
+        )
+    if source in {"config", "conftest"}:
+        pytest_lab.commit("early import route")
+    done = sealed(pytest_lab, "tests/jobs/test_sample.py::test_runs[2]")
+    assert done.returncode != 0
+    assert "first-party code outside this job's closure" in done.stdout + done.stderr
+
+
+def test_the_declaration_survives_a_parametrized_node_id(pytest_lab: Lab) -> None:
+    """`test_declared[1]` is the declaration on `test_declared`, wherever it sits."""
+    closure = closure_of(pytest_lab, "tests/jobs/test_declared.py::test_declared[1]")
+    assert closure.needs == ("data/corpus",)
+    assert closure.fetch == "evidence"
+    assert "templates/t.j2" in closure.files
+
+
+def test_the_declaration_survives_a_class_node_id(pytest_lab: Lab) -> None:
+    """`Class::test_method[1]` reaches the decorated method inside the class body."""
+    closure = closure_of(pytest_lab, "tests/jobs/test_declared.py::TestCases::test_method[1]")
+    assert closure.needs == ("data/other",)

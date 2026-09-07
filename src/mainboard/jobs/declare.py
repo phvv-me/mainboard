@@ -61,15 +61,25 @@ def job[Declared](
 def declared(module: ast.Module, name: str) -> Declaration:
     """The declaration on the target `name` of a parsed module, read without importing it.
 
-    A decorated function carries it on its decorator; an application carries it on the call
-    that wrapped it, `app = job(needs=...)(App(...))`. A target that declares nothing gets the
-    empty declaration.
+    A decorated function or method carries it on its decorator; an application carries it on
+    the call that wrapped it, `app = job(needs=...)(App(...))`. A target that declares nothing
+    gets the empty declaration.
 
     module: the parsed job file.
-    name: the target inside it.
+    name: the target inside it, including its class path for a pytest node id.
     """
-    for node in module.body:
-        decoration = _decoration(node, name)
+    parts = name.split("::")
+    body = module.body
+    for parent in parts[:-1]:
+        selected = next(
+            (node for node in body if isinstance(node, ast.ClassDef) and node.name == parent),
+            None,
+        )
+        if selected is None:
+            return Declaration()
+        body = selected.body
+    for node in body:
+        decoration = _decoration(node, parts[-1])
         if decoration is not None:
             return Declaration.model_validate(
                 {keyword.arg: _literal(keyword, name) for keyword in decoration.keywords}
@@ -80,10 +90,7 @@ def declared(module: ast.Module, name: str) -> Declaration:
 def _decoration(node: ast.stmt, name: str) -> ast.Call | None:
     """The `job(...)` call decorating `name` in `node`, None when `node` is not that target."""
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name:
-        for decorator in node.decorator_list:
-            if isinstance(decorator, ast.Call) and _is_job(decorator.func):
-                return decorator
-        return None
+        return _job_decorator(node)
     if isinstance(node, ast.Assign) and any(
         isinstance(target, ast.Name) and target.id == name for target in node.targets
     ):
@@ -95,6 +102,18 @@ def _decoration(node: ast.stmt, name: str) -> ast.Call | None:
         ):
             return wrapped.func
     return None
+
+
+def _job_decorator(function: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.Call | None:
+    """The `job(...)` call in `function`'s decorator list, None when none is there."""
+    return next(
+        (
+            decorator
+            for decorator in function.decorator_list
+            if isinstance(decorator, ast.Call) and _is_job(decorator.func)
+        ),
+        None,
+    )
 
 
 def _is_job(func: ast.expr) -> bool:

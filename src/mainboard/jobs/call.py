@@ -21,10 +21,10 @@
 #
 # A TEST FILE IS PYTEST'S TO RUN. A `test_` target is handed to `pytest.main` as the node id it
 # spells, fixtures and parametrization and exit status all native, with the guard already armed
-# so pytest's imports of the shipped modules answer from this tree. pytest's own rewrite hook
-# sits ahead of the guard on `meta_path`, which is why the closure carries the conftest chain
-# and every module a `pytest_plugins` literal names: those are the imports pytest answers
-# itself.
+# so pytest's imports of the shipped modules answer from this tree. pytest's rewrite hook sits
+# ahead of the guard on `meta_path` and finds modules on its own walk. The native adapter
+# wraps that hook at installation, before config/environment plugins or initial conftests
+# import. Its spec is checked before execution, with assertion rewriting left intact.
 
 import importlib
 import os
@@ -112,6 +112,22 @@ class Guard(MetaPathFinder):
         except ValueError:
             return False
 
+    def judged(self, fullname: str, spec: ModuleSpec) -> ModuleSpec:
+        """`spec` when the closure lets `fullname` import it, a refusal when it does not.
+
+        The rewrite hook's answer is judged here before it can execute, since the hook found
+        the module on its own walk and would otherwise import first-party code from wherever
+        the environment points.
+        """
+        top = fullname.partition(".")[0]
+        if top in self.names and top not in self.deferred and not self.holds(spec):
+            raise ModuleNotFoundError(
+                f"{fullname} is first-party code outside this job's closure; import it from the "
+                "job file, or declare its file as a resource, so the dispatch ships it",
+                name=fullname,
+            )
+        return spec
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one target and answer its exit code.
@@ -125,13 +141,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args and args[0] == DELIMITER:
         args = args[1:]
     file, _, name = spelling.partition(SEPARATOR)
-    Guard.armed(Path.cwd())
+    guard = Guard.armed(Path.cwd())
     if Path(file).stem.startswith(TEST_PREFIX):
         # The one environment-dependent import: an env that declares no pytest still runs every
         # other target, and a test target in one fails here naming what is missing.
-        import pytest
-
-        return pytest.main([spelling if name else file, *args])
+        runner = importlib.import_module(".pytest", package=__package__)
+        return runner.Runner(guard).run([spelling if name else file, *args])
     return called(getattr(loaded(Path(file)), name), name, args)
 
 
