@@ -83,6 +83,11 @@ class Shipment(FrozenModel):
         return bool(self.listing)
 
     @property
+    def files(self) -> tuple[str, ...]:
+        """Explicit closure files, including resources excluded by the ordinary mirror."""
+        return tuple(row.partition("\t")[0] for row in self.listing.splitlines())
+
+    @property
     def listing_name(self) -> str:
         """The file the listing is staged under, content-addressed like the job script."""
         return f"closure-{self.source.digest[:12]}.tsv"

@@ -737,7 +737,10 @@ class Dispatcher:
         dispatched = shipment or Shipment.of_command(script, source=self.source(), imports=())
         prepared, staged = self._prepare_script(script)
         shipped = self.rsync_up(
-            plan, root, required=required, extra=[*staged, *([listing] if listing else [])]
+            plan,
+            root,
+            required=required,
+            extra=[*staged, *([listing] if listing else []), *dispatched.files],
         )
         sha = git("rev-parse", "--short", "HEAD")
         dirty = dispatched.source.dirty
