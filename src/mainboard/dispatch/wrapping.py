@@ -68,16 +68,23 @@ def wrap(
         ]
     if not activate:
         steps.append(command)
-    elif plan.containerized:
-        if containerize is None:
-            raise LookupError(
-                f"plan for host {plan.host!r} is containerized but no container argv "
-                "builder was given"
-            )
-        steps.append(shlex.join(containerize(["bash", "-c", command])))
     else:
-        steps.append(activation_stage(plan, root, optional=True))
-        steps.append(command)
+        # Host overrides follow activation, just as they do in a submitted job.
+        # In particular, a workspace GPU mask must not replace a host's reserved card.
+        exported = " && ".join(
+            [f"export {key}={shlex.quote(value)}" for key, value in plan.exports.items()]
+            + [command]
+        )
+        if plan.containerized:
+            if containerize is None:
+                raise LookupError(
+                    f"plan for host {plan.host!r} is containerized but no container argv "
+                    "builder was given"
+                )
+            steps.append(shlex.join(containerize(["bash", "-c", exported])))
+        else:
+            steps.append(activation_stage(plan, root, optional=True))
+            steps.append(exported)
     return " && ".join(steps)
 
 
