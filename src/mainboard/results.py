@@ -138,7 +138,7 @@ class Results:
             FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
             LEFT JOIN events v ON v.stream = s.stream AND v.project = s.project
                 AND v.topic = 'settled'
-            LEFT JOIN trials t ON t.project = s.project AND t.run = s.data->>'run'
+            LEFT JOIN trials t ON t.project = s.project AND t.run = (s.data->>'run')
                 AND t.trial = s.trial
             WHERE e.topic = 'artifact' AND s.topic = 'started';
             CREATE VIEW metrics AS SELECT e.project, s.data->>'run' AS run,
@@ -158,10 +158,10 @@ class Results:
                 a.key AS name, a.value AS reference
             FROM trials t, json_each(t.artifacts::JSON) a,
                 unnest(?::JSON[]) AS p(row)
-            WHERE t.project = p.row->>'project'
+            WHERE t.project = (p.row->>'project')
                 AND json_type(a.value) = 'OBJECT'
-                AND a.value->>'media_type' IS NOT NULL
-                AND a.value->>'path' IS NOT NULL;
+                AND (a.value->>'media_type') IS NOT NULL
+                AND (a.value->>'path') IS NOT NULL;
             """,
             [
                 [
@@ -175,7 +175,7 @@ class Results:
             UNION ALL SELECT r.* FROM receipt_artifacts r
             WHERE NOT EXISTS (
                 SELECT 1 FROM emitted_artifacts e WHERE e.project = r.project
-                    AND e.reference->>'path' = r.reference->>'path'
+                    AND (e.reference->>'path') = (r.reference->>'path')
             );
         """)
         jobs = []
