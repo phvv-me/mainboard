@@ -8,7 +8,6 @@ from cyclopts import App
 from mainboard.dispatch.provenance import listing
 from mainboard.dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
 from mainboard.jobs import call
-from mainboard.jobs import closure as closure_module
 from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
 
@@ -21,18 +20,25 @@ def sealed(
     *,
     without: str = "",
     distributions: tuple[str, ...] = Lab.DISTRIBUTIONS,
+    environment: Path | None = None,
 ) -> Path:
     """Stand in the lab with its closure listed and the guard's roster exported, as a job does.
 
     without: a shipped file left out of the listing, to see the guard refuse it.
     distributions: the import roots the manifest installs editable, `Lab.DISTRIBUTIONS` by
         default.
+    environment: the compiled target environment the closure reads, an empty one when None.
     """
     from mainboard.dispatch.provenance import Repositories
 
     target = Target.spelled([Lab.JOB], lab.root)
     assert target is not None
-    closure = Closure.of(target, root=lab.root, distributions=distributions)
+    closure = Closure.of(
+        target,
+        root=lab.root,
+        distributions=distributions,
+        environment=environment or lab.root / Lab.ENVIRONMENT,
+    )
     _, rows = Repositories(lab.root).seal(closure.owner, closure.files, built=closure.built)
     written = lab.root / ".mainboard/closure.tsv"
     written.parent.mkdir(exist_ok=True)
@@ -152,11 +158,17 @@ def test_a_deferred_distribution_is_admitted_regardless_of_what_the_closure_ship
         "from ..helper.tools import tool\n\nimport ext._native\n\n\n"
         "def main() -> int:\n    tool()\n    return ext._native.VALUE\n",
     )
-    outside = Path("/somewhere/outside/ext/_native.cpython-314-x86_64-linux-gnu.so")
-    monkeypatch.setattr(
-        closure_module, "_extension_files", lambda name: (outside,) if name == "ext" else ()
+    environment = lab.compiled(
+        "camp-ext",
+        lab.root / f"{Lab.ENVIRONMENT}/lib/python3.14/site-packages/ext/"
+        "_native.cpython-314-x86_64-linux-gnu.so",
     )
-    written = sealed(lab, monkeypatch, distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src"))
+    written = sealed(
+        lab,
+        monkeypatch,
+        distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src"),
+        environment=environment,
+    )
     listed = written.read_text(encoding="utf-8").splitlines()
     assert not any(line.startswith("packages/ext/src/") for line in listed)
     # The environment already has `ext`, independent of what the closure shipped or put on

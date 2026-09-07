@@ -1,3 +1,4 @@
+import os
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -48,9 +49,42 @@ class Lab:
     JOB = "research/camp/experiments/node/run.py"
     HOME = "research/camp"
     DISTRIBUTIONS = ("packages/core/src", "packages/sub/src")
+    # Where the lab's compiled target environment would sit, the shape a dispatched job's
+    # closure reads a distribution's installed shape from.
+    ENVIRONMENT = ".mainboard/envs/default/.pixi/envs/default"
 
     def __init__(self, root: Path) -> None:
         self.root = root
+
+    def compiled(self, distribution: str, *extensions: Path, imports: str = "") -> Path:
+        """A compiled target environment holding `distribution`, its RECORD recording `extensions`.
+
+        Each extension is spelled as an install spells one, as a site-packages-relative row,
+        however far that climbs; a missing file is written, so a record of an extension inside
+        the source tree points at a file that is really there. Answers the prefix, so a test
+        hands the closure a target environment without a pixi in sight.
+
+        distribution: the dist-info name, free to differ from the import it claims.
+        extensions: absolute paths of compiled extensions the RECORD records.
+        imports: a top-level import root declared in `top_level.txt`, empty for a distribution
+            whose RECORD's own paths must speak for it.
+        """
+        prefix = self.root / Lab.ENVIRONMENT
+        site = prefix / "lib/python3.14/site-packages"
+        info = site / f"{distribution}-0.0.1.dist-info"
+        info.mkdir(parents=True, exist_ok=True)
+        (info / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {distribution}\nVersion: 0.0.1\n", encoding="utf-8"
+        )
+        if imports:
+            (info / "top_level.txt").write_text(f"{imports}\n", encoding="utf-8")
+        for extension in extensions:
+            extension.parent.mkdir(parents=True, exist_ok=True)
+            extension.write_text("not an elf, a stub\n", encoding="utf-8")
+        rows = [os.path.relpath(extension, site).replace(os.sep, "/") for extension in extensions]
+        rows.append(f"{info.relative_to(site).as_posix()}/RECORD,,")
+        (info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
+        return prefix
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
         """Run git in the workspace (or `cwd`), answering its stripped stdout."""

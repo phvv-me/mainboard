@@ -1355,10 +1355,18 @@ class Board:
         """The shipment of one job: its closure over this workspace's import roots, sealed.
 
         target: the job as spelled.
-        plan: the resolved execution context whose environment names the import roots.
+        plan: the resolved execution context whose environment names the import roots, and
+            whose compiled prefix is where a distribution's installed shape is read from: this
+            workspace's own copy of the environment, the lock the host installs frozen from.
         needs: data paths declared at dispatch time, joining the ones the job file declares.
         """
-        closure = Closure.of(target, root=self.root, distributions=self.imports(plan), needs=needs)
+        closure = Closure.of(
+            target,
+            root=self.root,
+            distributions=self.imports(plan),
+            environment=Path(plan.prefix(str(self.root))),
+            needs=needs,
+        )
         return Shipment.of_closure(closure, root=self.root)
 
     def results(self, fetch: str | None, *, node: str = "") -> str:

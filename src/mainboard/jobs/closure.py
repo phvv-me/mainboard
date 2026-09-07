@@ -21,22 +21,23 @@
 #
 # A COMPILED EXTENSION IS NOT SOURCE. The walk reads a package's `.py` files and an editable
 # install redirects exactly those to the tree; a compiled `_native.so` is neither, and no `.py`
-# beside it says where the built bytes live. `importlib.metadata` is asked instead, the one
-# place a package's installed shape is knowable without running it (`packages_distributions`
-# plus `distribution(...).files`, the same reading `trials.provenance.installed` already
-# trusts): the answer for `cutoken` is that nanobind's `_native` is not under the source tree at
-# all, but physically installed beside a scikit-build-core editable redirect, in the
-# environment's own `site-packages` (2026-09-07). An extension found inside the package's own
-# directory ships beside it, `built` in the listing since git may hold no opinion on a generated
-# file at all. An extension found outside the tree defers the whole package to the environment
-# instead of shipping half of it: a stale pure-Python half under this closure's digest beside a
-# live compiled half resolved from wherever the host's editable install happens to point is not
-# a closure, so nothing of that package ships and the runner's finder lets every import of it
-# through unchecked, trusting the same environment install the job's `PYTHONPATH` would otherwise
-# have shadowed.
+# beside it says where the built bytes live. The job's target environment is asked instead, the
+# one place a package's installed shape is knowable without running it (`distributions(path=...)`
+# over its site-packages, each distribution's RECORD, `engines.compile.backend.repair`): asked of
+# that environment, never of the interpreter asking, since the dispatcher is a uv tool whose own
+# site-packages holds none of the job's packages and it read its own metadata for a day and
+# deferred nothing (2026-09-07). The answer for `cutoken` is that nanobind's `_native` is not
+# under the source tree at all, but physically installed beside a scikit-build-core editable
+# redirect, in the environment's own `site-packages`. An extension found inside the package's
+# own directory ships beside it, `built` in the listing since git may hold no opinion on a
+# generated file at all. An extension found outside the tree defers the whole package to the
+# environment instead of shipping half of it: a stale pure-Python half under this closure's
+# digest beside a live compiled half resolved from wherever the host's editable install happens
+# to point is not a closure, so nothing of that package ships and the runner's finder lets every
+# import of it through unchecked, trusting the same environment install the job's `PYTHONPATH`
+# would otherwise have shadowed.
 
 import ast
-from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,7 @@ from patos import FrozenModel
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..dispatch.provenance import Repositories, Repository
+from ..engines.compile.backend.repair import recorded_extensions
 from .target import Target, dotted, home_of
 
 if TYPE_CHECKING:
@@ -187,6 +189,7 @@ class Closure(FrozenModel):
         *,
         root: Path,
         distributions: Sequence[str],
+        environment: Path,
         needs: Sequence[str] = (),
     ) -> Closure:
         """The closure of `target`: the node in full, what it imports, and what it declared.
@@ -194,6 +197,8 @@ class Closure(FrozenModel):
         target: the job.
         root: the workspace root.
         distributions: the import roots the manifest installs editable, workspace-relative.
+        environment: the prefix of the compiled environment the job runs in, whose dist-infos
+            answer where a distribution's compiled half was installed.
         needs: data paths declared at dispatch time, joining the ones the file declares.
         """
         repositories = Repositories(root)
@@ -211,7 +216,7 @@ class Closure(FrozenModel):
                 continue
             package = cls.__package(module)
             if package not in decided:
-                decided[package] = cls.__compiled(package, root=root)
+                decided[package] = cls.__compiled(package, root=root, environment=environment)
             outside, extensions = decided[package]
             if outside:
                 deferred.add(PurePosixPath(package).name)
@@ -261,15 +266,17 @@ class Closure(FrozenModel):
         return (PurePosixPath(module.root) / inside.parts[0]).as_posix()
 
     @staticmethod
-    def __compiled(package: str, *, root: Path) -> tuple[bool, tuple[str, ...]]:
+    def __compiled(package: str, *, root: Path, environment: Path) -> tuple[bool, tuple[str, ...]]:
         """Whether `package` defers to the environment, and which of its extensions ship inside.
 
         package: the top-level package directory, workspace-relative.
         root: the workspace root.
+        environment: the prefix of the compiled environment the job runs in, whose dist-infos
+            are where the package's installed shape is read from.
         """
         tree = (root / package).resolve()
         inside: list[str] = []
-        for file in _extension_files(PurePosixPath(package).name):
+        for file in recorded_extensions(PurePosixPath(package).name, prefix=environment):
             try:
                 relative = file.resolve().relative_to(tree)
             except ValueError:
@@ -290,25 +297,6 @@ class Closure(FrozenModel):
                     f"the need {need!r} would sit over shipped code ({shadowed[0]}); a need is "
                     "data the job reads, declared beside the code rather than around it"
                 )
-
-
-def _extension_files(name: str) -> tuple[Path, ...]:
-    """The compiled extensions an installed distribution named `name` carries, absolute.
-
-    Read off `importlib.metadata` rather than the tree, since a build backend is free to
-    install a compiled extension anywhere while redirecting only the pure Python half of an
-    editable install back to the source: the metadata is the one place that installed shape is
-    knowable without running the distribution's own code.
-    """
-    for candidate in packages_distributions().get(name, (name,)):
-        try:
-            found = distribution(candidate)
-        except PackageNotFoundError:
-            continue
-        return tuple(
-            Path(file.locate()) for file in found.files or () if file.suffix in (".so", ".pyd")
-        )
-    return ()
 
 
 def _absolute(package: str, *, level: int, name: str) -> str | None:

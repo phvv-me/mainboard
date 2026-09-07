@@ -27,7 +27,12 @@ def sealed(lab: Lab) -> tuple[Source, list]:
     """The lab's job sealed: its source and the listing of what it ships."""
     target = Target.spelled([Lab.JOB], lab.root)
     assert target is not None
-    closure = Closure.of(target, root=lab.root, distributions=Lab.DISTRIBUTIONS)
+    closure = Closure.of(
+        target,
+        root=lab.root,
+        distributions=Lab.DISTRIBUTIONS,
+        environment=lab.root / Lab.ENVIRONMENT,
+    )
     return Repositories(lab.root).seal(closure.owner, closure.files)
 
 

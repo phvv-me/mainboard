@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.shared import (
     CLOSURE_VAR,
@@ -12,7 +10,6 @@ from mainboard.dispatch.shared import (
     SOURCE_VAR,
 )
 from mainboard.dispatch.shipment import Shipment, runner
-from mainboard.jobs import closure as closure_module
 from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
 
@@ -35,7 +32,12 @@ def test_a_command_ships_the_mirror_under_the_trees_provenance_and_exports_only_
 def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> None:
     target = Target.spelled([Lab.JOB, "--x", "3"], lab.root)
     assert target is not None
-    closure = Closure.of(target, root=lab.root, distributions=Lab.DISTRIBUTIONS)
+    closure = Closure.of(
+        target,
+        root=lab.root,
+        distributions=Lab.DISTRIBUTIONS,
+        environment=lab.root / Lab.ENVIRONMENT,
+    )
     shipment = Shipment.of_closure(closure, root=lab.root)
     assert shipment.sealed
     assert shipment.command == f"python -m {runner()} {Lab.JOB}::app -- --x 3"
@@ -65,21 +67,25 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
 
 
 def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
-    lab: Lab, monkeypatch: pytest.MonkeyPatch
+    lab: Lab,
 ) -> None:
     """What `Closure.deferred` finds ships nothing, and rides the shipment as its own variable."""
     lab.write("packages/ext/src/ext/__init__.py", "")
     lab.write(
         "research/camp/experiments/node/run.py", "import ext\n\n\ndef main() -> None:\n    pass\n"
     )
-    outside = Path("/somewhere/outside/ext/_native.cpython-314-x86_64-linux-gnu.so")
-    monkeypatch.setattr(
-        closure_module, "_extension_files", lambda name: (outside,) if name == "ext" else ()
+    environment = lab.compiled(
+        "camp-ext",
+        lab.root / f"{Lab.ENVIRONMENT}/lib/python3.14/site-packages/ext/"
+        "_native.cpython-314-x86_64-linux-gnu.so",
     )
     target = Target.spelled([Lab.JOB], lab.root)
     assert target is not None
     closure = Closure.of(
-        target, root=lab.root, distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src")
+        target,
+        root=lab.root,
+        distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src"),
+        environment=environment,
     )
     shipment = Shipment.of_closure(closure, root=lab.root)
     assert shipment.deferred == ("ext",)

@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from mainboard import MissionError
-from mainboard.jobs import closure as closure_module
 from mainboard.jobs.closure import Closure, Module, Walker, _absolute
 from mainboard.jobs.target import Target
 
@@ -12,6 +11,7 @@ from ..support import Lab
 # The extension tests add a third distribution beside the lab's two, so nothing about the
 # existing fixtures moves under it.
 _EXT = "packages/ext/src"
+_ENVIRONMENT = Lab.ENVIRONMENT
 
 # What the lab's job ships: its node in full, the sibling package it imports, both distributions
 # whole, the resource it declared and the manifest. Nothing from the other campaign, nothing
@@ -35,10 +35,16 @@ _SHIPPED = (
 
 
 def closure_of(lab: Lab, spelling: str = Lab.JOB, **overrides: tuple[str, ...]) -> Closure:
-    """The closure of `spelling` over the lab's two distributions."""
+    """The closure of `spelling` over the lab's two distributions, closed over an empty env."""
     target = Target.spelled([spelling], lab.root)
     assert target is not None
-    return Closure.of(target, root=lab.root, distributions=Lab.DISTRIBUTIONS, **overrides)
+    return Closure.of(
+        target,
+        root=lab.root,
+        distributions=Lab.DISTRIBUTIONS,
+        environment=lab.root / _ENVIRONMENT,
+        **overrides,
+    )
 
 
 def test_the_closure_is_the_node_what_it_imports_and_what_it_declared_and_nothing_else(
@@ -142,7 +148,12 @@ def test_a_name_two_roots_both_hold_is_refused_rather_than_settled_by_order(lab:
     target = Target.spelled([Lab.JOB], lab.root)
     assert target is not None
     with pytest.raises(MissionError, match="`experiments` is a package under more than one"):
-        Closure.of(target, root=lab.root, distributions=(*Lab.DISTRIBUTIONS, "research/other"))
+        Closure.of(
+            target,
+            root=lab.root,
+            distributions=(*Lab.DISTRIBUTIONS, "research/other"),
+            environment=lab.root / _ENVIRONMENT,
+        )
 
 
 def test_the_job_file_itself_reaches_its_home_root_even_when_nothing_else_is_imported(
@@ -167,7 +178,10 @@ def test_an_import_root_the_workspace_does_not_hold_defines_nothing_and_ships_no
     target = Target.spelled([Lab.JOB], lab.root)
     assert target is not None
     closure = Closure.of(
-        target, root=lab.root, distributions=(*Lab.DISTRIBUTIONS, "packages/absent/src")
+        target,
+        root=lab.root,
+        distributions=(*Lab.DISTRIBUTIONS, "packages/absent/src"),
+        environment=lab.root / _ENVIRONMENT,
     )
     assert closure.first_party == ("core", "experiments", "sub")
     assert closure.roots == ("research/camp", *Lab.DISTRIBUTIONS)
@@ -226,10 +240,10 @@ def test_a_node_under_no_repository_cannot_say_what_it_keeps(lab: Lab, tmp_path:
     target = Target.spelled(["node/run.py"], loose)
     assert target is not None
     with pytest.raises(MissionError, match="under no git repository"):
-        Closure.of(target, root=loose, distributions=())
+        Closure.of(target, root=loose, distributions=(), environment=loose / _ENVIRONMENT)
 
 
-def _closure_with_ext(lab: Lab) -> Closure:
+def _closure_with_ext(lab: Lab, *, environment: Path) -> Closure:
     """The lab's job, rewritten to import a third distribution, `ext`, closed over all three."""
     lab.write("packages/ext/src/ext/__init__.py", "")
     lab.write(
@@ -237,21 +251,25 @@ def _closure_with_ext(lab: Lab) -> Closure:
     )
     target = Target.spelled([Lab.JOB], lab.root)
     assert target is not None
-    return Closure.of(target, root=lab.root, distributions=(*Lab.DISTRIBUTIONS, _EXT))
+    return Closure.of(
+        target,
+        root=lab.root,
+        distributions=(*Lab.DISTRIBUTIONS, _EXT),
+        environment=environment,
+    )
 
 
 def test_a_compiled_extension_built_inside_its_package_ships_beside_it_marked_built(
-    lab: Lab, monkeypatch: pytest.MonkeyPatch
+    lab: Lab,
 ) -> None:
-    """cutoken's own `.pyi` stub sits in the tree; a real build's `.so` sitting there too ships."""
+    """The target env's RECORD names the `.so`; it sits in the tree, so it ships beside it."""
     lab.write("packages/ext/.gitignore", "*.so\n")
-    binary = lab.write(
-        "packages/ext/src/ext/_native.cpython-314-x86_64-linux-gnu.so", "not an elf, a stub\n"
+    environment = lab.compiled(
+        "camp-ext",
+        lab.root / f"{_EXT}/ext/_native.cpython-314-x86_64-linux-gnu.so",
+        imports="ext",
     )
-    monkeypatch.setattr(
-        closure_module, "_extension_files", lambda name: (binary,) if name == "ext" else ()
-    )
-    closure = _closure_with_ext(lab)
+    closure = _closure_with_ext(lab, environment=environment)
     shipped = "packages/ext/src/ext/_native.cpython-314-x86_64-linux-gnu.so"
     assert shipped in closure.files
     assert closure.built == (shipped,)
@@ -259,16 +277,52 @@ def test_a_compiled_extension_built_inside_its_package_ships_beside_it_marked_bu
     assert _EXT in closure.roots
 
 
-def test_a_compiled_extension_only_in_the_environment_defers_the_whole_package(
-    lab: Lab, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_compiled_extension_only_in_the_environment_defers_the_whole_package(lab: Lab) -> None:
     """Where cutoken's own `_native` was actually found (2026-09-07): outside the tree entirely."""
-    outside = Path("/somewhere/outside/ext/_native.cpython-314-x86_64-linux-gnu.so")
-    monkeypatch.setattr(
-        closure_module, "_extension_files", lambda name: (outside,) if name == "ext" else ()
+    environment = lab.compiled(
+        "camp-ext",
+        lab.root / f"{_ENVIRONMENT}/lib/python3.14/site-packages/ext/"
+        "_native.cpython-314-x86_64-linux-gnu.so",
     )
-    closure = _closure_with_ext(lab)
+    closure = _closure_with_ext(lab, environment=environment)
     assert not any(file.startswith(f"{_EXT}/") for file in closure.files)
     assert closure.built == ()
     assert closure.deferred == ("ext",)
     assert _EXT not in closure.roots
+
+
+def test_the_extension_answer_comes_from_the_target_environment_not_this_interpreter(
+    lab: Lab,
+) -> None:
+    """The read is of the compiled env's dist-infos, never of the interpreter asking.
+
+    The process dispatching a job is a uv tool whose own site-packages holds none of the job's
+    packages: it read its own metadata for a day, found no extension, deferred nothing, and the
+    installed CLI died importing `cutoken.tokenization.data._native` (2026-09-07). So the
+    distribution here is named unlike its import — no name-based read could find it — and it
+    exists in the target environment alone, which this test's own interpreter has never heard
+    of. A package the target environment holds no record of stays pure source, the answer the
+    right reading gives when there is genuinely nothing compiled to know.
+    """
+    lab.write(
+        "research/camp/experiments/node/run.py",
+        "import ext\nimport sub.thing\n\n\ndef main() -> None:\n    pass\n",
+    )
+    lab.write("packages/ext/src/ext/__init__.py", "")
+    environment = lab.compiled(
+        "camp-ext-binary",
+        lab.root / f"{_ENVIRONMENT}/lib/python3.14/site-packages/ext/"
+        "_native.cpython-314-x86_64-linux-gnu.so",
+    )
+    target = Target.spelled([Lab.JOB], lab.root)
+    assert target is not None
+    closure = Closure.of(
+        target,
+        root=lab.root,
+        distributions=(*Lab.DISTRIBUTIONS, _EXT),
+        environment=environment,
+    )
+    # `sub` is in no environment's records anywhere: nothing compiled to know, so it ships.
+    assert "packages/sub/src/sub/__init__.py" in closure.files
+    assert not any(file.startswith(f"{_EXT}/") for file in closure.files)
+    assert closure.deferred == ("ext",)

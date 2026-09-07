@@ -1,7 +1,8 @@
 import csv
 from functools import cached_property
 from importlib.metadata import distributions
-from pathlib import Path
+from inspect import getmodulename
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from patos import FrozenOpenModel
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
 # installer, so a conda-owned record belongs to another manager and is never touched here.
 _INSTALLER = "uv-pixi"
 _ARTIFACT_SUFFIXES = frozenset({".dylib", ".pyd", ".so"})
+# The extensions an import resolves through, as opposed to a linked library a `.so` carries.
+_EXTENSION_SUFFIXES = frozenset({".pyd", ".so"})
 # What a compiler opens. Build configuration is deliberately not here: `pyproject.toml`,
 # `CMakeLists.txt` and their kind are rewritten in place by every tool that touches packaging,
 # so their clocks move without a single translation unit changing, while a `.cpp` whose clock
@@ -23,6 +26,82 @@ _SOURCE_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", 
 # vendored `.venv`, a `target/` of freshly unpacked crates, or a `build/` of copied headers
 # date every package as permanently out of date.
 _IGNORED_DIRS = frozenset({"__pycache__", "build", "dist", "node_modules", "target"})
+
+
+def site_packages(prefix: Path) -> tuple[Path, ...]:
+    """The site-packages trees a compiled prefix holds, POSIX and Windows spellings alike."""
+    candidates = [
+        *(prefix / "lib").glob("python*/site-packages"),
+        prefix / "Lib" / "site-packages",
+    ]
+    return tuple(tree for tree in candidates if tree.is_dir())
+
+
+def recorded_extensions(name: str, *, prefix: Path) -> tuple[Path, ...]:
+    """The compiled extensions the environment at `prefix` holds for import name `name`.
+
+    Asked of that environment's own dist-infos and never of the interpreter asking: the process
+    dispatching a job is a uv tool whose own site-packages holds none of what the job's target
+    environment holds, and it read its own metadata for a day and deferred nothing (2026-09-07).
+    The shape read here is the one thing a package's installed form is knowable from without
+    running its code: a build backend is free to install a compiled extension anywhere while
+    redirecting only the pure Python half of an editable install back to the source, and the
+    RECORD is where that split is written down.
+
+    The import name maps to a distribution the way `importlib.metadata.packages_distributions`
+    maps it, off a declared `top_level.txt` or inferred from the RECORD's own paths, with the
+    same last resort of a distribution named exactly like the import; the first distribution to
+    claim the name wins, ordered by distribution name so the answer never depends on directory
+    reading order. What comes back is where the environment says the extensions are, whether or
+    not every file is still there: a recorded extension gone missing is exactly the state the
+    caller has to know about, not one to silently drop.
+
+    name: the top-level import name, the package directory under its import root.
+    prefix: the compiled environment's prefix, whose site-packages are read.
+    """
+    found = sorted(
+        (
+            (dist, site)
+            for site in site_packages(prefix)
+            for dist in distributions(path=[str(site)])
+        ),
+        key=lambda pair: str(pair[0].name or ""),
+    )
+    for dist, site in found:
+        if name in _import_roots(dist):
+            return _recorded(dist, site)
+    for dist, site in found:
+        if str(dist.name or "").casefold() == name.casefold():
+            return _recorded(dist, site)
+    return ()
+
+
+def _import_roots(dist: Distribution) -> set[str]:
+    """The top-level import names `dist` claims, declared or inferred from its RECORD."""
+    declared = (dist.read_text("top_level.txt") or "").split()
+    if declared:
+        return set(declared)
+    record = dist.read_text("RECORD") or ""
+    roots: set[str] = set()
+    for row in csv.reader(record.splitlines()):
+        path = PurePosixPath(row[0])
+        if ".." in path.parts or path.parts[0].endswith(".dist-info"):
+            continue
+        if len(path.parts) > 1:
+            roots.add(path.parts[0])
+        elif stem := getmodulename(path.name):
+            roots.add(stem)
+    return roots
+
+
+def _recorded(dist: Distribution, site: Path) -> tuple[Path, ...]:
+    """The compiled extensions `dist`'s RECORD records, absolute, under `site`."""
+    record = dist.read_text("RECORD") or ""
+    return tuple(
+        site / row[0]
+        for row in csv.reader(record.splitlines())
+        if row and Path(row[0]).suffix in _EXTENSION_SUFFIXES
+    )
 
 
 class DirInfo(FrozenOpenModel):
@@ -192,16 +271,10 @@ class EnvironmentAudit:
 
     def installed(self) -> Iterator[InstalledPackage]:
         """Every uv-installed distribution across the environment's site-packages trees."""
-        candidates = [
-            *self.prefix.glob("lib/python*/site-packages"),
-            self.prefix / "Lib" / "site-packages",
-        ]
-        for site_packages in candidates:
-            if not site_packages.is_dir():
-                continue
-            for distribution in distributions(path=[str(site_packages)]):
+        for tree in site_packages(self.prefix):
+            for distribution in distributions(path=[str(tree)]):
                 if (distribution.read_text("INSTALLER") or "").strip() == _INSTALLER:
-                    yield InstalledPackage(distribution, site_packages)
+                    yield InstalledPackage(distribution, tree)
 
     def suspect(self) -> tuple[str, ...]:
         """Every package to reinstall, the damaged wheels and the editables to rebuild."""
