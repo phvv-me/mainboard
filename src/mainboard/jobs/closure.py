@@ -18,8 +18,25 @@
 #
 # NEEDS ARE NOT CODE. A path the job declares it reads is reached inside the snapshot by a link
 # back to the mirror: never copied, never digested, and never allowed to sit over a shipped file.
+#
+# A COMPILED EXTENSION IS NOT SOURCE. The walk reads a package's `.py` files and an editable
+# install redirects exactly those to the tree; a compiled `_native.so` is neither, and no `.py`
+# beside it says where the built bytes live. `importlib.metadata` is asked instead, the one
+# place a package's installed shape is knowable without running it (`packages_distributions`
+# plus `distribution(...).files`, the same reading `trials.provenance.installed` already
+# trusts): the answer for `cutoken` is that nanobind's `_native` is not under the source tree at
+# all, but physically installed beside a scikit-build-core editable redirect, in the
+# environment's own `site-packages` (2026-09-07). An extension found inside the package's own
+# directory ships beside it, `built` in the listing since git may hold no opinion on a generated
+# file at all. An extension found outside the tree defers the whole package to the environment
+# instead of shipping half of it: a stale pure-Python half under this closure's digest beside a
+# live compiled half resolved from wherever the host's editable install happens to point is not
+# a closure, so nothing of that package ships and the runner's finder lets every import of it
+# through unchecked, trusting the same environment install the job's `PYTHONPATH` would otherwise
+# have shadowed.
 
 import ast
+from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -146,6 +163,11 @@ class Closure(FrozenModel):
         the runner can refuse one the closure left out instead of reading it from the mirror.
     needs: workspace-relative paths the job reads on the host, linked back to the mirror.
     fetch: the results path the job declared, empty when it declared none.
+    built: workspace-relative paths of compiled extensions shipped beside their package's
+        source, marked `built` in the listing regardless of what git makes of them.
+    deferred: top-level names whose whole distribution the closure left to the environment
+        because one of its compiled extensions resolves outside the tree; the runner's finder
+        admits every import of these rather than checking them against the listing.
     """
 
     target: Target
@@ -155,6 +177,8 @@ class Closure(FrozenModel):
     first_party: tuple[str, ...] = ()
     needs: tuple[str, ...] = ()
     fetch: str = ""
+    built: tuple[str, ...] = ()
+    deferred: tuple[str, ...] = ()
 
     @classmethod
     def of(
@@ -178,11 +202,23 @@ class Closure(FrozenModel):
         reached = walker.reach(target.file)
         declared = target.declaration(root)
         files = set(repositories.kept(target.node))
+        built: set[str] = set()
+        deferred: set[str] = set()
+        decided: dict[str, tuple[bool, tuple[str, ...]]] = {}
         for module in reached:
-            if module.root in distributions:
-                files.update(repositories.kept(cls.__package(module)))
-            else:
+            if module.root not in distributions:
                 files.add(module.path)
+                continue
+            package = cls.__package(module)
+            if package not in decided:
+                decided[package] = cls.__compiled(package, root=root)
+            outside, extensions = decided[package]
+            if outside:
+                deferred.add(PurePosixPath(package).name)
+            else:
+                files.update(repositories.kept(package))
+                built.update(extensions)
+        files.update(built)
         for resource in declared.resources:
             files.update(cls.__pinned(resource, root, repositories))
         files.add(Project().manifest)
@@ -192,12 +228,18 @@ class Closure(FrozenModel):
             target=target,
             owner=repositories.owning(root / target.node),
             files=tuple(sorted(files)),
-            roots=tuple(place for place in walker.roots if any(m.root == place for m in reached)),
+            roots=tuple(
+                place
+                for place in walker.roots
+                if any(file == place or file.startswith(f"{place}/") for file in files)
+            ),
             first_party=tuple(
                 sorted({name for place in walker.roots for name in _defined(root / place)})
             ),
             needs=wanted,
             fetch=declared.fetch,
+            built=tuple(sorted(built)),
+            deferred=tuple(sorted(deferred)),
         )
 
     @staticmethod
@@ -219,6 +261,23 @@ class Closure(FrozenModel):
         return (PurePosixPath(module.root) / inside.parts[0]).as_posix()
 
     @staticmethod
+    def __compiled(package: str, *, root: Path) -> tuple[bool, tuple[str, ...]]:
+        """Whether `package` defers to the environment, and which of its extensions ship inside.
+
+        package: the top-level package directory, workspace-relative.
+        root: the workspace root.
+        """
+        tree = (root / package).resolve()
+        inside: list[str] = []
+        for file in _extension_files(PurePosixPath(package).name):
+            try:
+                relative = file.resolve().relative_to(tree)
+            except ValueError:
+                return True, ()
+            inside.append((PurePosixPath(package) / relative).as_posix())
+        return False, tuple(inside)
+
+    @staticmethod
     def __admissible(needs: Sequence[str], files: set[str]) -> None:
         """Refuse a need that could not be linked: one leaving the workspace, or one over code."""
         for need in needs:
@@ -231,6 +290,25 @@ class Closure(FrozenModel):
                     f"the need {need!r} would sit over shipped code ({shadowed[0]}); a need is "
                     "data the job reads, declared beside the code rather than around it"
                 )
+
+
+def _extension_files(name: str) -> tuple[Path, ...]:
+    """The compiled extensions an installed distribution named `name` carries, absolute.
+
+    Read off `importlib.metadata` rather than the tree, since a build backend is free to
+    install a compiled extension anywhere while redirecting only the pure Python half of an
+    editable install back to the source: the metadata is the one place that installed shape is
+    knowable without running the distribution's own code.
+    """
+    for candidate in packages_distributions().get(name, (name,)):
+        try:
+            found = distribution(candidate)
+        except PackageNotFoundError:
+            continue
+        return tuple(
+            Path(file.locate()) for file in found.files or () if file.suffix in (".so", ".pyd")
+        )
+    return ()
 
 
 def _absolute(package: str, *, level: int, name: str) -> str | None:

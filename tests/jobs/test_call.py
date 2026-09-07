@@ -6,31 +6,41 @@ import pytest
 from cyclopts import App
 
 from mainboard.dispatch.provenance import listing
-from mainboard.dispatch.shared import CLOSURE_VAR, FIRST_PARTY_VAR
+from mainboard.dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
 from mainboard.jobs import call
+from mainboard.jobs import closure as closure_module
 from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
 
 from ..support import Lab
 
 
-def sealed(lab: Lab, monkeypatch: pytest.MonkeyPatch, *, without: str = "") -> Path:
+def sealed(
+    lab: Lab,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    without: str = "",
+    distributions: tuple[str, ...] = Lab.DISTRIBUTIONS,
+) -> Path:
     """Stand in the lab with its closure listed and the guard's roster exported, as a job does.
 
     without: a shipped file left out of the listing, to see the guard refuse it.
+    distributions: the import roots the manifest installs editable, `Lab.DISTRIBUTIONS` by
+        default.
     """
     from mainboard.dispatch.provenance import Repositories
 
     target = Target.spelled([Lab.JOB], lab.root)
     assert target is not None
-    closure = Closure.of(target, root=lab.root, distributions=Lab.DISTRIBUTIONS)
-    _, rows = Repositories(lab.root).seal(closure.owner, closure.files)
+    closure = Closure.of(target, root=lab.root, distributions=distributions)
+    _, rows = Repositories(lab.root).seal(closure.owner, closure.files, built=closure.built)
     written = lab.root / ".mainboard/closure.tsv"
     written.parent.mkdir(exist_ok=True)
     written.write_text(listing(row for row in rows if row.path != without), encoding="utf-8")
     monkeypatch.chdir(lab.root)
     monkeypatch.setenv(CLOSURE_VAR, str(written))
     monkeypatch.setenv(FIRST_PARTY_VAR, ":".join(closure.first_party))
+    monkeypatch.setenv(DEFERRED_VAR, ":".join(closure.deferred))
     monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
     # What `PYTHONPATH` carries for a job: every import root of the closure, the node's first.
     for place in reversed(closure.roots):
@@ -121,3 +131,35 @@ def test_the_guard_answers_portions_and_paths_outside_the_tree_by_the_listing(
     assert call.Guard.armed(lab.root) is not None
     monkeypatch.delenv(CLOSURE_VAR)
     assert call.Guard.armed(lab.root) is None
+
+
+def test_a_deferred_distribution_is_admitted_regardless_of_what_the_closure_shipped(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cutoken's `_native` resolves from the environment, never from a closure ships none of it.
+
+    A pure-Python stand-in masquerades as the extension so the import can actually run: the
+    closure defers `ext` on the metadata's word alone and ships nothing of it, and the guard
+    steps aside for the name rather than refusing an import the listing was never going to
+    carry, the same way it already does for anything that is not first-party at all.
+    """
+    lab.write("packages/ext/src/ext/__init__.py", "")
+    lab.write("packages/ext/src/ext/_native.py", "VALUE = 42\n")
+    lab.write(
+        "research/camp/experiments/node/run.py",
+        # `..helper.tools` stays imported so the node's ancestor packages keep shipping exactly
+        # as they do for the plain job; only `ext._native` is new here.
+        "from ..helper.tools import tool\n\nimport ext._native\n\n\n"
+        "def main() -> int:\n    tool()\n    return ext._native.VALUE\n",
+    )
+    outside = Path("/somewhere/outside/ext/_native.cpython-314-x86_64-linux-gnu.so")
+    monkeypatch.setattr(
+        closure_module, "_extension_files", lambda name: (outside,) if name == "ext" else ()
+    )
+    written = sealed(lab, monkeypatch, distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src"))
+    listed = written.read_text(encoding="utf-8").splitlines()
+    assert not any(line.startswith("packages/ext/src/") for line in listed)
+    # The environment already has `ext`, independent of what the closure shipped or put on
+    # `PYTHONPATH`; the guard's job is to let that resolution happen, not to answer it.
+    monkeypatch.syspath_prepend(str(lab.root / "packages/ext/src"))
+    assert call.main([f"{Lab.JOB}::main"]) == 42

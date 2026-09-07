@@ -94,6 +94,8 @@ class JobSpec(FrozenModel):
         for a command that ships the mirror.
     first_party: the top-level names the workspace's own import roots define, colon-joined,
         exported as `MAINBOARD_FIRST_PARTY` beside the closure for the runner's finder.
+    deferred: top-level names whose whole distribution the closure left to the environment,
+        colon-joined, exported as `MAINBOARD_DEFERRED` so the runner's finder admits them.
     exports: the host profile's `[hosts.<name>.exports]`, written as `export KEY=VALUE` lines
         before the command so every job on that host runs in the world its profile declares.
     """
@@ -119,6 +121,7 @@ class JobSpec(FrozenModel):
     digest: str = ""
     closure: str = ""
     first_party: str = ""
+    deferred: str = ""
     exports: dict[str, str] = {}
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
@@ -168,6 +171,7 @@ class JobSpec(FrozenModel):
             digest=shlex.quote(self.digest) if self.digest else "",
             closure=shlex.quote(self.closure) if self.closure else "",
             first_party=shlex.quote(self.first_party) if self.first_party else "",
+            deferred=shlex.quote(self.deferred) if self.deferred else "",
             root=shlex.quote(self.root),
             exports=[(key, shlex.quote(value)) for key, value in self.exports.items()],
             receipts_staging=staging(),

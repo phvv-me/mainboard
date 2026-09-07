@@ -235,6 +235,7 @@ class Landing:
             source=shipment.source.identity,
             closure=f"{pinned}/{listing}" if listing else "",
             first_party=":".join(shipment.first_party),
+            deferred=":".join(shipment.deferred),
             exports=self.plan.exports,
         )
         return self.dispatcher.write_job_script(spec, pbs=False)

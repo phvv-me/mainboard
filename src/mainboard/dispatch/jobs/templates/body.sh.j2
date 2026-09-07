@@ -46,6 +46,12 @@ export MAINBOARD_CLOSURE={{ closure }}
 # import of one of these from the closure alone, never from the mirror an editable install names.
 export MAINBOARD_FIRST_PARTY={{ first_party }}
 {% endif %}
+{% if deferred %}
+# Names whose whole distribution the closure left to the environment because a compiled
+# extension of theirs resolves outside the tree: the runner admits every import of these rather
+# than refusing one the listing was never going to carry.
+export MAINBOARD_DEFERRED={{ deferred }}
+{% endif %}
 {% for key, value in exports %}
 export {{ key }}={{ value }}
 {% endfor %}

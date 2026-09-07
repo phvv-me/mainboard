@@ -1,14 +1,18 @@
 from pathlib import Path
 
+import pytest
+
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.shared import (
     CLOSURE_VAR,
     COMMIT_VAR,
+    DEFERRED_VAR,
     DIGEST_VAR,
     FIRST_PARTY_VAR,
     SOURCE_VAR,
 )
 from mainboard.dispatch.shipment import Shipment, runner
+from mainboard.jobs import closure as closure_module
 from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
 
@@ -40,12 +44,14 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
     assert shipment.needs == ("data/corpus",)
     assert shipment.fetch == "research/camp/experiments/node/evidence"
     assert shipment.first_party == ("core", "experiments", "sub")
+    assert shipment.deferred == ()
     assert shipment.listing.splitlines()[0].startswith("mainboard.toml\t")
     assert len(shipment.listing.splitlines()) == len(closure.files)
     assert shipment.listing_name == f"closure-{shipment.source.digest[:12]}.tsv"
     exported = shipment.exports("/pinned/closure.tsv")
     assert exported[CLOSURE_VAR] == "/pinned/closure.tsv"
     assert exported[FIRST_PARTY_VAR] == "core:experiments:sub"
+    assert DEFERRED_VAR not in exported
     assert exported[SOURCE_VAR] == shipment.source.identity
     local = shipment.locally(lab.root, closure=".mainboard/dispatch/jobs/closure.tsv")
     assert local[:2] == [
@@ -56,3 +62,26 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
     assert local[-6:] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x"] or local[
         -7:-1
     ] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x"]
+
+
+def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What `Closure.deferred` finds ships nothing, and rides the shipment as its own variable."""
+    lab.write("packages/ext/src/ext/__init__.py", "")
+    lab.write(
+        "research/camp/experiments/node/run.py", "import ext\n\n\ndef main() -> None:\n    pass\n"
+    )
+    outside = Path("/somewhere/outside/ext/_native.cpython-314-x86_64-linux-gnu.so")
+    monkeypatch.setattr(
+        closure_module, "_extension_files", lambda name: (outside,) if name == "ext" else ()
+    )
+    target = Target.spelled([Lab.JOB], lab.root)
+    assert target is not None
+    closure = Closure.of(
+        target, root=lab.root, distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src")
+    )
+    shipment = Shipment.of_closure(closure, root=lab.root)
+    assert shipment.deferred == ("ext",)
+    assert shipment.exports()[DEFERRED_VAR] == "ext"
+    assert not any(line.startswith("packages/ext/src/") for line in shipment.listing.splitlines())

@@ -613,6 +613,7 @@ class Dispatcher:
             digest=shipment.source.digest,
             closure=f"{pinned}/{listing}" if listing else "",
             first_party=":".join(shipment.first_party),
+            deferred=":".join(shipment.deferred),
             exports=plan.exports,
         )
         script = self.write_job_script(

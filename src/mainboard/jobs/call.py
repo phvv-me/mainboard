@@ -11,6 +11,13 @@
 # does not name is refused by name, never read from wherever else it happens to be. A local run
 # arms the same finder over the same listing, so a walk that missed a module fails on the
 # workstation and not on the node.
+#
+# A DEFERRED NAME IS THE ONE EXCEPTION. A package whose compiled extension the closure found
+# living outside the tree ships none of it, on purpose, and its whole distribution is left for
+# the environment's own install to answer; asking `shipped` about it would refuse every import
+# of it by name, which is not a walk that missed a module but a closure that never carried one.
+# So the guard steps aside for these names instead, the same way it already does for anything
+# that is not first-party at all.
 
 import importlib
 import os
@@ -23,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from cyclopts import App
 
-from ..dispatch.shared import CLOSURE_VAR, FIRST_PARTY_VAR
+from ..dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
 from .target import SEPARATOR, dotted, home_of
 
 if TYPE_CHECKING:
@@ -39,12 +46,22 @@ class Guard(MetaPathFinder):
     names: the top-level names the workspace's own import roots define.
     shipped: the files the closure holds, relative to `root`.
     root: the tree the job stands in, the pinned snapshot or the workspace.
+    deferred: top-level names admitted regardless of `shipped`, whose whole distribution the
+        closure left to the environment rather than shipping half of it.
     """
 
-    def __init__(self, names: Sequence[str], shipped: Sequence[str], root: Path) -> None:
+    def __init__(
+        self,
+        names: Sequence[str],
+        shipped: Sequence[str],
+        root: Path,
+        *,
+        deferred: Sequence[str] = (),
+    ) -> None:
         self.names = frozenset(names)
         self.shipped = frozenset(shipped)
         self.root = root
+        self.deferred = frozenset(deferred)
 
     @classmethod
     def armed(cls, root: Path) -> Guard | None:
@@ -57,6 +74,7 @@ class Guard(MetaPathFinder):
             os.environ.get(FIRST_PARTY_VAR, "").split(":"),
             [row.split("\t", maxsplit=1)[0] for row in rows if row],
             root,
+            deferred=os.environ.get(DEFERRED_VAR, "").split(":"),
         )
         sys.meta_path.insert(0, guard)
         return guard
@@ -66,7 +84,8 @@ class Guard(MetaPathFinder):
     ) -> ModuleSpec | None:
         """The spec of a first-party module the closure ships, a refusal for one it does not."""
         del target
-        if fullname.partition(".")[0] not in self.names:
+        top = fullname.partition(".")[0]
+        if top not in self.names or top in self.deferred:
             return None
         spec = PathFinder.find_spec(fullname, path)
         if spec is not None and self.holds(spec):

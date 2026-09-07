@@ -47,6 +47,9 @@ class Status(StrEnum):
     IGNORED: in no commit because an ignore rule keeps it out, a generated module for instance;
         digested, since the job runs it, but no dirt, since git itself counts none.
     UNVERSIONED: under no repository at all.
+    BUILT: a compiled extension the closure ships beside its package's source, found through the
+        distribution's own installed record rather than git; digested, never dirt, since a build
+        artifact is not something the repository owning its package ever had an opinion on.
     """
 
     CLEAN = auto()
@@ -54,6 +57,7 @@ class Status(StrEnum):
     UNTRACKED = auto()
     IGNORED = auto()
     UNVERSIONED = auto()
+    BUILT = auto()
 
     @property
     def dirty(self) -> bool:
@@ -283,7 +287,9 @@ class Repositories:
         self.root = root
         self.repositories: dict[Path, Repository | None] = {}
 
-    def seal(self, owner: Repository | None, files: Sequence[str]) -> tuple[Source, list[Row]]:
+    def seal(
+        self, owner: Repository | None, files: Sequence[str], *, built: Sequence[str] = ()
+    ) -> tuple[Source, list[Row]]:
         """The source and the listing of a closure of `files`, owned by `owner`.
 
         The digest is taken over the listing itself, every shipped file's path and the hash of
@@ -292,12 +298,15 @@ class Repositories:
 
         owner: the repository holding the job file, whose HEAD names the identity.
         files: the closure's files, workspace-relative, as the snapshot holds them.
+        built: the compiled extensions among `files`, recorded `built` outright rather than
+            asked of a repository that never had an opinion on a build artifact.
         """
+        marked = frozenset(built)
         rows = sorted(
             (
                 row
                 for repository, shipped in self.__grouped(files).items()
-                for row in self.__read(repository, shipped)
+                for row in self.__read(repository, shipped, marked)
             ),
             key=lambda row: row.path,
         )
@@ -358,21 +367,32 @@ class Repositories:
         real = (self.root / path).resolve()
         return real.relative_to(repository.root.resolve()).as_posix()
 
-    def __read(self, repository: Repository | None, shipped: Sequence[str]) -> list[Row]:
+    def __read(
+        self, repository: Repository | None, shipped: Sequence[str], built: frozenset[str]
+    ) -> list[Row]:
         """The rows of `shipped` under `repository`: each file's bytes hashed, its status asked.
 
         The blob is taken over the bytes on disk for every file alike, tracked or not, so the
-        digest over the rows moves exactly when the shipped bytes do. Only the status comes from
-        the repository, and a file under none is simply unversioned.
+        digest over the rows moves exactly when the shipped bytes do. A path in `built` is
+        stamped outright rather than asked of the repository, which has no opinion on a
+        compiled extension the closure found through the distribution's own installed record.
         """
         if repository is None:
             return [
-                Row(path=path, blob=blob_of(self.root / path), status=Status.UNVERSIONED)
+                Row(
+                    path=path,
+                    blob=blob_of(self.root / path),
+                    status=Status.BUILT if path in built else Status.UNVERSIONED,
+                )
                 for path in shipped
             ]
         relative = {path: self.__relative(repository, path) for path in shipped}
         states = repository.states(list(relative.values()))
         return [
-            Row(path=path, blob=blob_of(self.root / path), status=states[spelled])
+            Row(
+                path=path,
+                blob=blob_of(self.root / path),
+                status=Status.BUILT if path in built else states[spelled],
+            )
             for path, spelled in relative.items()
         ]

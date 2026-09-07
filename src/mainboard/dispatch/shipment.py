@@ -15,7 +15,7 @@ from patos import FrozenModel
 from ..core.project import Project
 from ..jobs.closure import Closure
 from .provenance import Repositories, Source, listing
-from .shared import CLOSURE_VAR, COMMIT_VAR, DIGEST_VAR, FIRST_PARTY_VAR, SOURCE_VAR
+from .shared import CLOSURE_VAR, COMMIT_VAR, DEFERRED_VAR, DIGEST_VAR, FIRST_PARTY_VAR, SOURCE_VAR
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -40,6 +40,8 @@ class Shipment(FrozenModel):
     fetch: the results path the job declared, empty when it declared none.
     first_party: the top-level names the workspace's own import roots define, which the runner
         refuses to import from anywhere but the closure.
+    deferred: top-level names whose whole distribution the closure left to the environment,
+        which the runner's finder admits unchecked rather than refusing for want of a listing.
     """
 
     command: str
@@ -50,6 +52,7 @@ class Shipment(FrozenModel):
     needs: tuple[str, ...] = ()
     fetch: str = ""
     first_party: tuple[str, ...] = ()
+    deferred: tuple[str, ...] = ()
 
     @classmethod
     def of_command(cls, command: str, *, source: Source, imports: Sequence[str]) -> Shipment:
@@ -59,7 +62,7 @@ class Shipment(FrozenModel):
     @classmethod
     def of_closure(cls, closure: Closure, *, root: Path) -> Shipment:
         """A job, shipping its closure under a provenance scoped to it, run through the runner."""
-        source, rows = Repositories(root).seal(closure.owner, closure.files)
+        source, rows = Repositories(root).seal(closure.owner, closure.files, built=closure.built)
         target = closure.target
         return cls(
             command=shlex.join(
@@ -72,6 +75,7 @@ class Shipment(FrozenModel):
             needs=closure.needs,
             fetch=closure.fetch,
             first_party=closure.first_party,
+            deferred=closure.deferred,
         )
 
     @property
@@ -95,6 +99,7 @@ class Shipment(FrozenModel):
             DIGEST_VAR: self.source.digest,
             CLOSURE_VAR: closure,
             FIRST_PARTY_VAR: ":".join(self.first_party),
+            DEFERRED_VAR: ":".join(self.deferred),
         }
         return {name: value for name, value in carried.items() if value}
 

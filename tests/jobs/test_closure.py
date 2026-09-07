@@ -3,10 +3,15 @@ from pathlib import Path
 import pytest
 
 from mainboard import MissionError
+from mainboard.jobs import closure as closure_module
 from mainboard.jobs.closure import Closure, Module, Walker, _absolute
 from mainboard.jobs.target import Target
 
 from ..support import Lab
+
+# The extension tests add a third distribution beside the lab's two, so nothing about the
+# existing fixtures moves under it.
+_EXT = "packages/ext/src"
 
 # What the lab's job ships: its node in full, the sibling package it imports, both distributions
 # whole, the resource it declared and the manifest. Nothing from the other campaign, nothing
@@ -222,3 +227,48 @@ def test_a_node_under_no_repository_cannot_say_what_it_keeps(lab: Lab, tmp_path:
     assert target is not None
     with pytest.raises(MissionError, match="under no git repository"):
         Closure.of(target, root=loose, distributions=())
+
+
+def _closure_with_ext(lab: Lab) -> Closure:
+    """The lab's job, rewritten to import a third distribution, `ext`, closed over all three."""
+    lab.write("packages/ext/src/ext/__init__.py", "")
+    lab.write(
+        "research/camp/experiments/node/run.py", "import ext\n\n\ndef main() -> None:\n    pass\n"
+    )
+    target = Target.spelled([Lab.JOB], lab.root)
+    assert target is not None
+    return Closure.of(target, root=lab.root, distributions=(*Lab.DISTRIBUTIONS, _EXT))
+
+
+def test_a_compiled_extension_built_inside_its_package_ships_beside_it_marked_built(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cutoken's own `.pyi` stub sits in the tree; a real build's `.so` sitting there too ships."""
+    lab.write("packages/ext/.gitignore", "*.so\n")
+    binary = lab.write(
+        "packages/ext/src/ext/_native.cpython-314-x86_64-linux-gnu.so", "not an elf, a stub\n"
+    )
+    monkeypatch.setattr(
+        closure_module, "_extension_files", lambda name: (binary,) if name == "ext" else ()
+    )
+    closure = _closure_with_ext(lab)
+    shipped = "packages/ext/src/ext/_native.cpython-314-x86_64-linux-gnu.so"
+    assert shipped in closure.files
+    assert closure.built == (shipped,)
+    assert closure.deferred == ()
+    assert _EXT in closure.roots
+
+
+def test_a_compiled_extension_only_in_the_environment_defers_the_whole_package(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where cutoken's own `_native` was actually found (2026-09-07): outside the tree entirely."""
+    outside = Path("/somewhere/outside/ext/_native.cpython-314-x86_64-linux-gnu.so")
+    monkeypatch.setattr(
+        closure_module, "_extension_files", lambda name: (outside,) if name == "ext" else ()
+    )
+    closure = _closure_with_ext(lab)
+    assert not any(file.startswith(f"{_EXT}/") for file in closure.files)
+    assert closure.built == ()
+    assert closure.deferred == ("ext",)
+    assert _EXT not in closure.roots

@@ -154,6 +154,7 @@ def test_a_sealed_job_exports_its_closure_and_the_first_party_roster_before_the_
         cmd="python -m mainboard.jobs.call a/run.py::app --",
         closure="/repo/.mainboard/dispatch/sources/k/.mainboard/dispatch/jobs/closure-ab.tsv",
         first_party="core:experiments",
+        deferred="cutoken",
     ).render(pbs=False)
 
     assert (
@@ -161,9 +162,11 @@ def test_a_sealed_job_exports_its_closure_and_the_first_party_roster_before_the_
         "/repo/.mainboard/dispatch/sources/k/.mainboard/dispatch/jobs/closure-ab.tsv"
     ) in sealed
     assert "export MAINBOARD_FIRST_PARTY=core:experiments" in sealed
+    assert "export MAINBOARD_DEFERRED=cutoken" in sealed
     assert sealed.index("MAINBOARD_FIRST_PARTY") < sealed.index("bash -c")
     plain = spec().render(pbs=False)
     assert "MAINBOARD_CLOSURE" not in plain and "MAINBOARD_FIRST_PARTY" not in plain
+    assert "MAINBOARD_DEFERRED" not in plain
 
 
 def test_the_command_runs_from_the_pinned_tree_whatever_an_earlier_stage_changed_into() -> None:

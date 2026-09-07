@@ -406,6 +406,7 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
         needs=("data/corpus",),
         fetch="a/evidence",
         first_party=("core", "experiments"),
+        deferred=("cutoken",),
     )
 
     handle = dispatcher.run(
@@ -420,6 +421,7 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     assert f"export PYTHONPATH={pinned}/research/camp:{pinned}/packages/core/src" in body
     assert f"export MAINBOARD_CLOSURE={pinned}/{listing}" in body
     assert "export MAINBOARD_FIRST_PARTY=core:experiments" in body
+    assert "export MAINBOARD_DEFERRED=cutoken" in body
     assert "export MAINBOARD_SOURCE=v1-dirty" in body
     assert f"cd {pinned}" in body
     [built] = [line for line in machine.lines if "mb_snap=" in line]

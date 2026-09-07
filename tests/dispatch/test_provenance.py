@@ -94,6 +94,21 @@ def test_an_ignored_module_the_job_imports_is_digested_but_never_dirt(lab: Lab) 
     assert not regenerated.dirty and regenerated.digest != source.digest
 
 
+def test_a_built_extension_is_recorded_built_outright_and_never_marks_the_tree_dirty(
+    lab: Lab,
+) -> None:
+    """An untracked `.so` git would call `UNTRACKED` (and so dirty) is `built` instead."""
+    shipped = "packages/core/src/core/_native.cpython-314-x86_64-linux-gnu.so"
+    binary = lab.write(shipped, "not an elf, a stub\n")
+    source, rows = Repositories(lab.root).seal(
+        Repository.owning(lab.root), ["mainboard.toml", shipped], built=(shipped,)
+    )
+    [built] = [row for row in rows if row.status is Status.BUILT]
+    assert built.path == shipped
+    assert built.blob == blob_of(binary)
+    assert not source.dirty
+
+
 def test_a_file_under_no_repository_is_unversioned_and_still_digested(
     lab: Lab, tmp_path: Path
 ) -> None:
