@@ -94,8 +94,8 @@ class Tracer(Registry):
     def resolve(self, kinds: Activity) -> Activity:
         """Reconcile requested ``kinds`` with :meth:`supported`: adapt ALL, else fail fast."""
         supported = self.supported()
-        if not supported:  # backend reports no support (e.g. no-op base) -> don't second-guess
-            return kinds
+        if not supported:
+            raise ValueError(f"trace backend {self.label!r} has no activity collector available")
         if kinds is Activity.ALL:
             dropped = kinds & ~supported
             if dropped:

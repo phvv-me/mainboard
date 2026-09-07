@@ -44,6 +44,7 @@
 
 from .adaptive import Absent, Owed, driver
 from .adversarial import Breach, Hunt
+from .artifacts import Artifact
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import ADMISSIBILITY, OPENED, Ambiguous, Dataset
 from .declaration import MARKERS, Declaration
@@ -53,6 +54,7 @@ from .flags import Flag, held, moved, reading
 from .lease import Busy, CardLease
 from .ledger import NESTED, Ledger, TrialReceipts, wire
 from .lints import Finding, findings
+from .log import Log
 from .provenance import (
     BASELINES,
     SOURCE_VAR,
@@ -73,6 +75,8 @@ from .universe import Universe
 from .vocabulary import Outcome, Stance, Vocabulary, Word
 
 __all__ = [
+    "Artifact",
+    "Log",
     "ADMISSIBILITY",
     "BASELINES",
     "MARKERS",

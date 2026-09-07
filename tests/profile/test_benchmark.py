@@ -47,3 +47,12 @@ def test_compare_tabulates_fastest_first(capsys: pytest.CaptureFixture[str]) -> 
     assert {s.label for s in samples} == {"a", "b"}
     assert capsys.readouterr().out
     assert samples == sorted(samples, key=lambda s: s.mean_us)
+
+
+@pytest.mark.parametrize(("iters", "warmup"), [(0, 1), (-1, 1), (1, -1)])
+def test_invalid_benchmark_counts_do_not_run_work(iters: int, warmup: int) -> None:
+    """Invalid counts fail before warmup or an empty sample reaches an aggregate."""
+    calls: list[int] = []
+    with pytest.raises(ValueError, match="iters >= 1 and warmup >= 0"):
+        benchmark(lambda: calls.append(1), iters=iters, warmup=warmup)
+    assert not calls

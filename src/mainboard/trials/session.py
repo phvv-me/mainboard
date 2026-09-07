@@ -274,6 +274,7 @@ class Trial:
         self.lane, self.key = lane_of(item)
         self.settled = ""
         self.gated = ""
+        self.artifacts: dict[str, JsonValue] = {}
 
     def __getattr__(self, name: str) -> Callable[..., None]:
         """One declared word as a method, so a lane calls `trial.validated(...)` and reads well.
@@ -353,6 +354,7 @@ class Trial:
                 "at": datetime.now(UTC).isoformat(timespec="seconds"),
                 "params": params,
                 "measured": dict(measured),
+                "artifacts": dict(self.artifacts),
             }
         )
 

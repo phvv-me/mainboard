@@ -9,6 +9,8 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ..profile.profiler import Collection
+from .artifacts import Artifact
 from .universe import Universe
 from .vocabulary import Vocabulary
 
@@ -54,6 +56,8 @@ class Declaration:
     repo: Path | None = None
     markers: Mapping[str, str] = field(default_factory=lambda: MARKERS)
     resident: Callable[[], int] | None = None
+    inputs: Mapping[str, Artifact] = field(default_factory=dict)
+    collection: Collection = field(default_factory=Collection)
 
     @property
     def tree(self) -> Path:

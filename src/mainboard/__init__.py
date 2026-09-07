@@ -66,7 +66,6 @@ _HOMES: dict[str, tuple[str, str]] = {
 }
 
 __all__ = [
-    *_HOMES,
     "Board",
     "Job",
     "ComputePath",

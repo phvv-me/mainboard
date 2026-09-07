@@ -111,7 +111,15 @@ class Target(FrozenModel):
         with, and the declaration sits on the function behind both: `Class::test_case[1]`
         declares what `test_case` declared.
         """
-        return declared(parsed(root / self.file), self.name.partition("[")[0])
+        declaration = declared(parsed(root / self.file), self.name.partition("[")[0])
+        if self.test and not declaration.fetch:
+            for parent in PurePosixPath(self.file).parents:
+                if parent.name == "experiments":
+                    parts = PurePosixPath(self.file).relative_to(parent).parts
+                    if len(parts) > 1:
+                        fetch = parent.parent / "datasets" / "experiments" / parts[0]
+                        return declaration.model_copy(update={"fetch": fetch.as_posix()})
+        return declaration
 
     @staticmethod
     def __relative(spelling: str, root: Path) -> str:

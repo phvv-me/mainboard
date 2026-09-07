@@ -216,6 +216,30 @@ def test_collection_only_runs_neither_body_nor_fixture(pytest_lab: Lab) -> None:
     assert not (pytest_lab.root / "marks.txt").exists()
 
 
+def test_namespace_node_keeps_relative_imports_and_its_project_identity(pytest_lab: Lab) -> None:
+    """A leaf PYTHONPATH would make pytest import test_probe as a top-level module."""
+    pytest_lab.write(
+        "research/study/pytest.ini",
+        "[pytest]\naddopts = --import-mode=importlib\nconsider_namespace_packages = true\n",
+    )
+    pytest_lab.write("research/study/experiments/__init__.py", "")
+    pytest_lab.write("research/study/experiments/other/helper.py", "VALUE = 7\n")
+    pytest_lab.write(
+        "research/study/experiments/node/experiment.py", "from ..other.helper import VALUE\n"
+    )
+    pytest_lab.write(
+        "research/study/experiments/node/test_probe.py",
+        "from .experiment import VALUE\n\ndef test_probe():\n    assert VALUE == 7\n",
+    )
+    pytest_lab.commit("a namespace experiment")
+    spelling = "research/study/experiments/node/test_probe.py::test_probe"
+    closure = closure_of(pytest_lab, spelling)
+    assert "research/study/experiments/other/helper.py" in closure.files
+    assert "research/study/experiments/node" not in closure.roots
+    done = sealed(pytest_lab, spelling)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
 def test_the_closure_carries_the_harness_the_walk_cannot_see(pytest_lab: Lab) -> None:
     """Conftest, the helper only it imports, and the config all ship beside the node."""
     closure = closure_of(pytest_lab, "tests/jobs/test_sample.py::test_runs[2]")

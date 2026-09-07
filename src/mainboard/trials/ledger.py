@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 # dataset and a lane's measurements are its own shape, so these ride as JSON text in one column
 # instead of forcing every lane's struct into every other lane's fragment. Both ends of the store
 # read this one tuple, so a writer and a reader cannot disagree about which columns are encoded.
-NESTED = ("params", "measured", "versions", "gates")
+NESTED = ("params", "measured", "versions", "gates", "artifacts")
 
 # The key a printed trial receipt carries its payload under. Spelled here rather than imported
 # for the reason `mainboard.verdicts` and `mainboard.dispatch.evidence` each spell it too: this

@@ -213,21 +213,27 @@ class Closure(FrozenModel):
         needs: data paths declared at dispatch time, joining the ones the file declares.
         """
         repositories = Repositories(root)
-        home = home_of(root / target.file, root=root).relative_to(root).as_posix()
+        config = cls.__pytest_config(target, root) if target.test else ""
+        boundary = root / config if config else None
+        home_path = home_of(root / target.file, root=root)
+        if boundary is not None and home_path.is_relative_to(boundary.parent):
+            home_path = boundary.parent
+        home = home_path.relative_to(root).as_posix()
         walker = Walker(root, home=home, distributions=distributions)
         reached = walker.reach(target.file)
         places = [home, *distributions]
-        config = ""
         if target.test:
             for conftest, plugins in cls.__pytest_harness(target, root):
-                place = home_of(root / conftest, root=root).relative_to(root).as_posix()
+                place_path = home_of(root / conftest, root=root)
+                if boundary is not None and place_path.is_relative_to(boundary.parent):
+                    place_path = boundary.parent
+                place = place_path.relative_to(root).as_posix()
                 places.append(place)
                 reached.extend(
                     Walker(root, home=place, distributions=distributions).reach(conftest)
                 )
                 for plugin in plugins:
                     reached.extend(walker.resolve(plugin))
-            config = cls.__pytest_config(target, root)
         declared = target.declaration(root)
         files = set(repositories.kept(target.node))
         built: set[str] = set()

@@ -14,6 +14,7 @@ from types import CodeType, FunctionType, ModuleType, TracebackType
 from typing import TypeAlias
 
 from patos import FrozenModel
+from pydantic import Field
 
 # The one place profiling reaches the probe package: a session that wants device evidence
 # and was handed no device finds the host's own. `probe.units.gpu` is the narrowest entry
@@ -92,9 +93,9 @@ class Collection(FrozenModel):
 
     features: Feature = Feature.DEFAULT
     activities: NativeActivity = NativeActivity.DEFAULT
-    device_index: int = 0
-    sample_interval_ms: int = 50
-    max_spans: int = 100_000
+    device_index: int = Field(default=0, ge=0)
+    sample_interval_ms: int = Field(default=50, gt=0)
+    max_spans: int = Field(default=100_000, gt=0)
     auto: tuple[str, ...] = ()
 
 
@@ -447,11 +448,16 @@ class Profiler:
                     frame.samples.append(snapshot)
 
     def _selected(self) -> DeviceProbe | None:
-        """The device this session samples: the `device_index`th visible one, else the first."""
+        """Select exactly the requested visible device; never substitute another card."""
         if not self.gpus:
             return None
         index = self.collection.device_index
-        return self.gpus[index] if index < len(self.gpus) else self.gpus[0]
+        try:
+            return self.gpus[index]
+        except IndexError:
+            raise ValueError(
+                f"device_index {index} is outside the {len(self.gpus)} visible devices"
+            ) from None
 
     def stats(self) -> list[RegionStat]:
         """Return per-span aggregates for the current session."""

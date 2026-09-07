@@ -52,6 +52,8 @@ def benchmark[T, S](
     sync: a barrier called after each run (e.g. ``torch.cuda.synchronize``) so async GPU
         work is included in the timing rather than just the launch.
     """
+    if iters < 1 or warmup < 0:
+        raise ValueError("benchmark requires iters >= 1 and warmup >= 0")
     barrier: Callable[[], S | None] = sync or _noop
     for _ in range(warmup):
         fn()

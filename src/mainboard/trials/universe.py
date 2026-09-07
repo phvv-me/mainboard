@@ -10,6 +10,7 @@
 # special case anywhere downstream.
 
 from pathlib import Path
+from typing import ClassVar
 
 from patos import FrozenModel
 
@@ -34,11 +35,22 @@ class Universe(FrozenModel):
     """
 
     root: Path
+    datasets: Path | None = None
+    dataset_type: ClassVar[type[Dataset]] = Dataset
     evidence: str = "evidence/receipts"
     axes: tuple[str, ...] = ()
     probed: tuple[str, ...] = ()
     nested: tuple[str, ...] = NESTED
     samples: int = 1
+
+    @property
+    def storage_root(self) -> Path:
+        """The declared data root, or the conventional sibling of an experiments tree."""
+        if self.datasets is not None:
+            return self.datasets
+        if self.root.name == "experiments":
+            return self.root.parent / "datasets" / "experiments"
+        return self.root
 
     @property
     def nodes(self) -> tuple[str, ...]:
@@ -50,18 +62,18 @@ class Universe(FrozenModel):
         found = tuple(
             sorted(
                 path.name
-                for path in self.root.iterdir()
+                for path in self.storage_root.iterdir()
                 if path.is_dir() and Dataset(path / self.evidence).parts
             )
-            if self.root.is_dir()
+            if self.storage_root.is_dir()
             else ()
         )
         return found or (("",) if self.dataset("").parts else ())
 
     def dataset(self, node: str) -> Dataset:
         """One node's receipt store, read with this universe's declared axes."""
-        return Dataset(
-            self.root / node / self.evidence,
+        return self.dataset_type(
+            self.storage_root / node / self.evidence,
             axes=self.axes,
             nested=self.nested,
             node=node,

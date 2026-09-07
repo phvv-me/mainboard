@@ -197,8 +197,7 @@ def test_activity_window_buffer_is_bounded(one_gpu: FakeGPU) -> None:
 def test_the_session_takes_its_device_from_the_collection_policy() -> None:
     """A policy is handed over whole, and it alone decides whether a GPU is selected at all.
 
-    With neither DEVICE nor ACTIVITY requested no GPU is ever touched, and a device index
-    past the end of the list falls back to the first rather than raising.
+    With neither DEVICE nor ACTIVITY requested no GPU is ever touched.
     """
     gpu = one_process_gpu()
     built = Profiler.under(Collection(features=Feature.SPANS), gpus=(gpu,))
@@ -208,9 +207,34 @@ def test_the_session_takes_its_device_from_the_collection_policy() -> None:
         assert profiler.gpu is None
 
     with Profiler(
-        gpus=(gpu,), features=Profiler.Feature.DEVICE, device_index=5, sample_interval_ms=1000
+        gpus=(gpu,), features=Profiler.Feature.DEVICE, device_index=0, sample_interval_ms=1000
     ) as profiler:
         assert profiler.gpu is gpu
+
+
+def test_an_invalid_device_index_never_profiles_a_different_card() -> None:
+    """A misspelled device must not produce evidence labeled with another card."""
+    profiler = Profiler(gpus=(one_process_gpu(),), features=Feature.DEVICE, device_index=5)
+    with pytest.raises(ValueError, match="device_index 5.*1 visible devices"), profiler:
+        pytest.fail("work ran with an invalid device selection")
+    assert not profiler.active
+    assert profiler.sampler is None
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"device_index": -1},
+        {"sample_interval_ms": 0},
+        {"sample_interval_ms": -1},
+        {"max_spans": 0},
+        {"max_spans": -1},
+    ],
+)
+def test_invalid_collection_bounds_fail_before_starting(settings: dict[str, int]) -> None:
+    """Device indices and buffer/sampler bounds cannot silently disable collection."""
+    with pytest.raises(ValueError):
+        Collection.model_validate(settings)
 
 
 def test_a_session_handed_no_device_profiles_the_hosts_own(

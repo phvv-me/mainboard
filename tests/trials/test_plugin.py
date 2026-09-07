@@ -377,6 +377,19 @@ def test_a_stale_card_lease_is_reclaimed_rather_than_wedging_every_run_after_it(
     assert not lock.exists()
 
 
+def test_collection_does_not_take_or_change_an_existing_gpu_lease(
+    universe: pytest.Pytester,
+) -> None:
+    """Inspecting GPU trial identities must work while another run holds the card."""
+    lock = Path(universe.path) / lease_module.filename()
+    held = f"{os.getpid()} {time.time()}"
+    lock.write_text(held, encoding="utf-8")
+    collected = ran(universe, "--collect-only", "--paid")
+    assert collected.ret == pytest.ExitCode.OK
+    assert lock.read_text(encoding="utf-8") == held
+    assert not store(universe).runs
+
+
 def test_a_trial_that_measured_nothing_fails_and_still_leaves_a_row(
     universe: pytest.Pytester,
 ) -> None:

@@ -2,7 +2,6 @@
 
 import time
 from collections.abc import Callable, Sequence
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -43,9 +42,15 @@ class Row[P: Point]:
     seconds: float = 0.0
 
     @property
-    def failed(self) -> bool:
-        """Return whether this point produced no evidence at all."""
-        return not (self.profile.summaries or self.profile.kernels)
+    def has_evidence(self) -> bool:
+        """Whether this point captured evidence, independently of any scientific verdict."""
+        return bool(
+            self.profile.summaries
+            or self.profile.windows
+            or self.profile.kernels
+            or self.profile.memcpys
+            or self.profile.activities
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,9 +82,9 @@ class Study[P: Point]:
     def run(self, work: Callable[[P], None], *, warm: bool = True) -> tuple[Row[P], ...]:
         """Measure `work` at every point, returning one row each.
 
-        A point that raises still yields a row, with whatever evidence was gathered before it
-        failed. A sweep that abandons its results because one configuration is unsupported
-        wastes every point before it, and a failed point is itself a finding.
+        Work and warmup exceptions propagate. A collected span does not make failed work
+        successful. Use parametrized pytest trials when points need independent failure
+        handling and durable receipts; this helper only returns a successful sweep.
 
         `warm` runs the first point once before anything is measured, because whatever a target
         compiles or allocates on its first call is charged to whichever point happens to come
@@ -88,14 +93,11 @@ class Study[P: Point]:
         """
         rows = []
         if warm and self.points:
-            with suppress(Exception):
-                work(self.points[0])
+            work(self.points[0])
         for point in self.points:
             label = point.label
             started = time.perf_counter()
-            # A failed point is a row and not a dead sweep, since abandoning the results would
-            # waste every point measured before it and the failure is itself a finding.
-            with Profiler.under(self.collection, gpus=self.gpus) as profiler, suppress(Exception):
+            with Profiler.under(self.collection, gpus=self.gpus) as profiler:
                 work(point)
             rows.append(
                 Row(

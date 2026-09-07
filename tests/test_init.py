@@ -11,6 +11,8 @@ def test_every_exported_name_resolves_and_nothing_else_does() -> None:
     surface is read here. Reading it twice is the memoization, since a deferred name binds onto
     the module and stops costing an import lookup after the first ask.
     """
+    assert len(mainboard.__all__) == len(set(mainboard.__all__))
+    assert set(mainboard.__all__) == set(mainboard._HOMES)
     for name in mainboard.__all__:
         assert getattr(mainboard, name) is getattr(mainboard, name)
     assert mainboard.Board.__name__ == "Board"

@@ -1,12 +1,13 @@
-# A sweep has to keep each point's conditions, and survive a point that fails.
+# A sweep keeps each point's conditions and never mistakes partial evidence for success.
 
 from collections.abc import Sequence
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from patos import FrozenModel
 
-from mainboard import Collection
+from mainboard import Collection, span
 from mainboard import ProfileStudy as Study
 from mainboard.profile import Feature, Point, Row
 
@@ -46,19 +47,38 @@ def test_every_point_keeps_its_conditions_beside_its_measurement(sizes: Sequence
     rows = study.run(lambda _: None)
     assert [row.label for row in rows] == [point.label for point in points]
     assert [row.point for row in rows] == points
-    assert all(isinstance(row, Row) and row.seconds >= 0.0 and row.failed for row in rows)
+    assert all(
+        isinstance(row, Row) and row.seconds >= 0.0 and not row.has_evidence for row in rows
+    )
 
 
-def test_one_failing_point_does_not_discard_the_others() -> None:
-    """Abandoning a sweep because one configuration is unsupported wastes every point before it."""
+@pytest.mark.parametrize("warm", [True, False])
+def test_work_that_raises_after_collecting_evidence_still_fails(warm: bool) -> None:
+    """Neither warmup nor a measured point may turn a swallowed exception into a row."""
+    visited: list[int] = []
 
     def work(point: Shape) -> None:
-        if point.size == 2:
+        visited.append(point.size)
+        with span("partial"):
             raise RuntimeError("unsupported on this device")
 
-    rows = Study.over([Shape(size=size) for size in (1, 2, 3)]).run(work)
-    assert len(rows) == 3
-    assert [row.label for row in rows] == ["size1", "size2", "size3"]
+    study = Study.over(
+        [Shape(size=size) for size in (1, 2, 3)], collection=Collection(features=Feature.SPANS)
+    )
+    with pytest.raises(RuntimeError, match="unsupported on this device"):
+        study.run(work, warm=warm)
+    assert visited == [1]
+
+
+def test_evidence_is_not_a_failure_or_scientific_verdict() -> None:
+    """A successful instrument can return evidence without settling any hypothesis."""
+    study = Study.over([Shape(size=1)], collection=Collection(features=Feature.SPANS))
+
+    def work(point: Shape) -> None:
+        with span(point.label):
+            pass
+
+    assert study.run(work, warm=False)[0].has_evidence
 
 
 def test_the_sweep_warms_before_it_measures() -> None:

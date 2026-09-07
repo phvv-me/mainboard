@@ -175,6 +175,74 @@ CUPTI, Perfetto merge manifests) that lands multiple machines on one queryable
 timeline. Experiment studies group many simultaneous jobs under one identity
 with content-addressed run ids and declared data needs.
 
+## Experiments and profiling
+
+A pytest experiment is a native job target:
+
+```console
+mainboard run path/to/test_experiment.py::test_measurement -- --collect-only
+mainboard submit --on gold path/to/test_experiment.py::test_measurement
+```
+
+Pytest owns fixtures, parametrization, assertions, and per-case failures. The
+`mainboard.jobs.job` decorator declares literal data needs, source resources,
+and a fetch path; Mainboard seals the import closure and dispatches that same
+target. Paths must resolve inside the declared environment. A decorator does
+not install a project's source package or make mutable input data immutable.
+
+The opt-in `mainboard.trials.pytest_plugin` supplies `trial`, `run`, and `stage`
+fixtures after the project provides its trials declaration. Trials own
+scientific receipts; a refuted hypothesis is distinct from a failed instrument.
+There is no injected `log` fixture yet.
+
+The profiling entry point remains independent of trials:
+
+```python
+from mainboard import Profiler, span
+
+with Profiler(features=Profiler.Feature.SPANS) as profiler:
+    with span("measurement"):
+        work()
+
+profile = profiler.result()
+profile.show()
+```
+
+| Need | Existing API | Boundary |
+| --- | --- | --- |
+| Python regions | `span`, `Profiler(auto=("package.module",))` | Explicit spans or PEP 669 instrumentation, not statistical sampling |
+| GPU execution trace | `Feature.ACTIVITY`, `Profile.perfetto(path)` | Native activity collection; explicitly requested activity cannot silently disappear |
+| Process device telemetry | `Feature.DEVICE` | Sampled GPU usage, not kernel execution time |
+| Callable timing | `benchmark(fn, sync=barrier)` | Synchronized wall time, not CUDA-event time |
+| Stage comparison | `profile_stages(cases, trace=True)` | Untraced timing pass followed by a separate trace pass |
+| Fleet telemetry | `mainboard sample`, `facts`, `compute` | Job/machine observations, not a replacement for in-process profiling |
+
+Keep profiling separate from uninstrumented throughput measurements, and keep
+the requested collection policy beside each saved profile. An invalid device
+index is an error, never permission to sample a different card. Profiling study
+exceptions propagate; `Row.has_evidence` describes capture, not success or a
+scientific verdict. Use pytest parametrization for independently recorded trials.
+
+`Feature.PYTHON` has no collector, and `Reach` launch/attach descriptors are not
+wired to execution. Neither `Profiler.run` nor `Profiler.show` exists: render
+the returned `Profile`.
+
+The `mainboard.trials.pytest_plugin` also injects `log`, backed by the existing
+trial identity and profiler. Use `log.info("phase {}", phase)`,
+`log.bind(model=model).metrics(loss=loss)`, `log.table(rows)`, and
+`log.image(path)`. `with log.profile():` attaches the existing profiler's result;
+it does not change the synchronization or timing protocol. Settle with the
+project's vocabulary, for example `log.validated("criterion held", error=error)`.
+
+Identity, output paths, and job fetch paths are inferred from the pytest node.
+Tables are Parquet; other artifacts are content-addressed bytes. Inputs are
+explicit `Declaration(inputs={alias: Artifact(...)})` references:
+`log.read(alias)` verifies size and SHA-256, and `log.read_table(alias)` reads
+Parquet. There is no ambient “latest” lookup or automatic producer execution.
+The facade is undergoing its first research pilots; remote behavior is not yet
+validated. Projects enforcing Parquet-only storage must permit the node-local
+`evidence/artifacts/` subtree for event journals and mixed-format payloads.
+
 ## Status
 
 0.1.0. Validated live on x86 and Grace hosts over ssh and pueue; PBS and
