@@ -6,19 +6,17 @@
 # trials live, what words it settles on, which process-global flags its lanes are allowed to move,
 # and which working tree stamps the commit, and the plugin is the rest.
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Mapping
+from pathlib import Path
+
+from patos import FrozenModel, Runtime
+from pydantic import Field
 
 from ..profile.profiler import Collection
 from .artifacts import Artifact
+from .flags import Flag
 from .universe import Universe
 from .vocabulary import Vocabulary
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-    from pathlib import Path
-
-    from .flags import Flag
 
 # What a trial can be marked with out of the box, and the two things a marker here does. The first
 # three decide whether a trial RUNS AT ALL, and `paid` is the only one wired to an option since it
@@ -35,8 +33,7 @@ MARKERS = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class Declaration:
+class Declaration(FrozenModel):
     """One workspace's trials, stated once and read by every hook the plugin implements.
 
     universe: where the trials live and what scopes their coverage.
@@ -51,13 +48,13 @@ class Declaration:
     """
 
     universe: Universe
-    words: Vocabulary = field(default_factory=Vocabulary)
-    flags: tuple[Flag, ...] = ()
+    words: Vocabulary = Field(default_factory=Vocabulary)
+    flags: tuple[Runtime[Flag], ...] = ()
     repo: Path | None = None
-    markers: Mapping[str, str] = field(default_factory=lambda: MARKERS)
+    markers: Mapping[str, str] = Field(default_factory=lambda: MARKERS.copy())
     resident: Callable[[], int] | None = None
-    inputs: Mapping[str, Artifact] = field(default_factory=dict)
-    collection: Collection = field(default_factory=Collection)
+    inputs: Mapping[str, Artifact] = Field(default_factory=dict)
+    collection: Collection = Field(default_factory=Collection)
 
     @property
     def tree(self) -> Path:

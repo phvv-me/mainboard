@@ -1,7 +1,6 @@
 """The injected facade preserves existing verdicts and durable, independently readable data."""
 
 import hashlib
-from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 
@@ -65,7 +64,7 @@ def test_declared_inputs_are_hash_checked_and_recorded(
     pinned = Artifact(
         path="input.bin", sha256=hashlib.sha256(content).hexdigest(), size=len(content)
     )
-    session = Session(replace(declared, inputs={"predecessor": pinned}))
+    session = Session(declared.model_copy(update={"inputs": {"predecessor": pinned}}))
     log = Log(session.trial(Item("alpha/t.py::read", tmp_path / "alpha/t.py")))
     assert log.read("predecessor") == content
     with pytest.raises(KeyError):
