@@ -1,5 +1,6 @@
 import sys
 from contextlib import suppress
+from json import loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, NoReturn
 
@@ -554,7 +555,10 @@ def build(root: Path | None = None) -> App:
         """
         frame = mainboard.Results(workspace_root()).query(sql, project=project)
         rows(
-            frame.to_dicts(), mode=mode_of(json_mode=json, agent=False), fields=(), title="results"
+            loads(frame.write_json()),
+            mode=mode_of(json_mode=json, agent=False),
+            fields=(),
+            title="results",
         )
 
     @app.command
