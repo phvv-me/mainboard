@@ -13,6 +13,7 @@ authors = [{ name = "Pedro Valois" }]
 dependencies = [
     "cyclopts>=3.0",
     "duckdb>=1.5.4",
+    "pytz>=2025.2",
     # Hardware inventory is a core Mainboard verb, so the official CUDA host bindings cannot be
     # hidden behind an extra on the two platforms NVIDIA supports. The wheel depends only on
     # cuda-pathfinder and locates installed CUDA/NVML libraries at runtime. macOS keeps its Apple

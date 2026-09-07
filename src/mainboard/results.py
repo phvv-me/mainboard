@@ -26,7 +26,7 @@ class Results:
         project: a research directory name; omitted means all projects, still labeled.
         Network refresh belongs to Mainboard monitor, not to an implicit SQL side effect.
         """
-        with duckdb.connect() as connection:
+        with duckdb.connect(config={"TimeZone": "UTC"}) as connection:
             self._views(connection, project)
             statements = connection.extract_statements(sql)
             if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
@@ -96,7 +96,9 @@ class Results:
                 raw = path.read_bytes()
                 if path.suffix == ".zst":
                     raw = zstd.decompress(raw)
-                for frame in parse_tail(raw.decode()):
+                # A live transfer may end inside a UTF-8 character as well as inside JSON.
+                complete, _, _ = raw.rpartition(b"\n")
+                for frame in parse_tail(complete.decode() + "\n"):
                     events.append(
                         json.dumps(
                             {
@@ -129,9 +131,15 @@ class Results:
                 FROM trials;
             CREATE VIEW artifacts AS SELECT DISTINCT e.project, e.stream,
                 coalesce(s.data->>'repository', e.root) AS root,
-                s.data AS context, e.data->>'name' AS name,
+                json_merge_patch(s.data, json_object('verdict',
+                    coalesce(t.verdict, v.data->>'verdict'))) AS context,
+                e.data->>'name' AS name,
                 json_merge_patch(e.data, '{"name":null}') AS reference
             FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
+            LEFT JOIN events v ON v.stream = s.stream AND v.project = s.project
+                AND v.topic = 'settled'
+            LEFT JOIN trials t ON t.project = s.project AND t.run = s.data->>'run'
+                AND t.trial = s.trial
             WHERE e.topic = 'artifact' AND s.topic = 'started';
             CREATE VIEW metrics AS SELECT e.project, s.data->>'run' AS run,
                 e.trial, e.recorded_at, e.metadata, e.data
