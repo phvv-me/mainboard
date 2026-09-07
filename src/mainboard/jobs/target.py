@@ -86,7 +86,8 @@ class Target(FrozenModel):
             if separator:
                 raise MissionError(f"no job file at {spelling}")
             return None
-        return cls(file=file, name=name or cls.__default(root / file), args=tuple(tokens[1:]))
+        start = 2 if len(tokens) > 1 and tokens[1] == "--" else 1
+        return cls(file=file, name=name or cls.__default(root / file), args=tuple(tokens[start:]))
 
     @property
     def spelling(self) -> str:
