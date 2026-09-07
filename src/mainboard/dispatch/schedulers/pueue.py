@@ -212,4 +212,7 @@ class Pueue:
             state=str(task.state),
             exit_code=task.exit_code,
             verdict=pueue_verdict(task),
+            stage=str(task.state).lower()
+            if task.state in {PueueState.RUNNING, PueueState.QUEUED}
+            else "",
         )
