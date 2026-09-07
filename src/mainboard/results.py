@@ -111,7 +111,7 @@ class Results:
             CREATE TABLE events AS SELECT DISTINCT
                 row->>'project' AS project, row->>'root' AS root,
                 row->>'job' AS stream, (row->>'offset')::UBIGINT AS offset,
-                (row->>'at')::TIMESTAMPTZ AS at,
+                (row->>'at')::TIMESTAMPTZ AS recorded_at,
                 row->'payload'->>'trial' AS trial,
                 row->'payload'->>'topic' AS topic,
                 row->'payload'->'metadata' AS metadata,
@@ -134,7 +134,7 @@ class Results:
             FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
             WHERE e.topic = 'artifact' AND s.topic = 'started';
             CREATE VIEW metrics AS SELECT e.project, s.data->>'run' AS run,
-                e.trial, e.at, e.metadata, e.data
+                e.trial, e.recorded_at, e.metadata, e.data
             FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
             WHERE e.topic = 'metrics' AND s.topic = 'started';
         """)

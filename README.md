@@ -256,7 +256,7 @@ Mainboard's remote result mounts and after fetching.
 ```console
 mainboard monitor --json
 mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
-mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY at DESC LIMIT 20"
+mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
 mainboard query "SELECT server, handle, state, verdict FROM jobs"
 ```
 

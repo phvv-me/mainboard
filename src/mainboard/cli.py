@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Annotated, NoReturn
 
 from cyclopts import App, Parameter
 
+import mainboard
+
 from . import staleness
 from .batch.spec import BatchSpec, Selection
 from .board import Board
@@ -19,7 +21,6 @@ from .durable import schedule
 from .listing import Listing
 from .manifest.loading import load
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
-from .results import Results
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -551,7 +552,7 @@ def build(root: Path | None = None) -> App:
         Views: runs, trials, events, metrics, artifacts, jobs. Project scopes science views;
         jobs always shows the fleet. Run monitor to refresh remote files, or schedule it.
         """
-        frame = Results(workspace_root()).query(sql, project=project)
+        frame = mainboard.Results(workspace_root()).query(sql, project=project)
         rows(
             frame.to_dicts(), mode=mode_of(json_mode=json, agent=False), fields=(), title="results"
         )
