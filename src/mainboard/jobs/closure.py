@@ -36,8 +36,19 @@
 # to point is not a closure, so nothing of that package ships and the runner's finder lets every
 # import of it through unchecked, trusting the same environment install the job's `PYTHONPATH`
 # would otherwise have shadowed.
+#
+# A PYTEST TARGET'S HARNESS IS NOT ITS IMPORTS. A `test_` file's fixtures live in conftest.py
+# files above it, which nothing the walk reads ever imports, so the whole-node shipping misses
+# them. The closure therefore walks up from the node and takes every ancestor conftest with its
+# own imports, plus what a literal `pytest_plugins` names -- the one spelling a dispatch can
+# read, since the file is never imported to be found out. The configuration file pytest would
+# adopt steers collection without being code, so the nearest one above the node ships with it:
+# `pytest.ini` by its name, the others by the section they carry.
 
 import ast
+import tomllib
+from configparser import ConfigParser
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -47,10 +58,10 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..dispatch.provenance import Repositories, Repository
 from ..engines.compile.backend.repair import recorded_extensions
-from .target import Target, dotted, home_of
+from .target import Target, dotted, home_of, parsed
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 # The dynamic import spellings whose literal argument the walk still follows.
 _DYNAMIC = ("import_module", "__import__")
@@ -205,6 +216,18 @@ class Closure(FrozenModel):
         home = home_of(root / target.file, root=root).relative_to(root).as_posix()
         walker = Walker(root, home=home, distributions=distributions)
         reached = walker.reach(target.file)
+        places = [home, *distributions]
+        config = ""
+        if target.test:
+            for conftest, plugins in cls.__pytest_harness(target, root):
+                place = home_of(root / conftest, root=root).relative_to(root).as_posix()
+                places.append(place)
+                reached.extend(
+                    Walker(root, home=place, distributions=distributions).reach(conftest)
+                )
+                for plugin in plugins:
+                    reached.extend(walker.resolve(plugin))
+            config = cls.__pytest_config(target, root)
         declared = target.declaration(root)
         files = set(repositories.kept(target.node))
         built: set[str] = set()
@@ -227,19 +250,23 @@ class Closure(FrozenModel):
         for resource in declared.resources:
             files.update(cls.__pinned(resource, root, repositories))
         files.add(Project().manifest)
+        if config:
+            files.add(config)
         wanted = tuple(dict.fromkeys([*declared.needs, *needs]))
         cls.__admissible(wanted, files)
+        roster = tuple(dict.fromkeys(places))
         return cls(
             target=target,
             owner=repositories.owning(root / target.node),
             files=tuple(sorted(files)),
             roots=tuple(
                 place
-                for place in walker.roots
-                if any(file == place or file.startswith(f"{place}/") for file in files)
+                for place in roster
+                if place == "."
+                or any(file == place or file.startswith(f"{place}/") for file in files)
             ),
             first_party=tuple(
-                sorted({name for place in walker.roots for name in _defined(root / place)})
+                sorted({name for place in roster for name in _defined(root / place)})
             ),
             needs=wanted,
             fetch=declared.fetch,
@@ -285,6 +312,32 @@ class Closure(FrozenModel):
         return False, tuple(inside)
 
     @staticmethod
+    def __pytest_harness(target: Target, root: Path) -> Iterator[tuple[str, tuple[str, ...]]]:
+        """The test file and every conftest above the node, with the plugins each names."""
+        place = PurePosixPath(target.node)
+        for candidate in [
+            PurePosixPath(target.file),
+            *(item / "conftest.py" for item in (place, *place.parents)),
+        ]:
+            if (root / candidate).is_file():
+                yield candidate.as_posix(), _pytest_plugins(root / candidate)
+
+    @staticmethod
+    def __pytest_config(target: Target, root: Path) -> str:
+        """The pytest configuration file governing the node, workspace-relative, empty for none.
+
+        Nearest wins, the way pytest adopts one, and every candidate is read statically: a
+        config is found out by name or by the section it carries, never by importing anything.
+        """
+        place = PurePosixPath(target.node)
+        for item in (place, *place.parents):
+            for name, carries in _PYTEST_CONFIGS:
+                candidate = item / name
+                if (root / candidate).is_file() and carries(root / candidate):
+                    return candidate.as_posix()
+        return ""
+
+    @staticmethod
     def __admissible(needs: Sequence[str], files: set[str]) -> None:
         """Refuse a need that could not be linked: one leaving the workspace, or one over code."""
         for need in needs:
@@ -297,6 +350,83 @@ class Closure(FrozenModel):
                     f"the need {need!r} would sit over shipped code ({shadowed[0]}); a need is "
                     "data the job reads, declared beside the code rather than around it"
                 )
+
+
+# The variable a conftest names its plugins by.
+_PLUGINS = "pytest_plugins"
+
+
+def _pytest_ini(file: Path) -> bool:
+    """Whether the file is pytest configuration; `pytest.ini` is, by its very name."""
+    del file
+    return True
+
+
+def _carries_pytest_options(file: Path) -> bool:
+    """Whether a `pyproject.toml` carries a `[tool.pytest.ini_options]` table."""
+    try:
+        return "ini_options" in tomllib.loads(file.read_text(encoding="utf-8"))["tool"]["pytest"]
+    except KeyError, TypeError, tomllib.TOMLDecodeError:
+        return False
+
+
+def _has_ini_section(file: Path, section: str) -> bool:
+    """Whether an ini file carries `section`, read without importing anything."""
+    parser = ConfigParser(interpolation=None)
+    parser.read(file, encoding="utf-8")
+    return parser.has_section(section)
+
+
+# The config files pytest adopts, nearest first inside a directory, each judged by name or by
+# a static read of the section it carries.
+_PYTEST_CONFIGS: tuple[tuple[str, Callable[[Path], bool]], ...] = (
+    ("pytest.ini", _pytest_ini),
+    ("pyproject.toml", _carries_pytest_options),
+    ("tox.ini", partial(_has_ini_section, section="pytest")),
+    ("setup.cfg", partial(_has_ini_section, section="tool:pytest")),
+)
+
+
+def _pytest_plugins(file: Path) -> tuple[str, ...]:
+    """The plugin modules `file` names in a literal `pytest_plugins`, empty for none.
+
+    The value is read like every declaration, off the syntax: a string is one plugin, a list or
+    tuple is several, and anything needing execution to be known names nothing a dispatch can
+    see, so it is refused rather than guessed at.
+    """
+    for node in parsed(file).body:
+        if (value := _plugins_value(node)) is None:
+            continue
+        try:
+            literal = ast.literal_eval(value)
+        except ValueError as opaque:
+            raise MissionError(
+                f"`{_PLUGINS}` in {file} must be a literal module name or list of them, since "
+                f"the file is read without being imported; {opaque}"
+            ) from None
+        names = (literal,) if isinstance(literal, str) else tuple(literal)
+        if not all(isinstance(name, str) for name in names):
+            raise MissionError(
+                f"`{_PLUGINS}` in {file} must name modules as strings, not {names!r}"
+            )
+        return names
+    return ()
+
+
+def _plugins_value(node: ast.stmt) -> ast.expr | None:
+    """The value `node` assigns to `_PLUGINS`, None when it is not that assignment."""
+    if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == _PLUGINS for target in node.targets
+    ):
+        return node.value
+    if (
+        isinstance(node, ast.AnnAssign)
+        and node.value is not None
+        and isinstance(node.target, ast.Name)
+        and node.target.id == _PLUGINS
+    ):
+        return node.value
+    return None
 
 
 def _absolute(package: str, *, level: int, name: str) -> str | None:

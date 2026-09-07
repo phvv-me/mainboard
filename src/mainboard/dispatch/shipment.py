@@ -64,10 +64,9 @@ class Shipment(FrozenModel):
         """A job, shipping its closure under a provenance scoped to it, run through the runner."""
         source, rows = Repositories(root).seal(closure.owner, closure.files, built=closure.built)
         target = closure.target
+        head = f"{target.file}::{target.name}" if target.name else target.file
         return cls(
-            command=shlex.join(
-                ["python", "-m", runner(), f"{target.file}::{target.name}", "--", *target.args]
-            ),
+            command=shlex.join(["python", "-m", runner(), head, "--", *target.args]),
             spelling=target.spelling,
             source=source,
             imports=closure.roots,

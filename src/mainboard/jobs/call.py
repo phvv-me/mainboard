@@ -18,6 +18,13 @@
 # of it by name, which is not a walk that missed a module but a closure that never carried one.
 # So the guard steps aside for these names instead, the same way it already does for anything
 # that is not first-party at all.
+#
+# A TEST FILE IS PYTEST'S TO RUN. A `test_` target is handed to `pytest.main` as the node id it
+# spells, fixtures and parametrization and exit status all native, with the guard already armed
+# so pytest's imports of the shipped modules answer from this tree. pytest's own rewrite hook
+# sits ahead of the guard on `meta_path`, which is why the closure carries the conftest chain
+# and every module a `pytest_plugins` literal names: those are the imports pytest answers
+# itself.
 
 import importlib
 import os
@@ -31,7 +38,7 @@ from typing import TYPE_CHECKING
 from cyclopts import App
 
 from ..dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
-from .target import SEPARATOR, dotted, home_of
+from .target import SEPARATOR, TEST_PREFIX, dotted, home_of
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -119,6 +126,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = args[1:]
     file, _, name = spelling.partition(SEPARATOR)
     Guard.armed(Path.cwd())
+    if Path(file).stem.startswith(TEST_PREFIX):
+        # The one environment-dependent import: an env that declares no pytest still runs every
+        # other target, and a test target in one fails here naming what is missing.
+        import pytest
+
+        return pytest.main([spelling if name else file, *args])
     return called(getattr(loaded(Path(file)), name), name, args)
 
 

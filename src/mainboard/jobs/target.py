@@ -21,6 +21,11 @@ SEPARATOR = "::"
 # The names a bare file spelling means, in the order they are looked for.
 DEFAULTS = ("app", "main")
 
+# The file prefix that makes a target a pytest module, the conventional boundary pytest itself
+# collects by. A `test_` file runs through pytest, so it gets fixtures, parametrization and
+# setup/teardown without mainboard growing an experiment DSL beside them.
+TEST_PREFIX = "test_"
+
 
 def home_of(file: Path, *, root: Path) -> Path:
     """The directory `file` is imported from: above every `__init__.py` its packages stack.
@@ -49,8 +54,10 @@ class Target(FrozenModel):
     """One job as spelled: a file, the name inside it, and the arguments it runs with.
 
     file: the job file, workspace-relative.
-    name: a cyclopts `App` or a zero-argument function defined in that module.
-    args: the tokens handed to the application, none for a function.
+    name: a cyclopts `App` or a zero-argument function defined in that module, or a pytest node
+        id inside a `test_` file (`Class::test_case[param]` included, everything after the
+        first separator), or empty meaning the whole test file.
+    args: the tokens handed to the application or to pytest, none for a function.
     """
 
     file: str
@@ -61,9 +68,10 @@ class Target(FrozenModel):
     def spelled(cls, tokens: Sequence[str], root: Path) -> Target | None:
         """The job `tokens` spell, or None when they are an ordinary command line.
 
-        A first token naming a Python file is a job, `::name` picking the target inside it and a
-        bare file meaning `app` and then `main`, whichever the file defines. A name given for a
-        file that is not there is refused rather than passed on as a command.
+        A first token naming a Python file is a job, `::name` picking the target inside it and
+        a bare file meaning `app` and then `main`, whichever the file defines -- or, for a
+        `test_` file, meaning the whole file's tests. A name given for a file that is not there
+        is refused rather than passed on as a command.
 
         tokens: the command tokens as the caller typed them.
         root: the workspace root the file is spelled from.
@@ -83,8 +91,13 @@ class Target(FrozenModel):
     @property
     def spelling(self) -> str:
         """The target as a command line spells it, its arguments quoted."""
-        head = f"{self.file}{SEPARATOR}{self.name}"
+        head = f"{self.file}{SEPARATOR}{self.name}" if self.name else self.file
         return f"{head} {shlex.join(self.args)}" if self.args else head
+
+    @property
+    def test(self) -> bool:
+        """Whether the job file is a pytest module, and so runs through pytest."""
+        return PurePosixPath(self.file).stem.startswith(TEST_PREFIX)
 
     @property
     def node(self) -> str:
@@ -108,7 +121,9 @@ class Target(FrozenModel):
 
     @staticmethod
     def __default(file: Path) -> str:
-        """The first of `DEFAULTS` the module defines at its top level."""
+        """The name a bare file spelling means: a whole pytest file, else `app` then `main`."""
+        if PurePosixPath(file.name).stem.startswith(TEST_PREFIX):
+            return ""
         defined = {
             target.id
             for node in parsed(file).body
