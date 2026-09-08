@@ -111,9 +111,10 @@ class Compiler:
         process may be replacing right now: a compile landing between a solve and this read
         makes the digest disagree with the blessing that solve had just written, and the refusal
         then named the very command that had just succeeded. The lock is the one the compile
-        itself takes, and it is reentrant, so a caller already holding it is not blocked here.
+        itself takes at the workspace root, not this compiler's shard directory. It is
+        reentrant, so a caller already holding it is not blocked here.
         """
-        with GeneratedFiles(directory=self.out).locked():
+        with GeneratedFiles(directory=self.root / Project().out_dir).locked():
             state = SyncState.load(self.out)
             if not self.pixi.lock.exists():
                 return

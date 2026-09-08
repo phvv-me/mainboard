@@ -1,15 +1,15 @@
 import tomllib
+from threading import Event, Thread
 from typing import TYPE_CHECKING
 
 import pytest
 import tomlkit
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.engines.compile.compiler import Compiler
-from mainboard.engines.compile.generated.files import (
-    _LOCKS,  # ruff:ignore[private-member-access]  reason=one test asserts the shared per-directory lock is held while vouch reads since=2026-09-05
-)
+from mainboard.engines.compile.generated import GeneratedFiles
 from mainboard.engines.compile.pixi_manifest import PixiManifest
+from mainboard.engines.compile.provisioner import Provisioner
 from mainboard.engines.compile.state import SyncState
 from mainboard.manifest import Manifest
 
@@ -366,30 +366,50 @@ def test_the_refusal_names_the_digests_and_the_file_they_were_read_from(
     assert "another process compiled into this workspace" in said
 
 
+@pytest.mark.parametrize("environment", ["default", "serving"])
+@pytest.mark.parametrize("generated", [".mainboard", ".renamed-output"])
 def test_vouch_reads_the_generated_files_under_the_lock_that_writes_them(
-    compiler_from: CompilerFrom, pixi: Pixi, monkeypatch: pytest.MonkeyPatch
+    environment: str, generated: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The answer is computed from files another process may be replacing right now.
+    """A real shard cannot read while the workspace compiler owns the generated files.
 
-    A compile landing between a solve and this read moves the digest under a blessing that was
-    right when it was written, so the read happens inside the lock the compile itself takes.
+    The old flat compiler fixture put both locks in the same directory, hiding the race.
+    Always release the writer and bound the worker join, including on assertion failure.
     """
-    pixi.manifest.write_text('[workspace]\nplatforms = ["linux-64"]\n', encoding="utf-8")
-    pixi.lock.write_text("version: 7\n", encoding="utf-8")
-    compiler = compiler_from(_BARE)
-    held: list[bool] = []
-    reading = Compiler.resolution_digest
+    monkeypatch.setattr(Project, "out_dir", property(lambda self: generated))
+    provisioner = Provisioner(
+        tmp_path, Manifest.model_validate(tomllib.loads(f"{_BARE}[envs.serving]\n"))
+    )
+    provisioner.recompiled(environment)
+    compiler = provisioner.compiler_for(environment)
+    compiler.pixi.lock.write_text("version: 7\n", encoding="utf-8")
+    assert compiler.out != provisioner.out
+    started, reading, finished = Event(), Event(), Event()
+    digest = Compiler.resolution_digest
 
     def watched(self: Compiler) -> str:
-        held.append(_LOCKS[compiler.out.resolve()].is_locked)
-        return reading(self)
+        reading.set()
+        return digest(self)
+
+    def inspect() -> None:
+        started.set()
+        with pytest.raises(MissionError):
+            compiler.vouch()
+        finished.set()
 
     monkeypatch.setattr(Compiler, "resolution_digest", watched)
+    worker = Thread(target=inspect, daemon=True)
+    try:
+        with GeneratedFiles(directory=provisioner.out).locked():
+            worker.start()
+            assert started.wait(timeout=5)
+            assert not reading.wait(timeout=0.1)
+            provisioner.recompiled(environment)
+    finally:
+        worker.join(timeout=5)
 
-    with pytest.raises(MissionError):
-        compiler.vouch()
-
-    assert held == [True]
+    assert not worker.is_alive()
+    assert reading.is_set() and finished.is_set()
 
 
 def test_a_lock_blessed_for_another_environment_says_which_one(
