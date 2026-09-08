@@ -1292,9 +1292,10 @@ class Board:
         retry escalates instead of dying to the same ceiling twice.
 
         A provider host is dispatched through its backend rather than over ssh, and the run it
-        hands back is recorded in the same dispatch cache a queued job lands in. That record is
-        what lets the durable sweep settle the run and end the rental, so a provider job nobody
-        stays to watch stops costing money when its command does.
+        hands back is recorded in the same dispatch cache a queued job lands in. Monitor must
+        run to collect evidence and request release. Install its periodic pass for unattended
+        jobs. Provider outages can delay release. A command exit or local timeout alone does
+        not stop billing.
 
         Every dispatch is tracked, which is why a run that named itself nothing is named here.
         A stream needs one key that outlives this process, since the sweep that settles the run
