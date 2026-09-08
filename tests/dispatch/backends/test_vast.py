@@ -1,5 +1,7 @@
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
+from email.message import Message
+from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -170,6 +172,15 @@ def test_pick_never_prefers_reliability_over_the_returned_price_ceiling() -> Non
     assert vast_backend(rows).pick(gpu_name="RTX 4090", gpus=1, max_usd_hr=0.18)["id"] == 22
     with pytest.raises(MissionError, match="no rentable"):
         vast_backend(rows, rows).pick(gpu_name="RTX 4090", gpus=1, max_usd_hr=0.1)
+
+
+def test_create_refusal_keeps_the_provider_reason_without_a_traceback() -> None:
+    refused = HTTPError(
+        f"{_ROOT}/asks/11/", 400, "Bad Request", Message(), BytesIO(b'{"msg":"ask expired"}')
+    )
+    backend = vast_backend(refused)
+    with pytest.raises(MissionError, match="offer 11.*400.*ask expired"):
+        backend.rented(offer(11, dph=0.17), plan=vast_plan(), launch={"runtype": "ssh"})
 
 
 @pytest.mark.parametrize(

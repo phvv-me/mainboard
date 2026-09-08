@@ -8,6 +8,7 @@ from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import landing as landing_module
 from mainboard.dispatch import provenance as provenance_module
 from mainboard.dispatch.landing import Landing, renter
+from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.rentals import LAUNCH, Rental
 from mainboard.dispatch.shared import state_dir
 from mainboard.dispatch.shipment import Shipment
@@ -154,6 +155,19 @@ def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would
     assert "timeout --kill-after=30s 1800" in body
     assert "bash -c 'python train.py'" in body
     assert "MAINBOARD_RECEIPTS" in body and "mainboard-receipts-begin" in body
+
+
+def test_a_rented_job_carries_the_complete_source_seal(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = machine_with("/root/projects\n")
+    landed, _, dispatcher = landing(workdir, host, monkeypatch)
+    source = Source(identity="abc1234", key="abc1234-5678", commit="a" * 40, digest="b" * 64)
+    shipment = Shipment.of_command("python train.py", source=source, imports=())
+    script = landed.script(shipment, root="/root/projects", listing="")
+    body = (dispatcher.root / script).read_text(encoding="utf-8")
+    assert f"MAINBOARD_SOURCE_COMMIT={source.commit}" in body
+    assert f"MAINBOARD_SOURCE_DIGEST={source.digest}" in body
 
 
 def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(

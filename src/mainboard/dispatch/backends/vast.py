@@ -465,7 +465,17 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         }
         if self.spot:
             body["price"] = float(offer["min_bid"])
-        payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
+        try:
+            payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
+        except HTTPError as refused:
+            try:
+                detail = json.load(refused)
+            except ValueError:
+                detail = {}
+            reason = detail.get("msg") or detail.get("message") or detail.get("error") or ""
+            raise MissionError(
+                f"vast refused offer {offer['id']} (HTTP {refused.code}): {str(reason)[:400]}"
+            ) from refused
         return str(payload["new_contract"])
 
     def request(

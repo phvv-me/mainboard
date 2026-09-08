@@ -233,6 +233,8 @@ class Landing:
             mem_gb=self.resources.mem_gb,
             pythonpath=":".join(f"{pinned}/{place}".rstrip("/") for place in shipment.imports),
             source=shipment.source.identity,
+            commit=shipment.source.commit,
+            digest=shipment.source.digest,
             closure=f"{pinned}/{listing}" if listing else "",
             first_party=":".join(shipment.first_party),
             deferred=":".join(shipment.deferred),
