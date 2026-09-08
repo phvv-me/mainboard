@@ -111,6 +111,13 @@ def test_numeric_hue_keeps_sql_order_and_exact_palette_colors(
         axis = canvas.axes[0]
         labels = axis.get_legend_handles_labels()[1]
         assert labels == ["20", "10"]
+        canvas.canvas.draw()
+        legend = axis.get_legend()
+        assert legend is not None
+        bounds = legend.get_window_extent()
+        assert bounds.x0 >= axis.get_window_extent().x1
+        assert canvas.bbox.contains(bounds.x0, bounds.y0)
+        assert canvas.bbox.contains(bounds.x1, bounds.y1)
         if kind == "scatter":
             colors = axis.collections[0].get_facecolors()
         elif kind == "line":

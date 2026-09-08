@@ -136,6 +136,8 @@ class Plot:
                 )
             case _:
                 raise ValueError("plot kind must be scatter, line, or bar")
+        if hue:
+            sns.move_legend(axis, "upper left", bbox_to_anchor=(1, 1), borderaxespad=0)
 
     def _publish(self, canvas: Figure, paths: tuple[Path, ...]) -> None:
         """Render every requested format before publishing any complete file."""

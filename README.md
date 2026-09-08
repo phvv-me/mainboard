@@ -214,6 +214,21 @@ profile = profiler.result()
 profile.show()
 ```
 
+For one operation's CUDA activity, use a synchronized window.
+
+```python
+answer, profile = Profiler.capture(
+    work, activities=Profiler.Activity.KERNEL, device_index=0
+)
+```
+
+`work` runs once. Capture reuses a compatible active `Profiler` or opens one.
+Nested windows share the collector without adding duplicate records to the outer
+total. Issue CUDA work serially from one host thread in the selected device's
+current context. Checkpoints synchronize all streams in that context.
+Unavailable activity support or collection failures raise, including lost records.
+An empty window is absent evidence, not proof that a kernel ran.
+
 | Need | Existing API | Boundary |
 | --- | --- | --- |
 | Python regions | `span`, `Profiler(auto=("package.module",))` | Explicit spans or PEP 669 instrumentation, not statistical sampling |
@@ -236,9 +251,15 @@ the returned `Profile`.
 The `mainboard.trials.pytest_plugin` also injects `log`, backed by the existing
 trial identity and profiler. Use `log.info("phase {}", phase)`,
 `log.bind(model=model).metrics(loss=loss)`, `log.table(rows)`, and
-`log.image(path)`. `with log.profile():` attaches the existing profiler's result;
-it does not change the synchronization or timing protocol. Settle with the
-project's vocabulary, for example `log.validated("criterion held", error=error)`.
+`log.image(path)`. `log.model(value)` attaches a Pydantic model's JSON bytes with
+an inferred name. Retain a captured profile with
+`log.model(profile, schema_name="mainboard.Profile")`.
+
+`with log.profile():` opens the declared profiling policy and attaches its result,
+even when the body raises. Use `Profiler.capture` for nested operation windows
+inside an activity-enabled policy. Do not open a second collector.
+Profiling does not replace the experiment's timing protocol. Settle with the
+project's vocabulary, such as `log.validated("criterion held", error=error)`.
 
 Identity, output paths, and job fetch paths are inferred from the pytest node.
 Tables are Parquet; other artifacts are content-addressed bytes. Inputs are
@@ -298,8 +319,9 @@ This example charts the collected run inventory, not comparative GPU performance
 For measurements, filter the experiment, input regime, and hardware explicitly in SQL.
 `scatter` shows individual rows; `line` retains SQL order without estimating a mean or
 adding error bars. `bar` requires one row per x/hue group, so aggregate in SQL first.
-`--hue` identifies a categorical series column in SQL appearance order; `--title` labels
-the scope. Paleta supplies native palette/theme names without copying their definitions.
+`--hue` identifies a categorical series column in SQL appearance order. Its legend
+sits outside the data axes. `--title` labels the scope. Paleta supplies native
+palette/theme names without copying their definitions.
 Output extensions select Matplotlib formats and DPI controls raster resolution.
 Null/nonfinite plotted values and existing output files are refused, not silently dropped
 or overwritten. Tables with bespoke plots can use Seaborn directly on
@@ -358,9 +380,9 @@ Log provenance: the standalone profile host field remains unpopulated.
 
 ## Status
 
-0.1.0. Validated live on x86 and Grace hosts over ssh and pueue; PBS and
-container paths covered by the test suite (1332 tests, 100 percent branch
-coverage). The provider router, `board.on("auto")`, scoring hosts by fit,
+The real-use checks above cover specific hardware and dispatch paths, not every
+provider or container configuration. The provider router, `board.on("auto")`,
+scoring hosts by fit,
 price, and time to result across private clusters and commercial GPU clouds,
 is under active development.
 
@@ -368,4 +390,4 @@ is under active development.
 declared container, rendered through the same containerize seam `run` already
 builds argv with, on an owned host. Staging `serve` onto a rented provider
 instance, alongside the same fit/price/time-to-result scoring `board.on("auto")`
-is bringing to dispatch, is 0.5 work.
+is bringing to dispatch, remains under development.
