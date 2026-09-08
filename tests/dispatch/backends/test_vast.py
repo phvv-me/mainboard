@@ -142,7 +142,7 @@ def test_api_key_reads_either_spelling_and_refuses_when_unset(
                 "dph_total": {"lte": 0.4},
                 "limit": 5,
             },
-            [22, 11],
+            [22],
             id="one-card-a-count-and-a-ceiling-with-underscores-read-as-spaces",
         ),
         pytest.param(True, {}, {"type": "bid"}, [11, 22], id="the-whole-market-at-the-bid-floor"),
@@ -163,6 +163,13 @@ def test_search_posts_the_consoles_own_filters_and_ranks_by_what_a_rental_will_p
     assert request.full_url == f"{_ROOT}/bundles/"
     assert request.get_header("Authorization") == "Bearer key-123"
     assert backend.transport.bodies == [_BASE_QUERY | extra]
+
+
+def test_pick_never_prefers_reliability_over_the_returned_price_ceiling() -> None:
+    rows = {"offers": [offer(11, dph=0.25, reliability2=1.0), offer(22, dph=0.17)]}
+    assert vast_backend(rows).pick(gpu_name="RTX 4090", gpus=1, max_usd_hr=0.18)["id"] == 22
+    with pytest.raises(MissionError, match="no rentable"):
+        vast_backend(rows, rows).pick(gpu_name="RTX 4090", gpus=1, max_usd_hr=0.1)
 
 
 @pytest.mark.parametrize(

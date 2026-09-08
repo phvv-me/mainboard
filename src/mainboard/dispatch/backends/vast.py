@@ -541,6 +541,10 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             query[_CUDA_FIELD] = {"gte": self.CUDA_FLOOR}
             query[_CAPABILITY_FIELD] = {"gte": self.CAPABILITY_FLOOR}
         offers = self.request("POST", path="/bundles/", body=query).get("offers") or []
+        # The service has returned rows above its requested ceiling. The quoted rate,
+        # not successful submission of a filter, decides whether spending is authorized.
+        if max_usd_hr:
+            offers = [offer for offer in offers if self.rate(offer) <= max_usd_hr]
         return sorted(offers, key=self.rate)
 
     def standing(self) -> Standing:
