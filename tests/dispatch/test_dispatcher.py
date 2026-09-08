@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from plumbum.commands.processes import ProcessExecutionError
 
-from mainboard import ExecutionPlan, MissionError
+from mainboard import Board, ExecutionPlan, MissionError
 from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, HostSetup, Verdict, shared
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import provenance as provenance_module
@@ -20,6 +20,7 @@ from mainboard.dispatch.shipment import Shipment
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
+from ..support import Lab
 from .support import (
     RecordingMachine,
     RecordingScheduler,
@@ -75,6 +76,32 @@ def answering(**told: str) -> Callable[..., str]:
 def shipped(dispatcher: Dispatcher, command: str, imports: tuple[str, ...] = ()) -> Shipment:
     """`command` as a board ships it to the dispatcher: the mirror, under the tree's provenance."""
     return Shipment.of_command(command, source=dispatcher.source(command), imports=imports)
+
+
+@pytest.mark.parametrize("entry", ["submit", "allocating"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_direct_dispatch_entries_refuse_stale_registration_before_external_work(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch, entry: str, missing: bool
+) -> None:
+    board = Board(lab.root)
+    shipment = board.shipment(f"{Lab.JOB}::app", board.plan())
+    node = lab.root / "research/camp/experiments/node/node.md"
+    if missing:
+        node.unlink()
+    else:
+        node.write_text("changed after seal\n")
+    dispatcher = board.dispatcher
+    monkeypatch.setattr(dispatcher, "rsync_up", lambda *a, **kw: pytest.fail("transport reached"))
+    monkeypatch.setattr(
+        dispatcher.cache, "reserve", lambda *a, **kw: pytest.fail("creation reserved")
+    )
+    with pytest.raises((MissionError, FileNotFoundError)):
+        if entry == "submit":
+            dispatcher.submit(
+                plan(), "/repo", script=Lab.JOB, args=(), resources=Resources(), shipment=shipment
+            )
+        else:
+            dispatcher.allocating(plan(), shipment, Resources(), evidence="not_started")
 
 
 @pytest.fixture

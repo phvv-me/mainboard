@@ -741,6 +741,7 @@ class Dispatcher:
             mem_gb=resources.mem_gb or 0,
         )
         dispatched = shipment or Shipment.of_command(script, source=self.source(), imports=())
+        dispatched.admit(self.root)
         prepared, staged = self._prepare_script(script)
         shipped = self.rsync_up(
             plan,
@@ -803,6 +804,7 @@ class Dispatcher:
         evidence: str,
     ) -> Allocation:
         """Reserve the existing job row before any provider creation can be attempted."""
+        shipment.admit(self.root)
         label = f"mainboard-{uuid4().hex}"
         request = Request(
             target=plan.host,

@@ -1324,6 +1324,64 @@ def test_a_job_runs_here_through_the_same_runner_with_its_closure_exported(
     board.run(["python", "-m", "foo"])
     assert FakeProvisioner.calls[-1] == ("run", (["python", "-m", "foo"], "default"))
 
+    # Collection remains usable while writing an experiment and certifies no acquisition.
+    file = "research/camp/experiments/draft/test_draft.py"
+    lab.write(file, "def test_draft():\n    raise RuntimeError('must not acquire')\n")
+    collected: list[str] = []
+    monkeypatch.setattr(
+        FakeProvisioner, "run", lambda self, command, env: collected.extend(command) or 0
+    )
+    board.run([file, "--", "--collect-only"])
+    assert "--collect-only" in collected and any("-dirty" in value for value in collected)
+
+
+@pytest.mark.parametrize("host", [_GOLD, "rentbox"])
+@pytest.mark.parametrize("condition", ["committed", "missing", "dirty", "untracked"])
+def test_research_admission_precedes_scheduler_or_provider_work(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch, host: str, condition: str
+) -> None:
+    FakeLanding.calls = []
+    FakeProvisioner.calls = []
+    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    monkeypatch.setattr("mainboard.board.Landing", FakeLanding)
+    monkeypatch.setattr(Board, "containerizer", lambda self, plan, root: None)
+    board = Board(lab.root)
+    manifest = board.manifest.model_copy(
+        update={
+            "hosts": {
+                **board.manifest.hosts,
+                "rentbox": board.manifest.profile(_GOLD).model_copy(update={"kind": "fakerental"}),
+            }
+        }
+    )
+    monkeypatch.setitem(board.shared, "manifest", manifest)
+    monkeypatch.setitem(board.shared, "resolver", None)
+    staged = []
+    submitted = []
+    monkeypatch.setattr(Board, "stage", lambda self, root: staged.append(root))
+
+    def submit(plan, shipment, **kwargs):
+        submitted.append(shipment)
+        return Handle(id="77", host=plan.host, root="/repo", kind=plan.profile.kind)
+
+    monkeypatch.setattr(board.dispatcher, "run", submit)
+    node = "research/camp/experiments/node/node.md"
+    if condition == "missing":
+        (lab.root / node).unlink()
+    elif condition == "dirty":
+        lab.write(node, "changed\n")
+    elif condition == "untracked":
+        lab.git("update-index", "--force-remove", node)
+    if condition == "committed":
+        job = board.on(host).submit(f"{Lab.JOB}::app")
+        assert job.handle.id == ("77" if host == _GOLD else "rental-1")
+        assert len(submitted) + len(FakeLanding.calls) == 1
+    else:
+        with pytest.raises(MissionError, match="committed"):
+            board.on(host).submit(f"{Lab.JOB}::app")
+        assert not staged and not submitted and not FakeLanding.calls
+        assert board.dispatcher.cache.total() == 0
+
 
 def test_a_job_cannot_land_on_a_prebuilt_image_that_ships_no_workspace(
     lab: Lab, monkeypatch: pytest.MonkeyPatch

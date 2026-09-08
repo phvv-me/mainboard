@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -16,9 +14,11 @@ def test_a_job_is_spelled_by_file_and_name_and_an_ordinary_command_is_left_alone
 ) -> None:
     """`path/to/file.py::name` is a job; `python -m foo` and a task name are not."""
     spelled = Target.spelled([f"{Lab.JOB}::app", "--x", "3"], lab.root)
+    assert spelled is not None
     assert spelled == Target(file=Lab.JOB, name="app", args=("--x", "3"))
     assert spelled.spelling == f"{Lab.JOB}::app --x 3"
     assert spelled.node == "research/camp/experiments/node"
+    assert spelled.registration == "research/camp/experiments/node/node.md"
     assert Target.spelled(["python", "-m", "foo"], lab.root) is None
     assert Target.spelled(["test", "--quiet"], lab.root) is None
     assert Target.spelled([], lab.root) is None
@@ -26,6 +26,19 @@ def test_a_job_is_spelled_by_file_and_name_and_an_ordinary_command_is_left_alone
     assert Target.spelled(["missing.py"], lab.root) is None
     with pytest.raises(MissionError, match="no job file at missing.py"):
         Target.spelled(["missing.py::main"], lab.root)
+
+
+@pytest.mark.parametrize(
+    ("path", "registration"),
+    [
+        ("experiments/alpha/test_law.py", "experiments/alpha/node.md"),
+        ("research/camp/tests/test_software.py", ""),
+        ("packages/tool/tests/experiments/test_software.py", ""),
+        ("research/camp/scripts/test_software.py", ""),
+    ],
+)
+def test_registration_is_inferred_only_from_experiment_paths(path: str, registration: str) -> None:
+    assert Target(file=path, name="").registration == registration
 
 
 def test_a_bare_file_means_app_then_main_and_refuses_a_file_defining_neither(lab: Lab) -> None:
@@ -39,14 +52,21 @@ def test_a_bare_file_means_app_then_main_and_refuses_a_file_defining_neither(lab
         Target.spelled(["./research/camp/neither.py"], lab.root)
 
 
+@pytest.mark.parametrize("spelling", ["absolute", "parent", "absolute_parent"])
 def test_an_absolute_file_is_rerooted_and_one_outside_the_workspace_is_refused(
-    lab: Lab, tmp_path: Path
+    lab: Lab, spelling: str
 ) -> None:
-    assert Target.spelled([str(lab.root / Lab.JOB)], lab.root).file == Lab.JOB
-    outside = tmp_path / "elsewhere.py"
+    target = Target.spelled([str(lab.root / Lab.JOB)], lab.root)
+    assert target is not None and target.file == Lab.JOB
+    outside = lab.root.parent / "elsewhere.py"
     outside.write_text("app = 1\n", encoding="utf-8")
+    aliases = {
+        "absolute": str(outside),
+        "parent": "../elsewhere.py",
+        "absolute_parent": str(lab.root / ".." / "elsewhere.py"),
+    }
     with pytest.raises(MissionError, match="outside the workspace"):
-        Target.spelled([str(outside)], lab.root)
+        Target.spelled([f"{aliases[spelling]}::app[a b]"], lab.root)
 
 
 def test_the_declaration_is_read_off_the_job_file(lab: Lab) -> None:

@@ -38,7 +38,7 @@ from uuid import uuid7
 
 from pydantic import JsonValue
 
-from ..dispatch.provenance import Row, Status, blob_of
+from ..dispatch.provenance import Row, Status, registered
 from .artifacts import Artifact, Artifacts
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import ADMISSIBILITY, LEDGER, OPENED, PARTIAL
@@ -262,11 +262,7 @@ class Session:
             Row(path=p, blob=b, status=Status(s))
             for p, b, s in (line.split("\t") for line in listing.splitlines())
         ]
-        registered = next((row for row in sources if row.path == relative), None)
-        if registered is None or registered.status is not Status.CLEAN:
-            raise RuntimeError(f"{relative} must be committed before this job is acquired")
-        if blob_of(registration) != registered.blob:
-            raise RuntimeError(f"{relative} changed after Mainboard prepared the job")
+        registered(registration, sources, root=Path.cwd())
         directory = universe.dataset(node).root.parent / "artifacts" / self.run
         manifest = {
             "run": self.run,

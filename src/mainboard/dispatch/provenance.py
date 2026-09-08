@@ -121,6 +121,16 @@ def listing(rows: Iterable[Row]) -> str:
     return "".join(f"{row.path}\t{row.blob}\t{row.status}\n" for row in rows)
 
 
+def registered(node: Path, rows: Sequence[Row], *, root: Path) -> None:
+    """Require the same committed adjacent registration at admission and acquisition."""
+    relative = node.relative_to(root).as_posix()
+    row = next((item for item in rows if item.path == relative), None)
+    if row is None or row.status is not Status.CLEAN:
+        raise MissionError(f"{relative} must be committed before this job is acquired")
+    if blob_of(node) != row.blob:
+        raise MissionError(f"{relative} changed after Mainboard prepared the job")
+
+
 def named(identity: str) -> str:
     """`identity` as a directory name a snapshot can be pinned under."""
     return _UNSAFE.sub("-", identity)[:96].lstrip(".") or "untracked"

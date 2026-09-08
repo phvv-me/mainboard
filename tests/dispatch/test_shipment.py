@@ -1,5 +1,9 @@
+import shlex
 from pathlib import Path
 
+import pytest
+
+from mainboard import MissionError
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.shared import (
     CLOSURE_VAR,
@@ -39,6 +43,7 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
         environment=lab.root / Lab.ENVIRONMENT,
     )
     shipment = Shipment.of_closure(closure, root=lab.root)
+    shipment.admit(lab.root)
     assert shipment.sealed
     assert shipment.command == f"python -m {runner()} {Lab.JOB}::app -- --x 3"
     assert shipment.spelling == f"{Lab.JOB}::app --x 3"
@@ -91,3 +96,104 @@ def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
     assert shipment.deferred == ("ext",)
     assert shipment.exports()[DEFERRED_VAR] == "ext"
     assert not any(line.startswith("packages/ext/src/") for line in shipment.listing.splitlines())
+
+
+@pytest.mark.parametrize("changed", ["node.md", "run.py", "packages/sub/src/sub/thing.py"])
+@pytest.mark.parametrize("late", [False, True])
+def test_research_admission_refuses_dirty_or_stale_source(
+    lab: Lab, changed: str, late: bool
+) -> None:
+    target = Target.spelled([Lab.JOB], lab.root)
+    assert target is not None
+    path = changed if changed.startswith("packages/") else f"{target.node}/{changed}"
+    closure = Closure.of(
+        target,
+        root=lab.root,
+        distributions=Lab.DISTRIBUTIONS,
+        environment=lab.root / Lab.ENVIRONMENT,
+    )
+    before = Shipment.of_closure(closure, root=lab.root)
+    lab.write(path, (lab.root / path).read_text() + "\n# changed\n")
+    shipment = before if late else Shipment.of_closure(closure, root=lab.root)
+    with pytest.raises(MissionError, match="changed after|clean committed"):
+        shipment.admit(lab.root)
+
+
+@pytest.mark.parametrize("removed", ["node.md", "run.py"])
+def test_research_admission_refuses_disappearing_files(lab: Lab, removed: str) -> None:
+    target = Target.spelled([Lab.JOB], lab.root)
+    assert target is not None
+    closure = Closure.of(
+        target,
+        root=lab.root,
+        distributions=Lab.DISTRIBUTIONS,
+        environment=lab.root / Lab.ENVIRONMENT,
+    )
+    shipment = Shipment.of_closure(closure, root=lab.root)
+    (lab.root / target.node / removed).unlink()
+    with pytest.raises((MissionError, FileNotFoundError)):
+        shipment.admit(lab.root)
+
+
+def test_research_admission_keeps_historical_seals_and_never_imports_the_job(lab: Lab) -> None:
+    target = Target.spelled([Lab.JOB], lab.root)
+    assert target is not None
+    node = lab.write(
+        f"{target.node}/node.md",
+        "---\nstatus: refuted\nregistration_sha256: preserved-retired-seal\n---\n",
+    )
+    lab.write(Lab.JOB, "raise RuntimeError('must not import')\napp = None\n")
+    lab.commit()
+    closure = Closure.of(
+        target,
+        root=lab.root,
+        distributions=Lab.DISTRIBUTIONS,
+        environment=lab.root / Lab.ENVIRONMENT,
+    )
+    original = node.read_bytes()
+    shipment = Shipment.of_closure(closure, root=lab.root)
+    shipment.admit(lab.root)
+    assert node.read_bytes() == original
+    wrong = shipment.model_copy(
+        update={"source": shipment.source.model_copy(update={"digest": "wrong"})}
+    )
+    with pytest.raises(MissionError, match="listing does not match"):
+        wrong.admit(lab.root)
+
+
+def test_ordinary_dirty_software_and_commands_keep_their_existing_admission(lab: Lab) -> None:
+    path = "packages/tool/tests/experiments/test_case.py"
+    lab.write(path, "def test_case():\n    raise RuntimeError('must not import')\n")
+    target = Target.spelled([path], lab.root)
+    assert target is not None and not target.registration
+    closure = Closure.of(
+        target, root=lab.root, distributions=(), environment=lab.root / Lab.ENVIRONMENT
+    )
+    shipment = Shipment.of_closure(closure, root=lab.root)
+    assert shipment.source.dirty
+    shipment.admit(lab.root)
+    Shipment.of_command("python -m research.work", source=shipment.source, imports=()).admit(
+        lab.root
+    )
+
+
+@pytest.mark.parametrize("name", ["test_law", "test_law[a b]", "test_law[a'b]"])
+@pytest.mark.parametrize("prefix", ["", "packages/../"])
+def test_real_closures_quote_paths_and_parameter_ids_before_admission(
+    lab: Lab, name: str, prefix: str
+) -> None:
+    file = "research/project with spaces/experiments/node/test_law.py"
+    lab.write(file, "def test_law():\n    raise RuntimeError('must not import')\n")
+    node = lab.write("research/project with spaces/experiments/node/node.md", "# registered\n")
+    lab.commit()
+    target = Target.spelled([f"{prefix}{file}::{name}"], lab.root)
+    assert target is not None
+    closure = Closure.of(
+        target, root=lab.root, distributions=(), environment=lab.root / Lab.ENVIRONMENT
+    )
+    shipment = Shipment.of_closure(closure, root=lab.root)
+    shipment.admit(lab.root)
+    node.write_text("changed after sealing\n")
+    with pytest.raises(MissionError, match="changed after Mainboard prepared"):
+        shipment.admit(lab.root)
+    assert shlex.split(shipment.spelling) == [f"{file}::{name}"]

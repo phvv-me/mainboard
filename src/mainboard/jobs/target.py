@@ -93,12 +93,22 @@ class Target(FrozenModel):
     def spelling(self) -> str:
         """The target as a command line spells it, its arguments quoted."""
         head = f"{self.file}{SEPARATOR}{self.name}" if self.name else self.file
-        return f"{head} {shlex.join(self.args)}" if self.args else head
+        return shlex.join([head, *self.args])
 
     @property
     def test(self) -> bool:
         """Whether the job file is a pytest module, and so runs through pytest."""
         return PurePosixPath(self.file).stem.startswith(TEST_PREFIX)
+
+    @property
+    def registration(self) -> str:
+        """The adjacent node for an experiment target, empty for ordinary software."""
+        path = PurePosixPath(self.file)
+        if path.parts[0] not in ("research", "experiments"):
+            return ""
+        if not any(parent.name == "experiments" for parent in path.parents):
+            return ""
+        return (path.parent / "node.md").as_posix()
 
     @property
     def node(self) -> str:
@@ -124,13 +134,11 @@ class Target(FrozenModel):
 
     @staticmethod
     def __relative(spelling: str, root: Path) -> str:
-        """`spelling` as a workspace-relative posix path, an absolute one rerooted."""
-        given = Path(spelling)
-        if given.is_absolute():
-            try:
-                given = given.relative_to(root)
-            except ValueError:
-                raise MissionError(f"{spelling} is outside the workspace {root}") from None
+        """Resolve aliases to one workspace-relative path, refusing any escape."""
+        try:
+            given = (root / spelling).resolve().relative_to(root.resolve())
+        except ValueError:
+            raise MissionError(f"{spelling} is outside the workspace {root}") from None
         return PurePosixPath(given).as_posix()
 
     @staticmethod

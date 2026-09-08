@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from mainboard.dispatch.provenance import Row, Status, blob_of, listing
 from mainboard.trials import (
     OPENED,
     Admissibility,
@@ -20,10 +21,32 @@ from mainboard.trials import (
 )
 from mainboard.trials import lease as lease_module
 from mainboard.trials import session as session_module
+from mainboard.trials.provenance import Source
 from mainboard.trials.session import WORD, lane_of, params_of
 
 from .support import PROBED, Item, Taken, cell, declaration
 from .test_declaring import knob
+
+
+def test_runtime_manifest_still_refuses_registration_changed_after_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probed: None
+) -> None:
+    root = tmp_path / "experiments"
+    node = root / "alpha/node.md"
+    node.parent.mkdir(parents=True)
+    node.write_text("committed registration\n")
+    monkeypatch.chdir(tmp_path)
+    closure = tmp_path / "closure.tsv"
+    closure.write_text(
+        listing([Row(path="experiments/alpha/node.md", blob=blob_of(node), status=Status.CLEAN)])
+    )
+    source = Source(commit="a" * 40, closure=str(closure))
+    monkeypatch.setattr(Taken, "source", property(lambda self: source), raising=False)
+    session = Session(declaration(root))
+    node.write_text("changed after dispatch\n")
+    with pytest.raises(RuntimeError, match="changed after Mainboard prepared"):
+        session.manifest(node.parent / "test_law.py")
+    assert not session.manifests
 
 
 def test_a_run_derives_every_field_a_lane_would_otherwise_have_to_retype(

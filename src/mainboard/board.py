@@ -1318,6 +1318,7 @@ class Board:
         command = vetted(command)
         plan = self.plan(env=env, container=container)
         shipment = self.shipment(command, plan, needs=needs)
+        shipment.admit(self.root)
         fetch = self.results(fetch or shipment.fetch, node=node) or None
         shipment = shipment.model_copy(update={"fetch": fetch or ""})
         resources = self.resources(
