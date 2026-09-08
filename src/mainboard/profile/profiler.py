@@ -68,12 +68,12 @@ class Feature(Flag):
     its own pass.
     """
 
-    PYTHON = auto()
-    SPANS = auto()
+    # Bit 1 named an unimplemented collector; keep the other recorded values stable.
+    SPANS = 2
     DEVICE = auto()
     MARKERS = auto()
     ACTIVITY = auto()
-    DEFAULT = PYTHON | SPANS | DEVICE | MARKERS | ACTIVITY
+    DEFAULT = SPANS | DEVICE | MARKERS | ACTIVITY
 
 
 class Collection(FrozenModel):

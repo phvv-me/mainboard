@@ -30,6 +30,19 @@ def test_profiler_signature_resolves_runtime_annotations() -> None:
     assert signature.parameters["auto"].annotation == Sequence[str]
 
 
+def test_collection_features_preserve_supported_wire_values() -> None:
+    """Recorded feature bits keep their meaning; the unused collector is not accepted."""
+    assert {feature.name: feature.value for feature in Feature} == {
+        "SPANS": 2,
+        "DEVICE": 4,
+        "MARKERS": 8,
+        "ACTIVITY": 16,
+    }
+    assert Feature.DEFAULT.value == 30
+    with pytest.raises(ValueError):
+        Collection.model_validate({"features": 1})
+
+
 def test_a_session_records_spans_windows_and_every_aggregate_read_off_them(
     one_gpu: FakeGPU,
 ) -> None:

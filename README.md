@@ -48,7 +48,7 @@ vast      provider  keyed        1x RTX 4090 Sweden, SE  0.2978  99.9968
 `mainboard help batch run` opens that command's help. Other queries, such as
 `mainboard help Log.read_table` or `mainboard help separate trace pass`, search
 command descriptions, this README, and Python API docstrings. Results name their
-source locations; the README ships in the wheel, and API search never imports
+source locations. The wheel includes the README. API search never imports
 the scanned modules. Broad searches show twenty hits and the full match count.
 
 `compute` answers what there is to run on before anything is dispatched: this
@@ -63,12 +63,9 @@ host once for all of them: one `qstat`, one `squeue`, one `pueue status`. A
 listing that had to leave anything out says so rather than stopping quietly at a
 limit, and `--limit` bounds only the settled tail.
 
-`monitor` is the sweep that makes a dispatched job's outcome survive the
-process that dispatched it. Each pass probes every job still owed an outcome,
-pulls back the results of the ones that just finished, records their verdicts
-in the study ledgers that own them, and reports only what changed, so a
-schedule of passes never announces the same job twice and a host that is down
-is one line in the report rather than a failed sweep.
+`monitor` collects outstanding results into durable job records and study ledgers.
+Its reports identify changes and unreachable hosts without repeating unchanged
+outcomes on later passes.
 
 ## Many jobs, many machines, one flow
 
@@ -113,14 +110,11 @@ $ mainboard batch wait fleet-db4af53f             # block until every job settle
 $ mainboard interact --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
 ```
 
-`prepare` measures the delta rather than the tree: a host already carries the
-workspace, so what a job actually sends is what changed since that mirror plus
-the data the job names, compressed the way the wire will carry it. `estimate`
-prices each row against setup times fitted from this workspace's own recorded
-dispatches, and a target nobody has timed says so in its sample count instead
-of inventing a number. `watch` drives the same durable sweep a cron runs, so
-results come back and provider rentals are cancelled whether or not anyone is
-watching.
+`prepare` measures compressed changes from the host's workspace mirror, plus
+declared input data. `estimate` uses recorded setup times. Its sample count
+identifies targets with no timing history. `watch` repeats the monitor sweep.
+Automatic result collection and rental release require a running monitor.
+Provider outages can delay release. A local execution timeout does not stop billing.
 
 Every state change and cost observation is one NDJSON line under the batch's
 own directory, and each verb reads its cursor back out of those lines rather
@@ -198,7 +192,7 @@ not install a project's source package or make mutable input data immutable.
 
 The opt-in `mainboard.trials.pytest_plugin` supplies `trial`, `run`, and `stage`
 fixtures after the project provides its trials declaration. Trials own
-scientific receipts; a refuted hypothesis is distinct from a failed instrument.
+scientific receipts. A refuted hypothesis is distinct from a failed instrument.
 The injected `log` fixture adds diagnostics, metrics, artifacts, and profiling to those trials.
 
 The profiling entry point remains independent of trials:
@@ -244,8 +238,10 @@ index is an error, never permission to sample a different card. Profiling study
 exceptions propagate; `Row.has_evidence` describes capture, not success or a
 scientific verdict. Use pytest parametrization for independently recorded trials.
 
-`Feature.PYTHON` has no collector. Select Python regions with `auto` or `span`;
-neither is statistical sampling. Launch work through `mainboard run` or
+Select Python regions with `auto` or `span`. Neither is statistical sampling.
+The unused `PYTHON` flag was removed. Existing feature bit values are unchanged.
+Historical policies containing that unsupported bit require their original source.
+Launch work through `mainboard run` or
 `mainboard submit`, with the profiling context inside the target. There is no
 profiler attach API. Render the returned `Profile`, not the active `Profiler`.
 
@@ -263,7 +259,7 @@ Profiling does not replace the experiment's timing protocol. Settle with the
 project's vocabulary, such as `log.validated("criterion held", error=error)`.
 
 Identity, output paths, and job fetch paths are inferred from the pytest node.
-Tables are Parquet; other artifacts are content-addressed bytes. Inputs are
+Tables are Parquet. Other artifacts are content-addressed bytes. Inputs are
 explicit `Declaration(inputs={alias: Artifact(...)})` references:
 `log.read(alias)` verifies size and SHA-256, and `log.read_table(alias)` reads
 Parquet. There is no ambient “latest” lookup or automatic producer execution.
@@ -275,7 +271,7 @@ For analysis, `Dataset(...).tables(project_root, schema_name="study.reading.v1")
 reads every matching table artifact across runs, verifies its hash, and retains
 each row's receipt metadata in the `_trial` JSON column. It does not pick the
 newest host, discard failed outcomes, or change scientific units or thresholds.
-Use an explicit `run=` to restrict the read; acquisition inputs still use pinned
+Use an explicit `run=` to restrict the read. Acquisition inputs still use pinned
 `log.read_table(...)` references. Artifact paths remain project-relative through
 Mainboard's remote result mounts and after fetching.
 
@@ -292,10 +288,10 @@ mainboard help batch run
 ```
 
 `monitor` pulls published results from running jobs as well as finished ones. Run
-repeated passes to refresh remote data; a query itself has no network side effects.
+repeated passes to refresh remote data. A query itself has no network side effects.
 DuckDB reads the collected Parquet fragments and event journals directly. There is
 no shared database file for different servers to lock, and no database service to deploy.
-Each query sees a fresh inventory; it is not a transaction across all servers.
+Each query sees a fresh inventory. It is not a transaction across all servers.
 
 Jobs keep the last `backend_state` separate from the command `verdict`. A rental
 can report `running` before its successful command is collected and the instance
@@ -306,8 +302,8 @@ provider-liveness check, and it does not turn unverified evidence into verified 
 extension. It creates parent directories, publishes only a complete file, and refuses
 to overwrite an existing destination. Parquet preserves column types; CSV and JSON use
 their standard representations. `--json` still prints JSON when no file is requested.
-`help` reads the CLI's own descriptions: a command path opens its full help, and other
-words search command names and docstrings. Use `help -- --max-usd` to search an option.
+An exact command path passed to `help` opens its documentation. Other words search
+command descriptions and API docstrings. Use `help -- --max-usd` to search an option.
 
 Plot the same SELECT with the optional Seaborn/paleta integration:
 
@@ -343,9 +339,9 @@ dpi = 300
 ```
 
 Palettes use Seaborn's existing names, including built-ins such as `deep`.
-The renderer takes colors in their named order, refusing extra categories beyond the
-palette's slots; fold the tail into Other or facet. `rc` contains native Matplotlib
-settings, not a second styling language. `--dpi` overrides a named style's resolution.
+The renderer takes colors in palette order and refuses excess categories.
+Group the tail into Other or use separate panels. `rc` contains native Matplotlib
+settings, not a second styling language. `--dpi` overrides the style's resolution.
 Changing styles does not rebuild an environment.
 
 The views are `jobs`, `runs`, `trials`, `events`, `metrics`, and `artifacts`.
@@ -356,7 +352,7 @@ settles. Missing artifact bytes remain an error, not a silently complete table.
 Acquisition dependencies still use explicit pinned `log.read_table(...)` inputs.
 
 Research `log` trials preserve one manifest per node/run from Mainboard's existing
-shipped-file listing, including the adjacent committed `node.md`, environment,
+transferred-file listing, including the adjacent committed `node.md`, environment,
 inputs, and hardware. Commit the registration and code before running. The pilot
 experiments no longer maintain a second source-file list or a hash of another seal.
 Artifact checksums remain useful for verifying transferred bytes. Historical
@@ -366,7 +362,7 @@ Receipt parts stay immutable after settlement. Fetches merge run-specific paths
 without deleting another server's results and exclude temporary files and mutable
 `latest.jsonl` summaries. Use the query views for the combined current picture.
 Source sync excludes trial artifact and receipt directories; explicitly sealed
-input resources are still shipped. Result downloads use rsync's update rule so
+input resources are still transferred. Result downloads use rsync's update rule so
 an older replica on another host cannot replace a newer local file. This relies
 on file timestamps, not distributed conflict resolution; divergent writes to one
 run path are unsupported. Final receipts supply artifact references when an event
@@ -387,8 +383,6 @@ scoring hosts by fit,
 price, and time to result across private clusters and commercial GPU clouds,
 is under active development.
 
-`[engines.*]` and `serve` are a skeleton: a declared command staged through a
-declared container, rendered through the same containerize seam `run` already
-builds argv with, on an owned host. Staging `serve` onto a rented provider
-instance, alongside the same fit/price/time-to-result scoring `board.on("auto")`
-is bringing to dispatch, remains under development.
+`[engines.*]` and `serve` currently stage a declared command in a container on an
+owned host. They reuse `run`'s container command construction. Provider-hosted
+serving and automatic host selection remain under development.
