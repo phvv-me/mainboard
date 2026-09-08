@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .probe.machine import Machine
     from .probe.snapshot import HostFacts
     from .profile.meter import Meter
-    from .profile.profiler import Collection, Profiler, Reach
+    from .profile.profiler import Collection, Profiler
     from .profile.result import Profile
     from .profile.spans import span
     from .profile.study import Study as ProfileStudy
@@ -54,7 +54,6 @@ _HOMES: dict[str, tuple[str, str]] = {
     "ProfileStudy": (".profile.study", "Study"),
     "Profiler": (".profile.profiler", "Profiler"),
     "Project": (".core", "Project"),
-    "Reach": (".profile.profiler", "Reach"),
     "RepoFile": (".experiments.data", "RepoFile"),
     "Resolver": (".context", "Resolver"),
     "Results": (".results", "Results"),
@@ -93,7 +92,6 @@ __all__ = [
     "Meter",
     "Collection",
     "Profiler",
-    "Reach",
     "Profile",
     "span",
     "ProfileStudy",

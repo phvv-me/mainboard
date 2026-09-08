@@ -6,7 +6,7 @@ from typing import NoReturn
 
 import pytest
 
-from mainboard import Collection, Profiler, Reach, span
+from mainboard import Collection, Profiler, span
 from mainboard.probe import GPU
 from mainboard.profile import (
     Activity,
@@ -302,30 +302,3 @@ def test_a_deviceless_session_says_which_kind_of_silence_it_is(
     assert profiler.gpu is None
     assert result.device_evidence is evidence
     assert ("no device evidence collected" in result.report()) is said
-
-
-@pytest.mark.parametrize(
-    ("reach", "kind"),
-    [
-        (Reach.here(), "here"),
-        (Reach.launch("pkg.mod"), "launch"),
-        (Reach.attaching(123), "attach"),
-    ],
-    ids=["measure_this_process", "run_a_target_once", "attach_to_a_live_process"],
-)
-def test_reach_reports_which_of_the_three_ways_it_names(reach: Reach, kind: str) -> None:
-    """There are exactly three ways to get at the thing being measured, and `kind` names one."""
-    assert reach.kind == kind
-
-
-def test_reach_launch_and_attaching_carry_their_fields() -> None:
-    """The launch and attach arguments travel on the value rather than on an entry point."""
-    launch = Reach.launch("pkg.mod", module=True, args=("--flag",), timeout=5.0)
-    assert launch.target == "pkg.mod"
-    assert launch.module is True
-    assert launch.args == ("--flag",)
-    assert launch.timeout == 5.0
-
-    attach = Reach.attaching(123, timeout=1.0)
-    assert attach.pid == 123
-    assert attach.timeout == 1.0

@@ -101,60 +101,6 @@ class Collection(FrozenModel):
     auto: tuple[str, ...] = ()
 
 
-class Reach(FrozenModel):
-    """How to get at the thing being measured, as one value.
-
-    There are exactly three ways and they were three entry points, which is why `executable` and
-    `timeout` were spelled out on each of them. As one model the choice is data, so a study can
-    hold it, vary it, or record which one produced a number, and one method serves all three.
-
-    target: a script path or a module name. Empty means the calling process itself.
-    module: whether `target` names a module rather than a path, or None to infer.
-    args: arguments passed to a launched target.
-    pid: a live process to attach to. Non-zero selects attachment and ignores `target`.
-    timeout: how long to wait on a launched or attached target.
-    """
-
-    target: str = ""
-    module: bool | None = None
-    args: tuple[str, ...] = ()
-    pid: int = 0
-    timeout: float | None = None
-
-    @property
-    def kind(self) -> str:
-        """Return which of the three this is, for a row key or an error message."""
-        if self.pid:
-            return "attach"
-        return "launch" if self.target else "here"
-
-    @classmethod
-    def attaching(cls, pid: int, *, timeout: float | None = None) -> Reach:
-        """Attach to a process already running."""
-        return cls(pid=pid, timeout=timeout)
-
-    @classmethod
-    def here(cls) -> Reach:
-        """Measure the calling process, which is what a `with` block does."""
-        return cls()
-
-    @classmethod
-    def launch(
-        cls,
-        target: str,
-        *,
-        module: bool | None = None,
-        args: tuple[str, ...] = (),
-        timeout: float | None = None,
-    ) -> Reach:
-        """Run one script or module once and measure it.
-
-        Launching a target and attaching to a live process both land with the Python
-        sampling CLI layer; only `here()` (an active `Profiler` context) is wired yet.
-        """
-        return cls(target=target, module=module, args=args, timeout=timeout)
-
-
 class Profiler:
     """Collect selected evidence through one bounded profiling session.
 

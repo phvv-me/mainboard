@@ -244,9 +244,10 @@ index is an error, never permission to sample a different card. Profiling study
 exceptions propagate; `Row.has_evidence` describes capture, not success or a
 scientific verdict. Use pytest parametrization for independently recorded trials.
 
-`Feature.PYTHON` has no collector, and `Reach` launch/attach descriptors are not
-wired to execution. Neither `Profiler.run` nor `Profiler.show` exists: render
-the returned `Profile`.
+`Feature.PYTHON` has no collector. Select Python regions with `auto` or `span`;
+neither is statistical sampling. Launch work through `mainboard run` or
+`mainboard submit`, with the profiling context inside the target. There is no
+profiler attach API. Render the returned `Profile`, not the active `Profiler`.
 
 The `mainboard.trials.pytest_plugin` also injects `log`, backed by the existing
 trial identity and profiler. Use `log.info("phase {}", phase)`,
