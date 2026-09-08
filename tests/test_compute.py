@@ -1,5 +1,6 @@
 from collections.abc import Callable, Sequence
 from inspect import signature
+from threading import get_ident
 from typing import TYPE_CHECKING
 
 import pytest
@@ -9,7 +10,7 @@ from hypothesis import strategies as st
 from mainboard import Board, HostFacts, Survey
 from mainboard.compute import Access, reachable, summary
 from mainboard.dispatch import HostSetup, HostUnreachable, SshTransport
-from mainboard.dispatch.backends import ProviderBackend, VastBackend
+from mainboard.dispatch.backends import Credentials, ProviderBackend, VastBackend
 from mainboard.manifest import HostProfile
 from mainboard.probe import GpuFact
 
@@ -104,6 +105,26 @@ def test_the_first_row_is_this_machine_with_its_own_hardware(board: Board) -> No
     assert first.kind == "local"
     assert first.access is Access.HERE
     assert first.detail == "1x NVIDIA GeForce RTX 4090, 64 GB RAM"
+
+
+def test_credentials_load_before_any_concurrent_host_probe(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = get_ident()
+    loaded: list[int] = []
+
+    def load(self: Credentials) -> tuple[str, ...]:
+        loaded.append(get_ident())
+        return ()
+
+    def reach(host: str) -> str:
+        assert loaded == [owner]
+        assert get_ident() != owner
+        return ""
+
+    monkeypatch.setattr(Credentials, "load", load)
+    survey(board, reach=reach).paths()
+    assert loaded == [owner]
 
 
 @given(

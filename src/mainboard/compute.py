@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from .core.errors import MissionError
-from .dispatch.backends.base import Account, ProviderBackend, route
+from .dispatch.backends.base import Account, Credentials, ProviderBackend, route
 from .dispatch.transport import HostUnreachable, SshTransport
 from .probe.snapshot import HostFacts
 
@@ -190,6 +190,9 @@ class Survey:
         setups: the onboarding records by alias, read from the dispatch cache here when None.
         """
         recorded = self.onboarded() if setups is None else setups
+        # Loading credentials mutates the process environment. Finish before SSH launches:
+        # concurrent setenv and execve can fail with EFAULT before ssh itself starts.
+        Credentials().load()
         probes: list[Callable[[], ComputePath]] = [self.here]
         probes.extend(
             partial(self.machine, alias, profile, recorded.get(alias))
