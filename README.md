@@ -45,6 +45,12 @@ miyabi-g  pbs       unreachable  ssh connect timed out
 vast      provider  keyed        1x RTX 4090 Sweden, SE  0.2978  99.9968
 ```
 
+`mainboard help batch run` opens that command's help. Other queries, such as
+`mainboard help Log.read_table` or `mainboard help separate trace pass`, search
+command descriptions, this README, and Python API docstrings. Results name their
+source locations; the README ships in the wheel, and API search never imports
+the scanned modules. Broad searches show twenty hits and the full match count.
+
 `compute` answers what there is to run on before anything is dispatched: this
 machine, every declared host with whether it answers and whether it was set up,
 and every provider with whether its credentials are here and what the account

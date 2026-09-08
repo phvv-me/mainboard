@@ -52,9 +52,9 @@ def build(root: Path | None = None) -> App:
 
     @app.command(name="help")
     def help_(*query: str) -> None:
-        """Show command help or search command descriptions without opening a workspace.
+        """Show command help or search shipped docs and Python docstrings without a workspace.
 
-        query: a command path, such as `batch run`, or search words, such as `artifacts`.
+        query: an exact command path such as `batch run`, or words such as `Log.read_table`.
         """
         Help(app).show(" ".join(query))
 
