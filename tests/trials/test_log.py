@@ -95,6 +95,52 @@ def test_declared_inputs_are_hash_checked_and_recorded(
     log.close(passed=True)
 
 
+@pytest.mark.parametrize(("name", "schema_name"), [("snapshot", "test.Profile.v1"), ("", "")])
+def test_model_artifacts_preserve_exact_bytes_reference_and_defaults(
+    session: Session, tmp_path: Path, name: str, schema_name: str, request: pytest.FixtureRequest
+) -> None:
+    module = pytest.Module.from_parent(request.session, path=tmp_path / "alpha/t.py")
+    item = pytest.Function.from_parent(module, name="model", callobj=lambda: None)
+    log = Log(session.trial(item))
+    value = Profile(host="host-α", device="GPU")
+    expected = value.model_dump_json().encode()
+    reference = log.model(value, name=name, schema_name=schema_name)
+    assert isinstance(reference, Artifact)
+    assert reference.read(tmp_path) == expected
+    assert reference.sha256 == hashlib.sha256(expected).hexdigest()
+    assert reference.size == len(expected)
+    assert reference.media_type == "application/json"
+    assert reference.schema_name == schema_name
+    assert log.trial.artifacts[name or "artifact-1"] == reference.model_dump()
+    assert Profile.model_validate_json(reference.read(tmp_path)) == value
+    log.close(passed=True)
+
+
+def test_model_serialization_failure_is_not_published_or_swallowed(
+    session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    module = pytest.Module.from_parent(request.session, path=tmp_path / "alpha/t.py")
+    item = pytest.Function.from_parent(module, name="model", callobj=lambda: None)
+    log = Log(session.trial(item))
+    before = dict(log.trial.artifacts)
+    frame_count = len(log.spool.frames_from(0))
+    failure = ValueError("model serializer failed")
+
+    def fail(value: Profile) -> str:
+        raise failure
+
+    monkeypatch.setattr(Profile, "model_dump_json", fail)
+    with pytest.raises(ValueError, match="model serializer failed") as raised:
+        log.model(Profile())
+    assert raised.value is failure
+    assert log.trial.artifacts == before
+    assert len(log.spool.frames_from(0)) == frame_count
+    log.close(passed=False)
+
+
 def test_profile_attaches_partial_evidence_without_swallowing_the_failure(
     session: Session, tmp_path: Path
 ) -> None:

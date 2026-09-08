@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from loguru import Message, Record
-    from pydantic import JsonValue
+    from pydantic import BaseModel, JsonValue
 
     from .session import Trial
 
@@ -123,6 +123,15 @@ class Log:
         self._event("artifact", {"name": label, **reference.model_dump()})
         return reference
 
+    def model(self, value: BaseModel, *, name: str = "", schema_name: str = "") -> Artifact:
+        """Attach a model's JSON bytes, retaining the caller's name and schema."""
+        return self.artifact(
+            value.model_dump_json().encode(),
+            name=name,
+            media_type="application/json",
+            schema_name=schema_name,
+        )
+
     def table(
         self,
         rows: pl.DataFrame | Sequence[Mapping[str, JsonValue]],
@@ -178,10 +187,9 @@ class Log:
             completed = True
         finally:
             result = profiler.result()
-            self.artifact(
-                result.model_dump_json().encode(),
+            self.model(
+                result,
                 name=name or self._name("profile"),
-                media_type="application/json",
                 schema_name="mainboard.Profile",
             )
             self._event(
