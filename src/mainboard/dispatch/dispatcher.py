@@ -925,32 +925,14 @@ class Dispatcher:
         *,
         prefix: str = "",
     ) -> None:
-        """Take the environment update the first job out of `pinned` would otherwise race for.
-
-        pixi brings a prefix in line with its lock on the way into every command it runs, and a
-        wave of nine jobs starting together shares one prefix, so each of them decides for
-        itself that it needs updating and the losers meet the environment mid-write: `Failed to
-        update PyPI packages ... No such file or directory`, or an import of a package that has
-        vanished for the moment it takes to relink (miyabi-g, 2026-09-05, twice, exactly one
-        member of the wave each time).
-
-        A lock only serializes the machine holding it, and a wave of PBS jobs is a wave of
-        nodes, so the update is taken here instead: one process, before anything is queued,
-        through the tool the job itself will run. What it leaves behind is the stamp every one
-        of those jobs then reads, so the wave only activates.
-
-        Nothing here fails a dispatch. The environment was already proven to run by `_verify`,
-        and a machine that cannot answer this one costs its wave the serialization rather than
-        the dispatch, which is exactly what it had before. A containerized plan is skipped
-        outright: its environment is the image, which no lock on this host describes.
+        """Build the pinned environment before submitting; refuse a failed build.
 
         remote: the open connection to the host.
-        plan: the resolved execution context, whose environment is being brought current.
+        plan: the resolved execution context; containers need no separate prefix.
         pinned: the snapshot the wave will run out of.
-        watch: announces the priming as it happens, so a batch dispatch says it took the update
-            rather than leaving it to be confirmed by watching processes on the host.
-        prefix: the built environment this dispatch pinned, so the host builds that one or says
-            why it reached another.
+        root: the host workspace containing the built environments.
+        watch: receives a successful build announcement.
+        prefix: the expected environment address.
         """
         command = providing(plan, root=root, pinned=pinned, prefix=prefix)
         if not command:
@@ -959,10 +941,9 @@ class Dispatcher:
             ["-lc", wrap(plan, root, command=command, activate=False)]
         ].run(retcode=None)
         if retcode:
-            logger.warning(
-                "could not prime %s on %s: %s", plan.env, plan.host, failure_reason(str(err))
+            raise SystemExit(
+                f"could not build {plan.env} on {plan.host}: {failure_reason(str(err))}"
             )
-            return
         told = f"built {plan.env} on {plan.host} for {pinned}"
         logger.info("%s", told)
         (watch or announce)(told)

@@ -9,6 +9,7 @@ from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from ..core.project import Project
+from ..engines.compile.generated.activation import module_specs
 from ..engines.compile.prefixes import ACTIVATION, STAMP
 from .transport import BoundedSshMachine, HostUnreachable, SshTransport
 
@@ -64,8 +65,7 @@ def wrap(
     if plan.profile.modules:
         steps.append("module purge")
         steps += [
-            f"module load {name}/{version}" if version else f"module load {name}"
-            for name, version in plan.profile.modules.items()
+            f"module load {shlex.quote(spec)}" for spec in module_specs(plan.profile.modules)
         ]
     if not activate:
         steps.append(command)

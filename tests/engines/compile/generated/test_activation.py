@@ -53,3 +53,10 @@ def test_render_omits_every_block_the_host_declared_nothing_for(tmp_path: Path) 
     assert "module load" not in script
     assert "export PATH=" not in script
     assert "export FOO=bar" in script
+
+
+def test_render_preserves_module_order_and_omits_empty_version_slash(tmp_path: Path) -> None:
+    script = ActivationScript(tmp_path / "activate.sh", hook="").render(
+        {"cuda": "13.0", "gcc": ""}
+    )
+    assert "module load cuda/13.0 gcc\n" in script

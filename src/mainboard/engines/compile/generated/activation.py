@@ -55,6 +55,11 @@ def module_init_snippet(inits: Sequence[str] = _MODULE_INITS) -> str:
     )
 
 
+def module_specs(modules: Mapping[str, str]) -> tuple[str, ...]:
+    """Name each declared module, in load order, with its optional version."""
+    return tuple(f"{name}/{version}" if version else name for name, version in modules.items())
+
+
 class ActivationScript:
     """Generates a per-host `.mainboard/activate.sh` that sets up the whole runtime in one
     `source`.
@@ -83,7 +88,7 @@ class ActivationScript:
         With no ``modules`` declared the whole module block is omitted, so the script never
         purges whatever stack the surrounding job had loaded.
         """
-        specs = shlex.join(f"{name}/{version}" for name, version in modules.items())
+        specs = shlex.join(module_specs(modules))
         return (
             _templates()
             .get_template("activate.sh.j2")

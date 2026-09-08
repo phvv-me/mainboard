@@ -416,7 +416,7 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
     listing = ".mainboard/dispatch/jobs/closure-9f9f9f9f9f9f.tsv"
     assert (workdir / listing).read_text(encoding="utf-8") == sealed.listing
-    assert dispatcher.shipped == [(script, listing)]
+    assert dispatcher.shipped == [(script, listing, "a/run.py", "mainboard.toml")]
     body = (workdir / str(script)).read_text(encoding="utf-8")
     assert f"export PYTHONPATH={pinned}/research/camp:{pinned}/packages/core/src" in body
     assert f"export MAINBOARD_CLOSURE={pinned}/{listing}" in body
@@ -485,27 +485,22 @@ def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
     assert [told for told in announced if told.startswith("built default on gold for /repo")]
 
 
-def test_a_host_that_will_not_build_costs_its_wave_the_head_start_and_not_the_dispatch(
+def test_a_failed_prefix_build_prevents_scheduler_submission(
     dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The job builds its own environment if it has to, so this is only ever a head start."""
-    warned: list[tuple[str, tuple[object, ...]]] = []
+    """A prior workspace check cannot prove that a newly addressed prefix builds."""
     machine = machine_with(rules=[("provide", 1, "no pixi here")])
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-    monkeypatch.setattr(
-        dispatch_module.logger, "warning", lambda message, *args: warned.append((message, args))
-    )
+    with pytest.raises(SystemExit, match="could not build default on gold: no pixi here"):
+        dispatcher.run(
+            plan(),
+            shipped(dispatcher, "python -m foo"),
+            root="/repo",
+            resources=Resources(),
+            prefix="/repo/.mainboard/prefixes/default/abcd1234",
+        )
 
-    handle = dispatcher.run(
-        plan(),
-        shipped(dispatcher, "python -m foo"),
-        root="/repo",
-        resources=Resources(),
-        prefix="/repo/.mainboard/prefixes/default/abcd1234",
-    )
-
-    assert handle.id == backend.submit_handle
-    assert [message for message, _ in warned] == ["could not prime %s on %s: %s"]
+    assert not any(name == "submit" for name, _ in backend.calls)
 
 
 def test_a_moving_working_tree_cannot_split_the_script_from_the_snapshot_it_runs_in(
