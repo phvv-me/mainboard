@@ -70,8 +70,7 @@ class ActivationScript:
     scripts `Provisioner.activated()` applies), and finally exports the directories the
     second-stage toolchains linked their executables into. Sourcing it makes `python -m
     <module>` and an npm-installed tool alike Just Work from a bare PBS or interactive shell.
-    Off-cluster the `module` lines are guarded by `command -v module`, so the script degrades
-    to pure pixi activation.
+    Declared modules must load successfully; only an empty module map skips this stage.
 
     binaries: directories to prepend to PATH after pixi's own activation, the same ones
         `Provisioner.activated()` exports in-process.

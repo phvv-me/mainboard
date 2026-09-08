@@ -8,12 +8,14 @@
 case $- in *u*) _mainboard_nounset=1; set +u;; *) _mainboard_nounset=0;; esac
 
 {% if modules %}
-# HPC modules (guarded so it no-ops off a cluster).
+# Declared modules are part of this environment's identity.
 {{ module_init }}
-if command -v module >/dev/null 2>&1; then
-  module purge
-  module load {{ modules }}
+if ! command -v module >/dev/null 2>&1; then
+  echo 'mainboard: declared host modules require a working module system' >&2
+  return 1
 fi
+module purge || return $?
+module load {{ modules }} || return $?
 
 {% endif %}
 # pixi env activation (env vars, PATH, activation scripts).

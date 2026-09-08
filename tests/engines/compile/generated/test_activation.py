@@ -1,6 +1,11 @@
+import shlex
+import subprocess
 from typing import TYPE_CHECKING
 
+import pytest
+
 from mainboard.engines.compile.generated import ActivationScript, module_init_snippet
+from mainboard.engines.compile.generated import activation as activation_module
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,4 +64,33 @@ def test_render_preserves_module_order_and_omits_empty_version_slash(tmp_path: P
     script = ActivationScript(tmp_path / "activate.sh", hook="").render(
         {"cuda": "13.0", "gcc": ""}
     )
-    assert "module load cuda/13.0 gcc\n" in script
+    assert "module load cuda/13.0 gcc || return $?\n" in script
+
+
+@pytest.mark.parametrize(
+    ("setup", "expected"),
+    [
+        ("unset -f module", 1),
+        ("module() { return 7; }", 7),
+        ("module() { case $1 in load) return 9;; esac; }", 9),
+        ("module() { return 0; }", 0),
+    ],
+)
+def test_declared_modules_must_load_before_activation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup: str, expected: int
+) -> None:
+    monkeypatch.setattr(activation_module, "module_init_snippet", lambda: ":")
+    path = ActivationScript(tmp_path / "activate.sh", hook="export READY=yes").write(
+        {"cuda": "13.0"}
+    )
+    command = f"PATH=''; {setup}; source {shlex.quote(str(path))} || exit $?"
+    command += '\n[ "$READY" = yes ]'
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", command],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == expected
+    if expected == 1:
+        assert "require a working module system" in result.stderr
