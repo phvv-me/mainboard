@@ -1,10 +1,12 @@
 """One query surface over project-owned results, including work still running."""
 
 import json
+import os
 import sqlite3
 from compression import zstd
 from io import BytesIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import duckdb
 import polars as pl
@@ -38,6 +40,31 @@ class Results:
                 orient="row",
                 infer_schema_length=None,
             )
+
+    def export(self, sql: str, path: Path, *, project: str = "") -> Path:
+        """Export one SELECT to a new CSV, Parquet, or JSON file, inferred from its suffix.
+
+        Publish only a complete file. An existing destination is never overwritten.
+        """
+        frame = self.query(sql, project=project)
+        writers = {
+            ".csv": frame.write_csv,
+            ".parquet": frame.write_parquet,
+            ".json": frame.write_json,
+        }
+        try:
+            write = writers[path.suffix.casefold()]
+        except KeyError:
+            raise ValueError("output suffix must be .csv, .parquet, or .json") from None
+        path = path.expanduser().absolute()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=path.parent) as staged:
+            temporary = Path(staged) / path.name
+            write(temporary)
+            with temporary.open("rb+") as completed:
+                os.fsync(completed.fileno())
+            os.link(temporary, path)
+        return path
 
     def table(self, schema: str, *, project: str = "") -> pl.DataFrame:
         """Read matching Parquet artifacts, including those published before trial settlement."""

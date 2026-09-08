@@ -19,6 +19,7 @@ from .dispatch.commandline import joined
 from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .durable import schedule
+from .help import Help
 from .listing import Listing
 from .manifest.loading import load
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
@@ -47,6 +48,14 @@ def build(root: Path | None = None) -> App:
 
     def board(on: str) -> Board:
         return Board(workspace_root(), host=on)
+
+    @app.command(name="help")
+    def help_(*query: str) -> None:
+        """Show command help or search command descriptions without opening a workspace.
+
+        query: a command path, such as `batch run`, or search words, such as `artifacts`.
+        """
+        Help(app).show(" ".join(query))
 
     # Everything after `--` is another program's argv and must reach it untouched. cyclopts
     # honours the `--` delimiter for its own help flags but not for its version flag, so the two
@@ -547,13 +556,29 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
-    def query(sql: str = "SELECT * FROM runs", *, project: str = "", json: bool = False) -> None:
+    def query(
+        sql: str = "SELECT * FROM runs",
+        *,
+        project: str = "",
+        json: bool = False,
+        out: Path | None = None,
+    ) -> None:
         """Explore collected results across servers; each query sees newly arrived files.
 
         Views: runs, trials, events, metrics, artifacts, jobs. Project scopes science views;
         jobs always shows the fleet. Run monitor to refresh remote files, or schedule it.
+
+        sql: one DuckDB SELECT statement over the local views.
+        project: restrict scientific rows to this research project.
+        json: print JSON when no output file is requested.
+        out: export to a new .csv, .parquet, or .json file instead of printing rows.
         """
-        frame = mainboard.Results(workspace_root()).query(sql, project=project)
+        results = mainboard.Results(workspace_root())
+        if out is not None:
+            saved = results.export(sql, out, project=project)
+            print(saved)
+            return
+        frame = results.query(sql, project=project)
         rows(
             loads(frame.write_json()),
             mode=mode_of(json_mode=json, agent=False),

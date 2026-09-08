@@ -258,6 +258,9 @@ mainboard monitor --json
 mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
 mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
 mainboard query "SELECT server, handle, state, verdict FROM jobs"
+mainboard query "SELECT * FROM runs" --out /tmp/runs.parquet
+mainboard help artifacts
+mainboard help batch run
 ```
 
 `monitor` pulls published results from running jobs as well as finished ones. Run
@@ -265,6 +268,13 @@ repeated passes to refresh remote data; a query itself has no network side effec
 DuckDB reads the collected Parquet fragments and event journals directly. There is
 no shared database file for different servers to lock, and no database service to deploy.
 Each query sees a fresh inventory; it is not a transaction across all servers.
+
+`--out` exports the selected rows as CSV, Parquet, or JSON according to the filename
+extension. It creates parent directories, publishes only a complete file, and refuses
+to overwrite an existing destination. Parquet preserves column types; CSV and JSON use
+their standard representations. `--json` still prints JSON when no file is requested.
+`help` reads the CLI's own descriptions: a command path opens its full help, and other
+words search command names and docstrings. Use `help -- --max-usd` to search an option.
 
 The views are `jobs`, `runs`, `trials`, `events`, `metrics`, and `artifacts`.
 Project, run, host, hardware, and source remain explicit; combining storage never
