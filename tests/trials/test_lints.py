@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 
 from mainboard.trials import Dataset, Declaration, findings
 from mainboard.trials.lints import pinned
@@ -9,7 +10,7 @@ from mainboard.trials.lints import pinned
 from .support import declaration
 
 
-def settled(store: Dataset, run: str, *rows: Mapping[str, object]) -> None:
+def settled(store: Dataset, run: str, *rows: Mapping[str, JsonValue]) -> None:
     """Write `rows` into `store` as one run's fragments, filling in what every receipt carries."""
     writer = store.writer(run, {"node": store.node})
     for row in rows:
@@ -83,15 +84,21 @@ def test_a_band_that_is_the_range_of_its_own_scored_rows_is_reported_as_unfailab
     assert "`published`" in found[0].detail and "no row can leave it" in found[0].detail
 
 
+@pytest.mark.parametrize(
+    ("refutation_key", "expected"),
+    [("heuristic/m1/k512", 1), ("heuristic/m16/k256", 0), ("", 0), (None, 0)],
+    ids=["named-off-grid", "named-in-grid", "unparameterized", "missing-key"],
+)
 def test_a_kill_that_never_fires_where_the_claim_dies_is_reported_as_uncovered(
-    claim: Dataset, declared: Declaration
+    claim: Dataset, declared: Declaration, refutation_key: str | None, expected: int
 ) -> None:
     """Does a lane carrying a kill get named when the claim's refutations sit off its grid?
 
     THE INSTANCE THAT EARNED IT is `carried_block_width` W1, ruled FATAL on 2026-08-29: its width
     lane runs five shapes that are all `M > 1`, and the four `M = 1` shapes where the sibling
     ladder lane recorded the pre-registration dying are the four the kill lane never visits, so
-    the claim cannot be falsified at the only shapes where it is false.
+    the claim cannot be falsified at the only shapes where it is false. An absent key does not
+    name such a shape, and a named refutation inside the grid is already covered.
     """
     settled(
         claim,
@@ -101,15 +108,17 @@ def test_a_kill_that_never_fires_where_the_claim_dies_is_reported_as_uncovered(
         {"lane": "test_ladder", "key": "heuristic/m16/k256", "measured": {"plateau": 8}},
         {
             "lane": "test_ladder",
-            "key": "heuristic/m1/k512",
+            "key": refutation_key,
             "verdict": "refuted",
             "measured": {"plateau": 2},
         },
     )
     found = [one for one in findings(claim, declared.words) if one.lint == "registered-kill"]
-    assert len(found) == 1
-    assert found[0].lane == "test_width" and "heuristic/m1/k512" in found[0].detail
-    assert "its grid never contains" in found[0].detail
+    assert len(found) == expected
+    if expected:
+        assert refutation_key is not None
+        assert found[0].lane == "test_width" and refutation_key in found[0].detail
+        assert "its grid never contains" in found[0].detail
 
 
 def test_a_lane_that_moved_its_readings_and_can_die_is_left_alone(

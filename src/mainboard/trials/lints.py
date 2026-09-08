@@ -196,7 +196,11 @@ def uncovered(
     """
     grouped = lanes_of(rows)
     words = {lane: {str(row.get("verdict", "")) for row in held} for lane, held in grouped.items()}
-    grids = {lane: {str(row.get("key", "")) for row in held} for lane, held in grouped.items()}
+    # An absent parametrization key does not identify a missing grid coordinate.
+    grids = {
+        lane: {key for row in held if isinstance(key := row.get("key"), str) and key}
+        for lane, held in grouped.items()
+    }
     died = {lane: grid for lane, grid in grids.items() if words[lane] & refuting}
     for lane, grid in grids.items():
         # A LANE THAT DECLARES NO GRID CANNOT HAVE AIMED ONE AWAY FROM ANYTHING. One key, or the
