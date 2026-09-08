@@ -7,6 +7,7 @@
 
 import types
 from collections.abc import Callable, Sequence
+from ctypes import c_size_t
 from typing import TYPE_CHECKING
 
 import pytest
@@ -58,6 +59,10 @@ class FakeCupti:
         self.unsupported = unsupported
         self.enabled: set[int] = set()
         self.flushes = 0
+        self.native_dropped = 0
+        self.drop_queries: list[tuple[int, int]] = []
+        self.sync_status = 0
+        self.drop_failure = False
         self.completed: Callable[[list[RawActivity]], None] | None = None
         self.subscribed: list[Subscriber] = []
         self.callback: Callable[[None, int, int, CallbackData], None] | None = None
@@ -72,6 +77,13 @@ class FakeCupti:
 
     def activity_flush_all(self, _flag: int) -> None:
         self.flushes += 1
+
+    def activity_get_num_dropped_records(self, context: int, stream_id: int, dropped: int) -> None:
+        if self.drop_failure:
+            raise RuntimeError("native loss query failed")
+        self.drop_queries.append((context, stream_id))
+        c_size_t.from_address(dropped).value = self.native_dropped
+        self.native_dropped = 0
 
     def activity_register_callbacks(
         self,
@@ -107,7 +119,12 @@ def fake_cupti(monkeypatch: pytest.MonkeyPatch) -> FakeCupti:
     """Install a fresh fake CUPTI and reset the module's global subscriber state."""
     cupti = FakeCupti()
     monkeypatch.setattr(nv, "cupti", cupti)
-    monkeypatch.setattr(nv, "cuda_runtime", None)
+    monkeypatch.setattr(
+        nv,
+        "cuda_runtime",
+        types.SimpleNamespace(cudaDeviceSynchronize=lambda: (cupti.sync_status,)),
+    )
+    monkeypatch.setattr(nv, "_runtime_loaded", True)
     monkeypatch.setattr(nv, "_active", [])
     monkeypatch.setattr(nv, "_registered", False)
     monkeypatch.setattr(nv, "_supported_kinds", None)
@@ -166,6 +183,7 @@ def test_collector_lifecycle_collects_routes_and_then_drops_its_records(
     the buffer and disables every native kind the capture turned on.
     """
     with nv.CuptiCollector(Activity.KERNEL | Activity.MEMCPY) as collector:
+        assert fake_cupti.completed is not None
         fake_cupti.completed([_kernel_activity(), _memcpy_activity(), _runtime_activity()])
         collector.flush()
         assert collector.kernels()[0].name == "gemm"
@@ -188,6 +206,7 @@ def test_a_generic_activity_resolves_its_name_after_the_callback_returns(
     neither falls back to its kind label.
     """
     with nv.CuptiCollector(Activity.RUNTIME) as collector:
+        assert fake_cupti.completed is not None
         fake_cupti.completed([_runtime_activity(cbid=7)])
         collector.flush()
         record = collector.activities()[0]
@@ -284,21 +303,6 @@ def test_raw_activity_buffer_is_bounded() -> None:
     assert collector.dropped() == 1
 
 
-def test_the_device_sync_runs_only_when_the_runtime_binding_is_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`_sync` drains the device when the CUDA runtime is loaded, and is a no-op without it."""
-    monkeypatch.setattr(nv, "cuda_runtime", None)
-    nv._sync()  # noqa: SLF001  reason=unit-tests the module-private device-sync helper since=2026-08-16
-
-    synced: list[int] = []
-    monkeypatch.setattr(
-        nv, "cuda_runtime", types.SimpleNamespace(cudaDeviceSynchronize=lambda: synced.append(1))
-    )
-    nv._sync()  # noqa: SLF001  reason=unit-tests the module-private device-sync helper since=2026-08-16
-    assert synced == [1]
-
-
 def test_annotation_goes_to_nvtx_while_the_deep_trace_goes_to_cupti(
     fake_cupti: FakeCupti, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -369,9 +373,10 @@ def test_the_callback_session_counts_one_api_call_per_enter(fake_cupti: FakeCupt
         exit_site = types.SimpleNamespace(
             callback_site=FakeApiCallbackSite.API_EXIT, function_name="cudaMalloc"
         )
-        fake_cupti.callback(None, None, 0, enter)
-        fake_cupti.callback(None, None, 0, enter)
-        fake_cupti.callback(None, None, 0, exit_site)  # EXIT is not counted
+        assert fake_cupti.callback is not None
+        fake_cupti.callback(None, 0, 0, enter)
+        fake_cupti.callback(None, 0, 0, enter)
+        fake_cupti.callback(None, 0, 0, exit_site)  # EXIT is not counted
     assert session.counts() == {"cudaMalloc": 2}
     assert fake_cupti.subscribed == []  # stop unsubscribed
     session.stop()  # subscriber already cleared -> no-op

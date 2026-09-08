@@ -63,13 +63,13 @@ def test_a_diff_matches_regions_by_name_and_survives_a_round_trip(tmp_path: Path
         (traced_profile(), ("Spans", "encode", "GPU activity", "3 kernels"), ("Capture limit",)),
         (
             Profile(dropped_activities=3),
-            ("Capture limit", "oldest GPU activities dropped"),
-            ("oldest spans dropped",),
+            ("Capture limit", "3 GPU activities dropped"),
+            ("oldest spans dropped", "oldest GPU activities"),
         ),
         (
             Profile(summaries=(RegionSummary(name="r", wall_ms=1.0),), dropped_spans=2),
             ("Spans", "oldest spans dropped"),
-            ("oldest GPU activities dropped",),
+            ("GPU activities dropped",),
         ),
         (
             Profile(

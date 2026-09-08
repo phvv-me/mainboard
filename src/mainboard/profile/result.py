@@ -166,7 +166,7 @@ class Profile(FrozenModel):
         if self.dropped_spans:
             drops.append(f"{self.dropped_spans} oldest spans dropped")
         if self.dropped_activities:
-            drops.append(f"{self.dropped_activities} oldest GPU activities dropped")
+            drops.append(f"{self.dropped_activities} GPU activities dropped")
         if drops:
             sections.append("Capture limit\n" + "\n".join(drops))
         return "\n\n".join(sections) or "No profiling data collected."

@@ -3,6 +3,7 @@
 import threading
 from collections import defaultdict, deque
 from contextlib import ExitStack, suppress
+from ctypes import addressof, c_size_t
 from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING, ClassVar, cast
@@ -76,8 +77,12 @@ _domain: dict[int, int] = {}  # kind int -> CallbackDomain, for cbid -> function
 
 def _sync() -> None:
     """Synchronize the device so all kernels land in the CUPTI buffer before a flush."""
-    if runtime := _runtime():
-        runtime.cudaDeviceSynchronize()
+    runtime = _runtime()
+    if runtime is None:
+        raise RuntimeError("CUDA runtime binding is required to synchronize activity capture")
+    (status,) = runtime.cudaDeviceSynchronize()
+    if status != 0:  # cudaSuccess is zero; asynchronous execution errors surface here too.
+        raise RuntimeError(f"cudaDeviceSynchronize failed with CUDA status {status}")
 
 
 def _runtime() -> CudaRuntime | None:
@@ -212,6 +217,7 @@ class CuptiCollector(TraceCollector):
         self.kinds = kinds
         self.records: deque[RawRecord] = deque(maxlen=max_records)
         self.dropped_records = 0
+        self.native_dropped_records = 0
         self.enabled_kinds: tuple[int, ...] = ()
         self.running = False
 
@@ -224,6 +230,7 @@ class CuptiCollector(TraceCollector):
             undo.callback(self._abandon)
             _sync()
             _cupti().activity_flush_all(1)  # drain prior records before capture starts
+            CuptiCollector._native_drops()  # reset the global count from before this capture
             _active.append(self)
             self.running = True
             undo.pop_all()
@@ -260,47 +267,16 @@ class CuptiCollector(TraceCollector):
         self.records.append(record)
 
     def dropped(self) -> int:
-        """Return raw activity records overwritten by the bounded deque."""
-        return self.dropped_records
+        """Return native buffer loss plus deque overwrites through the latest flush."""
+        with self.lock:
+            return self.native_dropped_records + self.dropped_records
 
     def flush(self) -> None:
         _sync()
         _cupti().activity_flush_all(1)
-
-    def _abandon(self) -> None:
-        """Roll the enables back after a start that never reached capture."""
-        _disable(self.enabled_kinds)
-        self.enabled_kinds = ()
-
-    @staticmethod
-    def _ensure_registered() -> None:
-        """Register the activity callbacks once, for the process (never unregistered)."""
-        global _registered
-        if _registered:
-            return
-        api = _cupti()
-        api.activity_register_callbacks(_on_buffer_requested, _on_buffer_completed)
-        _domain[int(api.ActivityKind.RUNTIME)] = api.CallbackDomain.RUNTIME_API
-        _domain[int(api.ActivityKind.DRIVER)] = api.CallbackDomain.DRIVER_API
-        _registered = True
-
-    @staticmethod
-    def _enable(kinds: Activity) -> tuple[int, ...]:
-        """Enable requested CUPTI kinds and return the exact native members enabled.
-
-        ``kinds`` is already reconciled against :func:`_supported`, so every kind here is
-        known to enable; an error would be a real bug, not an unsupported device.
-        """
-        api = _cupti()
-        enabled = []
-        for flag, enum_name in _CUPTI_KIND.items():
-            if flag not in kinds:
-                continue
-            kind = getattr(api.ActivityKind, enum_name)
-            api.activity_enable(kind)
-            _label[int(kind)] = flag.label
-            enabled.append(kind)
-        return tuple(enabled)
+        dropped = CuptiCollector._native_drops()
+        with self.lock:
+            self.native_dropped_records += dropped
 
     def kernels(self) -> list[KernelTrace]:
         with self.lock:
@@ -339,6 +315,7 @@ class CuptiCollector(TraceCollector):
         with self.lock:
             self.records.clear()
             self.dropped_records = 0
+            self.native_dropped_records = 0
 
     def stop(self) -> None:
         if not self.running:
@@ -346,8 +323,58 @@ class CuptiCollector(TraceCollector):
         with ExitStack() as teardown:
             teardown.callback(self._settle)
             teardown.callback(self._retire)
-            _sync()
-            _cupti().activity_flush_all(1)
+            self.flush()
+
+    @staticmethod
+    def _enable(kinds: Activity) -> tuple[int, ...]:
+        """Enable requested CUPTI kinds and return the exact native members enabled.
+
+        ``kinds`` is already reconciled against :func:`_supported`, so every kind here is
+        known to enable; an error would be a real bug, not an unsupported device.
+        """
+        api = _cupti()
+        enabled = []
+        for flag, enum_name in _CUPTI_KIND.items():
+            if flag not in kinds:
+                continue
+            kind = getattr(api.ActivityKind, enum_name)
+            api.activity_enable(kind)
+            _label[int(kind)] = flag.label
+            enabled.append(kind)
+        return tuple(enabled)
+
+    @staticmethod
+    def _ensure_registered() -> None:
+        """Register the activity callbacks once, for the process (never unregistered)."""
+        global _registered
+        if _registered:
+            return
+        api = _cupti()
+        api.activity_register_callbacks(_on_buffer_requested, _on_buffer_completed)
+        _domain[int(api.ActivityKind.RUNTIME)] = api.CallbackDomain.RUNTIME_API
+        _domain[int(api.ActivityKind.DRIVER)] = api.CallbackDomain.DRIVER_API
+        _registered = True
+
+    @staticmethod
+    def _native_drops() -> int:
+        """Drain CUPTI's reset-on-read global queue loss count, including empty flushes.
+
+        CUDA 6 onward delivers global buffers, so context and stream are both zero.
+        cupti-python takes the address of a size_t output, not an integer result.
+        """
+        dropped = c_size_t()
+        _cupti().activity_get_num_dropped_records(0, 0, addressof(dropped))
+        return dropped.value
+
+    def _abandon(self) -> None:
+        """Roll the enables back after a start that never reached capture."""
+        _disable(self.enabled_kinds)
+        self.enabled_kinds = ()
+
+    def _mark_stopped(self) -> None:
+        """Forget the enables and read as not running."""
+        self.enabled_kinds = ()
+        self.running = False
 
     def _retire(self) -> None:
         """Leave the active stack, tolerating a session someone else already popped."""
@@ -359,11 +386,6 @@ class CuptiCollector(TraceCollector):
         with ExitStack() as rest:
             rest.callback(self._mark_stopped)
             _disable(self.enabled_kinds)
-
-    def _mark_stopped(self) -> None:
-        """Forget the enables and read as not running."""
-        self.enabled_kinds = ()
-        self.running = False
 
     # force buffered records to the completion callback
 

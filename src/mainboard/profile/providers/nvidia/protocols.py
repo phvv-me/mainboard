@@ -52,6 +52,10 @@ class Cupti(Protocol):
 
     def activity_flush_all(self, flag: int) -> None: ...
 
+    def activity_get_num_dropped_records(
+        self, context: int, stream_id: int, dropped: int
+    ) -> None: ...
+
     def activity_register_callbacks(
         self,
         on_requested: Callable[[], tuple[int, int]],
