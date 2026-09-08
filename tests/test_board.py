@@ -23,9 +23,10 @@ from mainboard.dispatch.backends import (
     Rentable,
     Standing,
 )
-from mainboard.dispatch.rentals import Rental
+from mainboard.dispatch.rentals import Identity, Rental
 from mainboard.dispatch.schedulers import registry
 from mainboard.dispatch.state import RunRecord
+from mainboard.dispatch.transport import Endpoint
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.doctor import Doctor
 from mainboard.engines.compile import Provisioner
@@ -136,6 +137,9 @@ class FakeRental(ProviderBackend, Rentable):
 
     def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
         raise AssertionError("a board test never rents a real machine")
+
+    def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
+        return Endpoint(address="rental.example", port=2222, user="root", identity=key)
 
     def state(self, handle: str) -> JobState:
         return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
@@ -524,17 +528,20 @@ def test_a_dispatch_names_the_pinned_trees_import_roots_and_not_the_mirrors(
     where = Provisioner(workspace, board.manifest).environment_dir("default")
     where.mkdir(parents=True, exist_ok=True)
     (where / "pixi.toml").write_text(
-        '[workspace]\nname = "lab"\n'
-        'platforms = [{name = "linux-64-system", platform = "linux-64"}]\n'
-        "\n[pypi-dependencies]\n"
-        'lab-core = { path = "../../../packages/lab-core", editable = true }\n'
-        'lab-flat = { path = "../../../packages/lab-flat", editable = true }\n'
-        'built = { path = "../../../packages/built" }\n'
-        'elsewhere = { path = "/opt/elsewhere", editable = true }\n'
-        'paleta-tsukuba = { path = "../../../.mainboard/vendor/paleta-tsukuba", '
-        "editable = true }\n"
-        "\n[feature.dev.pypi-dependencies]\n"
-        'lab-self = { path = "../../..", editable = true }\n',
+        """[workspace]
+name = "lab"
+platforms = [{name = "linux-64-system", platform = "linux-64"}]
+
+[pypi-dependencies]
+lab-core = { path = "../../../packages/lab-core", editable = true }
+lab-flat = { path = "../../../packages/lab-flat", editable = true }
+built = { path = "../../../packages/built" }
+elsewhere = { path = "/opt/elsewhere", editable = true }
+paleta-tsukuba = { path = "../../../.mainboard/vendor/paleta-tsukuba", editable = true }
+
+[feature.dev.pypi-dependencies]
+lab-self = { path = "../../..", editable = true }
+""",
         encoding="utf-8",
     )
     (workspace / "packages/lab-core/src").mkdir(parents=True)
@@ -1097,11 +1104,11 @@ def test_a_provider_job_delegates_to_its_backend_and_ends_the_rental_on_a_wait(
     ids=["logs it never keeps", "a delivery it never had", "a path nobody recorded"],
 )
 def test_a_provider_job_refuses_a_capability_its_backend_never_had(
-    fetch: str, fault: type[Exception], refusal: str
+    board: Board, fetch: str, fault: type[Exception], refusal: str
 ) -> None:
     """The absence is discovered before the call, and answered with the backend's own advice."""
     handle = Handle(id="bare-1", host="cloudbox", root="", kind="bare", fetch_path=fetch or None)
-    job = ProviderJob(BareBackend(), handle)
+    job = ProviderJob(board, BareBackend(), handle)
     job.kill()
     assert job.wait(poll=lambda seconds: None).ok
     asked = job.logs if "logs" in refusal else job.pull
@@ -1117,14 +1124,15 @@ def test_a_provider_job_refuses_a_capability_its_backend_never_had(
     ],
 )
 def test_a_transcript_is_the_tolerant_twin_of_logs_so_a_settle_never_dies_over_one(
-    backend: ProviderBackend, expected: str
+    board: Board, backend: ProviderBackend, expected: str
 ) -> None:
     """The settle that captures output runs before the release, and must not fail the sweep."""
     handle = Handle(id="c-1", host="cloudbox", root="", kind=backend.name)
-    assert ProviderJob(backend, handle).transcript() == expected
+    assert ProviderJob(board, backend, handle).transcript() == expected
 
 
 def test_a_provider_that_will_not_hand_its_log_over_costs_a_transcript_and_nothing_else(
+    board: Board,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cloud = FakeCloud()
@@ -1132,7 +1140,36 @@ def test_a_provider_that_will_not_hand_its_log_over_costs_a_transcript_and_nothi
         cloud, "logs", lambda handle: (_ for _ in ()).throw(MissionError("vast refused logs"))
     )
     handle = Handle(id="c-2", host="cloudbox", root="", kind="fakecloud")
-    assert ProviderJob(cloud, handle).transcript() == ""
+    assert ProviderJob(board, cloud, handle).transcript() == ""
+
+
+def test_a_rental_reuses_host_artifact_transfer_before_its_disk_is_released(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rented SSH workspace has the same durable results path as an owned host."""
+    bound = board.on(_GOLD)
+    handle = Handle(
+        id="r-1",
+        host=_GOLD,
+        root="/rental/projects",
+        kind="fakerental",
+        fetch_path="research/project/datasets/experiments/probe",
+    )
+    monkeypatch.setattr(
+        "mainboard.board.identity", lambda declared: Identity(private="/keys/id", public="pub")
+    )
+    transferred = []
+    monkeypatch.setattr(
+        bound.dispatcher, "fetch_path", lambda host, **fields: transferred.append((host, fields))
+    )
+    ProviderJob(bound, FakeRental(), handle).pull()
+    [(host, fields)] = transferred
+    assert host == "root@rental.example"
+    assert fields["root"] == handle.root
+    assert fields["path"] == handle.fetch_path
+    assert fields["ssh"].endpoint == Endpoint(
+        address="rental.example", port=2222, user="root", identity="/keys/id"
+    )
 
 
 def test_job_rebuilds_a_dispatched_run_from_the_cache(

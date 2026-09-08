@@ -16,6 +16,7 @@ from mainboard.batch.runner import directory
 from mainboard.cli import build
 from mainboard.dispatch import SshTransport
 from mainboard.dispatch.backends import HpcAiBackend, VastBackend
+from mainboard.dispatch.rentals import Identity
 from mainboard.dispatch.schedulers import HostUnreachable
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState
@@ -32,6 +33,7 @@ from mainboard.experiments import StudyLedger
 from mainboard.experiments.identity import study_label
 
 from .dispatch.backends.support import FakeTransport, refused
+from .dispatch.support import machine_with
 
 if TYPE_CHECKING:
     from urllib.request import Request
@@ -473,15 +475,44 @@ def test_a_provider_that_refuses_the_cancel_is_a_warning_not_a_failed_sweep(
     assert board.dispatcher.cache.run("16").reported == "failed"
 
 
-def test_a_provider_that_cannot_deliver_still_settles_and_ends_the_rental(
+def test_a_rented_workspace_is_fetched_before_the_provider_destroys_it(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rented disk dies with the instance, so the missing artifact is a note, not a stop."""
+    """The monitor uses the rental's SSH endpoint before the irreversible release."""
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     seed("17", target="rented", kind=Rented.name, fetch_path="results/run")
-    Rented.replies = [*rented(), {"success": True}]
+    replies = rented()
+    Rented.replies = [
+        *replies[:3],
+        {
+            "instances": {
+                "actual_status": "running",
+                "ssh_host": "rental.example",
+                "ssh_port": 2222,
+            }
+        },
+        *replies[3:],
+        {"success": True},
+    ]
+    monkeypatch.setattr(
+        "mainboard.board.identity", lambda declared: Identity(private="/keys/id", public="pub")
+    )
+    monkeypatch.setattr(
+        "mainboard.board.connection", lambda host, policy: machine_with("/rental/projects")
+    )
+    transfers = []
+
+    def fetch(host: str, **fields) -> None:
+        assert not any(call.get_method() == "DELETE" for call in Rented.calls)
+        transfers.append((host, fields))
+
+    monkeypatch.setattr(board.dispatcher, "fetch_path", fetch)
     [item] = board.monitor().once().finished
-    assert item.pulled_path is None
+    assert item.pulled_path == "results/run"
+    [(host, fields)] = transfers
+    assert host == "root@rental.example"
+    assert fields["root"] == "/rental/projects"
+    assert fields["ssh"].endpoint.port == 2222
     assert Rented.calls[-1].get_method() == "DELETE"
 
 

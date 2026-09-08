@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
+    from ..transport import Endpoint
     from ..vocabulary import JobState, Resources
 
     class HttpResponse(Protocol):
@@ -233,6 +234,10 @@ class Rentable(Capability, abc.ABC):
     mirror-install-provision-pin path does the rest; one that does not keeps running the raw
     command as its container's entrypoint.
     """
+
+    @abc.abstractmethod
+    def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
+        """Reconnect to a rental, including after the submitting process has exited."""
 
     @abc.abstractmethod
     def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:

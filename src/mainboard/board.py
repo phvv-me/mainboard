@@ -25,16 +25,26 @@ from .core.project import Project
 from .core.shell import foreground
 from .deps import Dependencies
 from .dispatch import vocabulary
-from .dispatch.backends.base import Credentials, Delivery, LogSource, ProviderBackend, route
+from .dispatch.backends.base import (
+    Credentials,
+    Delivery,
+    LogSource,
+    ProviderBackend,
+    Rentable,
+    route,
+)
 from .dispatch.commandline import joined, vetted
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.jobs.spec import walltime_seconds
 from .dispatch.landing import Landing, renter
 from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
+from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shared import logger
 from .dispatch.shipment import Shipment
 from .dispatch.snapshots import Snapshots
+from .dispatch.targets import find_root
+from .dispatch.transport import SshTransport
 from .dispatch.vocabulary import Request, Resources
 from .dispatch.wrapping import connection, missing, wrap
 from .doctor import Doctor
@@ -168,11 +178,14 @@ class ProviderJob:
     the backend's own advice when that backend never had one.
     """
 
-    def __init__(self, backend: ProviderBackend, handle: Handle) -> None:
-        """backend: the provider backend instance that submitted this run.
+    def __init__(self, board: Board, backend: ProviderBackend, handle: Handle) -> None:
+        """board: the workspace bound to the provider host.
+
+        backend: the provider backend instance that submitted this run.
 
         handle: the dispatch handle carrying the provider's opaque run id.
         """
+        self.board = board
         self.backend = backend
         self.handle = handle
 
@@ -193,10 +206,8 @@ class ProviderJob:
     def transcript(self) -> str:
         """The run's captured output, empty when this provider keeps none or will not answer.
 
-        A rented machine's disk dies with the rental, so this is the only channel a provider run
-        has for anything it produced, which is why it must be read before the release that
-        destroys the instance and why a provider without one is an empty string rather than a
-        refusal.
+        A rented machine's disk dies with the rental, so logs and artifacts must both be read
+        before release. A provider without logs answers an empty string rather than a refusal.
         """
         if not isinstance(self.backend, LogSource):
             return ""
@@ -215,9 +226,22 @@ class ProviderJob:
         path = self.handle.fetch_path
         if not path:
             raise LookupError(f"handle {self.handle.id!r} has no fetch path to pull")
-        if not isinstance(self.backend, Delivery):
+        if isinstance(self.backend, Delivery):
+            self.backend.deliver(self.handle.id, path=path)
+        elif isinstance(self.backend, Rentable):
+            profile = self.board.plan().profile
+            key = identity(profile.vars.get("ssh-key", "")).private
+            endpoint = self.backend.endpoint(self.handle.id, key=key)
+            policy = SshTransport(endpoint=endpoint)
+            root = self.handle.root or profile.root
+            if not root:
+                with connection(endpoint.destination, policy) as remote:
+                    root = find_root(remote)
+            self.board.dispatcher.fetch_path(
+                endpoint.destination, root=root, path=path, ssh=policy
+            )
+        else:
             raise MissionError(self.backend.refusal(Delivery, handle=self.handle.id, path=path))
-        self.backend.deliver(self.handle.id, path=path)
 
     def release(self) -> None:
         """End the rental, which is the only thing that stops a provider charging for it.
@@ -663,6 +687,7 @@ class Board:
         destination = route(record.kind)
         if destination != "ssh-family":
             return ProviderJob(
+                self.on(record.target),
                 destination(),
                 Handle(
                     id=record.handle,
@@ -1287,6 +1312,7 @@ class Board:
         if destination != "ssh-family":
             backend = destination()
             run: Run = ProviderJob(
+                self.on(plan.host),
                 backend,
                 self.dispatcher.track(
                     self.rented(
