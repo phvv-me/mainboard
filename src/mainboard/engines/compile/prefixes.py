@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
 from .backend import Pixi
+from .compiler import Compiler
 from .ecosystems import SecondStage
 from .generated import ActivationScript, GeneratedFiles
 from .pixi_lock import canonical
@@ -91,8 +92,10 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
     """The identity of the environment `source`'s compiled artifact describes.
 
     Over Pixi's required pair, generated install and activation files, the second-stage
-    declaration digest, and the ordered host module stack. A source missing either required
-    file has no identity: half an artifact cannot describe a complete environment.
+    declaration digest, and the ordered host module stack. Tasks are omitted: each source
+    snapshot retains its own task manifest and links only the installed prefix. A source
+    missing either required file has no identity: half an artifact cannot describe a complete
+    environment. Local package build inputs are not inferred from this generated artifact.
 
     Both files are read normalized, and the lock canonically on top of that, since pixi writes
     the lock and each version writes some of it differently: see `pixi_lock.canonical` for the
@@ -116,7 +119,12 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
     payload = []
     for name in (MANIFEST, LOCK):
         text = normalized(_defining(source, name), root=root, generated_dir=shard)
-        payload.append((name, canonical(text) if name == LOCK else text))
+        content = (
+            canonical(text)
+            if name == LOCK
+            else json.dumps(Compiler.runtime_manifest(text), separators=(",", ":"))
+        )
+        payload.append((name, content))
     for entry in _generated(source):
         if entry.name in (MANIFEST, LOCK):
             continue

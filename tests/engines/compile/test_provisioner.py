@@ -143,10 +143,20 @@ def _cwd(seen: list[Path]) -> int:
     return 0
 
 
+@pytest.mark.parametrize(
+    ("edit", "installs"),
+    [
+        pytest.param('[tasks]\ncheck = "python -m hooks.cli"\n', 1, id="task-only"),
+        pytest.param('[env]\nACTIVE = "new"\n', 1, id="activation-only"),
+        pytest.param('[deps]\nripgrep = "*"\n', 2, id="dependency"),
+    ],
+)
 def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    edit: str,
+    installs: int,
 ) -> None:
     """pixi updates a prefix on the way into every command, which is a race for a whole wave.
 
@@ -157,11 +167,13 @@ def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
     them moves.
     """
     synced: list[str] = []
+    activated: list[str] = []
     monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
     monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
     monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
+    monkeypatch.setattr(Pixi, "cache_windows_activation", lambda self, env: activated.append(env))
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
-    provisioner.pixi.manifest.parent.mkdir(parents=True)
+    provisioner.recompiled()
     provisioner.pixi.lock.write_text("version: 7\n", encoding="utf-8")
 
     provisioner.run(("python", "-c", "pass"))
@@ -169,8 +181,41 @@ def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
     provisioner.capture(("python", "-c", "pass"))
 
     assert synced == ["default"]
-    # A lock that moved is the one thing that makes the prefix wrong again.
-    provisioner.pixi.lock.write_text("version: 8\n", encoding="utf-8")
+    previously_compiled = provisioner.pixi.manifest.read_text()
+    edited = Provisioner(tmp_path, manifest_from(_BARE + edit))
+    edited.run(("python", "-c", "pass"))
+    assert synced == ["default"] * installs
+    assert activated == ["default"]
+    assert edited.pixi.manifest.read_text() != previously_compiled
+    assert not edited.compiler.stale()
+    # Lock changes still reconcile even when a task or activation edit did not.
+    edited.pixi.lock.write_text("version: 8\n", encoding="utf-8")
+    edited.run(("python", "-c", "pass"))
+    assert synced == ["default"] * (installs + 1)
+
+
+def test_local_resolver_metadata_refreshes_an_unchanged_manifest_prefix(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The manifest alone cannot see an editable project's changed requirements."""
+    synced: list[str] = []
+    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
+    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
+    metadata = tmp_path / "packages" / "local" / "pyproject.toml"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text('[project]\nname = "local"\n', encoding="utf-8")
+    manifest = manifest_from(
+        _BARE + '[python.deps]\nlocal = {path = "packages/local", editable = true}\n'
+    )
+    provisioner = Provisioner(tmp_path, manifest)
+    provisioner.recompiled()
+    provisioner.pixi.lock.write_text("version: 7\n", encoding="utf-8")
+    provisioner.run(("python", "-c", "pass"))
+    metadata.write_text('[project]\nname = "local"\ndependencies = ["numpy"]\n', encoding="utf-8")
+    provisioner.run(("python", "-c", "pass"))
     provisioner.run(("python", "-c", "pass"))
     assert synced == ["default", "default"]
 
@@ -616,17 +661,10 @@ tok-paper = "tectonic paper.tex"
 """
 
 
-def test_a_task_row_added_between_two_dispatches_moves_the_address_it_is_pinned_by(
+def test_a_task_row_added_between_dispatches_refreshes_source_but_reuses_the_prefix(
     tmp_path: Path,
 ) -> None:
-    """A dispatch pins the compiled artifact and ships that same artifact, so it must compile.
-
-    Reading a compile older than the manifest the command was invoked under is how a workstation
-    came to pin a9d234f5f0dd2e93 while the mirror answered db8171ec0bd191b2 with no
-    `[tasks.head-paper]` in it at all. `recompiled` is what a dispatch runs before it addresses
-    anything, and after it the artifact on disk and the address taken over it are the same one
-    thing, which is what the mirror then carries.
-    """
+    """Dispatch still compiles fresh task definitions, but tasks cannot change installed deps."""
     from mainboard import Manifest
     from mainboard.engines.compile import digest_of
 
@@ -648,4 +686,4 @@ def test_a_task_row_added_between_two_dispatches_moves_the_address_it_is_pinned_
     after = digest_of(shard)
 
     assert "head-paper" in (shard / "pixi.toml").read_text()
-    assert after != before
+    assert after == before

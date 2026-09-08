@@ -252,6 +252,22 @@ class Compiler:
         )
 
     @staticmethod
+    def runtime_manifest(text: str) -> dict[str, Toml]:
+        """Parse generated runtime inputs without tasks, which belong to each source snapshot.
+
+        Keep dependency and activation tables, including platform activation. This projection
+        describes the generated manifest only; it is not a local package build-input digest.
+        """
+        document = tomllib.loads(text)
+        for table in (document, *_features(document)):
+            table.pop("tasks", None)
+            if isinstance(targets := table.get("target"), dict):
+                for target in targets.values():
+                    if isinstance(target, dict):
+                        target.pop("tasks", None)
+        return document
+
+    @staticmethod
     def _resolution_manifest(text: str) -> dict[str, Toml]:
         """Return generated Pixi data that can affect dependency resolution.
 
@@ -263,9 +279,8 @@ class Compiler:
         lock on every host already holding it. Renaming a command cannot change which versions
         resolve, which is exactly what this hash is supposed to mean.
         """
-        document = tomllib.loads(text)
+        document = Compiler.runtime_manifest(text)
         for table in (document, *_features(document)):
-            table.pop("tasks", None)
             table.pop("activation", None)
             if isinstance(targets := table.get("target"), dict):
                 for target in targets.values():

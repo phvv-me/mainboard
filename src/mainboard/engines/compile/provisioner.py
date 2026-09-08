@@ -318,8 +318,11 @@ class Provisioner:
         start together out of one pinned tree: they share the prefix, each decides for itself
         that it needs updating, and the loser meets the environment mid-write. Doing it here
         makes it one process at a time, and stamping what was synced makes it happen once
-        rather than once per command: the stamp names the lock and the manifest the prefix was
-        brought in line with, so nothing runs again until one of them moves.
+        rather than once per command. The stamp names the lock revision and the selected
+        resolver inputs, including local Python project/build-system/resolver metadata.
+        Tasks and activation still recompile, but cannot require a Pixi reinstall. This is
+        not a complete build-artifact identity: backend-specific tool configuration and
+        editable native source still require explicit installation when they change.
 
         An environment nothing has installed is left alone, and so is one with no lock to be in
         line with. A command in either is refused by the activation with the one line that names
@@ -332,7 +335,7 @@ class Provisioner:
         if not shard.pixi.ready(env) or not shard.pixi.lock.is_file():
             return
         stamp = shard.directory / _SYNCED
-        current = f"{shard.compiler.digest()}:{shard.pixi.lock.stat().st_mtime_ns}"
+        current = f"{shard.compiler.resolution_digest()}:{shard.pixi.lock.stat().st_mtime_ns}"
         with suppress(OSError):
             if stamp.read_text(encoding="utf-8") == current:
                 return

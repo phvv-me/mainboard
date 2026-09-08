@@ -118,6 +118,34 @@ def test_generated_install_and_activation_inputs_are_part_of_the_address(
     assert before != first != digest_of(source)
 
 
+@pytest.mark.parametrize(
+    "tasks",
+    [
+        '[tasks]\ncheck = "python -m hooks.cli"\n',
+        '[feature.serving.tasks]\ncheck = "python -m hooks.cli"\n',
+        '[target.linux-64.tasks]\ncheck = "python -m hooks.cli"\n',
+    ],
+)
+def test_tasks_share_a_prefix_but_activation_still_changes_its_identity(
+    artifact: Callable[[str], Path], tasks: str
+) -> None:
+    """Source snapshots own tasks; changing exported values still needs a new prefix."""
+    source = artifact("tasks")
+    base = (
+        _WORKSPACE
+        + '[feature.serving.dependencies]\nripgrep = "*"\n'
+        + '[target.linux-64.dependencies]\npython = "*"\n'
+    )
+    (source / "pixi.toml").write_text(base, encoding="utf-8")
+    before = digest_of(source)
+    (source / "pixi.toml").write_text(base + tasks, encoding="utf-8")
+    assert digest_of(source) == before
+    (source / "pixi.toml").write_text(
+        base + tasks + '[activation.env]\nACTIVE = "new"\n', encoding="utf-8"
+    )
+    assert digest_of(source) != before
+
+
 def test_mutable_activation_and_compile_bookkeeping_do_not_change_identity(
     artifact: Callable[[str], Path],
 ) -> None:
