@@ -2,8 +2,10 @@ import importlib
 import logging
 import os
 import threading
+import time
 from collections import deque
 from collections.abc import (
+    Callable,
     Sequence,  # noqa: TC003  reason=Profiler is inspect.signature()'d in tests, so __init__'s Sequence[...] annotations must resolve at runtime since=2026-08-17
 )
 from contextlib import ExitStack
@@ -27,7 +29,7 @@ from .protocols import (
     DeviceProbe,  # noqa: TC001  reason=Profiler is inspect.signature()'d in tests, so __init__'s Sequence[DeviceProbe] annotation must resolve at runtime since=2026-08-17
 )
 from .result import DeviceEvidence, Profile
-from .spans import activate, deactivate
+from .spans import activate, active, deactivate
 from .trace import Activity as NativeActivity
 from .trace import BottleneckReport, RegionWindow, TraceCollector
 from .tracer import Marker, Tracer
@@ -257,9 +259,78 @@ class Profiler:
             self.auto_on = False
         deactivate(self)
         self.stop_sampler()
-        if self.collection.features & self.Feature.ACTIVITY and self.gpu is not None:
-            self.collector.stop()
-        self.active = False
+        try:
+            if self.collection.features & self.Feature.ACTIVITY and self.gpu is not None:
+                self.collector.stop()
+        finally:
+            self.active = False
+
+    @classmethod
+    def capture[Answer](
+        cls,
+        work: Callable[[], Answer],
+        *,
+        activities: NativeActivity = NativeActivity.DEFAULT,
+        device_index: int = 0,
+    ) -> tuple[Answer, Profile]:
+        """Run once inside a synchronized, single-context native activity window.
+
+        Reuse the active activity owner or open one. Nested windows are views of
+        its records, never new subscribers or additions to its physical totals.
+        All CUDA streams in the caller's current context are synchronized.
+        This API requires serialized CUDA issuing from one host thread; it does
+        not claim attribution of unrelated concurrent CUDA work.
+        """
+        if not activities or activities & ~NativeActivity.DEFAULT:
+            raise ValueError("synchronized windows currently support kernels and memory copies")
+        owner = active()
+        if owner is not None:
+            if not isinstance(owner, cls):
+                raise RuntimeError("the active span owner cannot provide native activity windows")
+            if owner.collection.device_index != device_index:
+                raise RuntimeError("activity window requested a different CUDA-visible device")
+            return owner._capture(work, activities)
+        with cls(
+            features=Feature.ACTIVITY, activities=activities, device_index=device_index
+        ) as owner:
+            return owner._capture(work, activities)
+
+    def _capture[Answer](
+        self, work: Callable[[], Answer], activities: NativeActivity
+    ) -> tuple[Answer, Profile]:
+        """Checkpoint the shared stream, run once, then retrieve exactly that interval."""
+        if not self.active or not self.collection.features & Feature.ACTIVITY:
+            raise RuntimeError("the active Profiler did not request native activity collection")
+        if activities & ~self.collection.activities:
+            raise RuntimeError("the active Profiler did not enable the requested activity kinds")
+        if self.collector.device_index != self.collection.device_index:
+            raise RuntimeError("selected device differs from the actual current CUDA device")
+        since, loss_before = self.collector.checkpoint(activities)
+        start_ns = self.tracer.timestamp()
+        began = time.perf_counter_ns()
+        try:
+            answer = work()
+        finally:
+            until, loss_after = self.collector.checkpoint(activities)
+        wall_ns = time.perf_counter_ns() - began
+        end_ns = self.tracer.timestamp()
+        if loss_after != loss_before:
+            raise RuntimeError(f"native activity window lost {loss_after - loss_before} records")
+        kernels = tuple(self.collector.kernels(since=since, until=until))
+        memcpys = tuple(self.collector.memcpys(since=since, until=until))
+        if not activities & NativeActivity.KERNEL:
+            kernels = ()
+        if not activities & NativeActivity.MEMCPY:
+            memcpys = ()
+        observed = bool(kernels or memcpys)
+        name = getattr(work, "__qualname__", type(work).__qualname__)
+        return answer, Profile(
+            device=self.gpu.label if self.gpu is not None else "",
+            device_evidence=DeviceEvidence.COLLECTED if observed else DeviceEvidence.ABSENT,
+            kernels=kernels,
+            memcpys=memcpys,
+            windows=(RegionWindow(name=name, start_ns=start_ns, end_ns=end_ns, wall_ns=wall_ns),),
+        )
 
     @staticmethod
     def module_codes(modules: Sequence[str]) -> set[CodeType]:

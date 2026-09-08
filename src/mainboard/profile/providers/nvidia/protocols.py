@@ -66,6 +66,10 @@ class Cupti(Protocol):
 
     def get_callback_name(self, domain: int, cbid: int) -> str: ...
 
+    def get_context_id(self, context: int) -> int: ...
+
+    def get_device_id(self, context: int) -> int: ...
+
     def get_timestamp(self) -> int: ...
     def subscribe(
         self, callback: Callable[[None, int, int, CallbackData], None], userdata: None
@@ -91,6 +95,8 @@ class Nvtx(Protocol):
 
 
 class CudaRuntime(Protocol):
-    """The one `cuda.bindings.runtime` function the tracer calls: the device sync barrier."""
+    """Current CUDA-visible ordinal and the current-context completion barrier."""
 
     def cudaDeviceSynchronize(self) -> tuple[int]: ...
+
+    def cudaGetDevice(self) -> tuple[int, int]: ...

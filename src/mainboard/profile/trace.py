@@ -80,6 +80,9 @@ class KernelTrace(FrozenModel):
     static_shared_mem: int = 0
     dynamic_shared_mem: int = 0
     registers: int = 0
+    device_id: int | None = None
+    context_id: int | None = None
+    stream_id: int | None = None
 
     @property
     def duration_ns(self) -> int:
@@ -124,6 +127,9 @@ class KernelTrace(FrozenModel):
             dynamic_shared_mem=act.dynamic_shared_memory,
             registers=act.registers_per_thread,
             correlation_id=getattr(act, "correlation_id", 0),
+            device_id=getattr(act, "device_id", None),
+            context_id=getattr(act, "context_id", None),
+            stream_id=getattr(act, "stream_id", None),
         )
 
 
@@ -139,6 +145,9 @@ class MemcpyTrace(FrozenModel):
     end_ns: int = 0
     correlation_id: int = 0
     bytes_moved: int = 0
+    device_id: int | None = None
+    context_id: int | None = None
+    stream_id: int | None = None
 
     @property
     def bandwidth_gbps(self) -> float:
@@ -157,6 +166,9 @@ class MemcpyTrace(FrozenModel):
             end_ns=act.end,
             bytes_moved=getattr(act, "bytes", 0),
             correlation_id=getattr(act, "correlation_id", 0),
+            device_id=getattr(act, "device_id", None),
+            context_id=getattr(act, "context_id", None),
+            stream_id=getattr(act, "stream_id", None),
         )
 
 
@@ -209,6 +221,18 @@ class TraceCollector:
         """Generic timed records for the enabled non-kernel/memcpy activity kinds."""
         return []
 
+    def checkpoint(self, activities: Activity) -> tuple[int, int]:
+        """Drain one context; return its delivered-record and lifetime-loss counters.
+
+        Requested kinds must actually be enabled. Unsupported collectors refuse.
+        """
+        raise RuntimeError("synchronized activity windows are unavailable on this backend")
+
+    @property
+    def device_index(self) -> int:
+        """Return the captured CUDA-visible ordinal, not a physical NVML index."""
+        raise RuntimeError("this collector has no synchronized CUDA device")
+
     def dropped(self) -> int:
         """Number of native records discarded by a bounded capture buffer."""
         return 0
@@ -216,10 +240,10 @@ class TraceCollector:
     def flush(self) -> None:
         """Deliver buffered records to this collector (no clear) so reads see them."""
 
-    def kernels(self) -> list[KernelTrace]:
+    def kernels(self, *, since: int | None = None, until: int | None = None) -> list[KernelTrace]:
         return []
 
-    def memcpys(self) -> list[MemcpyTrace]:
+    def memcpys(self, *, since: int | None = None, until: int | None = None) -> list[MemcpyTrace]:
         return []
 
     def reset(self) -> None:

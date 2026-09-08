@@ -9,11 +9,14 @@ import types
 from collections.abc import Callable, Sequence
 from ctypes import c_size_t
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
-
-from mainboard.profile import Activity, TraceCollector
+from mainboard.profile import Activity, DeviceEvidence, Profile, Profiler, TraceCollector, annotate
 from mainboard.profile.providers import nvidia_tracer as nv
+from mainboard.trials import Log
+
+from ..support import one_process_gpu
 
 if TYPE_CHECKING:
     from mainboard.profile.protocols import RawActivity
@@ -125,6 +128,7 @@ def fake_cupti(monkeypatch: pytest.MonkeyPatch) -> FakeCupti:
         types.SimpleNamespace(cudaDeviceSynchronize=lambda: (cupti.sync_status,)),
     )
     monkeypatch.setattr(nv, "_runtime_loaded", True)
+    monkeypatch.setattr(nv.CuptiCollector, "_scope", staticmethod(lambda: (0, 1, 2)))
     monkeypatch.setattr(nv, "_active", [])
     monkeypatch.setattr(nv, "_registered", False)
     monkeypatch.setattr(nv, "_supported_kinds", None)
@@ -272,6 +276,137 @@ def test_failed_collector_start_disables_every_enabled_kind(
         collector.__enter__()
     assert collector.enabled_kinds == ()
     assert fake_cupti.enabled == set()
+
+
+def test_partial_enable_is_rolled_back(fake_cupti: FakeCupti) -> None:
+    fake_cupti.unsupported = (FakeActivityKind.MEMCPY,)
+    collector = nv.CuptiCollector(Activity.DEFAULT)
+    with pytest.raises(NotImplementedError):
+        collector.__enter__()
+    assert fake_cupti.enabled == set()
+    assert collector.enabled_kinds == ()
+    assert not collector.running
+
+
+@pytest.mark.parametrize("phase", ["start", "work", "work-and-flush"])
+def test_every_disable_is_attempted_and_every_error_retained(
+    fake_cupti: FakeCupti, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    attempted = []
+
+    def fail_disable(kind: int) -> None:
+        attempted.append(kind)
+        raise RuntimeError(f"disable {kind}")
+
+    def fail_flush(_flag: int) -> None:
+        raise OSError("flush failed")
+
+    monkeypatch.setattr(fake_cupti, "activity_disable", fail_disable)
+    collector = nv.CuptiCollector(Activity.DEFAULT | Activity.MEMSET)
+    during_start = phase == "start"
+    if during_start:
+        fake_cupti.unsupported = (FakeActivityKind.MEMSET,)
+    with pytest.raises(RuntimeError) as caught, collector:
+        if phase == "work-and-flush":
+            monkeypatch.setattr(fake_cupti, "activity_flush_all", fail_flush)
+        raise ValueError("work failed")
+    assert attempted == (
+        [FakeActivityKind.MEMCPY, FakeActivityKind.CONCURRENT_KERNEL]
+        if during_start
+        else [FakeActivityKind.MEMSET, FakeActivityKind.MEMCPY, FakeActivityKind.CONCURRENT_KERNEL]
+    )
+    errors: list[BaseException] = []
+    current: BaseException | None = caught.value
+    while current is not None:
+        errors.append(current)
+        current = current.__context__
+    assert [str(error) for error in errors[: len(attempted)]] == [
+        f"disable {kind}" for kind in reversed(attempted)
+    ]
+    assert isinstance(errors[-1], NotImplementedError if during_start else ValueError)
+    if phase == "work-and-flush":
+        assert isinstance(errors[-2], OSError)
+    assert len(errors) == len(attempted) + 1 + (phase == "work-and-flush")
+    assert collector.enabled_kinds == ()
+    assert not collector.running
+
+
+def test_callback_failure_remains_tainted_after_reset(fake_cupti: FakeCupti) -> None:
+    with (
+        pytest.raises(RuntimeError, match="tainted"),
+        nv.CuptiCollector(Activity.KERNEL) as collector,
+    ):
+        assert fake_cupti.completed is not None
+        malformed = types.SimpleNamespace(kind=FakeActivityKind.CONCURRENT_KERNEL)
+        with pytest.raises(AttributeError):
+            fake_cupti.completed([_kernel_activity("retained-prefix"), malformed])
+        assert [kernel.name for kernel in collector.kernels()] == ["retained-prefix"]
+        with pytest.raises(RuntimeError, match="tainted"):
+            collector.checkpoint(Activity.KERNEL)
+        with pytest.raises(RuntimeError, match="tainted"):
+            collector.reset()
+        fake_cupti.completed([_kernel_activity("later-record")])
+        assert collector.callback_failed
+        assert [kernel.name for kernel in collector.kernels()] == [
+            "retained-prefix",
+            "later-record",
+        ]
+        with pytest.raises(RuntimeError, match="tainted"):
+            collector.checkpoint(Activity.KERNEL)
+    assert not collector.running
+    assert collector.enabled_kinds == ()
+
+
+def test_callback_failure_during_flush_refuses_checkpoint(
+    fake_cupti: FakeCupti, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with (
+        pytest.raises(RuntimeError, match="tainted"),
+        nv.CuptiCollector(Activity.KERNEL) as collector,
+    ):
+
+        def malformed_callback(_flag: int) -> None:
+            assert fake_cupti.completed is not None
+            with pytest.raises(AttributeError):
+                fake_cupti.completed([types.SimpleNamespace(kind=FakeActivityKind.MEMCPY)])
+
+        monkeypatch.setattr(fake_cupti, "activity_flush_all", malformed_callback)
+        with pytest.raises(RuntimeError, match="tainted"):
+            collector.checkpoint(Activity.KERNEL)
+
+
+@pytest.mark.parametrize("logged", [False, True])
+def test_ordinary_owner_refuses_taint_but_retains_partial_evidence(
+    fake_cupti: FakeCupti, monkeypatch: pytest.MonkeyPatch, logged: bool
+) -> None:
+    monkeypatch.setattr(annotate, "_tracer", nv.NvtxTracer())
+    owner = Profiler(gpus=(one_process_gpu(),), features=Profiler.Feature.ACTIVITY)
+    log = Log.__new__(Log)
+    artifact, event = Mock(), Mock()
+    monkeypatch.setattr(log, "artifact", artifact)
+    monkeypatch.setattr(log, "_event", event)
+    monkeypatch.setattr(Profiler, "under", classmethod(lambda cls, policy: owner))
+    context = log.profile(name="partial", collection=owner.collection) if logged else owner
+    with pytest.raises(RuntimeError, match="tainted"), context:
+        assert fake_cupti.completed is not None
+        with pytest.raises(AttributeError):
+            fake_cupti.completed(
+                [
+                    _kernel_activity("retained-prefix"),
+                    types.SimpleNamespace(kind=FakeActivityKind.CONCURRENT_KERNEL),
+                ]
+            )
+    assert not owner.active
+    assert fake_cupti.enabled == set()
+    snapshot = owner.result()
+    assert [kernel.name for kernel in snapshot.kernels] == ["retained-prefix"]
+    assert snapshot.dropped_activities == 0  # unknown conversion loss is not a numeric count
+    assert snapshot.device_evidence is DeviceEvidence.COLLECTED  # observed, not complete
+    if logged:
+        artifact.assert_called_once()
+        saved = Profile.model_validate_json(artifact.call_args.args[0])
+        assert saved == snapshot
+        assert event.call_args.args[1]["completed"] is False
 
 
 def test_stop_cleans_up_even_when_the_active_slot_was_lost(fake_cupti: FakeCupti) -> None:

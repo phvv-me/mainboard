@@ -1,11 +1,13 @@
 # NVIDIA annotation + deep trace: NVTX ranges and the CUPTI Activity collector.
 
+import sys
 import threading
 from collections import defaultdict, deque
 from contextlib import ExitStack, suppress
 from ctypes import addressof, c_size_t
 from dataclasses import dataclass
 from importlib import import_module
+from itertools import islice
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from ...trace import (
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ...protocols import RawActivity
+    from .driver import CudaDriver
     from .protocols import CallbackData, CudaRuntime, Cupti, Nvtx, Subscriber
 
 # The accelerator bindings ship no stubs, so each handle is `import_module`'s untyped
@@ -111,44 +114,55 @@ def _on_buffer_completed(activities: Sequence[RawActivity]) -> None:
         return
     target = _active[-1]
     with target.lock:
-        for act in activities:
-            kind = int(act.kind)
-            if kind == _CONCURRENT_KERNEL:
-                target.append(
-                    RawKernel(
-                        name=act.name,
-                        start_ns=act.start,
-                        end_ns=act.end,
-                        grid=f"{act.grid_x}x{act.grid_y}x{act.grid_z}",
-                        block=f"{act.block_x}x{act.block_y}x{act.block_z}",
-                        static_shared_mem=act.static_shared_memory,
-                        dynamic_shared_mem=act.dynamic_shared_memory,
-                        registers=act.registers_per_thread,
-                        correlation_id=getattr(act, "correlation_id", 0),
+        complete = False
+        try:
+            for act in activities:
+                kind = int(act.kind)
+                if kind == _CONCURRENT_KERNEL:
+                    target.append(
+                        RawKernel(
+                            name=act.name,
+                            start_ns=act.start,
+                            end_ns=act.end,
+                            grid=f"{act.grid_x}x{act.grid_y}x{act.grid_z}",
+                            block=f"{act.block_x}x{act.block_y}x{act.block_z}",
+                            static_shared_mem=act.static_shared_memory,
+                            dynamic_shared_mem=act.dynamic_shared_memory,
+                            registers=act.registers_per_thread,
+                            correlation_id=getattr(act, "correlation_id", 0),
+                            device_id=getattr(act, "device_id", None),
+                            context_id=getattr(act, "context_id", None),
+                            stream_id=getattr(act, "stream_id", None),
+                        )
                     )
-                )
-            elif kind == _MEMCPY:
-                target.append(
-                    RawMemcpy(
-                        copy_kind=int(act.copy_kind),
-                        start_ns=act.start,
-                        end_ns=act.end,
-                        bytes_moved=getattr(act, "bytes", 0),
-                        correlation_id=getattr(act, "correlation_id", 0),
+                elif kind == _MEMCPY:
+                    target.append(
+                        RawMemcpy(
+                            copy_kind=int(act.copy_kind),
+                            start_ns=act.start,
+                            end_ns=act.end,
+                            bytes_moved=getattr(act, "bytes", 0),
+                            correlation_id=getattr(act, "correlation_id", 0),
+                            device_id=getattr(act, "device_id", None),
+                            context_id=getattr(act, "context_id", None),
+                            stream_id=getattr(act, "stream_id", None),
+                        )
                     )
-                )
-            elif kind in _label:
-                target.append(
-                    RawGeneric(
-                        kind_id=kind,
-                        kind=_label[kind],
-                        name=getattr(act, "name", None),
-                        cbid=getattr(act, "cbid", None),
-                        start_ns=act.start,
-                        end_ns=act.end,
-                        correlation_id=getattr(act, "correlation_id", 0),
+                elif kind in _label:
+                    target.append(
+                        RawGeneric(
+                            kind_id=kind,
+                            kind=_label[kind],
+                            name=getattr(act, "name", None),
+                            cbid=getattr(act, "cbid", None),
+                            start_ns=act.start,
+                            end_ns=act.end,
+                            correlation_id=getattr(act, "correlation_id", 0),
+                        )
                     )
-                )
+            complete = True
+        finally:
+            target.callback_failed |= not complete
 
 
 _supported_kinds: Activity | None = None
@@ -157,8 +171,11 @@ _supported_kinds: Activity | None = None
 def _disable(kinds: Sequence[int]) -> None:
     """Disable exactly the native activity kinds enabled for one capture."""
     api = _cupti()
+    cleanup = ExitStack()
     for kind in kinds:
-        api.activity_disable(kind)
+        cleanup.callback(api.activity_disable, kind)
+    # An inner ``with`` would hide the active work/start error from this stack.
+    cleanup.__exit__(*sys.exc_info())
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +191,9 @@ class RawKernel:
     dynamic_shared_mem: int
     registers: int
     correlation_id: int
+    device_id: int | None = None
+    context_id: int | None = None
+    stream_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +205,9 @@ class RawMemcpy:
     end_ns: int
     bytes_moved: int
     correlation_id: int
+    device_id: int | None = None
+    context_id: int | None = None
+    stream_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,15 +243,22 @@ class CuptiCollector(TraceCollector):
         self.native_dropped_records = 0
         self.enabled_kinds: tuple[int, ...] = ()
         self.running = False
+        self.received_records = 0
+        self.lost_records = 0
+        self.callback_failed = False
+        self.scope: tuple[int, int, int] | None = None
+        self.owner_thread = threading.get_ident()
 
     def __enter__(self) -> CuptiCollector:
         CuptiCollector._ensure_registered()
         if _active:
             raise RuntimeError("nested CUPTI collection unsupported (single-subscriber)")
         self.enabled_kinds = CuptiCollector._enable(self.kinds)
+        self.owner_thread = threading.get_ident()
         with ExitStack() as undo:
-            undo.callback(self._abandon)
+            undo.callback(self._settle)
             _sync()
+            self.scope = self._scope()
             _cupti().activity_flush_all(1)  # drain prior records before capture starts
             CuptiCollector._native_drops()  # reset the global count from before this capture
             _active.append(self)
@@ -247,8 +277,9 @@ class CuptiCollector(TraceCollector):
         return record.kind
 
     def activities(self) -> list[ActivityRecord]:
-        with self.lock:
-            records = tuple(record for record in self.records if isinstance(record, RawGeneric))
+        records = (
+            record for record in self._records(None, None) if isinstance(record, RawGeneric)
+        )
         return [
             ActivityRecord(
                 kind=record.kind,
@@ -264,7 +295,33 @@ class CuptiCollector(TraceCollector):
         """Append one raw record while keeping capture memory bounded."""
         if len(self.records) == self.records.maxlen:
             self.dropped_records += 1
+            self.lost_records += 1
         self.records.append(record)
+        self.received_records += 1
+
+    def checkpoint(self, activities: Activity) -> tuple[int, int]:
+        """Synchronize every stream in the captured context and freeze a raw cursor.
+
+        Both counters are monotone across reset(); an old window cannot mistake a
+        cleared or overwritten buffer for complete evidence.
+        """
+        if not self.running:
+            raise RuntimeError("activity checkpoints require a running collector")
+        enabled = Activity(0)
+        for flag, name in _CUPTI_KIND.items():
+            if getattr(_cupti().ActivityKind, name) in self.enabled_kinds:
+                enabled |= flag
+        if activities & ~enabled:
+            raise RuntimeError("activity window requested kinds not actually enabled")
+        self.flush()
+        with self.lock:
+            return self.received_records, self.lost_records
+
+    @property
+    def device_index(self) -> int:
+        if self.scope is None:
+            raise RuntimeError("activity capture has no current CUDA context")
+        return self.scope[0]
 
     def dropped(self) -> int:
         """Return native buffer loss plus deque overwrites through the latest flush."""
@@ -272,15 +329,23 @@ class CuptiCollector(TraceCollector):
             return self.native_dropped_records + self.dropped_records
 
     def flush(self) -> None:
+        if self.scope is not None and (
+            threading.get_ident() != self.owner_thread or self._scope() != self.scope
+        ):
+            raise RuntimeError("activity capture changed its issuing thread or CUDA context")
         _sync()
         _cupti().activity_flush_all(1)
         dropped = CuptiCollector._native_drops()
         with self.lock:
             self.native_dropped_records += dropped
+            self.lost_records += dropped
+            if self.callback_failed:
+                raise RuntimeError("activity collector tainted by callback conversion failure")
 
-    def kernels(self) -> list[KernelTrace]:
-        with self.lock:
-            records = tuple(record for record in self.records if isinstance(record, RawKernel))
+    def kernels(self, *, since: int | None = None, until: int | None = None) -> list[KernelTrace]:
+        records = (
+            record for record in self._records(since, until) if isinstance(record, RawKernel)
+        )
         return [
             KernelTrace(
                 name=record.name,
@@ -292,13 +357,17 @@ class CuptiCollector(TraceCollector):
                 dynamic_shared_mem=record.dynamic_shared_mem,
                 registers=record.registers,
                 correlation_id=record.correlation_id,
+                device_id=record.device_id,
+                context_id=record.context_id,
+                stream_id=record.stream_id,
             )
             for record in records
         ]
 
-    def memcpys(self) -> list[MemcpyTrace]:
-        with self.lock:
-            records = tuple(record for record in self.records if isinstance(record, RawMemcpy))
+    def memcpys(self, *, since: int | None = None, until: int | None = None) -> list[MemcpyTrace]:
+        records = (
+            record for record in self._records(since, until) if isinstance(record, RawMemcpy)
+        )
         return [
             MemcpyTrace(
                 kind=_MEMCPY_NAME.get(record.copy_kind, f"kind_{record.copy_kind}"),
@@ -306,6 +375,9 @@ class CuptiCollector(TraceCollector):
                 end_ns=record.end_ns,
                 bytes_moved=record.bytes_moved,
                 correlation_id=record.correlation_id,
+                device_id=record.device_id,
+                context_id=record.context_id,
+                stream_id=record.stream_id,
             )
             for record in records
         ]
@@ -320,10 +392,13 @@ class CuptiCollector(TraceCollector):
     def stop(self) -> None:
         if not self.running:
             return
-        with ExitStack() as teardown:
-            teardown.callback(self._settle)
-            teardown.callback(self._retire)
+        teardown = ExitStack()
+        teardown.callback(self._settle)
+        teardown.callback(self._retire)
+        try:
             self.flush()
+        finally:
+            teardown.__exit__(*sys.exc_info())
 
     @staticmethod
     def _enable(kinds: Activity) -> tuple[int, ...]:
@@ -334,13 +409,16 @@ class CuptiCollector(TraceCollector):
         """
         api = _cupti()
         enabled = []
-        for flag, enum_name in _CUPTI_KIND.items():
-            if flag not in kinds:
-                continue
-            kind = getattr(api.ActivityKind, enum_name)
-            api.activity_enable(kind)
-            _label[int(kind)] = flag.label
-            enabled.append(kind)
+        with ExitStack() as rollback:
+            rollback.callback(_disable, enabled)
+            for flag, enum_name in _CUPTI_KIND.items():
+                if flag not in kinds:
+                    continue
+                kind = getattr(api.ActivityKind, enum_name)
+                api.activity_enable(kind)
+                enabled.append(kind)
+                _label[int(kind)] = flag.label
+            rollback.pop_all()
         return tuple(enabled)
 
     @staticmethod
@@ -366,15 +444,54 @@ class CuptiCollector(TraceCollector):
         _cupti().activity_get_num_dropped_records(0, 0, addressof(dropped))
         return dropped.value
 
-    def _abandon(self) -> None:
-        """Roll the enables back after a start that never reached capture."""
-        _disable(self.enabled_kinds)
-        self.enabled_kinds = ()
-
     def _mark_stopped(self) -> None:
         """Forget the enables and read as not running."""
         self.enabled_kinds = ()
         self.running = False
+
+    def _records(self, since: int | None, until: int | None) -> tuple[RawRecord, ...]:
+        """Copy only one delivered range; never re-materialize the entire outer trace."""
+        with self.lock:
+            if since is None:
+                return tuple(self.records)
+            end = self.received_records if until is None else until
+            first = self.received_records - len(self.records)
+            if not first <= since <= end <= self.received_records:
+                raise RuntimeError("activity window was reset or overwritten before retrieval")
+            records = tuple(
+                islice(
+                    reversed(self.records),
+                    self.received_records - end,
+                    self.received_records - since,
+                )
+            )[::-1]
+        # Global CUPTI delivery is wider than one context. Do not silently filter
+        # foreign or unidentifiable GPU work and then call the remainder complete.
+        for record in records:
+            if not isinstance(record, (RawKernel, RawMemcpy)):
+                continue
+            if self.scope is None or (record.device_id, record.context_id) != self.scope[1:]:
+                raise RuntimeError("activity window contains a foreign or unknown CUDA context")
+            if record.stream_id is None or record.start_ns <= 0 or record.end_ns < record.start_ns:
+                raise RuntimeError(
+                    "activity window contains incomplete native timing or stream data"
+                )
+        return records
+
+    @staticmethod
+    def _scope() -> tuple[int, int, int]:
+        """Actual visible ordinal, CUPTI device ID, and CUPTI context ID; no substitution."""
+        runtime = _runtime()
+        if runtime is None:
+            raise RuntimeError("CUDA runtime is required to identify an activity window")
+        status, device = runtime.cudaGetDevice()
+        if status != 0:
+            raise RuntimeError(f"cudaGetDevice failed with CUDA status {status}")
+        driver = cast("CudaDriver", import_module("cuda.bindings.driver"))
+        status, context = driver.cuCtxGetCurrent()
+        if status != 0 or not int(context):
+            raise RuntimeError(f"cuCtxGetCurrent failed or returned no context: {status}")
+        return device, _cupti().get_device_id(int(context)), _cupti().get_context_id(int(context))
 
     def _retire(self) -> None:
         """Leave the active stack, tolerating a session someone else already popped."""
