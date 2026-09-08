@@ -23,6 +23,7 @@ from ...core.errors import MissionError
 from ...costs.imports import from_vast
 from ..evidence import framing, staging
 from ..jobs.spec import walltime_seconds
+from ..lease import Lease
 from ..rentals import LANDING_SECONDS, Identity, Rental, identity, reachable, waiting
 from ..shared import logger
 from ..transport import Endpoint
@@ -259,9 +260,15 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         answers is this method's own destination rather than a fault to raise from.
         """
         try:
-            self.request("DELETE", path=f"/instances/{handle}/")
+            reply = self.request("DELETE", path=f"/instances/{handle}/")
         except HTTPError as error:
             forgotten(error)
+            return
+        if reply.get("success") is not True:
+            raise MissionError(
+                f"vast did not confirm destruction of instance {handle}; "
+                "release remains pending and billing may continue"
+            )
 
     def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
         """A live offer search as catalog rows, the authed refresh of the imported price feed.
@@ -423,7 +430,12 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         )
         script = f"{waiting()}\necho {_EXIT_SENTINEL}$status\nexit $status\n"
         handle = self.rented(
-            offer, plan=plan, launch={"runtype": "ssh", "onstart": script}, allocation=allocation
+            offer,
+            plan=plan,
+            launch={"runtype": "ssh", "onstart": script},
+            allocation=allocation,
+            resources=resources,
+            setup_s=LANDING_SECONDS,
         )
         opened = False
         try:
@@ -447,7 +459,14 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         return reachable(endpoint, sleeper=self.sleeper)
 
     def rented(
-        self, offer: Mapping, *, plan: ExecutionPlan, launch: dict, allocation: Allocation
+        self,
+        offer: Mapping,
+        *,
+        plan: ExecutionPlan,
+        launch: dict,
+        allocation: Allocation,
+        resources: Resources,
+        setup_s: int = 0,
     ) -> str:
         """Create the instance for `offer`, returning the contract id that starts the meter.
 
@@ -470,7 +489,11 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         }
         if self.spot:
             body["price"] = float(offer["min_bid"])
-        allocation.begin()
+        accepted = from_vast([dict(offer)], spot=self.spot)[0].model_copy(
+            update={"source": f"probed:vast:offer:{offer['id']}"}
+        )
+        lease = Lease.priced(accepted, resources, setup_s=setup_s)
+        allocation.begin(lease=lease)
         try:
             payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
         except HTTPError as refused:
@@ -656,6 +679,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             plan=plan,
             launch={"runtype": "args", "onstart": "bash", "args": ["-c", script]},
             allocation=allocation,
+            resources=resources,
         )
 
     def uploaded(self, url: str) -> str:

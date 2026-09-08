@@ -186,6 +186,7 @@ def test_create_refusal_keeps_the_provider_reason_without_a_traceback() -> None:
             plan=vast_plan(),
             launch={"runtype": "ssh"},
             allocation=created_request(),
+            resources=Resources(max_usd=1.0, walltime="00:30:00"),
         )
 
 
@@ -719,6 +720,13 @@ def test_cancel_destroys_the_rental_and_treats_one_vast_already_forgot_as_ended(
     assert request.get_method() == "DELETE"
 
 
+@pytest.mark.parametrize("reply", [{}, {"success": False}, {"success": "true"}])
+def test_destroy_requires_explicit_provider_confirmation(reply: dict) -> None:
+    """HTTP success alone must not make a billable rental disappear from monitoring."""
+    with pytest.raises(MissionError, match="release remains pending"):
+        vast_backend(reply).cancel("4242")
+
+
 def test_the_declared_delivery_gap_points_at_the_logs_verb_instead() -> None:
     """A rented machine's disk dies with the instance, so there is nothing to deliver from here."""
     advice = vast_backend().refusal(Delivery, handle="4242", path="out/results.json")
@@ -794,7 +802,7 @@ def test_a_rental_that_never_comes_up_is_destroyed_rather_than_left_billing(
     keypair(tmp_path)
     naps = Naps()
     loading = [{"instances": {"id": 4242, "actual_status": "loading"}}] * 90
-    backend = rental_backend(*loading, {}, naps=naps)
+    backend = vast_backend(_OFFERS, _CREATED, *loading, {"success": True}, naps=naps)
     with pytest.raises(MissionError, match="never came up with an ssh address"):
         backend.rent(
             vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"), allocation=created_request()
@@ -810,7 +818,7 @@ def test_a_provider_that_will_not_take_the_key_refuses_before_anything_is_landed
     """An instance nobody can log into is a rental that bills for a landing that cannot happen."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     keypair(tmp_path)
-    backend = vast_backend(_OFFERS, _CREATED, running(), refused(403), {})
+    backend = vast_backend(_OFFERS, _CREATED, running(), refused(403), {"success": True})
     with pytest.raises(MissionError, match="cloud.vast.ai/manage-keys"):
         backend.rent(
             vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"), allocation=created_request()

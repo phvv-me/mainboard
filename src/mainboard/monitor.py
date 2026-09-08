@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 from pathlib import Path
+from sqlite3 import Error as SQLiteError
 from time import sleep
 from typing import TYPE_CHECKING
 
@@ -366,16 +367,77 @@ class Monitor:
             },
         )
 
+    def expired(self) -> list[Failed]:
+        """Release due rentals before probing hosts or waiting for the settlement lock.
+
+        At this boundary the reserved deletion interval has begun. Do not start another
+        unbounded transfer. Previously copied evidence survives; missing evidence remains
+        explicitly unverified. Provider failures keep the exact handle tracked for retry.
+        """
+        failed: list[Failed] = []
+        for record in self.cache.tracked():
+            if record.lease is None or not record.lease.expired:
+                continue
+            if record.verdict in {vocabulary.PREPARED, vocabulary.SUBMITTING}:
+                continue
+            try:
+                backend = route(record.kind)
+                if backend == _QUEUED:
+                    continue
+                current = self.cache.run(record.handle, record.target)
+            except (MissionError, OSError, ValueError, LookupError, SQLiteError) as fault:
+                failed.append(
+                    Failed(
+                        handle=record.handle,
+                        target=record.target,
+                        reason=f"deadline identity check failed; release remains pending: {fault}",
+                    )
+                )
+                continue
+            if (
+                current.submitted_at != record.submitted_at
+                or current.lease is None
+                or not current.lease.expired
+            ):
+                continue
+            copied = current.evidence in {"copied", "verified"}
+            detail = "rental release deadline reached"
+            status = "copied" if copied else "unverified"
+            try:
+                self.evidence(current, (), status=status, detail=detail)
+            except (MissionError, OSError, ValueError, SQLiteError) as fault:
+                detail += f"; evidence recording failed: {fault}"
+                logger.error("%s: %s", record.handle, detail)
+            try:
+                backend().cancel(record.handle)
+            except (MissionError, OSError, ValueError) as fault:
+                detail += f"; release failed and will be retried: {fault}"
+            else:
+                try:
+                    current = self.cache.resolve(
+                        current, vocabulary.TIMEOUT, None, vocabulary.TIMEOUT
+                    )
+                    self.evidence(
+                        current, (), status="verified" if copied else "unverified", detail=detail
+                    )
+                    self.cache.report(current, current.verdict or vocabulary.TIMEOUT)
+                except (MissionError, OSError, ValueError, SQLiteError) as fault:
+                    detail += f"; release confirmed but bookkeeping needs repair: {fault}"
+            failed.append(Failed(handle=record.handle, target=record.target, reason=detail))
+        return failed
+
     def once(self) -> MonitorReport:
         """Serialize settlement before reading its cursor, including across monitor processes."""
+        expired = self.expired()
         lock = self.cache.settlement
         try:
             lock.acquire(timeout=0)
         except Timeout:
             logger.debug("another monitor owns settlement; leaving its cursor untouched")
-            return MonitorReport()
+            return MonitorReport(failed=expired)
         try:
-            return self._once()
+            report = self._once()
+            return report.model_copy(update={"failed": [*expired, *report.failed]})
         finally:
             lock.release()
 

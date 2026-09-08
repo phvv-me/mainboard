@@ -89,7 +89,13 @@ class FakeTransport:
 
     def __call__(self, request: Request) -> SimpleNamespace:
         self.calls.append(request)
-        reply = self.responses.pop(0) if self.responses else {}
+        reply = (
+            self.responses.pop(0)
+            if self.responses
+            else {"success": True}
+            if request.get_method() == "DELETE"
+            else {}
+        )
         if isinstance(reply, HTTPError):
             raise reply
         body = reply.encode() if isinstance(reply, str) else json.dumps(reply).encode()

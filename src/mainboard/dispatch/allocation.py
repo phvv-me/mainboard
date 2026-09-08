@@ -4,6 +4,7 @@ from patos import FrozenModel, Runtime
 
 from ..core.errors import MissionError
 from . import vocabulary
+from .lease import Lease
 from .shared import logger
 from .state.cache import Cache, RunRecord
 
@@ -19,9 +20,9 @@ class Allocation(FrozenModel):
         """The unique label retained locally and sent with the provider's create request."""
         return self.record.creation
 
-    def begin(self) -> None:
+    def begin(self, *, lease: Lease | None = None) -> None:
         """Persist the uncertain API boundary before sending a create request."""
-        self.cache.leave_prepared(self.record, vocabulary.SUBMITTING)
+        self.cache.leave_prepared(self.record, vocabulary.SUBMITTING, lease=lease)
 
     def created(self, handle: str) -> str:
         """Attach the returned handle atomically, before waiting or running another API call."""

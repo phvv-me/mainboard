@@ -3,6 +3,7 @@ import logging
 import re
 import sys
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from getpass import getuser
 from hashlib import sha256
 from itertools import islice
@@ -16,8 +17,10 @@ from plumbum.commands.processes import ProcessExecutionError
 from mainboard import Board, Job, MissionError
 from mainboard.batch.runner import directory
 from mainboard.cli import build
+from mainboard.costs.catalog import Offer
 from mainboard.dispatch import SshTransport
 from mainboard.dispatch.backends import HpcAiBackend, VastBackend
+from mainboard.dispatch.lease import Lease
 from mainboard.dispatch.rentals import Identity
 from mainboard.dispatch.schedulers import HostUnreachable
 from mainboard.dispatch.state import Cache, RunRecord
@@ -175,6 +178,82 @@ def test_a_still_running_job_is_counted_and_its_state_memoized(
     assert report.running == 1
     assert not report.changed
     assert board.dispatcher.cache.run("1").state == "R"
+
+
+@pytest.mark.parametrize("verdict", ["running", "ok"])
+def test_due_rentals_release_without_waiting_for_a_host_or_transfer(
+    board: Board, monkeypatch: pytest.MonkeyPatch, verdict: str
+) -> None:
+    monkeypatch.setenv("VAST_API_KEY", "test-key")
+    record = seed("13", target="vast", kind=Rented.name, verdict=verdict)
+    record = record.model_copy(
+        update={
+            "lease": Lease(
+                offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
+                release_by=datetime.now(UTC) - timedelta(seconds=1),
+            ),
+            "evidence": "pending",
+        }
+    )
+    board.dispatcher.cache.record(record)
+    Rented.replies = [{"success": True}]
+    monkeypatch.setattr(board, "job", lambda *args, **kwargs: pytest.fail("host probed"))
+    failed = board.monitor().expired()
+    assert len(failed) == 1 and "deadline" in failed[0].reason
+    current = board.dispatcher.cache.run("13")
+    assert current.verdict == ("ok" if verdict == "ok" else "timeout")
+    assert current.evidence == "unverified" and current.reported == current.verdict
+    assert [call.get_method() for call in Rented.calls] == ["DELETE"]
+
+
+def test_failed_deadline_deletion_stays_tracked_for_retry(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VAST_API_KEY", "test-key")
+    record = seed("13", target="vast", kind=Rented.name, verdict="running")
+    record = record.model_copy(
+        update={
+            "lease": Lease(
+                offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
+                release_by=datetime.now(UTC) - timedelta(seconds=1),
+            ),
+        }
+    )
+    board.dispatcher.cache.record(record)
+    Rented.replies = [{"success": False}]
+    failed = board.monitor().expired()
+    assert "release failed" in failed[0].reason
+    assert board.dispatcher.cache.tracked()[0].handle == "13"
+    assert board.dispatcher.cache.run("13").reported is None
+
+
+def test_deadline_deletion_does_not_depend_on_a_healthy_receipt_stream(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VAST_API_KEY", "test-key")
+    for handle in ("13", "14"):
+        record = seed(handle, target="vast", kind=Rented.name, verdict="running")
+        board.dispatcher.cache.record(
+            record.model_copy(
+                update={
+                    "lease": Lease(
+                        offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
+                        release_by=datetime.now(UTC) - timedelta(seconds=1),
+                    ),
+                }
+            )
+        )
+    monitor = board.monitor()
+
+    def broken(*args, **kwargs) -> None:
+        raise OSError("receipt directory is unavailable")
+
+    monkeypatch.setattr(monitor, "evidence", broken)
+    Rented.replies = [{"success": True}]
+    failed = monitor.expired()
+    assert len(failed) == 2
+    assert all("release confirmed" in row.reason for row in failed)
+    assert all(record.verdict == "timeout" for record in board.dispatcher.cache.tracked())
 
 
 def test_a_finished_job_is_pulled_reported_and_announced_once(

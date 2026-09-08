@@ -11,6 +11,7 @@ from patos import FrozenModel
 
 from ...core.errors import MissionError
 from .. import vocabulary
+from ..lease import Lease
 from ..onboard import HostSetup
 from ..shared import db_file, now
 from ..vocabulary import Request
@@ -58,6 +59,7 @@ class RunRecord(FrozenModel):
     request: the original request for held jobs, or the resolved environment/resources for a
         provider creation. Only held requests are automatically retried; a lost create reply
         requires reconciliation with the provider.
+    lease: accepted rental quote and release deadline, retained before provider creation.
     reason: why the row is in the state it is in, when the state cannot say it alone: the
         refusal a target's quota answered a held dispatch with. Empty for every run that was
         taken, whose outcome is read off its verdict and its exit code instead.
@@ -84,6 +86,7 @@ class RunRecord(FrozenModel):
     evidence: str = ""
     creation: str = ""
     request: Request | None = None
+    lease: Lease | None = None
     reason: str = ""
 
 
@@ -227,18 +230,22 @@ class Cache:
             raise LookupError(f"no submitting creation {run.creation!r} on {run.target!r}")
         return RunRecord.model_validate_json(row["data"])
 
-    def leave_prepared(self, run: RunRecord, verdict: str) -> RunRecord:
+    def leave_prepared(
+        self, run: RunRecord, verdict: str, *, lease: Lease | None = None
+    ) -> RunRecord:
         """Claim preparation once, so cancellation and creation cannot both win."""
         if verdict not in vocabulary.VERDICTS[vocabulary.PREPARED]:
             raise ValueError(f"invalid prepared transition to {verdict!r}")
         row = self.connection.execute(
-            "UPDATE runs SET data = json_set(data, '$.state', ?, '$.verdict', ?, '$.reported', ?) "
+            "UPDATE runs SET data = json_set(data, '$.state', ?, '$.verdict', ?, '$.reported', ?, "
+            "'$.lease', json(?)) "
             "WHERE target = ? AND handle = ? AND submitted_at = ? "
             "AND json_extract(data, '$.verdict') = ? RETURNING data",
             (
                 verdict,
                 verdict,
                 verdict if verdict in vocabulary.TERMINAL else None,
+                lease.model_dump_json() if lease else "null",
                 run.target,
                 run.handle,
                 run.submitted_at,
