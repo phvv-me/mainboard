@@ -1088,15 +1088,15 @@ class Board:
     def run(self, command: Sequence[str], *, env: str = "", container: str = "") -> int:
         """Run `command` through the host's activated plan, returning its exit code.
 
-        Locally the wrapped line executes in place; remotely it rides one ssh
-        connection. Either way the same staging applies, cd, PATH, modules,
-        then the environment or the container. A command naming a declared task
+        Local commands execute in place. Remote diagnostic commands use one SSH
+        connection, including a batch cluster's login endpoint. Native file targets
+        run locally here; remote jobs require submit for allocation and source transfer.
+        A command naming a declared task
         is resolved by pixi inside the generated workspace instead of by the
         shell, which is what makes `run test` and `run -- pytest -q` the same verb.
 
-        A job spelled `path/to/file.py::name` runs through the same runner a dispatched one
-        does, with its closure's import roots and its provenance exported the same way, so the
-        receipts it writes here are the receipts it would write on a node.
+        Local file targets use the same runner and closure format as submitted jobs.
+        Collection and help remain local and do not allocate remote resources.
 
         command: exact command argv, or a declared task name and its arguments, or a job.
         env: an environment name overriding the profile's choice.
@@ -1105,6 +1105,12 @@ class Board:
         plan = self.plan(env=env, container=container)
         target = Target.spelled(command, self.root)
         if target is not None:
+            if not self.local:
+                raise MissionError(
+                    "remote file targets require submission for source transfer and allocation; "
+                    f"use mainboard submit --on {plan.host} -- {target.spelling}, then "
+                    "mainboard wait or mainboard monitor. Run collection and help locally."
+                )
             shipment = self.sealed(target, plan)
             listing = self.dispatcher.stage_listing(shipment)
             command = shipment.locally(self.root, closure=listing)

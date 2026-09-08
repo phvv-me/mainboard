@@ -78,9 +78,10 @@ def build(root: Path | None = None) -> App:
     ) -> int:
         """Run a command, or a job spelled `path/to/file.py::name`, through the host's plan.
 
-        A job runs through the same runner a dispatched one does, its closure computed and its
-        provenance exported the same way, so a receipt written here reads as one written on a
-        node. The exit code is the command's own.
+        Native file targets run locally with the same runner and closure format as submitted
+        jobs. Use submit for remote file targets; run collection and help locally. Plain
+        remote diagnostic commands execute over SSH, on a cluster's login
+        endpoint rather than in a batch allocation. The exit code is the command's own.
 
         command: the command tokens, everything after `--`, its own flags included; a job's
             arguments follow `--` the same way.

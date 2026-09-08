@@ -1292,6 +1292,26 @@ def test_a_job_spelled_by_file_ships_its_closure_and_declares_what_it_fetches(
     assert seen["fetch"] == "out"
 
 
+@pytest.mark.parametrize("host", [_GOLD, _MIYABI_G])
+@pytest.mark.parametrize("condition", ["committed", "missing", "dirty"])
+def test_remote_file_runs_refuse_before_staging_or_ssh(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch, host: str, condition: str
+) -> None:
+    node = lab.root / "research/camp/experiments/node/node.md"
+    if condition == "missing":
+        node.unlink()
+    elif condition == "dirty":
+        node.write_text("changed registration\n")
+    board = Board(lab.root).on(host)
+    monkeypatch.setattr(board, "sealed", lambda *a, **kw: pytest.fail("staging reached"))
+    monkeypatch.setattr(
+        "mainboard.board.connection", lambda *a, **kw: pytest.fail("SSH reached")
+    )
+    with pytest.raises(MissionError, match="remote file targets require submission"):
+        board.run([f"{Lab.JOB}::app"])
+    assert not (lab.root / ".mainboard/dispatch/jobs").exists()
+
+
 def test_a_job_runs_here_through_the_same_runner_with_its_closure_exported(
     lab: Lab, monkeypatch: pytest.MonkeyPatch
 ) -> None:

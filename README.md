@@ -67,6 +67,11 @@ limit, and `--limit` bounds only the settled tail.
 Its reports identify changes and unreachable hosts without repeating unchanged
 outcomes on later passes.
 
+`run` executes native file targets locally; use `submit` to ship and allocate a
+remote job. Collection and help stay local. Plain commands such as `nvidia-smi`
+can run remotely over SSH, which reaches a cluster's login endpoint, not a batch
+allocation. Stopping `wait` does not cancel a job or stop rental billing.
+
 ## Many jobs, many machines, one flow
 
 A batch is declared as data and moves through three verbs, and only the last

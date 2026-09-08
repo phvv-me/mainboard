@@ -416,10 +416,10 @@ class Verdicts:
         """Block until `handle` settles, sweeping the same durable path the monitor cron runs.
 
         Every pass is one `Monitor.once`, so waiting here pulls results back, releases rentals
-        and writes receipts exactly as an unattended sweep would, and a wait killed halfway
-        loses nothing. The answer is the receipts-derived outcome, so the exit code a caller
-        branches on is the job's own. A batch id waits for every job of the batch and answers
-        with the batch's verdict.
+        and writes receipts through the same path as an unattended sweep. Interruption stops
+        this waiter, not the submitted job or provider billing. The answer's code is the
+        normalized receipt outcome, not the original process exit status. A batch id waits for
+        every job of the batch and answers with the batch's verdict.
 
         handle: the dispatched run to wait on, or a batch id as `batch run` printed it.
         host: the alias narrowing a handle recorded on several hosts.
