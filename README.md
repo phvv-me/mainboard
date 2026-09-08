@@ -67,10 +67,14 @@ limit, and `--limit` bounds only the settled tail.
 Its reports identify changes and unreachable hosts without repeating unchanged
 outcomes on later passes.
 
-`run` executes native file targets locally; use `submit` to ship and allocate a
-remote job. Collection and help stay local. Plain commands such as `nvidia-smi`
-can run remotely over SSH, which reaches a cluster's login endpoint, not a batch
-allocation. Stopping `wait` does not cancel a job or stop rental billing.
+`run` executes native file targets locally. Use `submit` for remote jobs.
+Collection and help stay local. Plain diagnostic commands use SSH.
+On a cluster, SSH reaches the login endpoint. It provides no batch allocation.
+Stopping `wait` does not cancel a job or stop rental billing.
+
+Source snapshots are not deleted automatically. A local job cache cannot prove
+that another workstation has no job using a remote snapshot. Monitor inode
+usage. Remove a snapshot only after checking all dispatchers and queues.
 
 ## Many jobs, many machines, one flow
 

@@ -26,7 +26,8 @@ from .onboard import Bootstrap, RemoteShell
 from .rentals import Rental, handoff
 from .schedulers.base import failure_reason
 from .shared import Watcher, announce, logger
-from .snapshots import Snapshots
+from .snapshots import CLOSURE, Snapshots
+from .sync import SyncLock
 from .targets import find_root
 from .transport import SshTransport
 from .wrapping import connection, wrap
@@ -172,7 +173,10 @@ class Landing:
         """
         policy = SshTransport(endpoint=rental.endpoint)
         where = rental.endpoint.destination
-        with connection(where, policy) as remote:
+        with (
+            SyncLock(rental.endpoint, self.dispatcher.sync.root),
+            connection(where, policy) as remote,
+        ):
             root = self.plan.profile.root or find_root(remote)
             listing = self.dispatcher.stage_listing(shipment)
             script = self.script(shipment, root=root, listing=listing)
@@ -200,6 +204,7 @@ class Landing:
                 results=shipment.fetch,
                 commit=shipment.source.commit,
                 digest=shipment.source.digest,
+                script=script,
             )
             self.verify(remote, pinned)
             self.watch(f"starting the job on {rental.handle}")
@@ -210,7 +215,7 @@ class Landing:
                         f"rental {rental.handle} ended during setup; refusing launch"
                     )
                 self.dispatcher.cache.delivery(registered, "pending")
-                self.start(remote, pinned=pinned, script=f"{root}/{script}")
+                self.start(remote, pinned=pinned, script=f"{pinned}/{Snapshots.script(script)}")
 
     def transferable(self, remote: Machine) -> None:
         """Make sure the machine can receive a mirror at all, since rsync runs on both ends.
@@ -281,7 +286,7 @@ class Landing:
             source=shipment.source.identity,
             commit=shipment.source.commit,
             digest=shipment.source.digest,
-            closure=f"{pinned}/{listing}" if listing else "",
+            closure=f"{pinned}/{CLOSURE}" if listing else "",
             first_party=":".join(shipment.first_party),
             deferred=":".join(shipment.deferred),
             exports=self.plan.exports,
@@ -296,11 +301,8 @@ class Landing:
         can read afterwards. The line is the staging every other host gets, `cd`, PATH and
         modules, around a script that does its own activation.
 
-        The script is named by its absolute path in the mirror rather than by a name relative to
-        the snapshot the job stands in. A snapshot reaches the mirror's generated tree through
-        links it builds itself, and a launch that leans on that shape fails as one that named a
-        path the snapshot could not resolve, which is exactly how a landed rental answered `No
-        such file or directory` with the mirror holding the script all along.
+        The script is the verified frozen wrapper inside the snapshot, named absolutely so
+        launch does not depend on the mirror's mutable dispatch links.
 
         remote: the open connection to the machine.
         pinned: the snapshot the job runs from.

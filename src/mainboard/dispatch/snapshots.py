@@ -31,12 +31,12 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.project import Project
-from .shared import logger, state_dir
+from .shared import state_dir
 from .sync import Rsync, rsync_argv
 from .transport import HostUnreachable, is_transport_failure
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Sequence
 
     from .transport import Machine
 
@@ -44,14 +44,10 @@ if TYPE_CHECKING:
 # excludes from every transfer, so a sync can neither ship one nor prune one.
 SOURCES = f"{state_dir()}/sources"
 
-# The stamp a finished snapshot carries, naming the tree it froze. Its presence is what makes a
-# second dispatch of the same tree free, and what keeps a build interrupted halfway from being
-# mistaken for a complete one.
+# The completion stamp and frozen closure listing; reuse verifies both before returning a tree.
 STAMP = ".mainboard-source"
-
-# How many unused snapshots a host keeps after a prune. Enough that a job dispatched moments
-# before a sweep still has its tree, small enough to sit inside an inode quota.
-KEEP = 3
+CLOSURE = ".mainboard-closure"
+WRAPPERS = ".mainboard-jobs"
 
 
 def stamped(key: str, *, commit: str, digest: str) -> str:
@@ -119,6 +115,10 @@ class Image(ABC, FrozenModel):
     def linked(self) -> list[str]:
         """The lines run on every dispatch, outside the stamp, that link the mirror's data in."""
 
+    def verified(self, digest: str, results: str) -> str:
+        """Verify an exact listing when the image carries one; commands carry none."""
+        return ""
+
 
 class Mirrored(Image):
     """The whole synced allowlist, what a command that ships the mirror runs from.
@@ -137,9 +137,7 @@ class Mirrored(Image):
     def copied(self, root: str) -> str:
         """The shipped paths hardlinked in with the mirror as `--link-dest`, under the same rules.
 
-        A file that vanished mid-walk (rsync's code 24, which a concurrent mirror sync causes)
-        is the one failure absorbed, since the mirror is a moving target. Every other rsync
-        failure means the tree is not whole, and a job must never start in one that is not.
+        A vanished file is an incomplete copy, including rsync's exit code 24.
         """
         argv = rsync_argv(
             Rsync.ARCHIVE | Rsync.RELATIVE,
@@ -148,7 +146,7 @@ class Mirrored(Image):
             exclude=self.exclude,
             extra=[f"--link-dest={root}/"],
         )
-        return f'{shlex.join(["rsync", *argv])} "$mb_snap"/ || [ "$?" = 24 ]'
+        return f'{shlex.join(["rsync", *argv])} "$mb_snap"/'
 
     def filled(self) -> str:
         """The loop symlinking back whatever the mirror holds and the copy did not bring over."""
@@ -172,8 +170,8 @@ class Sealed(Image):
     """A job's closure and nothing beside it, what a job spelled by file runs from.
 
     listing: the closure listing the mirror carries, workspace-relative, whose first column
-        names every shipped file. It rides with the job script, so the host copies exactly what
-        the dispatch digested and a job reads the same rows through `MAINBOARD_CLOSURE`.
+        names every shipped file. The snapshot freezes it as `CLOSURE`; the runner reads that
+        copy through `MAINBOARD_CLOSURE`, not a later mirror's listing.
     needs: the workspace-relative data paths the job reads, each linked back to the mirror on
         every dispatch. A need the mirror does not hold refuses the dispatch by name, since a
         job that opens a dangling link fails after the queue rather than before it.
@@ -189,9 +187,55 @@ class Sealed(Image):
         job importing a module that is not there, and the mirror's own denylist covers the
         vendored tree a closure legitimately reaches into.
         """
-        argv = rsync_argv(Rsync.ARCHIVE, ["./"], extra=["--files-from=-", f"--link-dest={root}/"])
+        argv = rsync_argv(
+            Rsync.ARCHIVE | Rsync.COPY_LINKS,
+            ["./"],
+            extra=["--files-from=-", f"--link-dest={root}/"],
+        )
         rsync = f'{shlex.join(["rsync", *argv])} "$mb_snap"/'
-        return f'cut -f1 "$mb_root"/{shlex.quote(self.listing)} | {rsync} || [ "$?" = 24 ]'
+        return (
+            f'cp -- "$mb_root"/{shlex.quote(self.listing)} "$mb_snap/{CLOSURE}"; '
+            f'mb_hash=$(sha256sum -- "$mb_snap/{CLOSURE}"); '
+            '[ "${mb_hash%% *}" = "$mb_digest" ] || '
+            '{ echo "mainboard: closure listing digest mismatch" >&2; false; }; '
+            f'cut -f1 "$mb_snap/{CLOSURE}" | {rsync}'
+        )
+
+    def verified(self, digest: str, results: str) -> str:
+        """Check the frozen listing and every raw Git blob, without status exemptions."""
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise ValueError("a sealed snapshot requires its complete closure digest")
+        live = tuple(writable(path) for path in (*self.needs, *([results] if results else [])))
+        if any(
+            not path or path in (".", CLOSURE, STAMP, WRAPPERS) or path.startswith(WRAPPERS + "/")
+            for path in live
+        ):
+            raise ValueError("snapshot data and results must be relative paths below the root")
+        return "\n".join(
+            [
+                f'mb_hash=$(sha256sum -- "$mb_snap/{CLOSURE}")',
+                f'[ "${{mb_hash%% *}}" = {shlex.quote(digest)} ] || '
+                '{ echo "mainboard: closure listing digest mismatch" >&2; false; }',
+                "while IFS=$'\\t' read -r mb_file mb_blob mb_status; do",
+                'case "/$mb_file/" in //|/*/../*|/*/./*|//*) '
+                'echo "mainboard: invalid closure path: $mb_file" >&2; false;; esac',
+                f'case "$mb_file" in {CLOSURE}|{STAMP}|{WRAPPERS}|{WRAPPERS}/*) '
+                'echo "mainboard: reserved closure path: $mb_file" >&2; false;; esac',
+                f"for mb_live in {shlex.join(live)}; do",
+                'case "$mb_file" in "$mb_live"|"$mb_live"/*) '
+                'echo "mainboard: live path overlaps source: $mb_live" >&2; false;; esac',
+                "done",
+                '[ -f "$mb_snap/$mb_file" ] && [ ! -L "$mb_snap/$mb_file" ] || '
+                '{ echo "mainboard: missing or linked source: $mb_file" >&2; false; }',
+                'mb_real=$(realpath --relative-to="$mb_snap" -- "$mb_snap/$mb_file")',
+                '[ "$mb_real" = "$mb_file" ] || '
+                '{ echo "mainboard: linked source parent: $mb_file" >&2; false; }',
+                'mb_hash=$(git hash-object --no-filters -- "$mb_snap/$mb_file")',
+                '[ "$mb_hash" = "$mb_blob" ] || '
+                '{ echo "mainboard: source blob mismatch: $mb_file" >&2; false; }',
+                f'done < "$mb_snap/{CLOSURE}"',
+            ]
+        )
 
     def filled(self) -> str:
         """Nothing: a sealed tree reaches the mirror only through what it declared."""
@@ -215,12 +259,10 @@ class Sealed(Image):
 class Snapshots:
     """The pinned source trees on one host, under `{root}/{STATE_DIR}/sources/`.
 
-    A snapshot is a hardlink copy of the shipped file set, so it costs no data blocks at all and
-    one inode per shipped directory: a file is a second name for the inode the mirror already
-    holds, and only a directory has to be new. A workspace shipping a few thousand directories
-    therefore costs a few thousand inodes per snapshot, which is why `prune` exists and why it
-    keeps so few: Miyabi's personal group allows 102k inodes in total, and a host that runs out
-    of them fails every later job with `EDQUOT` rather than with anything about disk space.
+    Source files share inodes with the mirror; directories and frozen metadata add storage.
+    Automatic deletion is unsafe: one workstation's job cache cannot establish ownership
+    across other dispatchers or the gap before a submitted job is recorded. Snapshots remain
+    until an operator verifies that no queued or running job uses them. Watch inode quotas.
 
     Hardlinking is also what makes the pin correct rather than merely cheap. rsync replaces a
     changed file by writing a new one and renaming it over the old name, so the mirror's
@@ -229,12 +271,10 @@ class Snapshots:
 
     root: the workspace root on the host, the mirror every snapshot is taken from and links
         back to.
-    keep: how many unused snapshots survive a prune.
     """
 
-    def __init__(self, root: str, *, keep: int = KEEP) -> None:
+    def __init__(self, root: str) -> None:
         self.root = root.rstrip("/")
-        self.keep = keep
 
     @property
     def base(self) -> str:
@@ -249,6 +289,21 @@ class Snapshots:
         """
         return f"{self.base}/{key}"
 
+    @staticmethod
+    def script(staged: str) -> str:
+        """The frozen path of a generated wrapper, whose filename carries its complete digest."""
+        name = PurePosixPath(staged).name
+        digest = name.removeprefix("job-").removesuffix(".sh")
+        if (
+            not staged
+            or writable(staged) != staged
+            or name != f"job-{digest}.sh"
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+        ):
+            raise ValueError("a staged wrapper requires a canonical path and full SHA-256 name")
+        return f"{WRAPPERS}/{name}"
+
     def pin(
         self,
         remote: Machine,
@@ -260,11 +315,11 @@ class Snapshots:
         environment: str = "default",
         commit: str = "",
         digest: str = "",
+        script: str = "",
     ) -> str:
         """Materialise the snapshot for `key` on the host and answer the path a job runs from.
 
-        A key already pinned is answered without rebuilding its tree, so a batch of thirty five
-        jobs from one commit pays for one snapshot and reuses it thirty four times. Its declared
+        A key already pinned is verified without rebuilding its tree. Its declared
         results path and its needs are linked back on every dispatch all the same, since those
         belong to the dispatch rather than to the tree and two batches off one commit routinely
         declare different ones.
@@ -282,11 +337,15 @@ class Snapshots:
             which is what a workspace with no addressed prefixes still does.
         environment: the environment `prefix` belongs to, which is the directory inside the
             generated tree the link is written into.
+        script: staged generated wrapper to freeze and verify before submission; empty for a
+            direct remote command whose file is not shipped.
         commit / digest: the dispatching tree's own provenance, written into the stamp beside
             the key so the tree on the host says which commit it is and what its content hashed
             to. A mirror carries no history, so this file is the only place on that machine
             where either can be read.
         """
+        if not key or key in (".", "..") or PurePosixPath(key).name != key:
+            raise ValueError("a snapshot key must be one directory name")
         path = self.path(key)
         program = self.__program(
             path,
@@ -295,6 +354,8 @@ class Snapshots:
             prefix=prefix,
             environment=environment,
             stamp=stamped(key, commit=commit, digest=digest),
+            digest=digest,
+            script=script,
         )
         retcode, _, err = remote["bash"][["-lc", program]].run(retcode=None)
         if is_transport_failure(int(retcode), str(err)):
@@ -302,29 +363,6 @@ class Snapshots:
         if retcode:
             raise SystemExit(f"could not pin the source tree at {path}: {str(err).strip()[-400:]}")
         return path
-
-    def prune(self, remote: Machine, *, live: Collection[str]) -> list[str]:
-        """Remove every pinned tree no live job runs from, newest `keep` kept, and name them.
-
-        Reached from the durable sweep rather than from a dispatch, because only the sweep knows
-        which jobs are still owed an outcome. The newest few survive whatever the sweep found,
-        so a job dispatched between this pass and the last one still has the tree it was pinned
-        to even though no record of it had been resolved yet.
-
-        remote: the open connection to the host.
-        live: the keys of the trees jobs still in flight run from, never removed.
-        """
-        listed = remote["bash"][["-lc", f"ls -1t {shlex.quote(self.base)} 2>/dev/null"]](
-            retcode=None
-        )
-        names = [line.strip() for line in str(listed).splitlines() if line.strip()]
-        doomed = [name for name in names[self.keep :] if name not in live]
-        if not doomed:
-            return []
-        paths = " ".join(shlex.quote(self.path(name)) for name in doomed)
-        remote["bash"][["-lc", f"rm -rf {paths}"]](retcode=None)
-        logger.info("pruned %d unused source snapshot(s) under %s", len(doomed), self.base)
-        return doomed
 
     def __program(
         self,
@@ -335,32 +373,54 @@ class Snapshots:
         prefix: str,
         environment: str,
         stamp: str,
+        digest: str = "",
+        script: str = "",
     ) -> str:
         """The shell that builds one snapshot, in the order the phases have to happen.
 
-        The image's shipped set is hardlinked in first. The generated tree is rebuilt next, then
-        the image reaches back into the mirror for whatever it wants within reach, and the
-        environment is pointed at the prefix it names. Only then is the stamp written, so a
-        build cut off halfway is redone rather than run from. The image's needs and the
-        declared results path are linked last and on every dispatch, so they survive whichever
-        earlier phase also had an opinion about them.
+        A host-side lock serializes publication and reuse. Build into a private directory,
+        verify its source, then link disjoint live paths and publish atomically. A failed build
+        never becomes a completed snapshot; an older incomplete tree refuses for inspection.
+        Reuse verifies the stamp and source before adding this dispatch's live paths.
         """
         # The whole build sits inside one `if` rather than behind an early `exit`, because the
         # program runs in a login shell, and a login shell's `exit` runs `.bash_logout`, whose
         # `clear_console` fails without a terminal and under `set -e` becomes the shell's own
         # status: a key already pinned then read as a failed pin. Measured on gold 2026-09-04.
+        verify = image.verified(digest, results)
         lines = [
-            "set -eu",
+            "set -euo pipefail",
             f"mb_root={shlex.quote(self.root)}",
-            f"mb_snap={shlex.quote(path)}",
-            f'if [ ! -f "$mb_snap/{STAMP}" ]; then mkdir -p "$mb_snap"',
+            f"mb_digest={shlex.quote(digest)}",
+            f"mb_final={shlex.quote(path)}",
+            f"mkdir -p {shlex.quote(self.base)}",
+            f"exec 9>{shlex.quote(self.base + '/.pin.lock')}",
+            "flock -x 9",
+            'mb_snap="$mb_final"',
+            "mb_wrapper=''",
+            'trap \'if [ -n "${mb_wrapper:-}" ]; then rm -f -- "$mb_wrapper"; fi; '
+            'if [ -n "${mb_snap:-}" ] && [ "$mb_snap" != "$mb_final" ]; '
+            'then rm -rf -- "$mb_snap"; fi\' EXIT',
+            f'if [ ! -f "$mb_snap/{STAMP}" ]; then',
+            'if [ -e "$mb_final" ]; then '
+            'echo "mainboard: incomplete snapshot requires inspection: $mb_final" >&2; false; fi',
+            f"mb_snap=$(mktemp -d {shlex.quote(self.base + '/.pending.XXXXXXXXXX')})",
             'cd "$mb_root"',
             image.copied(self.root),
             self.__generated(),
             image.filled(),
             *self.__environment(prefix, environment),
+            verify,
+            *image.linked(),
+            *self.__results(results),
+            *self.__script(script),
             f"printf '%s' {shlex.quote(stamp)} > \"$mb_snap/{STAMP}\"",
-            "fi",
+            'mv -T -- "$mb_snap" "$mb_final"',
+            'mb_snap="$mb_final"',
+            "else",
+            f"printf '%s' {shlex.quote(stamp)} | cmp -s - \"$mb_snap/{STAMP}\" || "
+            '{ echo "mainboard: snapshot stamp mismatch" >&2; false; }',
+            verify,
             # Outside the stamp, because the tree is keyed on the source and a results path is
             # not part of it: two batches off one commit share a snapshot and declare different
             # results paths, and the second one used to get no link at all, so every pull failed
@@ -370,8 +430,39 @@ class Snapshots:
             # place.
             *image.linked(),
             *self.__results(results),
+            *self.__script(script),
+            "fi",
         ]
-        return "; ".join(line for line in lines if line)
+        return "\n".join(line for line in lines if line)
+
+    def __script(self, staged: str) -> list[str]:
+        """Freeze and verify the requested wrapper before submission, including source reuse."""
+        if not staged:
+            return []
+        where = self.script(staged)
+        digest = PurePosixPath(staged).stem.removeprefix("job-")
+        quoted = shlex.quote(where)
+        check = (
+            '[ "${mb_hash%% *}" = ' + shlex.quote(digest) + " ] || "
+            '{ echo "mainboard: wrapper digest mismatch" >&2; false; }'
+        )
+        return [
+            f'[ ! -L "$mb_snap/{WRAPPERS}" ] || '
+            '{ echo "mainboard: linked wrapper directory" >&2; false; }',
+            f'mkdir -p "$mb_snap/{WRAPPERS}"',
+            f'if [ ! -e "$mb_snap"/{quoted} ] && [ ! -L "$mb_snap"/{quoted} ]; then',
+            f'mb_wrapper=$(mktemp "$mb_snap/{WRAPPERS}/.pending.XXXXXXXXXX")',
+            f'cp --preserve=mode -- "$mb_root"/{shlex.quote(staged)} "$mb_wrapper"',
+            'mb_hash=$(sha256sum -- "$mb_wrapper")',
+            check,
+            f'mv -T -- "$mb_wrapper" "$mb_snap"/{quoted}',
+            "mb_wrapper=''",
+            "fi",
+            f'[ -f "$mb_snap"/{quoted} ] && [ ! -L "$mb_snap"/{quoted} ] || '
+            '{ echo "mainboard: missing or linked wrapper" >&2; false; }',
+            f'mb_hash=$(sha256sum -- "$mb_snap"/{quoted})',
+            check,
+        ]
 
     def __generated(self) -> str:
         """The lines that rebuild the generated tree as this snapshot's own.
@@ -441,6 +532,8 @@ class Snapshots:
         relative = writable(results)
         if not relative:
             return []
+        if relative in (".", CLOSURE, STAMP, WRAPPERS) or relative.startswith(WRAPPERS + "/"):
+            raise ValueError("a results path must not replace snapshot control files")
         quoted = shlex.quote(relative)
         parent = shlex.quote(str(PurePosixPath(relative).parent))
         return [

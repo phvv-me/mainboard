@@ -2,27 +2,28 @@ import inspect
 import os
 import stat
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from pathlib import Path
 from shutil import which
 from typing import TYPE_CHECKING
 
 import pytest
+from plumbum import local
 from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import Board, ExecutionPlan, MissionError
-from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, HostSetup, Verdict, shared
+from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, Shipment, Verdict, shared
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import provenance as provenance_module
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.schedulers import HostUnreachable, registry
-from mainboard.dispatch.shipment import Shipment
+from mainboard.dispatch.snapshots import CLOSURE, Snapshots
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
 from ..support import Lab
 from .support import (
-    RecordingMachine,
     RecordingScheduler,
     cache,
     machine_with,
@@ -187,10 +188,11 @@ def test_run_renders_a_job_script_ships_it_and_hands_back_a_pollable_handle(
         "out/",
     )
     [(_root, script, args)] = [call for name, call in backend.calls if name == "submit"]
-    assert script.startswith(".mainboard/dispatch/jobs/")
+    assert script.startswith(".mainboard-jobs/")
     assert args == ()
-    assert dispatcher.shipped == [(script,)]
-    assert (workdir / script).is_file()
+    [(staged,)] = dispatcher.shipped
+    assert Snapshots.script(staged) == script
+    assert (workdir / staged).is_file()
     assert backend.submit_resources == resources
 
 
@@ -247,7 +249,7 @@ def test_run_containerized_wraps_the_command_via_the_builder_or_refuses_without_
         containerize=lambda inner: ["apptainer", "exec", "image.sif", *inner],
     )
     [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    text = (workdir / script).read_text()
+    text = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text()
     assert "apptainer exec image.sif bash -c 'python -m foo' || status=$?" in text
 
 
@@ -310,9 +312,55 @@ def test_direct_script_submission_keeps_the_prepared_path_and_arguments(
     )
     record = dispatcher.cache.run(handle)
     [(_, prepared, submitted_args)] = [call for name, call in backend.calls if name == "submit"]
-    assert record.script == prepared and record.script.startswith(".mainboard/dispatch/jobs/")
+    assert Snapshots.script(record.script) == prepared
+    assert record.script.startswith(".mainboard/dispatch/jobs/")
     assert (workdir / record.script).read_bytes() == script.read_bytes()
     assert submitted_args == args and record.args == "--label 'a b'"
+
+
+def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
+    dispatcher: Dispatcher,
+    backend: RecordingScheduler,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Use real staging, rsync, and pinning; the scheduler never executes the script."""
+    mirror = tmp_path / "remote"
+    mirror.mkdir()
+    (workdir / "src").mkdir(exist_ok=True)
+    authored = workdir / "handwritten script.sh"
+    payload = b"#!/bin/sh\r\n# exact byte: \xff\r\n"
+    authored.write_bytes(payload)
+    authored.chmod(0o750)
+
+    def transfer(*args, **kwargs):
+        local["rsync"]["-a", "--exclude=remote", str(workdir) + "/", str(mirror) + "/"]()
+        return ["src"]
+
+    def submit(remote, root, *, script, args, resources):
+        assert script.startswith(".mainboard-jobs/")
+        frozen = Path(root) / script
+        assert frozen.read_bytes() == payload and not frozen.is_symlink()
+        assert args == ("--label", "a b")
+        return "frozen-control"
+
+    monkeypatch.setattr(dispatcher, "rsync_up", transfer)
+    monkeypatch.setattr(dispatcher, "_verify", lambda *a, **kw: None)
+    monkeypatch.setattr(dispatcher, "_prime", lambda *a, **kw: None)
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: nullcontext(local))
+    monkeypatch.setattr(backend, "submit", submit)
+    assert (
+        dispatcher.submit(
+            plan(),
+            str(mirror),
+            script=str(authored),
+            args=("--label", "a b"),
+            resources=Resources(),
+        )
+        == "frozen-control"
+    )
+    assert authored.read_bytes() == payload and stat.S_IMODE(authored.stat().st_mode) == 0o750
 
 
 def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror_itself(
@@ -341,7 +389,7 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     # queued into it, and the declared results path is linked back to the mirror.
     [built] = [line for line in machine.lines if "--link-dest" in line]
     assert '--link-dest=/repo/ src "$mb_snap"/' in built
-    assert f"mb_snap={pinned}" in built
+    assert f"mb_final={pinned}" in built
     assert 'ln -sfn "$mb_root"/out/raw "$mb_snap"/out/raw' in built
     [run] = dispatcher.cache.recent(10)
     assert run.source == pinned.rsplit("/", maxsplit=1)[-1]
@@ -373,7 +421,7 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     )
 
     [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    body = (workdir / str(script)).read_text(encoding="utf-8")
+    body = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
     assert f"cd /repo && mainboard provide default --source {root}/.mainboard/envs/default" in body
     # And it names the address the dispatch pinned, so a host that reads the shipped artifact as
     # another environment says which two addresses and which two pixis instead of building one
@@ -418,7 +466,7 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
     )
 
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    body = (workdir / str(script)).read_text(encoding="utf-8")
+    body = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
     assert pinned != "/repo"
     # The vendored root rides with the workspace's own: a house package that lives outside the
     # root is compiled inside it, so the tree a job is pinned to carries it like any other.
@@ -460,16 +508,18 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
     listing = ".mainboard/dispatch/jobs/closure-9f9f9f9f9f9f.tsv"
     assert (workdir / listing).read_text(encoding="utf-8") == sealed.listing
-    assert dispatcher.shipped == [(script, listing, "a/run.py", "mainboard.toml")]
-    body = (workdir / str(script)).read_text(encoding="utf-8")
+    [(staged, *carried)] = dispatcher.shipped
+    assert Snapshots.script(staged) == script
+    assert carried == [listing, "a/run.py", "mainboard.toml"]
+    body = (workdir / staged).read_text(encoding="utf-8")
     assert f"export PYTHONPATH={pinned}/research/camp:{pinned}/packages/core/src" in body
-    assert f"export MAINBOARD_CLOSURE={pinned}/{listing}" in body
+    assert f"export MAINBOARD_CLOSURE={pinned}/{CLOSURE}" in body
     assert "export MAINBOARD_FIRST_PARTY=core:experiments" in body
     assert "export MAINBOARD_DEFERRED=cutoken" in body
     assert "export MAINBOARD_SOURCE=v1-dirty" in body
     assert f"cd {pinned}" in body
     [built] = [line for line in machine.lines if "mb_snap=" in line]
-    assert f'cut -f1 "$mb_root"/{listing} | rsync -a --files-from=-' in built
+    assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --files-from=-' in built
     assert 'ln -sfn "$mb_root"/data/corpus "$mb_snap"/data/corpus' in built
     assert "for d in" not in built
     [run] = dispatcher.cache.recent(10)
@@ -493,7 +543,9 @@ def test_a_containerized_job_has_no_environment_of_its_own_to_build(
         containerize=lambda argv: ["apptainer", "exec", "img.sif", *argv],
     )
     [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    assert "provide" not in (workdir / str(script)).read_text(encoding="utf-8")
+    assert "provide" not in (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
@@ -577,7 +629,9 @@ def test_a_moving_working_tree_cannot_split_the_script_from_the_snapshot_it_runs
     )
     [(root, script, _)] = [call for name, call in backend.calls if name == "submit"]
     assert "/sources/abc1234-dirty-" in str(root)
-    assert str(root) in (workdir / str(script)).read_text(encoding="utf-8")
+    assert str(root) in (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_two_dispatches_of_one_tree_share_a_snapshot_and_a_different_tree_gets_its_own(
@@ -595,37 +649,6 @@ def test_two_dispatches_of_one_tree_share_a_snapshot_and_a_different_tree_gets_i
     assert dispatcher.pinned("/repo", source=dispatcher.source()) == first
     described["value"] = "v0.4.9"
     assert dispatcher.pinned("/repo", source=dispatcher.source()) != first
-
-
-def test_the_sweep_drops_the_snapshots_no_job_still_owed_an_outcome_runs_from(
-    dispatcher: Dispatcher, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The other half of pinning: a host under an inode quota cannot keep every tree forever."""
-    machine = machine_with("live\nnewest\nolder\nancient\n")
-    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-    dispatcher.cache.save_host(
-        HostSetup(host="gold", root="/repo", synced_at="2026-09-04T00:00:00Z")
-    )
-    dispatcher.cache.record(run_record("H1", target="gold").model_copy(update={"source": "live"}))
-    assert dispatcher.prune_sources() == {"gold": ["ancient"]}
-    assert not any("live" in line for line in machine.lines if line.startswith("rm -rf"))
-
-
-def test_a_host_that_was_never_mirrored_is_not_connected_to_for_a_prune(
-    dispatcher: Dispatcher, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A sweep runs on a cron over every onboarded host, so the quiet ones must stay quiet."""
-    reached: list[str] = []
-
-    def connect(host: str) -> RecordingMachine:
-        reached.append(host)
-        return machine_with()
-
-    monkeypatch.setattr(dispatch_module, "connection", connect)
-    dispatcher.cache.save_host(HostSetup(host="gold", root="/repo"))
-    dispatcher.cache.save_host(HostSetup(host="macmini", root=""))
-    assert dispatcher.prune_sources() == {}
-    assert reached == ["gold"]
 
 
 def test_git_reports_a_local_commands_stripped_stdout(monkeypatch: pytest.MonkeyPatch) -> None:

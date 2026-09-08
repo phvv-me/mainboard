@@ -1,11 +1,17 @@
 import shutil
+from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 from plumbum import local
 
+from mainboard.dispatch.provenance import Row, Status, blob_of
+from mainboard.dispatch.provenance import listing as listed
 from mainboard.dispatch.snapshots import (
+    CLOSURE,
     STAMP,
+    WRAPPERS,
     HostUnreachable,
     Mirrored,
     Sealed,
@@ -49,7 +55,8 @@ def test_a_pin_writes_that_provenance_into_the_tree_it_freezes() -> None:
 
     [program] = remote.lines
     stamp = "printf '%s' 'abc1234\ncommit c0ffee\ndigest d1\n'"
-    assert program.endswith(f'{stamp} > "$mb_snap/{STAMP}"; fi')
+    assert f'{stamp} > "$mb_snap/{STAMP}"\nmv -T' in program
+    assert f'{stamp} | cmp -s - "$mb_snap/{STAMP}"' in program
 
 
 @pytest.mark.parametrize(
@@ -98,8 +105,8 @@ def test_pinning_the_mirror_copies_the_shipped_set_by_hardlink_and_links_the_res
     assert pinned == "/work/projects/.mainboard/dispatch/sources/abc1234"
     [program] = remote.lines
     assert "mb_root=/work/projects" in program
-    assert f"mb_snap={pinned}" in program
-    assert f'if [ ! -f "$mb_snap/{STAMP}" ]; then mkdir -p "$mb_snap"' in program
+    assert f"mb_final={pinned}" in program
+    assert "mb_snap=$(mktemp -d " in program
     assert "--link-dest=/work/projects/" in program
     assert "rsync -aR" in program
     assert 'research/compression mainboard.toml "$mb_snap"/' in program
@@ -117,9 +124,9 @@ def test_pinning_the_mirror_copies_the_shipped_set_by_hardlink_and_links_the_res
     assert (
         'ln -sfn "$mb_root"/research/compression/raw "$mb_snap"/research/compression/raw'
     ) in program
-    stamped_line = f"printf '%s' 'abc1234\n' > \"$mb_snap/{STAMP}\"; fi"
+    stamped_line = f"printf '%s' 'abc1234\n' > \"$mb_snap/{STAMP}\""
     assert stamped_line in program
-    assert program.index(stamped_line) < program.index("ln -sfn")
+    assert program.index("ln -sfn") < program.index(stamped_line) < program.rindex("ln -sfn")
 
 
 def test_pinning_a_closure_copies_exactly_the_listed_files_and_links_only_the_needs() -> None:
@@ -131,18 +138,20 @@ def test_pinning_a_closure_copies_exactly_the_listed_files_and_links_only_the_ne
         key="abc1234-9f9f9f9f",
         image=Sealed(listing=listing, needs=("data/corpus", "data/models/x")),
         results="research/camp/experiments/node/evidence",
+        digest="ab" * 32,
     )
     [program] = remote.lines
-    assert f'cut -f1 "$mb_root"/{listing} | rsync -a --files-from=- ' in program
-    assert '--link-dest=/work/projects/ ./ "$mb_snap"/ || [ "$?" = 24 ]' in program
+    assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --files-from=- ' in program
+    assert '--link-dest=/work/projects/ ./ "$mb_snap"/' in program
+    assert '|| [ "$?" = 24 ]' not in program
     # No rule can drop a listed file, and nothing is filled back from the mirror.
     assert "--filter" not in program and "--exclude" not in program
     assert "for d in" not in program
     # Each need is checked on the mirror and linked in after the stamp, on every dispatch.
-    stamp = program.index(f'"$mb_snap/{STAMP}"; fi')
+    stamp = program.index('mv -T -- "$mb_snap" "$mb_final"')
     for need in ("data/corpus", "data/models/x"):
         check = f'if [ ! -e "$mb_root"/{need} ]; then echo'
-        assert check in program and program.index(check) > stamp
+        assert program.index(check) < stamp < program.rindex(check)
         assert f"the need {need} is not on the mirror" in program
         assert f'ln -sfn "$mb_root"/{need} "$mb_snap"/{need}' in program
     assert 'mkdir -p "$mb_snap"/data/models' in program
@@ -162,24 +171,6 @@ def test_a_host_that_dropped_while_pinning_reads_as_unreachable_not_as_a_broken_
     remote = machine_with(rules=[("rsync", 255, "ssh: connect to host gold port 22: timed out")])
     with pytest.raises(HostUnreachable):
         Snapshots("/work/projects").pin(remote, key="abc1234", image=mirrored("src"))
-
-
-def test_pruning_keeps_the_newest_few_and_everything_a_live_job_still_runs_from() -> None:
-    """A tree a queued job is pinned to outlives the sweep however old the directory is."""
-    remote = machine_with("new\nolder\noldest\nancient\nlive\n")
-    dropped = Snapshots("/work/projects", keep=2).prune(remote, live={"live"})
-    assert dropped == ["oldest", "ancient"]
-    removal = remote.lines[-1]
-    assert removal.startswith("rm -rf ")
-    assert "/work/projects/.mainboard/dispatch/sources/oldest" in removal
-    assert "live" not in removal
-
-
-def test_pruning_a_host_with_nothing_to_drop_never_runs_a_removal() -> None:
-    """A sweep runs every twenty minutes, so the quiet case has to cost one listing and no more."""
-    remote = machine_with("only\n")
-    assert Snapshots("/work/projects").prune(remote, live=set()) == []
-    assert not remote.ran("rm -rf")
 
 
 def _mirror(root: Path) -> None:
@@ -203,6 +194,121 @@ def _mirror(root: Path) -> None:
     (root / ".mainboard/vendor/house/src/house").mkdir(parents=True)
     (root / ".mainboard/vendor/house/src/house/__init__.py").write_text("", encoding="utf-8")
     (root / ".mainboard/vendor/house/src/house/extra.py").write_text("", encoding="utf-8")
+
+
+@pytest.fixture
+def sealed_mirror(tmp_path: Path) -> tuple[Snapshots, Sealed, str]:
+    root = tmp_path / "mirror with spaces"
+    _mirror(root)
+    payload = listed(
+        [
+            Row(path=path, blob=blob_of(root / path), status=status)
+            for path, status in (
+                ("research/compression/pkg/mod.py", Status.CLEAN),
+                ("research/compression/pkg/spare.py", Status.BUILT),
+            )
+        ]
+    ).encode()
+    listing = ".mainboard/dispatch/jobs/closure-source.tsv"
+    (root / listing).write_bytes(payload)
+    return Snapshots(str(root)), Sealed(listing=listing), sha256(payload).hexdigest()
+
+
+def test_parallel_pins_freeze_the_listing_and_survive_mirror_replacement(
+    sealed_mirror: tuple[Snapshots, Sealed, str],
+) -> None:
+    trees, image, digest = sealed_mirror
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        futures = [
+            workers.submit(trees.pin, local, key="same", image=image, digest=digest)
+            for _ in range(2)
+        ]
+        paths = [future.result() for future in futures]
+    assert paths[0] == paths[1]
+    frozen = Path(paths[0])
+    root = Path(trees.root)
+    assert (frozen / CLOSURE).read_bytes() == (root / image.listing).read_bytes()
+    assert not (frozen / CLOSURE).is_symlink()
+    replacement = root / "replacement.py"
+    replacement.write_text("v2\n")
+    replacement.replace(root / "research/compression/pkg/mod.py")
+    (root / image.listing).write_text("later listing\n")
+    assert trees.pin(local, key="same", image=image, digest=digest) == str(frozen)
+    assert (frozen / "research/compression/pkg/mod.py").read_text() == "v1\n"
+    assert not list(Path(trees.base).glob(".pending.*"))
+
+
+@pytest.mark.parametrize("corruption", ["listing", "clean", "built", "missing"])
+def test_wrong_mirror_bytes_never_publish_a_snapshot(
+    sealed_mirror: tuple[Snapshots, Sealed, str],
+    corruption: str,
+) -> None:
+    trees, image, digest = sealed_mirror
+    root = Path(trees.root)
+    path = (
+        root
+        / {
+            "listing": image.listing,
+            "clean": "research/compression/pkg/mod.py",
+            "built": "research/compression/pkg/spare.py",
+            "missing": "research/compression/pkg/mod.py",
+        }[corruption]
+    )
+    if corruption == "missing":
+        path.unlink()
+    else:
+        path.write_text("changed\n")
+    with pytest.raises(SystemExit, match="could not pin"):
+        trees.pin(local, key="wrong", image=image, digest=digest)
+    assert not Path(trees.path("wrong")).exists()
+    assert not list(Path(trees.base).glob(".pending.*"))
+
+
+@pytest.mark.parametrize("reuse", [False, True])
+@pytest.mark.parametrize("field", ["needs", "results"])
+def test_live_paths_cannot_replace_a_verified_source_directory(
+    sealed_mirror: tuple[Snapshots, Sealed, str],
+    reuse: bool,
+    field: str,
+) -> None:
+    trees, image, digest = sealed_mirror
+    if reuse:
+        trees.pin(local, key="overlap", image=image, digest=digest)
+    kwargs = {"results": "./research/compression/pkg"} if field == "results" else {}
+    if field == "needs":
+        image = image.model_copy(update={"needs": ("./research/compression/pkg",)})
+    with pytest.raises(SystemExit, match="live path overlaps source"):
+        trees.pin(local, key="overlap", image=image, digest=digest, **kwargs)
+    assert (Path(trees.root) / "research/compression/pkg/mod.py").read_text() == "v1\n"
+    assert Path(trees.path("overlap")).exists() is reuse
+
+
+def test_wrappers_are_frozen_by_bytes_and_not_repaired_after_corruption(
+    sealed_mirror: tuple[Snapshots, Sealed, str],
+) -> None:
+    trees, image, digest = sealed_mirror
+    root = Path(trees.root)
+    frozen = Path(trees.pin(local, key="wrappers", image=image, digest=digest))
+    payloads = (b"#!/bin/sh\r\n# non-UTF8: \xff\r\n", b"#!/bin/sh\n# second\n")
+    for payload in payloads:
+        staged = f".mainboard/dispatch/jobs/job-{sha256(payload).hexdigest()}.sh"
+        (root / staged).write_bytes(payload)
+        (root / staged).chmod(0o640)
+        trees.pin(local, key="wrappers", image=image, digest=digest, script=staged)
+        wrapper = frozen / Snapshots.script(staged)
+        assert wrapper.read_bytes() == payload and wrapper.stat().st_mode & 0o777 == 0o640
+        assert not wrapper.is_symlink() and not (frozen / WRAPPERS).is_symlink()
+        (root / staged).write_text("changed mirror wrapper\n")
+        trees.pin(local, key="wrappers", image=image, digest=digest, script=staged)
+        assert wrapper.read_bytes() == payload
+    assert len(list((frozen / WRAPPERS).glob("job-*.sh"))) == 2
+    with pytest.raises(SystemExit, match="wrapper digest mismatch"):
+        trees.pin(local, key="bad-wrapper", image=image, digest=digest, script=staged)
+    assert not Path(trees.path("bad-wrapper")).exists()
+    wrapper.write_text("corrupt frozen wrapper\n")
+    with pytest.raises(SystemExit, match="wrapper digest mismatch"):
+        trees.pin(local, key="wrappers", image=image, digest=digest, script=staged)
+    assert wrapper.read_text() == "corrupt frozen wrapper\n"
 
 
 @pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
@@ -264,17 +370,24 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
     root = tmp_path / "projects"
     _mirror(root)
     listing = ".mainboard/dispatch/jobs/closure-abc.tsv"
-    (root / listing).write_text(
-        "research/compression/pkg/mod.py\tb1\tclean\n"
-        ".mainboard/vendor/house/src/house/__init__.py\tb2\tclean\n",
-        encoding="utf-8",
-    )
+    payload = listed(
+        [
+            Row(path=path, blob=blob_of(root / path), status=Status.CLEAN)
+            for path in (
+                "research/compression/pkg/mod.py",
+                ".mainboard/vendor/house/src/house/__init__.py",
+            )
+        ]
+    ).encode()
+    (root / listing).write_bytes(payload)
+    digest = sha256(payload).hexdigest()
     pinned = Path(
         Snapshots(str(root)).pin(
             local,
             key="abc1234-9f9f9f9f",
             image=Sealed(listing=listing, needs=("research/data",)),
             results="research/compression/raw",
+            digest=digest,
         )
     )
     frozen = pinned / "research/compression/pkg/mod.py"
@@ -289,13 +402,20 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
     assert (pinned / ".mainboard/envs/default/.pixi").is_symlink()
     assert (pinned / ".mainboard/dispatch").is_symlink()
     assert not (pinned / ".gitignore").exists()
-    assert sorted(entry.name for entry in pinned.iterdir()) == [".mainboard", STAMP, "research"]
+    assert sorted(entry.name for entry in pinned.iterdir()) == [
+        ".mainboard",
+        CLOSURE,
+        STAMP,
+        "research",
+    ]
+    assert (pinned / CLOSURE).read_bytes() == payload
     # A need the mirror does not hold refuses the dispatch by name rather than dangling.
     with pytest.raises(SystemExit, match="the need research/absent is not on the mirror"):
         Snapshots(str(root)).pin(
             local,
             key="abc1234-9f9f9f9f",
             image=Sealed(listing=listing, needs=("research/absent",)),
+            digest=digest,
         )
 
 
@@ -386,8 +506,8 @@ def test_the_program_never_exits_since_a_login_shells_exit_runs_its_logout_file(
         stamp="k\n",
     )
     assert "exit" not in program
-    assert program.startswith("set -eu; ")
+    assert program.startswith("set -euo pipefail\n")
     assert 'if [ ! -f "/mirror/.mainboard/dispatch/sources/k/' in program.replace(
         '"$mb_snap/', '"/mirror/.mainboard/dispatch/sources/k/'
     )
-    assert program.endswith("; fi")
+    assert program.endswith("\nfi")

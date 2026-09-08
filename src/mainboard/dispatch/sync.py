@@ -11,7 +11,7 @@ from plumbum import CommandNotFound, local
 from plumbum.commands.processes import ProcessExecutionError
 
 from .shared import logger, state_dir, state_path
-from .transport import HostUnreachable, is_transport_failure
+from .transport import Endpoint, HostUnreachable, is_transport_failure
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -227,18 +227,22 @@ def _log_deletions(output: str) -> None:
 
 
 class SyncLock:
-    """Serialize destructive mirrors to one target across local dispatch processes.
+    """Serialize mirror-and-pin transactions to one target across local dispatch processes.
 
-    target: SSH alias whose remote tree is being mirrored.
+    target: the effective rental endpoint or declared SSH alias being mirrored.
     root: local workspace root that owns the generated state directory, discovered upward from
         the current directory when None, so two processes started in different subdirectories
         still queue behind the same lock file.
     """
 
-    def __init__(self, target: str, root: Path | None = None) -> None:
-        digest = hashlib.blake2s(target.encode(), digest_size=8).hexdigest()
+    def __init__(self, target: str | Endpoint, root: Path | None = None) -> None:
+        identity = (
+            target if isinstance(target, str) else f"{target.destination}:{target.port or 22}"
+        )
+        digest = hashlib.blake2s(identity.encode(), digest_size=8).hexdigest()
         self.path = state_path(root) / "locks" / f"sync-{digest}.lock"
-        self.lock = FileLock(self.path)
+        # Nested rsync calls must share the outer transaction's reentrant lock instance.
+        self.lock = FileLock(self.path.resolve(), is_singleton=True)
 
     def __enter__(self) -> Self:
         """Wait for this target's mirror lock and hold it until context exit."""

@@ -20,6 +20,7 @@ from plumbum.commands.processes import ProcessExecutionError
 from ..context.admission import admit
 from ..core.errors import MissionError
 from ..core.project import Project
+from ..engines.compile.generated import GeneratedFiles
 from ..engines.compile.vendor import vendor_root
 from . import vocabulary
 from .allocation import Allocation
@@ -28,7 +29,7 @@ from .provenance import Source, commanded, tree_source
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, Watcher, announce, db_file, git, logger, now, state_path, workspace
 from .shipment import Shipment
-from .snapshots import Image, Mirrored, Sealed, Snapshots
+from .snapshots import CLOSURE, Image, Mirrored, Sealed, Snapshots
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
@@ -350,35 +351,6 @@ class Dispatcher:
             logger.warning("%s unreachable, retrying: %s", handle.id, down)
             return None
 
-    def prune_sources(self) -> dict[str, list[str]]:
-        """Drop every pinned source tree no job still owed an outcome runs from, host by host.
-
-        The counterpart of the pin, and the reason a snapshot is affordable: a tree is kept
-        while any run recorded against its host still owes a verdict, the newest few are kept
-        whatever the registry says (a job dispatched since the last sweep has no resolved record
-        yet), and the rest are removed. A host that will not answer keeps its trees and is tried
-        again next sweep, since deleting nothing is always the safe half of this operation.
-
-        Reads only durable state, so the sweep that runs it settles trees it never dispatched,
-        which is the point of running it from a cron rather than from the dispatching process.
-        """
-        live: dict[str, set[str]] = {}
-        for run in self.cache.tracked():
-            live.setdefault(run.target, set()).add(run.source)
-        removed: dict[str, list[str]] = {}
-        for setup in self.cache.hosts():
-            if not setup.mirrored_at or not setup.root:
-                continue
-            try:
-                with connection(setup.host) as remote:
-                    dropped = Snapshots(setup.root).prune(remote, live=live.get(setup.host, set()))
-            except (HostUnreachable, OSError) as quiet:
-                logger.warning("could not prune snapshots on %s: %s", setup.host, quiet)
-                continue
-            if dropped:
-                removed[setup.host] = dropped
-        return removed
-
     def rsync_up(
         self,
         plan: ExecutionPlan,
@@ -448,7 +420,7 @@ class Dispatcher:
         remainder_filters = [f"/{directory}/***" for directory in directories]
         gitignore_files = self.sync.control_files(include)
         required_paths = list(dict.fromkeys(path for group in required for path in group))
-        with SyncLock(plan.host, self.sync.root):
+        with SyncLock(policy.endpoint or plan.host, self.sync.root):
             try:
                 rsync(
                     [*include, *gitignore_files, *required_paths, *extra],
@@ -618,7 +590,7 @@ class Dispatcher:
             source=shipment.source.identity,
             commit=shipment.source.commit,
             digest=shipment.source.digest,
-            closure=f"{pinned}/{listing}" if listing else "",
+            closure=f"{pinned}/{CLOSURE}" if listing else "",
             first_party=":".join(shipment.first_party),
             deferred=":".join(shipment.deferred),
             exports=plan.exports,
@@ -743,15 +715,15 @@ class Dispatcher:
         dispatched = shipment or Shipment.of_command(script, source=self.source(), imports=())
         dispatched.admit(self.root)
         prepared, staged = self._prepare_script(script)
-        shipped = self.rsync_up(
-            plan,
-            root,
-            required=required,
-            extra=[*staged, *([listing] if listing else []), *dispatched.files],
-        )
-        sha = git("rev-parse", "--short", "HEAD")
-        dirty = dispatched.source.dirty
-        with connection(plan.host) as remote:
+        with SyncLock(plan.host, self.sync.root), connection(plan.host) as remote:
+            shipped = self.rsync_up(
+                plan,
+                root,
+                required=required,
+                extra=[*staged, *([listing] if listing else []), *dispatched.files],
+            )
+            sha = git("rev-parse", "--short", "HEAD")
+            dirty = dispatched.source.dirty
             self._verify(remote, plan, root, verify=verify, containerize=containerize)
             pinned = Snapshots(root).pin(
                 remote,
@@ -762,11 +734,16 @@ class Dispatcher:
                 environment=plan.env,
                 commit=dispatched.source.commit,
                 digest=dispatched.source.digest,
+                script=prepared if staged else "",
             )
             self._prime(remote, plan, pinned, root, watch, prefix=prefix)
             try:
                 handle = pick(plan.profile).submit(
-                    remote, pinned, script=prepared, args=args, resources=resources
+                    remote,
+                    pinned,
+                    script=Snapshots.script(prepared) if staged else prepared,
+                    args=args,
+                    resources=resources,
                 )
             except SystemExit as error:
                 raise SystemExit(f"submission to host {plan.host!r} failed: {error}") from None
@@ -857,7 +834,7 @@ class Dispatcher:
         what the mirror recreates on the host and what the scheduler is told to run there.
         """
         text = spec.render(pbs=pbs, gpu_in_select=gpu_in_select)
-        digest = hashlib.sha256(text.encode()).hexdigest()[:12]
+        digest = hashlib.sha256(text.encode()).hexdigest()
         return self._stage(f"job-{digest}.sh", text.encode())
 
     @staticmethod
@@ -898,15 +875,15 @@ class Dispatcher:
             content = self.local(script).read_bytes()
         except FileNotFoundError as error:
             return Dispatcher._bare_name_or_raise(script, error), ()
-        digest = hashlib.sha256(content).hexdigest()[:12]
+        digest = hashlib.sha256(content).hexdigest()
         staged = self._stage(f"job-{digest}.sh", content)
         return staged, (staged,)
 
     def _stage(self, name: str, content: bytes) -> str:
-        """Write `content` into the jobs directory and answer its workspace-relative path."""
+        """Atomically stage exact bytes and answer their workspace-relative path."""
         path = state_path(self.root) / "jobs" / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
+        with GeneratedFiles(directory=path.parent).locked() as files:
+            files.write(path, content)
         return path.relative_to(self.root).as_posix()
 
     def _verdict(self, handle: Handle, state: JobState) -> Verdict:

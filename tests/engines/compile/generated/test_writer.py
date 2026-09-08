@@ -46,6 +46,22 @@ def test_a_file_is_replaced_only_once_its_complete_contents_reach_disk(tmp_path:
         assert target.stat().st_ino == second
 
 
+def test_staged_bytes_keep_binary_content_and_line_endings(tmp_path: Path) -> None:
+    lock = FileLock(tmp_path / ".sync.lock")
+    path = tmp_path / "job.sh"
+    payload = b"#!/bin/sh\r\n# binary: \xff\r\n"
+    with lock:
+        writer = Writer(lock)
+        writer.write(path, payload)
+        inode = path.stat().st_ino
+        assert path.read_bytes() == payload
+        writer.write(path, payload)
+        assert path.stat().st_ino == inode
+        writer.write(path, "text\r\n")
+        assert path.read_bytes() == b"text\r\n"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
 def test_windows_generated_files_keep_the_directorys_inherited_acl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

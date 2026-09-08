@@ -593,7 +593,6 @@ class Monitor:
             verdict = Verdict(verdict=state.verdict, exit_code=state.exit_code)
             fleet.settle({job.handle: verdict})
             self.cache.report(self.cache.run(record.handle, record.target), state.verdict)
-        self.board.dispatcher.prune_sources()
         return MonitorReport(
             running=running + len(waiting),
             resumed=resumed,

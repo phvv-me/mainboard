@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from mainboard import MissionError
-from mainboard.dispatch import Dispatcher, GitignoreFilter
+from mainboard.dispatch import Dispatcher, GitignoreFilter, Shipment
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import landing as landing_module
 from mainboard.dispatch import provenance as provenance_module
@@ -12,7 +12,6 @@ from mainboard.dispatch.landing import Landing, renter
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.rentals import LAUNCH, Rental
 from mainboard.dispatch.shared import state_dir
-from mainboard.dispatch.shipment import Shipment
 from mainboard.dispatch.snapshots import SOURCES
 from mainboard.dispatch.state import Cache
 from mainboard.dispatch.transport import Endpoint
@@ -160,7 +159,8 @@ def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would
     (written,) = host.inputs
     (root, (script,), _) = dispatcher.mirrored[0]
     assert written.startswith(f"cd {root}/{SOURCES}/")
-    assert written.endswith(f"bash {root}/{script}\n")
+    snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
+    assert written.endswith(f"bash {snapshot}/.mainboard-jobs/{Path(script).name}\n")
     assert "export PATH=" in written
     body = (dispatcher.root / script).read_text(encoding="utf-8")
     assert "timeout --kill-after=30s 1800" in body
@@ -226,7 +226,7 @@ def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(
     snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
     assert "-dirty-" in snapshot
     assert snapshot in (dispatcher.root / script).read_text(encoding="utf-8")
-    assert host.ran(f"mb_snap={snapshot}")
+    assert host.ran(f"mb_final={snapshot}")
 
 
 def test_a_pinned_tree_the_job_could_not_activate_from_ends_the_rental(

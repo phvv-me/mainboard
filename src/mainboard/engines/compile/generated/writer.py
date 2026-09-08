@@ -8,7 +8,7 @@ from uuid import uuid4
 from ....core import MissionError
 
 if TYPE_CHECKING:
-    from io import TextIOWrapper
+    from io import IOBase
 
     from filelock import FileLock
 
@@ -59,20 +59,21 @@ class Writer:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.symlink_to(target, target_is_directory=target.is_dir())
 
-    def write(self, path: Path, text: str) -> None:
-        """Replace one generated text file only after its complete contents reach disk."""
+    def write(self, path: Path, text: str | bytes) -> None:
+        """Replace a generated file atomically, encoding text as UTF-8 without newline changes."""
         self.held()
+        content = text.encode("utf-8") if isinstance(text, str) else text
         try:
-            existing = path.read_text(encoding="utf-8")
+            existing = path.read_bytes()
         except FileNotFoundError:
             existing = None
-        if existing == text:
+        if existing == content:
             return
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         try:
-            with temporary.open("x", encoding="utf-8") as stream:
+            with temporary.open("xb") as stream:
                 self._make_portable(stream)
-                stream.write(text)
+                stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary.replace(path)
@@ -80,7 +81,7 @@ class Writer:
             temporary.unlink(missing_ok=True)
 
     @staticmethod
-    def _make_portable(stream: TextIOWrapper) -> None:
+    def _make_portable(stream: IOBase) -> None:
         """Set a public generated-file mode without severing Windows ACL inheritance.
 
         Python 3.14 implements the full chmod mode surface on Windows. Applying POSIX ``0644``

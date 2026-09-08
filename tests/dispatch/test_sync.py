@@ -12,6 +12,7 @@ from mainboard.dispatch import GitignoreFilter, HostUnreachable, SyncLock
 from mainboard.dispatch import sync as sync_module
 from mainboard.dispatch.shared import STATE_DIR
 from mainboard.dispatch.sync import ALWAYS_EXCLUDE, Rsync, binary, rsync
+from mainboard.dispatch.transport import Endpoint
 
 _MIRROR = Rsync.ARCHIVE | Rsync.RELATIVE | Rsync.DELETE | Rsync.DELETE_AFTER
 _UPSTREAM = "rsync  version 3.2.7\n"
@@ -240,6 +241,21 @@ def test_deleted_receiver_paths_are_noted_once_per_invocation(
     assert [args for _, args in warnings] == [(2, "a.py, c.py")]
     sync_module._log_deletions("no deletions here\n")  # ruff:ignore[private-member-access]  reason=unit-tests the module-private helper since=2026-08-16
     assert len(warnings) == 1
+
+
+def test_sync_transactions_reenter_the_same_endpoint_and_separate_ports(tmp_path: Path) -> None:
+    first = Endpoint(address="node", port=22001, user="runner")
+    other = first.model_copy(update={"port": 22002})
+    with SyncLock(first, tmp_path) as outer:
+        with SyncLock(first, tmp_path) as inner, SyncLock(other, tmp_path) as separate:
+            assert inner.lock is outer.lock
+            assert separate.path != outer.path
+            assert separate.lock.is_locked and outer.lock.is_locked
+        assert outer.lock.is_locked
+    assert (
+        SyncLock(Endpoint(address="node", port=0), tmp_path).path
+        == SyncLock(Endpoint(address="node", port=22), tmp_path).path
+    )
 
 
 def test_the_sync_lock_releases_its_file_however_the_mirror_ends(

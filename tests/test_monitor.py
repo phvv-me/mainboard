@@ -22,10 +22,8 @@ from mainboard.dispatch import SshTransport
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch.backends import HpcAiBackend, VastBackend
 from mainboard.dispatch.lease import Lease
-from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.rentals import Identity
 from mainboard.dispatch.schedulers import HostUnreachable
-from mainboard.dispatch.shipment import Shipment
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.durable import (
@@ -43,6 +41,7 @@ from mainboard.manifest import HostProfile
 
 from .dispatch.backends.support import FakeTransport, refused
 from .dispatch.support import RecordingScheduler, machine_with, plan
+from .support import Lab
 
 if TYPE_CHECKING:
     from urllib.request import Request
@@ -665,21 +664,27 @@ def test_a_native_job_without_any_captured_receipt_cannot_settle_an_empty_transf
 
 @pytest.mark.parametrize("kind", ["ssh", "pbs"])
 def test_queued_native_submission_cannot_verify_an_empty_transfer(
-    board: Board, monkeypatch: pytest.MonkeyPatch, kind: str
+    lab: Lab, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     """Keep the native identity through real rendering, submission, and settlement."""
+    manifest = lab.root / "mainboard.toml"
+    lab.write(
+        "mainboard.toml",
+        manifest.read_text() + f'\n[hosts.miyabi-g]\nkind = "{kind}"\nroot = "/repo"\n',
+    )
+    file = "research/project with spaces/experiments/node/test_law.py"
+    lab.write(file, "def test_law():\n    raise RuntimeError('must not execute')\n")
+    lab.write("research/project with spaces/experiments/node/node.md", "# Software control\n")
+    lab.commit()
+    board = Board(lab.root)
     dispatcher = board.dispatcher
     scheduler = RecordingScheduler()
     monkeypatch.setattr(dispatch_module, "pick", lambda profile: scheduler)
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
     monkeypatch.setattr(dispatcher, "rsync_up", lambda *args, **kwargs: [])
-    monkeypatch.setattr(dispatcher, "prune_sources", lambda: None)
     spelling = "'research/project with spaces/experiments/node/test_law.py::test_law' -- -q"
-    shipment = Shipment(
-        command=f"python -m mainboard.jobs.call {spelling}",
-        spelling=spelling,
-        source=Source(identity="abc1234", key="abc1234"),
-    )
+    shipment = board.shipment(spelling, board.plan())
+    shipment.admit(lab.root)
     handle = dispatcher.run(
         plan(host=_HOST, profile=HostProfile(kind=kind, root="/repo")),
         shipment,
@@ -690,8 +695,10 @@ def test_queued_native_submission_cannot_verify_an_empty_transfer(
     )
     [(_, generated, args)] = [call for name, call in scheduler.calls if name == "submit"]
     assert isinstance(generated, str)
-    assert generated.startswith(".mainboard/dispatch/jobs/job-") and generated.endswith(".sh")
-    assert (board.root / generated).is_file() and args == ()
+    assert generated.startswith(".mainboard-jobs/job-") and generated.endswith(".sh")
+    assert (
+        board.root / ".mainboard/dispatch/jobs" / Path(generated).name
+    ).is_file() and args == ()
     probing(board, monkeypatch, finishing())
     monkeypatch.setattr(Job, "pull", lambda job: None)
     monkeypatch.setattr(Job, "transcript", lambda job: "")
@@ -701,7 +708,8 @@ def test_queued_native_submission_cannot_verify_an_empty_transfer(
     assert not report.finished and "no captured receipt" in report.failed[0].reason
     assert not released
     record = dispatcher.cache.run(handle.id)
-    assert record.script == spelling and record.args == ""
+    assert record.script == shipment.spelling == f"'{file}::test_law' -q"
+    assert record.args == ""
     assert record.evidence == "pending" and record.reported is None
     assert board.verdicts().handled(handle.id).code == 2
 
