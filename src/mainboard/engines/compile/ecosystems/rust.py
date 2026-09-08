@@ -91,14 +91,35 @@ class Rust(Ecosystem):
             if len(parts := key.split()) >= 2
         }
 
-    def sync(self) -> None:
+    def frozen_inputs(self) -> tuple[Path, ...]:
+        """Exact registry releases with --locked use their packaged Cargo.lock unchanged."""
+        for spec in self.deps.values():
+            extra = spec.model_extra or {}
+            if not extra.get("locked") or any(extra.get(key) for key in _SOURCES):
+                return super().frozen_inputs()
+            try:
+                version = Version(spec.version)
+            except InvalidVersion:
+                return super().frozen_inputs()
+            if len(version.release) != 3:
+                return super().frozen_inputs()
+        return ()
+
+    def sync(self, *, resolve: bool = False) -> None:
         """Install what is missing or drifted, and uninstall what the table no longer declares."""
+        if not resolve:
+            self.frozen_inputs()
         installed = self.installed()
         for name in sorted(installed.keys() - self.deps.keys()):
             self.cargo("uninstall", name)
         for name, spec in self.deps.items():
             current = installed.get(name)
-            if current is not None and self.satisfied(spec.version, installed=current):
+            satisfied = (
+                self.satisfied(spec.version, installed=current)
+                if resolve and current is not None
+                else current == spec.version
+            )
+            if satisfied:
                 continue
             reinstall = ("--force",) if current is not None else ()
             self.cargo("install", *self.install_args(spec), *reinstall, name)

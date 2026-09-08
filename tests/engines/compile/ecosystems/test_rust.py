@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from mainboard import MissionError
 from mainboard.engines.compile.ecosystems import Rust
 from mainboard.manifest import Spec
 from mainboard.manifest.schema.spec import Json
@@ -99,7 +100,7 @@ def test_sync_installs_a_missing_crate_against_the_environment_prefix(
     rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
     fp.register([fp.any()], stdout="installed\n")
 
-    rust.sync()
+    rust.sync(resolve=True)
 
     assert rust.prefix == pixi.env_prefix("default")
     assert rust.binary_dirs() == ()
@@ -126,7 +127,7 @@ def test_sync_leaves_a_crate_that_already_satisfies_its_constraint_alone(
     rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
     _record(rust, f"ripgrep 14.1.0 {_REGISTRY}")
 
-    rust.sync()
+    rust.sync(resolve=True)
 
     assert not fp.calls
 
@@ -139,7 +140,25 @@ def test_sync_uninstalls_what_was_dropped_and_forces_a_reinstall_over_what_drift
     for _ in range(2):
         fp.register([fp.any()], stdout="done\n")
 
-    rust.sync()
+    rust.sync(resolve=True)
 
     assert list(fp.calls[0])[-4:] == ["uninstall", "--root", str(rust.prefix), "orphan"]
     assert list(fp.calls[1])[-4:] == ["--version", ">=14", "--force", "ripgrep"]
+
+
+def test_frozen_registry_install_keeps_exact_version_and_native_lock(
+    bind: Bind, fp: FakeProcess
+) -> None:
+    rust = bind(Rust, {"deps": {"ripgrep": {"version": "14.1.0", "locked": True}}})
+    _record(rust, f"ripgrep 14.0.0 {_REGISTRY}")
+    fp.register([fp.any()], stdout="installed\n")
+    rust.sync()
+    assert list(fp.calls[0])[-5:] == ["--version", "14.1.0", "--locked", "--force", "ripgrep"]
+
+
+@pytest.mark.parametrize(
+    "declared", ["*", ">=14", {"version": "14.1.0"}, {"version": ">=14", "locked": True}]
+)
+def test_frozen_install_refuses_unresolved_crates(declared: Json, bind: Bind) -> None:
+    with pytest.raises(MissionError, match="frozen installation"):
+        bind(Rust, {"deps": {"ripgrep": declared}}).frozen_inputs()

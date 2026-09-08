@@ -293,7 +293,9 @@ def test_a_ready_environment_caches_its_windows_activation_after_provisioning(
         "install_locked",
         lambda self, files, *, resolve: observed.append("pixi"),
     )
-    monkeypatch.setattr(SecondStage, "install", lambda self, env: observed.append("second-stage"))
+    monkeypatch.setattr(
+        SecondStage, "install", lambda self, env, *, resolve=False: observed.append("second-stage")
+    )
     monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
     monkeypatch.setattr(
         Pixi, "cache_windows_activation", lambda self, env: observed.append("activation")
@@ -360,7 +362,7 @@ def test_each_environment_compiles_into_an_independent_selected_manifest_shard(
     assert provisioner.pixi_for("serving").env_prefix("serving") == (
         provisioner.out / "envs" / "serving" / ".pixi" / "envs" / "serving"
     )
-    assert provisioner.artifact_for("serving") == (
+    assert provisioner.artifact_for("serving")[:3] == (
         ".mainboard/envs/serving/pixi.toml",
         ".mainboard/envs/serving/pixi.lock",
         ".mainboard/envs/serving/state.toml",
@@ -577,6 +579,27 @@ def test_provision_installs_the_second_stage_after_pixi(
 
     assert "prettier" in (provisioner.environment_dir() / "package.json").read_text()
     assert [next(iter(call)) for call in fp.calls][-1] == npm
+
+
+def test_artifact_ships_the_same_generated_inputs_that_name_the_prefix(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path
+) -> None:
+    provisioner = Provisioner(tmp_path, manifest_from(_NODE))
+    provisioner.recompiled()
+    source = provisioner.environment_dir()
+    with pytest.raises(MissionError, match="no npm lock"):
+        _ = provisioner.artifact
+    (source / "package-lock.json").write_text('{"lockfileVersion":3}\n')
+    (source / "activate.sh").write_text("host-specific bookkeeping\n")
+    (source / ".mainboard-synced").write_text("mutable stamp\n")
+    expected = {
+        *GeneratedFiles(directory=source).inputs,
+        source / "pixi.lock",
+        SyncState.path(source),
+    }
+    assert {tmp_path / name for name in provisioner.artifact} == expected
+    assert source / "package-lock.json" in expected
+    assert source / "package.json" in expected
 
 
 def test_the_provisioner_says_which_pixi_solves_here(

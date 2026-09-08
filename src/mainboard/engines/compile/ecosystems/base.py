@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING, ClassVar
 
 from patos import Registry
 
+from ....core import MissionError
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -82,6 +84,15 @@ class Ecosystem(Registry, abc.ABC):
         files: the generated-file writer, valid only while the sync lock is held.
         """
 
+    def frozen_inputs(self) -> tuple[Path, ...]:
+        """Inputs that permit installation without resolving versions, or a clear refusal."""
+        if self.deps:
+            raise MissionError(
+                f"[{self.toolchain}] has no frozen installation contract; "
+                "pin a supported native locked mode before remote setup or dispatch"
+            )
+        return ()
+
     @abc.abstractmethod
-    def sync(self) -> None:
+    def sync(self, *, resolve: bool = False) -> None:
         """Make the environment carry exactly what the table declares, and nothing it dropped."""

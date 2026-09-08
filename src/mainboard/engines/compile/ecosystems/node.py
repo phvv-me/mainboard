@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from patos import FrozenOpenModel
 
+from ....core import MissionError, Project
 from ..backend import Tool
 from ..package_json import PackageJson
 from .base import Ecosystem
@@ -16,6 +17,12 @@ if TYPE_CHECKING:
 _MANIFEST = "package.json"
 _MODULES = "node_modules"
 _PACKAGE_FIELDS = "package"
+_LOCKS = {
+    "npm": ("npm-shrinkwrap.json", "package-lock.json"),
+    "pnpm": ("pnpm-lock.yaml",),
+    "yarn": ("yarn.lock",),
+    "bun": ("bun.lock",),
+}
 
 
 class NodeOptions(FrozenOpenModel):
@@ -53,9 +60,9 @@ class NodeManager(Tool):
 class Node(Ecosystem):
     """The Node.js toolchain: a generated `package.json`, installed by the declared manager.
 
-    The manager is the whole of the backend, since `package.json` is the only thing it reads
-    and `node_modules` the only thing it writes. An ordinary toolchain keeps both inside the
-    generated environment directory, while `app = true` moves them to the workspace root,
+    The generated manifest and the manager's resolved lock jointly define the install.
+    An ordinary toolchain keeps them inside the generated environment directory,
+    while `app = true` moves them to the workspace root,
     where a bundler and a `node` process resolve imports the way the ecosystem expects.
     """
 
@@ -106,16 +113,60 @@ class Node(Ecosystem):
         A `package.json` surviving the removal of the last declared dependency would keep
         reinstalling it, so the file is deleted rather than emptied.
         """
-        if not self.deps:
+        if not (self.deps or self.fields):
             files.remove(self.manifest)
             return
         files.write(self.manifest, self.compiled().to_json())
 
-    def sync(self) -> None:
-        """Install the generated `package.json` with the declared manager.
+    def frozen_inputs(self) -> tuple[Path, ...]:
+        """Require a shard-local manifest and native lock before remote transfer or pinning."""
+        if not (self.deps or self.fields):
+            return ()
+        if self.options.app:
+            raise MissionError(
+                "[nodejs] app=true installs into the mutable workspace, not an isolated "
+                "prefix; frozen remote setup/dispatch for this mode is not implemented"
+            )
+        return self.manifest, self.lock()
+
+    def lock(self) -> Path:
+        """The selected manager's existing lock, preserving npm shrinkwrap precedence."""
+        manager = self.options.manager
+        try:
+            names = _LOCKS[manager]
+        except KeyError as missing:
+            raise MissionError(
+                f"[nodejs] manager={manager!r} has no supported frozen mode"
+            ) from missing
+        for name in names:
+            path = self.directory / name
+            if path.is_file():
+                return path
+        raise MissionError(
+            f"{self.directory} has no {manager} lock ({', '.join(names)}); "
+            f"run `{Project().name} install {self.env} --resolve` locally before shipping"
+        )
+
+    def sync(self, *, resolve: bool = False) -> None:
+        """Install the generated manifest from its lock unless resolution was requested.
 
         The manager is itself a conda package, reached through the activated environment the
         second stage runs inside, and it needs no environment flag of its own because the
         directory it runs in is the environment it installs into.
         """
-        NodeManager(self.options.manager, self.directory)("install")
+        if not (self.deps or self.fields):
+            return
+        manager = NodeManager(self.options.manager, self.directory)
+        if not manager.available():
+            raise MissionError(
+                f"{self.manifest} is missing despite declared Node dependencies/package fields; "
+                f"run `{Project().name} install {self.env}` to regenerate it"
+            )
+        if resolve:
+            manager("install")
+            return
+        self.lock()
+        if self.options.manager == "npm":
+            manager("ci")
+        else:
+            manager("install", "--frozen-lockfile")

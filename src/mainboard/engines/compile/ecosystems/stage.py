@@ -116,11 +116,15 @@ class SecondStage:
         for ecosystem in self.ecosystems(env):
             ecosystem.generate(files)
 
-    def install(self, env: str) -> None:
-        """Run each toolchain's installer inside the environment pixi has already provisioned."""
+    def frozen_inputs(self, env: str) -> tuple[Path, ...]:
+        """Require each selected runtime's native frozen contract before transferring files."""
+        return tuple(path for eco in self.ecosystems(env) for path in eco.frozen_inputs())
+
+    def install(self, env: str, *, resolve: bool = False) -> None:
+        """Install locked inputs; only an explicit resolve may choose new package versions."""
         with self.pixi.activated(env):
             for ecosystem in self.ecosystems(env):
-                ecosystem.sync()
+                ecosystem.sync(resolve=resolve)
 
     def merged(self, scopes: Sequence[Scope]) -> dict[str, Toolchain]:
         """Every ecosystem table across `scopes`, each merged over the ones beneath it."""

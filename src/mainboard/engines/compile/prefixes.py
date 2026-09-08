@@ -125,7 +125,7 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
             else json.dumps(Compiler.runtime_manifest(text), separators=(",", ":"))
         )
         payload.append((name, content))
-    for entry in _generated(source):
+    for entry in GeneratedFiles(directory=source).inputs:
         if entry.name in (MANIFEST, LOCK):
             continue
         payload.append(
@@ -138,17 +138,6 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
         [payload, state.runtime_from, list(modules.items())], separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
-
-
-def _generated(source: Path) -> list[Path]:
-    """Generated install/activation inputs, excluding state and mutable build bookkeeping."""
-    return [
-        entry
-        for entry in sorted(source.iterdir())
-        if entry.is_file()
-        and not entry.name.startswith(".")
-        and entry.name not in (ACTIVATION, SyncState.path(source).name)
-    ]
 
 
 def _standing(source: Path, shard: PurePosixPath) -> str:
@@ -242,6 +231,7 @@ class Prefixes:
             )
         if self.built(digest):
             return target
+        SecondStage(self.root, projected, source, Pixi(source)).frozen_inputs(self.environment)
         self.base.mkdir(parents=True, exist_ok=True)
         with GeneratedFiles(directory=self.base).locked() as files:
             if self.built(digest):
@@ -292,7 +282,7 @@ class Prefixes:
         files: the writer holding the lock on the prefixes directory.
         """
         shard = environment_shard(self.environment)
-        for entry in (*_generated(source), SyncState.path(source)):
+        for entry in (*GeneratedFiles(directory=source).inputs, SyncState.path(source)):
             text = entry.read_text(encoding="utf-8")
             files.write(target / entry.name, anchored(text, root=self.root, generated_dir=shard))
 

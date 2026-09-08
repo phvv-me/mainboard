@@ -40,6 +40,7 @@ def test_the_executable_name_follows_the_module_path(module: str, executable: st
         pytest.param("v1.4.0", f"{_TOOL}@v1.4.0", id="a-version-already-prefixed"),
         pytest.param("main", f"{_TOOL}@main", id="a-branch-rides-through-as-written"),
         pytest.param("latest", f"{_TOOL}@latest", id="the-latest-keyword-itself"),
+        pytest.param("1" * 40, f"{_TOOL}@{'1' * 40}", id="a-commit-is-not-a-numbered-version"),
     ],
 )
 def test_a_requirement_go_can_resolve_becomes_a_module_reference(
@@ -93,3 +94,9 @@ def test_a_table_without_modules_installs_nothing_and_creates_no_directory(
     go.sync()
     assert not fp.calls
     assert not go.gobin.exists()
+
+
+@pytest.mark.parametrize("version", ["*", "latest", "main", "v1"])
+def test_frozen_install_refuses_floating_go_references(version: str, bind: Bind) -> None:
+    with pytest.raises(MissionError, match="frozen installation"):
+        bind(Go, {"deps": {_TOOL: version}}).frozen_inputs()

@@ -200,8 +200,8 @@ class Provisioner:
     def artifact(self) -> tuple[str, ...]:
         """The compiled dependency artifact a host installs from, workspace-relative.
 
-        The generated pixi manifest, the lock solved from it, and the state naming which
-        resolution that lock was solved from. Shipping the three together is what lets a host
+        The generated install and activation inputs, their locks, and the state naming which
+        resolution those locks belong to. Shipping the complete group lets a host
         install frozen instead of solving on its own toolchain, which is the whole point: a
         solve reads dependency metadata, reading metadata builds source distributions, and a
         host's compiler is the last thing that belongs in a lock's dependency path.
@@ -209,14 +209,16 @@ class Provisioner:
         return self.artifact_for("default")
 
     def artifact_for(self, environment: str) -> tuple[str, ...]:
-        """The manifest, lock and state belonging to ``environment`` alone."""
+        """Every defining generated input, with resolved second-stage locks required locally."""
         shard = self._shard(environment)
         paths = (
             shard.pixi.manifest,
             shard.pixi.lock,
             SyncState.path(shard.directory),
+            *GeneratedFiles(directory=shard.directory).inputs,
+            *shard.stage.frozen_inputs(environment),
         )
-        return tuple(path.relative_to(self.root).as_posix() for path in paths)
+        return tuple(dict.fromkeys(path.relative_to(self.root).as_posix() for path in paths))
 
     def activate(self, env: str = "default", *, modules: Mapping[str, str] = {}) -> Path:
         """Write ``env``'s generated activation script for this host and return its path.
@@ -380,6 +382,6 @@ class Provisioner:
             if refresh:
                 shard.pixi.update(env)
             shard.compiler.install_locked(files, resolve=resolve or refresh)
-            shard.stage.install(env)
+            shard.stage.install(env, resolve=resolve or refresh)
             if shard.pixi.ready(env):
                 shard.pixi.cache_windows_activation(env)

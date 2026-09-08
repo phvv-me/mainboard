@@ -99,11 +99,81 @@ def test_sync_installs_through_the_declared_manager_once_there_is_a_manifest(
     pnpm = stub_binary("pnpm")
     node = bind(Node, {"manager": "pnpm", "deps": {"vite": "*"}})
 
-    node.sync()
+    with pytest.raises(MissionError, match="missing despite declared Node"):
+        node.sync(resolve=True)
     assert not fp.calls
 
     node.manifest.write_text('{"name": "w-npm"}\n')
     fp.register([fp.any()], stdout="added 1 package\n")
-    node.sync()
+    node.sync(resolve=True)
 
     assert list(fp.calls[0]) == [pnpm, "install"]
+
+
+@pytest.mark.parametrize(
+    ("manager", "lock", "argv"),
+    [
+        ("npm", "package-lock.json", ["ci"]),
+        ("pnpm", "pnpm-lock.yaml", ["install", "--frozen-lockfile"]),
+        ("yarn", "yarn.lock", ["install", "--frozen-lockfile"]),
+        ("bun", "bun.lock", ["install", "--frozen-lockfile"]),
+    ],
+)
+def test_frozen_install_requires_and_preserves_the_native_lock(
+    manager: str,
+    lock: str,
+    argv: list[str],
+    bind: Bind,
+    fp: FakeProcess,
+    stub_binary: Callable[[str], str],
+) -> None:
+    executable = stub_binary(manager)
+    node = bind(Node, {"manager": manager, "deps": {"vite": "*"}})
+    node.manifest.write_text('{"name": "w-npm"}\n')
+    with pytest.raises(MissionError, match="locally before shipping"):
+        node.sync()
+    assert not fp.calls
+    locked = node.directory / lock
+    locked.write_text("locked dependency versions\n")
+    before = locked.read_bytes()
+    fp.register([fp.any()], stdout="installed from lock\n")
+    node.sync()
+    assert list(fp.calls[0]) == [executable, *argv]
+    assert node.frozen_inputs() == (node.manifest, locked)
+    assert locked.read_bytes() == before
+
+
+def test_remote_application_install_refuses_mutable_workspace_ownership(bind: Bind) -> None:
+    node = bind(Node, {"app": True, "deps": {"vite": "*"}})
+    with pytest.raises(MissionError, match="not an isolated prefix"):
+        node.frozen_inputs()
+
+
+def test_npm_shrinkwrap_takes_precedence_over_package_lock(bind: Bind) -> None:
+    node = bind(Node, {"deps": {"vite": "*"}})
+    for name in ("package-lock.json", "npm-shrinkwrap.json"):
+        (node.directory / name).write_text("{}\n")
+    assert node.lock().name == "npm-shrinkwrap.json"
+
+
+@pytest.mark.parametrize("app", [False, True])
+def test_package_fields_alone_still_require_a_manifest_and_frozen_lock(
+    *, app: bool, bind: Bind, files: Writer, fp: FakeProcess
+) -> None:
+    node = bind(Node, {"app": app, "package": {"dependencies": {"vite": "^5"}}})
+    with pytest.raises(MissionError, match="missing despite declared Node"):
+        node.sync()
+    assert not fp.calls
+    node.generate(files)
+    assert json.loads(node.manifest.read_text())["dependencies"] == {"vite": "^5"}
+    message = "not an isolated prefix" if app else "no npm lock"
+    with pytest.raises(MissionError, match=message):
+        node.frozen_inputs()
+
+
+def test_empty_node_table_does_not_install_a_stray_manifest(bind: Bind, fp: FakeProcess) -> None:
+    node = bind(Node, {})
+    node.manifest.write_text('{"dependencies":{"vite":"^5"}}\n')
+    node.sync()
+    assert node.frozen_inputs() == ()
+    assert not fp.calls

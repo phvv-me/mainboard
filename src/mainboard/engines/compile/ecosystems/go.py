@@ -20,6 +20,7 @@ _MAJOR = re.compile(r"v[0-9]+")
 
 # Characters that only appear in a version range, which Go resolves for nothing.
 _RANGE = frozenset("<>=!~^,")
+_PIN = re.compile(r"v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+incompatible)?|[0-9a-f]{40}")
 
 
 class Go(Ecosystem):
@@ -74,13 +75,20 @@ class Go(Ecosystem):
                 f"[go] dep `{module}` declares `{version}`, and go install resolves one exact "
                 "version, branch, commit or `*` for latest, never a range."
             )
-        return f"{module}@{f'v{version}' if version[0].isdigit() else version}"
+        numbered = version[0].isdigit() and not re.fullmatch(r"[0-9a-f]{40}", version)
+        return f"{module}@{f'v{version}' if numbered else version}"
 
     def binary_dirs(self) -> tuple[Path, ...]:
         """Where installed modules land, since Go links them outside the environment prefix."""
         return (self.gobin,)
 
-    def sync(self) -> None:
+    def frozen_inputs(self) -> tuple[Path, ...]:
+        """Exact module versions/revisions carry the published module's dependency graph."""
+        if any(not _PIN.fullmatch(spec.version) for spec in self.deps.values()):
+            return super().frozen_inputs()
+        return ()
+
+    def sync(self, *, resolve: bool = False) -> None:
         """Install every declared module, and unlink an executable the table no longer declares.
 
         Go writes no install record the way cargo does, so every declared module is installed
@@ -88,6 +96,8 @@ class Go(Ecosystem):
         would cost one `go version` process per binary to skip an install the module cache
         already makes cheap.
         """
+        if not resolve:
+            self.frozen_inputs()
         declared = {self.executable(module) for module in self.deps}
         for installed in sorted(self.gobin.glob("*")):
             if installed.name not in declared:

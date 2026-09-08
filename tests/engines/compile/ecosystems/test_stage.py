@@ -167,6 +167,6 @@ def test_install_runs_every_toolchains_installer_inside_the_provisioned_environm
     for _ in range(2):
         fp.register([fp.any()], stdout="done\n")
 
-    stage.install("default")
+    stage.install("default", resolve=True)
 
     assert [next(iter(call)) for call in fp.calls] == [npm, tool_paths["pixi"]]

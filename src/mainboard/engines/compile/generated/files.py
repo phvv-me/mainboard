@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ..state import SyncState
 from .writer import Writer
 
 if TYPE_CHECKING:
@@ -26,6 +27,21 @@ class GeneratedFiles(FrozenModel):
     """Atomic generated-file writes guarded by one workspace sync lock."""
 
     directory: Path
+
+    @property
+    def inputs(self) -> tuple[Path, ...]:
+        """Generated install/activation files shared by shipment, hashing, and prefix copying.
+
+        State travels separately. Hidden bookkeeping, installed directories, and the
+        host-specific activation script are not inputs to an addressed environment.
+        """
+        return tuple(
+            entry
+            for entry in sorted(self.directory.glob("*"))
+            if entry.is_file()
+            and not entry.name.startswith(".")
+            and entry.name not in ("activate.sh", SyncState.path(self.directory).name)
+        )
 
     @contextmanager
     def locked(self) -> Generator[Writer]:
