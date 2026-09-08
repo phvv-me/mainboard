@@ -29,6 +29,18 @@ def test_a_blank_line_in_the_log_replays_as_nothing_rather_than_as_a_failure(
     assert [event.topic for event in bus.replay()] == [Topic.OPENED]
 
 
+def test_a_torn_tail_is_preserved_without_swallowing_the_next_durable_event(
+    tmp_path: Path,
+) -> None:
+    bus = Receipts(tmp_path / "events.ndjson")
+    first = publish(bus, "b", Topic.OPENED, data={})
+    with bus.path.open("a") as stream:
+        stream.write('{"at":"torn')
+    second = publish(bus, "b", Topic.EVIDENCE, data={"status": "copied"})
+    assert bus.replay() == [first, second]
+    assert '{"at":"torn\n' in bus.path.read_text()
+
+
 def test_a_record_becomes_a_payload_the_same_way_a_broker_would_carry_it() -> None:
     """The payload is the model's own JSON shape, so nothing depends on python types surviving."""
     measured = TransferSet(job="a", target="gold", paths=("packages",), files=2, raw_bytes=9)

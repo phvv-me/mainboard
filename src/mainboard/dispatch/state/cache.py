@@ -52,6 +52,9 @@ class RunRecord(FrozenModel):
     reported: the verdict a durable monitor last surfaced for this run, the change cursor that
         keeps a periodic sweep reporting only jobs newly terminal since the last check. `None`
         means never reported, so the first sweep that finds it terminal announces it.
+    evidence: delivery status, separate from the computational verdict. `copied` means hashes
+        were verified but release is pending; `verified` means settlement finished. An
+        `unverified` correction preserves the original verdict while qualifying its evidence.
     request: the dispatch as it was asked for, kept only while the run is `held`, so the sweep
         that finds the target's quota open again can make the same request. `None` on every run
         a target actually took, which is every run that has a handle to be asked about.
@@ -78,6 +81,7 @@ class RunRecord(FrozenModel):
     exit_code: int | None = None
     verdict: str | None = None
     reported: str | None = None
+    evidence: str = ""
     request: Request | None = None
     reason: str = ""
 
@@ -105,6 +109,10 @@ class Cache:
             "DELETE FROM runs WHERE target = ? AND handle = ? AND submitted_at = ?",
             (run.target, run.handle, run.submitted_at),
         )
+
+    def delivery(self, run: RunRecord, status: str) -> RunRecord:
+        """Advance evidence without replacing another process's computation or report fields."""
+        return self._change(run, evidence=status)
 
     def host(self, alias: str) -> HostSetup:
         """`alias`'s recorded onboarding, raising when the host was never set up."""
@@ -164,21 +172,39 @@ class Cache:
 
     def report(self, run: RunRecord, verdict: str) -> None:
         """Record the verdict a durable monitor last surfaced for `run`."""
-        self.record(run.model_copy(update={"reported": verdict}))
+        self._change(run, reported=verdict)
 
     def resolve(
         self, run: RunRecord, state: str | None, exit_code: int | None, verdict: str
     ) -> RunRecord:
         """Memoize a run's resolved scheduler outcome and return the stored record.
 
-        A terminal verdict is never re-probed once memoized. The stored record comes back so a
-        caller writing to the same row again (a durable sweep advancing its `reported` cursor)
-        builds on what this call just wrote instead of clobbering it with a stale copy.
+        Update only computation fields. A dispatcher may advance evidence while a monitor holds
+        an older record; neither writer may replace the other's state from that stale copy.
         """
-        fields = {"state": state, "exit_code": exit_code, "verdict": verdict}
-        stored = run.model_copy(update=fields)
-        self.record(stored)
-        return stored
+        return self._change(run, state=state, exit_code=exit_code, verdict=verdict)
+
+    def _change(self, run: RunRecord, **fields: str | int | None) -> RunRecord:
+        """Update one registered identity atomically and return its complete current record."""
+        arguments = tuple(item for key, value in fields.items() for item in (f"$.{key}", value))
+        placeholders = ", ".join("?, ?" for _ in fields)
+        expression = f"json_set(data, {placeholders})"
+        if "verdict" in fields and fields["verdict"] not in vocabulary.TERMINAL:
+            terminal = tuple(sorted(vocabulary.TERMINAL))
+            held = ", ".join("?" for _ in terminal)
+            expression = (
+                f"CASE WHEN json_extract(data, '$.verdict') IN ({held}) "
+                f"THEN data ELSE {expression} END"
+            )
+            arguments = (*terminal, *arguments)
+        row = self.connection.execute(
+            f"UPDATE runs SET data = {expression} "
+            "WHERE target = ? AND handle = ? AND submitted_at = ? RETURNING data",
+            (*arguments, run.target, run.handle, run.submitted_at),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"no registered run {run.handle!r} on {run.target!r}")
+        return RunRecord.model_validate_json(row["data"])
 
     def run(self, handle: str, target: str | None = None) -> RunRecord:
         """The most recent run dispatched as `handle`, optionally narrowed to `target`.

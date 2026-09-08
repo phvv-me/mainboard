@@ -256,11 +256,7 @@ class ProviderJob:
     def wait(
         self, *, interval: float = 15.0, poll: Callable[[float], None] = time.sleep
     ) -> Verdict:
-        """Poll the provider until the run is terminal, end the rental, and return its verdict.
-
-        The rental is released before the verdict is handed back, since a caller that blocked on
-        this run is the last thing standing between a finished command and an instance that
-        bills until someone notices.
+        """Poll the computational verdict; the durable monitor owns evidence and release.
 
         interval: seconds between provider state polls.
         poll: the sleeper between polls, injectable for tests.
@@ -268,7 +264,6 @@ class ProviderJob:
         while True:
             state = self.backend.state(self.handle.id)
             if state.verdict in vocabulary.TERMINAL:
-                self.release()
                 return Verdict(verdict=state.verdict, exit_code=state.exit_code)
             poll(interval)
 
@@ -810,9 +805,11 @@ class Board:
         *,
         shipment: Shipment,
         resources: Resources,
+        name: str = "",
+        node: str = "",
         watch: Watcher | None = None,
-    ) -> str:
-        """Dispatch `shipment` to a machine this workspace rents, and return the provider's handle.
+    ) -> Handle:
+        """Dispatch `shipment` and retain the rental before any workspace provisioning.
 
         A rental is set up the way a declared host is, so it is shipped the same artifact
         `install` ships gold: this workstation solved the lock and the machine installs frozen
@@ -826,6 +823,8 @@ class Board:
         shipment: what the job runs and ships. A job spelled by file needs a workspace to ship
             its closure into, so a plan whose image is the whole environment refuses it.
         resources: the resolved request, whose spend cap and walltime bound the rental.
+        name: the label retained with the allocated handle.
+        node: the research node served by the dispatch.
         watch: announces each landing stage as it begins, since a landing is minutes of mirror,
             install and provisioning that would otherwise stand silent on a metered box.
         """
@@ -837,7 +836,15 @@ class Board:
                     "runs a prebuilt image that ships no workspace for its closure; run it as "
                     "a command inside that image, or on a host that mirrors the workspace"
                 )
-            return backend.submit(plan, shipment.command, resources)
+            return self.dispatcher.track(
+                backend.submit(plan, shipment.command, resources),
+                host=plan.host,
+                kind=plan.profile.kind,
+                shipment=shipment,
+                name=name,
+                node=node,
+                fetch=shipment.fetch or None,
+            )
         provisioner = Provisioner(self.root, self.manifest)
         provisioner.compiler_for(plan.env).vouch()
         return Landing(
@@ -848,7 +855,7 @@ class Board:
             artifact=provisioner.artifact_for(plan.env),
             watch=watch,
             floor=self.floor,
-        ).land(shipment)
+        ).land(shipment, name=name, node=node)
 
     def dispatch(self, asked: Request) -> Run:
         """Make the dispatch `asked` describes, whichever host it names.
@@ -1298,6 +1305,7 @@ class Board:
         plan = self.plan(env=env, container=container)
         shipment = self.shipment(command, plan, needs=needs)
         fetch = self.results(fetch or shipment.fetch, node=node) or None
+        shipment = shipment.model_copy(update={"fetch": fetch or ""})
         resources = self.resources(
             queue=queue,
             walltime=walltime,
@@ -1321,16 +1329,14 @@ class Board:
             run: Run = ProviderJob(
                 self.on(plan.host),
                 backend,
-                self.dispatcher.track(
-                    self.rented(
-                        backend, plan, shipment=shipment, resources=resources, watch=watch
-                    ),
-                    host=plan.host,
-                    kind=plan.profile.kind,
+                self.rented(
+                    backend,
+                    plan,
                     shipment=shipment,
+                    resources=resources,
                     name=label,
                     node=node,
-                    fetch=fetch,
+                    watch=watch,
                 ),
             )
         else:

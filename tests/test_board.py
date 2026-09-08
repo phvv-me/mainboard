@@ -154,14 +154,23 @@ class FakeLanding:
     calls: list[tuple[str, str, tuple[str, ...]]] = []
 
     def __init__(self, dispatcher, backend, plan: ExecutionPlan, **fields) -> None:
+        self.dispatcher = dispatcher
         self.plan = plan
         self.fields = fields
 
-    def land(self, shipment: Shipment) -> str:
+    def land(self, shipment: Shipment, *, name: str = "", node: str = "") -> Handle:
         FakeLanding.calls.append(
             (self.plan.host, shipment.spelling, tuple(self.fields["artifact"]))
         )
-        return "rental-1"
+        return self.dispatcher.track(
+            "rental-1",
+            host=self.plan.host,
+            kind=self.plan.profile.kind,
+            shipment=shipment,
+            name=name,
+            node=node,
+            fetch=shipment.fetch or None,
+        )
 
 
 class FakeCloud(ProviderBackend, Account, Delivery, LogSource):
@@ -1102,7 +1111,7 @@ def test_a_provider_submit_is_recorded_so_a_later_process_rebuilds_the_rental(
     assert rebuilt.backend.name == "fakecloud"
 
 
-def test_a_provider_job_delegates_to_its_backend_and_ends_the_rental_on_a_wait(
+def test_a_provider_wait_leaves_evidence_and_release_to_the_durable_monitor(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A caller that blocked on the run is the last thing between it and an idle meter."""
@@ -1112,7 +1121,7 @@ def test_a_provider_job_delegates_to_its_backend_and_ends_the_rental_on_a_wait(
     assert job.poll().verdict == "running"
     verdict = job.wait(poll=lambda seconds: None)
     assert verdict.ok and job.logs() == "cloud log"
-    assert job.backend.cancelled == [job.handle.id]
+    assert job.backend.cancelled == []
     job.kill()
     job.pull()
 
@@ -1315,4 +1324,4 @@ def test_a_job_cannot_land_on_a_prebuilt_image_that_ships_no_workspace(
     with pytest.raises(MissionError, match="runs a prebuilt image that ships no workspace"):
         board.rented(BareBackend(), plan, shipment=sealed, resources=Resources())
     plain = board.shipment("python -m foo", plan)
-    assert board.rented(BareBackend(), plan, shipment=plain, resources=Resources()) == "bare-1"
+    assert board.rented(BareBackend(), plan, shipment=plain, resources=Resources()).id == "bare-1"

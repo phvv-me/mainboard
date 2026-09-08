@@ -18,6 +18,7 @@ import shlex
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..core.errors import MissionError
+from . import vocabulary
 from .backends.base import ProviderBackend
 from .jobs import JobSpec
 from .onboard import Bootstrap, RemoteShell
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ..context.plan import ExecutionPlan
-    from .dispatcher import Dispatcher
+    from .dispatcher import Dispatcher, Handle
     from .shipment import Shipment
     from .transport import Machine
     from .vocabulary import Resources
@@ -105,26 +106,56 @@ class Landing:
         self.watch = watch or announce
         self.floor = floor
 
-    def land(self, shipment: Shipment) -> str:
-        """Rent a machine, land this workspace on it, start the job, hand back the handle.
+    def land(self, shipment: Shipment, *, name: str = "", node: str = "") -> Handle:
+        """Register a rental before provisioning it, then return the same tracked handle.
 
-        The rental is ended the moment anything at all goes wrong, because between the create and
-        the launch this process is the only thing that holds the handle: the machine's own
-        entrypoint would otherwise wait out its deadline on the meter for a dispatch that already
-        failed.
+        The shared registry retains the rental if this process dies during provisioning. A
+        failed landing still attempts immediate cleanup; a failed cleanup remains tracked.
+        The backend currently returns only after SSH is ready, so creation and address discovery
+        still precede this registration and need provider-side request reconciliation.
 
         shipment: what the job runs and ships, once the machine can run it.
+        name: the label retained by a later monitor.
+        node: the research node served by the dispatch.
         """
         rental = self.backend.rent(self.plan, self.resources)
         started = False
         try:
+            handle = self.dispatcher.track(
+                rental.handle,
+                host=self.plan.host,
+                kind=self.plan.profile.kind,
+                shipment=shipment,
+                name=name,
+                node=node,
+                fetch=shipment.fetch or None,
+                evidence="not_started",
+            )
             self.equip(rental, shipment=shipment)
             started = True
         finally:
             if not started:
-                logger.warning("landing on %s failed; ending the rental", rental.handle)
-                self.backend.cancel(rental.handle)
-        return rental.handle
+                self._abort(rental.handle)
+        return handle
+
+    def _abort(self, handle: str) -> None:
+        """Release a definite setup failure; retain an ambiguous launch for the monitor."""
+        registered = None
+        try:
+            registered = self.dispatcher.cache.run(handle, self.plan.host)
+        except LookupError:
+            logger.warning("registration of rental %s failed before provisioning", handle)
+        if registered is not None and registered.evidence != "not_started":
+            logger.warning("launch of %s is uncertain; retaining the tracked rental", handle)
+            return
+        try:
+            if registered is not None:
+                self.dispatcher.cache.resolve(
+                    registered, vocabulary.FAILED, None, vocabulary.FAILED
+                )
+        finally:
+            logger.warning("landing on %s failed before launch; ending the rental", handle)
+            self.backend.cancel(handle)
 
     def equip(self, rental: Rental, *, shipment: Shipment) -> None:
         """Mirror, install, provision, pin, launch: everything the machine needs, in that order.
@@ -161,9 +192,14 @@ class Landing:
                 remote,
                 key=shipment.source.key,
                 image=self.dispatcher.image(self.plan, shipment, listing=listing, shipped=shipped),
+                results=shipment.fetch,
+                commit=shipment.source.commit,
+                digest=shipment.source.digest,
             )
             self.verify(remote, pinned)
             self.watch(f"starting the job on {rental.handle}")
+            registered = self.dispatcher.cache.run(rental.handle, self.plan.host)
+            self.dispatcher.cache.delivery(registered, "pending")
             self.start(remote, pinned=pinned, script=f"{root}/{script}")
 
     def transferable(self, remote: Machine) -> None:

@@ -41,6 +41,16 @@ def test_resolve_memoizes_the_outcome_and_report_builds_on_that_same_write() -> 
     assert (settled.verdict, settled.exit_code, settled.reported) == ("ok", 0, "ok")
 
 
+def test_a_stale_running_probe_cannot_erase_a_definite_setup_failure() -> None:
+    store = cache()
+    run = run_record("H1")
+    store.record(run)
+    store.resolve(run, "failed", None, "failed")
+    store.delivery(run, "not_started")
+    refreshed = store.resolve(run, "R", None, "running")
+    assert (refreshed.verdict, refreshed.evidence) == ("failed", "not_started")
+
+
 def test_tracked_holds_a_run_until_its_terminal_verdict_has_been_reported() -> None:
     """The job whose dispatching agent died is exactly the one no sweep may ever drop."""
     store = cache()
@@ -53,6 +63,24 @@ def test_tracked_holds_a_run_until_its_terminal_verdict_has_been_reported() -> N
     assert "H1" in [run.handle for run in store.tracked()]
     store.report(finished, "ok")
     assert [run.handle for run in store.tracked()] == ["H2"]
+
+
+def test_independent_updates_preserve_delivery_and_the_exact_run_identity() -> None:
+    store = cache()
+    older = run_record("H1", submitted_at="t0")
+    newer = run_record("H1", submitted_at="t1")
+    store.record(older)
+    store.record(newer)
+    store.delivery(older, "pending")
+    store.resolve(older, "F", 0, "ok")
+    store.delivery(older, "copied")
+    store.report(older, "ok")
+    current, previous = store.recent(2)
+    assert current == newer
+    assert (previous.verdict, previous.reported, previous.evidence) == ("ok", "ok", "copied")
+    store.forget(older)
+    with pytest.raises(LookupError, match="no registered run"):
+        store.delivery(older, "verified")
 
 
 def test_run_resolves_the_newest_row_and_refuses_a_handle_recorded_on_two_targets() -> None:

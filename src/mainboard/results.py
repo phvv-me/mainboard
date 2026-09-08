@@ -188,6 +188,7 @@ class Results:
             CREATE TABLE jobs AS SELECT row->>'target' AS server,
                 row->>'handle' AS handle, row->>'submitted_at' AS submitted_at,
                 row->>'state' AS state, row->>'verdict' AS verdict,
+                row->>'evidence' AS evidence,
                 row->>'fetch_path' AS results, row AS metadata
             FROM unnest(?::JSON[]) AS records(row)
         """,

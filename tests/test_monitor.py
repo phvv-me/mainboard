@@ -4,11 +4,13 @@ import re
 import sys
 from collections.abc import Callable, Sequence
 from getpass import getuser
+from hashlib import sha256
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 import pytest
+from filelock import FileLock
 from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import Board, Job, MissionError
@@ -198,7 +200,7 @@ def test_a_finished_job_is_pulled_reported_and_announced_once(
     [None, "results/run"],
     ids=[
         "a run that recorded no results path pulls nothing",
-        "a pull that fails leaves the job finished without a path",
+        "a failed pull keeps settlement pending",
     ],
 )
 def test_a_finished_job_reports_only_the_results_it_could_actually_bring_back(
@@ -216,9 +218,14 @@ def test_a_finished_job_reports_only_the_results_it_could_actually_bring_back(
         raise ProcessExecutionError(["rsync"], 23, "", "no such file")
 
     monkeypatch.setattr(board.dispatcher, "fetch", explode)
-    [item] = board.monitor().once().finished
-    assert item.pulled_path is None
-    assert board.dispatcher.cache.run("3").reported == "ok"
+    report = board.monitor().once()
+    if fetch_path:
+        assert not report.finished
+        assert "transfer failed" in report.failed[0].reason
+        assert board.dispatcher.cache.run("3").reported is None
+    else:
+        assert report.finished[0].pulled_path is None
+        assert board.dispatcher.cache.run("3").reported == "ok"
 
 
 def test_a_failed_job_carries_a_network_free_reason(
@@ -402,10 +409,15 @@ def test_the_cancel_verb_destroys_the_rental_rather_than_leaving_it_stopped(
     """
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     seed("24", target="rented", kind=Rented.name)
-    Rented.replies = [{"success": True}, {"success": True}]
+    Rented.replies = [
+        {"result_url": "https://s3.example/logs/24.log"},
+        "partial output\n",
+        {"success": True},
+        {"success": True},
+    ]
     settled = board.verdicts().cancel("24")
     assert settled.trials[0].verdict == "cancelled"
-    assert [(call.full_url, call.get_method()) for call in Rented.calls] == [
+    assert [(call.full_url, call.get_method()) for call in Rented.calls][-2:] == [
         ("https://console.vast.ai/api/v0/instances/24/", "DELETE")
     ] * 2
 
@@ -472,7 +484,139 @@ def test_a_provider_that_refuses_the_cancel_is_a_warning_not_a_failed_sweep(
     report = board.monitor().once()
     assert [item.handle for item in report.failed] == ["16"]
     assert "could not release 16" in caplog.text
-    assert board.dispatcher.cache.run("16").reported == "failed"
+    assert board.dispatcher.cache.run("16").reported is None
+
+
+def test_empty_successful_transfer_retains_receipt_referenced_evidence(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for Vast 50237293: rsync exited zero against the wrong empty root."""
+    record = seed("31", name="empty-transfer", fetch_path="research/project/datasets/node")
+    probing(board, monkeypatch, finishing())
+    content = b"measured data"
+    receipt = json.dumps(
+        {
+            "trial_receipt": {
+                "case_id": "case",
+                "outcome": "passed",
+                "verdict": "validated",
+                "artifacts": {
+                    "table": {
+                        "path": "datasets/node/evidence/table.parquet",
+                        "sha256": sha256(content).hexdigest(),
+                        "size": len(content),
+                    }
+                },
+            }
+        }
+    )
+    monkeypatch.setattr(Job, "transcript", lambda job: receipt)
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda *args, **kwargs: None)
+    released = []
+    monkeypatch.setattr(Job, "release", lambda job: released.append(job.handle.id))
+    report = board.monitor().once()
+    assert not report.finished and len(report.failed) == 1
+    assert not released
+    assert board.dispatcher.cache.run(record.handle).reported is None
+    assert board.dispatcher.cache.run(record.handle).evidence == "pending"
+    assert board.verdicts().handled(record.handle).code == 2
+    table = board.root / "research/project/datasets/node/evidence/table.parquet"
+    table.parent.mkdir(parents=True)
+    table.write_bytes(content)
+    assert board.monitor().once().finished[0].handle == record.handle
+    assert released == [record.handle]
+    assert board.verdicts().handled(record.handle).code == 0
+    assert board.dispatcher.cache.run(record.handle).evidence == "verified"
+    assert (directory(board, "empty-transfer") / "receipts.ndjson").read_text().count(receipt) == 1
+
+
+def test_failed_release_retries_without_refetching_destroyed_evidence(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed("32", name="retry-release", fetch_path="results/run")
+    probing(board, monkeypatch, finishing())
+    pulled = []
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: pulled.append(True))
+    calls = []
+
+    def release(job: Job) -> None:
+        calls.append(job.handle.id)
+        if len(calls) == 1:
+            raise MissionError("provider temporarily unavailable")
+
+    monkeypatch.setattr(Job, "release", release)
+    assert not board.monitor().once().finished
+    assert board.dispatcher.cache.run("32").reported is None
+    assert board.monitor().once().finished[0].handle == "32"
+    assert pulled == [True]
+    assert calls == ["32", "32"]
+
+
+def test_competing_monitor_does_not_read_a_stale_settlement_cursor(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed("33")
+    trips = probing(board, monkeypatch, finishing())
+    with FileLock(board.dispatcher.cache.path.with_suffix(".settlement.lock")):
+        assert not board.monitor().once().changed
+    assert not trips
+    assert board.monitor().once().finished[0].handle == "33"
+
+
+def test_a_native_job_without_any_captured_receipt_cannot_settle_an_empty_transfer(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = seed("34", fetch_path="research/project/datasets/node")
+    board.dispatcher.cache.record(
+        record.model_copy(
+            update={"script": "research/project/experiments/node/test_law.py::test_law"}
+        )
+    )
+    probing(board, monkeypatch, finishing())
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: None)
+    monkeypatch.setattr(Job, "transcript", lambda job: "")
+    monkeypatch.setattr(Job, "release", lambda job: pytest.fail("evidence was not delivered"))
+    report = board.monitor().once()
+    assert not report.finished and "no captured receipt" in report.failed[0].reason
+
+
+@pytest.mark.parametrize("fault", ["torn", "capture"])
+def test_bad_native_evidence_does_not_prevent_another_job_from_settling(
+    board: Board, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    seed("40", name="good")
+    seed("41", name="bad", fetch_path="results/bad")
+    probing(board, monkeypatch, finishing())
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: None)
+
+    def transcript(job: Job) -> str:
+        if job.handle.id == "41":
+            if fault == "capture":
+                raise OSError("cannot read native output")
+            return '{"trial_receipt": {"run": "torn"'
+        return "finished"
+
+    released = []
+    monkeypatch.setattr(Job, "transcript", transcript)
+    monkeypatch.setattr(Job, "release", lambda job: released.append(job.handle.id))
+    report = board.monitor().once()
+    assert [item.handle for item in report.finished] == ["40"]
+    assert [item.handle for item in report.failed] == ["41"]
+    assert released == ["40"]
+    assert board.dispatcher.cache.run("41").evidence == "pending"
+
+
+def test_a_reused_stream_cannot_borrow_another_handles_copied_checkpoint(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = seed("35", name="reused", verdict="ok", reported="ok")
+    board.monitor().evidence(old, (), status="copied")
+    seed("36", name="reused", fetch_path="results/new")
+    probing(board, monkeypatch, finishing())
+    pulled = []
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda handle, **kw: pulled.append(handle.id))
+    assert board.monitor().once().finished[0].handle == "36"
+    assert pulled == ["36"]
 
 
 def test_a_rented_workspace_is_fetched_before_the_provider_destroys_it(

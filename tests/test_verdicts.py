@@ -16,6 +16,84 @@ if TYPE_CHECKING:
 _STREAM = "study-receipts"
 
 
+@pytest.mark.parametrize("status", ["pending", "copied"])
+def test_a_cached_success_is_not_delivered_before_its_first_evidence_event(
+    board: Board, status: str
+) -> None:
+    recorded(board, "79", name="crashed-before-event", verdict="ok")
+    record = board.dispatcher.cache.run("79")
+    board.dispatcher.cache.delivery(record, status)
+    assert board.verdicts().handled("79").code == 2
+    assert board.verdicts().handled("79").trials[0].verdict == "blocked"
+    under = directory(board, "crashed-before-event")
+    under.mkdir(parents=True, exist_ok=True)
+    (under / "receipts.ndjson").write_text(
+        json.dumps(
+            {
+                "trial_receipt": {
+                    "run": "r",
+                    "case_id": "case",
+                    "outcome": "passed",
+                    "verdict": "validated",
+                }
+            }
+        )
+        + "\n"
+    )
+    assert board.verdicts().of("crashed-before-event").code == 2
+
+
+def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidence(
+    board: Board,
+) -> None:
+    recorded(board, "77", name="lost-transfer", verdict="ok")
+    under = directory(board, "lost-transfer")
+    under.mkdir(parents=True, exist_ok=True)
+    path = under / "receipts.ndjson"
+    payload = {
+        "trial_receipt": {
+            "run": "first-run",
+            "case_id": "same-case",
+            "outcome": "passed",
+            "verdict": "validated",
+        }
+    }
+    original = json.dumps(payload) + "\n"
+    second = (
+        json.dumps(
+            {
+                "trial_receipt": {
+                    "run": "second-run",
+                    "case_id": "same-case",
+                    "outcome": "passed",
+                    "verdict": "validated",
+                }
+            }
+        )
+        + "\n"
+    )
+    path.write_text(original + second)
+    publish(
+        Receipts(under / "events.ndjson"),
+        "lost-transfer",
+        Topic.EVIDENCE,
+        job="lost-transfer",
+        data={
+            "handle": "77",
+            "status": "unverified",
+            "detail": "raw artifacts missing",
+            "trials": [["first-run", "same-case"]],
+        },
+    )
+    result = board.verdicts().handled("77")
+    assert result.code == 3
+    first, second_trial = [trial for trial in result.trials if trial.run]
+    assert (first.verdict, first.settled) == ("unverified", "validated")
+    assert second_trial.verdict == "passed"
+    assert path.read_text() == original + second
+    assert board.dispatcher.cache.run("77").verdict == "ok"
+
+
 def recorded(
     board: Board,
     handle: str,
@@ -520,6 +598,7 @@ def test_wait_sweeps_the_monitor_path_until_terminal_and_answers_from_the_receip
         passes.append(1)
         if len(passes) == 2:
             recorded(board, "9", name="waited", verdict="ok")
+            board.dispatcher.cache.report(board.dispatcher.cache.run("9"), "ok")
 
     monkeypatch.setattr(Monitor, "once", sweeping)
     settled = board.verdicts().wait("9", interval=0.0, poll=lambda seconds: None)
@@ -585,6 +664,7 @@ def test_cancel_kills_through_the_backend_and_settles_the_record_in_the_same_pas
     monkeypatch.setattr(Monitor, "once", lambda monitor: acted.append("swept"))
     monkeypatch.setattr(Job, "kill", lambda self: acted.append("killed"))
     monkeypatch.setattr(Job, "release", lambda self: acted.append("released"))
+    monkeypatch.setattr(Job, "transcript", lambda self: "")
     settled = board.verdicts().cancel("7")
     assert acted == ["killed", "released"]
     assert settled.trials[0].verdict == "cancelled"
@@ -661,6 +741,7 @@ def test_cancelling_a_run_that_already_settled_touches_nothing(
 ) -> None:
     """A terminal verdict can never change, so a late cancel reports rather than rewrites."""
     recorded(board, "6", name="done", verdict="ok", target="miyabi-g")
+    board.dispatcher.cache.report(board.dispatcher.cache.run("6"), "ok")
     monkeypatch.setattr(Job, "kill", lambda self: pytest.fail("a settled run was killed"))
     settled = board.verdicts().cancel("6")
     assert (settled.trials[0].verdict, settled.code) == ("ok", 0)

@@ -799,6 +799,7 @@ class Dispatcher:
         name: str = "",
         node: str = "",
         fetch: str | None = None,
+        evidence: str = "pending",
     ) -> Handle:
         """Record a provider-dispatched run in the shared cache and return its `Handle`.
 
@@ -815,6 +816,7 @@ class Dispatcher:
         name: a human label for the run, a study's label when a study owns it.
         node: the ledger slug this run serves, recorded on the run and its receipts.
         fetch: a results path recorded for a later pull.
+        evidence: whether a launch was attempted; landed rentals begin as `not_started`.
         """
         self.cache.record(
             RunRecord(
@@ -831,6 +833,7 @@ class Dispatcher:
                 node=node,
                 commit=shipment.source.commit,
                 digest=shipment.source.digest,
+                evidence=evidence,
             )
         )
         logger.info("%s -> %s on %s (%s)", shipment.spelling, handle, host, kind)

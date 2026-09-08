@@ -24,6 +24,13 @@ from .support import RecordingMachine, cache, machine_with, plan
 _ENDPOINT = Endpoint(address="ssh5.vast.ai", port=41022, user="root", identity="/keys/id")
 _ASKED = Resources(max_usd=1.0, walltime="00:30:00", gpus=1)
 
+
+@pytest.mark.parametrize("amount", [-1.0, float("nan"), float("inf"), -float("inf")])
+def test_a_rental_budget_must_be_finite_and_nonnegative(amount: float) -> None:
+    with pytest.raises(ValueError):
+        Resources(max_usd=amount)
+
+
 # A provider host's plan: no root declared, since a rented box is asked where its own workspace
 # goes rather than told, and no container, since that is what makes it a landing at all.
 _RENTED = {
@@ -99,7 +106,7 @@ def test_a_rental_gets_the_workspace_the_tool_and_the_environment_before_the_job
     """
     host = machine_with("/root/projects\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
-    assert landed.land(shipped(dispatcher, "python train.py")) == "4242"
+    assert landed.land(shipped(dispatcher, "python train.py")).id == "4242"
     assert backend.asked == [("vast", "00:30:00")]
     root, extra, where = dispatcher.mirrored[0]
     assert (root, where) == ("/root/projects", "root@ssh5.vast.ai")
@@ -170,6 +177,22 @@ def test_a_rented_job_carries_the_complete_source_seal(
     assert f"MAINBOARD_SOURCE_DIGEST={source.digest}" in body
 
 
+def test_rental_results_link_to_the_live_root_that_fetch_reads(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sealed snapshot must not strand results on a disk that release destroys."""
+    host = machine_with("/root/projects\n")
+    landed, _, dispatcher = landing(workdir, host, monkeypatch)
+    shipment = shipped(dispatcher, "python train.py").model_copy(
+        update={"fetch": "research/project/datasets/node"}
+    )
+    landed.land(shipment)
+    assert host.ran(
+        'ln -sfn "$mb_root"/research/project/datasets/node '
+        '"$mb_snap"/research/project/datasets/node'
+    )
+
+
 def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -223,13 +246,72 @@ def test_a_pinned_tree_the_job_could_not_activate_from_ends_the_rental(
 def test_a_landing_that_fails_anywhere_ends_the_rental_it_was_holding(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Between the create and the launch this process is the only thing holding the handle."""
+    """The failed rental remains tracked independently of this process's cleanup attempt."""
     host = machine_with("/root/projects\n", rules=[("mb_snap", 1, "no space left on device")])
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     with pytest.raises(SystemExit, match="could not pin the source tree"):
         landed.land(shipped(dispatcher, "python train.py"))
     assert backend.cancelled == ["4242"]
+    record = dispatcher.cache.run("4242", "vast")
+    assert record.script == "python train.py"
+    assert record.evidence == "not_started" and record.verdict == "failed"
     assert LAUNCH not in " ".join(host.lines)
+
+
+def test_a_rental_is_durably_registered_before_provisioning(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = machine_with("/root/projects\n")
+    landed, _, dispatcher = landing(workdir, host, monkeypatch)
+    shipment = shipped(dispatcher, "python train.py").model_copy(update={"fetch": "out/run"})
+
+    def inspect(rental: Rental, *, shipment: Shipment) -> None:
+        record = dispatcher.cache.run(rental.handle, "vast")
+        assert record.name == "early" and record.node == "carry"
+        assert record.fetch_path == shipment.fetch
+        assert record.commit == shipment.source.commit
+        assert record.evidence == "not_started"
+        assert record in dispatcher.cache.tracked()
+
+    monkeypatch.setattr(landed, "equip", inspect)
+    handle = landed.land(shipment, name="early", node="carry")
+    assert handle.id == "4242"
+    assert dispatcher.cache.total() == 1
+
+
+def test_a_lost_launch_reply_retains_the_rental_and_pending_evidence(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = machine_with("/root/projects\n")
+    landed, backend, dispatcher = landing(workdir, host, monkeypatch)
+
+    def interrupted(remote: RecordingMachine, *, pinned: str, script: str) -> None:
+        assert dispatcher.cache.run("4242", "vast").evidence == "pending"
+        raise MissionError("launch reply lost")
+
+    monkeypatch.setattr(landed, "start", interrupted)
+    with pytest.raises(MissionError, match="launch reply lost"):
+        landed.land(shipped(dispatcher, "python train.py"))
+    assert backend.cancelled == []
+    assert dispatcher.cache.run("4242", "vast").verdict is None
+    assert dispatcher.cache.total() == len(dispatcher.cache.tracked()) == 1
+
+
+def test_failed_setup_cleanup_keeps_its_handle_for_a_later_monitor(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = machine_with("/root/projects\n", rules=[("mb_snap", 1, "disk full")])
+    landed, backend, dispatcher = landing(workdir, host, monkeypatch)
+
+    def unavailable(handle: str) -> None:
+        raise MissionError("provider cleanup unavailable")
+
+    monkeypatch.setattr(backend, "cancel", unavailable)
+    with pytest.raises(MissionError, match="provider cleanup unavailable"):
+        landed.land(shipped(dispatcher, "python train.py"))
+    record = dispatcher.cache.run("4242", "vast")
+    assert record.evidence == "not_started" and record.verdict == "failed"
+    assert record.reported is None and record in dispatcher.cache.tracked()
 
 
 def test_a_market_that_never_rented_anything_leaves_nothing_to_cancel(

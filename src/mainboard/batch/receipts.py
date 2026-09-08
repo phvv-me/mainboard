@@ -32,7 +32,10 @@
 #   job.cost        {"platform", "gpu", "setup_s", "run_s", "observed", "expected_usd",
 #                   "actual_usd", "delta_usd"}, what the run was quoted at beside what it
 #                   came to, so the cost model learns from its own misses
-#   job.settled     {"handle", "verdict", "exit_code", "detail"}  terminal, once and last
+#   job.settled     {"handle", "verdict", "exit_code", "detail"}  terminal computation
+#   job.evidence    {"handle", "target", "submitted_at", "status", "trials", "detail"}
+#                   delivery/release checkpoint or append-only correction, keyed to the run;
+#                   status is pending, copied, verified, not_started, or unverified
 #   batch.closed    {"jobs", "ok", "failed", "skipped"}           every job settled, once
 #
 # THE RULES that make the transport swappable. Every line is derived from durable state (the
@@ -46,11 +49,13 @@
 
 import json
 import logging
+import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
+from filelock import FileLock
 from patos import FrozenModel
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from ..dispatch.shared import now
 
@@ -76,6 +81,7 @@ class Topic(StrEnum):
     ATTESTED = "job.attested"
     SAMPLE = "job.sample"
     SETTLED = "job.settled"
+    EVIDENCE = "job.evidence"
     COST = "job.cost"
     CLOSED = "batch.closed"
 
@@ -128,15 +134,29 @@ class Receipts:
     def publish(self, event: Event) -> None:
         """Append one event line durably."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as opened:
-            opened.write(event.model_dump_json() + "\n")
+        with FileLock(self.path.with_suffix(".lock")), self.path.open("a+b") as opened:
+            if opened.tell():
+                opened.seek(-1, os.SEEK_END)
+                if opened.read(1) != b"\n":
+                    opened.write(b"\n")
+            opened.write((event.model_dump_json() + "\n").encode())
+            opened.flush()
+            os.fsync(opened.fileno())
 
     def replay(self) -> list[Event]:
         """Every recorded event, oldest first, empty when nothing has been published yet."""
         if not self.path.is_file():
             return []
         lines = self.path.read_text(encoding="utf-8").splitlines()
-        return [Event.model_validate_json(line) for line in lines if line.strip()]
+        events: list[Event] = []
+        for number, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            try:
+                events.append(Event.model_validate_json(line))
+            except ValidationError:
+                logger.warning("unreadable receipt line retained at %s:%d", self.path, number)
+        return events
 
 
 class Mirrored:

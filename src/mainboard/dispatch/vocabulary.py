@@ -6,6 +6,7 @@
 # import the other's family to speak the common language.
 
 from patos import FrozenModel, Lifecycle
+from pydantic import Field
 
 from .shared import HandleId
 
@@ -95,7 +96,7 @@ class Resources(FrozenModel):
     account: str = ""
     container: str = ""
     mem_gb: int | None = None
-    max_usd: float = 0.0
+    max_usd: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
 
 
 class Request(FrozenModel):
@@ -132,7 +133,7 @@ class Request(FrozenModel):
     mem_gb: int = 0
     gpus: int = 0
     gpu_name: str = ""
-    max_usd: float = 0.0
+    max_usd: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
     nodes: int = 1
     attempt: int = 1
 

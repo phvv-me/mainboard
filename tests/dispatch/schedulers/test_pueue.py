@@ -187,4 +187,4 @@ def test_a_pueue_task_the_daemon_has_finished_reads_as_finished_whatever_it_ende
     assert (probed.state, probed.verdict) == ("Done", verdict)
     assert probed.phase == "finished"
     live = status_json({"id": 5, "label": "job", "status": {"Running": {}}})
-    assert Pueue().state(machine_with(live), "/repo", handle="5").phase == "Running"
+    assert Pueue().state(machine_with(live), "/repo", handle="5").phase == "running"

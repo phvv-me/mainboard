@@ -1,7 +1,9 @@
 """Immutable trial artifacts and explicitly pinned inputs."""
 
 import hashlib
+import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -40,6 +42,38 @@ class Artifacts:
         self.root = Path(os.path.abspath(root))
         self.directory = Path(os.path.abspath(directory))
         self.directory.relative_to(self.root)
+
+    @staticmethod
+    def verify(receipts: Iterable[str], *, directory: Path, boundary: Path) -> None:
+        """Verify receipt references within the fetched directory, without importing a project.
+
+        References are project-relative; the fetch directory is workspace-relative. Match
+        their common suffix to recover the logical root, bounded by this workspace. Never
+        accept a same-named artifact from a different project's result directory.
+        """
+        directory = directory.absolute()
+        boundary = boundary.absolute()
+        directory.relative_to(boundary)
+        roots = [directory, *directory.parents]
+        roots = [root for root in reversed(roots) if root.is_relative_to(boundary)]
+        for line in receipts:
+            payload = json.loads(line)["trial_receipt"]
+            for value in payload.get("artifacts", {}).values():
+                if not isinstance(value, dict):
+                    continue
+                reference = Artifact.model_validate(value)
+                relative = Path(reference.path)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ValueError(f"artifact path must stay project-relative: {relative}")
+                root = next(
+                    (root for root in roots if (root / relative).is_relative_to(directory)),
+                    None,
+                )
+                if root is None:
+                    raise ValueError(f"artifact is outside the declared fetch: {relative}")
+                if not (root / relative).resolve().is_relative_to(directory.resolve()):
+                    raise ValueError(f"artifact link leaves the declared fetch: {relative}")
+                reference.read(root)
 
     def write(self, data: bytes, *, media_type: str, schema_name: str = "") -> Artifact:
         """Publish bytes before returning their immutable reference."""

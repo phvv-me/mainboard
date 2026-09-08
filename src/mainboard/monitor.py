@@ -3,9 +3,14 @@
 # closes out jobs this process never submitted and a remote job's result never depends on the
 # agent that dispatched it staying alive to see it end.
 
+import json
+import os
+import shlex
+from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING
 
+from filelock import FileLock, Timeout
 from plumbum.commands.processes import ProcessExecutionError
 
 from .batch.receipts import Topic, latest, publish
@@ -23,6 +28,8 @@ from .tracking import is_batched, streamed
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
+
+    from pydantic import JsonValue
 
     from .batch.receipts import Bus
     from .board import Board, Run
@@ -162,40 +169,116 @@ class Monitor:
         """Log one failed pull as a warning and stand for its absent results path."""
         logger.warning("could not pull %s from %s: %s", path, host, fault)
 
-    def capture(self, record: RunRecord, job: Run) -> None:
-        """Bring a settled run's output and its trial receipts home, beside that run's receipts.
+    def capture(self, record: RunRecord, job: Run) -> tuple[str, ...]:
+        """Save the native log and deduplicated receipts before a rental can be destroyed.
 
-        Only the exit code used to survive a run. The output lived on the host under the state
-        dir, or on a rented disk that dies with the rental, and no verb ever brought either back,
-        so losing the terminal that dispatched a job lost everything it printed. Here the tail is
-        written next to the stream's own `events.ndjson`, which is the directory every reader
-        already knows how to find, and the trial receipts the output carries are lifted into that
-        stream so `verdict` can settle on them.
-
-        This runs before the release, and that ordering is load-bearing rather than tidy: a
-        release cancels a rental, and a cancelled rental's instance takes its log with it, so a
-        read afterwards would come back empty on exactly the runs that most need it.
-
-        Nothing here can fail the sweep. A host that went quiet between the probe and the read
-        costs its own transcript and no other job's outcome, which is the same bargain `pull`
-        already makes.
-
-        record: the run as the dispatch cache holds it.
-        job: that run rebuilt, whichever of the two worlds took it.
+        A retry can read the saved log after the provider disappears. Files are flushed before
+        the delivery checkpoint is published; receipt references are verified separately.
         """
-        if not (transcript := job.transcript()):
-            return
         stream, name = streamed(record.name or "", handle=record.handle)
         under = directory(self.board, stream)
         under.mkdir(parents=True, exist_ok=True)
-        (under / f"{record.handle}.log").write_text(transcript, encoding="utf-8")
+        log = under / f"{record.handle}.log"
+        transcript = job.transcript()
+        if not transcript:
+            return receipts_in(log.read_text(encoding="utf-8")) if log.is_file() else ()
+        with log.open("w", encoding="utf-8") as opened:
+            opened.write(transcript)
+            opened.flush()
+            os.fsync(opened.fileno())
         harvested = receipts_in(transcript)
         if harvested:
             path = under / "receipts.ndjson"
+            seen = set(path.read_text(encoding="utf-8").splitlines()) if path.is_file() else set()
+            fresh = [line for line in harvested if line not in seen]
             with path.open("a", encoding="utf-8") as opened:
-                opened.write("\n".join(harvested) + "\n")
+                if fresh:
+                    opened.write("\n".join(fresh) + "\n")
+                    opened.flush()
+                    os.fsync(opened.fileno())
         lines = transcript.count("\n")
         logger.info("captured %d log lines for %s (%s)", lines, record.handle, name)
+        return harvested
+
+    def evidence(
+        self, record: RunRecord, receipts: tuple[str, ...], *, status: str, detail: str = ""
+    ) -> None:
+        """Append transfer status without rewriting the computational receipt or exit code."""
+        self.cache.delivery(record, status)
+        stream, job = streamed(record.name or "", handle=record.handle)
+        bus = self.streams.setdefault(stream, self.board.receipts(stream))
+        data: dict[str, JsonValue] = {
+            "handle": record.handle,
+            "target": record.target,
+            "submitted_at": record.submitted_at,
+            "status": status,
+            "detail": detail,
+            "trials": self._cases(receipts),
+        }
+        seen = latest(bus.replay(), Topic.EVIDENCE).get(job)
+        if seen is None or seen.data != data:
+            try:
+                publish(bus, stream, Topic.EVIDENCE, job=job, data=data)
+            except OSError as fault:
+                logger.error(
+                    "evidence status is cached but its event could not be saved: %s", fault
+                )
+
+    @staticmethod
+    def _cases(receipts: tuple[str, ...]) -> list[JsonValue]:
+        """Associate valid envelopes only; raw malformed lines stay in the captured log."""
+        cases: list[JsonValue] = []
+        for line in receipts:
+            try:
+                envelope = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = envelope.get("trial_receipt") if isinstance(envelope, dict) else None
+            if isinstance(payload, dict):
+                cases.append(
+                    [
+                        str(payload.get("run", "")),
+                        str(payload.get("case_id") or payload.get("run_id", "")),
+                    ]
+                )
+        return cases
+
+    def verify(
+        self, record: RunRecord, job: Run, pulled: str | None, receipts: tuple[str, ...]
+    ) -> None:
+        """A successful transport is not proof that its declared artifacts arrived."""
+        # The trials reader loads its dataframe dependency only when evidence needs checking,
+        # matching the lazy reader used by `verdict` rather than taxing every CLI startup.
+        from .trials.artifacts import Artifacts
+
+        for line in receipts:
+            envelope = json.loads(line)
+            payload = envelope.get("trial_receipt") if isinstance(envelope, dict) else None
+            if not isinstance(payload, dict) or not isinstance(payload.get("artifacts", {}), dict):
+                raise ValueError("malformed trial receipt; raw line preserved in captured log")
+        if job.handle.fetch_path and pulled is None:
+            raise MissionError("result transfer failed; remote evidence retained")
+        native = any(
+            Path(token.partition("::")[0]).name.startswith("test_")
+            for token in shlex.split(record.script)
+        )
+        if native and job.handle.fetch_path and not receipts:
+            raise MissionError("native trial has no captured receipt; evidence is unverified")
+        if receipts:
+            if pulled is None:
+                referenced = any(
+                    isinstance(value, dict)
+                    for line in receipts
+                    for value in json.loads(line)["trial_receipt"].get("artifacts", {}).values()
+                )
+                if referenced:
+                    raise MissionError("receipt references artifacts but no fetch was declared")
+            else:
+                Artifacts.verify(
+                    receipts,
+                    directory=self.board.dispatcher.local(pulled),
+                    boundary=self.board.root,
+                )
 
     def asked(self, record: RunRecord) -> Run | None:
         """Ask `record`'s target for its held dispatch again, None while the quota is still full.
@@ -280,6 +363,20 @@ class Monitor:
         )
 
     def once(self) -> MonitorReport:
+        """Serialize settlement before reading its cursor, including across monitor processes."""
+        path = self.cache.path.with_suffix(".settlement.lock")
+        lock = FileLock(path, timeout=0)
+        try:
+            lock.acquire()
+        except Timeout:
+            logger.debug("another monitor owns settlement; leaving its cursor untouched")
+            return MonitorReport()
+        try:
+            return self._once()
+        finally:
+            lock.release()
+
+    def _once(self) -> MonitorReport:
         """Resolve every unsettled run once, harvest the newly terminal ones, report the changes.
 
         Resolving happens first and by target, so each host is asked once about every handle it
@@ -323,14 +420,80 @@ class Monitor:
             if state is None:
                 continue
             job = resolved.runs[record]
-            stored = self.cache.resolve(record, state.state, state.exit_code, state.verdict)
+            current = self.cache.resolve(record, state.state, state.exit_code, state.verdict)
             if state.verdict not in vocabulary.TERMINAL:
                 if state.stage == vocabulary.RUNNING:
                     self.pull(job)
                 self.track(record, state, detail="")
                 running += 1
                 continue
-            pulled = self.pull(job)
+            evidence = current.evidence
+            discarded = state.state == vocabulary.CANCELLED and evidence == "unverified"
+            if evidence == "not_started" or discarded:
+                detail = (
+                    "explicit cancellation; evidence remains unverified"
+                    if discarded
+                    else "provisioning ended before a native launch was attempted"
+                )
+                if self.release(job):
+                    if not discarded:
+                        self.evidence(record, (), status="not_started", detail=detail)
+                    self.track(record, state, detail=detail)
+                    fleet.settle(
+                        {job.handle: Verdict(verdict=state.verdict, exit_code=state.exit_code)}
+                    )
+                    self.cache.report(record, state.verdict)
+                else:
+                    detail += "; release failed and will be retried"
+                failed.append(Failed(handle=record.handle, target=record.target, reason=detail))
+                continue
+            stream, name = streamed(record.name or "", handle=record.handle)
+            bus = self.streams.setdefault(stream, self.board.receipts(stream))
+            history = (
+                event
+                for event in bus.replay()
+                if event.data.get("handle") == record.handle
+                and event.data.get("target") == record.target
+                and event.data.get("submitted_at") == record.submitted_at
+            )
+            previous = latest(history, Topic.EVIDENCE).get(name)
+            copied = current.evidence in {"copied", "verified"} or (
+                previous is not None
+                and previous.data.get("handle") == record.handle
+                and previous.data.get("target") == record.target
+                and previous.data.get("submitted_at") == record.submitted_at
+                and previous.data.get("status") in {"copied", "verified"}
+            )
+            harvested: tuple[str, ...] = ()
+            pulled = None
+            try:
+                if copied:
+                    log = directory(self.board, stream) / f"{record.handle}.log"
+                    if previous is None and not log.is_file():
+                        raise MissionError("copied evidence has no recoverable local receipt log")
+                    harvested = (
+                        receipts_in(log.read_text(encoding="utf-8")) if log.is_file() else ()
+                    )
+                    if previous is not None and previous.data.get("trials") and not harvested:
+                        raise MissionError("copied trial receipts are missing from the local log")
+                    pulled = job.handle.fetch_path
+                else:
+                    pulled = self.pull(job)
+                    harvested = self.capture(record, job)
+                self.verify(record, job, pulled, harvested)
+            except (MissionError, OSError, ValueError) as fault:
+                detail = f"settlement pending; remote evidence retained: {fault}"
+                self.evidence(record, harvested, status="pending", detail=detail)
+                logger.error("%s on %s: %s", record.handle, record.target, detail)
+                failed.append(Failed(handle=record.handle, target=record.target, reason=detail))
+                continue
+            self.evidence(record, harvested, status="copied")
+            if not self.release(job):
+                detail = "settlement pending; release failed and will be retried"
+                self.evidence(record, harvested, status="copied", detail=detail)
+                failed.append(Failed(handle=record.handle, target=record.target, reason=detail))
+                continue
+            self.evidence(record, harvested, status="verified")
             if state.verdict == vocabulary.OK:
                 finished.append(
                     Finished(handle=record.handle, target=record.target, pulled_path=pulled)
@@ -347,11 +510,9 @@ class Monitor:
                     )
                 )
             self.track(record, state, detail=detail)
-            self.capture(record, job)
-            self.release(job)
             verdict = Verdict(verdict=state.verdict, exit_code=state.exit_code)
             fleet.settle({job.handle: verdict})
-            self.cache.report(stored, state.verdict)
+            self.cache.report(self.cache.run(record.handle, record.target), state.verdict)
         self.board.dispatcher.prune_sources()
         return MonitorReport(
             running=running + len(waiting),
@@ -386,7 +547,7 @@ class Monitor:
             return self.unpulled(path, host=job.handle.host, fault=fault)
         return path
 
-    def release(self, job: Run) -> None:
+    def release(self, job: Run) -> bool:
         """Let a settled run go, so nothing keeps billing for work that already ended.
 
         A scheduler job releases nothing, since a queue stops charging when the job stops. A
@@ -399,6 +560,8 @@ class Monitor:
             job.release()
         except (MissionError, OSError) as fault:
             logger.warning("could not release %s on %s: %s", job.handle.id, job.handle.host, fault)
+            return False
+        return True
 
     def track(self, record: RunRecord, state: JobState, *, detail: str) -> None:
         """Publish what this pass learned about one run into that run's own receipts stream.

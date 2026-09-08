@@ -17,6 +17,7 @@ import json
 from time import monotonic, sleep
 from typing import TYPE_CHECKING
 
+from filelock import FileLock
 from patos import FrozenModel
 from pydantic import ValidationError
 
@@ -103,6 +104,7 @@ class TrialVerdict(FrozenModel):
     """
 
     job: str
+    run: str = ""
     handle: str = ""
     target: str = ""
     node: str = ""
@@ -164,30 +166,19 @@ class Verdicts:
         self.board = board
 
     def cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
-        """Stop `handle` on whatever took it, and settle its record in the same pass.
+        """Cancel under the same claim as automatic settlement, preserving cleanup failures."""
+        path = self.board.dispatcher.cache.path.with_suffix(".settlement.lock")
+        with FileLock(path):
+            return self._cancel(handle, host=host)
 
-        A cancel used to have no verb at all, so a provably doomed job could only die at its own
-        walltime (82 minutes of a serial probe against an under-set budget, 2026-08-23) and
-        killing it over ssh by hand would have stopped the job while leaving the dispatch record
-        claiming it was still running, which is a receipt trail with a hole in it. So this is one
-        pass: kill through the backend the run was dispatched under, write the terminal verdict,
-        publish the settled receipt, release whatever the run still holds, and only then advance
-        the reported cursor.
+    def _cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
+        """Preserve available evidence, cancel, and advance the cursor only after release.
 
-        The cursor moves last on purpose, the same ordering the durable sweep argues for. A
-        cancel killed halfway repeats on the next pass rather than losing an outcome, and
-        repeating is cheap because every step is idempotent: a scheduler asked to cancel a job it
-        already forgot does nothing, and a provider asked to end a rental twice is the expected
-        case rather than the exceptional one.
-
-        A dispatch a quota is holding is the one run this verb stops without touching a machine,
-        since no machine has it: the row settles as cancelled and the sweep stops asking for it.
-
-        handle: the dispatched run to stop.
-        host: the alias narrowing a handle recorded on several hosts.
+        Explicit cancellation may discard incomplete work, but records that loss rather than
+        calling the evidence complete. A held dispatch has no machine to contact.
         """
         record = self.record(handle, host=host)
-        if record.verdict in vocabulary.TERMINAL:
+        if record.verdict in vocabulary.TERMINAL and record.reported == record.verdict:
             return self.handled(handle, host=host)
         if record.verdict == vocabulary.HELD:
             # Nothing ever took this one, so there is nothing to kill and no backend to ask.
@@ -200,14 +191,30 @@ class Verdicts:
             return self.handled(handle, host=host)
         run = self.board.job(record.handle, host=record.target)
         monitor = self.board.monitor()
-        run.kill()
-        state = JobState(handle=record.handle, state=record.state, verdict=vocabulary.CANCELLED)
-        stored = self.board.dispatcher.cache.resolve(
-            record, state.state, record.exit_code, vocabulary.CANCELLED
+        receipts: tuple[str, ...] = ()
+        try:
+            receipts = monitor.capture(record, run)
+            pulled = monitor.pull(run)
+            monitor.verify(record, run, pulled, receipts)
+        except (MissionError, OSError, ValueError) as fault:
+            monitor.evidence(record, receipts, status="unverified", detail=f"cancelled: {fault}")
+        else:
+            monitor.evidence(record, receipts, status="copied")
+        verdict = (
+            record.verdict
+            if record.verdict is not None and record.verdict in vocabulary.TERMINAL
+            else vocabulary.CANCELLED
         )
-        monitor.track(record, state, detail=short_reason(vocabulary.CANCELLED, None))
-        monitor.release(run)
-        self.board.dispatcher.cache.report(stored, vocabulary.CANCELLED)
+        state = JobState(handle=record.handle, state=vocabulary.CANCELLED, verdict=verdict)
+        stored = self.board.dispatcher.cache.resolve(
+            record, state.state, record.exit_code, verdict
+        )
+        run.kill()
+        if monitor.release(run):
+            if self.board.dispatcher.cache.run(handle, record.target).evidence == "copied":
+                monitor.evidence(record, receipts, status="verified")
+            monitor.track(record, state, detail=short_reason(vocabulary.CANCELLED, None))
+            self.board.dispatcher.cache.report(stored, verdict)
         return self.handled(handle, host=host)
 
     def captured(self, handle: str, *, host: str = "") -> str:
@@ -245,11 +252,12 @@ class Verdicts:
         stream, job = streamed(record.name or "", handle=record.handle)
         under = directory(self.board, stream)
         stream_file = under / "events.ndjson"
-        recorded = eventful(Receipts(stream_file).replay()) if stream_file.is_file() else ()
+        events = Receipts(stream_file).replay() if stream_file.is_file() else []
+        recorded = eventful(events)
         mine = [trial for trial in recorded if trial.handle == record.handle]
         harvested = harvest(under)
         floor = self.swept(tuple(mine)) or (self.__floor(record, job=job),)
-        return StreamVerdict(stream=stream, trials=(*floor, *harvested))
+        return StreamVerdict(stream=stream, trials=qualified((*floor, *harvested), events))
 
     def of(self, target: str, *, host: str = "", run: str = "") -> StreamVerdict:
         """The settled truth of `target`, a receipts store, a file, a stream, or a handle.
@@ -268,10 +276,19 @@ class Verdicts:
             return StreamVerdict(stream=target, trials=read, note=unreadable(path, read))
         under = directory(self.board, target)
         stream_file = under / "events.ndjson"
-        if stream_file.is_file():
-            recorded = eventful(Receipts(stream_file).replay())
-            found = (*self.swept(recorded), *harvest(under))
-            return StreamVerdict(stream=target, trials=found, note=unreadable(stream_file, found))
+        if stream_file.is_file() or (under / "receipts.ndjson").is_file():
+            events = Receipts(stream_file).replay()
+            recorded = eventful(events)
+            missing = tuple(
+                self.__floor(record, job=job)
+                for record in self.board.dispatcher.cache.tracked()
+                for stream, job in [streamed(record.name or "", handle=record.handle)]
+                if stream == target and record.handle not in {trial.handle for trial in recorded}
+            )
+            found = (*self.swept(recorded), *missing, *harvest(under))
+            return StreamVerdict(
+                stream=target, trials=qualified(found, events), note=unreadable(stream_file, found)
+            )
         return self.handled(target, host=host)
 
     def record(self, handle: str, *, host: str = "") -> RunRecord:
@@ -358,6 +375,7 @@ class Verdicts:
         joined = trial.model_copy(
             update={"commit": record.commit, "digest": record.digest, **outcome}
         )
+        joined = delivery(joined, record)
         if joined.code != 1:
             return joined
         return joined.model_copy(update={"cause": self.why(record)})
@@ -406,7 +424,7 @@ class Verdicts:
                 settled = self.of(handle)
                 if settled.code != _IN_FLIGHT:
                     return settled
-            elif self.record(handle, host=host).verdict in vocabulary.TERMINAL:
+            elif self.record(handle, host=host).reported in vocabulary.TERMINAL:
                 return self.handled(handle, host=host)
             if deadline is not None and monotonic() >= deadline:
                 return self.of(handle) if stream else self.handled(handle, host=host)
@@ -484,6 +502,56 @@ def harvest(under: Path) -> tuple[TrialVerdict, ...]:
     return lined(path) if path.is_file() else ()
 
 
+def qualified(
+    trials: tuple[TrialVerdict, ...], events: Iterable[Event]
+) -> tuple[TrialVerdict, ...]:
+    """Overlay append-only delivery corrections; leave original computation receipts intact."""
+    statuses: dict[tuple[str, str, str], Event] = {}
+    for event in sorted(events, key=lambda event: event.at):
+        if event.topic == Topic.EVIDENCE:
+            identity = (
+                str(event.data.get("handle", "")),
+                str(event.data.get("target", "")),
+                str(event.data.get("submitted_at", "")),
+            )
+            statuses[identity] = event
+    updates: dict[tuple[str, str], Event] = {}
+    handles: dict[tuple[str, str], Event] = {}
+    for event in statuses.values():
+        cases = event.data.get("trials", [])
+        handles[(str(event.data.get("target", "")), str(event.data.get("handle", "")))] = event
+        if isinstance(cases, list):
+            updates.update(
+                {
+                    (str(case[0]), str(case[1])): event
+                    for case in cases
+                    if isinstance(case, list) and len(case) == 2
+                }
+            )
+    result: list[TrialVerdict] = []
+    for trial in trials:
+        status = (
+            handles.get((trial.target, trial.handle))
+            or handles.get(("", trial.handle))
+            or updates.get((trial.run, trial.job))
+        )
+        if status is None or status.data.get("status") in {"verified", "not_started"}:
+            result.append(trial)
+            continue
+        word = "unverified" if status.data.get("status") == "unverified" else "blocked"
+        result.append(
+            trial.model_copy(
+                update={
+                    "verdict": word,
+                    "detail": str(
+                        status.data.get("detail") or "evidence settlement is incomplete"
+                    ),
+                }
+            )
+        )
+    return tuple(result)
+
+
 def lined(path: Path) -> tuple[TrialVerdict, ...]:
     """Every row a receipts file holds, whichever of the two written shapes each line is.
 
@@ -514,7 +582,9 @@ def lined(path: Path) -> tuple[TrialVerdict, ...]:
             events.append(Event.model_validate(payload))
         except ValidationError:
             logger.debug("%s carries a line that is neither shape this verb reads", path)
-    return (*eventful(events), *trials)
+    companion = path.parent / "events.ndjson"
+    corrections = Receipts(companion).replay() if companion != path and companion.is_file() else []
+    return qualified((*eventful(events), *trials), [*events, *corrections])
 
 
 def receipted(payload: JsonValue) -> TrialVerdict:
@@ -533,6 +603,7 @@ def receipted(payload: JsonValue) -> TrialVerdict:
     data = payload if isinstance(payload, dict) else {}
     return TrialVerdict(
         job=str(data.get("case_id") or data.get("run_id", "")),
+        run=str(data.get("run", "")),
         node=str(data.get("node", "")),
         verdict=str(data.get("outcome", "")) or vocabulary.OK,
         settled=str(data.get("verdict", "")),
@@ -559,7 +630,7 @@ def gated(sweep: JsonValue) -> str:
 
 def registered(record: RunRecord, *, job: str) -> TrialVerdict:
     """The run registry's own row as a settled row, the floor a receiptless run answers from."""
-    return TrialVerdict(
+    trial = TrialVerdict(
         job=job,
         handle=record.handle,
         target=record.target,
@@ -569,6 +640,21 @@ def registered(record: RunRecord, *, job: str) -> TrialVerdict:
         exit_code=record.exit_code,
         commit=record.commit,
         digest=record.digest,
+    )
+    return delivery(trial, record)
+
+
+def delivery(trial: TrialVerdict, record: RunRecord) -> TrialVerdict:
+    """Fail closed on the cache checkpoint even if its next event was never published."""
+    if record.evidence not in {"pending", "copied", "unverified"}:
+        return trial
+    return trial.model_copy(
+        update={
+            "verdict": "unverified" if record.evidence == "unverified" else "blocked",
+            "detail": "evidence is unverified"
+            if record.evidence == "unverified"
+            else "evidence settlement is incomplete",
+        }
     )
 
 

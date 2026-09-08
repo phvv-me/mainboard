@@ -1,6 +1,7 @@
 """The injected facade preserves existing verdicts and durable, independently readable data."""
 
 import hashlib
+import json
 from io import BytesIO
 from pathlib import Path
 
@@ -14,6 +15,27 @@ from mainboard.trials import Artifact, Declaration, Log, Session
 from mainboard.trials.artifacts import Artifacts
 
 from .support import Item
+
+
+@pytest.mark.parametrize("fault", ["missing", "changed", "escape", "other-project"])
+def test_fetched_artifacts_require_the_declared_bytes_inside_the_selected_project(
+    tmp_path: Path, fault: str
+) -> None:
+    directory = tmp_path / "research/one/datasets/node"
+    writer = Artifacts(tmp_path / "research/one", directory)
+    reference = writer.write(b"data", media_type="application/octet-stream")
+    relative = reference.path
+    if fault == "missing":
+        (tmp_path / "research/one" / relative).unlink()
+    elif fault == "changed":
+        (tmp_path / "research/one" / relative).write_bytes(b"oops")
+    elif fault == "escape":
+        reference = reference.model_copy(update={"path": "../outside"})
+    else:
+        directory = tmp_path / "research/two/datasets/node"
+    line = json.dumps({"trial_receipt": {"artifacts": {"value": reference.model_dump()}}})
+    with pytest.raises((ValueError, OSError)):
+        Artifacts.verify([line], directory=directory, boundary=tmp_path)
 
 
 def test_log_derives_identity_preserves_verdict_and_records_bound_messages(

@@ -22,7 +22,7 @@ class Finished(FrozenModel):
 
 
 class Failed(FrozenModel):
-    """A job that ended badly (`failed` or `vanished`) since the last sweep, with the cause.
+    """A computational or settlement failure, with the cause.
 
     A failed run still carries its results path, because the work it did before it died is
     what a partial sweep is worth: 399 immutable receipt fragments out of 500 planned trials
@@ -30,8 +30,8 @@ class Failed(FrozenModel):
 
     handle: the scheduler's job handle.
     target: the host alias it ran on.
-    reason: a short, network-free cause (a signal exit, a plain non-zero code, or that it is
-        gone).
+    reason: the execution failure or the pending transfer/release. A settlement failure does
+        not change the recorded computational verdict or advance its reported cursor.
     pulled_path: the local path whatever it managed to write was rsynced into, or None when the
         run had no fetch path or the pull failed.
     """
