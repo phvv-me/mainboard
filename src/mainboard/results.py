@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 from compression import zstd
+from contextlib import closing
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +12,7 @@ from tempfile import TemporaryDirectory
 import duckdb
 import polars as pl
 
+from .dispatch import vocabulary
 from .dispatch.shared import db_file
 from .observe.frames import parse_tail
 from .trials.artifacts import Artifact
@@ -27,6 +29,8 @@ class Results:
 
         project: a research directory name; omitted means all projects, still labeled.
         Network refresh belongs to Mainboard monitor, not to an implicit SQL side effect.
+        Jobs separate the last backend_state from the command verdict. The settled flag
+        reads the monitor's completion cursor, not current provider liveness.
         """
         with duckdb.connect(config={"TimeZone": "UTC"}) as connection:
             self._views(connection, project)
@@ -208,16 +212,18 @@ class Results:
         jobs = []
         path = db_file(self.root)
         if path.is_file():
-            with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as state:
+            with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as state:
                 jobs = [row[0] for row in state.execute("SELECT data FROM runs")]
         connection.execute(
             """
             CREATE TABLE jobs AS SELECT row->>'target' AS server,
                 row->>'handle' AS handle, row->>'submitted_at' AS submitted_at,
-                row->>'state' AS state, row->>'verdict' AS verdict,
+                row->>'state' AS backend_state, row->>'verdict' AS verdict,
                 row->>'evidence' AS evidence,
+                coalesce((row->>'reported') = (row->>'verdict')
+                    AND (row->>'verdict') = ANY(?::VARCHAR[]), false) AS settled,
                 row->>'fetch_path' AS results, row AS metadata
             FROM unnest(?::JSON[]) AS records(row)
         """,
-            [jobs],
+            [sorted(vocabulary.TERMINAL), jobs],
         )

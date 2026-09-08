@@ -257,7 +257,7 @@ Mainboard's remote result mounts and after fetching.
 mainboard monitor --json
 mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
 mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
-mainboard query "SELECT server, handle, state, verdict FROM jobs"
+mainboard query "SELECT server, handle, backend_state, verdict, evidence, settled FROM jobs"
 mainboard query "SELECT * FROM runs" --out /tmp/runs.parquet
 mainboard help artifacts
 mainboard help batch run
@@ -268,6 +268,11 @@ repeated passes to refresh remote data; a query itself has no network side effec
 DuckDB reads the collected Parquet fragments and event journals directly. There is
 no shared database file for different servers to lock, and no database service to deploy.
 Each query sees a fresh inventory; it is not a transaction across all servers.
+
+Jobs keep the last `backend_state` separate from the command `verdict`. A rental
+can report `running` before its successful command is collected and the instance
+released. `settled` means the monitor recorded completion; it is not a fresh
+provider-liveness check, and it does not turn unverified evidence into verified data.
 
 `--out` exports the selected rows as CSV, Parquet, or JSON according to the filename
 extension. It creates parent directories, publishes only a complete file, and refuses

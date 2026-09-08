@@ -6,6 +6,8 @@ from polars.testing import assert_frame_equal
 
 from mainboard import Results
 from mainboard.cli import build
+from mainboard.dispatch.shared import db_file
+from mainboard.dispatch.state import Cache, RunRecord
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -83,3 +85,40 @@ def test_query_json_stdout_stays_available(
     with pytest.raises(SystemExit, match="^0$"):
         build(tmp_path)(["query", "SELECT 24 AS readings", "--json"])
     assert '"readings":24' in capsys.readouterr().out.replace(" ", "")
+
+
+@pytest.mark.parametrize(
+    ("verdict", "reported", "evidence", "settled"),
+    [
+        ("ok", "ok", "verified", True),
+        ("ok", None, "copied", False),
+        ("ok", "ok", "unverified", True),
+        ("running", "running", "", False),
+        (None, None, "", False),
+    ],
+)
+def test_jobs_distinguish_backend_observations_from_settlement(
+    tmp_path: Path, verdict: str | None, reported: str | None, evidence: str, settled: bool
+) -> None:
+    cache = Cache(db_file(tmp_path))
+    record = RunRecord(
+        handle="5080",
+        target="vast",
+        kind="vast",
+        script="test_carry.py::test_carry",
+        args="",
+        git_sha="acquired-source",
+        dirty=0,
+        submitted_at="2026-09-08T10:40:00Z",
+        state="running",
+        verdict=verdict,
+        reported=reported,
+        evidence=evidence,
+    )
+    cache.record(record)
+    assert Results(tmp_path).query(
+        "SELECT backend_state, verdict, evidence, settled FROM jobs"
+    ).to_dicts() == [
+        dict(backend_state="running", verdict=verdict, evidence=evidence, settled=settled)
+    ]
+    assert cache.run("5080", "vast") == record
