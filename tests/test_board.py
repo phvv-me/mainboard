@@ -570,7 +570,7 @@ class FakePrefixes:
         self.environment = environment
 
     def materialize(self, source: Path, *, modules: Mapping[str, str] = {}) -> Path:
-        return self.root / "prefixes" / self.environment / digest_of(source)
+        return self.root / "prefixes" / self.environment / digest_of(source, modules=modules)
 
     def referenced(self, sources: Path) -> set[str]:
         return set()
@@ -627,6 +627,29 @@ def test_providing_refuses_an_artifact_this_machine_reads_as_another_environment
     # And it says which of the two sides is behind, since a dispatch ships the artifact it
     # pinned and the only way the two can disagree is that something wrote over it here.
     assert "compile made on this machine rather than the one the dispatch shipped" in said
+
+
+def test_addressing_and_providing_use_the_same_host_module_identity(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = board.on(_MIYABI_G)
+    plan = bound.plan(env="default", container="none")
+    where = compiled_artifact(bound)
+    expected = digest_of(where, modules=plan.profile.modules)
+    monkeypatch.setattr("mainboard.board.Prefixes", FakePrefixes)
+    assert expected != digest_of(where)
+    assert bound.addressed(plan, "/remote").endswith(f"/default/{expected}")
+    assert bound.provide("default", str(where), expected).name == expected
+
+
+def test_providing_refuses_a_dispatch_with_a_different_module_stack(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = board.on(_MIYABI_G)
+    where = compiled_artifact(bound)
+    monkeypatch.setattr(Provisioner, "solver_version", lambda self: "0.77.0")
+    with pytest.raises(MissionError, match="the dispatch pinned"):
+        bound.provide("default", str(where), digest_of(where))
 
 
 def test_installing_here_on_windows_writes_no_bash_activation_and_names_none(

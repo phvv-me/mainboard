@@ -34,6 +34,7 @@ def test_an_unreadable_state_reads_as_stale_everywhere(
     solved_from=st.one_of(st.just(""), WORDS),
     solved_by=st.one_of(st.just(""), WORDS),
     compiled_at=st.one_of(st.just(""), WORDS),
+    runtime_from=st.one_of(st.just(""), WORDS),
 )
 @example(
     environment="serving",
@@ -41,6 +42,7 @@ def test_an_unreadable_state_reads_as_stale_everywhere(
     solved_from="feedface",
     solved_by="0.77.0",
     compiled_at="/work/xg25g007/x10537/projects",
+    runtime_from="deadbeef",
 )
 def test_a_state_survives_the_file_it_renders_in_a_deterministic_order(
     environment: str,
@@ -48,6 +50,7 @@ def test_a_state_survives_the_file_it_renders_in_a_deterministic_order(
     solved_from: str,
     solved_by: str,
     compiled_at: str,
+    runtime_from: str,
     tmp_path: Path,
 ) -> None:
     """One atomic replace carries the shard identity, its digests, solver and root back."""
@@ -57,6 +60,7 @@ def test_a_state_survives_the_file_it_renders_in_a_deterministic_order(
         solved_from=solved_from,
         solved_by=solved_by,
         compiled_at=compiled_at,
+        runtime_from=runtime_from,
     )
     text = state.render()
     SyncState.path(tmp_path).write_text(text)
@@ -64,5 +68,5 @@ def test_a_state_survives_the_file_it_renders_in_a_deterministic_order(
     assert text.endswith(
         f'environment = "{environment}"\ncompiled_from = "{compiled_from}"\n'
         f'solved_from = "{solved_from}"\nsolved_by = "{solved_by}"\n'
-        f'compiled_at = "{compiled_at}"\n'
+        f'compiled_at = "{compiled_at}"\nruntime_from = "{runtime_from}"\n'
     )

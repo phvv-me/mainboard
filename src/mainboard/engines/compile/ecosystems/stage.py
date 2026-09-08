@@ -1,8 +1,12 @@
+import hashlib
+import json
 from collections.abc import Sequence
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from ....core.host import current_platform, platform_selectors
 from ....manifest.schema.toolchain import Toolchain
+from ..pixi_manifest import normalized
 from .base import Ecosystem
 
 if TYPE_CHECKING:
@@ -29,6 +33,51 @@ class SecondStage:
         self.manifest = manifest
         self.out = out
         self.pixi = pixi
+
+    def digest(self) -> str:
+        """The selected second-stage declarations, independent of the workspace's location.
+
+        Rust and Go read their specs directly rather than through a generated file. Node's
+        manager and app location also live outside package.json. Preserve every selected scope
+        and platform selector, including overlay order, without unrelated tasks or host tables.
+        """
+        scopes = [
+            ("root", self.manifest),
+            ("dev", self.manifest.dev),
+            *((f"on:{name}", scope) for name, scope in self.manifest.on.items()),
+            *(
+                item
+                for name, environment in self.manifest.envs.items()
+                for item in (
+                    (f"env:{name}", environment),
+                    *(
+                        (f"env:{name}/on:{platform}", scope)
+                        for platform, scope in environment.on.items()
+                    ),
+                )
+            ),
+        ]
+        declared = {implementation.toolchain for implementation in Ecosystem.implementations()}
+        payload = {
+            "project": self.manifest.workspace.name,
+            "scopes": [
+                (
+                    name,
+                    {
+                        key: table.model_dump(mode="json", round_trip=True)
+                        for key, table in scope.toolchains().items()
+                        if key in declared
+                    },
+                )
+                for name, scope in scopes
+            ],
+        }
+        text = normalized(
+            json.dumps(payload, separators=(",", ":")),
+            root=self.root,
+            generated_dir=PurePosixPath("."),
+        )
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def binary_dirs(self, env: str) -> list[Path]:
         """Every directory the toolchains link executables into, for `env`'s activation."""

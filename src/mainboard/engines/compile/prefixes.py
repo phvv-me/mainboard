@@ -17,9 +17,9 @@
 #   * a forty five job wave that died the same way after an agent solved a new lock in the same
 #     workspace between its queuing and its start.
 #
-# So an environment is content now, not a location. The digest of the compiled manifest and the
-# lock beside it names a directory that is built once and never written to again; a new lock is a
-# new digest and a new directory beside the old one, and a job that was queued against the old
+# So an environment is content now, not a location. Its compiled files, second-stage declarations,
+# and host module stack name a directory that is built once and never written to again. A change
+# is a new digest and a new directory beside the old one, and a job that was queued against the old
 # one keeps it. Dispatch pins the digest into the snapshot the same way it pins the source, the
 # job activates that prefix directly rather than asking pixi to reconcile anything, and the sweep
 # that prunes unused source trees prunes unreferenced prefixes with them.
@@ -31,6 +31,7 @@
 # pinned trees finite.
 
 import hashlib
+import json
 import shutil
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -67,10 +68,8 @@ STAMP = ".mainboard-prefix"
 # What the activation a dispatched job sources is called inside a built prefix.
 ACTIVATION = "activate.sh"
 
-# The two files that define an environment, and therefore the ones its digest is taken over. The
-# rest of the generated shard is copied in beside them (see `Prefixes.__take`) but not hashed:
-# the state file names digests rather than dependencies, and an activation script or a second
-# stage's own manifest cannot change which packages the lock says land here.
+# Pixi's required pair joins the generated install/activation inputs, second-stage declarations,
+# and ordered host modules in the identity. The mutable shard activation is rebuilt per prefix.
 MANIFEST = "pixi.toml"
 LOCK = "pixi.lock"
 
@@ -88,13 +87,12 @@ def prefix_path(root: str, environment: str, digest: str) -> str:
     return f"{root}/{Project().out_dir}/{PREFIXES}/{environment}/{digest}"
 
 
-def digest_of(source: Path) -> str:
+def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
     """The identity of the environment `source`'s compiled artifact describes.
 
-    Over the compiled manifest and the lock beside it, because those two decide every package
-    that lands in a prefix and nothing else does. A source missing either has no identity at
-    all and says so, since building from half an artifact is how a prefix ends up describing
-    one lock and containing another.
+    Over Pixi's required pair, generated install and activation files, the second-stage
+    declaration digest, and the ordered host module stack. A source missing either required
+    file has no identity: half an artifact cannot describe a complete environment.
 
     Both files are read normalized, and the lock canonically on top of that, since pixi writes
     the lock and each version writes some of it differently: see `pixi_lock.canonical` for the
@@ -110,14 +108,39 @@ def digest_of(source: Path) -> str:
     as a different one.
 
     source: a directory holding a compiled `pixi.toml` and the `pixi.lock` solved from it.
+    modules: the target host's declared module stack, in activation order.
     """
     shard = environment_shard(source.name)
-    root = PurePosixPath(SyncState.load(source).compiled_at or _standing(source, shard))
-    fingerprint = hashlib.sha256()
+    state = SyncState.load(source)
+    root = PurePosixPath(state.compiled_at or _standing(source, shard))
+    payload = []
     for name in (MANIFEST, LOCK):
         text = normalized(_defining(source, name), root=root, generated_dir=shard)
-        fingerprint.update((canonical(text) if name == LOCK else text).encode("utf-8"))
-    return fingerprint.hexdigest()[:16]
+        payload.append((name, canonical(text) if name == LOCK else text))
+    for entry in _generated(source):
+        if entry.name in (MANIFEST, LOCK):
+            continue
+        payload.append(
+            (
+                entry.name,
+                normalized(entry.read_text(encoding="utf-8"), root=root, generated_dir=shard),
+            )
+        )
+    encoded = json.dumps(
+        [payload, state.runtime_from, list(modules.items())], separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _generated(source: Path) -> list[Path]:
+    """Generated install/activation inputs, excluding state and mutable build bookkeeping."""
+    return [
+        entry
+        for entry in sorted(source.iterdir())
+        if entry.is_file()
+        and not entry.name.startswith(".")
+        and entry.name not in (ACTIVATION, SyncState.path(source).name)
+    ]
 
 
 def _standing(source: Path, shard: PurePosixPath) -> str:
@@ -171,7 +194,14 @@ class Prefixes:
 
     def built(self, digest: str) -> bool:
         """Whether the environment `digest` names is finished and safe to activate."""
-        return (self.path(digest) / STAMP).is_file()
+        target = self.path(digest)
+        try:
+            stamped = (target / STAMP).read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return False
+        return stamped == digest and all(
+            (target / name).is_file() for name in (MANIFEST, LOCK, ACTIVATION)
+        )
 
     def materialize(self, source: Path, *, modules: Mapping[str, str] = {}) -> Path:
         """Build the environment `source` describes, once, and answer where it is.
@@ -192,8 +222,16 @@ class Prefixes:
         source: the directory holding the compiled artifact to build from.
         modules: the host's declared module stack, carried into the activation script.
         """
-        digest = digest_of(source)
+        digest = digest_of(source, modules=modules)
         target = self.path(digest)
+        projected = selected_manifest(self.manifest, self.environment)
+        pixi = Pixi(target)
+        stage = SecondStage(self.root, projected, target, pixi)
+        if SyncState.load(source).runtime_from != stage.digest():
+            raise MissionError(
+                f"{source} does not record this selected second-stage runtime; recompile and "
+                "ship the matching artifact before building its addressed environment"
+            )
         if self.built(digest):
             return target
         self.base.mkdir(parents=True, exist_ok=True)
@@ -202,10 +240,7 @@ class Prefixes:
                 return target
             target.mkdir(parents=True, exist_ok=True)
             self.__take(source, target, files)
-            pixi = Pixi(target)
             pixi.install(self.environment)
-            projected = selected_manifest(self.manifest, self.environment)
-            stage = SecondStage(self.root, projected, target, pixi)
             stage.install(self.environment)
             binaries = [
                 directory
@@ -221,7 +256,7 @@ class Prefixes:
     def __take(self, source: Path, target: Path, files: Writer) -> None:
         """Copy the compiled artifact into the prefix, anchored so the copy reads as it did.
 
-        EVERY generated file travels, not only the pair the digest is taken over. The manifest's
+        Every defining generated file travels. The manifest's
         activation sources the dotenv loader and the unset script by name, and the second stage
         installs from whatever its own managers read, so a prefix holding only the manifest and
         the lock is activated without the variables the workspace declares and installed without
@@ -249,9 +284,7 @@ class Prefixes:
         files: the writer holding the lock on the prefixes directory.
         """
         shard = environment_shard(self.environment)
-        for entry in sorted(source.iterdir()):
-            if entry.name.startswith(".") or not entry.is_file():
-                continue
+        for entry in (*_generated(source), SyncState.path(source)):
             text = entry.read_text(encoding="utf-8")
             files.write(target / entry.name, anchored(text, root=self.root, generated_dir=shard))
 

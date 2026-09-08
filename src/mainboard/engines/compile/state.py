@@ -34,6 +34,10 @@ class SyncState(FrozenModel):
     address moved with the root and no host could build what a workstation pinned. Recorded
     rather than derived, because the artifact is read from wherever it was copied to (a mirror,
     a pinned snapshot under it) and only it knows which root its own text spells.
+
+    `runtime_from` identifies the complete selected second-stage declarations after normalizing
+    workspace paths. It excludes unrelated tasks and host tables and joins the generated files
+    and ordered host modules in the immutable-prefix identity.
     """
 
     environment: str = ""
@@ -41,6 +45,7 @@ class SyncState(FrozenModel):
     solved_from: str = ""
     solved_by: str = ""
     compiled_at: str = ""
+    runtime_from: str = ""
 
     @staticmethod
     def path(out: Path) -> Path:
@@ -65,6 +70,7 @@ class SyncState(FrozenModel):
             solved_from=str(data.get("solved_from", "")),
             solved_by=str(data.get("solved_by", "")),
             compiled_at=str(data.get("compiled_at", "")),
+            runtime_from=str(data.get("runtime_from", "")),
         )
 
     def render(self) -> str:
@@ -77,5 +83,6 @@ class SyncState(FrozenModel):
             f'solved_from = "{self.solved_from}"',
             f'solved_by = "{self.solved_by}"',
             f'compiled_at = "{self.compiled_at}"',
+            f'runtime_from = "{self.runtime_from}"',
         ]
         return "\n".join(lines) + "\n"

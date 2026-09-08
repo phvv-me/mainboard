@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard import MissionError
+from mainboard.engines.compile.backend import Pixi
+from mainboard.engines.compile.ecosystems import SecondStage
 from mainboard.engines.compile.prefixes import STAMP, Prefixes, digest_of, prefix_path
+from mainboard.engines.compile.provisioner import Provisioner
+from mainboard.engines.compile.state import SyncState
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -18,7 +22,7 @@ _WORKSPACE = '[workspace]\nname = "w"\n'
 
 
 @pytest.fixture
-def artifact(tmp_path: Path) -> Callable[[str], Path]:
+def artifact(tmp_path: Path, manifest_from: Callable[[str], Manifest]) -> Callable[[str], Path]:
     """A factory writing a compiled artifact whose lock pins `text`, returning its directory."""
 
     def make(text: str) -> Path:
@@ -26,6 +30,10 @@ def artifact(tmp_path: Path) -> Callable[[str], Path]:
         source.mkdir(parents=True, exist_ok=True)
         (source / "pixi.toml").write_text('[workspace]\nname = "w"\n', encoding="utf-8")
         (source / "pixi.lock").write_text(f"version: 7\n# {text}\n", encoding="utf-8")
+        stage = SecondStage(tmp_path, manifest_from(_WORKSPACE), source, Pixi(source))
+        SyncState.path(source).write_text(
+            SyncState(runtime_from=stage.digest()).render(), encoding="utf-8"
+        )
         return source
 
     return make
@@ -79,6 +87,139 @@ def test_an_environment_is_addressed_by_the_artifact_it_would_be_built_from(
     # And nothing was built by asking where it would go.
     assert not prefixes.built(digest_of(one))
     assert not prefixes.base.exists()
+
+
+@pytest.mark.parametrize(
+    "modules",
+    [
+        {"cuda": "12.9", "gcc": "14"},
+        {"gcc": "14", "cuda": "12.8"},
+        {"cuda": "12.8"},
+    ],
+)
+def test_module_versions_and_load_order_change_the_environment_address(
+    artifact: Callable[[str], Path], modules: Mapping[str, str]
+) -> None:
+    source = artifact("modules")
+    assert digest_of(source, modules={"cuda": "12.8", "gcc": "14"}) != digest_of(
+        source, modules=modules
+    )
+
+
+@pytest.mark.parametrize("name", ["package.json", "package-lock.json", "dotenv.sh", "unset.sh"])
+def test_generated_install_and_activation_inputs_are_part_of_the_address(
+    artifact: Callable[[str], Path], name: str
+) -> None:
+    source = artifact("generated")
+    before = digest_of(source)
+    (source / name).write_text("first\n", encoding="utf-8")
+    first = digest_of(source)
+    (source / name).write_text("second\n", encoding="utf-8")
+    assert before != first != digest_of(source)
+
+
+def test_mutable_activation_and_compile_bookkeeping_do_not_change_identity(
+    artifact: Callable[[str], Path],
+) -> None:
+    source = artifact("bookkeeping")
+    before = digest_of(source)
+    (source / "activate.sh").write_text("local hook\n", encoding="utf-8")
+    (source / ".mainboard-synced").write_text("stamp\n", encoding="utf-8")
+    state = SyncState.load(source)
+    SyncState.path(source).write_text(
+        state.model_copy(update={"compiled_from": "another-root", "solved_by": "0.99"}).render(),
+        encoding="utf-8",
+    )
+    assert digest_of(source) == before
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ('[rust.deps]\nrg = "1"', '[rust.deps]\nrg = "2"'),
+        (
+            '[rust.deps]\nrg = {git = "https://example.org/tool", rev = "abc"}',
+            '[rust.deps]\nrg = {git = "https://example.org/tool", rev = "def"}',
+        ),
+        (
+            '[rust.deps]\nrg = {path = "packages/one", locked = true}',
+            '[rust.deps]\nrg = {path = "packages/two", locked = false}',
+        ),
+        ('[go.deps]\n"example.org/tool" = "1.0"', '[go.deps]\n"example.org/tool" = "2.0"'),
+        ('[nodejs.deps]\nprettier = "3"', '[nodejs.deps]\nprettier = "4"'),
+        (
+            '[nodejs]\nmanager = "npm"\n[nodejs.deps]\nprettier = "3"',
+            '[nodejs]\nmanager = "pnpm"\n[nodejs.deps]\nprettier = "3"',
+        ),
+        (
+            '[nodejs]\napp = false\n[nodejs.deps]\nprettier = "3"',
+            '[nodejs]\napp = true\n[nodejs.deps]\nprettier = "3"',
+        ),
+        (
+            '[nodejs.package]\nprivate = false\n[nodejs.deps]\nprettier = "3"',
+            '[nodejs.package]\nprivate = true\n[nodejs.deps]\nprettier = "3"',
+        ),
+        ('[nodejs.dev]\neslint = "8"', '[nodejs.dev]\neslint = "9"'),
+        ('[on.linux-64.rust.deps]\nrg = "1"', '[on.linux-64.rust.deps]\nrg = "2"'),
+        ('[on.win-64.rust.deps]\nrg = "1"', '[on.win-64.rust.deps]\nrg = "2"'),
+        ('[dev.rust.deps]\nrg = "1"', '[dev.rust.deps]\nrg = "2"'),
+        (
+            '[go.deps]\n"one.org/tool" = "1"\n"two.org/tool" = "2"',
+            '[go.deps]\n"two.org/tool" = "2"\n"one.org/tool" = "1"',
+        ),
+    ],
+)
+def test_second_stage_changes_move_the_address_even_with_the_same_pixi_lock(
+    tmp_path: Path,
+    manifest_from: Callable[[str], Manifest],
+    before: str,
+    after: str,
+) -> None:
+    identities = []
+    for declaration in (before, after):
+        provisioner = Provisioner(tmp_path, manifest_from(f"{_WORKSPACE}\n{declaration}\n"))
+        provisioner.recompiled()
+        source = provisioner.environment_dir()
+        (source / "pixi.lock").write_text("version: 7\n", encoding="utf-8")
+        assert SyncState.load(source).runtime_from == provisioner.stage.digest()
+        identities.append(digest_of(source))
+    assert identities[0] != identities[1]
+
+
+def test_a_selected_second_stage_ignores_unrelated_tasks_hosts_and_environments(
+    tmp_path: Path, manifest_from: Callable[[str], Manifest]
+) -> None:
+    identities = []
+    for version in ("1", "2"):
+        manifest = manifest_from(
+            f'{_WORKSPACE}\n[rust.deps]\nrg = "1"\n[tasks]\ncheck = "echo {version}"\n'
+            f'[envs.other.rust.deps]\nrg = "{version}"\n'
+            f'[hosts.remote.modules]\ncuda = "{version}"\n'
+        )
+        identities.append(Provisioner(tmp_path, manifest).stage.digest())
+    assert identities[0] == identities[1]
+
+
+def test_relocated_second_stage_paths_and_generated_inputs_keep_one_identity(
+    tmp_path: Path, manifest_from: Callable[[str], Manifest]
+) -> None:
+    identities = []
+    runtime_identities = []
+    for name in ("workstation", "host"):
+        root = tmp_path / name
+        root.mkdir()
+        manifest = manifest_from(
+            f'{_WORKSPACE}\n[rust.deps]\nrg = {{path = "{root}/packages/tool"}}\n'
+            f'[env]\nPYTHONPATH = "{root}/src"\n'
+        )
+        provisioner = Provisioner(root, manifest)
+        provisioner.recompiled()
+        source = provisioner.environment_dir()
+        (source / "pixi.lock").write_text("version: 7\n", encoding="utf-8")
+        identities.append(digest_of(source, modules={"cuda": "12.8"}))
+        runtime_identities.append(SyncState.load(source).runtime_from)
+    assert identities[0] == identities[1]
+    assert runtime_identities[0] == runtime_identities[1]
 
 
 def test_half_an_artifact_names_no_environment_and_says_which_command_makes_one(
@@ -200,6 +341,62 @@ def test_an_environment_already_built_is_answered_and_never_built_again(
     assert prefixes.materialize(source) == built
     assert len(fp.calls) == spent
     assert prefixes.built(digest_of(source))
+
+
+def test_module_stacks_build_separate_activations_without_rewriting_the_old_prefix(
+    fp: FakeProcess,
+    artifact: Callable[[str], Path],
+    prefixes: Prefixes,
+    tool_paths: Mapping[str, str],
+) -> None:
+    fp.register(
+        [tool_paths["pixi"], "shell-hook", fp.any()], stdout="export ONE=1\n", occurrences=2
+    )
+    fp.register([fp.any()], stdout="environment ready\n", occurrences=16)
+    source = artifact("modules")
+    first = prefixes.materialize(source, modules={"cuda": "12.8"})
+    activation = (first / "activate.sh").read_bytes()
+    second = prefixes.materialize(source, modules={"cuda": "12.9"})
+    assert first != second
+    assert first.name == digest_of(source, modules={"cuda": "12.8"})
+    assert second.name == digest_of(source, modules={"cuda": "12.9"})
+    assert (first / "activate.sh").read_bytes() == activation
+    assert b"cuda/12.8" in activation
+    assert "cuda/12.9" in (second / "activate.sh").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("missing", [STAMP, "activate.sh", "pixi.toml", "pixi.lock"])
+def test_a_stamp_cannot_vouch_for_a_prefix_missing_a_required_file(
+    prefixes: Prefixes, missing: str
+) -> None:
+    target = prefixes.path("incomplete")
+    target.mkdir(parents=True)
+    for name in (STAMP, "activate.sh", "pixi.toml", "pixi.lock"):
+        if name != missing:
+            (target / name).write_text("incomplete\n", encoding="utf-8")
+    assert not prefixes.built("incomplete")
+
+
+def test_materialize_refuses_a_runtime_not_recorded_by_the_compiled_artifact(
+    artifact: Callable[[str], Path], prefixes: Prefixes
+) -> None:
+    source = artifact("unrecorded")
+    SyncState.path(source).write_text(SyncState().render(), encoding="utf-8")
+    with pytest.raises(MissionError, match="selected second-stage runtime"):
+        prefixes.materialize(source)
+    assert not prefixes.base.exists()
+
+
+def test_materialize_refuses_second_stage_declarations_changed_after_compile(
+    artifact: Callable[[str], Path],
+    prefixes: Prefixes,
+    manifest_from: Callable[[str], Manifest],
+) -> None:
+    source = artifact("changed-runtime")
+    changed = Prefixes(prefixes.root, manifest_from(f'{_WORKSPACE}\n[rust.deps]\nrg = "2"\n'))
+    with pytest.raises(MissionError, match="selected second-stage runtime"):
+        changed.materialize(source)
+    assert not prefixes.base.exists()
 
 
 def test_an_interrupted_build_is_never_mistaken_for_a_finished_one(

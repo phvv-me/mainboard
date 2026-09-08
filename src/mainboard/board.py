@@ -900,7 +900,7 @@ class Board:
         provisioner = Provisioner(self.root, self.manifest)
         where = self.dispatcher.local(source) if source else provisioner.environment_dir(plan.env)
         if expect:
-            self.__pinned(where, expect, provisioner)
+            self.__pinned(where, expect, provisioner, modules=plan.profile.modules)
         prefixes = Prefixes(self.root, self.manifest, plan.env)
         built = prefixes.materialize(where, modules=plan.profile.modules)
         # Building is also the moment to let go of what nothing names any more, since this is
@@ -912,27 +912,34 @@ class Board:
             )
         return built
 
-    def __pinned(self, where: Path, expect: str, provisioner: Provisioner) -> None:
+    def __pinned(
+        self,
+        where: Path,
+        expect: str,
+        provisioner: Provisioner,
+        *,
+        modules: Mapping[str, str],
+    ) -> None:
         """Refuse to build when this machine reads the shipped artifact as another environment.
 
-        A prefix is addressed by the content of the manifest and lock it is built from, and both
-        sides reach that address from the same bytes, so the two numbers agree or something
-        rewrote the artifact between them. That something is pixi, which rewrites the lock it
-        reads and spells parts of it differently from version to version, so the refusal names
-        the pixi that solved the lock beside the one running here as well as the two addresses.
-        Building anyway would put a whole environment at a path no queued job will ever activate.
+        Both sides must agree on the generated files, selected second-stage declarations, and
+        ordered host modules. The refusal also names both Pixi versions, since lock rewrites
+        were another source of identity drift. Building anyway would put an environment at a
+        path no queued job will ever activate.
 
         where: the compiled artifact this build would read.
         expect: the digest the dispatch pinned.
         provisioner: this workspace's compile stack, which knows the pixi running here.
         """
-        arrived = digest_of(where)
+        arrived = digest_of(where, modules=modules)
         if arrived == expect:
             return
         state = SyncState.load(where)
         solved = state.solved_by or "an unrecorded pixi"
         raise MissionError(
-            f"{where} describes environment {arrived}, but the dispatch pinned {expect}. That "
+            f"{where} describes environment {arrived}, but the dispatch pinned {expect}. "
+            "Check the selected second-stage runtime and ordered host modules as well as the "
+            "generated files. That "
             f"artifact was compiled for {state.compiled_at or 'an unrecorded root'} from "
             f"manifest {state.compiled_from[:12] or 'nothing'}, so {self.__behind(state)}. It "
             f"was solved by pixi {solved} while this machine runs pixi "
@@ -1016,7 +1023,7 @@ class Board:
             return ""
         where = Provisioner(self.root, self.manifest).environment_dir(plan.env)
         try:
-            digest = digest_of(where)
+            digest = digest_of(where, modules=plan.profile.modules)
         except MissionError as unbuilt:
             logger.warning("dispatching without an addressed environment: %s", unbuilt)
             return ""

@@ -211,7 +211,11 @@ class Compiler:
         if not self.pixi.manifest.exists():
             return False
         state = SyncState.load(self.out)
-        return state.environment != self.environment or state.compiled_from != self.digest()
+        return (
+            state.environment != self.environment
+            or state.compiled_from != self.digest()
+            or state.runtime_from != self.stage.digest()
+        )
 
     def write(self, files: Writer) -> None:
         """Write this shard's generated files through the workspace-locked writer."""
@@ -242,6 +246,7 @@ class Compiler:
                     "environment": self.environment,
                     "compiled_from": source_digest,
                     "compiled_at": str(self.root),
+                    "runtime_from": self.stage.digest(),
                 }
             ),
         )
