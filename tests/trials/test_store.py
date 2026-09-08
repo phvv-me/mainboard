@@ -443,6 +443,7 @@ def test_a_receipts_store_is_scored_one_run_at_a_time_rather_than_as_one_flat_st
     assert newest.trials == (
         TrialVerdict(
             job="one",
+            run="run-2",
             node="alpha",
             verdict="passed",
             settled="refuted",
