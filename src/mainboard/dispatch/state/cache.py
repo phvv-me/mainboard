@@ -25,8 +25,8 @@ class RunRecord(FrozenModel):
     target: the alias the job was dispatched to.
     kind: the target's kind at submit time, a scheduler's (`ssh` / `pbs` / `slurm` / `local`) or
         a provider's (`vast` / `hpc-ai` / `modal`), which is what a later pass routes on.
-    script: the job script path on the host, or the command itself for a provider run, which
-        has no script because the provider took the command directly.
+    script: the original shipment spelling, or the prepared host script for a direct
+        submission without a shipment. Older queued records may contain a generated script.
     args: the script arguments, shell-quoted and space-joined.
     git_sha: the short HEAD sha the workspace was at when dispatched.
     dirty: 1 when the working tree had uncommitted changes, else 0.

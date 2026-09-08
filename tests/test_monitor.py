@@ -19,12 +19,15 @@ from mainboard.batch.runner import directory
 from mainboard.cli import build
 from mainboard.costs.catalog import Offer
 from mainboard.dispatch import SshTransport
+from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch.backends import HpcAiBackend, VastBackend
 from mainboard.dispatch.lease import Lease
+from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.rentals import Identity
 from mainboard.dispatch.schedulers import HostUnreachable
+from mainboard.dispatch.shipment import Shipment
 from mainboard.dispatch.state import Cache, RunRecord
-from mainboard.dispatch.vocabulary import JobState
+from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.durable import (
     Every,
     Settler,
@@ -36,9 +39,10 @@ from mainboard.durable import (
 )
 from mainboard.experiments import StudyLedger
 from mainboard.experiments.identity import study_label
+from mainboard.manifest import HostProfile
 
 from .dispatch.backends.support import FakeTransport, refused
-from .dispatch.support import machine_with
+from .dispatch.support import RecordingScheduler, machine_with, plan
 
 if TYPE_CHECKING:
     from urllib.request import Request
@@ -657,6 +661,49 @@ def test_a_native_job_without_any_captured_receipt_cannot_settle_an_empty_transf
     monkeypatch.setattr(Job, "release", lambda job: pytest.fail("evidence was not delivered"))
     report = board.monitor().once()
     assert not report.finished and "no captured receipt" in report.failed[0].reason
+
+
+@pytest.mark.parametrize("kind", ["ssh", "pbs"])
+def test_queued_native_submission_cannot_verify_an_empty_transfer(
+    board: Board, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """Keep the native identity through real rendering, submission, and settlement."""
+    dispatcher = board.dispatcher
+    scheduler = RecordingScheduler()
+    monkeypatch.setattr(dispatch_module, "pick", lambda profile: scheduler)
+    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
+    monkeypatch.setattr(dispatcher, "rsync_up", lambda *args, **kwargs: [])
+    monkeypatch.setattr(dispatcher, "prune_sources", lambda: None)
+    spelling = "'research/project with spaces/experiments/node/test_law.py::test_law' -- -q"
+    shipment = Shipment(
+        command=f"python -m mainboard.jobs.call {spelling}",
+        spelling=spelling,
+        source=Source(identity="abc1234", key="abc1234"),
+    )
+    handle = dispatcher.run(
+        plan(host=_HOST, profile=HostProfile(kind=kind, root="/repo")),
+        shipment,
+        root="/repo",
+        resources=Resources(walltime="00:01:00"),
+        fetch="research/project with spaces/datasets/node",
+        name="native-empty-transfer",
+    )
+    [(_, generated, args)] = [call for name, call in scheduler.calls if name == "submit"]
+    assert isinstance(generated, str)
+    assert generated.startswith(".mainboard/dispatch/jobs/job-") and generated.endswith(".sh")
+    assert (board.root / generated).is_file() and args == ()
+    probing(board, monkeypatch, finishing())
+    monkeypatch.setattr(Job, "pull", lambda job: None)
+    monkeypatch.setattr(Job, "transcript", lambda job: "")
+    released: list[str] = []
+    monkeypatch.setattr(Job, "release", lambda job: released.append(job.handle.id))
+    report = board.monitor().once()
+    assert not report.finished and "no captured receipt" in report.failed[0].reason
+    assert not released
+    record = dispatcher.cache.run(handle.id)
+    assert record.script == spelling and record.args == ""
+    assert record.evidence == "pending" and record.reported is None
+    assert board.verdicts().handled(handle.id).code == 2
 
 
 @pytest.mark.parametrize("fault", ["torn", "capture"])

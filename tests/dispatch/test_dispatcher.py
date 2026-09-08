@@ -264,11 +264,28 @@ def test_submit_records_the_run_with_the_git_provenance_it_was_dispatched_from(
     [run] = dispatcher.cache.recent(10)
     assert (run.handle, run.target, run.git_sha, run.dirty) == (handle, "gold", "abc1234", dirty)
     assert run.args == "--x 1"
+    assert run.script == "train.sh"
     # And the whole commit beside the short one, with the digest of the tree it was taken from:
     # the mirror this job runs in has no history, so the registry is where a later reader learns
     # what the run was measured from.
     assert run.commit == "abc1234"
     assert len(run.digest) == 64
+
+
+def test_direct_script_submission_keeps_the_prepared_path_and_arguments(
+    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
+) -> None:
+    script = workdir / "script with spaces.sh"
+    script.write_text("#!/bin/bash\nexit 0\n")
+    args = ("--label", "a b")
+    handle = dispatcher.submit(
+        plan(), "/repo", script=str(script), args=args, resources=Resources()
+    )
+    record = dispatcher.cache.run(handle)
+    [(_, prepared, submitted_args)] = [call for name, call in backend.calls if name == "submit"]
+    assert record.script == prepared and record.script.startswith(".mainboard/dispatch/jobs/")
+    assert (workdir / record.script).read_bytes() == script.read_bytes()
+    assert submitted_args == args and record.args == "--label 'a b'"
 
 
 def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror_itself(

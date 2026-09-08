@@ -774,7 +774,7 @@ class Dispatcher:
                 handle=handle,
                 target=plan.host,
                 kind=plan.profile.kind,
-                script=prepared,
+                script=dispatched.spelling if shipment is not None else prepared,
                 args=" ".join(shlex.quote(a) for a in args),
                 git_sha=sha,
                 dirty=int(dirty),
