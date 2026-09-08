@@ -10,7 +10,7 @@ from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING
 
-from filelock import FileLock, Timeout
+from filelock import Timeout
 from plumbum.commands.processes import ProcessExecutionError
 
 from .batch.receipts import Topic, latest, publish
@@ -79,7 +79,11 @@ class Sweep:
         self.down: dict[str, str] = {}
         # A dispatch a quota is holding has no handle and no target that has heard of it, so it
         # is not a thing to probe. `Monitor.held` is what asks its target for room again.
-        waiting = [record for record in records if record.verdict != vocabulary.HELD]
+        waiting = [
+            record
+            for record in records
+            if record.verdict not in {vocabulary.HELD, vocabulary.PREPARED, vocabulary.SUBMITTING}
+        ]
         for (target, kind), owned in self.grouped(waiting).items():
             if target in self.down:
                 continue
@@ -364,10 +368,9 @@ class Monitor:
 
     def once(self) -> MonitorReport:
         """Serialize settlement before reading its cursor, including across monitor processes."""
-        path = self.cache.path.with_suffix(".settlement.lock")
-        lock = FileLock(path, timeout=0)
+        lock = self.cache.settlement
         try:
-            lock.acquire()
+            lock.acquire(timeout=0)
         except Timeout:
             logger.debug("another monitor owns settlement; leaving its cursor untouched")
             return MonitorReport()
@@ -414,6 +417,21 @@ class Monitor:
         resumed, waiting = self.held()
         fleet = self.board.fleet()
         records = self.cache.tracked()
+        for record in records:
+            if record.verdict in {vocabulary.PREPARED, vocabulary.SUBMITTING}:
+                reason = (
+                    "provider creation prepared; no create attempted; cancel if abandoned"
+                    if record.verdict == vocabulary.PREPARED
+                    else "provider creation has no confirmed handle; reconcile its exact "
+                    "label before retrying; no automatic resubmission or release"
+                )
+                failed.append(
+                    Failed(
+                        handle=record.handle,
+                        target=record.target,
+                        reason=reason,
+                    )
+                )
         resolved = Sweep(self.board, records)
         for record in records:
             state = resolved.states.get(record)

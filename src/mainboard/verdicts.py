@@ -17,7 +17,6 @@ import json
 from time import monotonic, sleep
 from typing import TYPE_CHECKING
 
-from filelock import FileLock
 from patos import FrozenModel
 from pydantic import ValidationError
 
@@ -70,6 +69,8 @@ _EXITS = {
     "blocked": 2,
     "": 2,
     vocabulary.QUEUED: 2,
+    vocabulary.PREPARED: 2,
+    vocabulary.SUBMITTING: 2,
 }
 
 
@@ -167,8 +168,7 @@ class Verdicts:
 
     def cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
         """Cancel under the same claim as automatic settlement, preserving cleanup failures."""
-        path = self.board.dispatcher.cache.path.with_suffix(".settlement.lock")
-        with FileLock(path):
+        with self.board.dispatcher.cache.settlement:
             return self._cancel(handle, host=host)
 
     def _cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
@@ -178,7 +178,22 @@ class Verdicts:
         calling the evidence complete. A held dispatch has no machine to contact.
         """
         record = self.record(handle, host=host)
+        if record.verdict == vocabulary.SUBMITTING:
+            raise MissionError(
+                f"creation {record.creation} has no confirmed provider handle; reconcile "
+                "its provider label before cancellation; absence from one listing is not proof"
+            )
         if record.verdict in vocabulary.TERMINAL and record.reported == record.verdict:
+            return self.handled(handle, host=host)
+        if record.verdict == vocabulary.PREPARED:
+            cache = self.board.dispatcher.cache
+            try:
+                cache.leave_prepared(record, vocabulary.CANCELLED)
+            except ValueError as changed:
+                raise MissionError(
+                    f"creation {record.creation} changed during cancellation; reconcile "
+                    "its provider label before retrying"
+                ) from changed
             return self.handled(handle, host=host)
         if record.verdict == vocabulary.HELD:
             # Nothing ever took this one, so there is nothing to kill and no backend to ask.

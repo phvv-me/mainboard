@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from ..core.errors import MissionError
 from . import vocabulary
 from .backends.base import ProviderBackend
+from .dispatcher import Handle
 from .jobs import JobSpec
 from .onboard import Bootstrap, RemoteShell
 from .rentals import Rental, handoff
@@ -34,7 +35,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ..context.plan import ExecutionPlan
-    from .dispatcher import Dispatcher, Handle
+    from .allocation import Allocation
+    from .dispatcher import Dispatcher
     from .shipment import Shipment
     from .transport import Machine
     from .vocabulary import Resources
@@ -53,7 +55,7 @@ class Renter(Protocol):
     def cancel(self, handle: str) -> None:
         """Cancel `handle` on the provider, which is what stops the meter."""
 
-    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
         """Rent a machine for one job and return it once ssh answers on it."""
 
 
@@ -111,32 +113,35 @@ class Landing:
 
         The shared registry retains the rental if this process dies during provisioning. A
         failed landing still attempts immediate cleanup; a failed cleanup remains tracked.
-        The backend currently returns only after SSH is ready, so creation and address discovery
-        still precede this registration and need provider-side request reconciliation.
+        The provider must persist its returned handle before waiting for SSH. A lost create
+        response leaves its labeled intent visible and requires provider-side reconciliation.
 
         shipment: what the job runs and ships, once the machine can run it.
         name: the label retained by a later monitor.
         node: the research node served by the dispatch.
         """
-        rental = self.backend.rent(self.plan, self.resources)
+        allocation = self.dispatcher.allocating(
+            self.plan, shipment, self.resources, name=name, node=node, evidence="not_started"
+        )
+        rental = None
         started = False
         try:
-            handle = self.dispatcher.track(
-                rental.handle,
-                host=self.plan.host,
-                kind=self.plan.profile.kind,
-                shipment=shipment,
-                name=name,
-                node=node,
-                fetch=shipment.fetch or None,
-                evidence="not_started",
-            )
+            rental = self.backend.rent(self.plan, self.resources, allocation=allocation)
             self.equip(rental, shipment=shipment)
             started = True
         finally:
             if not started:
-                self._abort(rental.handle)
-        return handle
+                if rental is None:
+                    allocation.interrupted()
+                else:
+                    self._abort(rental.handle)
+        return Handle(
+            id=rental.handle,
+            host=self.plan.host,
+            root="",
+            kind=self.plan.profile.kind,
+            fetch_path=shipment.fetch or None,
+        )
 
     def _abort(self, handle: str) -> None:
         """Release a definite setup failure; retain an ambiguous launch for the monitor."""
@@ -198,9 +203,14 @@ class Landing:
             )
             self.verify(remote, pinned)
             self.watch(f"starting the job on {rental.handle}")
-            registered = self.dispatcher.cache.run(rental.handle, self.plan.host)
-            self.dispatcher.cache.delivery(registered, "pending")
-            self.start(remote, pinned=pinned, script=f"{root}/{script}")
+            with self.dispatcher.cache.settlement:
+                registered = self.dispatcher.cache.run(rental.handle, self.plan.host)
+                if registered.verdict in vocabulary.TERMINAL:
+                    raise MissionError(
+                        f"rental {rental.handle} ended during setup; refusing launch"
+                    )
+                self.dispatcher.cache.delivery(registered, "pending")
+                self.start(remote, pinned=pinned, script=f"{root}/{script}")
 
     def transferable(self, remote: Machine) -> None:
         """Make sure the machine can receive a mirror at all, since rsync runs on both ends.

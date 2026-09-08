@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
+    from ..allocation import Allocation
     from ..vocabulary import Resources
     from .base import Transport
 
@@ -401,7 +402,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             "own card. Maxwell, Pascal and Volta went with it; ask for Turing or newer."
         )
 
-    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
         """Rent a machine that answers ssh and hold its entrypoint until a dispatch lands on it.
 
         The entrypoint waits rather than running the job, because the workspace, the tool and the
@@ -421,7 +422,9 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             max_usd_hr=self.hourly_cap(resources, landing=LANDING_SECONDS),
         )
         script = f"{waiting()}\necho {_EXIT_SENTINEL}$status\nexit $status\n"
-        handle = self.rented(offer, plan=plan, launch={"runtype": "ssh", "onstart": script})
+        handle = self.rented(
+            offer, plan=plan, launch={"runtype": "ssh", "onstart": script}, allocation=allocation
+        )
         opened = False
         try:
             endpoint = self.opened(handle, key=key)
@@ -443,7 +446,9 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         self.attach(handle, key=key.public)
         return reachable(endpoint, sleeper=self.sleeper)
 
-    def rented(self, offer: Mapping, *, plan: ExecutionPlan, launch: dict) -> str:
+    def rented(
+        self, offer: Mapping, *, plan: ExecutionPlan, launch: dict, allocation: Allocation
+    ) -> str:
         """Create the instance for `offer`, returning the contract id that starts the meter.
 
         offer: the bundle row `pick` chose.
@@ -457,7 +462,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             "client_id": "me",
             "image": container.image if container is not None else _DEFAULT_IMAGE,
             "disk": self.disk_gb,
-            "label": f"mainboard-{plan.host}",
+            "label": allocation.label,
             # Fail the rent outright rather than parking a stopped instance we would still owe
             # storage on when the offer is taken between the search and the create.
             "cancel_unavail": True,
@@ -465,6 +470,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         }
         if self.spot:
             body["price"] = float(offer["min_bid"])
+        allocation.begin()
         try:
             payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
         except HTTPError as refused:
@@ -476,7 +482,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             raise MissionError(
                 f"vast refused offer {offer['id']} (HTTP {refused.code}): {str(reason)[:400]}"
             ) from refused
-        return str(payload["new_contract"])
+        return allocation.created(str(payload["new_contract"]))
 
     def request(
         self, method: str, *, path: str, body: dict | None = None, query: dict | None = None
@@ -620,7 +626,9 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             verdict="ok" if code == 0 else "failed",
         )
 
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+    def submit(
+        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+    ) -> str:
         """Run `command` as the container's own entrypoint, for a plan that brings its own image.
 
         The raw-command shape, and the one case it is still right for: a prebuilt image already
@@ -647,6 +655,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             offer,
             plan=plan,
             launch={"runtype": "args", "onstart": "bash", "args": ["-c", script]},
+            allocation=allocation,
         )
 
     def uploaded(self, url: str) -> str:

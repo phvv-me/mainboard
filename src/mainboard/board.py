@@ -679,6 +679,15 @@ class Board:
         host: the alias to disambiguate a handle recorded on several hosts.
         """
         record = self.dispatcher.cache.run(str(handle), host or None)
+        if record.verdict in {vocabulary.PREPARED, vocabulary.SUBMITTING}:
+            action = (
+                "no create attempted; cancel if abandoned"
+                if record.verdict == vocabulary.PREPARED
+                else "inspect the provider by this label before retrying or cancelling"
+            )
+            raise MissionError(
+                f"creation {record.creation} has no confirmed provider handle; {action}"
+            )
         destination = route(record.kind)
         if destination != "ssh-family":
             return ProviderJob(
@@ -836,14 +845,19 @@ class Board:
                     "runs a prebuilt image that ships no workspace for its closure; run it as "
                     "a command inside that image, or on a host that mirrors the workspace"
                 )
-            return self.dispatcher.track(
-                backend.submit(plan, shipment.command, resources),
+            allocation = self.dispatcher.allocating(
+                plan, shipment, resources, name=name, node=node, evidence="pending"
+            )
+            try:
+                handle = backend.submit(plan, shipment.command, resources, allocation=allocation)
+            finally:
+                allocation.interrupted()
+            return Handle(
+                id=handle,
                 host=plan.host,
+                root="",
                 kind=plan.profile.kind,
-                shipment=shipment,
-                name=name,
-                node=node,
-                fetch=shipment.fetch or None,
+                fetch_path=shipment.fetch or None,
             )
         provisioner = Provisioner(self.root, self.manifest)
         provisioner.compiler_for(plan.env).vouch()

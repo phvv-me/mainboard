@@ -4,18 +4,17 @@
 
 import weakref
 from itertools import islice
-from typing import TYPE_CHECKING
+from pathlib import Path
 
+from filelock import FileLock
 from patos import FrozenModel
 
+from ...core.errors import MissionError
 from .. import vocabulary
 from ..onboard import HostSetup
 from ..shared import db_file, now
 from ..vocabulary import Request
 from .storage import connect
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class RunRecord(FrozenModel):
@@ -37,8 +36,8 @@ class RunRecord(FrozenModel):
     node: the ledger slug this run serves, carried into its receipts; empty when the dispatch
         declared none, which stays a valid run.
     source: the key of the pinned source tree the run executes from, so a sweep knows which
-        snapshot on the host is still in use and which is garbage. Empty for a provider run,
-        which rents a fresh machine per job and pins nothing.
+        snapshot on the host is still in use and which is garbage. Provider creation intents
+        retain this key before their machine exists.
     commit: the whole commit of the tree that owns the dispatched code, which is not always the
         workspace `git_sha` names: a monorepo dispatching a submodule's job records the
         submodule's. Empty when git answered nothing.
@@ -55,9 +54,10 @@ class RunRecord(FrozenModel):
     evidence: delivery status, separate from the computational verdict. `copied` means hashes
         were verified but release is pending; `verified` means settlement finished. An
         `unverified` correction preserves the original verdict while qualifying its evidence.
-    request: the dispatch as it was asked for, kept only while the run is `held`, so the sweep
-        that finds the target's quota open again can make the same request. `None` on every run
-        a target actually took, which is every run that has a handle to be asked about.
+    creation: the unique provider-request label, retained when its handle replaces the intent.
+    request: the original request for held jobs, or the resolved environment/resources for a
+        provider creation. Only held requests are automatically retried; a lost create reply
+        requires reconciliation with the provider.
     reason: why the row is in the state it is in, when the state cannot say it alone: the
         refusal a target's quota answered a held dispatch with. Empty for every run that was
         taken, whose outcome is read off its verdict and its exit code instead.
@@ -82,6 +82,7 @@ class RunRecord(FrozenModel):
     verdict: str | None = None
     reported: str | None = None
     evidence: str = ""
+    creation: str = ""
     request: Request | None = None
     reason: str = ""
 
@@ -91,11 +92,20 @@ class Cache:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or db_file()
+        if self.path != Path(":memory:"):
+            self.path = self.path.resolve()
         self.connection = connect(self.path)
         # A cache outlives no process it was built in, so closing is the collector's job rather
         # than a caller's. Without this the connection is only reclaimed by interpreter exit,
         # which every short-lived cache in a suite reports as an unclosed database.
         weakref.finalize(self, self.connection.close)
+
+    @property
+    def settlement(self) -> FileLock:
+        """The shared launch/cancel/settle lock; remote lifecycle requires durable state."""
+        if self.path == Path(":memory:"):
+            raise MissionError("durable settlement requires a file-backed dispatch cache")
+        return FileLock(self.path.with_suffix(".settlement.lock"), is_singleton=True)
 
     def forget(self, run: RunRecord) -> None:
         """Drop one run's row entirely, the only thing that ever leaves this table.
@@ -170,6 +180,85 @@ class Cache:
             (run.target, run.handle, run.model_dump_json(), run.submitted_at),
         )
 
+    def reserve(self, run: RunRecord) -> None:
+        """Reserve a creation once; unresolved identical requests cannot allocate twice."""
+        row = self.connection.execute(
+            "INSERT INTO runs (target, handle, data, submitted_at) "
+            "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM runs WHERE target = ? "
+            "AND json_extract(data, '$.verdict') IN (?, ?) "
+            "AND json_extract(data, '$.script') = ? "
+            "AND json_extract(data, '$.digest') = ?) RETURNING handle",
+            (
+                run.target,
+                run.handle,
+                run.model_dump_json(),
+                run.submitted_at,
+                run.target,
+                vocabulary.PREPARED,
+                vocabulary.SUBMITTING,
+                run.script,
+                run.digest,
+            ),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"an unresolved creation already exists for {run.name or run.script!r} on "
+                f"{run.target}; inspect its job record and provider label before retrying"
+            )
+
+    def bind(self, run: RunRecord, handle: str) -> RunRecord:
+        """Replace the intent identity in one statement, preserving its provenance and time."""
+        row = self.connection.execute(
+            "UPDATE runs SET handle = ?, data = json_set(data, '$.handle', ?, '$.state', ?, "
+            "'$.verdict', ?) WHERE target = ? AND handle = ? AND submitted_at = ? "
+            "AND json_extract(data, '$.verdict') = ? RETURNING data",
+            (
+                handle,
+                handle,
+                vocabulary.QUEUED,
+                vocabulary.QUEUED,
+                run.target,
+                run.handle,
+                run.submitted_at,
+                vocabulary.SUBMITTING,
+            ),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"no submitting creation {run.creation!r} on {run.target!r}")
+        return RunRecord.model_validate_json(row["data"])
+
+    def leave_prepared(self, run: RunRecord, verdict: str) -> RunRecord:
+        """Claim preparation once, so cancellation and creation cannot both win."""
+        if verdict not in vocabulary.VERDICTS[vocabulary.PREPARED]:
+            raise ValueError(f"invalid prepared transition to {verdict!r}")
+        row = self.connection.execute(
+            "UPDATE runs SET data = json_set(data, '$.state', ?, '$.verdict', ?, '$.reported', ?) "
+            "WHERE target = ? AND handle = ? AND submitted_at = ? "
+            "AND json_extract(data, '$.verdict') = ? RETURNING data",
+            (
+                verdict,
+                verdict,
+                verdict if verdict in vocabulary.TERMINAL else None,
+                run.target,
+                run.handle,
+                run.submitted_at,
+                vocabulary.PREPARED,
+            ),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"creation {run.creation!r} is no longer prepared; do not resend it")
+        return RunRecord.model_validate_json(row["data"])
+
+    def creation(self, label: str, target: str) -> RunRecord:
+        """Read the same request before or after its provider handle replaced the intent."""
+        row = self.connection.execute(
+            "SELECT data FROM runs WHERE target = ? AND json_extract(data, '$.creation') = ?",
+            (target, label),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"no creation {label!r} on {target!r}")
+        return RunRecord.model_validate_json(row["data"])
+
     def report(self, run: RunRecord, verdict: str) -> None:
         """Record the verdict a durable monitor last surfaced for `run`."""
         self._change(run, reported=verdict)
@@ -189,14 +278,15 @@ class Cache:
         arguments = tuple(item for key, value in fields.items() for item in (f"$.{key}", value))
         placeholders = ", ".join("?, ?" for _ in fields)
         expression = f"json_set(data, {placeholders})"
-        if "verdict" in fields and fields["verdict"] not in vocabulary.TERMINAL:
+        if "verdict" in fields:
             terminal = tuple(sorted(vocabulary.TERMINAL))
             held = ", ".join("?" for _ in terminal)
             expression = (
                 f"CASE WHEN json_extract(data, '$.verdict') IN ({held}) "
+                "AND json_extract(data, '$.verdict') != ? "
                 f"THEN data ELSE {expression} END"
             )
-            arguments = (*terminal, *arguments)
+            arguments = (*terminal, fields["verdict"], *arguments)
         row = self.connection.execute(
             f"UPDATE runs SET data = {expression} "
             "WHERE target = ? AND handle = ? AND submitted_at = ? RETURNING data",

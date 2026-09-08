@@ -15,6 +15,8 @@ POLL_SECONDS = 5.0
 
 QUEUED = "queued"
 RUNNING = "running"
+PREPARED = "prepared"
+SUBMITTING = "submitting"
 # The third live word, and the only one no backend reports for itself: the queue is done with the
 # job and the durable sweep has not brought it home yet. Without it a listing printed whatever
 # letter the backend spells that moment with, so a PBS job that finished clean showed as `F`
@@ -44,6 +46,8 @@ SKIPPED = "skipped"
 # cancelled, running -> one terminal. Every terminal maps to the empty set, so a further move (a
 # stale `running` after `ok`) raises rather than mutates.
 VERDICTS: dict[str, set[str]] = {
+    PREPARED: {SUBMITTING, FAILED, CANCELLED},
+    SUBMITTING: {QUEUED, RUNNING},
     HELD: {QUEUED, RUNNING, FAILED, VANISHED, CANCELLED},
     QUEUED: {RUNNING, VANISHED, CANCELLED},
     RUNNING: {OK, FAILED, VANISHED, TIMEOUT, CANCELLED},
@@ -107,7 +111,9 @@ class Request(FrozenModel):
     request is resubmitted by the durable sweep whenever the quota next has room, which is why
     every field here is the caller's own ask and none of them is a resolved value: the profile's
     defaults, the queue policy and the market price are all read again at the retry, so a
-    request held overnight lands under whatever the manifest says in the morning.
+    request held overnight lands under whatever the manifest says in the morning. Provider
+    creation intents also retain this model, with resolved values for recovery rather than
+    automatic resubmission.
 
     target: the host alias the job is for.
     command: the command the job runs.

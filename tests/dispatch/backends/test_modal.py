@@ -12,6 +12,7 @@ from mainboard.dispatch.evidence import framing, staging
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container
 
+from ..support import created_request
 from .support import FakeModal, ModalFault, environment, plan
 
 # What a sandbox's `poll()` says, and the verdict a post-mortem reads it as. A sandbox that has
@@ -37,7 +38,10 @@ def broken_import(name: str) -> NoReturn:
 def gpu_kwarg(fake: FakeModal, *, gpus: int, gpu_name: str) -> str | None:
     """The `gpu=` value a submit under `gpus` and `gpu_name` hands the sandbox it creates."""
     handle = ModalBackend().submit(
-        plan(), "echo hi", Resources(max_usd=1.0, gpus=gpus, gpu_name=gpu_name)
+        plan(),
+        "echo hi",
+        Resources(max_usd=1.0, gpus=gpus, gpu_name=gpu_name),
+        allocation=created_request(),
     )
     return fake.sandboxes[handle].kwargs["gpu"]
 
@@ -69,7 +73,7 @@ def test_submit_refuses_before_the_sdk_is_even_imported_when_the_budget_is_unset
 ) -> None:
     monkeypatch.delitem(sys.modules, "modal", raising=False)
     with pytest.raises(MissionError, match="max-usd"):
-        ModalBackend().submit(plan(), "echo hi", Resources())
+        ModalBackend().submit(plan(), "echo hi", Resources(), allocation=created_request())
     assert "modal" not in sys.modules
 
 
@@ -104,8 +108,12 @@ def test_submit_creates_one_sandbox_whose_entrypoint_image_and_timeout_are_the_p
     A detached exec would leave the sandbox idling as running forever with empty logs, which is
     what the first live submit found.
     """
+    allocation = created_request()
     handle = ModalBackend().submit(
-        plan(**overrides), "echo hi", Resources(max_usd=1.0, walltime=walltime)
+        plan(**overrides),
+        "echo hi",
+        Resources(max_usd=1.0, walltime=walltime),
+        allocation=allocation,
     )
     (created,) = fake_modal.sandboxes.values()
     assert handle == created.object_id
@@ -113,8 +121,27 @@ def test_submit_creates_one_sandbox_whose_entrypoint_image_and_timeout_are_the_p
     assert created.entrypoint == ("bash", "-c", script)
     assert vars(created.kwargs["image"]) == image
     assert created.kwargs["app"].name == "mainboard"
+    assert created.kwargs["name"] == allocation.label
+    assert allocation.cache.run(handle).creation == allocation.label
     assert created.kwargs.get("timeout") == timeout
     assert ("timeout" in created.kwargs) is (timeout is not None)
+
+
+def test_a_lost_modal_create_response_retains_the_provider_searchable_name(
+    fake_modal: FakeModal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    allocation = created_request()
+
+    def lost(*args: str, **kwargs) -> NoReturn:
+        assert kwargs["name"] == allocation.label
+        assert allocation.cache.run(allocation.label).verdict == "submitting"
+        raise TimeoutError("provider reply lost")
+
+    monkeypatch.setattr(fake_modal.Sandbox, "create", lost)
+    with pytest.raises(TimeoutError, match="reply lost"):
+        ModalBackend().submit(plan(), "echo hi", Resources(max_usd=1), allocation=allocation)
+    allocation.interrupted()
+    assert allocation.cache.run(allocation.label).verdict == "submitting"
 
 
 def test_submit_maps_gpus_and_gpu_name_onto_the_sandboxs_gpu_kwarg(fake_modal: FakeModal) -> None:
@@ -126,7 +153,9 @@ def test_submit_maps_gpus_and_gpu_name_onto_the_sandboxs_gpu_kwarg(fake_modal: F
 
 
 def test_state_maps_the_sandboxs_poll_result_onto_a_verdict(fake_modal: FakeModal) -> None:
-    handle = ModalBackend().submit(plan(), "echo hi", Resources(max_usd=1.0))
+    handle = ModalBackend().submit(
+        plan(), "echo hi", Resources(max_usd=1.0), allocation=created_request()
+    )
     read = {}
     for code in _VERDICTS:
         fake_modal.sandboxes[handle].poll_result = code
@@ -136,7 +165,9 @@ def test_state_maps_the_sandboxs_poll_result_onto_a_verdict(fake_modal: FakeModa
 
 
 def test_logs_reads_the_sandboxs_captured_stdout(fake_modal: FakeModal) -> None:
-    handle = ModalBackend().submit(plan(), "echo hi", Resources(max_usd=1.0))
+    handle = ModalBackend().submit(
+        plan(), "echo hi", Resources(max_usd=1.0), allocation=created_request()
+    )
     assert ModalBackend().logs(handle) == "sandbox output"
 
 
@@ -148,7 +179,9 @@ def test_cancel_terminates_the_sandbox_and_tolerates_one_modal_already_forgot(
     A sweep cancels every run it settles, so the same sandbox is cancelled more than once and
     the second call walks straight into the `NotFoundError` a gone id raises.
     """
-    handle = ModalBackend().submit(plan(), "echo hi", Resources(max_usd=1.0))
+    handle = ModalBackend().submit(
+        plan(), "echo hi", Resources(max_usd=1.0), allocation=created_request()
+    )
     ModalBackend().cancel(handle)
     assert fake_modal.sandboxes[handle].terminated is True
     ModalBackend().cancel("sb-gone")

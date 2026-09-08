@@ -242,8 +242,20 @@ def test_a_quiet_sweep_writes_nothing_and_a_terminal_one_writes_the_last_line(
     monkeypatch.setattr(fresh.dispatcher, "fetch", lambda handle, **kw: None)
     fresh.monitor().once()
     published = stream.replay()
-    assert [line.topic for line in published] == [Topic.STATE, Topic.STATE, Topic.SETTLED]
+    assert [line.topic for line in published] == [
+        Topic.STATE,
+        Topic.EVIDENCE,
+        Topic.EVIDENCE,
+        Topic.STATE,
+        Topic.SETTLED,
+    ]
+    assert [line.data["status"] for line in published if line.topic == Topic.EVIDENCE] == [
+        "copied",
+        "verified",
+    ]
     assert published[-1].data["verdict"] == "ok"
+    fresh.monitor().once()
+    assert stream.replay() == published
 
 
 def test_a_sweep_on_a_workspace_that_tracks_nothing_publishes_nothing(

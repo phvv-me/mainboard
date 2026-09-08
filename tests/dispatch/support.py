@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mainboard import ExecutionPlan
+from mainboard.dispatch import now
+from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Container, HostProfile
@@ -21,6 +23,27 @@ type Rule = tuple[str, int, str]
 # One `(marker, error)` pair: when `marker` appears in the argv, the command raises instead of
 # answering, the way a client whose daemon refused its control socket does.
 type Fault = tuple[str, BaseException]
+
+
+def created_request() -> Allocation:
+    """A reserved provider request backed by the same in-memory cache used by dispatch tests."""
+    store = cache()
+    record = RunRecord(
+        handle="mainboard-test-creation",
+        creation="mainboard-test-creation",
+        target="provider-host",
+        kind="vast",
+        script="true",
+        args="",
+        git_sha="abc",
+        dirty=0,
+        submitted_at=now(),
+        state="prepared",
+        verdict="prepared",
+        evidence="pending",
+    )
+    store.reserve(record)
+    return Allocation(cache=store, record=record)
 
 
 class RecordingCommand:

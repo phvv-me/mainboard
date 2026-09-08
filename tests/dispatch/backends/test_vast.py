@@ -4,6 +4,7 @@ from email.message import Message
 from io import BytesIO
 from pathlib import Path
 from urllib.error import HTTPError
+from urllib.request import Request
 
 import pytest
 from hypothesis import given
@@ -24,7 +25,7 @@ from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
 from ...strategies import WORDS
-from ..support import keypair
+from ..support import created_request, keypair
 from .support import Naps, Reply, not_found, plan, refused, vast_backend
 
 # The v0 root their own CLI defaults to, which every request a test reads back hangs off.
@@ -180,7 +181,12 @@ def test_create_refusal_keeps_the_provider_reason_without_a_traceback() -> None:
     )
     backend = vast_backend(refused)
     with pytest.raises(MissionError, match="offer 11.*400.*ask expired"):
-        backend.rented(offer(11, dph=0.17), plan=vast_plan(), launch={"runtype": "ssh"})
+        backend.rented(
+            offer(11, dph=0.17),
+            plan=vast_plan(),
+            launch={"runtype": "ssh"},
+            allocation=created_request(),
+        )
 
 
 @pytest.mark.parametrize(
@@ -328,7 +334,7 @@ def test_the_hourly_cap_spends_exactly_the_budget_over_the_walltime_a_job_declar
 def test_submit_refuses_before_any_network_call_when_the_budget_is_unset() -> None:
     backend = vast_backend()
     with pytest.raises(MissionError, match="max-usd"):
-        backend.submit(vast_plan(), "echo hi", Resources())
+        backend.submit(vast_plan(), "echo hi", Resources(), allocation=created_request())
     assert backend.transport.calls == []
 
 
@@ -344,7 +350,12 @@ def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_c
     every log line at 500 characters and a printed receipt would arrive here in half.
     """
     backend = vast_backend(_OFFERS, _CREATED)
-    handle = backend.submit(vast_plan(), "python train.py", Resources(max_usd=5.0, gpus=2))
+    handle = backend.submit(
+        vast_plan(),
+        "python train.py",
+        Resources(max_usd=5.0, gpus=2),
+        allocation=created_request(),
+    )
     assert handle == "4242"
     assert backend.transport.urls == [f"{_ROOT}/bundles/", f"{_ROOT}/asks/22/"]
     assert backend.transport.calls[1].get_method() == "PUT"
@@ -354,7 +365,7 @@ def test_submit_rents_the_picked_offer_as_a_one_shot_container_and_returns_its_c
         "client_id": "me",
         "image": "vastai/base-image:cuda-13.3.1-auto",
         "disk": 64.0,
-        "label": "mainboard-provider-host",
+        "label": "mainboard-test-creation",
         "runtype": "args",
         "onstart": "bash",
         "args": [
@@ -378,6 +389,7 @@ def test_submit_narrows_the_search_and_the_rental_to_what_the_request_asks_for()
         vast_plan(container=Container(image="pytorch/pytorch:latest")),
         "echo hi",
         Resources(max_usd=1.0, walltime="02:00:00"),
+        allocation=created_request(),
     )
     search, create = backend.transport.bodies
     assert search["num_gpus"] == {"eq": 1}
@@ -743,12 +755,28 @@ def test_a_rental_is_created_waiting_for_a_landing_rather_than_running_the_comma
     key = keypair(tmp_path)
     monkeypatch.setattr(vast_module, "reachable", lambda endpoint, *, sleeper: endpoint)
     backend = rental_backend(running())
-    rental = backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00", gpus=1))
-    attached = backend.transport.urls.index(f"{_ROOT}/instances/4242/ssh/")
-    search, create = backend.transport.bodies[:2]
-    attach = backend.transport.bodies[attached]
+    allocation = created_request()
+    transport = backend.transport
+
+    def observed(request: Request):
+        if "/asks/" in request.full_url:
+            assert allocation.cache.run(allocation.label).verdict == "submitting"
+        if "/instances/4242" in request.full_url:
+            assert allocation.cache.run("4242").creation == allocation.label
+        return transport(request)
+
+    backend = VastBackend(transport=observed, sleeper=Naps())
+    rental = backend.rent(
+        vast_plan(),
+        Resources(max_usd=1.0, walltime="00:30:00", gpus=1),
+        allocation=allocation,
+    )
+    attached = transport.urls.index(f"{_ROOT}/instances/4242/ssh/")
+    search, create = transport.bodies[:2]
+    attach = transport.bodies[attached]
     assert search["dph_total"] == {"lte": pytest.approx(1.0 * 3600 / (1800 + LANDING_SECONDS))}
     assert create["runtype"] == "ssh" and "args" not in create
+    assert create["label"] == allocation.label
     assert create["image"] == "vastai/base-image:cuda-13.3.1-auto"
     assert waiting() in create["onstart"]
     assert create["onstart"].endswith(f"echo {_MARKER}$status\nexit $status\n")
@@ -761,14 +789,16 @@ def test_a_rental_is_created_waiting_for_a_landing_rather_than_running_the_comma
 def test_a_rental_that_never_comes_up_is_destroyed_rather_than_left_billing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Between the create and the launch this process is the only thing holding the handle."""
+    """Cleanup is attempted while the durable registry retains the returned handle."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     keypair(tmp_path)
     naps = Naps()
     loading = [{"instances": {"id": 4242, "actual_status": "loading"}}] * 90
     backend = rental_backend(*loading, {}, naps=naps)
     with pytest.raises(MissionError, match="never came up with an ssh address"):
-        backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"))
+        backend.rent(
+            vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"), allocation=created_request()
+        )
     assert backend.transport.calls[-1].get_method() == "DELETE"
     assert backend.transport.urls[-1] == f"{_ROOT}/instances/4242/"
     assert naps.waited == [10.0] * 90
@@ -782,7 +812,9 @@ def test_a_provider_that_will_not_take_the_key_refuses_before_anything_is_landed
     keypair(tmp_path)
     backend = vast_backend(_OFFERS, _CREATED, running(), refused(403), {})
     with pytest.raises(MissionError, match="cloud.vast.ai/manage-keys"):
-        backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"))
+        backend.rent(
+            vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"), allocation=created_request()
+        )
     assert backend.transport.calls[-1].get_method() == "DELETE"
 
 
@@ -793,5 +825,7 @@ def test_a_workspace_holding_no_key_pair_never_reaches_the_market(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     backend = rental_backend(running())
     with pytest.raises(MissionError, match="ssh-keygen"):
-        backend.rent(vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"))
+        backend.rent(
+            vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"), allocation=created_request()
+        )
     assert backend.transport.calls == []

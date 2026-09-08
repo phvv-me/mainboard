@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
+    from ..allocation import Allocation
     from ..transport import Endpoint
     from ..vocabulary import JobState, Resources
 
@@ -240,7 +241,7 @@ class Rentable(Capability, abc.ABC):
         """Reconnect to a rental, including after the submitting process has exited."""
 
     @abc.abstractmethod
-    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
         """Rent a machine for one job and return it once ssh answers on it.
 
         The job is not started here. The rented entrypoint is waiting for the launch script a
@@ -338,7 +339,9 @@ class ProviderBackend(Registry, abc.ABC):
         """Post-mortem `handle`: its state, exit code, and a verdict."""
 
     @abc.abstractmethod
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+    def submit(
+        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+    ) -> str:
         """Launch `command` under `resources`; return the provider's opaque handle id."""
 
 

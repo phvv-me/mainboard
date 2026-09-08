@@ -15,6 +15,7 @@ from mainboard.batch import Topic
 from mainboard.board import ProviderJob
 from mainboard.deps import Dependencies
 from mainboard.dispatch import Handle, HostSetup, Verdict
+from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.backends import (
     Account,
     Delivery,
@@ -135,7 +136,7 @@ class FakeRental(ProviderBackend, Rentable):
     def cancel(self, handle: str) -> None:
         return None
 
-    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
         raise AssertionError("a board test never rents a real machine")
 
     def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
@@ -144,7 +145,9 @@ class FakeRental(ProviderBackend, Rentable):
     def state(self, handle: str) -> JobState:
         return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
 
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+    def submit(
+        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+    ) -> str:
         raise AssertionError("a rentable backend is landed on rather than handed a raw command")
 
 
@@ -162,14 +165,21 @@ class FakeLanding:
         FakeLanding.calls.append(
             (self.plan.host, shipment.spelling, tuple(self.fields["artifact"]))
         )
-        return self.dispatcher.track(
-            "rental-1",
-            host=self.plan.host,
-            kind=self.plan.profile.kind,
-            shipment=shipment,
+        allocation = self.dispatcher.allocating(
+            self.plan,
+            shipment,
+            self.fields["resources"],
             name=name,
             node=node,
-            fetch=shipment.fetch or None,
+            evidence="pending",
+        )
+        allocation.begin()
+        return Handle(
+            id=allocation.created("rental-1"),
+            host=self.plan.host,
+            kind=self.plan.profile.kind,
+            root="",
+            fetch_path=shipment.fetch or None,
         )
 
 
@@ -198,9 +208,12 @@ class FakeCloud(ProviderBackend, Account, Delivery, LogSource):
     def state(self, handle: str) -> JobState:
         return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
 
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+    def submit(
+        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+    ) -> str:
         FakeCloud.submitted.append(command)
-        return "cloud-1"
+        allocation.begin()
+        return allocation.created("cloud-1")
 
 
 @pytest.fixture
@@ -1104,7 +1117,7 @@ def test_a_provider_submit_is_recorded_so_a_later_process_rebuilds_the_rental(
     record = board.dispatcher.cache.run(submitted.handle.id)
     assert (record.target, record.kind) == ("cloudbox", "fakecloud")
     assert (record.script, record.fetch_path) == ("python train.py", "results/run")
-    assert record.verdict is None
+    assert record.verdict == "queued"
     rebuilt = board.job(submitted.handle.id)
     assert isinstance(rebuilt, ProviderJob)
     assert rebuilt.handle == submitted.handle

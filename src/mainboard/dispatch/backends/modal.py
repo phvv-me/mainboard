@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from ...context.plan import ExecutionPlan
+    from ..allocation import Allocation
     from ..vocabulary import Resources
 
 # The Modal app every sandbox is created under; sandboxes are one-shot jobs, so a single shared
@@ -218,7 +219,9 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         verdict = "running" if exit_code is None else ("ok" if exit_code == 0 else "failed")
         return JobState(handle=handle, exit_code=exit_code, verdict=verdict)
 
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+    def submit(
+        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+    ) -> str:
         self.admit(plan, resources)
         modal = _modal()
         container = plan.container
@@ -229,6 +232,7 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         )
         kwargs = {
             "app": modal.App.lookup(_APP_NAME, create_if_missing=True),
+            "name": allocation.label,
             "image": image,
             "gpu": self._gpu_spec(resources),
         }
@@ -240,8 +244,9 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         # status is captured and re-raised as the entrypoint's, so framing the receipts back
         # after it costs the sandbox none of its own exit code.
         script = f"{staging()}\n{command}\nstatus=$?\n{framing()}\nexit $status"
+        allocation.begin()
         sandbox = modal.Sandbox.create("bash", "-c", script, **kwargs)
-        return str(sandbox.object_id)
+        return allocation.created(str(sandbox.object_id))
 
     @staticmethod
     def _gpu_spec(resources: Resources) -> str | None:

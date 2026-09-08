@@ -7,18 +7,20 @@ from mainboard.dispatch import Dispatcher, GitignoreFilter
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import landing as landing_module
 from mainboard.dispatch import provenance as provenance_module
+from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.landing import Landing, renter
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.rentals import LAUNCH, Rental
 from mainboard.dispatch.shared import state_dir
 from mainboard.dispatch.shipment import Shipment
 from mainboard.dispatch.snapshots import SOURCES
+from mainboard.dispatch.state import Cache
 from mainboard.dispatch.transport import Endpoint
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
 from .backends.support import BareBackend
-from .support import RecordingMachine, cache, machine_with, plan
+from .support import RecordingMachine, machine_with, plan
 
 # The machine a rental hands over, and the resources every landing below runs under.
 _ENDPOINT = Endpoint(address="ssh5.vast.ai", port=41022, user="root", identity="/keys/id")
@@ -51,10 +53,12 @@ class FakeRenter:
     def cancel(self, handle: str) -> None:
         self.cancelled.append(handle)
 
-    def rent(self, execution, resources: Resources) -> Rental:
+    def rent(self, execution, resources: Resources, *, allocation: Allocation) -> Rental:
         self.asked.append((execution.host, resources.walltime or ""))
         if self.fault is not None:
             raise self.fault
+        allocation.begin()
+        allocation.created("4242")
         return Rental(handle="4242", endpoint=_ENDPOINT)
 
 
@@ -65,7 +69,7 @@ def shipped(dispatcher: Dispatcher, command: str) -> Shipment:
 
 def dispatcher_for(workdir: Path) -> Dispatcher:
     """A dispatcher whose mirror only records what it was asked to ship, and where."""
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    instance = Dispatcher(cache=Cache(workdir / "dispatch.sqlite"), sync=GitignoreFilter(workdir))
     instance.mirrored: list[tuple[str, tuple[str, ...], str]] = []
 
     def mirror(execution, root: str, **kwargs: object) -> list[str]:
@@ -293,8 +297,27 @@ def test_a_lost_launch_reply_retains_the_rental_and_pending_evidence(
     with pytest.raises(MissionError, match="launch reply lost"):
         landed.land(shipped(dispatcher, "python train.py"))
     assert backend.cancelled == []
-    assert dispatcher.cache.run("4242", "vast").verdict is None
+    assert dispatcher.cache.run("4242", "vast").verdict == "queued"
     assert dispatcher.cache.total() == len(dispatcher.cache.tracked()) == 1
+
+
+def test_a_cancelled_provisioning_job_cannot_start_after_cancellation(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host = machine_with("/root/projects\n")
+    landed, _, dispatcher = landing(workdir, host, monkeypatch)
+
+    def cancelled(remote: RecordingMachine, pinned: str) -> None:
+        record = dispatcher.cache.run("4242", "vast")
+        stopped = dispatcher.cache.resolve(record, "cancelled", None, "cancelled")
+        dispatcher.cache.report(stopped, "cancelled")
+
+    monkeypatch.setattr(landed, "verify", cancelled)
+    monkeypatch.setattr(landed, "start", lambda *args, **kwargs: pytest.fail("late launch"))
+    with pytest.raises(MissionError, match="ended during setup"):
+        landed.land(shipped(dispatcher, "python train.py"))
+    assert dispatcher.cache.run("4242", "vast").verdict == "cancelled"
+    assert dispatcher.cache.tracked() == []
 
 
 def test_failed_setup_cleanup_keeps_its_handle_for_a_later_monitor(

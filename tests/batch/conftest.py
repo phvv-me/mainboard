@@ -11,14 +11,14 @@ from .support import Recorder
 
 @pytest.fixture
 def lab(workspace: Path) -> Board:
-    """A board over a throwaway workspace whose dispatch state never reaches a disk.
+    """A board whose registry and settlement lock stay inside a throwaway workspace.
 
     The fixture manifest's own hosts, so a batch resolves real profiles, real sync scopes and
-    real queue policies, while the run registry and the onboarding records stay in memory.
+    real queue policies, including the file-backed registry needed for durable settlement.
     """
     board = Board(workspace)
     board.shared["dispatcher"] = Dispatcher(
-        cache=Cache(Path(":memory:")), sync=GitignoreFilter(workspace)
+        cache=Cache(workspace / "dispatch.sqlite"), sync=GitignoreFilter(workspace)
     )
     return board
 

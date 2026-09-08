@@ -1,11 +1,35 @@
 import gc
 import sqlite3
+from pathlib import Path
 
 import pytest
 
+from mainboard import MissionError
 from mainboard.dispatch import HostSetup, now
+from mainboard.dispatch.state import Cache
 
 from ..support import cache, run_record
+
+
+def test_in_memory_state_cannot_create_a_phony_durable_settlement_lock() -> None:
+    with pytest.raises(MissionError, match="file-backed"), cache().settlement:
+        pytest.fail("an in-memory registry cannot coordinate durable settlement")
+
+
+def test_the_settlement_lock_follows_the_opened_database_not_a_later_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    store = Cache(Path("dispatch.sqlite"))
+    monkeypatch.chdir(tmp_path.parent)
+    assert Path(store.settlement.lock_file) == tmp_path / "dispatch.settlement.lock"
+
+
+def test_a_held_dispatch_can_reenter_its_own_settlement_lock(tmp_path: Path) -> None:
+    original = Cache(tmp_path / "dispatch.sqlite")
+    reopened = Cache(original.path)
+    with original.settlement, reopened.settlement.acquire(timeout=0):
+        assert reopened.settlement.is_locked
 
 
 def test_a_cache_nobody_holds_any_more_closes_the_database_it_opened() -> None:
@@ -49,6 +73,30 @@ def test_a_stale_running_probe_cannot_erase_a_definite_setup_failure() -> None:
     store.delivery(run, "not_started")
     refreshed = store.resolve(run, "R", None, "running")
     assert (refreshed.verdict, refreshed.evidence) == ("failed", "not_started")
+
+
+def test_a_stale_setup_failure_cannot_erase_a_completed_cancellation() -> None:
+    store = cache()
+    run = run_record("H1")
+    store.record(run)
+    cancelled = store.resolve(run, "cancelled", None, "cancelled")
+    store.report(cancelled, "cancelled")
+    refreshed = store.resolve(run, "failed", None, "failed")
+    assert (refreshed.verdict, refreshed.state, refreshed.reported) == (
+        "cancelled",
+        "cancelled",
+        "cancelled",
+    )
+    assert store.tracked() == []
+
+
+def test_cancel_can_mark_release_without_relabeling_a_terminal_computation() -> None:
+    store = cache()
+    run = run_record("H1")
+    store.record(run)
+    complete = store.resolve(run, "F", 0, "ok")
+    cancelled = store.resolve(complete, "cancelled", 0, "ok")
+    assert (cancelled.verdict, cancelled.state, cancelled.exit_code) == ("ok", "cancelled", 0)
 
 
 def test_tracked_holds_a_run_until_its_terminal_verdict_has_been_reported() -> None:

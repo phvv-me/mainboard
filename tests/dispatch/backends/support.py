@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from urllib.error import HTTPError
 
 from mainboard import ExecutionPlan
+from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.backends import (
     HpcAiBackend,
     LogSource,
@@ -45,9 +46,12 @@ class BareBackend(ProviderBackend):
     def state(self, handle: str) -> JobState:
         return JobState(handle=handle, state="finished", exit_code=0, verdict="ok")
 
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+    def submit(
+        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+    ) -> str:
         del plan, command, resources
-        return "bare-1"
+        allocation.begin()
+        return allocation.created("bare-1")
 
 
 def hpc_ai_backend(

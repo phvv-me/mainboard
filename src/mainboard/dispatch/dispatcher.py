@@ -12,14 +12,17 @@ from math import ceil
 from pathlib import Path, PurePosixPath
 from time import sleep
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from patos import FrozenModel
 from plumbum.commands.processes import ProcessExecutionError
 
 from ..context.admission import admit
+from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.vendor import vendor_root
 from . import vocabulary
+from .allocation import Allocation
 from .jobs import JobSpec
 from .provenance import Source, commanded, tree_source
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
@@ -789,55 +792,60 @@ class Dispatcher:
         )
         return handle
 
-    def track(
+    def allocating(
         self,
-        handle: str,
-        *,
-        host: str,
-        kind: str,
+        plan: ExecutionPlan,
         shipment: Shipment,
+        resources: Resources,
+        *,
         name: str = "",
         node: str = "",
-        fetch: str | None = None,
-        evidence: str = "pending",
-    ) -> Handle:
-        """Record a provider-dispatched run in the shared cache and return its `Handle`.
-
-        A provider backend owns its own transport, so none of the shipping, verifying and
-        scheduling `submit` does applies to it, but the run still has to land in the same cache
-        every other dispatch does or no later process can settle it. That matters more here than
-        for a queue, since an untracked rental keeps billing after its command ends and being
-        tracked is what lets the durable sweep end it.
-
-        handle: the provider's own opaque run id.
-        host: the alias the run was dispatched to.
-        kind: the provider kind, which is how a later pass finds the backend again.
-        shipment: what the run was launched with, kept as its provenance.
-        name: a human label for the run, a study's label when a study owns it.
-        node: the ledger slug this run serves, recorded on the run and its receipts.
-        fetch: a results path recorded for a later pull.
-        evidence: whether a launch was attempted; landed rentals begin as `not_started`.
-        """
-        self.cache.record(
-            RunRecord(
-                handle=handle,
-                target=host,
-                kind=kind,
-                script=shipment.spelling,
-                args="",
-                git_sha=git("rev-parse", "--short", "HEAD"),
-                dirty=int(shipment.source.dirty),
-                submitted_at=now(),
-                fetch_path=fetch,
-                name=name,
-                node=node,
-                commit=shipment.source.commit,
-                digest=shipment.source.digest,
-                evidence=evidence,
-            )
+        evidence: str,
+    ) -> Allocation:
+        """Reserve the existing job row before any provider creation can be attempted."""
+        label = f"mainboard-{uuid4().hex}"
+        request = Request(
+            target=plan.host,
+            command=shipment.spelling,
+            name=name,
+            node=node,
+            fetch=shipment.fetch or None,
+            env=plan.env,
+            container=resources.container,
+            queue=resources.queue or "",
+            walltime=resources.walltime or "",
+            mem_gb=resources.mem_gb or 0,
+            gpus=resources.gpus,
+            gpu_name=resources.gpu_name,
+            max_usd=resources.max_usd,
+            nodes=resources.nodes,
         )
-        logger.info("%s -> %s on %s (%s)", shipment.spelling, handle, host, kind)
-        return Handle(id=handle, host=host, root="", kind=kind, fetch_path=fetch)
+        record = RunRecord(
+            handle=label,
+            target=plan.host,
+            kind=plan.profile.kind,
+            script=shipment.spelling,
+            args="",
+            git_sha=git("rev-parse", "--short", "HEAD"),
+            dirty=int(shipment.source.dirty),
+            submitted_at=now(),
+            fetch_path=shipment.fetch or None,
+            name=name,
+            node=node,
+            source=shipment.source.key,
+            commit=shipment.source.commit,
+            digest=shipment.source.digest,
+            state=vocabulary.PREPARED,
+            verdict=vocabulary.PREPARED,
+            evidence=evidence,
+            creation=label,
+            request=request,
+        )
+        try:
+            self.cache.reserve(record)
+        except ValueError as unresolved:
+            raise MissionError(str(unresolved)) from unresolved
+        return Allocation(cache=self.cache, record=record)
 
     def write_job_script(self, spec: JobSpec, *, pbs: bool, gpu_in_select: bool = True) -> str:
         """Render `spec`, write it under `{STATE_DIR}/jobs/`, return its workspace-relative path.

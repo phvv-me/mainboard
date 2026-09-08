@@ -12,7 +12,7 @@ from mainboard.dispatch.rentals import waiting
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import HostProfile
 
-from ..support import Naps, keypair
+from ..support import Naps, created_request, keypair
 from .support import FakeTransport, Reply, hpc_ai_backend, plan, refused
 
 # The API root every refusal a test queues is attributed to.
@@ -123,6 +123,7 @@ def test_submit_refuses_before_any_network_call_when_the_request_is_incomplete(
             hpc_ai_plan(variables),
             "echo hi",
             Resources(max_usd=1.0) if missing else Resources(),
+            allocation=created_request(),
         )
     assert backend.transport.calls == []
 
@@ -136,7 +137,9 @@ def test_submit_posts_every_field_their_create_validator_calls_required(spot: bo
     and captured output can land, since HPC-AI reports instance status and nothing finer.
     """
     backend = authed_backend(_CREATED, spot=spot)
-    handle = backend.submit(hpc_ai_plan(_VARS), "python train.py", Resources(max_usd=5.0))
+    handle = backend.submit(
+        hpc_ai_plan(_VARS), "python train.py", Resources(max_usd=5.0), allocation=created_request()
+    )
     assert handle == "notebook-42"
     (request,) = backend.transport.calls
     assert request.full_url == "https://www.hpc-ai.com/api/instance/create"
@@ -377,7 +380,11 @@ def test_a_rental_is_created_waiting_for_a_landing_and_read_back_off_its_ssh_lin
     key = keypair(tmp_path)
     monkeypatch.setattr(hpcai_module, "reachable", lambda endpoint, *, sleeper: endpoint)
     backend = authed_backend(_CREATED, listing(reachable_row("notebook-42")))
-    rental = backend.rent(hpc_ai_plan(_VARS), Resources(max_usd=1.0, walltime="00:30:00"))
+    rental = backend.rent(
+        hpc_ai_plan(_VARS),
+        Resources(max_usd=1.0, walltime="00:30:00"),
+        allocation=created_request(),
+    )
     created, _ = backend.transport.bodies
     script = created["instanceConfiguration"]["initScript"]
     assert waiting() in script and "python" not in script
@@ -399,6 +406,10 @@ def test_an_instance_that_publishes_no_ssh_endpoint_is_terminated_and_names_the_
     pages = [listing(listed("notebook-42", "PullingImage"))] * 90
     backend = hpc_ai_backend(transport=FakeTransport(_CREATED, *pages, {}, {}), naps=naps)
     with pytest.raises(MissionError, match="ssh keys in the HPC-AI console"):
-        backend.rent(hpc_ai_plan(_VARS), Resources(max_usd=1.0, walltime="00:30:00"))
+        backend.rent(
+            hpc_ai_plan(_VARS),
+            Resources(max_usd=1.0, walltime="00:30:00"),
+            allocation=created_request(),
+        )
     assert backend.transport.urls[-1] == "https://www.hpc-ai.com/api/instance/terminate"
     assert naps.waited == [10.0] * 90

@@ -23,7 +23,6 @@ from time import sleep
 from typing import TYPE_CHECKING
 from urllib.error import HTTPError
 from urllib.request import Request
-from uuid import uuid4
 
 from ...core.errors import MissionError
 from ..evidence import framing, staging
@@ -48,6 +47,7 @@ if TYPE_CHECKING:
 
     from ...context.plan import ExecutionPlan
     from ...manifest.schema.host import HostProfile
+    from ..allocation import Allocation
     from ..vocabulary import Resources
     from .base import Transport
 
@@ -238,7 +238,7 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
                 return {}
             page += 1
 
-    def create(self, plan: ExecutionPlan, *, script: str) -> str:
+    def create(self, plan: ExecutionPlan, *, script: str, allocation: Allocation) -> str:
         """Create an instance whose initScript runs `script`, returning HPC-AI's instance id.
 
         Every field their create endpoint calls required is sent, `billing` and `nodePorts`
@@ -254,30 +254,28 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
         script: the initScript body, a command for a prebuilt image or the waiting entrypoint for
             a machine a dispatch lands on.
         """
-        payload = self.request(
-            "POST",
-            path="/instance/create",
-            body={
-                "name": f"mainboard-{uuid4().hex[:12]}",
-                "isSpotInstance": self.spot,
-                "instanceTypeId": _required_var(plan.profile, "instance-type-id"),
-                "imageId": _required_var(plan.profile, "image-id"),
-                "region": _required_var(plan.profile, "region"),
-                "billing": {"chargeMode": "perHour", "duration": 1},
-                "remoteStorages": [],
-                "instanceConfiguration": {
-                    "enableCommonData": False,
-                    "enableDocker": False,
-                    "initScript": (
-                        f"mkdir -p {_SENTINEL_DIR}\n"
-                        f"{{ {script}\n}} > {_LOG_PATH} 2>&1\n"
-                        f"echo $status > {_EXIT_PATH}\n"
-                    ),
-                },
-                "nodePorts": [],
+        body = {
+            "name": allocation.label,
+            "isSpotInstance": self.spot,
+            "instanceTypeId": _required_var(plan.profile, "instance-type-id"),
+            "imageId": _required_var(plan.profile, "image-id"),
+            "region": _required_var(plan.profile, "region"),
+            "billing": {"chargeMode": "perHour", "duration": 1},
+            "remoteStorages": [],
+            "instanceConfiguration": {
+                "enableCommonData": False,
+                "enableDocker": False,
+                "initScript": (
+                    f"mkdir -p {_SENTINEL_DIR}\n"
+                    f"{{ {script}\n}} > {_LOG_PATH} 2>&1\n"
+                    f"echo $status > {_EXIT_PATH}\n"
+                ),
             },
-        )
-        return str(payload["instanceId"])
+            "nodePorts": [],
+        }
+        allocation.begin()
+        payload = self.request("POST", path="/instance/create", body=body)
+        return allocation.created(str(payload["instanceId"]))
 
     def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
         """Where ssh reaches instance `handle`, waited for until it runs and publishes one.
@@ -321,7 +319,7 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
                 "before it was created."
             ) from None
 
-    def rent(self, plan: ExecutionPlan, resources: Resources) -> Rental:
+    def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
         """Rent an instance that answers ssh and hold its initScript until a dispatch lands on it.
 
         The initScript waits rather than running the job, because the workspace, the tool and the
@@ -331,7 +329,7 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
         """
         self.admit(plan, resources)
         key = identity(plan.profile.vars.get("ssh-key", ""))
-        handle = self.create(plan, script=f"{waiting()}\n")
+        handle = self.create(plan, script=f"{waiting()}\n", allocation=allocation)
         opened = False
         try:
             endpoint = self.opened(handle, key=key)
@@ -382,7 +380,9 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
             handle=handle, state=status, verdict=_VERDICTS.get(status.lower(), "unknown")
         )
 
-    def submit(self, plan: ExecutionPlan, command: str, resources: Resources) -> str:
+    def submit(
+        self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
+    ) -> str:
         """Run `command` as the instance's own initScript, for a plan that brings its own image.
 
         The raw-command shape, and the one case it is still right for: a prebuilt image already
@@ -395,7 +395,9 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
         # below would otherwise be what `$?` reports. Receipts are framed into the same captured
         # log the sentinel pair already writes, so whoever reads that file by hand gets the
         # trials as well as the output.
-        return self.create(plan, script=f"{staging()}\n{command}\nstatus=$?\n{framing()}\n")
+        return self.create(
+            plan, script=f"{staging()}\n{command}\nstatus=$?\n{framing()}\n", allocation=allocation
+        )
 
     @staticmethod
     def _hourly(kind: Mapping) -> float:
