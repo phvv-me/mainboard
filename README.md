@@ -276,6 +276,44 @@ their standard representations. `--json` still prints JSON when no file is reque
 `help` reads the CLI's own descriptions: a command path opens its full help, and other
 words search command names and docstrings. Use `help -- --max-usd` to search an option.
 
+Plot the same SELECT with the optional Seaborn/paleta integration:
+
+```console
+uv tool install --from './packages/mainboard[wandb,plot]' --with ./packages/paleta mainboard --force
+mainboard plot "SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware" --project reproducibility --x hardware --y runs --kind bar --out /tmp/run-inventory.png --out /tmp/run-inventory.pdf --dpi 300
+```
+
+This example charts the collected run inventory, not comparative GPU performance.
+For measurements, filter the experiment, input regime, and hardware explicitly in SQL.
+`scatter` shows individual rows; `line` retains SQL order without estimating a mean or
+adding error bars. `bar` requires one row per x/hue group, so aggregate in SQL first.
+`--hue` identifies a categorical series column in SQL appearance order; `--title` labels
+the scope. Paleta supplies native palette/theme names without copying their definitions.
+Output extensions select Matplotlib formats and DPI controls raster resolution.
+Null/nonfinite plotted values and existing output files are refused, not silently dropped
+or overwritten. Tables with bespoke plots can use Seaborn directly on
+`Results(root).query(sql).to_dict(as_series=False)` or verified `Results(root).table(...)` data.
+
+Name additional styles in `mainboard.toml` and select one with `--style paper`:
+
+```toml
+[plots.paper]
+palette = "paleta-shiho" # also paleta-shiho-dark, paleta-meta, paleta-meta-dark
+theme = "paleta-shiho"   # a native Matplotlib style name
+figsize = [3.25, 2.1]    # inches; omitted keeps paleta's text-column size
+dpi = 300
+
+[plots.paper.rc]
+"axes.labelsize" = 8
+"font.family" = "sans-serif"
+```
+
+Palettes use Seaborn's existing names, including built-ins such as `deep`.
+The renderer takes colors in their named order, refusing extra categories beyond the
+palette's slots; fold the tail into Other or facet. `rc` contains native Matplotlib
+settings, not a second styling language. `--dpi` overrides a named style's resolution.
+Changing styles does not rebuild an environment.
+
 The views are `jobs`, `runs`, `trials`, `events`, `metrics`, and `artifacts`.
 Project, run, host, hardware, and source remain explicit; combining storage never
 means combining scientific conclusions. `Results(root).table(schema, project=...)`

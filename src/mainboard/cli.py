@@ -2,7 +2,7 @@ import sys
 from contextlib import suppress
 from json import loads
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 from cyclopts import App, Parameter
 
@@ -22,6 +22,7 @@ from .durable import schedule
 from .help import Help
 from .listing import Listing
 from .manifest.loading import load
+from .manifest.schema.plot import PlotStyle
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
 
 if TYPE_CHECKING:
@@ -585,6 +586,57 @@ def build(root: Path | None = None) -> App:
             fields=(),
             title="results",
         )
+
+    @app.command
+    def plot(
+        sql: str,
+        *,
+        x: str,
+        y: str,
+        out: tuple[Path, ...],
+        project: str = "",
+        hue: str = "",
+        kind: Literal["scatter", "line", "bar"] = "scatter",
+        style: str = "",
+        dpi: int | None = None,
+        title: str = "",
+    ) -> None:
+        """Plot a local SELECT using Seaborn and paleta, without implicit aggregation.
+
+        sql: define the table, including any filtering, grouping, and ordering.
+        x, y, hue: column names; omit hue for one series.
+        out: a new output path; repeat for multiple formats, such as .pdf and .png.
+        project: restrict scientific rows to this research project.
+        kind: scatter, line, or bar; bar requires one row per x/hue group.
+        style: a named [plots.<name>] entry in mainboard.toml; default is paleta-shiho.
+        dpi: raster resolution, overriding the style's DPI when supplied.
+        title: the chart title, including the measurement scope when appropriate.
+        """
+        # Plotting is a genuine optional dependency boundary; other verbs do not import it.
+        try:
+            from .plotting import Plot
+        except ModuleNotFoundError as fault:
+            if fault.name not in {"paleta", "seaborn", "matplotlib", "pandas"}:
+                raise
+            raise MissionError(
+                "plotting requires the plot extra. From the monorepo root run: "
+                "uv tool install --from './packages/mainboard[wandb,plot]' "
+                "--with ./packages/paleta mainboard --force"
+            ) from fault
+        settings = PlotStyle()
+        if style:
+            styles = load(workspace_root() / Project().manifest).plots
+            try:
+                settings = styles[style]
+            except KeyError:
+                raise MissionError(
+                    f"no plot style {style!r}; declared styles are {sorted(styles)}"
+                ) from None
+        frame = mainboard.Results(workspace_root()).query(sql, project=project)
+        for path in Plot(frame, settings).save(
+            *out, x=x, y=y, hue=hue, kind=kind, dpi=dpi, title=title
+        ):
+            print(path)
 
     @app.command
     def monitor(
