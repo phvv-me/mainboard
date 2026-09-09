@@ -399,7 +399,7 @@ Native `axis`, `ticks`, `grid`, `legend`, and `rc` settings control presentation
 Declared job outputs are download-only during source mirroring. This includes
 current and historically recorded output paths in the local workspace cache,
 regardless of host alias. Source files outside those paths still get pruned.
-An explicit resource under an output root is refused before upload; materialize
+An explicit resource overlapping an output root is refused before upload; materialize
 the selected data under a separate pinned input path instead. Ordinary `needs`
 remain mutable mirror links. These safeguards do not provide distributed
 coordination across separate local caches or simultaneous first submissions

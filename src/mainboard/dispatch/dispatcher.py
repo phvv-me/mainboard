@@ -902,7 +902,11 @@ class Dispatcher:
                 raise ValueError(
                     f"declared output must be a relative path below the workspace: {path!r}"
                 )
-            if any(PurePosixPath(source).is_relative_to(relative) for source in sources):
+            if any(
+                PurePosixPath(source).is_relative_to(relative)
+                or PurePosixPath(relative).is_relative_to(source)
+                for source in sources
+            ):
                 raise ValueError(
                     f"explicit input overlaps declared output {relative!r}; "
                     "bind the selected data under a separate immutable input path"

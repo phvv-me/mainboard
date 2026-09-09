@@ -872,8 +872,9 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
 
 
 @pytest.mark.parametrize("recorded", [False, True])
+@pytest.mark.parametrize("resource", ["project", "project/output", "project/output/row.json"])
 def test_explicit_output_resource_is_refused_before_transfer(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch, recorded: bool
+    workdir: Path, monkeypatch: pytest.MonkeyPatch, recorded: bool, resource: str
 ) -> None:
     source = workdir / "project/output"
     source.mkdir(parents=True)
@@ -891,7 +892,7 @@ def test_explicit_output_resource_is_refused_before_transfer(
         instance.rsync_up(
             execution,
             "/repo",
-            extra=["project/output/row.json"],
+            extra=[resource],
             fetch="" if recorded else "project/output",
         )
 
