@@ -2,9 +2,11 @@ import inspect
 import os
 import stat
 from collections.abc import Callable, Sequence
-from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, nullcontext
 from pathlib import Path
 from shutil import which
+from threading import Barrier
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,13 +14,22 @@ from plumbum import local
 from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import Board, ExecutionPlan, MissionError
-from mainboard.dispatch import Dispatcher, GitignoreFilter, Handle, Shipment, Verdict, shared
+from mainboard.dispatch import (
+    Dispatcher,
+    GitignoreFilter,
+    Handle,
+    Shipment,
+    SyncLock,
+    Verdict,
+    shared,
+)
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import provenance as provenance_module
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.schedulers import HostUnreachable, registry
 from mainboard.dispatch.snapshots import CLOSURE, Snapshots
+from mainboard.dispatch.state import Cache
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
@@ -793,6 +804,93 @@ def test_a_rendered_and_a_staged_script_are_both_content_addressed(
     assert (workdir / prepared).read_text() == external.read_text()
     with pytest.raises(FileNotFoundError, match="cannot be shipped to the host"):
         dispatcher._prepare_script("./missing/job.sh")  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
+
+
+@pytest.mark.parametrize("local_output", [False, True])
+def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch, local_output: bool
+) -> None:
+    """Missing or empty local data cannot erase another running job's declared output."""
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
+    source, landed = workdir / "project", workdir / "host-side"
+    source.mkdir()
+    (source / "current.py").write_text("current source")
+    output = "project/measurements[trial]"
+    if local_output:
+        (workdir / output).mkdir()
+    remote = landed / output
+    remote.mkdir(parents=True)
+    (landed / "project/stale.py").write_text("retired source")
+    (landed / "project/measurementst").write_text("not the literal output path")
+    (landed / "project/new-output").mkdir()
+    database = workdir / "state.sqlite"
+    store = Cache(database)
+    store.record(
+        run_record("old", target="other-alias").model_copy(
+            update={"fetch_path": output, "verdict": "ok"}
+        )
+    )
+    real = dispatch_module.rsync
+    monkeypatch.setattr(
+        dispatch_module,
+        "rsync",
+        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
+    )
+    ready = Barrier(2)
+
+    def mirror(job: int) -> None:
+        instance = Dispatcher(cache=Cache(database), sync=GitignoreFilter(workdir))
+        host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["project"]}))
+        with closing(instance.cache.connection):
+            ready.wait(timeout=10)
+            instance.rsync_up(host, "/repo", fetch="project/new-output")
+            instance.cache.record(
+                run_record(str(job)).model_copy(update={"fetch_path": "project/new-output"})
+            )
+        del instance
+
+    artifact = remote / "plain.jsonl"
+    with artifact.open("w") as writer, ThreadPoolExecutor(max_workers=2) as workers:
+        writer.write("before\n")
+        writer.flush()
+        list(workers.map(mirror, (1, 2)))
+        writer.write("after\n")
+    assert artifact.read_text() == "before\nafter\n"
+    assert (landed / "project/new-output").is_dir()
+    assert (landed / "project/current.py").read_text() == "current source"
+    assert not (landed / "project/stale.py").exists()
+    assert not (landed / "project/measurementst").exists()
+
+
+def test_submission_records_outputs_before_releasing_the_mirror_lock(
+    dispatcher: Dispatcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The next submission cannot miss the previous handle's output declaration."""
+    execution = plan()
+    record = dispatcher.cache.record
+
+    def within_transaction(run) -> None:
+        assert SyncLock(execution.host, dispatcher.root).lock.is_locked
+        record(run)
+
+    monkeypatch.setattr(dispatcher.cache, "record", within_transaction)
+    handle = dispatcher.submit(
+        execution,
+        "/repo",
+        script="train.sh",
+        args=(),
+        resources=Resources(),
+        fetch="project/output",
+    )
+    assert dispatcher.cache.run(handle).fetch_path == "project/output"
+
+
+@pytest.mark.parametrize("path", ["/absolute", "../escape", "."])
+def test_mirror_refuses_unsafe_declared_output_protection(workdir: Path, path: str) -> None:
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    with pytest.raises(ValueError, match="relative path below"):
+        instance._protected_outputs(path)
 
 
 def test_rsync_up_refuses_an_undeclared_include_and_warns_about_a_stale_one(

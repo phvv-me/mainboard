@@ -29,7 +29,7 @@ from .provenance import Source, commanded, tree_source
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, Watcher, announce, db_file, git, logger, now, state_path, workspace
 from .shipment import Shipment
-from .snapshots import CLOSURE, Image, Mirrored, Sealed, Snapshots
+from .snapshots import CLOSURE, Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
@@ -359,12 +359,15 @@ class Dispatcher:
         ssh: SshTransport | None = None,
         required: Sequence[Sequence[str]] = (),
         extra: Sequence[str] = (),
+        fetch: str = "",
     ) -> list[str]:
         """Mirror the workspace to `plan.host`; git-ignored files and the denylist skipped.
 
-        The workspace and nested `.gitignore` files are the primary send and delete boundary;
-        `plan.profile.sync.protect` is the escape hatch for remote-only artifacts outside that
-        boundary. `required` names groups of paths that must ship together despite being
+        The workspace and nested `.gitignore` files are the primary send and delete boundary.
+        Declared output paths from this submission and prior jobs in this workspace are always
+        protected from deletion, regardless of their names or local existence.
+        `plan.profile.sync.protect` additionally protects unregistered remote artifacts.
+        `required` names groups of paths that must ship together despite being
         outside the allowlist or git-ignored (a compiled manifest with its lock and the state
         naming what that lock was solved from, say): each group is required to exist locally as
         a whole, and is punched through the denylist with its own include filter. `extra` ships
@@ -452,7 +455,7 @@ class Dispatcher:
                     include=include_filters,
                     filters=self.sync.filters,
                     exclude=[*remainder_filters, *self.sync.excludes, *scope.exclude],
-                    protect=scope.protect,
+                    protect=[*self._protected_outputs(fetch), *scope.protect],
                     rsh=policy.rsync_shell,
                     timeout=ceil(policy.deadline),
                     host=plan.host,
@@ -721,6 +724,7 @@ class Dispatcher:
                 root,
                 required=required,
                 extra=[*staged, *([listing] if listing else []), *dispatched.files],
+                fetch=fetch or "",
             )
             sha = git("rev-parse", "--short", "HEAD")
             dirty = dispatched.source.dirty
@@ -747,24 +751,24 @@ class Dispatcher:
                 )
             except SystemExit as error:
                 raise SystemExit(f"submission to host {plan.host!r} failed: {error}") from None
-        self.cache.record(
-            RunRecord(
-                handle=handle,
-                target=plan.host,
-                kind=plan.profile.kind,
-                script=dispatched.spelling if shipment is not None else prepared,
-                args=" ".join(shlex.quote(a) for a in args),
-                git_sha=sha,
-                dirty=int(dirty),
-                submitted_at=now(),
-                fetch_path=fetch,
-                name=name,
-                node=node,
-                source=dispatched.source.key,
-                commit=dispatched.source.commit,
-                digest=dispatched.source.digest,
+            self.cache.record(
+                RunRecord(
+                    handle=handle,
+                    target=plan.host,
+                    kind=plan.profile.kind,
+                    script=dispatched.spelling if shipment is not None else prepared,
+                    args=" ".join(shlex.quote(a) for a in args),
+                    git_sha=sha,
+                    dirty=int(dirty),
+                    submitted_at=now(),
+                    fetch_path=fetch,
+                    name=name,
+                    node=node,
+                    source=dispatched.source.key,
+                    commit=dispatched.source.commit,
+                    digest=dispatched.source.digest,
+                )
             )
-        )
         logger.info(
             "%s -> %s on %s (%s%s)", prepared, handle, plan.host, sha, "+dirty" if dirty else ""
         )
@@ -878,6 +882,28 @@ class Dispatcher:
         digest = hashlib.sha256(content).hexdigest()
         staged = self._stage(f"job-{digest}.sh", content)
         return staged, (staged,)
+
+    def _protected_outputs(self, fetch: str) -> list[str]:
+        """Protect literal declared paths, including empty roots, before receiver filters.
+
+        The existing workspace cache spans host aliases and retains completed evidence.
+        Glob metacharacters in a real filename must not widen the protected subtree.
+        """
+        paths = {run.fetch_path for run in self.cache.recent(limit=None) if run.fetch_path}
+        paths.update([fetch] if fetch else [])
+        escaped = []
+        for path in sorted(paths):
+            relative = writable(path)
+            if not relative or relative == ".":
+                raise ValueError(
+                    f"declared output must be a relative path below the workspace: {path!r}"
+                )
+            escaped.append(
+                relative.translate(
+                    str.maketrans({"\\": "\\\\", "*": "\\*", "?": "\\?", "[": "\\[", "]": "\\]"})
+                )
+            )
+        return [pattern for path in escaped for pattern in (f"/{path}", f"/{path}/***")]
 
     def _stage(self, name: str, content: bytes) -> str:
         """Atomically stage exact bytes and answer their workspace-relative path."""

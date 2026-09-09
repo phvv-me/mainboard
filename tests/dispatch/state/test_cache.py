@@ -16,6 +16,20 @@ def test_in_memory_state_cannot_create_a_phony_durable_settlement_lock() -> None
         pytest.fail("an in-memory registry cannot coordinate durable settlement")
 
 
+def test_unlimited_history_retains_old_output_declarations() -> None:
+    store = cache()
+    for index in range(25):
+        store.record(
+            run_record(str(index), submitted_at=f"{index:02}").model_copy(
+                update={"fetch_path": f"measurements/{index}", "verdict": "ok"}
+            )
+        )
+    assert len(store.recent()) == 20
+    assert {run.fetch_path for run in store.recent(limit=None)} == {
+        f"measurements/{index}" for index in range(25)
+    }
+
+
 def test_the_settlement_lock_follows_the_opened_database_not_a_later_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -168,10 +168,11 @@ class Cache:
         """
         return [run for run in self.__records() if run.verdict not in vocabulary.TERMINAL]
 
-    def recent(self, limit: int = 20) -> list[RunRecord]:
-        """The most recent dispatched runs, newest first."""
+    def recent(self, limit: int | None = 20) -> list[RunRecord]:
+        """Dispatched runs, newest first; None retains all historical declarations."""
         rows = self.connection.execute(
-            "SELECT data FROM runs ORDER BY submitted_at DESC LIMIT ?", (limit,)
+            "SELECT data FROM runs ORDER BY submitted_at DESC LIMIT ?",
+            (-1 if limit is None else limit,),
         ).fetchall()
         return [RunRecord.model_validate_json(row["data"]) for row in rows]
 

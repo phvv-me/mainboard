@@ -188,6 +188,7 @@ class Landing:
                 ssh=policy,
                 required=[self.artifact] if self.artifact else [],
                 extra=[script, *([listing] if listing else []), *shipment.files],
+                fetch=shipment.fetch,
             )
             # Every command below stands in the workspace the mirror just created, which is why
             # nothing before this line may `cd` into a root that did not exist yet.
