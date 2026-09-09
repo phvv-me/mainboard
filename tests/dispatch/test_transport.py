@@ -1,5 +1,12 @@
+import os
 import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=monkeypatches Popen for hermetic tests, never runs a real process since=2026-08-18
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from typing import BinaryIO
 
 import psutil
 import pytest
@@ -54,7 +61,7 @@ class _FakeProcess:
         self.communicate_calls = 0
         self.wait_calls: list[float | None] = []
 
-    def communicate(self, timeout: float) -> tuple[str, str]:
+    def communicate(self, timeout: float, input: str | None = None) -> tuple[str, str]:
         self.communicate_calls += 1
         if self.raise_timeout and self.communicate_calls == 1:
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=timeout)
@@ -211,6 +218,71 @@ def test_a_timed_out_transfer_takes_its_whole_process_group_down_with_it(
     assert process.wait_calls == [2.0]
 
 
+@pytest.mark.parametrize("output_file", [False, True])
+def test_run_pipes_only_explicit_input_and_streams_stdout_bytes(
+    tmp_path: Path, output_file: bool
+) -> None:
+    output = tmp_path / "stream.bin" if output_file else None
+    script = "import sys; data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data)"
+    answer = SshTransport().run(
+        (sys.executable, "-c", script),
+        "local",
+        operation="stream",
+        input_text="line one\nUnicode: 日本語\n",
+        output=output,
+    )
+    if output is None:
+        assert answer == "line one\nUnicode: 日本語\n"
+    else:
+        assert answer == ""
+        assert output.read_bytes() == "line one\nUnicode: 日本語\n".encode()
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_stream_keeps_binary_bytes_and_preserves_command_failure(
+    tmp_path: Path, exit_code: int
+) -> None:
+    output = tmp_path / "partial.bin"
+    script = (
+        "import sys; sys.stdout.buffer.write(bytes(range(256))); "
+        f"sys.stderr.write('command failed'); sys.exit({exit_code})"
+    )
+    command = (sys.executable, "-c", script)
+    if exit_code:
+        with pytest.raises(RuntimeError, match="command failed"):
+            SshTransport().run(command, "local", operation="stream", output=output)
+    else:
+        assert SshTransport().run(command, "local", operation="stream", output=output) == ""
+    assert output.read_bytes() == bytes(range(256))
+
+
+def test_stream_timeout_closes_staging_file_and_terminates_process_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    process = _FakeProcess(raise_timeout=True)
+    killed: list[tuple[int, bool]] = []
+    opened: list[BinaryIO] = []
+
+    def spawn(command: tuple[str, ...], **kwargs: BinaryIO | str | bool | int) -> _FakeProcess:
+        sink = cast("BinaryIO", kwargs["stdout"])
+        sink.write(b"partial")
+        opened.append(sink)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(
+        transport_module,
+        "terminate_process_tree",
+        lambda pid, *, force=False: killed.append((pid, force)),
+    )
+    output = tmp_path / "partial.bin"
+    with pytest.raises(HostUnreachable, match="timed out"):
+        SshTransport().run(("ssh", "host"), "host", operation="stream", output=output)
+    assert output.read_bytes() == b"partial"
+    assert opened[0].closed
+    assert killed == [(process.pid, False)]
+
+
 def test_every_ssh_this_policy_runs_reads_devnull_and_never_the_callers_own_stdin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -220,13 +292,13 @@ def test_every_ssh_this_policy_runs_reads_devnull_and_never_the_callers_own_stdi
     every remote verb warms a connection before it does anything, so
     `while read handle; do mainboard submit ...; done < handles` fed the first submit's warm-up
     the rest of the file and the loop ran once. Nothing here wants a caller's input: the warm-up
-    runs `true`, scp moves a file, and a real remote command rides plumbum's own piped session.
+    echoes a marker, scp moves a file, and a real remote command rides plumbum's own piped session.
     """
     opened: list[dict[str, object]] = []
 
     def record(*args: object, **kwargs: object) -> _FakeProcess:
         opened.append(kwargs)
-        return _FakeProcess(stdout="ok\n")
+        return _FakeProcess(stdout="mainboard-reachable\n")
 
     monkeypatch.setattr(subprocess, "Popen", record)
     policy = SshTransport()
@@ -270,11 +342,12 @@ def test_warm_and_transfer_ride_the_same_policy_and_machine_opens_a_new_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[tuple[str, ...], str, str]] = []
-    monkeypatch.setattr(
-        SshTransport,
-        "run",
-        lambda self, command, host, *, operation: calls.append((command, host, operation)),
-    )
+
+    def run(self: SshTransport, command: tuple[str, ...], host: str, *, operation: str) -> str:
+        calls.append((command, host, operation))
+        return "mainboard-reachable\r\n"
+
+    monkeypatch.setattr(SshTransport, "run", run)
     built: dict[str, str | tuple[str, ...] | float | bool] = {}
 
     class FakeBoundedSshMachine:
@@ -299,6 +372,7 @@ def test_warm_and_transfer_ride_the_same_policy_and_machine_opens_a_new_session(
     policy.transfer("a.txt", destination="gold:b.txt", host="gold")
     policy.machine("gold")
     assert calls[0][0][:2] == ("ssh", "-o")
+    assert calls[0][0][-3:] == ("gold", "echo", "mainboard-reachable")
     assert calls[0][1:] == ("gold", "connect")
     assert calls[1][0][:2] == ("scp", "-o")
     assert calls[1][1:] == ("gold", "copy")
@@ -408,12 +482,29 @@ def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liven
         "-o",
         "StrictHostKeyChecking=accept-new",
         "-o",
-        "UserKnownHostsFile=/dev/null",
+        f"UserKnownHostsFile={os.devnull}",
         "-o",
         "LogLevel=ERROR",
     )
     assert "-p 41022" in policy.rsync_shell and "-i /keys/id" in policy.rsync_shell
     assert Endpoint(address="a", identity="~/.ssh/id").identity.startswith("/")
+
+
+@pytest.mark.parametrize("device", ["/dev/null", "nul"])
+def test_rental_known_hosts_uses_the_client_null_device(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    monkeypatch.setattr(transport_module.os, "devnull", device)
+    assert f"UserKnownHostsFile={device}" in Endpoint(address="rental").options
+
+
+@pytest.mark.parametrize("output", ["", "banner only\n", "prefix-mainboard-reachable\n"])
+def test_warm_refuses_success_without_its_complete_marker(
+    monkeypatch: pytest.MonkeyPatch, output: str
+) -> None:
+    monkeypatch.setattr(SshTransport, "run", lambda self, command, host, *, operation: output)
+    with pytest.raises(RuntimeError, match="without the expected marker"):
+        SshTransport().warm("gold")
 
 
 def test_an_unbound_policy_names_the_alias_and_a_bound_one_spells_the_port_scp_way() -> None:

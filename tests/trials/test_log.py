@@ -168,3 +168,46 @@ def test_artifact_publication_never_overwrites_corrupted_content(tmp_path: Path)
     with pytest.raises(ValueError, match="collision"):
         artifacts.write(b"proof", media_type="text/plain")
     assert list((tmp_path / "out/objects").iterdir()) == [tmp_path / first.path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "",
+        ".",
+        "../outside",
+        "/outside",
+        "C:/outside",
+        "C:outside",
+        "//host/share/file",
+        "data\\file",
+        "data/../file",
+        "data/./file",
+        "data//file",
+        "data/file:stream",
+        "data/\0file",
+    ],
+)
+def test_artifact_paths_are_portable_before_reading_or_transfer_verification(
+    tmp_path: Path, path: str
+) -> None:
+    reference = Artifact(path=path, sha256=hashlib.sha256(b"").hexdigest(), size=0)
+    with pytest.raises(ValueError, match="canonical and project-relative"):
+        reference.read(tmp_path)
+    receipt = json.dumps({"trial_receipt": {"artifacts": {"table": reference.model_dump()}}})
+    with pytest.raises(ValueError, match="canonical and project-relative"):
+        Artifacts.verify([receipt], directory=tmp_path, boundary=tmp_path)
+
+
+def test_project_artifact_reads_preserve_logical_dataset_mounts(tmp_path: Path) -> None:
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "datasets").symlink_to(storage, target_is_directory=True)
+    reference = Artifacts(project, project / "datasets/node").write(
+        b"mounted bytes", media_type="text/plain"
+    )
+    assert reference.read(project) == b"mounted bytes"
+    receipt = json.dumps({"trial_receipt": {"artifacts": {"data": reference.model_dump()}}})
+    Artifacts.verify([receipt], directory=project / "datasets", boundary=project)

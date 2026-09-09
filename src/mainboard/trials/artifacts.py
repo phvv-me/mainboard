@@ -4,7 +4,8 @@ import hashlib
 import json
 import os
 from collections.abc import Iterable
-from pathlib import Path
+from ntpath import isreserved
+from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 
 from patos import FrozenModel
@@ -20,19 +21,37 @@ class Artifact(FrozenModel):
     media_type: str = "application/octet-stream"
     schema_name: str = ""
 
+    @property
+    def relative(self) -> PurePosixPath:
+        """Validate canonical portable paths without interpreting the source machine's OS."""
+        return relative_path(self.path)
+
     def read(self, root: Path) -> bytes:
         """Read pinned bytes through the project's logical storage mounts.
 
         Dispatch mounts result directories outside its source snapshot. References remain
         project-relative across that mount and after fetching; their hash verifies the bytes.
         """
-        relative = Path(self.path)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError(f"artifact path must stay project-relative: {self.path}")
-        data = (root / relative).read_bytes()
+        data = (root / self.relative).read_bytes()
         if len(data) != self.size or hashlib.sha256(data).hexdigest() != self.sha256:
             raise ValueError(f"artifact content changed: {self.path}")
         return data
+
+
+def relative_path(value: str) -> PurePosixPath:
+    """Validate a portable project-relative reference, independent of the reader's OS."""
+    path = PurePosixPath(value)
+    if (
+        not path.parts
+        or path.is_absolute()
+        or ".." in path.parts
+        or path.as_posix() != value
+        or "\\" in value
+        or ":" in value
+        or isreserved(value)
+    ):
+        raise ValueError(f"artifact path must stay canonical and project-relative: {value}")
+    return path
 
 
 class Artifacts:
@@ -62,9 +81,7 @@ class Artifacts:
                 if not isinstance(value, dict):
                     continue
                 reference = Artifact.model_validate(value)
-                relative = Path(reference.path)
-                if relative.is_absolute() or ".." in relative.parts:
-                    raise ValueError(f"artifact path must stay project-relative: {relative}")
+                relative = reference.relative
                 root = next(
                     (root for root in roots if (root / relative).is_relative_to(directory)),
                     None,

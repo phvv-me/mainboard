@@ -80,7 +80,10 @@ class Results:
         return path
 
     def table(self, schema: str, *, project: str = "") -> pl.DataFrame:
-        """Read matching Parquet artifacts, including those published before trial settlement."""
+        """Read verified Parquet tables from collected storage, never a source host's path.
+
+        Original repository and machine metadata remain in the _trial provenance column.
+        """
         artifacts = self.query("SELECT * FROM artifacts", project=project)
         frames = []
         for row in artifacts.iter_rows(named=True):
@@ -90,9 +93,17 @@ class Results:
             if reference.media_type != "application/vnd.apache.parquet":
                 raise ValueError(f"{schema} contains a non-Parquet artifact")
             root = Path(row["root"])
-            prefix = root.relative_to(self.root).as_posix()
-            if prefix != "." and reference.path.startswith(f"{prefix}/"):
-                root = self.root
+            relative = reference.relative
+            # References may be project- or workspace-relative. Match only this project's
+            # location, including when Results is opened on the project itself.
+            root = next(
+                (
+                    parent
+                    for parent in root.parents
+                    if relative.is_relative_to(root.relative_to(parent).as_posix())
+                ),
+                root,
+            )
             frame = pl.read_parquet(BytesIO(reference.read(root)))
             if "_trial" in frame.columns:
                 raise ValueError("artifact payload reserves the _trial provenance column")
@@ -110,26 +121,27 @@ class Results:
         roots = self._projects(project)
         # Explicit file inventory per query is the snapshot. Temporary rsync/Parquet files
         # never match; a later query sees newly published immutable fragments automatically.
-        parts = [
-            str(path)
-            for root in roots
-            for path in root.glob("*/evidence/receipts/run=*/part-*.parquet")
-        ]
-        if parts:
-            connection.read_parquet(
-                parts, union_by_name=True, hive_partitioning=False, filename=True
-            ).create_view("_trials")
-            connection.execute("""
-                CREATE VIEW trials AS SELECT DISTINCT
-                    regexp_extract(filename, '([^/]+)/datasets/experiments/', 1) AS project,
-                    * EXCLUDE(filename) FROM _trials
-            """)
-        else:
-            connection.execute(
-                "CREATE TABLE trials(project VARCHAR, run VARCHAR, trial VARCHAR, "
-                "verdict VARCHAR, artifacts JSON, host VARCHAR, card_name VARCHAR, commit VARCHAR)"
-            )
-        events = []
+        connection.execute(
+            "CREATE TABLE _receipt_schema(project VARCHAR, run VARCHAR, trial VARCHAR, "
+            "verdict VARCHAR, artifacts JSON, host VARCHAR, card_name VARCHAR, commit VARCHAR)"
+        )
+        inventories = ["SELECT * FROM _receipt_schema"]
+        for root in roots:
+            parts = [str(path) for path in root.glob("*/evidence/receipts/run=*/part-*.parquet")]
+            if parts:
+                name = f"_trials_{len(inventories)}"
+                connection.sql(
+                    "SELECT ?::VARCHAR AS project, * FROM read_parquet(?, "
+                    "union_by_name=true, hive_partitioning=false)",
+                    params=[root.parents[1].name, parts],
+                ).create_view(name)
+                inventories.append(f"SELECT * FROM {name}")
+        connection.execute(
+            "CREATE VIEW trials AS SELECT DISTINCT * FROM ("
+            + " UNION ALL BY NAME ".join(inventories)
+            + ")"
+        )
+        events: dict[tuple[str, str, int], str] = {}
         for root in roots:
             owner = root.parents[1]
             for path in sorted(root.glob("*/evidence/artifacts/*/*/events/*.ndjson*")):
@@ -139,15 +151,20 @@ class Results:
                 # A live transfer may end inside a UTF-8 character as well as inside JSON.
                 complete, _, _ = raw.rpartition(b"\n")
                 for frame in parse_tail(complete.decode() + "\n"):
-                    events.append(
-                        json.dumps(
-                            {
-                                "project": owner.name,
-                                "root": str(owner),
-                                **frame.model_dump(mode="json"),
-                            }
-                        )
+                    record = json.dumps(
+                        {
+                            "project": owner.name,
+                            "root": str(owner),
+                            **frame.model_dump(mode="json"),
+                        },
+                        sort_keys=True,
                     )
+                    identity = (owner.name, frame.job, frame.offset)
+                    if events.setdefault(identity, record) != record:
+                        raise ValueError(
+                            f"conflicting event snapshots for project {owner.name!r}, "
+                            f"stream {frame.job!r}, offset {frame.offset}"
+                        )
         connection.execute(
             """
             CREATE TABLE events AS SELECT DISTINCT
@@ -160,7 +177,7 @@ class Results:
                 row->'payload'->'data' AS data
             FROM unnest(?::JSON[]) AS records(row)
         """,
-            [events],
+            [list(events.values())],
         )
         connection.execute("""
             CREATE VIEW runs AS SELECT DISTINCT project,
@@ -170,7 +187,7 @@ class Results:
                 UNION SELECT DISTINCT project, run, host, card_name AS hardware, commit
                 FROM trials;
             CREATE VIEW emitted_artifacts AS SELECT DISTINCT e.project, e.stream,
-                coalesce(s.data->>'repository', e.root) AS root,
+                e.root AS root,
                 json_merge_patch(s.data, json_object('verdict',
                     coalesce(t.verdict, v.data->>'verdict'))) AS context,
                 e.data->>'name' AS name,

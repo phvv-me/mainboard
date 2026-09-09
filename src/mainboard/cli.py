@@ -17,6 +17,7 @@ from .core.errors import MissionError
 from .core.project import Project
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
+from .dispatch.dispatcher import Dispatcher
 from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .durable import schedule
@@ -565,6 +566,24 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
+    def collect(path: str, *, on: str) -> None:
+        """Collect remote evidence for queries, including runs started directly on that node.
+
+        path: workspace-relative results file or directory, using forward slashes on every OS.
+        on: declared SSH host; root and bootstrap Python come from its manifest profile.
+            Python is a command in that host's SSH login shell, usually python3; quote an
+            absolute interpreter path as that shell requires. No remote Mainboard is needed.
+        Complete files are immutable. Conflicts preserve the local copy and fail collection.
+        Live event snapshots exclude incomplete records; queries deduplicate overlapping frames.
+        A new query sees published files. Collection is not one transaction across servers.
+        """
+        local_root = workspace_root()
+        profile = load(local_root / Project().manifest).profile(on)
+        if not profile.root:
+            raise MissionError(f"declare hosts.{on}.root before collecting its results")
+        Dispatcher(root=local_root).fetch_path(on, root=profile.root, path=path)
+
+    @app.command
     def query(
         sql: str | None = None,
         *,
@@ -576,7 +595,8 @@ def build(root: Path | None = None) -> App:
         """Explore collected results across servers; each query sees newly arrived files.
 
         Views: runs, trials, events, metrics, artifacts, jobs. Project scopes science views;
-        jobs always shows the fleet. Run monitor to refresh remote files, or schedule it.
+        jobs always shows the fleet. Monitor refreshes tracked jobs; collect also imports
+        results from native remote runs. Neither requires a shared database service.
 
         sql: one DuckDB SELECT statement; defaults to SELECT * FROM runs without --file.
         file: read SQL from a UTF-8 file instead of the positional statement.

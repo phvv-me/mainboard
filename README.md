@@ -298,6 +298,7 @@ Mainboard's remote result mounts and after fetching.
 
 ```console
 mainboard monitor --json
+mainboard collect research/reproducibility/datasets/experiments/architecture_error_census --on homelab
 mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
 mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
 mainboard query "SELECT server, handle, backend_state, verdict, evidence, settled FROM jobs"
@@ -312,6 +313,19 @@ repeated passes to refresh remote data. A query itself has no network side effec
 DuckDB reads the collected Parquet fragments and event journals directly. There is
 no shared database file for different servers to lock, and no database service to deploy.
 Each query sees a fresh inventory. It is not a transaction across all servers.
+
+`collect` also imports runs started directly on a node, using the same collection
+path as monitor. Remote filesystem operations use Python's standard library and
+native `Path`; OpenSSH carries the bytes without remote rsync, tar, Bash, or an
+installed Mainboard. The host profile supplies `root` and `python` (default
+`python3`). The latter is a trusted interpreter command in the SSH login shell;
+quote paths containing spaces as that shell requires. Python 3.9 or later is
+needed for collection, independently of the experiment environment.
+
+Artifact references use canonical forward-slash relative paths on every OS.
+Queries read collected local bytes, while the original repository path remains
+provenance. Older receipt schemas retain missing fields as null. Importing a
+copy from another node never changes its recorded acquisition hardware.
 
 Jobs keep the last `backend_state` separate from the command `verdict`. A rental
 can report `running` before its successful command is collected and the instance
@@ -438,11 +452,31 @@ Receipt parts stay immutable after settlement. Fetches merge run-specific paths
 without deleting another server's results and exclude temporary files and mutable
 `latest.jsonl` summaries. Use the query views for the combined current picture.
 Source sync excludes trial artifact and receipt directories; explicitly sealed
-input resources are still transferred. Result downloads use rsync's update rule so
-an older replica on another host cannot replace a newer local file. This relies
-on file timestamps, not distributed conflict resolution; divergent writes to one
-run path are unsupported. Final receipts supply artifact references when an event
+input resources are still transferred. Result downloads stage and validate the
+transfer before publishing immutable files without overwriting existing paths.
+Conflicting copies fail explicitly, regardless of their timestamps. Live event
+prefixes become immutable offset-named snapshots; queries deduplicate overlaps.
+Temporary files, derived event heartbeats, and incomplete trailing records are
+excluded. Repeating a transfer adds no files when the source is unchanged.
+Final receipts supply artifact references when an event
 stream is incomplete, without inventing missing events or their timestamps.
+
+Collection verifies transport integrity, not the scientific meaning of results.
+Monitor still checks receipt references before declaring evidence delivered;
+`Results.table` verifies referenced artifact bytes when reading them. Collect from
+the declared storage workspace, not a pinned source tree with external data mounts.
+Linked or unreadable evidence is refused. Files publish individually, so a failed
+publication may leave a valid subset for the next retry. Current transfers send
+the selected scope again and growing snapshots can overlap on disk; incremental
+transfer and snapshot compaction remain optimization work.
+
+Collection from native Windows and Linux nodes to a Linux client has been exercised,
+as has native Windows local execution. Source setup,
+snapshot pinning, and scheduler launch still contain Unix-shell paths; collection
+support does not establish fully portable remote submission. The next boundary is
+one Python executor for the existing job specification, retaining Pueue/PBS/Slurm
+as scheduler adapters and Pixi as environment activation rather than adding a
+second queue or database service.
 
 September 7 real-use validation covered local RTX 4090, Crimson's reserved RTX
 3090 through SSH/pueue, and Miyabi GH200 through PBS. On Crimson, live result

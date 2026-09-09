@@ -5,9 +5,10 @@
 # A policy carries an `Endpoint` when the machine it opens is not in `~/.ssh/config` at all,
 # which is the whole difference between a declared host and one rented for a single job.
 
+import os
 import shlex
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp/rsync options), not untrusted input since=2026-08-17
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from math import ceil
 from pathlib import Path
 from typing import NoReturn
@@ -134,7 +135,7 @@ class Endpoint(FrozenModel):
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
-            "UserKnownHostsFile=/dev/null",
+            f"UserKnownHostsFile={os.devnull}",
             "-o",
             "LogLevel=ERROR",
         )
@@ -215,36 +216,49 @@ class SshTransport(FrozenModel):
             new_session=True,
         )
 
-    def run(self, command: tuple[str, ...], host: str, *, operation: str) -> str:
+    def run(
+        self,
+        command: tuple[str, ...],
+        host: str,
+        *,
+        operation: str,
+        input_text: str | None = None,
+        output: Path | None = None,
+    ) -> str:
         """Run one SSH transfer in a killable process group and surface a typed failure.
 
-        Its stdin is `/dev/null`, which is `ssh -n` spelled where every ssh and scp this policy
-        runs inherits it. An ssh client left on the caller's own stdin reads it greedily to
-        forward to the far side, and every verb here opens a connection before it does anything,
-        so `while read handle; do mainboard submit ...; done < handles` lost the rest of the
-        file to the first submit's connection warm-up. Nothing this policy runs wants a caller's
-        input: the warm-up runs `true`, scp moves a file, and a real remote command rides
-        plumbum's own session, whose stdin is a pipe it writes the command into.
+        input_text: explicit UTF-8 input, otherwise stdin is the native null device. Never
+            inherit the caller's input, which an SSH warm-up could consume from a shell loop.
+        output: caller-owned staging file for raw stdout bytes, otherwise capture text. A
+            streamed operation returns an empty string and retains partial bytes on failure.
+            The caller owns validation and publication of the completed staging file.
         """
-        try:
-            process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh/scp argv built from typed fields, not untrusted input since=2026-08-16
-                command,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
+        with ExitStack() as stack:
+            sink = (
+                stack.enter_context(output.open("wb")) if output is not None else subprocess.PIPE
             )
-        except OSError as error:
-            raise HostUnreachable(
-                f"ssh {operation} to {host!r} could not start: {error}"
-            ) from error
-        try:
-            stdout, stderr = process.communicate(timeout=self.deadline)
-        except subprocess.TimeoutExpired as error:
-            self.__raise_after_terminating(process, host=host, operation=operation, cause=error)
+            try:
+                process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh/scp argv built from typed fields, not untrusted input since=2026-08-16
+                    command,
+                    stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                    stdout=sink,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    start_new_session=True,
+                )
+            except OSError as error:
+                raise HostUnreachable(
+                    f"ssh {operation} to {host!r} could not start: {error}"
+                ) from error
+            try:
+                stdout, stderr = process.communicate(input=input_text, timeout=self.deadline)
+            except subprocess.TimeoutExpired as error:
+                self.__raise_after_terminating(
+                    process, host=host, operation=operation, cause=error
+                )
         if process.returncode == 0:
-            return stdout
+            return stdout or ""
         if "host key verification failed" in stderr.lower():
             raise ConnectionError(f"ssh to {host!r} failed host-key verification")
         detail = (
@@ -256,7 +270,10 @@ class SshTransport(FrozenModel):
 
     def warm(self, host: str) -> None:
         """Validate one bounded SSH connection before Plumbum opens its persistent session."""
-        self.run(("ssh", *self.options, host, "true"), host, operation="connect")
+        marker = "mainboard-reachable"
+        output = self.run(("ssh", *self.options, host, "echo", marker), host, operation="connect")
+        if marker not in output.splitlines():
+            raise RuntimeError(f"ssh connect to {host!r} returned without the expected marker")
 
     @staticmethod
     def __force_killpg(process: subprocess.Popen[str]) -> None:

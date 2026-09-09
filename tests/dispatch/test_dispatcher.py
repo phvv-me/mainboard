@@ -766,26 +766,37 @@ def test_states_asks_the_host_once_and_only_re_asks_what_the_listing_missed(
 
 
 @pytest.mark.parametrize(
-    ("fetch_path", "source", "dest"),
-    [("out/", "gold:/repo/out", ""), ("a/b/c.json", "gold:/repo/a/b/c.json", "a/b")],
+    "fetch_path",
+    ["out/", "a/b/c.json"],
 )
 def test_fetch_pulls_the_recorded_path_back_into_its_own_parent_directory(
     dispatcher: Dispatcher,
     workdir: Path,
     monkeypatch: pytest.MonkeyPatch,
     fetch_path: str,
-    source: str,
-    dest: str,
 ) -> None:
     """The results land under the workspace, wherever the command that pulls them was typed."""
-    pulled: list[tuple[str | Sequence[str], str]] = []
+    (workdir / "mainboard.toml").write_text(
+        "[workspace]\nname = 'test'\n[hosts.gold]\npython = 'remote-python'\n"
+    )
+    pulled = []
     monkeypatch.setattr(
-        dispatch_module, "rsync", lambda sources, target, *a, **k: pulled.append((sources, target))
+        dispatch_module.Collector,
+        "pull",
+        lambda self, host, **kwargs: pulled.append((self.root, host, kwargs)),
     )
     dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh", fetch_path=fetch_path))
-    landing = workdir / dest
-    assert pulled == [([source], f"{landing}/")]
-    assert landing.is_dir()
+    assert pulled == [
+        (
+            workdir,
+            "gold",
+            {
+                "root": "/repo",
+                "path": fetch_path.rstrip("/"),
+                "python": "remote-python",
+            },
+        )
+    ]
     with pytest.raises(LookupError, match="no fetch path"):
         dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh"))
 

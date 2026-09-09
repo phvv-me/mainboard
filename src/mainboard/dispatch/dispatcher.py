@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 from time import sleep
 from typing import TYPE_CHECKING
 from uuid import uuid4
+from zipfile import BadZipFile
 
 from patos import FrozenModel
 from plumbum.commands.processes import ProcessExecutionError
@@ -22,8 +23,10 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.generated import GeneratedFiles
 from ..engines.compile.vendor import vendor_root
+from ..manifest.loading import load
 from . import vocabulary
 from .allocation import Allocation
+from .collection.collector import Collector
 from .jobs import JobSpec
 from .provenance import Source, commanded, tree_source
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
@@ -206,7 +209,7 @@ class Dispatcher:
         return verdicts
 
     def fetch(self, handle: Handle, *, ssh: SshTransport | None = None) -> None:
-        """rsync the handle's recorded results path back from its host into the same local path."""
+        """Collect the handle's results without overwriting conflicting local evidence."""
         if not handle.fetch_path:
             raise LookupError(f"handle {handle.id!r} has no fetch path to pull")
         self.fetch_path(handle.host, root=handle.root, path=handle.fetch_path, ssh=ssh)
@@ -214,21 +217,21 @@ class Dispatcher:
     def fetch_path(
         self, host: str, *, root: str, path: str, ssh: SshTransport | None = None
     ) -> None:
-        """rsync `path` back from `host` into the same workspace path (a file or a directory)."""
-        policy = ssh or SshTransport()
-        target = self.local(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        rsync(
-            [f"{host}:{root}/{PurePosixPath(path)}"],
-            f"{target.parent}/",
-            # A host can retain an older replica from before results became download-only.
-            # Do not replace newer local evidence when collecting its whole node directory.
-            RsyncFlags.ARCHIVE | RsyncFlags.COMPRESS | RsyncFlags.UPDATE,
-            rsh=policy.rsync_shell,
-            timeout=ceil(policy.deadline),
-            host=host,
-            exclude=("*.tmp", "latest.jsonl", "partial-*.jsonl"),
-        )
+        """Collect a file or directory through remote Python, on either OS.
+
+        The host profile's python command bootstraps standard-library filesystem operations.
+        Source synchronization remains separate from evidence collection.
+        """
+        profile = load(self.root / Project().manifest).profile(host)
+        try:
+            Collector(self.root, ssh).pull(
+                host,
+                root=root,
+                path=path.rstrip("/"),
+                python=profile.python,
+            )
+        except (ValueError, RuntimeError, BadZipFile) as fault:
+            raise MissionError(f"collection of {path} from {host} failed: {fault}") from fault
         logger.info("fetched %s from %s", path, host)
 
     def hold(self, asked: Request, *, reason: str) -> RunRecord:
