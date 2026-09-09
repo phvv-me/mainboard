@@ -11,7 +11,7 @@ version = "0.4.8"
 description = "One interface for environments, remote dispatch, and hardware: manifest, execution context, probe, profile."
 readme = "README.md"
 requires-python = ">=3.14"
-license = "MIT"
+license = "Apache-2.0"
 authors = [{ name = "Pedro Valois" }]
 dependencies = [
     "cyclopts>=3.0",
