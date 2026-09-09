@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 # harness that stamped it, so any experiment framework earns the same reading by printing the
 # same line, and a reader parses it instead of importing this package. That is what lets a
 # proof-bookkeeping tool turn a claim's run into evidence carrying the trial's
-# content-addressed identity and its full gate sweep without knowing what ran it.
+# content-addressed identity and its evaluated gates without knowing what ran it.
 RECEIPT = "trial_receipt"
 
 
@@ -47,7 +47,7 @@ class TrialOutcome:
     """Shared identity every trial result carries, whatever its outcome.
 
     run_id: this trial's dedup identity.
-    gate_evidence: every declared gate's verdict, in declaration order.
+    gate_evidence: evaluated gate verdicts, ending at the first unmet precondition.
     node: the ledger slug this trial serves; empty stays a valid receipt and the field is
         simply absent from the printed line.
     """
@@ -61,7 +61,7 @@ class TrialOutcome:
     def receipt(self) -> str:
         """This trial as its one `RECEIPT` JSON line, for whatever drives the trial to print.
 
-        Identity, the outcome word, the harness that stamped it, the rendered gate sweep, the
+        Identity, the outcome word, the harness that stamped it, the evaluated gates, the
         ledger node when one was declared, and then whatever else the outcome kind carries as
         its own fields. A new kind declares a `verdict` and its fields, and its receipt follows
         without a renderer here ever being edited. `producer` is provenance for a reader
@@ -174,12 +174,11 @@ def runnable(
     *,
     lane: Lane | None = None,
 ) -> TrialResult | BlockedTrial | FailedTrial:
-    """Execute one trial: every declared gate, then `setup` and `measure` once they all clear.
+    """Check ordered preconditions, then set up and measure only when all gates pass.
 
-    Every gate is checked, not just the first blocker, so a trial's evidence always reflects
-    the full precondition sweep. A blocked gate outranks a failed one in the returned outcome,
-    since BLOCKED is an expected, recoverable wait and FAILED is a real break; `runnable` never
-    conflates the two.
+    Stop at the first blocked or failed gate: later checks can require resources that
+    earlier gates admit. Retain only evaluated verdicts, including the stopping gate.
+    A blocked precondition remains distinct from a failed check.
 
     experiment_cls: the registered `Experiment` subclass whose declared `gates` this trial
         must clear.
@@ -191,16 +190,19 @@ def runnable(
     run = Run(
         model_id=model, config=config, artifact_dir=Path(Project().out_dir) / "runs" / trial_id
     )
-    evidence = tuple(gate.check(run) for gate in experiment_cls.gates)
-
-    blocked = next((verdict for verdict in evidence if verdict.status == GateStatus.BLOCKED), None)
-    if blocked is not None:
-        return BlockedTrial(run_id=trial_id, gate_evidence=evidence, reason=blocked.reason)
-
-    failed = next((verdict for verdict in evidence if verdict.status == GateStatus.FAILED), None)
-    if failed is not None:
-        return FailedTrial(run_id=trial_id, gate_evidence=evidence, reason=failed.reason)
+    evidence: list[GateVerdict] = []
+    for gate in experiment_cls.gates:
+        verdict = gate.check(run)
+        evidence.append(verdict)
+        if verdict.status == GateStatus.BLOCKED:
+            return BlockedTrial(
+                run_id=trial_id, gate_evidence=tuple(evidence), reason=verdict.reason
+            )
+        if verdict.status == GateStatus.FAILED:
+            return FailedTrial(
+                run_id=trial_id, gate_evidence=tuple(evidence), reason=verdict.reason
+            )
 
     config.setup(run)
     metrics = config.measure(run, lane)
-    return TrialResult(run_id=trial_id, metrics=metrics, gate_evidence=evidence)
+    return TrialResult(run_id=trial_id, metrics=metrics, gate_evidence=tuple(evidence))

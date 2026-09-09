@@ -16,7 +16,7 @@ from mainboard.lab.board_surface import (
     TrialResult,
     runnable,
 )
-from mainboard.lab.gates import Gate, GateStatus, GateVerdict
+from mainboard.lab.gates import Gate, GateStatus, GateVerdict, Idle, Parity
 
 # The one gate entry every mixed sweep below renders first, kept here so each expected receipt
 # spells out only the gate that decides its outcome.
@@ -57,8 +57,8 @@ class MixedPassAndFail(NoGates):
     gates = (FixedGate(GateStatus.PASSED), FixedGate(GateStatus.FAILED, reason="broke"))
 
 
-class BlockedOutranksFailed(NoGates):
-    """A trial blocked by one gate and failed by another, the precedence case."""
+class BlockedBeforeFailed(NoGates):
+    """A trial whose first blocker prevents checking its later failing gate."""
 
     gates = (
         FixedGate(GateStatus.BLOCKED, reason="wait"),
@@ -85,15 +85,15 @@ class BlockedOutranksFailed(NoGates):
             id="a-broken-gate-fails-it",
         ),
         pytest.param(
-            BlockedOutranksFailed,
+            BlockedBeforeFailed,
             BlockedTrial,
             "wait",
-            (GateStatus.BLOCKED, GateStatus.FAILED),
-            id="a-block-outranks-a-failure",
+            (GateStatus.BLOCKED,),
+            id="a-block-prevents-later-checks",
         ),
     ],
 )
-def test_runnable_sweeps_every_declared_gate_before_reporting_the_trials_outcome(
+def test_runnable_retains_only_evaluated_gates_in_declaration_order(
     declared: type[Experiment],
     outcome_kind: type[TrialOutcome],
     reason: str,
@@ -104,6 +104,43 @@ def test_runnable_sweeps_every_declared_gate_before_reporting_the_trials_outcome
     assert outcome.run_id == declared().run_id(model="gpt2")
     assert tuple(verdict.status for verdict in outcome.gate_evidence) == swept
     assert getattr(outcome, "reason", "") == reason
+
+
+@pytest.mark.parametrize("status", tuple(GateStatus))
+def test_idle_admits_parity_and_measurement_only_after_passing(
+    monkeypatch: pytest.MonkeyPatch, status: GateStatus
+) -> None:
+    calls: list[str] = []
+
+    def wait(*, timeout: float) -> bool:
+        assert timeout == 0
+        calls.append("idle")
+        if status == GateStatus.FAILED:
+            raise RuntimeError("idle probe failed")
+        return status == GateStatus.PASSED
+
+    def parity(oracle: str, run: Run) -> bool:
+        calls.append("parity")
+        return True
+
+    def setup(self: NoGates, run: Run) -> None:
+        calls.append("setup")
+
+    def measure(self: NoGates, run: Run, lane: Lane | None = None) -> dict[str, float]:
+        calls.append("measure")
+        return {"score": 1.0}
+
+    monkeypatch.setattr(NoGates, "gates", (Idle(seconds=0, wait=wait), Parity("hf", parity)))
+    monkeypatch.setattr(NoGates, "setup", setup)
+    monkeypatch.setattr(NoGates, "measure", measure)
+    outcome = runnable(NoGates, "gpt2", NoGates())
+
+    assert outcome.verdict == status
+    expected = ["idle", "parity", "setup", "measure"] if status == GateStatus.PASSED else ["idle"]
+    assert calls == expected
+    assert tuple(verdict.status for verdict in outcome.gate_evidence) == (
+        (GateStatus.PASSED, GateStatus.PASSED) if status == GateStatus.PASSED else (status,)
+    )
 
 
 def test_runnable_builds_the_artifact_dir_under_the_projects_runs_path() -> None:
