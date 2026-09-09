@@ -120,6 +120,7 @@ def test_every_option_becomes_its_own_argument_in_receiver_order(
         include=["/src/keep.py"],
         exclude=["drop.py"],
         protect=["results/***"],
+        hide=["results/***"],
         filters=["merge,- .gitignore"],
         rsh="ssh -o BatchMode=yes",
         bwlimit=1000,
@@ -134,6 +135,8 @@ def test_every_option_becomes_its_own_argument_in_receiver_order(
         "ssh -o BatchMode=yes",
         "--bwlimit=1000",
         "--timeout=30",
+        "--filter",
+        "hide results/***",
         "--filter",
         "protect results/***",
         "--include",
@@ -172,6 +175,30 @@ def test_a_real_mirror_prunes_the_stale_and_the_ignored_while_protecting_the_rem
     assert not (host / "src/stale.py").exists()
     assert (host / "src/host-only.scratch").is_file()
     assert (host / "src/results/e1.json").is_file()
+
+
+def test_sender_hide_beats_explicit_include_without_blocking_source_pruning(
+    tmp_path: Path,
+) -> None:
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
+    repo, host = tmp_path / "repo", tmp_path / "host"
+    seed(repo, "src/current.py", "src/output/data.json")
+    seed(host, "src/stale.py", "src/output/data.json")
+    (repo / "src/output/data.json").write_text("stale bytes uploaded from a prior fetch")
+    protected = ("/src/output", "/src/output/***")
+    rsync(
+        ["src"],
+        f"{host}/",
+        _MIRROR,
+        include=["/src/output/data.json"],
+        hide=protected,
+        protect=protected,
+        cwd=repo,
+    )
+    assert (host / "src/output/data.json").read_text() == "src/output/data.json"
+    assert (host / "src/current.py").exists()
+    assert not (host / "src/stale.py").exists()
 
 
 def test_a_mirror_reads_its_sources_from_the_workspace_not_from_where_it_was_typed(

@@ -93,13 +93,14 @@ def rsync_argv(
     include: Sequence[str] = (),
     exclude: Sequence[str] = (),
     protect: Sequence[str] = (),
+    hide: Sequence[str] = (),
     filters: Sequence[str] = (),
     rsh: str | None = None,
     bwlimit: int | None = None,
     timeout: int | None = None,
     extra: Sequence[str] = (),
 ) -> list[str]:
-    """The rsync argv: combined flags, then filter rules in receiver order, then paths.
+    """The rsync argv: side-specific filters before includes, then ordinary filters and paths.
 
     Public because a transfer is not the only thing that runs rsync: a host pinning a snapshot
     of its own mirror builds the same argv with the same filter rules and runs it there, and one
@@ -115,14 +116,20 @@ def rsync_argv(
         args.append(f"--bwlimit={bwlimit}")
     if timeout is not None:
         args.append(f"--timeout={timeout}")
-    for pattern in protect:
-        args += ["--filter", f"protect {pattern}"]
-    for pattern in include:
-        args += ["--include", pattern]
-    for rule in filters:
-        args += ["--filter", rule]
-    for pattern in exclude:
-        args += ["--exclude", pattern]
+    for option, patterns in (
+        (
+            "--filter",
+            [
+                f"{action} {pattern}"
+                for action, group in (("hide", hide), ("protect", protect))
+                for pattern in group
+            ],
+        ),
+        ("--include", include),
+        ("--filter", filters),
+        ("--exclude", exclude),
+    ):
+        args.extend(argument for pattern in patterns for argument in (option, pattern))
     args += [*extra, *paths]
     return args
 
@@ -135,6 +142,7 @@ def rsync(
     include: Sequence[str] = (),
     exclude: Sequence[str] = (),
     protect: Sequence[str] = (),
+    hide: Sequence[str] = (),
     filters: Sequence[str] = (),
     rsh: str | None = None,
     bwlimit: int | None = None,
@@ -154,6 +162,7 @@ def rsync(
     include / exclude: filter patterns emitted before and after `filters`.
     protect: receiver-side `protect` filter rules emitted before include/exclude, shielding
         remote-only paths from `--delete` pruning.
+    hide: sender-side exclusions emitted before includes, preventing protected output uploads.
     filters: ordered rsync filter rules, such as Git ignore merge rules.
     rsh: remote shell (`-e`). bwlimit: KB/s cap. timeout: seconds.
     extra: raw flags for anything not covered above.
@@ -171,6 +180,7 @@ def rsync(
         include=include,
         exclude=exclude,
         protect=protect,
+        hide=hide,
         filters=filters,
         rsh=rsh,
         bwlimit=bwlimit,

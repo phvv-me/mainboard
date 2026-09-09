@@ -806,9 +806,9 @@ def test_a_rendered_and_a_staged_script_are_both_content_addressed(
         dispatcher._prepare_script("./missing/job.sh")  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
 
 
-@pytest.mark.parametrize("local_output", [False, True])
+@pytest.mark.parametrize("local_output", ["missing", "empty", "stale"])
 def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch, local_output: bool
+    workdir: Path, monkeypatch: pytest.MonkeyPatch, local_output: str
 ) -> None:
     """Missing or empty local data cannot erase another running job's declared output."""
     if which("rsync") is None:
@@ -816,9 +816,13 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
     source, landed = workdir / "project", workdir / "host-side"
     source.mkdir()
     (source / "current.py").write_text("current source")
+    (source / "selected-input.json").write_text("deliberately bound input")
     output = "project/measurements[trial]"
-    if local_output:
+    if local_output != "missing":
         (workdir / output).mkdir()
+    if local_output == "stale":
+        (workdir / output / "plain.jsonl").write_text("stale local output must never upload\n")
+        (workdir / output / "local-only.json").write_text("not an input")
     remote = landed / output
     remote.mkdir(parents=True)
     (landed / "project/stale.py").write_text("retired source")
@@ -844,7 +848,9 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
         host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["project"]}))
         with closing(instance.cache.connection):
             ready.wait(timeout=10)
-            instance.rsync_up(host, "/repo", fetch="project/new-output")
+            instance.rsync_up(
+                host, "/repo", fetch="project/new-output", extra=["project/selected-input.json"]
+            )
             instance.cache.record(
                 run_record(str(job)).model_copy(update={"fetch_path": "project/new-output"})
             )
@@ -857,10 +863,37 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
         list(workers.map(mirror, (1, 2)))
         writer.write("after\n")
     assert artifact.read_text() == "before\nafter\n"
+    assert not (remote / "local-only.json").exists()
     assert (landed / "project/new-output").is_dir()
     assert (landed / "project/current.py").read_text() == "current source"
+    assert (landed / "project/selected-input.json").read_text() == "deliberately bound input"
     assert not (landed / "project/stale.py").exists()
     assert not (landed / "project/measurementst").exists()
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_explicit_output_resource_is_refused_before_transfer(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch, recorded: bool
+) -> None:
+    source = workdir / "project/output"
+    source.mkdir(parents=True)
+    (source / "row.json").write_text("stale local data")
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    if recorded:
+        instance.cache.record(
+            run_record("old").model_copy(update={"fetch_path": "project/output"})
+        )
+    monkeypatch.setattr(
+        dispatch_module, "rsync", lambda *a, **kw: pytest.fail("transport reached")
+    )
+    execution = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["project"]}))
+    with pytest.raises(ValueError, match="separate immutable input"):
+        instance.rsync_up(
+            execution,
+            "/repo",
+            extra=["project/output/row.json"],
+            fetch="" if recorded else "project/output",
+        )
 
 
 def test_submission_records_outputs_before_releasing_the_mirror_lock(

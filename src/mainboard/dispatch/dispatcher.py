@@ -365,7 +365,9 @@ class Dispatcher:
 
         The workspace and nested `.gitignore` files are the primary send and delete boundary.
         Declared output paths from this submission and prior jobs in this workspace are always
-        protected from deletion, regardless of their names or local existence.
+        download-only, regardless of their names or local existence. An explicit resource
+        underneath an output path is refused before transfer; bind a separate immutable input
+        instead. Ordinary `needs` remain mutable mirror links, not immutable input snapshots.
         `plan.profile.sync.protect` additionally protects unregistered remote artifacts.
         `required` names groups of paths that must ship together despite being
         outside the allowlist or git-ignored (a compiled manifest with its lock and the state
@@ -424,6 +426,7 @@ class Dispatcher:
         gitignore_files = self.sync.control_files(include)
         required_paths = list(dict.fromkeys(path for group in required for path in group))
         with SyncLock(policy.endpoint or plan.host, self.sync.root):
+            outputs = self._protected_outputs(fetch, sources=named)
             try:
                 rsync(
                     [*include, *gitignore_files, *required_paths, *extra],
@@ -455,7 +458,8 @@ class Dispatcher:
                     include=include_filters,
                     filters=self.sync.filters,
                     exclude=[*remainder_filters, *self.sync.excludes, *scope.exclude],
-                    protect=[*self._protected_outputs(fetch), *scope.protect],
+                    protect=[*outputs, *scope.protect],
+                    hide=outputs,
                     rsh=policy.rsync_shell,
                     timeout=ceil(policy.deadline),
                     host=plan.host,
@@ -883,8 +887,8 @@ class Dispatcher:
         staged = self._stage(f"job-{digest}.sh", content)
         return staged, (staged,)
 
-    def _protected_outputs(self, fetch: str) -> list[str]:
-        """Protect literal declared paths, including empty roots, before receiver filters.
+    def _protected_outputs(self, fetch: str, *, sources: Sequence[str] = ()) -> list[str]:
+        """Download-only literal output paths, excluding conflicts with explicitly shipped input.
 
         The existing workspace cache spans host aliases and retains completed evidence.
         Glob metacharacters in a real filename must not widen the protected subtree.
@@ -897,6 +901,11 @@ class Dispatcher:
             if not relative or relative == ".":
                 raise ValueError(
                     f"declared output must be a relative path below the workspace: {path!r}"
+                )
+            if any(PurePosixPath(source).is_relative_to(relative) for source in sources):
+                raise ValueError(
+                    f"explicit input overlaps declared output {relative!r}; "
+                    "bind the selected data under a separate immutable input path"
                 )
             escaped.append(
                 relative.translate(
