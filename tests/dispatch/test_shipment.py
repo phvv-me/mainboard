@@ -1,3 +1,4 @@
+import os
 import shlex
 from pathlib import Path
 
@@ -69,6 +70,14 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
     assert local[-6:] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x"] or local[
         -7:-1
     ] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x"]
+
+
+def test_local_import_roots_use_the_native_path_separator(monkeypatch: pytest.MonkeyPatch) -> None:
+    shipment = Shipment.of_command(
+        "python -m job", source=Source(identity="", key="untracked"), imports=("a", "b")
+    )
+    monkeypatch.setattr(os, "pathsep", ";")
+    assert shipment.local_exports(Path("/workspace"))["PYTHONPATH"] == "/workspace/a;/workspace/b"
 
 
 def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(

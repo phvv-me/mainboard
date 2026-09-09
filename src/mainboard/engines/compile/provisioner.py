@@ -271,7 +271,13 @@ class Provisioner:
             with local.env(PATH=os.pathsep.join([*installed, str(local.env["PATH"])])):
                 yield
 
-    def run(self, command: Sequence[str], env: str = "default") -> int:
+    def run(
+        self,
+        command: Sequence[str],
+        env: str = "default",
+        *,
+        exports: dict[str, str] | None = None,
+    ) -> int:
         """Compile stale generated files, then let Pixi activate and run ``command``.
 
         Local execution deliberately goes through Pixi instead of a host shell. Pixi already
@@ -280,6 +286,8 @@ class Provisioner:
         """
         shard = self.refreshed(env)
         with local.cwd(str(self.root)):
+            if exports:
+                return shard.pixi.run(command, env, exports=exports)
             return shard.pixi.run(command, env)
 
     def capture(

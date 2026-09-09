@@ -7,6 +7,7 @@
 # under a provenance scoped to those files, and runs through one runner in the job's environment.
 
 import hashlib
+import os
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -151,14 +152,19 @@ class Shipment(FrozenModel):
         root: the workspace root the import roots resolve against.
         closure: the staged listing, workspace-relative, empty for a command.
         """
-        exported = self.exports(str(root / closure) if closure else "")
-        if self.imports:
-            exported = {
-                "PYTHONPATH": ":".join(str(root / place) for place in self.imports),
-                **exported,
-            }
+        exported = self.local_exports(root, closure=closure)
         return [
             "env",
             *(f"{name}={value}" for name, value in exported.items()),
             *shlex.split(self.command),
         ]
+
+    def local_exports(self, root: Path, *, closure: str = "") -> dict[str, str]:
+        """The native process environment, without assuming a POSIX `env` executable."""
+        exported = self.exports(str(root / closure) if closure else "")
+        if self.imports:
+            exported = {
+                "PYTHONPATH": os.pathsep.join(str(root / place) for place in self.imports),
+                **exported,
+            }
+        return exported

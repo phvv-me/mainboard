@@ -240,7 +240,13 @@ class Pixi(Tool):
         """
         return (self.env_prefix(env) / "conda-meta" / _FINGERPRINT).is_file()
 
-    def run(self, command: Sequence[str], env: str = "default") -> int:
+    def run(
+        self,
+        command: Sequence[str],
+        env: str = "default",
+        *,
+        exports: dict[str, str] | None = None,
+    ) -> int:
         """Run exact task or command argv through Pixi's cross-platform runner.
 
         Pixi owns environment activation while each caller-owned token remains a distinct
@@ -261,10 +267,12 @@ class Pixi(Tool):
                     f"environment {env!r} is not installed; run `{Project().name} install {env}`"
                 )
             runner = WindowsTaskRunner(self.manifest, env)
-            with self.direct_windows_environment(env):
+            with self.direct_windows_environment(env), local.env(**(exports or {})):
                 if command[0] in runner.tasks:
                     return runner.run(command, Process.stream).returncode
                 return Process.passthrough(local[command[0]][command[1:]])
+        if exports:
+            command = ["env", *(f"{name}={value}" for name, value in exports.items()), *command]
         return self.within_cwd(Process.passthrough, "run", "--frozen", "-e", env, *command)
 
     def capture(

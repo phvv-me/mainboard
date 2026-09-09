@@ -1304,12 +1304,35 @@ def test_remote_file_runs_refuse_before_staging_or_ssh(
         node.write_text("changed registration\n")
     board = Board(lab.root).on(host)
     monkeypatch.setattr(board, "sealed", lambda *a, **kw: pytest.fail("staging reached"))
-    monkeypatch.setattr(
-        "mainboard.board.connection", lambda *a, **kw: pytest.fail("SSH reached")
-    )
+    monkeypatch.setattr("mainboard.board.connection", lambda *a, **kw: pytest.fail("SSH reached"))
     with pytest.raises(MissionError, match="remote file targets require submission"):
         board.run([f"{Lab.JOB}::app"])
     assert not (lab.root / ".mainboard/dispatch/jobs").exists()
+
+
+def test_windows_native_targets_pass_process_environment_without_a_posix_utility(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows receives sealed imports and provenance after native prefix activation."""
+
+    def run(
+        self: FakeProvisioner,
+        command: Sequence[str],
+        env: str,
+        *,
+        exports: dict[str, str] | None = None,
+    ) -> int:
+        assert command[:3] == ["python", "-m", "mainboard.jobs.call"]
+        assert env == "default" and exports is not None
+        assert exports["PYTHONPATH"] == str(lab.root / "research/camp")
+        assert Path(exports["MAINBOARD_CLOSURE"]).is_file()
+        assert exports["MAINBOARD_FIRST_PARTY"] == "experiments"
+        return 17
+
+    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    monkeypatch.setattr(FakeProvisioner, "run", run)
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    assert Board(lab.root).run([f"{Lab.JOB}::app"]) == 17
 
 
 def test_a_job_runs_here_through_the_same_runner_with_its_closure_exported(

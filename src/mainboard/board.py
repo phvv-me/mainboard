@@ -1104,6 +1104,7 @@ class Board:
         """
         plan = self.plan(env=env, container=container)
         target = Target.spelled(command, self.root)
+        exported: dict[str, str] = {}
         if target is not None:
             if not self.local:
                 raise MissionError(
@@ -1113,8 +1114,16 @@ class Board:
                 )
             shipment = self.sealed(target, plan)
             listing = self.dispatcher.stage_listing(shipment)
-            command = shipment.locally(self.root, closure=listing)
+            if platform.system() == "Windows" and not plan.containerized:
+                exported = shipment.local_exports(self.root, closure=listing)
+                command = shlex.split(shipment.command)
+            else:
+                command = shipment.locally(self.root, closure=listing)
         if self.local and not plan.containerized:
+            if exported:
+                return Provisioner(self.root, self.manifest).run(
+                    command, plan.env, exports=exported
+                )
             return Provisioner(self.root, self.manifest).run(command, plan.env)
         line = self.line(joined(command), env=env, container=container)
         if self.local:

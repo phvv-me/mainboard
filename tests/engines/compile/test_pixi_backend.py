@@ -406,6 +406,45 @@ def test_windows_refuses_an_arbitrary_activation_script_instead_of_skipping_it(
         pixi.run(("tectonic", "--help"))
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_windows_native_exports_override_activation_without_changing_the_parent(
+    pixi: Pixi,
+    stub_binary: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    failed: bool,
+) -> None:
+    """A sealed job exports only its own keys inside the fully activated child."""
+    pixi.manifest.write_text("[workspace]\n", encoding="utf-8")
+    pixi.windows_activation_cache.write_text("{}", encoding="utf-8")
+    stub_binary("python.exe")
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
+    monkeypatch.setattr(
+        Pixi,
+        "direct_windows_environment",
+        lambda self, env: local.env(PYTHONPATH="activation", PRESERVED="yes"),
+    )
+
+    def passthrough(command: BaseCommand) -> int:
+        assert command.formulate()[1:] == ["-m", "mainboard.jobs.call", "test_probe.py"]
+        assert local.env["PYTHONPATH"] == "C:\\source;C:\\other"
+        assert local.env["PRESERVED"] == "yes"
+        if failed:
+            raise RuntimeError("child failed")
+        return 19
+
+    monkeypatch.setattr(Process, "passthrough", passthrough)
+    with local.env(PYTHONPATH="parent"):
+        command = ("python", "-m", "mainboard.jobs.call", "test_probe.py")
+        exports = {"PYTHONPATH": "C:\\source;C:\\other"}
+        if failed:
+            with pytest.raises(RuntimeError, match="child failed"):
+                pixi.run(command, exports=exports)
+        else:
+            assert pixi.run(command, exports=exports) == 19
+        assert local.env["PYTHONPATH"] == "parent"
+
+
 def test_windows_explicit_argv_requires_a_finished_prefix(
     pixi: Pixi, monkeypatch: pytest.MonkeyPatch
 ) -> None:
