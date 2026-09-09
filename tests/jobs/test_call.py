@@ -86,6 +86,19 @@ def test_a_function_gets_no_arguments_and_answers_its_return(
     assert call.called(loud, "loud", []) == 5
 
 
+def test_a_namespace_application_ships_and_loads_its_relative_imports(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (lab.root / "research/camp/experiments/node/__init__.py").unlink()
+    lab.commit("a namespace application below a regular experiments package")
+    written = sealed(lab, monkeypatch)
+    assert "research/camp/experiments/helper/tools.py" in written.read_text(encoding="utf-8")
+    with pytest.raises(SystemExit) as exited:
+        call.main([f"{Lab.JOB}::app", "--", "--x", "3"])
+    assert exited.value.code == 4
+    assert "experiments.node.run" in sys.modules
+
+
 def test_the_runner_refuses_an_empty_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["call"])
     with pytest.raises(SystemExit, match="usage"):

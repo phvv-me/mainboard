@@ -93,6 +93,18 @@ def test_a_module_is_imported_from_where_its_package_chain_stops(lab: Lab) -> No
     assert home_of(lab.root / "top.py", root=lab.root) == lab.root
 
 
+def test_namespace_descendants_keep_their_regular_package_ancestor(lab: Lab) -> None:
+    file = lab.write("research/camp/experiments/namespace/dispatch/run.py", "app = 1\n")
+    home = home_of(file, root=lab.root)
+    assert home == lab.root / Lab.HOME
+    assert dotted(file, home=home) == "experiments.namespace.dispatch.run"
+    assert home_of(file, root=file.parent) == file.parent
+    with pytest.raises(ValueError):
+        home_of(file, root=lab.root / "elsewhere")
+    script = lab.write("research/camp/experiments/not-a-package/run.py", "app = 1\n")
+    assert home_of(script, root=lab.root) == script.parent
+
+
 @given(args=st.lists(st.text(min_size=1).filter(lambda token: "\n" not in token), max_size=4))
 def test_a_spelling_round_trips_through_the_shell(args: list[str]) -> None:
     """What the records call a job is what `shlex.split` hands back to the runner."""

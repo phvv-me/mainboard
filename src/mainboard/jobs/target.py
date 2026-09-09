@@ -28,19 +28,23 @@ TEST_PREFIX = "test_"
 
 
 def home_of(file: Path, *, root: Path) -> Path:
-    """The directory `file` is imported from: above every `__init__.py` its packages stack.
+    """Find the import root, retaining namespace descendants of a regular package.
 
-    The import root of a module is where its package chain stops, so a file under
-    `experiments/gds_ingest/run.py` whose two parents carry `__init__.py` is imported as
-    `experiments.gds_ingest.run` from the directory above `experiments`. A bare script whose
-    directory carries none is imported from that directory. Nothing above `root` is climbed.
+    A missing initializer does not end an enclosing package: its descendants may
+    be namespace portions. Find the outermost regular ancestor through valid Python
+    directory names. A script without such an ancestor keeps its own directory.
+    A wholly namespace-based tree requires a separately declared import root.
 
     file: the module, absolute.
     root: the highest directory the climb may reach.
     """
+    file.relative_to(root)
     home = file.parent
-    while home != root and (home / "__init__.py").is_file():
-        home = home.parent
+    for parent in file.parents:
+        if parent == root or not parent.name.isidentifier():
+            break
+        if (parent / "__init__.py").is_file():
+            home = parent.parent
     return home
 
 
