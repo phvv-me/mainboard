@@ -292,6 +292,7 @@ mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY A
 mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
 mainboard query "SELECT server, handle, backend_state, verdict, evidence, settled FROM jobs"
 mainboard query "SELECT * FROM runs" --out /tmp/runs.parquet
+mainboard query --file queries/inventory.sql --out /tmp/inventory.parquet
 mainboard help artifacts
 mainboard help batch run
 ```
@@ -313,6 +314,10 @@ to overwrite an existing destination. Parquet preserves column types; CSV and JS
 their standard representations. `--json` still prints JSON when no file is requested.
 An exact command path passed to `help` opens its documentation. Other words search
 command descriptions and API docstrings. Use `help -- --max-usd` to search an option.
+
+Keep reusable SELECT statements in UTF-8 `.sql` files. `--file` replaces the SQL
+argument, while Python callers pass a `Path` to `Results.query`. The SQL file and
+any paths inside its query resolve from the caller's current directory.
 
 Plot the same SELECT with the optional Seaborn/paleta integration:
 
@@ -352,6 +357,53 @@ The renderer takes colors in palette order and refuses excess categories.
 Group the tail into Other or use separate panels. `rc` contains native Matplotlib
 settings, not a second styling language. `--dpi` overrides the style's resolution.
 Changing styles does not rebuild an environment.
+
+For a reusable composition, keep its style and figure together in `plots.toml`.
+This explicit configuration does not select an environment or change path resolution.
+
+```toml
+[workspace]
+name = "project-figures"
+
+[plots.paper]
+theme = "paleta-shiho"
+palette = "paleta-shiho"
+figsize = [3.25, 2.1]
+dpi = 300
+
+[figures.inventory]
+style = "paper"
+out = ["inventory.pdf", "inventory.png"]
+
+[figures.inventory.panels.counts]
+file = "queries/inventory.sql"
+variables = {x = "hardware", y = "runs"}
+layers = [{mark = "Bar"}]
+axis = {xlabel = "Hardware", ylabel = "Recorded runs"}
+```
+
+The corresponding `queries/inventory.sql` contains
+`SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware ORDER BY hardware`.
+
+```console
+mainboard plot --config plots.toml --figure inventory
+mainboard plot --config plots.toml --figure inventory --out /tmp/inventory.svg
+```
+
+Layers use native Seaborn marks and moves. SQL supplies aggregates and interval
+bounds; rendering never estimates them. `colors`, `labels`, `markers`, and
+`linestyles` in a style provide stable semantic mappings. Shared legend order follows
+the explicit `colors` order even when panels contain different subsets.
+Native `axis`, `ticks`, `grid`, `legend`, and `rc` settings control presentation.
+
+Declared job outputs are download-only during source mirroring. This includes
+current and historically recorded output paths in the local workspace cache,
+regardless of host alias. Source files outside those paths still get pruned.
+An explicit resource under an output root is refused before upload; materialize
+the selected data under a separate pinned input path instead. Ordinary `needs`
+remain mutable mirror links. These safeguards do not provide distributed
+coordination across separate local caches or simultaneous first submissions
+through different aliases to the same endpoint.
 
 The views are `jobs`, `runs`, `trials`, `events`, `metrics`, and `artifacts`.
 Project, run, host, hardware, and source remain explicit; combining storage never

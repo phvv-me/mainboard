@@ -72,8 +72,10 @@ class FigurePlot(Plot):
                 handles = PanelPlot(tables[name], panel, self.style).draw(target, layers)
                 shared.update(handles)
             if shared:
-                labels = [self.style.labels.get(label, label) for label in shared]
+                ordered = list(dict.fromkeys((*self.style.colors, *shared)))
+                ordered = [label for label in ordered if label in shared]
+                labels = [self.style.labels.get(label, label) for label in ordered]
                 legend = cast("Callable[..., Legend]", canvas.legend)
-                legend(list(shared.values()), labels, **self.style.legend)
+                legend([shared[label] for label in ordered], labels, **self.style.legend)
             self._publish(canvas, paths)
         return paths

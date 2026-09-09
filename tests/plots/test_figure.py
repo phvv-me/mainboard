@@ -112,6 +112,39 @@ def test_nonrectangular_mosaic_is_refused() -> None:
         )
 
 
+def test_shared_legend_follows_explicit_style_order_across_panel_subsets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = FigureSpec.model_validate(
+        {
+            "panels": {
+                engine: {
+                    "sql": f"SELECT 1 x, 2.0 y, '{engine}' engine",
+                    "variables": {"x": "x", "y": "y", "color": "engine"},
+                    "layers": [{"mark": "Dot"}],
+                }
+                for engine in ("baseline", "ours")
+            }
+        }
+    )
+    style = PlotStyle(
+        colors={"ours": "#7755aa", "absent": "#006644", "baseline": "#aa2222"},
+        labels={"ours": "Our engine", "baseline": "Baseline"},
+    )
+    picture = rendering.FigurePlot(style)
+    checked = []
+
+    def inspect(canvas, paths):
+        [legend] = canvas.legends
+        assert [text.get_text() for text in legend.get_texts()] == ["Our engine", "Baseline"]
+        assert [handle.get_color() for handle in legend.legend_handles] == ["#7755aa", "#aa2222"]
+        checked.append(True)
+
+    monkeypatch.setattr(picture, "_publish", inspect)
+    picture.render(spec, Results(tmp_path).query, tmp_path / "ordered.png")
+    assert checked == [True]
+
+
 def test_layer_data_rebinds_inherited_category_and_color(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
