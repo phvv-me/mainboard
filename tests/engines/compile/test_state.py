@@ -25,6 +25,16 @@ def test_an_unreadable_state_reads_as_stale_everywhere(
     assert SyncState.load(tmp_path) == SyncState()
 
 
+@pytest.mark.parametrize(
+    "root", [r"C:\Users\vazva\mainboard-managed", 'C:\\A "quoted" path', "C:\\line\nreturn\rtab\t"]
+)
+def test_windows_roots_preserve_the_frozen_lock_blessing(root: str, tmp_path: Path) -> None:
+    """Escaped paths cannot make a valid cross-host lock read as unblessed."""
+    state = SyncState(environment="default", compiled_at=root, solved_from="sealed")
+    SyncState.path(tmp_path).write_text(state.render(), encoding="utf-8")
+    assert SyncState.load(tmp_path) == state
+
+
 # Ten examples rather than the profile's thirty, since this suite is the fast gate and the
 # round trip writes a file per example. The out-of-order pair is pinned by `@example` below.
 @settings(max_examples=10)
