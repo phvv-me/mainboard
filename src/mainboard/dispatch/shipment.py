@@ -143,7 +143,7 @@ class Shipment(FrozenModel):
         return {name: value for name, value in carried.items() if value}
 
     def locally(self, root: Path, *, closure: str = "") -> list[str]:
-        """The argv that runs this shipment here, its import roots and provenance exported.
+        """The POSIX argv for a local shell or container, with imports and provenance.
 
         The same runner and the same variables a dispatched script gets, so a local run writes
         receipts a dispatched one would, with the import roots resolved against this workspace
@@ -153,6 +153,8 @@ class Shipment(FrozenModel):
         closure: the staged listing, workspace-relative, empty for a command.
         """
         exported = self.local_exports(root, closure=closure)
+        if self.imports:
+            exported["PYTHONPATH"] = ":".join(str(root / place) for place in self.imports)
         return [
             "env",
             *(f"{name}={value}" for name, value in exported.items()),

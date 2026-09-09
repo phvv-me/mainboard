@@ -78,6 +78,7 @@ def test_local_import_roots_use_the_native_path_separator(monkeypatch: pytest.Mo
     )
     monkeypatch.setattr(os, "pathsep", ";")
     assert shipment.local_exports(Path("/workspace"))["PYTHONPATH"] == "/workspace/a;/workspace/b"
+    assert "PYTHONPATH=/workspace/a:/workspace/b" in shipment.locally(Path("/workspace"))
 
 
 def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
