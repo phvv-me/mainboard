@@ -136,7 +136,15 @@ def test_every_option_becomes_its_own_argument_in_receiver_order(
         "--bwlimit=1000",
         "--timeout=30",
         "--filter",
+        "hide .card.lock",
+        "--filter",
+        "hide .card.lock.*",
+        "--filter",
         "hide results/***",
+        "--filter",
+        "protect .card.lock",
+        "--filter",
+        "protect .card.lock.*",
         "--filter",
         "protect results/***",
         "--include",
@@ -198,6 +206,34 @@ def test_sender_hide_beats_explicit_include_without_blocking_source_pruning(
     )
     assert (host / "src/output/data.json").read_text() == "src/output/data.json"
     assert (host / "src/current.py").exists()
+    assert not (host / "src/stale.py").exists()
+
+
+@pytest.mark.parametrize("lease", (".card.lock", ".card.lock.local", ".card.lock.local.0"))
+def test_mirror_never_uploads_or_deletes_host_card_leases(tmp_path: Path, lease: str) -> None:
+    """Early lease filters beat broad and exact includes without changing source pruning."""
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
+    repo, host = tmp_path / "repo", tmp_path / "host"
+    seed(repo, "src/current.py", "src/.card.locked", f"src/{lease}", "src/.card.lock.sender.1")
+    seed(host, "src/stale.py", f"src/{lease}", "src/.card.lock.receiver.0")
+    local_lease, remote_lease = repo / "src" / lease, host / "src" / lease
+    local_lease.write_text("sender lease")
+    remote_lease.write_text("receiver lease")
+    rsync(
+        ["src"],
+        f"{host}/",
+        _MIRROR,
+        include=[f"/src/{lease}", "src/***"],
+        allow_vanished=False,
+        cwd=repo,
+    )
+    assert local_lease.read_text() == "sender lease"
+    assert remote_lease.read_text() == "receiver lease"
+    assert (host / "src/.card.lock.receiver.0").is_file()
+    assert not (host / "src/.card.lock.sender.1").exists()
+    assert (host / "src/current.py").is_file()
+    assert (host / "src/.card.locked").is_file()
     assert not (host / "src/stale.py").exists()
 
 

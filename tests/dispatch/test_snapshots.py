@@ -141,11 +141,13 @@ def test_pinning_a_closure_copies_exactly_the_listed_files_and_links_only_the_ne
         digest="ab" * 32,
     )
     [program] = remote.lines
-    assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --files-from=- ' in program
+    assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --filter' in program
+    assert "--files-from=-" in program
+    assert "hide .card.lock" in program and "protect .card.lock" in program
     assert '--link-dest=/work/projects/ ./ "$mb_snap"/' in program
     assert '|| [ "$?" = 24 ]' not in program
-    # No rule can drop a listed file, and nothing is filled back from the mirror.
-    assert "--filter" not in program and "--exclude" not in program
+    # Only host-local lease rules apply; ordinary ignores cannot alter the exact listing.
+    assert program.count("--filter") == 4 and "--exclude" not in program
     assert "for d in" not in program
     # Each need is checked on the mirror and linked in after the stamp, on every dispatch.
     stamp = program.index('mv -T -- "$mb_snap" "$mb_final"')

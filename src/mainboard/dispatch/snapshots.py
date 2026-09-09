@@ -181,11 +181,11 @@ class Sealed(Image):
     needs: tuple[str, ...] = ()
 
     def copied(self, root: str) -> str:
-        """The listed files hardlinked in with the mirror as `--link-dest`, no rules at all.
+        """Hardlink the listed files without applying the mirror's ordinary ignore rules.
 
-        No filters, since the listing is exact: a rule that dropped a shipped file would leave a
-        job importing a module that is not there, and the mirror's own denylist covers the
-        vendored tree a closure legitimately reaches into.
+        The listing is exact, including vendored files that ordinary mirror rules exclude.
+        Only the invariant host-local lease filters remain; dispatch refuses explicit leases,
+        and verification below rejects any missing listed file before running the job.
         """
         argv = rsync_argv(
             Rsync.ARCHIVE | Rsync.COPY_LINKS,

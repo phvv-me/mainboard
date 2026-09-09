@@ -530,7 +530,9 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     assert "export MAINBOARD_SOURCE=v1-dirty" in body
     assert f"cd {pinned}" in body
     [built] = [line for line in machine.lines if "mb_snap=" in line]
-    assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --files-from=-' in built
+    assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --filter' in built
+    assert "--files-from=-" in built
+    assert "hide .card.lock" in built and "protect .card.lock" in built
     assert 'ln -sfn "$mb_root"/data/corpus "$mb_snap"/data/corpus' in built
     assert "for d in" not in built
     [run] = dispatcher.cache.recent(10)
@@ -977,6 +979,32 @@ def test_rsync_up_punches_a_required_group_through_the_denylist_or_refuses_an_in
     assert "/.mainboard/" in sent["include"]
     assert "/.mainboard/***" in sent["exclude"]
     assert sent["allow_vanished"] is False
+
+
+@pytest.mark.parametrize("spelling", ("required", "extra", "include"))
+@pytest.mark.parametrize("resource", ("src/.card.lock.local.0", "src/.card.lock.local/input.json"))
+def test_rsync_up_refuses_explicit_card_lease_resources_before_transfer(
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spelling: str,
+    resource: str,
+) -> None:
+    path = workdir / resource
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not transferable")
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    include = [resource] if spelling == "include" else ["src"]
+    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": include}))
+    monkeypatch.setattr(
+        dispatch_module, "rsync", lambda *_args, **_kwargs: pytest.fail("transfer reached")
+    )
+    with pytest.raises(ValueError, match="card leases cannot be declared"):
+        instance.rsync_up(
+            host,
+            "/repo",
+            required=[(resource,)] if spelling == "required" else (),
+            extra=(resource,) if spelling == "extra" else (),
+        )
 
 
 def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(

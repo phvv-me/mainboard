@@ -1,7 +1,8 @@
 # Mirror a workspace onto a host: the `.gitignore` filter and the `rsync` command builder.
 
 import hashlib
-from pathlib import Path
+from fnmatch import fnmatchcase
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Self
 
 import pathspec
@@ -33,6 +34,9 @@ ALWAYS_EXCLUDE = (
     "*/evidence/artifacts/***",
     "*/evidence/receipts/***",
 )
+
+# Host/device coordination is never transferable, even under an explicit include rule.
+_CARD_LEASES = (".card.lock", ".card.lock.*")
 
 # macOS ships Apple's openrsync as /usr/bin/rsync; upstream rsync usually arrives via Homebrew
 # or MacPorts at these roots, searched after PATH.
@@ -121,7 +125,10 @@ def rsync_argv(
             "--filter",
             [
                 f"{action} {pattern}"
-                for action, group in (("hide", hide), ("protect", protect))
+                for action, group in (
+                    ("hide", (*_CARD_LEASES, *hide)),
+                    ("protect", (*_CARD_LEASES, *protect)),
+                )
                 for pattern in group
             ],
         ),
@@ -294,6 +301,21 @@ class GitignoreFilter:
             ":- .gitignore",
         ]
         self.excludes = list(ALWAYS_EXCLUDE)
+
+    @staticmethod
+    def validate_sources(paths: Sequence[str]) -> None:
+        """Refuse explicit sources that cannot cross a host's coordination boundary."""
+        leases = [
+            path
+            for path in paths
+            if any(
+                fnmatchcase(part, pattern)
+                for part in PurePosixPath(path).parts
+                for pattern in _CARD_LEASES
+            )
+        ]
+        if leases:
+            raise ValueError(f"card leases cannot be declared as transferable source: {leases}")
 
     def control_files(self, sources: Sequence[str]) -> list[str]:
         """Ignore files above source roots that the receiver needs before deletion.

@@ -410,6 +410,7 @@ class Dispatcher:
                 "dispatching"
             )
         named = [*(path for group in required for path in group), *extra]
+        self.sync.validate_sources((*named, *scope.include))
         directories = dict.fromkeys(Path(path).parts[0] for group in required for path in group)
         include_filters = [
             *(f"/{directory}/" for directory in directories),

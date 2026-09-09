@@ -405,6 +405,11 @@ remain mutable mirror links. These safeguards do not provide distributed
 coordination across separate local caches or simultaneous first submissions
 through different aliases to the same endpoint.
 
+GPU leases named `.card.lock` or `.card.lock.*` remain local to their host.
+Mirroring neither uploads nor deletes them, even under broader include rules.
+Declaring a lease as an explicit source or resource fails before transfer;
+missing required source files still fail instead of accepting a partial shipment.
+
 The views are `jobs`, `runs`, `trials`, `events`, `metrics`, and `artifacts`.
 Project, run, host, hardware, and source remain explicit; combining storage never
 means combining scientific conclusions. `Results(root).table(schema, project=...)`
