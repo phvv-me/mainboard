@@ -109,6 +109,10 @@ class Walker:
         """Every module name `module` imports, relative ones spelled out, in syntax order."""
         tree = ast.parse((self.root / module.path).read_text(encoding="utf-8"))
         package = dotted(self.root / module.path, home=self.root / module.root)
+        # _absolute drops the importing module's final component. A package initializer
+        # imports relative to itself, not its parent; retain that file component here.
+        if Path(module.path).name == "__init__.py":
+            package = f"{package}.__init__"
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 yield from (alias.name for alias in node.names)

@@ -143,6 +143,20 @@ def test_a_relative_import_is_spelled_out_against_the_importing_module(
     assert _absolute(package, level=level, name=name) == expected
 
 
+def test_nested_package_initializer_reaches_its_sibling_and_parent_imports(lab: Lab) -> None:
+    """A real census refactor exposed imports being resolved one package too high."""
+    lab.write("research/camp/experiments/node/run.py", "from .census import measure\napp = 1\n")
+    lab.write(
+        "research/camp/experiments/node/census/__init__.py",
+        "from ...helper.tools import tool\nfrom .record import measure\n",
+    )
+    lab.write("research/camp/experiments/node/census/record.py", "measure = 1\n")
+    walker = Walker(lab.root, home=Lab.HOME, distributions=Lab.DISTRIBUTIONS)
+    reached = {module.path for module in walker.reach("research/camp/experiments/node/run.py")}
+    assert "research/camp/experiments/helper/tools.py" in reached
+    assert "research/camp/experiments/node/census/record.py" in reached
+
+
 def test_a_name_two_roots_both_hold_is_refused_rather_than_settled_by_order(lab: Lab) -> None:
     """Two campaigns each keep an `experiments` package; a job must name one."""
     target = Target.spelled([Lab.JOB], lab.root)
