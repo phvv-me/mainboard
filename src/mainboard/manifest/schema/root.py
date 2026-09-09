@@ -6,6 +6,7 @@ from ...core.errors import MissionError
 from .container import Container
 from .engine import Engine
 from .environment import Env, Task
+from .figures.figure import FigureSpec
 from .gate import Gate
 from .host import HostProfile
 from .plot import PlotStyle
@@ -57,7 +58,17 @@ class Manifest(Scope):
     # compiler's own output in `tests/engines/compile/test_compiler.py`, so a table added to
     # the schema is refused until somebody decides which side of this line it sits on.
     uncompiled: ClassVar[frozenset[str]] = frozenset(
-        {"containers", "engines", "gates", "hosts", "plots", "templates", "tracking", "vars"}
+        {
+            "containers",
+            "engines",
+            "figures",
+            "gates",
+            "hosts",
+            "plots",
+            "templates",
+            "tracking",
+            "vars",
+        }
     )
 
     workspace: Header
@@ -75,6 +86,7 @@ class Manifest(Scope):
     hosts: dict[str, HostProfile] = {}
     engines: dict[str, Engine] = {}
     plots: dict[str, PlotStyle] = {}
+    figures: dict[str, FigureSpec] = {}
 
     @model_validator(mode="after")
     def env_values_set_or_clear(self) -> Manifest:

@@ -1,7 +1,7 @@
 """Named plot settings; palette and theme names belong to the plotting libraries."""
 
 from patos import FrozenModel
-from pydantic import PositiveFloat, PositiveInt
+from pydantic import JsonValue, PositiveFloat, PositiveInt
 
 
 class PlotStyle(FrozenModel):
@@ -16,3 +16,9 @@ class PlotStyle(FrozenModel):
     figsize: tuple[PositiveFloat, PositiveFloat] | None = None
     dpi: PositiveInt = 300
     rc: dict[str, bool | float | str | list[str]] = {}
+    colors: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    markers: dict[str, str] = {}
+    linestyles: dict[str, str] = {}
+    legend: dict[str, JsonValue] = {"loc": "outside lower center", "frameon": False}
+    legend_marker: dict[str, JsonValue] = {"marker": "o", "linestyle": "none"}

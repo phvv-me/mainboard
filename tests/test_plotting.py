@@ -10,7 +10,7 @@ from mainboard.manifest.schema.plot import PlotStyle
 if TYPE_CHECKING:
     from pathlib import Path
 
-plotting = pytest.importorskip("mainboard.plotting", exc_type=ModuleNotFoundError)
+plotting = pytest.importorskip("mainboard.plots.table", exc_type=ModuleNotFoundError)
 
 
 @pytest.mark.parametrize("kind", ["scatter", "line", "bar"])

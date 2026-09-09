@@ -1,5 +1,6 @@
 import sys
 from contextlib import suppress
+from functools import partial
 from json import loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
@@ -24,6 +25,7 @@ from .listing import Listing
 from .manifest.loading import load
 from .manifest.schema.plot import PlotStyle
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
+from .results import Results
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -599,9 +601,11 @@ def build(root: Path | None = None) -> App:
         sql: str | None = None,
         *,
         file: Path | None = None,
-        x: str,
-        y: str,
-        out: tuple[Path, ...],
+        config: Path | None = None,
+        figure: str = "",
+        x: str = "",
+        y: str = "",
+        out: tuple[Path, ...] = (),
         project: str = "",
         hue: str = "",
         kind: Literal["scatter", "line", "bar"] = "scatter",
@@ -614,6 +618,10 @@ def build(root: Path | None = None) -> App:
         sql: define the table, including any filtering, grouping, and ordering.
         file: read a UTF-8 SQL file instead of the positional statement.
             Both the file and paths inside SQL resolve from the caller's current directory.
+        config: explicitly read styles and figures from this manifest-format TOML file.
+            It does not select an environment or change path resolution.
+        figure: render a named [figures.<name>] specification; omit SQL, x, and y.
+            Panels use native Seaborn marks and Matplotlib settings, without estimation.
         x, y, hue: column names; omit hue for one series.
         out: a new output path; repeat for multiple formats, such as .pdf and .png.
         project: restrict scientific rows to this research project.
@@ -623,11 +631,16 @@ def build(root: Path | None = None) -> App:
         title: the chart title, including the measurement scope when appropriate.
         """
         source = _query_source(sql, file)
-        if source is None:
+        if figure and (source is not None or x or y or hue or title):
+            raise MissionError("--figure cannot be combined with SQL or individual chart mappings")
+        if not figure and source is None:
             raise MissionError("plot requires a SQL statement or --file")
+        if not figure and (not x or not y):
+            raise MissionError("plot requires --x and --y without --figure")
         # Plotting is a genuine optional dependency boundary; other verbs do not import it.
         try:
-            from .plotting import Plot
+            from .plots.figure import FigurePlot
+            from .plots.table import Plot
         except ModuleNotFoundError as fault:
             if fault.name not in {"paleta", "seaborn", "matplotlib", "pandas"}:
                 raise
@@ -637,14 +650,40 @@ def build(root: Path | None = None) -> App:
                 "--with ./packages/paleta mainboard --force"
             ) from fault
         settings = PlotStyle()
+        specification = None
+        manifest = (
+            load(config or workspace_root() / Project().manifest)
+            if config or figure or style
+            else None
+        )
+        if figure:
+            assert manifest is not None
+            try:
+                specification = manifest.figures[figure]
+            except KeyError:
+                raise MissionError(
+                    f"no figure {figure!r}; declared figures are {sorted(manifest.figures)}"
+                ) from None
+            style = style or specification.style
         if style:
-            styles = load(workspace_root() / Project().manifest).plots
+            assert manifest is not None
+            styles = manifest.plots
             try:
                 settings = styles[style]
             except KeyError:
                 raise MissionError(
                     f"no plot style {style!r}; declared styles are {sorted(styles)}"
                 ) from None
+        if specification is not None:
+            for path in FigurePlot(settings).render(
+                specification,
+                partial(Results(workspace_root()).query, project=project),
+                *out,
+                dpi=dpi,
+            ):
+                print(path)
+            return
+        assert source is not None
         frame = mainboard.Results(workspace_root()).query(source, project=project)
         for path in Plot(frame, settings).save(
             *out, x=x, y=y, hue=hue, kind=kind, dpi=dpi, title=title

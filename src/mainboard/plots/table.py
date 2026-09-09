@@ -8,11 +8,12 @@ from typing import TYPE_CHECKING, Literal
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.style as mplstyle
 import paleta
 import polars as pl
 import seaborn as sns
 
-from .manifest.schema.plot import PlotStyle
+from ..manifest.schema.plot import PlotStyle
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -42,56 +43,65 @@ class Plot:
         paths: output formats follow their extensions; dpi controls raster resolution.
         """
         dpi = self.style.dpi if dpi is None else dpi
-        if not paths or dpi <= 0:
-            raise ValueError("plot needs an output path and a positive DPI")
-        paths = tuple(path.expanduser().absolute() for path in paths)
-        if len(set(paths)) != len(paths):
-            raise ValueError("plot output paths must be distinct")
-        for path in paths:
-            try:
-                path.lstat()
-            except FileNotFoundError:
-                continue
-            raise FileExistsError(f"plot output already exists: {path}")
+        paths = self._outputs(paths, dpi)
         data = self.frame.select(list(dict.fromkeys([x, y, *([hue] if hue else [])])))
-        if data.is_empty() or any(data.null_count().row(0)):
-            raise ValueError("plot columns must contain rows without null values")
+        self._data(data)
         if not data[y].dtype.is_numeric():
             raise ValueError("plot y column must be numeric")
-        if any(
-            not series.cast(pl.Float64).is_finite().all()
-            for series in data
-            if series.dtype.is_numeric()
-        ):
-            raise ValueError("plot columns must contain finite values")
         if kind == "bar" and data.n_unique([x, *([hue] if hue else [])]) != data.height:
             raise ValueError("bar groups repeat; aggregate each x/hue group in SQL first")
         paleta.register()
-        with mpl.style.context([self.style.theme, self.style.rc]):
+        with mplstyle.context([self.style.theme, self.style.rc]), ExitStack() as cleanup:
             mpl.rcParams["savefig.dpi"] = dpi
             canvas, axis = paleta.figure()
-            try:
-                if self.style.figsize is not None:
-                    canvas.set_size_inches(self.style.figsize)
-                self._draw(axis, data, x=x, y=y, hue=hue, kind=kind)
-                axis.set_title(title)
-                self._publish(canvas, paths)
-            finally:
-                plt.close(canvas)
+            cleanup.callback(plt.close, canvas)
+            if self.style.figsize is not None:
+                canvas.set_size_inches(self.style.figsize)
+            self._draw(axis, data, x=x, y=y, hue=hue, kind=kind)
+            if hue:
+                sns.move_legend(axis, "upper left", bbox_to_anchor=(1, 1), borderaxespad=0)
+            axis.set_title(title)
+            self._publish(canvas, paths)
         return paths
 
+    @staticmethod
+    def _data(frame: pl.DataFrame) -> None:
+        """Reject missing and nonfinite values before any plotting library sees them."""
+        if frame.is_empty() or any(frame.null_count().row(0)):
+            raise ValueError("plot columns must contain rows without null values")
+        if any(
+            not series.cast(pl.Float64).is_finite().all()
+            for series in frame
+            if series.dtype.is_numeric()
+        ):
+            raise ValueError("plot columns must contain finite values")
+
     def _draw(
-        self, axis: Axes, data: pl.DataFrame, *, x: str, y: str, hue: str, kind: str
+        self,
+        axis: Axes,
+        data: pl.DataFrame,
+        *,
+        x: str,
+        y: str,
+        hue: str = "",
+        kind: str = "scatter",
     ) -> None:
         """Use Seaborn's native axes functions, with SQL order retained for lines."""
         columns = data.to_dict(as_series=False)
         palette = sns.color_palette(self.style.palette)
         levels = data[hue].unique(maintain_order=True).to_list() if hue else []
-        if len(levels) > len(palette):
+        if len(levels) > len(palette) and not self.style.colors:
             raise ValueError(
                 f"palette has {len(palette)} slots; fold the tail into Other or facet"
             )
-        colors = dict(zip(levels, palette[: len(levels)], strict=True)) if hue else None
+        colors = None
+        if hue and not self.style.colors:
+            colors = dict(zip(levels, palette[: len(levels)], strict=True))
+        if hue and self.style.colors:
+            absent = {str(level) for level in levels} - self.style.colors.keys()
+            if absent:
+                raise ValueError(f"style has no explicit colors for {sorted(absent)}")
+            colors = {level: self.style.colors[str(level)] for level in levels}
         color = None if hue else palette[0]
         match kind:
             case "scatter":
@@ -136,8 +146,18 @@ class Plot:
                 )
             case _:
                 raise ValueError("plot kind must be scatter, line, or bar")
-        if hue:
-            sns.move_legend(axis, "upper left", bbox_to_anchor=(1, 1), borderaxespad=0)
+
+    def _outputs(self, paths: tuple[Path, ...], dpi: int | None) -> tuple[Path, ...]:
+        """Check every destination before querying or creating a figure."""
+        if not paths or (dpi is not None and dpi <= 0):
+            raise ValueError("plot needs an output path and a positive DPI")
+        absolute = tuple(path.expanduser().absolute() for path in paths)
+        if len(set(absolute)) != len(absolute):
+            raise ValueError("plot output paths must be distinct")
+        for path in absolute:
+            if os.path.lexists(path):
+                raise FileExistsError(f"plot output already exists: {path}")
+        return absolute
 
     def _publish(self, canvas: Figure, paths: tuple[Path, ...]) -> None:
         """Render every requested format before publishing any complete file."""

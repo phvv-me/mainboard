@@ -49,6 +49,17 @@ _EDITS: dict[str, Json] = {
     "engines": {"vserve": {"command": "true"}},
     "hosts": {"miyabi-g": {"kind": "pbs", "defaults": {"interact-queue": "interact-g"}}},
     "plots": {"paper": {"palette": "paleta-meta", "dpi": 600}},
+    "figures": {
+        "example": {
+            "panels": {
+                "one": {
+                    "sql": "SELECT 1 AS x, 2 AS y",
+                    "variables": {"x": "x", "y": "y"},
+                    "layers": [{"mark": "Dot"}],
+                }
+            }
+        }
+    },
 }
 
 
@@ -480,9 +491,13 @@ def test_install_locked_blesses_the_lock_after_a_successful_resolve(
 def test_the_resolution_manifest_drops_per_target_activation_and_keeps_the_rest() -> None:
     """A `[target.win.activation]` edit must not move the lock any more than a task rename."""
     rendered = Compiler._resolution_manifest(
-        "[target.win.activation]\nscripts = ['a.bat']\n"
-        "[target.win.dependencies]\nx = '1'\n"
-        "[target]\nlinux-64 = 'bare'\n"
+        """[target.win.activation]
+scripts = ['a.bat']
+[target.win.dependencies]
+x = '1'
+[target]
+linux-64 = 'bare'
+"""
     )
     assert rendered["target"] == {"win": {"dependencies": {"x": "1"}}, "linux-64": "bare"}
 
@@ -506,9 +521,12 @@ def test_a_local_projects_metadata_counts_only_where_a_solve_reads_it(
     edit: str, *, same: bool
 ) -> None:
     """A word list or an interpreter path under `tool` cannot move which versions resolve."""
-    base = (
-        '[build-system]\nrequires = ["hatchling"]\n'
-        '[project]\nname = "p"\nversion = "0"\ndependencies = ["numpy"]\n'
-    )
+    base = """[build-system]
+requires = ["hatchling"]
+[project]
+name = "p"
+version = "0"
+dependencies = ["numpy"]
+"""
     before = Compiler._resolution_metadata(base)
     assert (Compiler._resolution_metadata(base + edit) == before) is same

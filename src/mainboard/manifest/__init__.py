@@ -2,6 +2,9 @@ from .loading import load
 from .schema.container import Container, EnvMode, Guardrail
 from .schema.engine import Engine
 from .schema.environment import Env
+from .schema.figures.figure import FigureSpec
+from .schema.figures.layer import Layer
+from .schema.figures.panel import Panel
 from .schema.host import HostProfile, Sync
 from .schema.observe import Observe
 from .schema.queue import Defaults, QueuePolicy
@@ -19,6 +22,9 @@ __all__ = [
     "Env",
     "EnvMode",
     "Guardrail",
+    "FigureSpec",
+    "Layer",
+    "Panel",
     "Header",
     "HostProfile",
     "Manifest",

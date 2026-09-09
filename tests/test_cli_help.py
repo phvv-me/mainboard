@@ -89,7 +89,7 @@ def test_help_respects_document_boundaries_and_exact_command_precedence(
 def test_missing_plot_dependencies_name_the_local_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delitem(sys.modules, "mainboard.plotting", raising=False)
+    monkeypatch.delitem(sys.modules, "mainboard.plots.table", raising=False)
     monkeypatch.setitem(sys.modules, "paleta", None)
     with pytest.raises(MissionError, match=r"mainboard\[wandb,plot\].*packages/paleta"):
         build(tmp_path)(
