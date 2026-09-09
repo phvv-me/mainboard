@@ -566,13 +566,14 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
-    def collect(path: str, *, on: str) -> None:
+    def collect(path: str, *, on: str, json: bool = False) -> None:
         """Collect remote evidence for queries, including runs started directly on that node.
 
         path: workspace-relative results file or directory, using forward slashes on every OS.
         on: declared SSH host; root and bootstrap Python come from its manifest profile.
             Python is a command in that host's SSH login shell, usually python3; quote an
             absolute interpreter path as that shell requires. No remote Mainboard is needed.
+        json: return a machine-readable collection summary.
         Complete files are immutable. Conflicts preserve the local copy and fail collection.
         Live event snapshots exclude incomplete records; queries deduplicate overlapping frames.
         A new query sees published files. Collection is not one transaction across servers.
@@ -581,7 +582,13 @@ def build(root: Path | None = None) -> App:
         profile = load(local_root / Project().manifest).profile(on)
         if not profile.root:
             raise MissionError(f"declare hosts.{on}.root before collecting its results")
-        Dispatcher(root=local_root).fetch_path(on, root=profile.root, path=path)
+        published = Dispatcher(root=local_root).fetch_path(on, root=profile.root, path=path)
+        record(
+            {"host": on, "path": path, "new_files": published},
+            mode=mode_of(json_mode=json, agent=False),
+            fields=(),
+            title="collection",
+        )
 
     @app.command
     def query(

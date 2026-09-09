@@ -216,7 +216,7 @@ class Dispatcher:
 
     def fetch_path(
         self, host: str, *, root: str, path: str, ssh: SshTransport | None = None
-    ) -> None:
+    ) -> int:
         """Collect a file or directory through remote Python, on either OS.
 
         The host profile's python command bootstraps standard-library filesystem operations.
@@ -224,7 +224,7 @@ class Dispatcher:
         """
         profile = load(self.root / Project().manifest).profile(host)
         try:
-            Collector(self.root, ssh).pull(
+            published = Collector(self.root, ssh).pull(
                 host,
                 root=root,
                 path=path.rstrip("/"),
@@ -233,6 +233,7 @@ class Dispatcher:
         except (ValueError, RuntimeError, BadZipFile) as fault:
             raise MissionError(f"collection of {path} from {host} failed: {fault}") from fault
         logger.info("fetched %s from %s", path, host)
+        return published
 
     def hold(self, asked: Request, *, reason: str) -> RunRecord:
         """Keep a dispatch a target's quota refused, so a later sweep can ask for it again.
