@@ -123,7 +123,8 @@ class Results:
         # never match; a later query sees newly published immutable fragments automatically.
         connection.execute(
             "CREATE TABLE _receipt_schema(project VARCHAR, run VARCHAR, trial VARCHAR, "
-            "verdict VARCHAR, artifacts JSON, host VARCHAR, card_name VARCHAR, commit VARCHAR)"
+            "verdict VARCHAR, artifacts JSON, host VARCHAR, card_name VARCHAR, commit VARCHAR, "
+            "params VARCHAR)"
         )
         inventories = ["SELECT * FROM _receipt_schema"]
         for root in roots:
@@ -211,7 +212,8 @@ class Results:
                 t.project,
                 regexp_extract(t.artifacts::JSON->>'events',
                     'artifacts/([^/]+/[^/]+)/events$', 1) AS stream,
-                p.row->>'root' AS root, to_json(t) AS context,
+                p.row->>'root' AS root,
+                json_merge_patch(to_json(t), json_object('params', t.params::JSON)) AS context,
                 a.key AS name, a.value AS reference
             FROM trials t, json_each(t.artifacts::JSON) a,
                 unnest(?::JSON[]) AS p(row)
@@ -232,6 +234,7 @@ class Results:
             UNION ALL SELECT r.* FROM receipt_artifacts r
             WHERE NOT EXISTS (
                 SELECT 1 FROM emitted_artifacts e WHERE e.project = r.project
+                    AND e.stream = r.stream AND e.name = r.name
                     AND (e.reference->>'path') = (r.reference->>'path')
             );
         """)

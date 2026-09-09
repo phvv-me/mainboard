@@ -194,8 +194,13 @@ def test_jobs_distinguish_backend_observations_from_settlement(
 @pytest.mark.parametrize("workspace_relative", [False, True])
 @pytest.mark.parametrize("from_project", [False, True])
 @pytest.mark.parametrize("events", [False, True])
+@pytest.mark.parametrize("receipt_alias", [False, True])
 def test_transferred_tables_keep_source_context_but_read_collected_bytes(
-    tmp_path: Path, workspace_relative: bool, from_project: bool, events: bool
+    tmp_path: Path,
+    workspace_relative: bool,
+    from_project: bool,
+    events: bool,
+    receipt_alias: bool,
 ) -> None:
     project = tmp_path / "research" / "project's results"
     evidence = project / "datasets/experiments/node/evidence"
@@ -215,6 +220,7 @@ def test_transferred_tables_keep_source_context_but_read_collected_bytes(
         "card_name": "GPU",
         "commit": "source",
         "repository": source,
+        "params": {"precision": "bf16"},
     }
     receipt = evidence / "receipts/run=run/part-0.parquet"
     receipt.parent.mkdir(parents=True)
@@ -222,10 +228,12 @@ def test_transferred_tables_keep_source_context_but_read_collected_bytes(
         [
             {
                 **context,
+                "params": json.dumps(context["params"]),
                 "artifacts": json.dumps(
                     {
                         "events": (directory / "events").relative_to(writer.root).as_posix(),
                         "table": reference.model_dump(),
+                        **({"alias": reference.model_dump()} if receipt_alias else {}),
                     }
                 ),
             }
@@ -259,11 +267,16 @@ def test_transferred_tables_keep_source_context_but_read_collected_bytes(
         )
     results = Results(project if from_project else tmp_path)
     table = results.table("test.v1", project=project.name)
-    assert table["value"].to_list() == [7]
+    count = 2 if receipt_alias else 1
+    assert table["value"].to_list() == [7] * count
     assert json.loads(table["_trial"][0])["repository"] == source
+    assert json.loads(table["_trial"][0])["params"] == context["params"]
     artifacts = results.query("SELECT project, root, reference FROM artifacts")
-    assert artifacts["project"].to_list() == [project.name]
-    assert artifacts["root"].to_list() == [str(project)]
+    assert artifacts["project"].to_list() == [project.name] * count
+    assert artifacts["root"].to_list() == [str(project)] * count
+    assert sorted(results.query("SELECT name FROM artifacts")["name"]) == (
+        ["alias", "table"] if receipt_alias else ["table"]
+    )
     assert json.loads(artifacts["reference"][0]) == reference.model_dump()
     assert results.table("missing.v1").is_empty()
     (writer.root / reference.path).write_bytes(b"changed")
