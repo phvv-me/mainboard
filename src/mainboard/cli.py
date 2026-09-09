@@ -559,8 +559,9 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def query(
-        sql: str = "SELECT * FROM runs",
+        sql: str | None = None,
         *,
+        file: Path | None = None,
         project: str = "",
         json: bool = False,
         out: Path | None = None,
@@ -570,17 +571,22 @@ def build(root: Path | None = None) -> App:
         Views: runs, trials, events, metrics, artifacts, jobs. Project scopes science views;
         jobs always shows the fleet. Run monitor to refresh remote files, or schedule it.
 
-        sql: one DuckDB SELECT statement over the local views.
+        sql: one DuckDB SELECT statement; defaults to SELECT * FROM runs without --file.
+        file: read SQL from a UTF-8 file instead of the positional statement.
+            Both the file and paths inside SQL resolve from the caller's current directory.
         project: restrict scientific rows to this research project.
         json: print JSON when no output file is requested.
         out: export to a new .csv, .parquet, or .json file instead of printing rows.
         """
+        source = _query_source(sql, file)
+        if source is None:
+            source = "SELECT * FROM runs"
         results = mainboard.Results(workspace_root())
         if out is not None:
-            saved = results.export(sql, out, project=project)
+            saved = results.export(source, out, project=project)
             print(saved)
             return
-        frame = results.query(sql, project=project)
+        frame = results.query(source, project=project)
         rows(
             loads(frame.write_json()),
             mode=mode_of(json_mode=json, agent=False),
@@ -590,8 +596,9 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def plot(
-        sql: str,
+        sql: str | None = None,
         *,
+        file: Path | None = None,
         x: str,
         y: str,
         out: tuple[Path, ...],
@@ -605,6 +612,8 @@ def build(root: Path | None = None) -> App:
         """Plot a local SELECT using Seaborn and paleta, without implicit aggregation.
 
         sql: define the table, including any filtering, grouping, and ordering.
+        file: read a UTF-8 SQL file instead of the positional statement.
+            Both the file and paths inside SQL resolve from the caller's current directory.
         x, y, hue: column names; omit hue for one series.
         out: a new output path; repeat for multiple formats, such as .pdf and .png.
         project: restrict scientific rows to this research project.
@@ -613,6 +622,9 @@ def build(root: Path | None = None) -> App:
         dpi: raster resolution, overriding the style's DPI when supplied.
         title: the chart title, including the measurement scope when appropriate.
         """
+        source = _query_source(sql, file)
+        if source is None:
+            raise MissionError("plot requires a SQL statement or --file")
         # Plotting is a genuine optional dependency boundary; other verbs do not import it.
         try:
             from .plotting import Plot
@@ -633,7 +645,7 @@ def build(root: Path | None = None) -> App:
                 raise MissionError(
                     f"no plot style {style!r}; declared styles are {sorted(styles)}"
                 ) from None
-        frame = mainboard.Results(workspace_root()).query(sql, project=project)
+        frame = mainboard.Results(workspace_root()).query(source, project=project)
         for path in Plot(frame, settings).save(
             *out, x=x, y=y, hue=hue, kind=kind, dpi=dpi, title=title
         ):
@@ -1279,6 +1291,13 @@ _VERDICT_COLUMNS = (
     "commit",
     "digest",
 )
+
+
+def _query_source(sql: str | None, file: Path | None) -> str | Path | None:
+    """Select explicit SQL text or a file without interpreting strings as paths."""
+    if sql is not None and file is not None:
+        raise MissionError("SQL statement and --file are mutually exclusive")
+    return file if file is not None else sql
 
 
 def _expected(priced: JobEstimate, *, results: str = "") -> str:

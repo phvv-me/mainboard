@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
+from mainboard import MissionError
 from mainboard.cli import build
 from mainboard.manifest.schema.plot import PlotStyle
 
@@ -63,15 +64,20 @@ def test_bad_output_formats_leave_no_partial_render(tmp_path: Path) -> None:
     assert not plotting.plt.get_fignums()
 
 
+@pytest.mark.parametrize("from_file", [False, True])
 def test_cli_plot_uses_sql_and_requested_dpi(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], from_file: bool
 ) -> None:
     path = tmp_path / "plot.png"
+    sql = "SELECT * FROM (VALUES (1, 2.25), (2, 3.75)) AS t(width, readings)"
+    source = tmp_path / "plot.sql"
+    source.write_text(sql, encoding="utf-8")
+    query = ["--file", str(source)] if from_file else [sql]
     with pytest.raises(SystemExit, match="^0$"):
         build(tmp_path)(
             [
                 "plot",
-                "SELECT * FROM (VALUES (1, 2.25), (2, 3.75)) AS t(width, readings)",
+                *query,
                 "--x",
                 "width",
                 "--y",
@@ -85,6 +91,25 @@ def test_cli_plot_uses_sql_and_requested_dpi(
     assert capsys.readouterr().out.strip() == str(path)
     image = plotting.plt.imread(path)
     assert image.shape[1] == 550
+
+
+@pytest.mark.parametrize("source", [[], ["SELECT 1", "--file", "missing.sql"]])
+def test_cli_plot_requires_exactly_one_query_source(tmp_path: Path, source: list[str]) -> None:
+    target = tmp_path / "refused.png"
+    with pytest.raises(MissionError, match="SQL statement"):
+        build(tmp_path)(["plot", *source, "--x", "x", "--y", "y", "--out", str(target)])
+    assert not target.exists()
+
+
+def test_cli_plot_file_rejects_multiple_statements(tmp_path: Path) -> None:
+    source = tmp_path / "refused.sql"
+    source.write_text("SELECT 1 AS x, 2 AS y; SELECT 3", encoding="utf-8")
+    target = tmp_path / "refused.png"
+    with pytest.raises(ValueError, match="one SELECT"):
+        build(tmp_path)(
+            ["plot", "--file", str(source), "--x", "x", "--y", "y", "--out", str(target)]
+        )
+    assert not target.exists()
 
 
 def test_line_chart_retains_every_selected_row_and_sql_order(
@@ -143,9 +168,15 @@ def test_named_style_uses_manifest_dimensions_dpi_and_fonts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "mainboard.toml").write_text(
-        '[workspace]\nname="demo"\n[plots.paper]\n'
-        'palette="paleta-meta"\nfigsize=[3.25,2.0]\ndpi=100\n'
-        '[plots.paper.rc]\n"axes.labelsize"=12\n'
+        """[workspace]
+name="demo"
+[plots.paper]
+palette="paleta-meta"
+figsize=[3.25,2.0]
+dpi=100
+[plots.paper.rc]
+"axes.labelsize"=12
+"""
     )
     captured = []
     original = plotting.Plot._publish

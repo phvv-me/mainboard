@@ -24,19 +24,27 @@ class Results:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
 
-    def query(self, sql: str = "SELECT * FROM runs", *, project: str = "") -> pl.DataFrame:
+    def query(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> pl.DataFrame:
         """Query a fresh local snapshot of runs, trials, events, artifacts, and dispatch jobs.
 
+        sql: SELECT text or a UTF-8 file Path; strings are never interpreted as filenames.
+            Relative file paths and paths inside SQL use the caller's current directory,
+            not this Results root or the SQL file's parent.
         project: a research directory name; omitted means all projects, still labeled.
         Network refresh belongs to Mainboard monitor, not to an implicit SQL side effect.
         Jobs separate the last backend_state from the command verdict. The settled flag
         reads the monitor's completion cursor, not current provider liveness.
         """
+        if isinstance(sql, Path):
+            try:
+                sql = sql.expanduser().read_text(encoding="utf-8")
+            except UnicodeError as fault:
+                raise ValueError(f"SQL file {sql} must contain UTF-8 text: {fault}") from fault
         with duckdb.connect(config={"TimeZone": "UTC"}) as connection:
-            self._views(connection, project)
             statements = connection.extract_statements(sql)
             if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
                 raise ValueError("results queries must be one SELECT statement")
+            self._views(connection, project)
             result = connection.execute(sql)
             return pl.DataFrame(
                 result.fetchall(),
@@ -45,10 +53,11 @@ class Results:
                 infer_schema_length=None,
             )
 
-    def export(self, sql: str, path: Path, *, project: str = "") -> Path:
+    def export(self, sql: str | Path, path: Path, *, project: str = "") -> Path:
         """Export one SELECT to a new CSV, Parquet, or JSON file, inferred from its suffix.
 
         Publish only a complete file. An existing destination is never overwritten.
+        SQL text and UTF-8 file Paths use the same query contract as `query`.
         """
         frame = self.query(sql, project=project)
         writers = {
