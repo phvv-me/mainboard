@@ -267,12 +267,42 @@ class Verdicts:
         stream, job = streamed(record.name or "", handle=record.handle)
         under = directory(self.board, stream)
         stream_file = under / "events.ndjson"
-        events = Receipts(stream_file).replay() if stream_file.is_file() else []
+        history = Receipts(stream_file).replay() if stream_file.is_file() else []
+        events = self.__events(history, record)
         recorded = eventful(events)
         mine = [trial for trial in recorded if trial.handle == record.handle]
-        harvested = harvest(under)
+        cases = {
+            (str(case[0]), str(case[1]))
+            for event in events
+            if event.topic == Topic.EVIDENCE
+            for group in [event.data.get("trials")]
+            if isinstance(group, list)
+            for case in group
+            if isinstance(case, list) and len(case) == 2
+        }
+        harvested = tuple(trial for trial in harvest(under) if (trial.run, trial.job) in cases)
         floor = self.swept(tuple(mine)) or (self.__floor(record, job=job),)
         return StreamVerdict(stream=stream, trials=qualified((*floor, *harvested), events))
+
+    @staticmethod
+    def __events(events: list[Event], record: RunRecord) -> list[Event]:
+        """Select one submission, refusing ambiguous legacy events without a host."""
+        targets = {
+            str(event.data.get("target", ""))
+            for event in events
+            if event.topic == Topic.SUBMITTED and event.data.get("handle") == record.handle
+        }
+        return [
+            event
+            for event in events
+            if event.data.get("handle") == record.handle
+            and event.at >= record.submitted_at
+            and event.data.get("submitted_at", record.submitted_at) == record.submitted_at
+            and (
+                event.data.get("target") == record.target
+                or (not event.data.get("target") and targets == {record.target})
+            )
+        ]
 
     def of(self, target: str, *, host: str = "", run: str = "") -> StreamVerdict:
         """The settled truth of `target`, a receipts store, a file, a stream, or a handle.
@@ -298,7 +328,9 @@ class Verdicts:
                 self.__floor(record, job=job)
                 for record in self.board.dispatcher.cache.tracked()
                 for stream, job in [streamed(record.name or "", handle=record.handle)]
-                if stream == target and record.handle not in {trial.handle for trial in recorded}
+                if stream == target
+                and (record.target, record.handle)
+                not in {(trial.target, trial.handle) for trial in recorded}
             )
             found = (*self.swept(recorded), *missing, *harvest(under))
             return StreamVerdict(
@@ -459,10 +491,21 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
     `--only` wave's unselected jobs stop being invisible to the verb that reports the batch.
     """
     recorded = list(events)
+    targets: dict[str, set[str]] = {}
+    for event in recorded:
+        if event.topic == Topic.SUBMITTED:
+            handle = str(event.data.get("handle", ""))
+            targets.setdefault(handle, set()).add(str(event.data.get("target", "")))
+    identified = [
+        event
+        for event in recorded
+        if event.data.get("target")
+        or len(targets.get(str(event.data.get("handle", "")), set()) - {""}) <= 1
+    ]
     answers = latest(recorded, *OFFERED)
     skipped = latest(recorded, Topic.SKIPPED)
-    states = latest(recorded, Topic.STATE)
-    settled = latest(recorded, Topic.SETTLED)
+    states = latest(identified, Topic.STATE)
+    settled = latest(identified, Topic.SETTLED)
     attested = latest(recorded, Topic.ATTESTED)
     return tuple(
         _joined(
@@ -758,9 +801,11 @@ def _joined(
         )
     handle = str(answer.data.get("handle", ""))
     node = str(answer.data.get("node", ""))
+    state = _matching(state, answer)
+    ended = _matching(ended, answer)
     current = str(state.data.get("state", "")) if state else ""
     verdict = str(state.data.get("verdict", "")) if state else ""
-    if ended is not None and str(ended.data.get("handle", "")) == handle:
+    if ended is not None:
         code = ended.data.get("exit_code")
         return TrialVerdict(
             job=job,
@@ -782,3 +827,15 @@ def _joined(
         verdict=verdict or vocabulary.RUNNING,
         contended=contended,
     )
+
+
+def _matching(event: Event | None, submission: Event) -> Event | None:
+    """Keep a state only when its identity and time belong to this submission."""
+    if event is None or event.at < submission.at:
+        return None
+    for field in ("handle", "target", "submitted_at"):
+        expected = submission.data.get(field)
+        observed = event.data.get(field)
+        if (field == "handle" or (expected and observed)) and expected != observed:
+            return None
+    return event

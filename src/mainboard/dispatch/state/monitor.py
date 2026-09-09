@@ -92,6 +92,7 @@ class MonitorReport(FrozenModel):
 
     running: how many tracked jobs are still in flight, a dispatch a target's quota is holding
         included, since a held request is work this workspace still owes an outcome for.
+        None when another monitor owns settlement and this pass did not inspect the fleet.
     resumed: dispatches a quota had been holding that this sweep got through, each with the
         handle the target finally gave it.
     held: dispatches still waiting on a quota after this sweep asked again, each with why.
@@ -101,7 +102,7 @@ class MonitorReport(FrozenModel):
     unreachable_hosts: hosts that could not be probed, each with why.
     """
 
-    running: int = 0
+    running: int | None = 0
     resumed: list[Resumed] = Field(default_factory=list)
     held: list[Held] = Field(default_factory=list)
     finished: list[Finished] = Field(default_factory=list)

@@ -1456,7 +1456,9 @@ def _present(report: MonitorReport, *, mode: str | None, fields: tuple[str, ...]
         _changes(report),
         mode=mode,
         fields=fields or _CHANGE_COLUMNS,
-        title=f"monitor: {report.running} running",
+        title="monitor: sweep skipped; another monitor owns settlement"
+        if report.running is None
+        else f"monitor: {report.running} running",
     )
 
 

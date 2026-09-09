@@ -80,6 +80,7 @@ def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidenc
         job="lost-transfer",
         data={
             "handle": "77",
+            "target": "gold",
             "status": "unverified",
             "detail": "raw artifacts missing",
             "trials": [["first-run", "same-case"]],
@@ -87,8 +88,10 @@ def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidenc
     )
     result = board.verdicts().handled("77")
     assert result.code == 3
-    first, second_trial = [trial for trial in result.trials if trial.run]
+    first = next(trial for trial in result.trials if trial.run)
     assert (first.verdict, first.settled) == ("unverified", "validated")
+    assert {trial.run for trial in result.trials if trial.run} == {"first-run"}
+    second_trial = next(trial for trial in lined(path) if trial.run == "second-run")
     assert second_trial.verdict == "passed"
     assert path.read_text() == original + second
     assert board.dispatcher.cache.run("77").verdict == "ok"
@@ -572,6 +575,95 @@ def test_a_handle_prefers_its_own_receipts_rows_over_the_registry_floor(board: B
     settled = board.verdicts().of("1")
     assert [trial.job for trial in settled.trials] == ["a"]
     assert settled.trials[0].detail == "results/run"
+
+
+@pytest.mark.parametrize("shared_handle", [False, True])
+@pytest.mark.parametrize("missing_submission", [False, True])
+def test_same_named_host_jobs_keep_their_own_state_and_child_receipts(
+    board: Board, shared_handle: bool, missing_submission: bool
+) -> None:
+    """A finished Hopper launcher cannot settle a running crimson launcher."""
+    stream = "scaling-gpt2"
+    remote = "3325153"
+    active = remote if shared_handle else "1679"
+    recorded(board, remote, name=stream, target="miyabi-g", verdict="ok")
+    recorded(board, active, name=stream, target="crimson")
+    bus = Receipts(directory(board, stream) / "events.ndjson")
+    for handle, target in [(remote, "miyabi-g"), (active, "crimson")]:
+        if missing_submission and target == "crimson":
+            continue
+        publish(
+            bus,
+            stream,
+            Topic.SUBMITTED,
+            job=stream,
+            data={"handle": handle, "target": target},
+        )
+    publish(
+        bus,
+        stream,
+        Topic.STATE,
+        job=stream,
+        data={"handle": active, "state": "Running", "verdict": "running"},
+    )
+    for topic in (Topic.STATE, Topic.SETTLED):
+        publish(
+            bus,
+            stream,
+            topic,
+            job=stream,
+            data={
+                "handle": remote,
+                "state": "F",
+                "verdict": "ok",
+                "exit_code": 0,
+            },
+        )
+    receipts = []
+    for target, handle in [("miyabi-g", remote), ("crimson", active)]:
+        cases = [[f"{target}-{index}", f"case-{index}"] for index in range(3)]
+        for run, case in cases:
+            receipts.append(
+                json.dumps(
+                    {
+                        "trial_receipt": {
+                            "run": run,
+                            "case_id": case,
+                            "outcome": "passed",
+                        }
+                    }
+                )
+            )
+        publish(
+            bus,
+            stream,
+            Topic.EVIDENCE,
+            job=stream,
+            data={
+                "handle": handle,
+                "target": target,
+                "submitted_at": board.dispatcher.cache.run(handle, target).submitted_at,
+                "status": "verified",
+                "trials": cases,
+            },
+        )
+    path = directory(board, stream) / "receipts.ndjson"
+    original = "\n".join(receipts) + "\n"
+    path.write_text(original)
+
+    waiting = board.verdicts().handled(active, host="crimson")
+    assert waiting.code == 2  # Passing children do not prove that the launcher ended.
+    assert waiting.trials[0].verdict == "running"
+    assert {trial.run for trial in waiting.trials if trial.run} == {
+        f"crimson-{index}" for index in range(3)
+    }
+    finished = board.verdicts().handled(remote, host="miyabi-g")
+    assert finished.code == 0
+    assert {trial.run for trial in finished.trials if trial.run} == {
+        f"miyabi-g-{index}" for index in range(3)
+    }
+    assert board.verdicts().of(stream).code == 2
+    assert path.read_text() == original
 
 
 def test_a_target_that_is_nothing_at_all_is_refused_with_the_three_shapes_named(

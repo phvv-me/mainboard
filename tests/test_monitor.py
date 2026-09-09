@@ -640,7 +640,10 @@ def test_competing_monitor_does_not_read_a_stale_settlement_cursor(
     seed("33")
     trips = probing(board, monkeypatch, finishing())
     with FileLock(board.dispatcher.cache.path.with_suffix(".settlement.lock")):
-        assert not board.monitor().once().changed
+        skipped = board.monitor().once()
+        assert not skipped.changed
+        assert skipped.running is None
+        assert skipped.model_dump()["running"] is None
     assert not trips
     assert board.monitor().once().finished[0].handle == "33"
 

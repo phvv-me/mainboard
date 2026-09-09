@@ -434,7 +434,7 @@ class Monitor:
             lock.acquire(timeout=0)
         except Timeout:
             logger.debug("another monitor owns settlement; leaving its cursor untouched")
-            return MonitorReport(failed=expired)
+            return MonitorReport(running=None, failed=expired)
         try:
             report = self._once()
             return report.model_copy(update={"failed": [*expired, *report.failed]})
@@ -663,7 +663,13 @@ class Monitor:
         stream, job = streamed(label, handle=record.handle)
         bus = self.streams.setdefault(stream, self.board.receipts(stream))
         seen = latest(bus.replay(), Topic.STATE).get(job)
-        moved = {"handle": record.handle, "state": state.state or "", "verdict": state.verdict}
+        moved = {
+            "handle": record.handle,
+            "target": record.target,
+            "submitted_at": record.submitted_at,
+            "state": state.state or "",
+            "verdict": state.verdict,
+        }
         if seen is not None and seen.data == moved:
             return
         publish(bus, stream, Topic.STATE, job=job, data=moved)
@@ -675,6 +681,8 @@ class Monitor:
                 job=job,
                 data={
                     "handle": record.handle,
+                    "target": record.target,
+                    "submitted_at": record.submitted_at,
                     "verdict": state.verdict,
                     "exit_code": state.exit_code,
                     "detail": detail,
