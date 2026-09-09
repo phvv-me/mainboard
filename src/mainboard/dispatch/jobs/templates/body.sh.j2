@@ -1,3 +1,22 @@
+{% set pbs = pbs | default(false) %}
+# Finalize completed receipts on normal exit and graceful termination. SIGKILL cannot run a
+# trap; this is not incremental transport. Cleanup must retain the command's original status.
+unset MAINBOARD_RECEIPTS
+mainboard_exit() {
+  local status="$1"
+  trap - EXIT
+  set +e
+  if [ -n "${MAINBOARD_RECEIPTS:-}" ]; then
+    {{ receipts_framing }}
+  fi
+{% if pbs %}
+  printf 'exit=%s\n' "$status" >> "$mainboard_log"
+  printf 'exit=%s\n' "$status" > "{{ state_dir }}/logs/${PBS_JOBID%%.*}.exit"
+{% endif %}
+  exit "$status"
+}
+trap 'mainboard_exit $?' EXIT
+trap 'exit 143' TERM
 {% if provide %}
 # Build the environment this job activates, unless the host already has it. It is addressed by
 # the content of the manifest and lock this job was dispatched with, so this is a stat on every
@@ -81,5 +100,4 @@ status=0
 {% else %}
 bash -c {{ cmd }} || status=$?
 {% endif %}
-{{ receipts_framing }}
 exit $status
