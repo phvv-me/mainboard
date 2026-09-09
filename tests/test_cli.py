@@ -1,6 +1,7 @@
 import json
 import os
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from shutil import rmtree
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -561,6 +562,7 @@ def test_the_compute_verb_prices_and_credits_the_provider_rows(
     payload = json.loads(capsys.readouterr().out)
     assert [row["name"] for row in payload] == ["local", _MIYABI_G, "vast"]
     assert payload[0]["access"] == "here"
+    assert datetime.fromisoformat(payload[2]["observed_at"]).tzinfo is UTC
     assert payload[2] == {
         "name": "vast",
         "kind": "provider",
@@ -568,6 +570,8 @@ def test_the_compute_verb_prices_and_credits_the_provider_rows(
         "detail": "1x RTX 4090 Texas, US",
         "usd_hr": 0.31,
         "credit_usd": 42.5,
+        "observed_at": payload[2]["observed_at"],
+        "cached_at": "",
     }
 
 

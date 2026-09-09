@@ -51,7 +51,7 @@ _LADDER = ("bare", "compiled", "solved", "provisioned", "blessed", "whole", "dam
 _ROWS = st.builds(ComputePath, name=WORDS, kind=WORDS, access=st.sampled_from(Access))
 
 # What the section counts as usable as it stands, so anything outside it earns a word.
-_USABLE = {Access.HERE, Access.READY, Access.KEYED}
+_USABLE = {Access.HERE, Access.KEYED}
 
 
 def answering(status: int, output: str) -> Callable[[str, float], tuple[int, str]]:
@@ -373,6 +373,7 @@ def test_a_gate_that_declares_shell_grammar_is_refused_rather_than_run_as_argume
 @given(rows=st.lists(_ROWS, max_size=6))
 @example(rows=[])
 @example(rows=[ComputePath(name="gold", kind="ssh", access=Access.REACHABLE)])
+@example(rows=[ComputePath(name="gold", kind="ssh", access=Access.PROVISIONED)])
 @example(rows=[ComputePath(name="vast", kind="provider", access=Access.UNKEYED)])
 @example(rows=[ComputePath(name="local", kind="local", access=Access.HERE)])
 def test_the_fleet_verdict_is_a_pure_function_of_the_rows_it_was_handed(
@@ -386,15 +387,14 @@ def test_the_fleet_verdict_is_a_pure_function_of_the_rows_it_was_handed(
     board = Board(workspace)
     found = Doctor(board, survey=FixedSurvey(board, rows)).fleet()
     usable = [row for row in rows if row.access in _USABLE]
-    cold = [row.name for row in rows if row.access is Access.REACHABLE]
     assert found.verdict is not Verdict.FAIL
     assert (found.verdict is Verdict.PASS) == (len(usable) == len(rows))
     assert (found.fix == "") == (found.verdict is Verdict.PASS)
     assert found.detail.startswith(f"{len(usable)} ")
-    if cold:
-        assert found.fix == f"mainboard setup {cold[0]}"
-    elif found.verdict is Verdict.WARN:
+    if found.verdict is Verdict.WARN:
         assert found.fix == "mainboard compute"
+    if any(row.access is Access.PROVISIONED for row in rows):
+        assert "cached setup, job readiness unverified" in found.detail
 
 
 def test_the_hosts_verdict_compares_each_recorded_digest_against_the_manifest_now(

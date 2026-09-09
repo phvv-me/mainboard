@@ -1,4 +1,5 @@
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from inspect import signature
 from threading import get_ident
 from typing import TYPE_CHECKING
@@ -90,13 +91,24 @@ def test_reachable_answers_with_the_refusal_instead_of_raising(
 ) -> None:
     """The probe is bounded and its failure is an answer, since a survey stays a listing."""
 
-    def warm(self: SshTransport, host: str) -> None:
+    def run(self: SshTransport, command: tuple[str, ...], host: str, *, operation: str) -> str:
+        assert command[-2:] == ("echo", "mainboard-reachable")
+        assert operation == "survey"
         if refusal:
             raise HostUnreachable(refusal)
+        return "mainboard-reachable\r\n"
 
-    monkeypatch.setattr(SshTransport, "warm", warm)
+    monkeypatch.setattr(SshTransport, "run", run)
     assert reachable(_GOLD) == refusal
     assert signature(reachable).parameters["ssh"].default.deadline < 30
+
+
+@pytest.mark.parametrize("reply", ["", "unexpected shell output"])
+def test_a_successful_ssh_exit_without_the_marker_is_not_reachability(
+    monkeypatch: pytest.MonkeyPatch, reply: str
+) -> None:
+    monkeypatch.setattr(SshTransport, "run", lambda self, command, host, operation: reply)
+    assert "expected survey marker" in reachable("homelab")
 
 
 def test_the_first_row_is_this_machine_with_its_own_hardware(board: Board) -> None:
@@ -104,7 +116,10 @@ def test_the_first_row_is_this_machine_with_its_own_hardware(board: Board) -> No
     assert first.name == "local"
     assert first.kind == "local"
     assert first.access is Access.HERE
-    assert first.detail == "1x NVIDIA GeForce RTX 4090, 64 GB RAM"
+    assert first.detail.startswith("1x NVIDIA GeForce RTX 4090, 64 GB RAM")
+    assert "GPU availability not checked" in first.detail
+    assert datetime.fromisoformat(first.observed_at).tzinfo is UTC
+    assert first.cached_at == ""
 
 
 def test_credentials_load_before_any_concurrent_host_probe(
@@ -136,21 +151,60 @@ def test_credentials_load_before_any_concurrent_host_probe(
 def test_a_host_row_says_only_what_the_probe_and_the_onboarding_record_support(
     board: Board, alias: str, profile: HostProfile, setup: HostSetup | None, refusal: str
 ) -> None:
-    """Three states, one rule each.
-
-    A host that will not answer is unreachable whatever was recorded of it, one that answers
-    without a record is reachable rather than ready, and a ready row describes real hardware
-    without a second round trip.
-    """
+    """A live reply and a cached setup never imply current job readiness."""
     row = survey(board, reach=lambda host: refusal).machine(alias, profile, setup)
     assert (row.name, row.kind) == (alias, profile.kind)
     if refusal:
-        assert row.access is Access.UNREACHABLE and row.detail == refusal
+        assert row.access is Access.UNREACHABLE and row.detail.startswith(refusal)
     elif setup is None:
-        assert row.access is Access.REACHABLE and row.detail == "never set up"
+        assert row.access is Access.REACHABLE
+        assert f"mainboard setup {alias}" in row.detail
+        assert "no cached setup or hardware" in row.detail
     else:
-        assert row.access is Access.READY
-        assert row.detail.endswith("GB RAM") if setup.hardware else setup.env in row.detail
+        assert row.access is Access.PROVISIONED
+        assert "GB RAM" in row.detail if setup.hardware else setup.env in row.detail
+        assert "job readiness and GPU availability not checked" in row.detail
+    assert row.cached_at == (setup.onboarded_at if setup else "")
+
+
+def test_cached_hardware_keeps_its_original_observation_after_a_later_sync(board: Board) -> None:
+    setup = HostSetup(
+        host="homelab",
+        root="C:/projects",
+        hardware=facts("RTX 5080"),
+        onboarded_at="2026-09-01T01:00:00+00:00",
+        synced_at="2026-09-09T23:00:00+00:00",
+    )
+    row = survey(board).machine("homelab", HostProfile(kind="ssh"), setup)
+    assert row.access is Access.PROVISIONED
+    assert row.cached_at == setup.onboarded_at
+    assert setup.synced_at not in row.detail
+    assert "cached" in row.detail and "RTX 5080" in row.detail
+
+
+@pytest.mark.parametrize("recorded", [False, True])
+def test_manifest_status_note_names_a_supported_route_without_claiming_readiness(
+    board: Board, *, recorded: bool
+) -> None:
+    note = "Native managed SSH route only; generic submit is unsupported"
+    profile = HostProfile(kind="ssh", vars={"status-note": note})
+    setup = HostSetup(host="homelab", root="C:/managed") if recorded else None
+    row = survey(board).machine("homelab", profile, setup)
+    assert row.access is (Access.PROVISIONED if recorded else Access.REACHABLE)
+    assert note in row.detail
+    assert "mainboard setup homelab" not in row.detail
+
+
+@pytest.mark.parametrize("kind", ["pbs", "slurm"])
+def test_scheduler_login_probe_does_not_claim_compute_node_availability(
+    board: Board, kind: str
+) -> None:
+    setup = HostSetup(host=_MIYABI_G, root="/work/projects", hardware=facts())
+    row = survey(board).machine(_MIYABI_G, HostProfile(kind=kind), setup)
+    assert row.access is Access.PROVISIONED
+    assert "login endpoint only" in row.detail
+    assert "GPU availability not checked" in row.detail
+    assert "mainboard jobs" in row.detail
 
 
 def test_a_provider_with_a_key_carries_its_credit_and_a_live_rate(

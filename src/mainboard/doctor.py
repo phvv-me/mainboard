@@ -33,7 +33,7 @@ _TOOL = Project().name
 
 # The compute paths that are usable as they stand, so a survey row outside this set is
 # something the report has to say a word about.
-_USABLE = frozenset({Access.HERE, Access.READY, Access.KEYED})
+_USABLE = frozenset({Access.HERE, Access.KEYED})
 
 # What a gate cannot mean, because a gate is argv. The runner hands each token to the command as
 # an argument, so a declared `a && b` runs `a` with three arguments and reports whatever that
@@ -201,12 +201,14 @@ class Doctor:
         paths = self.survey.paths(setups)
         ready = [path for path in paths if path.access in _USABLE]
         cold = [path.name for path in paths if path.access is Access.REACHABLE]
+        cached = [path.name for path in paths if path.access is Access.PROVISIONED]
         down = [path.name for path in paths if path.access is Access.UNREACHABLE]
         unkeyed = [path.name for path in paths if path.access is Access.UNKEYED]
         notes = [
             note
             for note in (
                 f"answering but never set up: {', '.join(cold)}" if cold else "",
+                f"cached setup, job readiness unverified: {', '.join(cached)}" if cached else "",
                 f"not answering: {', '.join(down)}" if down else "",
                 f"no credentials here: {', '.join(unkeyed)}" if unkeyed else "",
             )
@@ -220,7 +222,7 @@ class Doctor:
             section="fleet",
             verdict=Verdict.WARN,
             detail=f"{len(ready)} usable, {'; '.join(notes)}",
-            fix=f"{_TOOL} setup {cold[0]}" if cold else f"{_TOOL} compute",
+            fix=f"{_TOOL} compute",
         )
 
     def hosts(self, setups: Mapping[str, HostSetup] | None = None) -> Section:

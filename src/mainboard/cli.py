@@ -545,9 +545,14 @@ def build(root: Path | None = None) -> App:
         slowest one takes, and a host that is down or a provider with no key is a row rather than
         a failure. No credential is ever printed, only whether one was found.
 
+        Provisioned means cached setup, not current job readiness. Hardware may be stale;
+        cached_at names its onboarding observation and observed_at names this live survey.
+        GPU availability is not checked. PBS/Slurm reachability concerns the login endpoint,
+        not an allocated compute node. Inspect jobs and facts before scheduling experiments.
+
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over name/kind/access/detail/usd_hr/credit_usd.
+        fields: comma-separated name/kind/access/detail/usd_hr/credit_usd/observed_at/cached_at.
         """
         mode = mode_of(json_mode=json, agent=agent)
         with progress("probing every compute path"):

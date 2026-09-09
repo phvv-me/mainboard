@@ -5,11 +5,13 @@
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from enum import StrEnum, auto
 from functools import partial
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
+from pydantic import Field
 
 from .core.errors import MissionError
 from .dispatch.backends.base import Account, Credentials, ProviderBackend, route
@@ -48,7 +50,7 @@ class Access(StrEnum):
     """How usable one compute path is right now."""
 
     HERE = auto()
-    READY = auto()
+    PROVISIONED = auto()
     REACHABLE = auto()
     UNREACHABLE = auto()
     KEYED = auto()
@@ -65,6 +67,8 @@ class ComputePath(FrozenModel):
         host that would not answer, the variable to set for a provider with no key.
     usd_hr: a live cheapest-offer sample, None where no price is a cheap question.
     credit_usd: the balance the provider reports, None where it exposes none.
+    observed_at: UTC completion time of this survey observation, not a readiness lease.
+    cached_at: onboarding time of retained host facts; empty means their age is unknown.
     """
 
     name: str
@@ -73,6 +77,8 @@ class ComputePath(FrozenModel):
     detail: str = ""
     usd_hr: float | None = None
     credit_usd: float | None = None
+    observed_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    cached_at: str = ""
 
 
 def summary(facts: HostFacts) -> str:
@@ -89,16 +95,22 @@ def summary(facts: HostFacts) -> str:
 def reachable(host: str, ssh: SshTransport = _PROBE_SSH) -> str:
     """Why `host` cannot be reached right now, empty when one bounded ssh round trip lands.
 
-    The cheapest question worth asking a host, one `true` over the connection the dispatch
-    subsystem would use anyway, so a survey never pays for the workspace probe that `facts` runs.
+    An echo marker works in POSIX shells, cmd, and PowerShell without requiring a provisioned
+    environment. This proves a remote command answered, not that a GPU job can run.
 
     host: the ssh alias to try.
     ssh: the bounded transport policy the probe rides, a short-deadline one by default.
     """
     try:
-        ssh.warm(host)
+        reply = ssh.run(
+            ("ssh", *ssh.options, ssh.destination(host), "echo", "mainboard-reachable"),
+            host,
+            operation="survey",
+        )
     except (HostUnreachable, ConnectionError, RuntimeError) as refusal:
         return str(refusal)
+    if "mainboard-reachable" not in (line.strip() for line in reply.splitlines()):
+        return "SSH command returned without the expected survey marker; inspect the remote shell"
     return ""
 
 
@@ -141,32 +153,54 @@ class Survey:
     def here(self) -> ComputePath:
         """This machine, from its own probed facts."""
         return ComputePath(
-            name="local", kind="local", access=Access.HERE, detail=summary(self.facts())
+            name="local",
+            kind="local",
+            access=Access.HERE,
+            detail=f"{summary(self.facts())}; live hardware, GPU availability not checked",
         )
 
     def machine(self, alias: str, profile: HostProfile, setup: HostSetup | None) -> ComputePath:
         """One declared host: whether it answers, and what onboarding already recorded of it.
 
-        A host that answers but was never set up is reachable rather than ready, which is the
-        difference between a machine that can take a job and one that still needs `setup`. The
-        hardware line comes from the onboarding record rather than from the host, so a ready row
-        describes real hardware without a second round trip.
+        Provisioned means an onboarding record exists, not that its environment or scheduler
+        still works. Retained hardware is explicitly cached and may be stale. In particular,
+        PBS/Slurm login hardware says nothing about a future compute allocation.
+        A profile's vars.status-note may replace generic next-step advice, never observed state.
 
         alias: the declared host name.
         profile: that host's resolved profile, whose kind names the scheduler.
         setup: what onboarding recorded for the alias, None when it was never set up.
         """
         refusal = self.reach(alias)
+        note = profile.vars.get("status-note", "")
+        cached_at = setup.onboarded_at if setup else ""
+        cached = ""
+        if setup is not None:
+            hardware = summary(setup.hardware) if setup.hardware else "hardware unrecorded"
+            cached = f"cached {setup.env}: {hardware} (observed {cached_at or 'time unknown'})"
         if refusal:
-            return ComputePath(
-                name=alias, kind=profile.kind, access=Access.UNREACHABLE, detail=refusal
+            access = Access.UNREACHABLE
+            detail = f"{refusal}; {cached}" if cached else refusal
+        elif setup is None:
+            access = Access.REACHABLE
+            detail = (
+                "SSH answered; no cached setup or hardware; "
+                f"{note or f'run mainboard setup {alias}'}"
             )
-        if setup is None:
-            return ComputePath(
-                name=alias, kind=profile.kind, access=Access.REACHABLE, detail="never set up"
+        else:
+            access = Access.PROVISIONED
+            endpoint = "login endpoint only; " if profile.kind in {"pbs", "slurm"} else ""
+            action = note or f"inspect mainboard jobs and mainboard facts --on {alias}"
+            detail = (
+                f"{cached}; {endpoint}job readiness and GPU availability not checked; {action}"
             )
-        detail = summary(setup.hardware) if setup.hardware else f"{setup.env}, hardware unrecorded"
-        return ComputePath(name=alias, kind=profile.kind, access=Access.READY, detail=detail)
+        return ComputePath(
+            name=alias,
+            kind=profile.kind,
+            access=access,
+            detail=detail,
+            cached_at=cached_at,
+        )
 
     def onboarded(self) -> dict[str, HostSetup]:
         """What onboarding recorded for each alias, read from the dispatch cache, keyed by alias.

@@ -40,7 +40,7 @@ $ mainboard jobs                    # every live job as its own queue sees it ri
 $ mainboard compute --agent         # every path this workspace can run on
 name      kind      access       detail                 usd_hr  credit_usd
 local     local     here         1x RTX 4090, 135 GB RAM
-gold      ssh       ready        1x GB10, 129 GB RAM
+gold      ssh       provisioned  cached default: hardware from onboarding
 miyabi-g  pbs       unreachable  ssh connect timed out
 vast      provider  keyed        1x RTX 4090 Sweden, SE  0.2978  99.9968
 ```
@@ -55,6 +55,16 @@ the scanned modules. Broad searches show twenty hits and the full match count.
 machine, every declared host with whether it answers and whether it was set up,
 and every provider with whether its credentials are here and what the account
 has left. No credential is ever printed, only whether one was found.
+`provisioned` means a cached setup record exists, not that a job can currently run.
+`observed_at` timestamps the live survey; `cached_at` timestamps the retained host
+facts, which may be stale. An SSH echo probe works with POSIX shells, cmd, and
+PowerShell without requiring an installed environment. Neither cached hardware nor
+a successful login proves GPU availability. For PBS/Slurm, the reachable endpoint
+is the login host, not an allocated compute node. Inspect `mainboard jobs` and
+`mainboard facts --on <host>` before choosing a target.
+A host's `[hosts.<name>.vars]` may contain `status-note` to describe a supported
+route or known restriction. This replaces generic setup advice, not the observed
+access state, and never makes a host job-ready.
 
 
 `jobs` shows every dispatched job still in flight before it shows any that
