@@ -61,11 +61,11 @@ def test_a_missing_modal_extra_refuses_every_verb_with_the_command_that_installs
     """
     monkeypatch.delitem(sys.modules, "modal", raising=False)
     monkeypatch.setattr("mainboard.dispatch.backends.modal.import_module", broken_import)
-    with pytest.raises(MissionError, match="uv add modal"):
+    with pytest.raises(MissionError, match="installed Mainboard tool needs its `modal` extra"):
         ModalBackend().cancel("sb-0")
     standing = ModalBackend().standing()
     assert standing.keyed is False
-    assert "uv add modal" in standing.note
+    assert "installed Mainboard tool needs its `modal` extra" in standing.note
 
 
 def test_submit_refuses_before_the_sdk_is_even_imported_when_the_budget_is_unset(

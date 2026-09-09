@@ -10,13 +10,8 @@ from collections.abc import (
 )
 from contextlib import ExitStack
 from contextvars import ContextVar
-from dataclasses import dataclass, field
-from enum import Flag, auto
 from types import CodeType, FunctionType, ModuleType, TracebackType
 from typing import TypeAlias
-
-from patos import FrozenModel
-from pydantic import Field
 
 # The one place profiling reaches the probe package: a session that wants device evidence
 # and was handed no device finds the host's own. `probe.units.gpu` is the narrowest entry
@@ -29,76 +24,16 @@ from .protocols import (
     DeviceProbe,  # noqa: TC001  reason=Profiler is inspect.signature()'d in tests, so __init__'s Sequence[DeviceProbe] annotation must resolve at runtime since=2026-08-17
 )
 from .result import DeviceEvidence, Profile
+from .session import Collection as Collection
+from .session import Feature as Feature
+from .session import SpanFrame as SpanFrame
+from .session import SpanMeasurement as SpanMeasurement
 from .spans import activate, active, deactivate
 from .trace import Activity as NativeActivity
 from .trace import BottleneckReport, RegionWindow, TraceCollector
-from .tracer import Marker, Tracer
+from .tracer import Tracer
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class SpanFrame:
-    """One live span and the evidence attributed to it."""
-
-    name: str
-    path: str
-    thread: int
-    device_start_ns: int
-    finish_marker: Marker | None
-    samples: deque[ProcessReading] = field(default_factory=lambda: deque(maxlen=4096))
-
-
-@dataclass(frozen=True, slots=True)
-class SpanMeasurement:
-    """Raw span data kept cheap until a result is requested."""
-
-    name: str
-    wall_ms: float
-    samples: tuple[ProcessReading, ...]
-
-
-class Feature(Flag):
-    """Independent collection costs that may be combined with `|`.
-
-    Independence is the contract, not a convenience: `DEFAULT` ORs every member because each
-    one can be collected alongside the others without changing what the others observe. A
-    capability that cannot honour that, such as hardware counter collection needing kernel
-    replay, does not belong in this flag however convenient the syntax would be. It belongs in
-    its own pass.
-    """
-
-    # Bit 1 named an unimplemented collector; keep the other recorded values stable.
-    SPANS = 2
-    DEVICE = auto()
-    MARKERS = auto()
-    ACTIVITY = auto()
-    DEFAULT = SPANS | DEVICE | MARKERS | ACTIVITY
-
-
-class Collection(FrozenModel):
-    """What evidence to gather and at what cost, as one value.
-
-    These six choices were six constructor arguments, two of which were then repeated on every
-    other entry point, so the same policy had to be restated wherever it was wanted and nothing
-    checked that two statements of it agreed. As one model it can be built once, passed around,
-    compared and stored beside the measurement it produced, which is what a study needs: a
-    throughput number whose collection policy is not attached to it is hard to reproduce.
-
-    features: which capabilities may be collected.
-    activities: which CUPTI activity kinds to keep when `ACTIVITY` is on.
-    device_index: which of the constructor's `gpus` to sample.
-    sample_interval_ms: how often to take a device telemetry sample.
-    max_spans: the bound on retained spans and windows, past which they are dropped and counted.
-    auto: modules whose functions are annotated automatically.
-    """
-
-    features: Feature = Feature.DEFAULT
-    activities: NativeActivity = NativeActivity.DEFAULT
-    device_index: int = Field(default=0, ge=0)
-    sample_interval_ms: int = Field(default=50, gt=0)
-    max_spans: int = Field(default=100_000, gt=0)
-    auto: tuple[str, ...] = ()
 
 
 class Profiler:

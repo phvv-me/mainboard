@@ -61,8 +61,9 @@ def _modal() -> ModuleType:
         return import_module("modal")
     except ModuleNotFoundError:
         raise MissionError(
-            "the modal backend needs the `modal` package; run `uv add modal` then "
-            "`modal token new` to authenticate"
+            "the installed Mainboard tool needs its `modal` extra; reinstall Mainboard "
+            "with that extra alongside the extras already in use, then authenticate "
+            "with `mainboard run -- modal token new`"
         ) from None
 
 
