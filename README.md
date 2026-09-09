@@ -470,7 +470,7 @@ publication may leave a valid subset for the next retry. Current transfers send
 the selected scope again and growing snapshots can overlap on disk; incremental
 transfer and snapshot compaction remain optimization work.
 
-Collection from native Windows and Linux nodes to a Linux client has been exercised,
+Collection from native Windows, Linux, and macOS nodes to a Linux client has been exercised,
 as has native Windows local execution. Source setup,
 snapshot pinning, and scheduler launch still contain Unix-shell paths; collection
 support does not establish fully portable remote submission. The next boundary is
