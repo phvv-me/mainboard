@@ -12,6 +12,7 @@ from plumbum import local
 from plumbum.commands.base import BoundEnvCommand
 
 from ....core import MissionError, Project
+from ....core.host import current_platform
 from .engine import PixiEngine
 from .process import Process
 from .repair import EnvironmentAudit
@@ -173,6 +174,29 @@ class Pixi(Tool):
             locked=not resolve and not self._has_editable_paths(),
             frozen=not resolve and self._has_editable_paths(),
         )
+
+    def solve(self) -> None:
+        """Solve the lock for every platform the manifest declares, installing nothing.
+
+        A solve is not an install: a lock can be solved here for a platform this machine cannot
+        run, then shipped to the host that can (a Windows card from a Linux workstation).
+        """
+        result = self.within_cwd(Process.stream, "lock")
+        if result.returncode:
+            raise MissionError("`pixi lock` failed (see its output above)")
+
+    def runs_here(self) -> bool:
+        """Whether the compiled manifest declares the platform this machine is.
+
+        A manifest that declares no platforms, or none compiled yet, runs here.
+        """
+        try:
+            parsed = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return True
+        declared = parsed.get("workspace", {}).get("platforms", [])
+        names = {entry if isinstance(entry, str) else str(entry.get("platform", "")) for entry in declared}
+        return not names or current_platform() in names
 
     def install(self, env: str, *, resolve: bool = False) -> None:
         """Install ``env`` locked by default and verify every explicitly resolved lock."""

@@ -144,6 +144,19 @@ def test_a_driver_version_nvml_will_not_answer_reads_empty_rather_than_the_cuda_
     assert gpu.runtime_version == (13, 1)
 
 
+def test_a_discrete_card_under_heterogeneous_memory_management_is_not_coherent(
+    install_nvidia_stack,
+) -> None:
+    """Pageable and managed access alone are what a driver with HMM gives a discrete card.
+
+    The RTX 4090 on the open kernel modules reported both and was budgeted as a Grace
+    Hopper for a week; host-native atomics are the flag only a coherent fabric raises.
+    """
+    install_nvidia_stack(hmm=True)
+    gpu = NvidiaGPU(index=0)
+    assert gpu.coherent is False
+
+
 def test_a_binding_without_the_attribute_query_degrades_to_not_coherent(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:

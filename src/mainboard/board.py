@@ -569,11 +569,14 @@ class Board:
                 floor=self.floor,
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
+        # An environment solved for a platform this machine cannot run has no prefix to
+        # activate here; its lock ships with `setup` to the host that runs it.
+        activate = self.activation(provisioner, plan) if provisioner.runs_here(plan.env) else ""
         return HostSetup(
             host=self.host,
             root=str(self.root),
             env=plan.env,
-            activate=self.activation(provisioner, plan),
+            activate=activate,
             installer="in-place",
             tool=version(self.project.name),
         )

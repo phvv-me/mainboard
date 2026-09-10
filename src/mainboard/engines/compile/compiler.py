@@ -87,18 +87,24 @@ class Compiler:
         """
         if not resolve:
             self.vouch()
-        self.pixi.install(self.environment, resolve=resolve)
-        if resolve:
-            state = SyncState.load(self.out)
-            self.__persist_state(
-                files,
-                state.model_copy(
-                    update={
-                        "solved_from": self.resolution_digest(),
-                        "solved_by": self.pixi.version(),
-                    }
-                ),
-            )
+            self.pixi.install(self.environment)
+            return
+        # The solve is its own step, blessed before any install, so an environment declared
+        # for a platform this machine cannot run (a Windows card, from Linux) still leaves a
+        # lock the mirror can ship and the host can install from.
+        self.pixi.solve()
+        state = SyncState.load(self.out)
+        self.__persist_state(
+            files,
+            state.model_copy(
+                update={
+                    "solved_from": self.resolution_digest(),
+                    "solved_by": self.pixi.version(),
+                }
+            ),
+        )
+        if self.pixi.runs_here():
+            self.pixi.install(self.environment)
 
     def vouch(self) -> None:
         """Refuse unless the lock on disk was solved from this manifest and package metadata.

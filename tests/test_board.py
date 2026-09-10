@@ -109,6 +109,9 @@ class FakeProvisioner:
     def provision(self, env: str, *, resolve: bool) -> None:
         FakeProvisioner.calls.append(("provision", (env, resolve)))
 
+    def runs_here(self, env: str) -> bool:
+        return True
+
     def run(self, command: Sequence[str], env: str) -> int:
         FakeProvisioner.calls.append(("run", (command, env)))
         return {("true",): 0, ("false",): 1}.get(tuple(command), 0)

@@ -19,29 +19,35 @@ class CudaErrorT:
 
 
 class CudaDeviceAttr:
-    """Mimic `cudaDeviceAttr` with the two coherence-probe members read here."""
+    """Mimic `cudaDeviceAttr` with the three coherence-probe members read here."""
 
     cudaDevAttrPageableMemoryAccess = 24
+    cudaDevAttrHostNativeAtomicSupported = 76
     cudaDevAttrConcurrentManagedAccess = 89
 
 
 class FakeRuntime:
     """Minimal `cuda.bindings.runtime` returning two visible devices.
 
-    `coherent` toggles the two `cudaDeviceGetAttribute` coherence flags so a test can
-    model a discrete card (the default 4090, both flags off) or a Grace-Hopper-style
-    coherent pool (both flags on, the `unified=True` signal).
+    `coherent` toggles the three `cudaDeviceGetAttribute` coherence flags so a test can
+    model a discrete card (the default 4090, every flag off) or a Grace-Hopper-style
+    coherent pool (every flag on, the `unified=True` signal). `hmm` models a discrete card
+    under heterogeneous memory management, which reports pageable and managed access but
+    no host-native atomics.
     """
 
     cudaError_t = CudaErrorT
     cudaDeviceAttr = CudaDeviceAttr
 
-    def __init__(self, count: int = 2, coherent: bool = False) -> None:
+    def __init__(self, count: int = 2, coherent: bool = False, hmm: bool = False) -> None:
         self.count = count
         self.coherent = coherent
+        self.hmm = hmm
 
     def cudaDeviceGetAttribute(self, attr: int, index: int) -> tuple[int, int]:
-        return (CudaErrorT.cudaSuccess, 1 if self.coherent else 0)
+        if attr == CudaDeviceAttr.cudaDevAttrHostNativeAtomicSupported:
+            return (CudaErrorT.cudaSuccess, 1 if self.coherent else 0)
+        return (CudaErrorT.cudaSuccess, 1 if self.coherent or self.hmm else 0)
 
     def cudaDeviceGetPCIBusId(self, length: int, index: int) -> tuple[int, bytes]:
         # The runtime honors `CUDA_VISIBLE_DEVICES`: a visible index names a physical one.
@@ -258,9 +264,9 @@ class FakeNvidiaApis:
     """
 
     def __init__(
-        self, device_count: int = 2, *, has_cuda_core: bool = True, coherent: bool = False
+        self, device_count: int = 2, *, has_cuda_core: bool = True, coherent: bool = False, hmm: bool = False
     ) -> None:
-        self.runtime = FakeRuntime(device_count, coherent=coherent)
+        self.runtime = FakeRuntime(device_count, coherent=coherent, hmm=hmm)
         self.system = FakeSystem() if has_cuda_core else None
         self.nvml = FakeNvml(device_count=device_count)
         self.cuda_device_type = (lambda index: object()) if has_cuda_core else None

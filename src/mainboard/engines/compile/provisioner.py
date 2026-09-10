@@ -236,6 +236,10 @@ class Provisioner:
         hook = shard.pixi.shell_hook(env)
         return ActivationScript(path, hook, self.binaries(env)).write(modules)
 
+    def runs_here(self, env: str = "default") -> bool:
+        """Whether `env` declares the platform this machine is, so it can be installed here."""
+        return self._shard(env).pixi.runs_here()
+
     def recompiled(self, env: str = "default") -> None:
         """Bring `env`'s generated artifact in line with the manifest, and touch nothing else.
 
@@ -390,6 +394,10 @@ class Provisioner:
             if refresh:
                 shard.pixi.update(env)
             shard.compiler.install_locked(files, resolve=resolve or refresh)
+            if not shard.pixi.runs_here():
+                # Solved for platforms this machine cannot run: the lock ships with `setup`,
+                # and the host that runs it installs the second stage and its activation.
+                return
             shard.stage.install(env, resolve=resolve or refresh)
             if shard.pixi.ready(env):
                 shard.pixi.cache_windows_activation(env)

@@ -88,9 +88,9 @@ def install_nvidia_stack(monkeypatch: pytest.MonkeyPatch) -> InstallNvidiaStack:
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
 
     def install(
-        *, device_count: int = 2, has_cuda_core: bool = True, coherent: bool = False
+        *, device_count: int = 2, has_cuda_core: bool = True, coherent: bool = False, hmm: bool = False
     ) -> FakeNvidiaApis:
-        apis = FakeNvidiaApis(device_count, has_cuda_core=has_cuda_core, coherent=coherent)
+        apis = FakeNvidiaApis(device_count, has_cuda_core=has_cuda_core, coherent=coherent, hmm=hmm)
         nvidia_apis_module.nvidia_apis.cache_clear()
         monkeypatch.setattr(nvidia_apis_module, "nvidia_apis", lambda: apis)
         return apis
