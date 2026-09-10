@@ -74,12 +74,13 @@ class NvidiaGPU(GPU):
     def coherent(self) -> bool:
         """Whether this GPU shares a cache-coherent memory pool with the host.
 
-        This is probed rather than guessed, since a device that reports both
+        Probed rather than guessed, and on three attributes, not two: a driver with
+        heterogeneous memory management makes a discrete card report
         `cudaDevAttrPageableMemoryAccess` and `cudaDevAttrConcurrentManagedAccess`
-        sits on a coherent fabric where host RAM is a peer NUMA node of HBM (Grace
-        Hopper, GB10), not a PCIe copy away. A discrete card (the 4090) reports
-        neither, so `unified` stays False there. A binding that lacks the attribute
-        query degrades to False rather than raising.
+        too (the RTX 4090 on the open kernel modules did, and was budgeted as a
+        Grace Hopper for a week), while `cudaDevAttrHostNativeAtomicSupported` holds
+        only where host RAM is a peer of HBM over a coherent fabric (GH200, GB10). A
+        binding that lacks the attribute query degrades to False rather than raising.
         """
         runtime = self.apis.runtime
         if runtime is None:
@@ -93,7 +94,17 @@ class NvidiaGPU(GPU):
             err_m, managed = runtime.cudaDeviceGetAttribute(
                 attrs.cudaDevAttrConcurrentManagedAccess, self.index
             )
-            return err_p == success and err_m == success and bool(pageable) and bool(managed)
+            err_a, atomics = runtime.cudaDeviceGetAttribute(
+                attrs.cudaDevAttrHostNativeAtomicSupported, self.index
+            )
+            return (
+                err_p == success
+                and err_m == success
+                and err_a == success
+                and bool(pageable)
+                and bool(managed)
+                and bool(atomics)
+            )
         return False
 
     @cached_property
