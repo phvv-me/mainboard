@@ -1,4 +1,4 @@
-from .engine import PIXI_VERSION, POSIX_INSTALLER, PixiEngine
+from .engine import PIXI_VERSION, POSIX_INSTALLER, WINDOWS_INSTALLER, PixiEngine
 from .pixi import Pixi
 from .process import Process
 from .repair import EnvironmentAudit
@@ -8,6 +8,7 @@ from .tool import Tool
 __all__ = [
     "PIXI_VERSION",
     "POSIX_INSTALLER",
+    "WINDOWS_INSTALLER",
     "CommandResult",
     "EnvironmentAudit",
     "Pixi",

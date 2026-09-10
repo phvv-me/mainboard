@@ -98,3 +98,27 @@ def test_a_deferred_tool_builds_the_same_command_without_waiting(
 
     _Unavailable().defer("ignored")
     assert seen == [f"{_PYTHON} hi"]
+
+
+def test_on_windows_a_manager_runs_by_its_pathext_spelling_and_a_script_under_cmd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """conda ships `npm` as a POSIX script beside `npm.cmd`; only the launcher is a program."""
+    from plumbum import local
+
+    from mainboard.engines.compile.backend import tool as tool_module
+
+    (tmp_path / "npm").write_text("#!/bin/sh\n")
+    (tmp_path / "npm.cmd").write_text("@echo off\n")
+    for program in ("node.exe", "cmd.exe"):
+        (tmp_path / program).write_bytes(b"MZ")
+        (tmp_path / program).chmod(0o755)
+    monkeypatch.setattr(tool_module.platform, "system", lambda: "Windows")
+    with local.env(PATH=str(tmp_path), PATHEXT=".EXE;.CMD;.BAT"):
+        npm = tool_module.windows_launcher("npm")
+        node = tool_module.windows_launcher("node")
+        with pytest.raises(MissionError, match="yarn is not on PATH"):
+            tool_module.windows_launcher("yarn")
+    assert npm.formulate()[-3:] == ["/d", "/c", str(tmp_path / "npm.cmd")]
+    assert npm.formulate()[0].lower().endswith("cmd.exe")
+    assert node.formulate() == [str(tmp_path / "node.exe")]

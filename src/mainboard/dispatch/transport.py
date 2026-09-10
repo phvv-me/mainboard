@@ -11,7 +11,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv buil
 from contextlib import ExitStack, suppress
 from math import ceil
 from pathlib import Path
-from typing import NoReturn
+from typing import IO, NoReturn
 
 import psutil
 from patos import FrozenModel
@@ -216,6 +216,37 @@ class SshTransport(FrozenModel):
             new_session=True,
         )
 
+    def invoke(
+        self,
+        command: tuple[str, ...],
+        host: str,
+        *,
+        operation: str,
+        input_text: str | None = None,
+        bounded: bool = True,
+    ) -> tuple[int, str, str]:
+        """Run one ssh process and answer its exit status with what it wrote.
+
+        A transport fault or a host-key failure is raised as itself, since neither is an answer;
+        any other exit status comes back, because a probe that exits non-zero answered.
+
+        command: the full argv, `ssh` first.
+        host: the alias or destination, named in every failure.
+        operation: what the command is for, named in every failure.
+        input_text: explicit UTF-8 input, otherwise the native null device.
+        bounded: hold the process to the control deadline; False lets an install run its course.
+        """
+        returncode, stdout, stderr = self.__communicate(
+            command,
+            host,
+            operation=operation,
+            input_text=input_text,
+            sink=subprocess.PIPE,
+            timeout=self.deadline if bounded else None,
+        )
+        self.__check(returncode, stderr, host=host, operation=operation)
+        return returncode, stdout or "", stderr or ""
+
     def run(
         self,
         command: tuple[str, ...],
@@ -237,36 +268,60 @@ class SshTransport(FrozenModel):
             sink = (
                 stack.enter_context(output.open("wb")) if output is not None else subprocess.PIPE
             )
-            try:
-                process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh/scp argv built from typed fields, not untrusted input since=2026-08-16
-                    command,
-                    stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-                    stdout=sink,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    start_new_session=True,
-                )
-            except OSError as error:
-                raise HostUnreachable(
-                    f"ssh {operation} to {host!r} could not start: {error}"
-                ) from error
-            try:
-                stdout, stderr = process.communicate(input=input_text, timeout=self.deadline)
-            except subprocess.TimeoutExpired as error:
-                self.__raise_after_terminating(
-                    process, host=host, operation=operation, cause=error
-                )
-        if process.returncode == 0:
+            returncode, stdout, stderr = self.__communicate(
+                command,
+                host,
+                operation=operation,
+                input_text=input_text,
+                sink=sink,
+                timeout=self.deadline,
+            )
+        if returncode == 0:
             return stdout or ""
+        self.__check(returncode, stderr, host=host, operation=operation)
+        raise RuntimeError(f"ssh {operation} to {host!r} failed: {_detail(stderr, returncode)}")
+
+    def __communicate(
+        self,
+        command: tuple[str, ...],
+        host: str,
+        *,
+        operation: str,
+        input_text: str | None,
+        sink: int | IO[bytes],
+        timeout: float | None,
+    ) -> tuple[int, str, str]:
+        """Run `command` in its own process group and return its status, stdout and stderr."""
+        try:
+            process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh/scp argv built from typed fields, not untrusted input since=2026-08-16
+                command,
+                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdout=sink,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise HostUnreachable(
+                f"ssh {operation} to {host!r} could not start: {error}"
+            ) from error
+        try:
+            stdout, stderr = process.communicate(input=input_text, timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            self.__raise_after_terminating(process, host=host, operation=operation, cause=error)
+        return process.returncode, stdout or "", stderr or ""
+
+    @staticmethod
+    def __check(returncode: int, stderr: str, *, host: str, operation: str) -> None:
+        """Raise the typed failure `(returncode, stderr)` names, if it names one."""
         if "host key verification failed" in stderr.lower():
             raise ConnectionError(f"ssh to {host!r} failed host-key verification")
-        detail = (
-            stderr.strip().splitlines()[-1] if stderr.strip() else f"exit {process.returncode}"
-        )
-        if is_transport_failure(process.returncode, stderr):
-            raise HostUnreachable(f"ssh {operation} to {host!r} failed: {detail}")
-        raise RuntimeError(f"ssh {operation} to {host!r} failed: {detail}")
+        if is_transport_failure(returncode, stderr):
+            raise HostUnreachable(
+                f"ssh {operation} to {host!r} failed: {_detail(stderr, returncode)}"
+            )
 
     def warm(self, host: str) -> None:
         """Validate one bounded SSH connection before Plumbum opens its persistent session."""
@@ -290,6 +345,11 @@ class SshTransport(FrozenModel):
         raise HostUnreachable(
             f"ssh {operation} to {host!r} timed out after {self.deadline:g}s"
         ) from cause
+
+
+def _detail(stderr: str, returncode: int) -> str:
+    """The last thing ssh said, or its exit status when it said nothing."""
+    return stderr.strip().splitlines()[-1] if stderr.strip() else f"exit {returncode}"
 
 
 def is_transport_failure(retcode: int, stderr: str) -> bool:

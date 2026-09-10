@@ -1,3 +1,4 @@
+import base64
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -148,6 +149,57 @@ class RecordingMachine:
     def ran(self, marker: str) -> bool:
         """Whether any command run so far carried `marker`."""
         return any(marker in " ".join(argv) for argv in self.calls)
+
+    def close(self) -> None:
+        """Nothing to release."""
+        return
+
+
+class RecordingTransport:
+    """A bounded-transport double answering every one-shot ssh the way a scripted host would.
+
+    The same three knobs as `RecordingMachine`, matched against the argv with any PowerShell
+    `-EncodedCommand` payload decoded back to its script, so a rule written against the words
+    of a probe matches whether the host is asked in bash or in PowerShell.
+    """
+
+    def __init__(
+        self,
+        outputs: Sequence[str] = (),
+        *,
+        rules: Sequence[Rule] = (),
+        faults: Sequence[Fault] = (),
+    ) -> None:
+        self.machine = RecordingMachine(outputs, rules=rules, faults=faults)
+        self.options: tuple[str, ...] = ("-o", "BatchMode=yes")
+        self.endpoint = None
+
+    @property
+    def calls(self) -> list[list[str]]:
+        """Every argv invoked, PowerShell scripts decoded."""
+        return self.machine.calls
+
+    @property
+    def scripts(self) -> list[str]:
+        """The decoded script (or bash line) each call carried."""
+        return self.machine.lines
+
+    def destination(self, host: str) -> str:
+        return host
+
+    def invoke(
+        self, command: Sequence[str], host: str, *, operation: str, **_: object
+    ) -> tuple[int, str, str]:
+        del host, operation
+        argv = list(command)
+        if "-EncodedCommand" in argv:
+            argv[-1] = base64.b64decode(argv[-1]).decode("utf-16-le")
+        retcode, output = self.machine.answer(argv)
+        return (retcode, output, "") if retcode == 0 else (retcode, "", output)
+
+    def ran(self, marker: str) -> bool:
+        """Whether any script run so far carried `marker`."""
+        return self.machine.ran(marker)
 
 
 def machine_with(

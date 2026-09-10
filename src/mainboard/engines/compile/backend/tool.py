@@ -1,4 +1,6 @@
+import platform
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from plumbum import local
@@ -8,9 +10,32 @@ from .process import Process
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from plumbum.commands.base import BaseCommand
+
+
+# A conda package on Windows ships its manager twice, `npm` as the POSIX shell script and
+# `npm.cmd` as the launcher Windows runs, and plumbum takes the first file it finds on PATH, the
+# script, which `CreateProcess` refuses as not a Win32 application. Only the `PATHEXT` spellings
+# are Windows programs, and a `.cmd` or `.bat` one runs through cmd.exe or not at all.
+_SCRIPT_LAUNCHERS = {".cmd", ".bat"}
+
+
+def windows_launcher(name: str) -> BaseCommand:
+    """The command that runs `name` on Windows: its `PATHEXT` spelling, under cmd.exe if a script.
+
+    name: the bare program name, `npm` say.
+    """
+    extensions = local.env.get("PATHEXT", ".EXE;.CMD;.BAT").lower().split(";")
+    for directory in local.env.path:
+        for extension in extensions:
+            candidate = Path(str(directory)) / f"{name}{extension}"
+            if not candidate.is_file():
+                continue
+            if extension in _SCRIPT_LAUNCHERS:
+                return local["cmd.exe"]["/d", "/c", str(candidate)]
+            return local[str(candidate)]
+    raise MissionError(f"{name} is not on PATH")
 
 
 class Tool:
@@ -46,6 +71,8 @@ class Tool:
         """
         if not self.name:
             raise MissionError(f"{type(self).__name__} names no command of its own to run")
+        if platform.system() == "Windows":
+            return windows_launcher(self.name)
         return local[self.name]
 
     @staticmethod

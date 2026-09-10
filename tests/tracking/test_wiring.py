@@ -54,6 +54,9 @@ class FakeRemote:
         FakeRemote.piped.append((self.command, text))
         return self
 
+    def close(self) -> None:
+        return
+
 
 def tracking(board: Board, **fields: str | float) -> Board:
     """Turn this workspace's tracking lane on, at whatever the caller declared."""
@@ -139,6 +142,7 @@ def test_a_dispatched_job_is_handed_the_line_that_makes_it_watch_itself(
     FakeRemote.piped = []
     asked = submitting(tracking(board, interval=15.0), monkeypatch)
     monkeypatch.setattr("mainboard.board.connection", FakeRemote)
+    monkeypatch.setattr("mainboard.dispatch.shells.connection", lambda host, ssh=None: FakeRemote())
     board.on(_HOST).submit("python train.py", walltime="01:00:00")
     line = asked[0]["sampler"]
     assert "mainboard sample" in line and "--interval 15 --seconds 3600" in line

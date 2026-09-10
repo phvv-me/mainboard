@@ -348,6 +348,7 @@ class Pixi(Tool):
         text = self.within_cwd(
             lambda command: Process.output(command, "pixi shell-hook --json"),
             "shell-hook",
+            "--frozen",
             "--json",
             "-e",
             env,
@@ -385,7 +386,13 @@ class Pixi(Tool):
     def _apply_generated_activation(
         script: Path, exported: dict[str, str], cleared: set[str]
     ) -> None:
-        """Apply Mainboard's generated dotenv/unset batch scripts, refusing arbitrary ones."""
+        """Apply Mainboard's generated dotenv/unset batch scripts, refusing arbitrary ones.
+
+        A POSIX shell script declared for every platform is skipped rather than refused: pixi
+        cannot run it on Windows either, so its effects were never part of the activation here.
+        """
+        if script.suffix == ".sh":
+            return
         try:
             text = script.read_text(encoding="utf-8")
         except FileNotFoundError as error:
@@ -479,7 +486,10 @@ class Pixi(Tool):
         env, the exact activation :meth:`activated` performs, captured as text so a generated
         `activate.sh` can reproduce the whole pixi env without invoking pixi at job time.
         """
-        command = self.command["shell-hook", "-s", shell, "-e", env, *self.scope()]
+        # Frozen, like every install: a host runs the lock it was shipped and never solves, and
+        # without the flag a lock pixi reads as out of date is re-solved for every platform,
+        # which is how a Windows host came to build an osx-arm64 sdist (2026-09-11).
+        command = self.command["shell-hook", "--frozen", "-s", shell, "-e", env, *self.scope()]
         return Process.output(command, "pixi shell-hook")
 
     def update(self, env: str) -> None:

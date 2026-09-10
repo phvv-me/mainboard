@@ -38,6 +38,8 @@ class HostProfile(Declared):
     on the host exports. A profile inherits the `[hosts.defaults]` table
     field-by-field before its own keys apply.
 
+    platform: the pixi platform the host runs, `win-64` say; probed at setup when left empty,
+        and what decides whether the host is reached through a login `bash` or PowerShell.
     python: bootstrap interpreter command in the remote SSH login shell. Standard-library
         collection needs no activated environment or installed Mainboard on the destination.
         Quote an absolute interpreter path as that shell requires.
@@ -52,6 +54,7 @@ class HostProfile(Declared):
 
     kind: str = "auto"
     root: str = ""
+    platform: str = ""
     python: str = "python3"
     account: str = ""
     login_shell: bool = True

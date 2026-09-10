@@ -34,7 +34,7 @@ PIXI_VERSION = "0.79.0"
 # first use with the official installer for the current operating system, always at the pinned
 # version, which the installer reads from its own `PIXI_VERSION`.
 POSIX_INSTALLER = f"curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION={PIXI_VERSION} sh"
-_WINDOWS_INSTALLER = (
+WINDOWS_INSTALLER = (
     f"$Env:PIXI_VERSION='{PIXI_VERSION}'; irm -useb https://pixi.sh/install.ps1 | iex"
 )
 
@@ -139,7 +139,7 @@ class PixiEngine(Tool):
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",
-                _WINDOWS_INSTALLER,
+                WINDOWS_INSTALLER,
             ]
         executable = shutil.which("sh")
         if executable is None:

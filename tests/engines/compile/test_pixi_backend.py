@@ -406,6 +406,16 @@ def test_windows_refuses_an_arbitrary_activation_script_instead_of_skipping_it(
         pixi.run(("tectonic", "--help"))
 
 
+def test_a_posix_activation_script_is_skipped_on_windows_rather_than_refused(
+    pixi: Pixi,
+) -> None:
+    """pixi cannot run a `.sh` there either, so its effects were never part of the activation."""
+    exported: dict[str, str] = {}
+    cleared: set[str] = set()
+    pixi._apply_generated_activation(pixi.manifest.parent / "activate.sh", exported, cleared)
+    assert (exported, cleared) == ({}, set())
+
+
 @pytest.mark.parametrize("failed", [False, True])
 def test_windows_native_exports_override_activation_without_changing_the_parent(
     pixi: Pixi,
@@ -579,6 +589,7 @@ def test_windows_caches_pixis_complete_activation_after_provisioning(
         "shell-hook",
         "--manifest-path",
         str(pixi.manifest),
+        "--frozen",
         "--json",
         "-e",
         "default",
@@ -671,6 +682,7 @@ def test_shell_hook_returns_the_activation_script_pixi_prints(
         [
             tool_paths["pixi"],
             "shell-hook",
+            "--frozen",
             "-s",
             "bash",
             "-e",

@@ -80,6 +80,12 @@ class FakeConnection:
     def __getitem__(self, name: str) -> FakeConnection:
         return self
 
+    def run(self, *_: object, **__: object) -> tuple[int, str, str]:
+        return 0, self.reply, ""
+
+    def close(self) -> None:
+        return
+
 
 class FakeProvisioner:
     """A `Provisioner` double recording what a local install compiled and activated."""
@@ -1058,7 +1064,8 @@ def test_a_bound_board_reads_facts_and_runs_commands_over_one_connection(
     """A remote fact read parses the last JSON line out of whatever the login shell said first."""
     payload = HostFacts(schema_version=1, hostname="fake-remote").model_dump_json()
     monkeypatch.setattr(
-        "mainboard.board.connection", lambda host: FakeConnection(f"module chatter\n{payload}\n")
+        "mainboard.dispatch.shells.connection",
+        lambda host, ssh=None: FakeConnection(f"module chatter\n{payload}\n"),
     )
     monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
     bound = board.on(_MIYABI_G)

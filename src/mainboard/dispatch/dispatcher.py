@@ -31,11 +31,13 @@ from .jobs import JobSpec
 from .provenance import Source, commanded, tree_source
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, Watcher, announce, db_file, git, logger, now, state_path, workspace
+from .shells import is_windows
 from .shipment import Shipment
 from .snapshots import CLOSURE, Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
 from .sync import GitignoreFilter, SyncLock, rsync
 from .sync import Rsync as RsyncFlags
+from .tarball import Tarball
 from .transport import SshTransport
 from .vocabulary import JobState, Request, Resources
 from .wrapping import connection, wrap
@@ -432,6 +434,20 @@ class Dispatcher:
         required_paths = list(dict.fromkeys(path for group in required for path in group))
         with SyncLock(policy.endpoint or plan.host, self.sync.root):
             outputs = self._protected_outputs(fetch, sources=named)
+            if is_windows(plan.profile):
+                # No rsync on the far side: the same file set, listed here and streamed by tar.
+                Tarball(self.root, policy).mirror(
+                    plan,
+                    root,
+                    paths=[*include, *gitignore_files, *required_paths, *extra],
+                    include=include_filters,
+                    exclude=[*remainder_filters, *self.sync.excludes, *scope.exclude],
+                    hide=outputs,
+                    filters=self.sync.filters,
+                    vendored=vendor_root() if self.local(vendor_root()).is_dir() else "",
+                )
+                self.cache.mark_synced(plan.host)
+                return include
             try:
                 rsync(
                     [*include, *gitignore_files, *required_paths, *extra],

@@ -20,21 +20,19 @@ from patos import FrozenModel, Resolution, Strategy, StrategyError
 
 from ..core.errors import MissionError
 from ..core.project import Project
-from ..engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER
+from ..engines.compile.backend import PIXI_VERSION
 from ..probe.snapshot import HostFacts
-from .schedulers.base import failure_reason
 from .schedulers.pueue import Pueue
 from .schedulers.registry import pick
 from .shared import Watcher, announce, logger
-from .targets import Facts, find_root, probe_capabilities
-from .wrapping import activation, connection, wrap
+from .shells import HostShell, is_windows, open_shell
+from .targets import Facts, probe_capabilities, resolve
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ..context.plan import ExecutionPlan
     from .dispatcher import Dispatcher
-    from .transport import Machine
 
 # The tool this workspace answers to, so nothing below spells the name of the binary it installs.
 _TOOL = Project().name
@@ -43,9 +41,6 @@ _TOOL = Project().name
 # from a published build) is what keeps a host's tool and the manifest it compiles from ever
 # drifting apart, the failure the previous generation's setup script existed to prevent.
 _SOURCE = f"packages/{_TOOL}"
-
-# uv's official installer, used only when a host has neither uv nor pip to install the tool with.
-_UV_INSTALLER = "curl -LsSf https://astral.sh/uv/install.sh | sh"
 
 
 def facts_command() -> str:
@@ -104,46 +99,6 @@ class HostSetup(FrozenModel):
         return max(self.synced_at, self.onboarded_at)
 
 
-class RemoteShell:
-    """A host's shell staged by an execution plan, the one way onboarding runs a remote command.
-
-    Two footings: a bare command gets `cd`, the per-user install dirs on `PATH` and the host's
-    modules, all an unprovisioned machine can offer, while an activated one additionally sources
-    the environment, which is what proves the environment the install just built actually runs.
-
-    remote: the open connection commands ride.
-    plan: the resolved execution context staging them.
-    root: the workspace root on the host.
-    """
-
-    def __init__(self, remote: Machine, plan: ExecutionPlan, root: str) -> None:
-        self.remote = remote
-        self.plan = plan
-        self.root = root
-
-    def ok(self, command: str) -> bool:
-        """Whether `command` exits zero on the host, its output discarded."""
-        retcode, _, _ = self.__execute(command, activate=False)
-        return retcode == 0
-
-    def run(self, command: str, *, activate: bool = False) -> str:
-        """`command`'s stdout on the host, raising a `MissionError` naming why it failed.
-
-        command: the command to run in the workspace.
-        activate: run it through the plan's activation rather than the bare staging.
-        """
-        retcode, out, err = self.__execute(command, activate=activate)
-        if retcode:
-            reason = failure_reason(err or out, retcode)
-            raise MissionError(f"`{command}` failed on {self.plan.host!r}: {reason}")
-        return str(out)
-
-    def __execute(self, command: str, *, activate: bool) -> tuple[int, str, str]:
-        line = wrap(self.plan, self.root, command=command, activate=activate)
-        retcode, out, err = self.remote["bash"][["-lc", line]].run(retcode=None)
-        return int(retcode), str(out), str(err)
-
-
 class Installer:
     """One route to putting the tool on a host, probed before the cascade commits to it.
 
@@ -151,7 +106,7 @@ class Installer:
     command: the shell line that installs the tool once the route wins.
     """
 
-    def __init__(self, shell: RemoteShell, *, probe: str, command: str) -> None:
+    def __init__(self, shell: HostShell, *, probe: str, command: str) -> None:
         self.shell = shell
         self.probe = probe
         self.command = command
@@ -208,12 +163,12 @@ class Existing(Installer):
     manifest was written against.
     """
 
-    def __init__(self, shell: RemoteShell, *, floor: str) -> None:
+    def __init__(self, shell: HostShell, *, floor: str) -> None:
         """shell: the host shell the version is read through.
 
         floor: the version the workspace declares for the tool.
         """
-        super().__init__(shell, probe=f"command -v {_TOOL}", command="true")
+        super().__init__(shell, probe=shell.dialect.has(_TOOL), command=shell.dialect.noop)
         self.floor = floor
 
     def available(self) -> bool:
@@ -221,7 +176,7 @@ class Existing(Installer):
         return satisfied_by(installed_version(self.shell), self.floor)
 
 
-def installed_version(shell: RemoteShell) -> str:
+def installed_version(shell: HostShell) -> str:
     """The tool version the machine already runs, empty when it runs none.
 
     shell: the host shell the question is asked through.
@@ -232,7 +187,7 @@ def installed_version(shell: RemoteShell) -> str:
         return ""
 
 
-def installed_pixi(shell: RemoteShell) -> str:
+def installed_pixi(shell: HostShell) -> str:
     """The pixi version the machine runs as `X.Y.Z`, empty when it runs none.
 
     shell: the host shell the question is asked through.
@@ -244,7 +199,7 @@ def installed_pixi(shell: RemoteShell) -> str:
 
 
 def installers(
-    shell: RemoteShell, source: str = _SOURCE, *, vendored: bool = True, floor: str = ""
+    shell: HostShell, source: str = _SOURCE, *, vendored: bool = True, floor: str = ""
 ) -> Strategy[Installer]:
     """The ordered install routes for `shell`'s host, best first.
 
@@ -265,55 +220,34 @@ def installers(
     floor: the version the workspace declares for the tool, read from its own manifest.
     """
     strategy: Strategy[Installer] = Strategy(f"{_TOOL} installer")
+    dialect = shell.dialect
+    fetch_probe, fetch = dialect.uv_bootstrap
+    pip_probe, pip = dialect.pip
     if vendored:
         quoted = shlex.quote(source)
-        strategy.register(
-            "uv",
-            Installer(
-                shell,
-                probe="command -v uv",
-                command=f"uv tool install --force --editable {quoted}",
-            ),
-        )
+        editable = f"uv tool install --force --editable {quoted}"
+        strategy.register("uv", Installer(shell, probe=dialect.has("uv"), command=editable))
         strategy.register(
             "uv-bootstrap",
-            Installer(
-                shell,
-                probe="command -v curl",
-                command=f"{_UV_INSTALLER} && uv tool install --force --editable {quoted}",
-            ),
+            Installer(shell, probe=fetch_probe, command=dialect.chain(fetch, editable)),
         )
         strategy.register(
             "pip",
             Installer(
-                shell,
-                probe="python3 -m pip --version",
-                command="python3 -m pip install --user --break-system-packages "
-                f"--force-reinstall --editable {quoted}",
+                shell, probe=pip_probe, command=f"{pip} --force-reinstall --editable {quoted}"
             ),
         )
         return strategy
     wanted = shlex.quote(f"{_TOOL}{specifier(floor)}")
+    indexed = f"uv tool install --force {wanted}"
     strategy.register("present", Existing(shell, floor=floor))
-    strategy.register(
-        "uv-index",
-        Installer(shell, probe="command -v uv", command=f"uv tool install --force {wanted}"),
-    )
+    strategy.register("uv-index", Installer(shell, probe=dialect.has("uv"), command=indexed))
     strategy.register(
         "uv-bootstrap-index",
-        Installer(
-            shell,
-            probe="command -v curl",
-            command=f"{_UV_INSTALLER} && uv tool install --force {wanted}",
-        ),
+        Installer(shell, probe=fetch_probe, command=dialect.chain(fetch, indexed)),
     )
     strategy.register(
-        "pip-index",
-        Installer(
-            shell,
-            probe="python3 -m pip --version",
-            command=f"python3 -m pip install --user --break-system-packages --upgrade {wanted}",
-        ),
+        "pip-index", Installer(shell, probe=pip_probe, command=f"{pip} --upgrade {wanted}")
     )
     return strategy
 
@@ -334,7 +268,7 @@ class Bootstrap:
         no source and the tool therefore comes from an index.
     """
 
-    def __init__(self, shell: RemoteShell, *, resolve: bool = False, floor: str = "") -> None:
+    def __init__(self, shell: HostShell, *, resolve: bool = False, floor: str = "") -> None:
         self.shell = shell
         self.resolve = resolve
         self.floor = floor
@@ -356,7 +290,7 @@ class Bootstrap:
         assumed the tool, and the refusal names the condition that actually decided it.
         """
         host = self.shell.plan.host
-        vendored = self.shell.ok(f"[ -d {shlex.quote(_SOURCE)} ]")
+        vendored = self.shell.ok(self.shell.dialect.is_directory(_SOURCE))
         routes = installers(self.shell, vendored=vendored, floor=self.floor)
         try:
             resolution = routes.cascade()
@@ -393,15 +327,14 @@ class Bootstrap:
         The machine is told which declared profile describes it, so the activation script it
         generates carries that profile's module stack rather than this machine's.
         """
-        host, root = self.shell.plan.host, self.shell.root
-        resolve = " --resolve" if self.resolve else ""
+        host = self.shell.plan.host
+        resolving = " --resolve" if self.resolve else ""
         self.shell.run(
-            f"{_TOOL} install {shlex.quote(self.env)}{resolve} --profile {shlex.quote(host)}"
+            f"{_TOOL} install {shlex.quote(self.env)}{resolving} --profile {shlex.quote(host)}"
         )
-        script = activation(root, env=self.env)
-        if not self.shell.ok(f"test -f {shlex.quote(script)}"):
+        if not self.shell.ok(self.shell.provisioned):
             raise MissionError(
-                f"{host!r} has no {script} after installing {self.env!r}; "
+                f"{host!r} has no {self.shell.proof} after installing {self.env!r}; "
                 "the environment was not provisioned"
             )
 
@@ -480,7 +413,7 @@ class Onboarding:
         """The environment provisioned, the plan's own."""
         return self.plan.env
 
-    def align_pixi(self, shell: RemoteShell, *, host: str) -> str:
+    def align_pixi(self, shell: HostShell, *, host: str) -> str:
         """Put the fleet's one pixi on `host`, whichever one it runs now, and say which that is.
 
         A lock is pixi's file, not this package's, and every pixi version writes some of it
@@ -504,7 +437,7 @@ class Onboarding:
         if theirs == PIXI_VERSION:
             return theirs
         self.watch(f"putting pixi {PIXI_VERSION} on {host}, which runs {theirs or 'none'}")
-        shell.run(POSIX_INSTALLER)
+        shell.run(shell.dialect.pixi_installer)
         aligned = installed_pixi(shell)
         if aligned != PIXI_VERSION:
             raise MissionError(
@@ -516,14 +449,23 @@ class Onboarding:
             )
         return aligned
 
-    def verify_queue(self, shell: RemoteShell, *, host: str) -> None:
+    def verify_queue(self, shell: HostShell, *, host: str) -> None:
         """Make sure the queue daemon a plain ssh host dispatches through is answering.
 
         pueue is assumed running on such a host and every later `submit` fails on its socket
         when it is not, so the daemon is started here when it is down and the host refused,
-        naming the fix, when it still does not answer.
+        naming the fix, when it still does not answer. A Windows host is set up without one,
+        since nothing here can daemonize pueue there yet: it runs commands and collects, and a
+        `submit` to it refuses on its own until a pueue answers.
         """
         if not isinstance(pick(self.plan.profile), Pueue) or shell.ok("pueue status"):
+            return
+        if is_windows(self.plan.profile):
+            logger.warning(
+                "%s answers no pueue; `submit` cannot queue there until pueue is installed and "
+                "`pueued` started, then the host set up again",
+                host,
+            )
             return
         shell.run("pueued -d")
         if not shell.ok("pueue status"):
@@ -587,11 +529,11 @@ class Onboarding:
         self.undisturbed(host)
         if sync_only:
             return self._sync(host)
-        with connection(host) as remote:
-            self.watch(f"probing {host}")
-            capabilities = probe_capabilities(remote, host)
-            root = self.root or find_root(remote)
-            shell = RemoteShell(remote, self.plan, root)
+        self.watch(f"probing {host}")
+        capabilities = probe_capabilities(host)
+        self.plan = self.resolved(capabilities)
+        root = self.root or capabilities.root
+        with open_shell(self.plan, root) as shell:
             bootstrap = Bootstrap(shell, resolve=self.resolve, floor=self.floor)
             self.watch(f"mirroring the workspace to {host}:{root}")
             self.dispatcher.rsync_up(
@@ -610,7 +552,7 @@ class Onboarding:
                 host=host,
                 root=root,
                 env=self.env,
-                activate=activation(root, env=self.env),
+                activate=shell.activation_record,
                 installer=winner.winner,
                 rejected=winner.rejected,
                 tool=shell.run(f"{_TOOL} --version").strip(),
@@ -622,6 +564,13 @@ class Onboarding:
         recorded = self.dispatcher.cache.save_host(setup)
         logger.info("onboarded %s at %s through %s", host, root, recorded.installer)
         return recorded
+
+    def resolved(self, facts: Facts) -> ExecutionPlan:
+        """The plan with every gap its profile left open filled from what the probe found.
+
+        facts: the host as the bootstrap probe (or the record of one) describes it.
+        """
+        return self.plan.model_copy(update={"profile": resolve(self.plan.profile, facts)})
 
     def _sync(self, host: str) -> HostSetup:
         """Re-mirror and re-provision `host`, its bootstrap and hardware probe skipped.
@@ -644,8 +593,9 @@ class Onboarding:
         """
         recorded = self.dispatcher.cache.host(host)
         root = self.root or recorded.root
-        with connection(host) as remote:
-            shell = RemoteShell(remote, self.plan, root)
+        if recorded.capabilities is not None:
+            self.plan = self.resolved(recorded.capabilities)
+        with open_shell(self.plan, root) as shell:
             self.watch(f"mirroring the workspace to {host}:{root}")
             self.dispatcher.rsync_up(
                 self.plan, root, required=[self.artifact] if self.artifact else []
@@ -653,13 +603,14 @@ class Onboarding:
             pixi = self.align_pixi(shell, host=host)
             self.watch(f"provisioning {self.env} on {host}")
             Bootstrap(shell, resolve=self.resolve).environment()
+            activate = shell.activation_record
         fresh = self.dispatcher.cache.host(host)
         updated = self.dispatcher.cache.save_host(
             fresh.model_copy(
                 update={
                     "root": root,
                     "env": self.env,
-                    "activate": activation(root, env=self.env),
+                    "activate": activate,
                     "pixi": pixi,
                     "digest": self.digest or fresh.digest,
                 }

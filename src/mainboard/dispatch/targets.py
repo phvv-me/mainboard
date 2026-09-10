@@ -1,9 +1,15 @@
 # Targets from `~/.ssh/config` and the over-ssh bootstrap probe that describes each host.
 
+import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from patos import FrozenModel
+
+from ..core.errors import MissionError
+from ..core.host import pixi_platform
+from .shells import POWERSHELL, encoded
+from .transport import SshTransport
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -46,6 +52,40 @@ _CAPABILITIES = "\n".join(
     )
 )
 
+# The same lines from a Windows host, whose ssh login shell is cmd.exe and which answers this
+# PowerShell script once the POSIX one above turns out not to be a command there at all.
+_WINDOWS_CAPABILITIES = "\n".join(
+    (
+        "$gpu = nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits"
+        " 2>$null | Select-Object -First 1",
+        "$mem = [int64]((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1024)",
+        "$pixi = (Get-Command pixi -ErrorAction SilentlyContinue).Source",
+        'if (-not $pixi) { $pixi = (Get-Item "$HOME\\.pixi\\bin\\pixi.exe"'
+        " -ErrorAction SilentlyContinue).FullName }",
+        "$uv = (Get-Command uv -ErrorAction SilentlyContinue).Source",
+        'if (-not $uv) { $uv = (Get-Item "$HOME\\.local\\bin\\uv.exe"'
+        " -ErrorAction SilentlyContinue).FullName }",
+        "$root = \"$HOME/projects\" -replace '\\\\', '/'",
+        '"root=$root"',
+        '"kind=ssh"',
+        '"gpu=$gpu"',
+        '"mem=$mem"',
+        '"account="',
+        '"queue="',
+        '"pixi=$pixi"',
+        '"uv=$uv"',
+        '"platform=Windows $env:PROCESSOR_ARCHITECTURE"',
+    )
+)
+
+# The two shells a probe is tried under, in order: a login bash, then PowerShell. The bash script
+# travels as one line, so the cmd.exe that cannot run it fails on one command rather than trying
+# every line of it as a command of its own.
+_PROBES = (
+    ("bash", "-lc", shlex.quote(_CAPABILITIES.replace("\n", "; "))),
+    (*POWERSHELL, encoded(_WINDOWS_CAPABILITIES)),
+)
+
 
 class Facts(FrozenModel):
     """One host's bootstrap-probed capabilities, before any manifest override.
@@ -74,6 +114,36 @@ class Facts(FrozenModel):
     platform: str = ""
     pixi: str = ""
     uv: str = ""
+
+    @classmethod
+    def parsed(cls, name: str, text: str) -> Self:
+        """The facts inside a probe's `key=value` lines.
+
+        name: the ssh alias that answered.
+        text: what the probe printed.
+        """
+        fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+        gpu, _, vram = fields["gpu"].partition(",")
+        sysmem_kb = fields["mem"]
+        return cls(
+            name=name,
+            root=fields["root"],
+            kind=fields["kind"],
+            account=fields["account"],
+            queue=fields["queue"],
+            gpu_name=gpu.strip() or None,
+            gpu_mem_mb=int(vram) if vram.strip().isdigit() else None,
+            sysmem_gb=round(int(sysmem_kb) / 1024**2) if sysmem_kb.isdigit() else None,
+            platform=fields["platform"].strip(),
+            pixi=fields["pixi"],
+            uv=fields["uv"],
+        )
+
+    @property
+    def pixi_platform(self) -> str:
+        """The host as a pixi platform string, empty before it was probed."""
+        system, _, machine = self.platform.partition(" ")
+        return pixi_platform(system, machine) if system else ""
 
     @property
     def vram_gb(self) -> float | None:
@@ -110,41 +180,40 @@ def ssh_hosts(config_path: Path = _SSH_CONFIG) -> list[str]:
 
 
 def find_root(remote: Machine) -> str:
-    """The workspace root to use on the host (an HPC `/work` area, else `~/projects`)."""
+    """The workspace root to use on a POSIX host (an HPC `/work` area, else `~/projects`)."""
     return str(remote["bash"][["-lc", _ROOT_FINDER]]()).strip()
 
 
-def probe_capabilities(remote: Machine, alias: str) -> Facts:
-    """Probe `alias` over ssh without syncing or installing, as `Facts`.
+def probe_capabilities(host: str, *, ssh: SshTransport | None = None) -> Facts:
+    """Probe `host` over ssh without syncing or installing, as `Facts`.
 
     Runs the stock-tool `_CAPABILITIES` script in a login shell and parses its `key=value`
-    lines, so it needs nothing on the host, available before a single byte is shipped.
+    lines, so it needs nothing on the host, available before a single byte is shipped. A host
+    that has no `bash` to run it, a Windows box whose login shell is cmd.exe, is asked the same
+    questions in PowerShell instead.
+
+    host: the ssh alias to probe.
+    ssh: the bounded SSH policy; the default policy when omitted.
     """
-    raw = remote["bash"][["-lc", _CAPABILITIES]]()
-    fields = dict(line.split("=", 1) for line in raw.splitlines() if "=" in line)
-    name, _, vram = fields["gpu"].partition(",")
-    sysmem_kb = fields["mem"]
-    return Facts(
-        name=alias,
-        root=fields["root"],
-        kind=fields["kind"],
-        account=fields["account"],
-        queue=fields["queue"],
-        gpu_name=name.strip() or None,
-        gpu_mem_mb=int(vram) if vram.strip().isdigit() else None,
-        sysmem_gb=round(int(sysmem_kb) / 1024**2) if sysmem_kb.isdigit() else None,
-        platform=fields["platform"],
-        pixi=fields["pixi"],
-        uv=fields["uv"],
-    )
+    policy = ssh or SshTransport()
+    refusals: list[str] = []
+    for shell in _PROBES:
+        argv = ("ssh", *policy.options, policy.destination(host), *shell)
+        _, out, err = policy.invoke(argv, host, operation="probe")
+        if "platform=" in out:
+            return Facts.parsed(host, out)
+        refusals.append(err.strip()[-200:])
+    said = " / ".join(refusal for refusal in refusals if refusal) or "nothing"
+    raise MissionError(f"{host!r} answered neither the bash nor the PowerShell probe: {said}")
 
 
 def resolve(profile: HostProfile, facts: Facts) -> HostProfile:
     """`profile` with any field it left at its `auto`/unset default filled from `facts`.
 
     The manifest is the declared source of truth; a probed fact only ever fills a gap the
-    manifest left open (`kind: "auto"`, an empty `root`, an empty `account`), so an explicit
-    manifest value always wins and the manifest schema (not this function) owns validation.
+    manifest left open (`kind: "auto"`, an empty `root`, an empty `account`, an empty
+    `platform`), so an explicit manifest value always wins and the manifest schema (not this
+    function) owns validation.
     """
     updates: dict[str, str] = {}
     if profile.kind == "auto":
@@ -153,6 +222,8 @@ def resolve(profile: HostProfile, facts: Facts) -> HostProfile:
         updates["root"] = facts.root
     if not profile.account:
         updates["account"] = facts.account
+    if not profile.platform and facts.pixi_platform:
+        updates["platform"] = facts.pixi_platform
     return profile.model_copy(update=updates) if updates else profile
 
 

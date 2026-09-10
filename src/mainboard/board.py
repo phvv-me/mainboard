@@ -3,7 +3,7 @@ import platform
 import shlex
 import time
 from importlib.metadata import version
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, NoReturn, cast
 
@@ -41,9 +41,11 @@ from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
 from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shared import logger
+from .dispatch.shells import dialect_for, is_windows, open_shell
 from .dispatch.shipment import Shipment
 from .dispatch.snapshots import Snapshots
 from .dispatch.targets import find_root
+from .dispatch.targets import resolve as resolved_profile
 from .dispatch.transport import SshTransport
 from .dispatch.vocabulary import Request, Resources
 from .dispatch.wrapping import connection, missing, wrap
@@ -491,10 +493,8 @@ class Board:
         """
         if self.local:
             return HostFacts.collected()
-        line = wrap(self.plan(container="none"), self.remote_root(), command=facts_command())
-        with connection(self.host) as remote:
-            reply = remote["bash"]["-lc", line]()
-        return read_facts(str(reply))
+        with open_shell(self.plan(container="none"), self.remote_root()) as shell:
+            return read_facts(shell.run(facts_command(), activate=True))
 
     @property
     def floor(self) -> str:
@@ -657,17 +657,16 @@ class Board:
         session = pick(plan.profile).interactive(
             env=plan.env, command=command, resources=resources
         )
-        staged = wrap(plan, self.remote_root(), command=session, activate=False)
+        dialect = dialect_for(plan.profile)
+        staged = dialect.stage(plan, self.remote_root(), command=session, activate=False)
         if keep:
             # `new-session -A` attaches to the named session when it exists and only otherwise
             # starts one, so the same verb both opens and returns to a held allocation.
             held = f"{self.project.name}-{self.host}"
             staged = f"tmux new-session -A -s {shlex.quote(held)} {shlex.quote(staged)}"
         # A bounded transport is what a poll wants and the opposite of what a session wants, so
-        # the user's own ssh config owns this one connection. `-t` forces the pty the far side
-        # needs, and the staged line is quoted whole because ssh joins its argv back into one
-        # string for the remote login shell to parse.
-        replace("ssh", ["ssh", "-t", self.host, f"bash -lc {shlex.quote(staged)}"])
+        # the user's own ssh config owns this one connection.
+        replace("ssh", dialect.session(self.host, staged))
 
     def job(self, handle: str | int, *, host: str = "") -> Run:
         """The dispatched run `handle`, rebuilt from the dispatch cache as whichever kind it is.
@@ -779,8 +778,23 @@ class Board:
             return cast("Built", built)
 
     def plan(self, *, env: str = "", container: str = "") -> ExecutionPlan:
-        """The resolved execution plan for this board's host."""
-        return self.resolver.plan(self.host, env=env, container=container)
+        """The resolved execution plan for this board's host.
+
+        A bound host's profile is completed from what its setup probed, so a platform the
+        manifest never spelled out is still the one every later command stages for.
+        """
+        plan = self.resolver.plan(self.host, env=env, container=container)
+        if self.local or plan.profile.platform:
+            return plan
+        try:
+            recorded = self.dispatcher.cache.host(self.host)
+        except LookupError:
+            return plan
+        if recorded.capabilities is None:
+            return plan
+        return plan.model_copy(
+            update={"profile": resolved_profile(plan.profile, recorded.capabilities)}
+        )
 
     def receipts(self, stream: str) -> Bus:
         """Where one stream's events go: this workspace's own file, plus whatever it declared.
@@ -1128,6 +1142,9 @@ class Board:
                     command, plan.env, exports=exported
                 )
             return Provisioner(self.root, self.manifest).run(command, plan.env)
+        if not self.local and is_windows(plan.profile):
+            with open_shell(plan, self.remote_root()) as shell:
+                return shell.foreground(task_line(self.manifest, joined(command), env=plan.env))
         line = self.line(joined(command), env=env, container=container)
         if self.local:
             return foreground(localhost["bash"]["-lc", line])
@@ -1273,11 +1290,8 @@ class Board:
         secret = os.environ.get(variable, "") if variable else ""
         if not secret or self.local:
             return
-        path = host_env(root)
-        written = f"umask 077; mkdir -p {shlex.quote(str(PurePosixPath(path).parent))}; "
-        written += f"cat > {shlex.quote(path)}"
-        with connection(self.host) as remote:
-            (remote["bash"]["-c", written] << f"{variable}={shlex.quote(secret)}\n")()
+        with open_shell(self.plan(container="none"), root) as shell:
+            shell.write(host_env(root), f"{variable}={shlex.quote(secret)}\n")
 
     def submit(
         self,

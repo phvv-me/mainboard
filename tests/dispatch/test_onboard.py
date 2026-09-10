@@ -5,21 +5,28 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard import MissionError
-from mainboard.dispatch import HostSetup
+from mainboard.dispatch import Facts, HostSetup
 from mainboard.dispatch import onboard as onboard_module
 from mainboard.dispatch.onboard import (
     Bootstrap,
     Onboarding,
-    RemoteShell,
     facts_command,
     installers,
     read_facts,
     satisfied_by,
 )
+from mainboard.dispatch.shells import PosixShell
 from mainboard.dispatch.state import Cache
 from mainboard.engines.compile.backend import PIXI_VERSION
 
-from .support import RecordingMachine, Rule, cache, machine_with, plan, run_record
+from .support import (
+    RecordingMachine,
+    Rule,
+    cache,
+    machine_with,
+    plan,
+    run_record,
+)
 
 if TYPE_CHECKING:
     from mainboard import ExecutionPlan
@@ -44,7 +51,6 @@ platform=Linux aarch64
 
 # A machine that answers every onboarding step the way a healthy one would.
 _HEALTHY: tuple[Rule, ...] = (
-    ("MemTotal", 0, _CAPABILITIES),
     ("facts --json", 0, f"module chatter\n{_FACTS_JSON}\n"),
     ("pixi --version", 0, f"pixi {PIXI_VERSION}\n"),
     ("--version", 0, "0.1.0\n"),
@@ -69,8 +75,17 @@ class FakeDispatcher:
 def onboarding(
     host: RecordingMachine, monkeypatch: pytest.MonkeyPatch, **overrides: Setting
 ) -> tuple[Onboarding, FakeDispatcher]:
-    """An `Onboarding` over `host`, with its connection and dispatcher stubbed out."""
-    monkeypatch.setattr(onboard_module, "connection", lambda alias: host)
+    """An `Onboarding` over `host`, with its probe, connection and dispatcher stubbed out."""
+    monkeypatch.setattr(
+        onboard_module,
+        "probe_capabilities",
+        lambda alias, ssh=None: Facts.parsed(alias, _CAPABILITIES),
+    )
+    monkeypatch.setattr(
+        onboard_module,
+        "open_shell",
+        lambda execution, root, ssh=None: PosixShell(host, execution, root),
+    )
     dispatcher = FakeDispatcher(cache())
     fields: dict[str, Setting] = {"root": "/repo"}
     fields.update(overrides)
@@ -80,7 +95,7 @@ def onboarding(
 def test_the_remote_shell_stages_a_bare_command_and_activates_only_when_asked() -> None:
     """An unprovisioned machine has nothing to source, so onboarding stands on `cd` and PATH."""
     host = machine_with(rules=[("broken", 1, "")])
-    shell = RemoteShell(host, plan(), "/repo")
+    shell = PosixShell(host, plan(), "/repo")
     assert not shell.run("uv --version")
     assert host.lines[0].startswith("cd /repo && export PATH=")
     assert "activate.sh" not in host.lines[0]
@@ -95,7 +110,7 @@ def test_the_remote_shell_stages_a_bare_command_and_activates_only_when_asked() 
 
 def test_the_install_routes_are_offered_best_first_and_all_read_the_synced_source() -> None:
     """uv leads because it needs no interpreter on the host new enough to run the tool."""
-    routes = installers(RemoteShell(machine_with(), plan(), "/repo"), "packages/tool")
+    routes = installers(PosixShell(machine_with(), plan(), "/repo"), "packages/tool")
     assert routes.names == ["uv", "uv-bootstrap", "pip"]
     assert all("packages/tool" in routes.select(name).command for name in routes.names)
     assert "astral.sh/uv" in routes.select("uv-bootstrap").command
@@ -108,7 +123,7 @@ def test_a_workspace_that_vendors_no_source_installs_the_version_it_declares() -
     and mainboard were all present, and the refusal blamed the host's tooling for something the
     workspace had never sent (miyabi-g, 2026-09-05).
     """
-    shell = RemoteShell(machine_with(), plan(), "/repo")
+    shell = PosixShell(machine_with(), plan(), "/repo")
     routes = installers(shell, "packages/tool", vendored=False, floor=">=0.4.8")
 
     assert routes.names == ["present", "uv-index", "uv-bootstrap-index", "pip-index"]
@@ -134,7 +149,7 @@ def test_the_declared_version_reaches_the_index_command_the_way_a_requirement_sp
 ) -> None:
     """A manifest writes a version the way its own resolver spells one, operator or not."""
     routes = installers(
-        RemoteShell(machine_with(), plan(), "/repo"), "packages/tool", vendored=False, floor=floor
+        PosixShell(machine_with(), plan(), "/repo"), "packages/tool", vendored=False, floor=floor
     )
     assert routes.select("uv-index").command == f"uv tool install --force {shlex.quote(wanted)}"
 
@@ -200,11 +215,11 @@ def test_a_host_that_can_reach_no_route_says_which_family_was_being_tried(
     )
     setup, _ = onboarding(bare, monkeypatch, floor=">=0.4.8")
     with pytest.raises(MissionError, match=r"installing mainboard>=0.4.8 from an index"):
-        Bootstrap(RemoteShell(bare, plan(), "/repo"), floor=">=0.4.8").tool()
+        Bootstrap(PosixShell(bare, plan(), "/repo"), floor=">=0.4.8").tool()
 
     vendoring = machine_with(rules=[("command -v", 1, ""), ("pip --version", 1, "")])
     with pytest.raises(MissionError, match="source this workspace vendors at packages/mainboard"):
-        Bootstrap(RemoteShell(vendoring, plan(), "/repo")).tool()
+        Bootstrap(PosixShell(vendoring, plan(), "/repo")).tool()
     del setup
 
 
@@ -213,7 +228,7 @@ def test_bootstrap_falls_through_to_pip_keeping_every_rejection_it_passed_over(
 ) -> None:
     host = machine_with(rules=[("command -v uv", 1, ""), ("command -v curl", 1, "")])
     onboarding(host, monkeypatch)
-    resolution = Bootstrap(RemoteShell(host, plan(), "/repo")).tool()
+    resolution = Bootstrap(PosixShell(host, plan(), "/repo")).tool()
     assert resolution.winner == "pip"
     assert [name for name, _ in resolution.rejected] == ["uv", "uv-bootstrap"]
     assert host.ran("pip install --user")
@@ -225,7 +240,7 @@ def test_bootstrap_refuses_a_host_no_route_can_reach_before_anything_assumes_the
     host = machine_with(rules=[("command -v", 1, ""), ("pip --version", 1, "")])
     onboarding(host, monkeypatch)
     with pytest.raises(MissionError, match="cannot install mainboard on 'gold'"):
-        Bootstrap(RemoteShell(host, plan(), "/repo")).tool()
+        Bootstrap(PosixShell(host, plan(), "/repo")).tool()
 
 
 @pytest.mark.parametrize(
@@ -312,7 +327,16 @@ def test_onboarding_a_named_environment_verifies_that_environments_own_activatio
 ) -> None:
     """A host provisioned for `serving` must be checked and recorded against its own script."""
     host = machine_with(rules=_HEALTHY)
-    monkeypatch.setattr(onboard_module, "connection", lambda alias: host)
+    monkeypatch.setattr(
+        onboard_module,
+        "probe_capabilities",
+        lambda alias, ssh=None: Facts.parsed(alias, _CAPABILITIES),
+    )
+    monkeypatch.setattr(
+        onboard_module,
+        "open_shell",
+        lambda execution, root, ssh=None: PosixShell(host, execution, root),
+    )
     dispatcher = FakeDispatcher(cache())
     report = Onboarding(dispatcher, plan(env="serving"), root="/repo").run()
     assert host.ran("mainboard install serving --profile gold")
@@ -363,11 +387,13 @@ def test_onboarding_ships_the_compiled_artifact_unless_told_to_solve_on_the_host
 def test_onboarding_discovers_a_root_the_profile_never_declared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    host = machine_with(rules=(*_HEALTHY, ("ls -d /work", 0, "/work/grp/me/projects\n")))
+    """The probe already answered where the workspace goes, so nothing asks the host twice."""
+    host = machine_with(rules=_HEALTHY)
     setup, dispatcher = onboarding(host, monkeypatch, root="")
     report = setup.run()
-    assert report.root == "/work/grp/me/projects"
-    assert dispatcher.mirrored == [("gold", "/work/grp/me/projects")]
+    assert report.root == "/home/me/projects"
+    assert dispatcher.mirrored == [("gold", "/home/me/projects")]
+    assert not host.ran("ls -d /work")
 
 
 def test_onboarding_refuses_a_provisioning_that_left_no_activation_behind(
