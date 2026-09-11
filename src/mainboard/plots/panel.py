@@ -91,6 +91,11 @@ class PanelPlot(Plot):
             axis.set(**panel.axis)
             ticks = cast("Callable[..., None]", axis.tick_params)
             ticks(**panel.ticks)
+            # Explicit ticks name every label the author wants; a log axis adds none between.
+            if "xticks" in panel.axis:
+                axis.xaxis.set_minor_formatter(NullFormatter())
+            if "yticks" in panel.axis:
+                axis.yaxis.set_minor_formatter(NullFormatter())
             if panel.grid:
                 grid = cast("Callable[..., None]", axis.grid)
                 grid(**panel.grid)
