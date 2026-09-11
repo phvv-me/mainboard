@@ -242,3 +242,49 @@ def test_native_dodge_gap_shrinks_caps_without_moving_interval_centers(
     monkeypatch.setattr(picture, "_publish", inspect)
     picture.render(spec, Results(tmp_path).query, tmp_path / "aligned.png")
     assert checked == [True]
+
+
+def test_heatmap_cells_follow_distinct_axis_values(tmp_path: Path) -> None:
+    specification = FigureSpec.model_validate(
+        {
+            "panels": {
+                "grid": {
+                    "sql": (
+                        "SELECT * FROM (VALUES (82, 827., 16.8, 'a'), (128, 903., 11.0, 'b'), "
+                        "(132, 3353., 5.8, 'c')) t(sms, bandwidth, latency, label)"
+                    ),
+                    "variables": {
+                        "x": "sms",
+                        "y": "bandwidth",
+                        "color": "latency",
+                        "text": "label",
+                    },
+                    "layers": [{"mark": "Heatmap", "kws": {"log": True, "label": "ms"}}],
+                    "axis": {"xlabel": "Multiprocessors"},
+                }
+            },
+        }
+    )
+    output = tmp_path / "heatmap.png"
+    rendering.FigurePlot(PlotStyle(figsize=(4, 3))).render(
+        specification, Results(tmp_path).query, output, dpi=80
+    )
+    assert rendering.plt.imread(output).shape[:2] == (240, 320)
+
+
+def test_heatmap_refuses_repeated_cells(tmp_path: Path) -> None:
+    specification = FigureSpec.model_validate(
+        {
+            "panels": {
+                "grid": {
+                    "sql": "SELECT * FROM (VALUES (1, 2., 3.), (1, 2., 4.)) t(x, y, v)",
+                    "variables": {"x": "x", "y": "y", "color": "v"},
+                    "layers": [{"mark": "Heatmap"}],
+                }
+            },
+        }
+    )
+    with pytest.raises(ValueError, match="cells repeat"):
+        rendering.FigurePlot().render(
+            specification, Results(tmp_path).query, tmp_path / "bad.png"
+        )

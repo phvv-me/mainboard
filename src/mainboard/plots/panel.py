@@ -3,9 +3,12 @@
 from typing import TYPE_CHECKING, cast
 
 import matplotlib as mpl
+import numpy as np
 import polars as pl
 import seaborn.objects as so
+from matplotlib.colors import LogNorm, Normalize
 from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter, NullFormatter
 
 from .table import Plot
 
@@ -49,6 +52,8 @@ class PanelPlot(Plot):
 
     def draw(self, target: SubFigure, tables: list[pl.DataFrame]) -> dict[str, Artist]:
         """Compile marks, apply axes, and return the shared color legend."""
+        if any(layer.mark == "Heatmap" for layer in self.panel.layers):
+            return self._heatmap(target, tables)
         drawing = self._drawing(tables)
         parent = target.get_figure(root=True)
         assert parent is not None
@@ -154,6 +159,79 @@ class PanelPlot(Plot):
                 ),
             )
         return self._scales(drawing)
+
+    def _heatmap(self, target: SubFigure, tables: list[pl.DataFrame]) -> dict[str, Artist]:
+        """One grid of cells at the distinct x and y values, colored by a value column.
+
+        A Heatmap panel holds exactly one layer. `x` and `y` are numeric columns whose distinct
+        values become the ordered categories, `color` the numeric cell value, and an optional
+        `text` the cell annotation; cells without a row stay blank. Layer kws: `cmap` (a
+        Matplotlib colormap name), `log` (a logarithmic color scale), `fontsize` for the
+        annotations, `label` for the color bar, `fmt` for the tick labels and `cbar_fmt` for the
+        color bar's, which sits at the cell values.
+        """
+        panel = self.panel
+        if len(panel.layers) != 1:
+            raise ValueError("a Heatmap panel holds exactly one layer")
+        (layer,), (frame,) = panel.layers, tables
+        variables = panel.variables | layer.variables
+        frame = self._numeric(frame)
+        columns = [variables[key] for key in ("x", "y", "color") if key in variables]
+        if len(columns) != 3:
+            raise ValueError("Heatmap needs x, y and color columns")
+        self._data(frame.select(columns))
+        if not all(frame[column].dtype.is_numeric() for column in columns):
+            raise ValueError("Heatmap x, y and color columns must be numeric")
+        if frame.n_unique([variables["x"], variables["y"]]) != frame.height:
+            raise ValueError("heatmap cells repeat; aggregate each cell in SQL first")
+        x, y, color = variables["x"], variables["y"], variables["color"]
+        xs = sorted(frame[x].unique().to_list())
+        ys = sorted(frame[y].unique().to_list())
+        grid = np.full((len(ys), len(xs)), np.nan)
+        for row in frame.iter_rows(named=True):
+            grid[ys.index(row[y]), xs.index(row[x])] = row[color]
+        kws = dict(layer.kws)
+        fmt = str(kws.pop("fmt", "{:g}"))
+        bar_fmt = str(kws.pop("cbar_fmt", fmt))
+        fontsize = kws.pop("fontsize", mpl.rcParams["font.size"])
+        label = str(kws.pop("label", ""))
+        logarithmic = bool(kws.pop("log", False))
+        colormap = mpl.colormaps[str(kws.pop("cmap", "Purples"))]
+        values = np.ma.masked_invalid(grid)
+        norm = (
+            LogNorm(values.min(), values.max())
+            if logarithmic
+            else Normalize(values.min(), values.max())
+        )
+        axis = target.subplots()
+        mesh = axis.imshow(values, cmap=colormap, norm=norm, aspect="auto", origin="lower", **kws)
+        axis.set_xticks(range(len(xs)), [fmt.format(value) for value in xs])
+        axis.set_yticks(range(len(ys)), [fmt.format(value) for value in ys])
+        axis.grid(False)
+        if "text" in variables:
+            for row in frame.iter_rows(named=True):
+                column, line = xs.index(row[x]), ys.index(row[y])
+                red, green, blue, _ = colormap(norm(grid[line, column]))
+                axis.text(
+                    column,
+                    line,
+                    str(row[variables["text"]]),
+                    ha="center",
+                    va="center",
+                    fontsize=fontsize,
+                    color="white" if 0.299 * red + 0.587 * green + 0.114 * blue < 0.5 else "black",
+                )
+        colorbar = target.colorbar(mesh, ax=axis, fraction=0.05, pad=0.03)
+        colorbar.set_label(label)
+        colorbar.set_ticks(sorted(set(values.compressed().tolist())))
+        colorbar.ax.yaxis.set_major_formatter(
+            FuncFormatter(lambda value, _: bar_fmt.format(value))
+        )
+        colorbar.ax.yaxis.set_minor_formatter(NullFormatter())
+        axis.set(**panel.axis)
+        ticks = cast("Callable[..., None]", axis.tick_params)
+        ticks(**panel.ticks)
+        return {}
 
     def _legends(
         self, target: SubFigure, tables: list[pl.DataFrame], created: Set[Legend]

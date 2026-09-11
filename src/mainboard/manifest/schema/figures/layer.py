@@ -24,6 +24,7 @@ class Layer(FrozenModel):
         "Area",
         "Band",
         "Text",
+        "Heatmap",
     ]
     variables: dict[str, str] = {}
     kws: dict[str, JsonValue] = {}
