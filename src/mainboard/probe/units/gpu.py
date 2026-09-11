@@ -46,6 +46,14 @@ class GPU(Unit, Registry):
         return "unknown"
 
     @cached_property
+    def coherent(self) -> bool:
+        """Whether host RAM is a peer of this device's memory over a cache-coherent fabric.
+
+        A provider that can probe the fabric answers for itself; the base knows of none.
+        """
+        return False
+
+    @cached_property
     def driver(self) -> str:
         """The HOST DRIVER version this device answers under, `610.57.04` shaped, or empty.
 
