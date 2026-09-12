@@ -665,6 +665,34 @@ def test_a_native_job_without_any_captured_receipt_cannot_settle_an_empty_transf
     assert not report.finished and "no captured receipt" in report.failed[0].reason
 
 
+def test_a_native_job_whose_every_cell_was_already_covered_settles_without_a_receipt(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lane group re-run on a covered card skips every cell and captures nothing.
+
+    That is a settled job with nothing to deliver, not a broken transfer: the transcript
+    carries the plugin's own words for a cell a previous run took, and only skips.
+    """
+    record = seed("35", fetch_path="research/project/datasets/node")
+    board.dispatcher.cache.record(
+        record.model_copy(
+            update={"script": "research/project/experiments/node/test_law.py::test_law"}
+        )
+    )
+    probing(board, monkeypatch, finishing())
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: None)
+    transcript = (
+        "mainboard: fresh process for test_law.py::test_law[0-gpt2]\n"
+        "  complete experiments/node/test_law.py::test_law on GPU-1, gpt2  1/1 from 2026\n"
+        "SKIPPED [1] test_law.py:17: complete, run 20260912T030615Z-01a0 took it; --rerun\n"
+        "1 skipped in 0.76s\n"
+    )
+    monkeypatch.setattr(Job, "transcript", lambda job: transcript)
+    report = board.monitor().once()
+    assert [finished.handle for finished in report.finished] == ["35"]
+    assert not report.failed
+
+
 @pytest.mark.parametrize("kind", ["ssh", "pbs"])
 def test_queued_native_submission_cannot_verify_an_empty_transfer(
     lab: Lab, monkeypatch: pytest.MonkeyPatch, kind: str

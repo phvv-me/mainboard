@@ -21,6 +21,7 @@
 # is holding.
 
 import base64
+import re
 import string
 
 # The variable a run reads to learn where to write its receipts, and the file it names. A rented
@@ -111,6 +112,23 @@ def unframed(log: str) -> str:
         if payload and len(payload) % 4 == 0 and set(payload) <= _BASE64_ALPHABET:
             return base64.b64decode(payload).decode(errors="replace")
     return ""
+
+
+# What the trials plugin prints for a cell whose data a previous run already took, and the
+# pytest summary such a session ends with. A job made only of those cells has nothing to
+# deliver and is still a settled job.
+_COVERED = re.compile(r"complete, run \S+ took it")
+_ONLY_SKIPS = re.compile(r"^\s*\d+ skipped in [\d.]+s\s*$", re.MULTILINE)
+_ACQUIRED = re.compile(r"\b\d+ (passed|known|failed|error)", re.MULTILINE)
+
+
+def covered_in(log: str) -> bool:
+    """Whether `log` is a trials session whose every cell was already complete and skipped.
+
+    log: the run's captured output, as its backend handed it over.
+    """
+    skipped = _COVERED.search(log) is not None and _ONLY_SKIPS.search(log) is not None
+    return skipped and _ACQUIRED.search(log) is None
 
 
 def receipts_in(log: str) -> tuple[str, ...]:

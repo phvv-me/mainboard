@@ -20,7 +20,7 @@ from .core.errors import MissionError
 from .dispatch import vocabulary
 from .dispatch.backends.base import route
 from .dispatch.dispatcher import Verdict
-from .dispatch.evidence import receipts_in
+from .dispatch.evidence import covered_in, receipts_in
 from .dispatch.schedulers import HostUnreachable, is_quota_refusal, short_reason
 from .dispatch.shared import logger
 from .dispatch.state import DownHost, Failed, Finished, Held, MonitorReport, Resumed
@@ -249,9 +249,19 @@ class Monitor:
         return cases
 
     def verify(
-        self, record: RunRecord, job: Run, pulled: str | None, receipts: tuple[str, ...]
+        self,
+        record: RunRecord,
+        job: Run,
+        pulled: str | None,
+        receipts: tuple[str, ...],
+        *,
+        covered: bool = False,
     ) -> None:
-        """A successful transport is not proof that its declared artifacts arrived."""
+        """A successful transport is not proof that its declared artifacts arrived.
+
+        covered: whether the transcript is a trials session whose every cell was already
+            complete and skipped, the one native run that legitimately captures no receipt.
+        """
         # The trials reader loads its dataframe dependency only when evidence needs checking,
         # matching the lazy reader used by `verdict` rather than taxing every CLI startup.
         from .trials.artifacts import Artifacts
@@ -267,7 +277,7 @@ class Monitor:
             Path(token.partition("::")[0]).name.startswith("test_")
             for token in shlex.split(record.script)
         )
-        if native and job.handle.fetch_path and not receipts:
+        if native and job.handle.fetch_path and not receipts and not covered:
             raise MissionError("native trial has no captured receipt; evidence is unverified")
         if receipts:
             if pulled is None:
@@ -547,20 +557,20 @@ class Monitor:
             harvested: tuple[str, ...] = ()
             pulled = None
             try:
+                log = directory(self.board, stream) / f"{record.handle}.log"
                 if copied:
-                    log = directory(self.board, stream) / f"{record.handle}.log"
                     if previous is None and not log.is_file():
                         raise MissionError("copied evidence has no recoverable local receipt log")
-                    harvested = (
-                        receipts_in(log.read_text(encoding="utf-8")) if log.is_file() else ()
-                    )
+                    transcript = log.read_text(encoding="utf-8") if log.is_file() else ""
+                    harvested = receipts_in(transcript)
                     if previous is not None and previous.data.get("trials") and not harvested:
                         raise MissionError("copied trial receipts are missing from the local log")
                     pulled = job.handle.fetch_path
                 else:
                     pulled = self.pull(job)
                     harvested = self.capture(record, job)
-                self.verify(record, job, pulled, harvested)
+                    transcript = log.read_text(encoding="utf-8") if log.is_file() else ""
+                self.verify(record, job, pulled, harvested, covered=covered_in(transcript))
             except (MissionError, OSError, ValueError) as fault:
                 detail = f"settlement pending; remote evidence retained: {fault}"
                 self.evidence(record, harvested, status="pending", detail=detail)
