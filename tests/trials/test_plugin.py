@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from collections.abc import Sequence
 from functools import partial
@@ -444,6 +445,7 @@ def test_a_shuffling_plugin_is_held_still_and_the_declared_markers_are_registere
         "paid: could bill money, skipped unless --paid is passed",
         "adversarial: hunts a counterexample by shrinking, so what it finds is a candidate",
         "search: proposes its own points adaptively, so what it finds is a candidate",
+        "phase: the registered phase its receipts belong to, a coverage axis when one is declared",
     ]
     assert config.stash[pytest_plugin.SESSION].run
 
@@ -458,3 +460,52 @@ def test_a_shuffling_plugin_is_held_still_and_the_declared_markers_are_registere
     pytest_plugin.pytest_configure(bare)
     assert pytest_plugin.SESSION not in bare.stash
     assert pytest_plugin.pytest_report_collectionfinish(bare) == []
+
+
+PHASED_CONFTEST = CONFTEST.replace('axes=("card", "model")', 'axes=("card", "model", "phase")')
+
+PHASED = """
+import pytest
+
+pytestmark = pytest.mark.phase("2")
+
+
+@pytest.mark.parametrize("model", ["qwen"])
+def test_law_holds(trial, model):
+    trial.validated("the law held in this phase")
+"""
+
+
+def test_a_marked_axis_is_a_coordinate_and_a_new_phase_is_a_new_cell(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`@pytest.mark.phase` answers the declared `phase` axis like a parametrize value would.
+
+    The receipt names the phase, the completeness question is asked at it, and the same grid
+    marked with another phase is not satisfied by the first one's data, so a registration's
+    later phase never needs `--rerun` and never pools with the earlier one.
+    """
+    monkeypatch.setattr(session_module, "Preflight", Taken)
+    pytester.makeconftest(PHASED_CONFTEST)
+    pytester.makepyfile(**{"alpha/test_law": PHASED})
+
+    assert ran(pytester, "alpha/test_law.py").ret == 0
+    receipts = Dataset(
+        Path(pytester.path) / "alpha" / "evidence" / "receipts", axes=("card", "model", "phase")
+    )
+    assert [row["phase"] for row in receipts.rows()] == ["2"]
+
+    again = ran(pytester, "alpha/test_law.py")
+    again.stdout.fnmatch_lines(["*complete*test_law_holds on GPU-1111, qwen, 2*"])
+
+    pytester.makepyfile(**{"alpha/test_law": PHASED.replace('phase("2")', 'phase("3")')})
+    # The in-process runner keeps the first import of the lane module; the rewritten
+    # registration must be imported afresh for its new marker to be read.
+    for name in [name for name in sys.modules if name.endswith("test_law")]:
+        del sys.modules[name]
+    third = ran(pytester, "alpha/test_law.py")
+    assert third.ret == 0
+    afresh = Dataset(
+        Path(pytester.path) / "alpha" / "evidence" / "receipts", axes=("card", "model", "phase")
+    )
+    assert sorted(afresh.passing(every=True)["phase"].to_list()) == ["2", "3"]

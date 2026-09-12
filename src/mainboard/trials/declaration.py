@@ -30,6 +30,7 @@ MARKERS = {
     "paid": "could bill money, skipped unless --paid is passed",
     "adversarial": "hunts a counterexample by shrinking, so what it finds is a candidate",
     "search": "proposes its own points adaptively, so what it finds is a candidate",
+    "phase": "the registered phase its receipts belong to, a coverage axis when one is declared",
 }
 
 

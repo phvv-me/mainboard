@@ -61,7 +61,7 @@ class Log:
             "node": node,
             "trial": trial.item.nodeid,
             "run": session.run,
-            "params": params_of(trial.item),
+            "params": params_of(trial.item, universe.axes),
             "manifest": manifest.model_dump(mode="json") if manifest is not None else None,
         }
         self.logger = logger.bind(mainboard_trial=self.identity)

@@ -153,7 +153,7 @@ def _surveyed(session: Session, items: Sequence[pytest.Item]) -> tuple[LaneStatu
     for item in items:
         lane, key = lane_of(item)
         node = session.declared.universe.node_of(Path(str(item.path)))
-        cell = session.cell(params_of(item))
+        cell = session.cell(params_of(item, session.declared.universe.axes))
         cells[cell.key] = cell
         grids.setdefault((node, lane, cell.key), set()).add(key)
     return tuple(
@@ -170,7 +170,8 @@ def _satisfied(session: Session, items: Sequence[pytest.Item]) -> None:
         if status.state == "complete"
     }
     for item in items:
-        where = (lane_of(item)[0], session.cell(params_of(item)).key)
+        axes = session.declared.universe.axes
+        where = (lane_of(item)[0], session.cell(params_of(item, axes)).key)
         if where in complete:
             taken = complete[where]
             item.add_marker(

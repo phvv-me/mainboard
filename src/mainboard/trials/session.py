@@ -30,6 +30,7 @@
 # in `trial` where it always was.
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from time import time_ns
@@ -62,14 +63,27 @@ if TYPE_CHECKING:
 WORD = "mainboard_trials_word"
 
 
-def params_of(item: pytest.Item) -> dict[str, JsonValue]:
-    """A trial's own parametrize values as text, empty for a lane that takes no grid.
+def params_of(item: pytest.Item, axes: Sequence[str] = ()) -> dict[str, JsonValue]:
+    """A trial's own coordinates as text, empty for a lane that takes no grid and no marker.
 
     Text because a receipt column has to be comparable across runs and a parametrize value is
     whatever object the grid held, which may not survive a round trip through parquet at all.
+
+    A DECLARED AXIS A LANE NAMES BY MARKER IS A COORDINATE TOO. `@pytest.mark.phase("2")` on a
+    lane puts `phase` beside its parametrize values, so a registration's phase rides on the
+    receipt and on the completeness cell without being retyped into every id, and a second
+    phase of the same grid is a second cell rather than a re-run of the first.
+
+    item: the collected trial.
+    axes: the declared coverage axes a marker of the same name may answer.
     """
     drawn = getattr(item, "callspec", None)
-    return {name: str(value) for name, value in getattr(drawn, "params", {}).items()}
+    values = {name: str(value) for name, value in getattr(drawn, "params", {}).items()}
+    for axis in axes:
+        marker = item.get_closest_marker(axis)
+        if axis not in values and marker is not None and marker.args:
+            values[axis] = str(marker.args[0])
+    return values
 
 
 def lane_of(item: pytest.Item) -> tuple[str, str]:
@@ -377,7 +391,7 @@ class Trial:
         lane nobody committed, and that row names a commit which does not contain the test that
         produced it, so the run-wide answer alone would call it evidence.
         """
-        params = params_of(self.item)
+        params = params_of(self.item, self.session.declared.universe.axes)
         path = Path(str(self.item.path))
         live = reading(self.session.declared.flags)
         for name, value in live.items():

@@ -24,9 +24,10 @@ class Universe(FrozenModel):
     root: the directory holding the nodes, a lane's own file living under one of them.
     evidence: the per-node path the receipt partitions sit under.
     axes: the coverage coordinates, each one a receipt column and each one asked of every lane.
-        An axis is resolved from a trial's own parameters when it names one and from the run's
-        probed provenance otherwise, so `model` comes off a parametrize grid and `card` off the
-        machine without either being special-cased anywhere.
+        An axis is resolved from a trial's own parameters when it names one, from a marker of
+        the axis's name on the lane otherwise (`@pytest.mark.phase("2")`), and from the run's
+        probed provenance last, so `model` comes off a parametrize grid, `phase` off a
+        registration's marker and `card` off the machine without any being special-cased.
     probed: the logical packages whose provider distribution version every receipt records.
     nested: the receipt columns stored as JSON text rather than as parquet scalars.
     samples: how many passing receipts one cell owes before a lane is complete there. One suits a

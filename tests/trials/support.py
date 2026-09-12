@@ -79,6 +79,10 @@ class Item:
         self.user_properties: list[tuple[str, str]] = []
         self.callspec = SimpleNamespace(params=params) if params is not None else None
 
+    def get_closest_marker(self, name: str) -> None:
+        """A stand-in lane carries no markers, so every axis reads off its params or the run."""
+        return None
+
 
 class Card:
     """One probed device, the five attributes provenance reads and nothing else."""
