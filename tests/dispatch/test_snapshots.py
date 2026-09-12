@@ -179,8 +179,9 @@ def test_a_sealed_snapshot_links_its_staged_pins_beside_its_needs() -> None:
     [program] = remote.lines
     assert 'ln -sfn "$mb_root"/data/corpus "$mb_snap"/data/corpus' in program
     pin = ".mainboard/pins/models--o--n/snapshots/r/tokenizer.json"
-    assert f'ln -sfn "$mb_root"/{pin} "$mb_snap"/{pin}' in program
     assert f"mainboard: the need {pin} is not on the mirror" in program
+    assert 'ln -sfn "$mb_root"/.mainboard/pins "$mb_snap"/.mainboard/pins' in program
+    assert f'ln -sfn "$mb_root"/{pin}' not in program
 
 
 def test_pinning_a_tree_the_host_could_not_build_refuses_instead_of_dispatching_into_it() -> None:

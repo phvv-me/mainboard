@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.project import Project
+from ..jobs.pins import STAGING as PINS
 from .shared import state_dir
 from .sync import Rsync, rsync_argv
 from .transport import HostUnreachable, is_transport_failure
@@ -245,11 +246,24 @@ class Sealed(Image):
     def linked(self) -> list[str]:
         """Each need checked on the mirror and linked into the tree, on every dispatch.
 
-        Pins ride as needs too, each checked and linked at its staged path, so the runner's
-        Hub client finds the whole pinned set under the tree.
+        Pins are checked on the mirror one by one and reached through their staging directory
+        as a whole: the tree's state directory is the mirror's own when the two are shared, and
+        one link to the staging directory stands in when it is not, so the runner's Hub client
+        finds the whole pinned set under the tree either way.
         """
         lines: list[str] = []
-        for need in (*self.needs, *self.pins):
+        if self.pins:
+            staging = shlex.quote(PINS)
+            lines += [
+                *(
+                    f'if [ ! -e "$mb_root"/{shlex.quote(pin)} ]; then echo '
+                    f"{shlex.quote(f'mainboard: the need {pin} is not on the mirror')} >&2; false; fi"
+                    for pin in self.pins
+                ),
+                f'if [ ! -e "$mb_snap"/{staging} ]; then mkdir -p "$mb_snap"/{shlex.quote(str(PurePosixPath(PINS).parent))}; '
+                f'ln -sfn "$mb_root"/{staging} "$mb_snap"/{staging}; fi',
+            ]
+        for need in self.needs:
             quoted = shlex.quote(need)
             parent = shlex.quote(str(PurePosixPath(need).parent))
             absent = shlex.quote(f"mainboard: the need {need} is not on the mirror")
