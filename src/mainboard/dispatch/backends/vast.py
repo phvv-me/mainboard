@@ -14,7 +14,7 @@ import json
 import os
 from contextlib import suppress
 from time import sleep
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, ClassVar, NoReturn
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request
@@ -24,7 +24,7 @@ from ...costs.imports import from_vast
 from ..evidence import framing, staging
 from ..jobs.spec import walltime_seconds
 from ..lease import Lease
-from ..rentals import LANDING_SECONDS, Identity, Rental, identity, reachable, waiting
+from ..rentals import LANDING_SECONDS, Identity, Rental, identity, reachable, seeded, waiting
 from ..shared import logger
 from ..transport import Endpoint
 from ..vocabulary import JobState
@@ -58,6 +58,12 @@ _DEFAULT_IMAGE = "vastai/base-image:cuda-13.3.1-auto"
 # load and the card's own compute capability (`750` for `sm_75`). Vast publishes both on every
 # bundle row, which is what makes them filterable before renting rather than after.
 _CUDA_FIELD = "cuda_max_good"
+# The host's measured download rate, in Mbps, as the bundle row publishes it. A cold rental pulls
+# a multi-gigabyte image before its container exists, and a host below this floor spent the whole
+# address wait pulling and ended with no container at all (three rentals, 2026-09-12), while hosts
+# at a few Gbps were running inside two minutes.
+_DOWNLOAD_FIELD = "inet_down"
+_DOWNLOAD_FLOOR_MBPS = 500.0
 _CAPABILITY_FIELD = "compute_cap"
 # Local disk per rental, in GB. It is also what an offer search prices storage at, so one number
 # keeps the quoted rate and the rented machine honest about each other. Sized for what a landing
@@ -127,6 +133,17 @@ def cuda_max_good(offer: Mapping) -> float:
     try:
         return float(offer[_CUDA_FIELD])
     except KeyError, TypeError, ValueError:
+        return 0.0
+
+
+def download(offer: Mapping) -> float:
+    """The host's download rate in Mbps, 0 for a row that publishes none.
+
+    offer: one bundle row as the offer search returned it.
+    """
+    try:
+        return float(offer.get(_DOWNLOAD_FIELD) or 0.0)
+    except TypeError, ValueError:
         return 0.0
 
 
@@ -202,6 +219,10 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         "the instance, so have the command upload its own results and read `logs {handle}` "
         "until that path lands",
     }
+
+    # A host below this download rate spends the address wait pulling the image; see the module
+    # note beside `_DOWNLOAD_FLOOR_MBPS`.
+    DOWNLOAD_FLOOR_MBPS: ClassVar[float] = _DOWNLOAD_FLOOR_MBPS
 
     def __init__(
         self,
@@ -399,14 +420,24 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
                 "hand back a contract id and no instance, because vast destroys a container its "
                 "driver cannot start. Ask for a card whose hosts run a newer driver."
             )
-        best = max(loadable, key=capability)
+        buildable = [row for row in loadable if capability(row) >= self.CAPABILITY_FLOOR]
+        if not buildable:
+            best = max(loadable, key=capability)
+            raise MissionError(
+                f"vast has {len(loadable)} rentable {card} offer(s){ceiling} whose driver "
+                f"reaches CUDA {self.CUDA_FLOOR}, and not one is an architecture that CUDA still "
+                f"builds for. The best is {_describe(best, gpu_name)} at compute capability "
+                f"{capability(best)}, below the sm_{self.CAPABILITY_FLOOR // 10} floor. Renting "
+                "it would boot, bill, and die at the first kernel launch with no kernel image "
+                "for its own card. Maxwell, Pascal and Volta went with it; ask for Turing or newer."
+            )
+        best = max(buildable, key=download)
         raise MissionError(
-            f"vast has {len(loadable)} rentable {card} offer(s){ceiling} whose driver reaches "
-            f"CUDA {self.CUDA_FLOOR}, and not one is an architecture that CUDA still builds "
-            f"for. The best is {_describe(best, gpu_name)} at compute capability "
-            f"{capability(best)}, below the sm_{self.CAPABILITY_FLOOR // 10} floor. Renting it "
-            "would boot, bill, and die at the first kernel launch with no kernel image for its "
-            "own card. Maxwell, Pascal and Volta went with it; ask for Turing or newer."
+            f"vast has {len(buildable)} rentable {card} offer(s){ceiling} this house could run "
+            f"on, and not one host downloads at {self.DOWNLOAD_FLOOR_MBPS:.0f} Mbps or more. The "
+            f"best is {_describe(best, gpu_name)} at {download(best):.0f} Mbps. Renting it would "
+            "spend the whole landing window pulling the image and end with no container, which "
+            "is how three rentals went on 2026-09-12; raise the ceiling to reach a faster host."
         )
 
     def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
@@ -428,7 +459,8 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             gpus=max(resources.gpus, 1),
             max_usd_hr=self.hourly_cap(resources, landing=LANDING_SECONDS),
         )
-        script = f"{waiting()}\necho {_EXIT_SENTINEL}$status\nexit $status\n"
+        marker = f"echo {_EXIT_SENTINEL}$status\nexit $status\n"
+        script = f"{seeded(key.public)}\n{waiting()}\n{marker}"
         handle = self.rented(
             offer,
             plan=plan,
@@ -579,6 +611,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         if floored:
             query[_CUDA_FIELD] = {"gte": self.CUDA_FLOOR}
             query[_CAPABILITY_FIELD] = {"gte": self.CAPABILITY_FLOOR}
+            query[_DOWNLOAD_FIELD] = {"gte": self.DOWNLOAD_FLOOR_MBPS}
         offers = self.request("POST", path="/bundles/", body=query).get("offers") or []
         # The service has returned rows above its requested ceiling. The quoted rate,
         # not successful submission of a filter, decides whether spending is authorized.

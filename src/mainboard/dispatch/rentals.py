@@ -116,6 +116,26 @@ def identity(declared: str = "") -> Identity:
     )
 
 
+def seeded(public: str) -> str:
+    """The shell lines that put `public` into root's authorized keys with the modes sshd wants.
+
+    A provider injects the account key after the container is up, and a host that writes that
+    file with the wrong owner or mode, or never writes it, leaves the machine billing behind an
+    sshd that refuses every knock (RTX 5090 host 206415, 2026-09-12). Writing the one key the
+    landing holds from the entrypoint itself makes the login independent of that injection.
+    """
+    quoted = shlex.quote(public.strip())
+    return "\n".join(
+        (
+            "mkdir -p /root/.ssh && chmod 700 /root/.ssh",
+            f"grep -qxF {quoted} /root/.ssh/authorized_keys 2>/dev/null || "
+            f"echo {quoted} >> /root/.ssh/authorized_keys",
+            "chmod 600 /root/.ssh/authorized_keys && "
+            "chown root:root /root/.ssh /root/.ssh/authorized_keys",
+        )
+    )
+
+
 def waiting() -> str:
     """The entrypoint shell of a rented machine: hold still for the landing, then run the job.
 

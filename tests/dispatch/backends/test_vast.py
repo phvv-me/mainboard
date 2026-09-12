@@ -46,6 +46,7 @@ _BASE_QUERY = {
     "limit": 32,
     "cuda_max_good": {"gte": 13.0},
     "compute_cap": {"gte": 750},
+    "inet_down": {"gte": 500.0},
 }
 
 # `actual_status` values that mean the container has not run the command yet, so no marker can
@@ -275,6 +276,30 @@ def test_pick_refuses_a_market_whose_every_driver_is_below_the_cuda_floor() -> N
     assert floored["compute_cap"] == {"gte": 750}
     assert "cuda_max_good" not in unfloored
     assert "compute_cap" not in unfloored
+    assert "inet_down" not in unfloored
+
+
+def test_pick_refuses_a_market_whose_every_host_downloads_too_slowly() -> None:
+    """The refusal names the download floor, the fastest host on offer, and where it is.
+
+    A host that passes both CUDA floors can still spend the whole landing window pulling the
+    image and end with no container, which is how three rentals went on 2026-09-12, so the
+    floor rides on the search and its refusal is the last one asked, after the two CUDA floors.
+    """
+    slow = {
+        "offers": [
+            offer(11, dph=0.4, inet_down=80.0),
+            offer(22, dph=0.9, inet_down=240.0, gpu_name="RTX 5090"),
+        ]
+    }
+    backend = vast_backend({}, slow)
+    with pytest.raises(MissionError) as refused_at:
+        backend.pick(gpu_name="RTX 5090", gpus=1)
+    refusal = str(refused_at.value)
+    assert "500 Mbps" in refusal, "the floor it failed is named"
+    assert "240 Mbps" in refusal, "the fastest host actually on offer is named"
+    assert "offer 22" in refusal and "Texas, US" in refusal, "and which offer, and where"
+    assert "no container" in refusal, "and what renting it would do"
 
 
 def test_pick_refuses_an_architecture_this_cuda_no_longer_builds_for() -> None:
@@ -788,6 +813,12 @@ def test_a_rental_is_created_waiting_for_a_landing_rather_than_running_the_comma
     assert create["image"] == "vastai/base-image:cuda-13.3.1-auto"
     assert waiting() in create["onstart"]
     assert create["onstart"].endswith(f"echo {_MARKER}$status\nexit $status\n")
+    # The entrypoint seeds the landing's own key before it waits, so a host whose key injection
+    # never lands or lands with the wrong modes still lets the landing in.
+    seeding, _, rest = create["onstart"].partition(waiting())
+    assert "'ssh-ed25519 AAAA me@here' >> /root/.ssh/authorized_keys" in seeding
+    assert "chmod 600 /root/.ssh/authorized_keys" in seeding
+    assert rest, "the seeding comes first and the wait follows it"
     assert attach == {"ssh_key": "ssh-ed25519 AAAA me@here"}
     assert rental.handle == "4242"
     assert rental.endpoint.destination == "root@ssh5.vast.ai"

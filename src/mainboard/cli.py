@@ -956,6 +956,8 @@ def build(root: Path | None = None) -> App:
         walltime: str = "",
         mem_gb: int = 0,
         gpus: int = 0,
+        gpu_name: str = "",
+        max_usd: float = 0.0,
         node: str = "",
         dry_run: bool = False,
         wait: bool = False,
@@ -982,6 +984,8 @@ def build(root: Path | None = None) -> App:
         walltime: the walltime for queued hosts.
         mem_gb: the memory for queued hosts.
         gpus: cards per job, the host profile's default when 0.
+        gpu_name: the card a provider host rents, in the provider's own spelling.
+        max_usd: the spend cap of one rental on a provider host; one group is one rental.
         node: the ledger slug the receipts serve, the directory under `experiments` when unset.
         dry_run: print the plan and dispatch nothing.
         wait: block until every dispatched job settles.
@@ -1035,6 +1039,8 @@ def build(root: Path | None = None) -> App:
                         walltime=walltime,
                         mem_gb=mem_gb,
                         gpus=gpus,
+                        gpu_name=gpu_name,
+                        max_usd=max_usd,
                         node=served,
                     )
                 dispatched.append((host, chosen.name, job.handle.id))

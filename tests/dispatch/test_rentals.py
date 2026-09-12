@@ -5,11 +5,12 @@ import pytest
 from mainboard import MissionError
 from mainboard.dispatch import rentals as rentals_module
 from mainboard.dispatch.rentals import (
-    LANDING_SECONDS,
-    LAUNCH,
     handoff,
     identity,
+    LANDING_SECONDS,
+    LAUNCH,
     reachable,
+    seeded,
     waiting,
 )
 from mainboard.dispatch.transport import Endpoint, HostUnreachable
@@ -99,3 +100,11 @@ def test_a_machine_that_never_answers_ssh_is_refused_rather_than_landed_on(
     with pytest.raises(MissionError, match="ssh never answered at root@box"):
         reachable(Endpoint(address="box", user="root"), sleeper=naps, attempts=3)
     assert naps.waited == [5.0, 5.0, 5.0]
+
+
+def test_seeding_writes_one_key_once_with_the_modes_sshd_accepts() -> None:
+    lines = seeded("ssh-ed25519 AAAA me@here\n").splitlines()
+    assert lines[0] == "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
+    assert lines[1].startswith("grep -qxF 'ssh-ed25519 AAAA me@here' /root/.ssh/authorized_keys")
+    assert lines[1].endswith("|| echo 'ssh-ed25519 AAAA me@here' >> /root/.ssh/authorized_keys")
+    assert lines[2].startswith("chmod 600 /root/.ssh/authorized_keys && chown root:root")
