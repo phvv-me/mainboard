@@ -3,6 +3,7 @@ from typing import ClassVar
 from pydantic import model_validator
 
 from ...core.errors import MissionError
+from .admission import Admission
 from .container import Container
 from .engine import Engine
 from .environment import Env, Task
@@ -35,6 +36,7 @@ class Manifest(Scope):
     `[engines.*]` names a command `serve` stages through one of `[containers.*]`,
     the manifest side of the containerize seam `run` already builds argv through.
     `[plots.*]` names palette, theme, and output settings for result charts.
+    `[admission.<card>]` says how idle a named card must be before a trial measures on it.
 
     `[env]` sets a variable to a string and clears one with `false`. Clearing
     is not the same as setting an empty string, which is what the table could
@@ -59,6 +61,7 @@ class Manifest(Scope):
     # the schema is refused until somebody decides which side of this line it sits on.
     uncompiled: ClassVar[frozenset[str]] = frozenset(
         {
+            "admission",
             "containers",
             "engines",
             "figures",
@@ -84,6 +87,7 @@ class Manifest(Scope):
     tracking: Tracking = Tracking()
     containers: dict[str, Container] = {}
     hosts: dict[str, HostProfile] = {}
+    admission: dict[str, Admission] = {}
     engines: dict[str, Engine] = {}
     plots: dict[str, PlotStyle] = {}
     figures: dict[str, FigureSpec] = {}

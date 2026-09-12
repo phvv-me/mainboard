@@ -48,6 +48,7 @@ _EDITS: dict[str, Json] = {
     "containers": {"cuda": {"image": "docker://nvidia/cuda"}},
     "engines": {"vserve": {"command": "true"}},
     "hosts": {"miyabi-g": {"kind": "pbs", "defaults": {"interact-queue": "interact-g"}}},
+    "admission": {"NVIDIA GB10": {"holders": "record"}},
     "plots": {"paper": {"palette": "paleta-meta", "dpi": 600}},
     "figures": {
         "example": {
