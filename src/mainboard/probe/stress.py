@@ -241,10 +241,9 @@ class Stress:
     def _rate(self, precision: Precision) -> Rate:
         n = self.n // 2 if precision == Precision.FP64 else self.n
         try:
-            call = self.kernels.gemm(precision, n)
+            seconds = self._timed(self.kernels.gemm(precision, n))
         except (RuntimeError, NotImplementedError, AttributeError, KeyError) as error:
             return Rate(precision=precision, n=n, supported=False, note=str(error).splitlines()[0])
-        seconds = self._timed(call)
         return Rate(precision=precision, n=n, seconds=seconds, tflops=2 * n**3 / seconds / 1e12)
 
     def _link(self, path: str) -> Link:

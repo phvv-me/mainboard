@@ -13,6 +13,12 @@ class FakeKernels:
     def gemm(self, precision: Precision, n: int):
         if precision == Precision.FP8:
             raise RuntimeError("fp8 needs sm_89")
+        if precision == Precision.INT8:
+
+            def refused() -> None:
+                raise RuntimeError("int8 refused at call time")
+
+            return refused
         return lambda: None
 
     def copy(self, path: str, megabytes: int):
@@ -31,6 +37,8 @@ def test_report_carries_every_precision_and_link(monkeypatch) -> None:
     assert report.rate(Precision.FP64).n == 512
     assert not report.rate(Precision.FP8).supported
     assert "sm_89" in report.rate(Precision.FP8).note
+    assert not report.rate(Precision.INT8).supported
+    assert "call time" in report.rate(Precision.INT8).note
     fp32 = report.rate(Precision.FP32)
     assert fp32.seconds > 0 and fp32.tflops == 2 * 1024**3 / fp32.seconds / 1e12
     assert [link.path for link in report.links] == [

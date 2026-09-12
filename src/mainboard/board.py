@@ -507,12 +507,13 @@ class Board:
             probe = shlex.split(stress_command(n=n, repetitions=repetitions))
             command = localhost[Project().name]["run", "--", *probe]
             return StressReport.model_validate_json(_report_json(command()))
-        if self.profile.kind in {"pbs", "slurm"}:
+        plan = self.plan(container="none")
+        if plan.profile.kind in {"pbs", "slurm"}:
             raise MissionError(
                 f"{self.host} is a scheduler host with no card on its login node; submit "
                 f"packages/{Project().name}/src/{Project().name}/probe/stress.py::app instead"
             )
-        with open_shell(self.plan(container="none"), self.remote_root()) as shell:
+        with open_shell(plan, self.remote_root()) as shell:
             text = shell.run(stress_command(n=n, repetitions=repetitions), activate=True)
         return StressReport.model_validate_json(_report_json(text))
 
