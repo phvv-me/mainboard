@@ -303,6 +303,9 @@ class PanelPlot(Plot):
         if panel.facet:
             facet = cast("Callable[..., so.Plot]", drawing.facet)
             drawing = facet(**panel.facet)
+        if panel.share:
+            share = cast("Callable[..., so.Plot]", drawing.share)
+            drawing = share(**panel.share)
         return drawing
 
     def _secondary(self, native: dict[str, Artist]) -> dict[str, Artist]:

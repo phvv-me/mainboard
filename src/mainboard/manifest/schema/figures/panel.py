@@ -9,13 +9,14 @@ from .layer import Layer
 
 
 class Panel(FrozenModel):
-    """Paths retain caller-cwd semantics; facet and axis use native library keywords."""
+    """Paths retain caller-cwd semantics; facet, share and axis use native library keywords."""
 
     file: Path | None = None
     sql: str = ""
     variables: dict[str, str] = {}
     layers: tuple[Layer, ...]
     facet: dict[str, JsonValue] = {}
+    share: dict[str, JsonValue] = {}
     order: dict[str, tuple[str, ...]] = {}
     axis: dict[str, JsonValue] = {}
     ticks: dict[str, JsonValue] = {}

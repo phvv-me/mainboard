@@ -50,6 +50,31 @@ def test_native_layers_facets_and_supplied_ranges(
     assert rendering.plt.imread(output).shape[:2] == (160, 400)
 
 
+def test_facets_share_only_what_the_panel_asks(tmp_path: Path) -> None:
+    specification = FigureSpec.model_validate(
+        {
+            "panels": {
+                "saved": {
+                    "sql": (
+                        "SELECT * FROM (VALUES (1, 2., 'a', 'first'), (2, 4., 'a', 'first'), "
+                        "(1, 200., 'a', 'second'), (2, 400., 'a', 'second')) t(x,y,engine,corpus)"
+                    ),
+                    "variables": {"x": "x", "y": "y", "color": "engine"},
+                    "layers": [{"mark": "Line"}],
+                    "facet": {"col": "corpus"},
+                    "share": {"y": False},
+                }
+            },
+        }
+    )
+    picture = rendering.FigurePlot(PlotStyle(figsize=(5, 2), colors={"a": "#7755aa"}))
+    limits = []
+    picture._publish = lambda canvas, paths: limits.extend(axis.get_ylim() for axis in canvas.axes)
+    picture.render(specification, Results(tmp_path).query, tmp_path / "share.png", dpi=80)
+    assert len(limits) == 2
+    assert limits[0][1] < 10 < limits[1][1]
+
+
 @pytest.mark.parametrize(
     "layer,message",
     [
@@ -285,6 +310,4 @@ def test_heatmap_refuses_repeated_cells(tmp_path: Path) -> None:
         }
     )
     with pytest.raises(ValueError, match="cells repeat"):
-        rendering.FigurePlot().render(
-            specification, Results(tmp_path).query, tmp_path / "bad.png"
-        )
+        rendering.FigurePlot().render(specification, Results(tmp_path).query, tmp_path / "bad.png")
