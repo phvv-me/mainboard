@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 from collections.abc import Sequence
 from functools import partial
@@ -498,14 +497,12 @@ def test_a_marked_axis_is_a_coordinate_and_a_new_phase_is_a_new_cell(
     again = ran(pytester, "alpha/test_law.py")
     again.stdout.fnmatch_lines(["*complete*test_law_holds on GPU-1111, qwen, 2*"])
 
-    pytester.makepyfile(**{"alpha/test_law": PHASED.replace('phase("2")', 'phase("3")')})
-    # The in-process runner keeps the first import of the lane module; the rewritten
-    # registration must be imported afresh for its new marker to be read.
-    for name in [name for name in sys.modules if name.endswith("test_law")]:
-        del sys.modules[name]
+    # A rewrite of the same length within the same second would reuse pytest's rewritten
+    # bytecode, so the new phase is spelled longer than the old one.
+    pytester.makepyfile(**{"alpha/test_law": PHASED.replace('phase("2")', 'phase("later")')})
     third = ran(pytester, "alpha/test_law.py")
     assert third.ret == 0
     afresh = Dataset(
         Path(pytester.path) / "alpha" / "evidence" / "receipts", axes=("card", "model", "phase")
     )
-    assert sorted(afresh.passing(every=True)["phase"].to_list()) == ["2", "3"]
+    assert sorted(afresh.passing(every=True)["phase"].to_list()) == ["2", "later"]

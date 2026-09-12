@@ -58,6 +58,7 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..dispatch.provenance import Repositories, Repository
 from ..engines.compile.backend.repair import recorded_extensions
+from .pins import Pin, split
 from .target import Target, dotted, home_of, parsed
 
 if TYPE_CHECKING:
@@ -179,6 +180,8 @@ class Closure(FrozenModel):
     first_party: every top-level name the workspace's import roots define, shipped or not, so
         the runner can refuse one the closure left out instead of reading it from the mirror.
     needs: workspace-relative paths the job reads on the host, linked back to the mirror.
+    pins: Hub files the job reads at a pinned revision, `hf://org/name@revision/filename`,
+        staged from this machine's cache and shipped beside the needs.
     fetch: the results path the job declared, empty when it declared none.
     built: workspace-relative paths of compiled extensions shipped beside their package's
         source, marked `built` in the listing regardless of what git makes of them.
@@ -193,6 +196,7 @@ class Closure(FrozenModel):
     roots: tuple[str, ...]
     first_party: tuple[str, ...] = ()
     needs: tuple[str, ...] = ()
+    pins: tuple[str, ...] = ()
     fetch: str = ""
     built: tuple[str, ...] = ()
     deferred: tuple[str, ...] = ()
@@ -262,8 +266,10 @@ class Closure(FrozenModel):
         files.add(Project().manifest)
         if config:
             files.add(config)
-        wanted = tuple(dict.fromkeys([*declared.needs, *needs]))
+        wanted, pinned = split(dict.fromkeys([*declared.needs, *needs]))
         cls.__admissible(wanted, files)
+        for pin in pinned:
+            Pin.parse(pin)
         roster = tuple(dict.fromkeys(places))
         return cls(
             target=target,
@@ -279,6 +285,7 @@ class Closure(FrozenModel):
                 sorted({name for place in roster for name in _defined(root / place)})
             ),
             needs=wanted,
+            pins=pinned,
             fetch=declared.fetch,
             built=tuple(sorted(built)),
             deferred=tuple(sorted(deferred)),

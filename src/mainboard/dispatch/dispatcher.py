@@ -337,7 +337,7 @@ class Dispatcher:
         shipped: the allowlist the mirror transfer carried, what a command's snapshot copies.
         """
         if listing:
-            return Sealed(listing=listing, needs=shipment.needs)
+            return Sealed(listing=listing, needs=shipment.needs, pins=shipment.pins)
         return Mirrored(
             sources=tuple(shipped),
             filters=tuple(self.sync.filters),
@@ -641,7 +641,11 @@ class Dispatcher:
             containerize=containerize,
             watch=watch,
             prefix=prefix,
-            required=[artifact] if artifact else [],
+            required=[
+                *([artifact] if artifact else []),
+                *([need] for need in shipment.needs),
+                *([pin] for pin in shipment.pins),
+            ],
         )
         return Handle(
             id=handle, host=plan.host, root=root, kind=plan.profile.kind, fetch_path=fetch

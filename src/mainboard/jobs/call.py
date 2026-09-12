@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING
 from cyclopts import App
 
 from ..dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
+from .pins import STAGING
 from .target import SEPARATOR, TEST_PREFIX, dotted, home_of
 
 if TYPE_CHECKING:
@@ -142,6 +143,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = args[1:]
     file, _, name = spelling.partition(SEPARATOR)
     guard = Guard.armed(Path.cwd())
+    pins = Path.cwd() / STAGING
+    if pins.is_dir():
+        # A job that declared Hub pins reads exactly them, from the tree, whatever the host
+        # caches elsewhere.
+        os.environ["HF_HUB_CACHE"] = str(pins)
     if Path(file).stem.startswith(TEST_PREFIX):
         # The one environment-dependent import: an env that declares no pytest still runs every
         # other target, and a test target in one fails here naming what is missing.

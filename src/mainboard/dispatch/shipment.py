@@ -17,6 +17,7 @@ from patos import FrozenModel
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..jobs.closure import Closure
+from ..jobs.pins import stage
 from ..jobs.target import Target
 from .provenance import Repositories, Row, Source, Status, blob_of, listing, registered
 from .shared import CLOSURE_VAR, COMMIT_VAR, DEFERRED_VAR, DIGEST_VAR, FIRST_PARTY_VAR, SOURCE_VAR
@@ -41,6 +42,8 @@ class Shipment(FrozenModel):
     listing: the closure listing, one `path blob status` row per shipped file, empty for a
         command that ships the mirror.
     needs: workspace-relative data paths the job reads, linked back to the mirror.
+    pins: the Hub pins the job declared, staged under the workspace in the cache layout and
+        shipped as needs, workspace-relative.
     fetch: the results path the job declared, empty when it declared none.
     first_party: the top-level names the workspace's own import roots define, which the runner
         refuses to import from anywhere but the closure.
@@ -54,6 +57,7 @@ class Shipment(FrozenModel):
     imports: tuple[str, ...] = ()
     listing: str = ""
     needs: tuple[str, ...] = ()
+    pins: tuple[str, ...] = ()
     fetch: str = ""
     first_party: tuple[str, ...] = ()
     deferred: tuple[str, ...] = ()
@@ -76,6 +80,7 @@ class Shipment(FrozenModel):
             imports=closure.roots,
             listing=listing(rows),
             needs=closure.needs,
+            pins=stage(closure.pins, root),
             fetch=closure.fetch,
             first_party=closure.first_party,
             deferred=closure.deferred,

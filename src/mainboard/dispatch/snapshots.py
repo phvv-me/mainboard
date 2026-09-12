@@ -179,6 +179,7 @@ class Sealed(Image):
 
     listing: str
     needs: tuple[str, ...] = ()
+    pins: tuple[str, ...] = ()
 
     def copied(self, root: str) -> str:
         """Hardlink the listed files without applying the mirror's ordinary ignore rules.
@@ -242,9 +243,13 @@ class Sealed(Image):
         return ""
 
     def linked(self) -> list[str]:
-        """Each need checked on the mirror and linked into the tree, on every dispatch."""
+        """Each need checked on the mirror and linked into the tree, on every dispatch.
+
+        Pins ride as needs too, each checked and linked at its staged path, so the runner's
+        Hub client finds the whole pinned set under the tree.
+        """
         lines: list[str] = []
-        for need in self.needs:
+        for need in (*self.needs, *self.pins):
             quoted = shlex.quote(need)
             parent = shlex.quote(str(PurePosixPath(need).parent))
             absent = shlex.quote(f"mainboard: the need {need} is not on the mirror")

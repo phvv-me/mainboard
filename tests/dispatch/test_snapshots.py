@@ -161,6 +161,28 @@ def test_pinning_a_closure_copies_exactly_the_listed_files_and_links_only_the_ne
     assert program.rindex("ln -sfn") > program.index("ln -sfn")
 
 
+def test_a_sealed_snapshot_links_its_staged_pins_beside_its_needs() -> None:
+    """A Hub pin staged under the workspace is a need: checked on the mirror and linked in."""
+    remote = machine_with()
+    listing = ".mainboard/dispatch/jobs/closure-abc.tsv"
+    Snapshots("/work/projects").pin(
+        remote,
+        key="abc1234-9f9f9f9f",
+        image=Sealed(
+            listing=listing,
+            needs=("data/corpus",),
+            pins=(".mainboard/pins/models--o--n/snapshots/r/tokenizer.json",),
+        ),
+        results="research/camp/experiments/node/evidence",
+        digest="ab" * 32,
+    )
+    [program] = remote.lines
+    assert 'ln -sfn "$mb_root"/data/corpus "$mb_snap"/data/corpus' in program
+    pin = ".mainboard/pins/models--o--n/snapshots/r/tokenizer.json"
+    assert f'ln -sfn "$mb_root"/{pin} "$mb_snap"/{pin}' in program
+    assert f"mainboard: the need {pin} is not on the mirror" in program
+
+
 def test_pinning_a_tree_the_host_could_not_build_refuses_instead_of_dispatching_into_it() -> None:
     """A job started in a half-built tree imports whatever happened to be copied first."""
     remote = machine_with(rules=[("rsync", 23, "rsync: link_stat failed")])
