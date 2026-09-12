@@ -28,6 +28,7 @@
 
 import importlib
 import os
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs this same runner per cell from typed tokens, never a shell string since=2026-09-12
 import sys
 from importlib.abc import MetaPathFinder
 from importlib.machinery import ModuleSpec, PathFinder
@@ -141,6 +142,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     spelling, args = tokens[0], tokens[1:]
     if args and args[0] == DELIMITER:
         args = args[1:]
+    fresh = Fresh.parsed(args)
+    if fresh is not None:
+        return fresh.run(spelling)
     file, _, name = spelling.partition(SEPARATOR)
     guard = Guard.armed(Path.cwd())
     pins = Path.cwd() / STAGING
@@ -154,6 +158,70 @@ def main(argv: Sequence[str] | None = None) -> int:
         runner = importlib.import_module(".pytest", package=__package__)
         return runner.Runner(guard).run([spelling if name else file, *args])
     return called(getattr(loaded(Path(file)), name), name, args)
+
+
+class Fresh:
+    """Several cells of one lane, each run as its own fresh process by this same runner.
+
+    `file.py::test --fresh id1 id2 -- <pytest args>`: a timed acquisition wants nothing of the
+    cell before it, no warm allocator, no cached tokenizer, no fragmented card, so every id
+    becomes `python -m mainboard.jobs.call file.py::test[id] -- <pytest args>` in turn, under a
+    hard timeout, and the first cell that fails stops the group.
+
+    ids: the parametrize ids to run, in order.
+    args: the pytest arguments every cell gets.
+    timeout: seconds one cell may take before it is killed.
+    """
+
+    FLAG = "--fresh"
+    TIMEOUT = "--timeout"
+
+    def __init__(self, ids: Sequence[str], args: Sequence[str], timeout: float) -> None:
+        self.ids = tuple(ids)
+        self.args = tuple(args)
+        self.timeout = timeout
+
+    @classmethod
+    def parsed(cls, tokens: Sequence[str]) -> Fresh | None:
+        """The fresh plan the tokens spell, None when they name no `--fresh`."""
+        if not tokens or tokens[0] != cls.FLAG:
+            return None
+        rest = list(tokens[1:])
+        timeout = 900.0
+        if rest and rest[0] == cls.TIMEOUT:
+            if len(rest) < 2:
+                raise SystemExit(f"{cls.TIMEOUT} takes the seconds one cell may run")
+            timeout = float(rest[1])
+            rest = rest[2:]
+        ids, _, args = _partitioned(rest)
+        if not ids:
+            raise SystemExit(
+                f"{cls.FLAG} takes the parametrize ids to run, then -- and pytest args"
+            )
+        return cls(ids, args, timeout)
+
+    def run(self, spelling: str) -> int:
+        """Run every id as its own process, answering the first nonzero exit code."""
+        for identity in self.ids:
+            cell = f"{spelling}[{identity}]"
+            print(f"mainboard: fresh process for {cell}", flush=True)
+            command = [sys.executable, "-m", __spec__.name, cell, DELIMITER, *self.args]
+            try:
+                completed = subprocess.run(command, check=False, timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                print(f"mainboard: {cell} exceeded {self.timeout:g} s and was killed", flush=True)
+                return 124
+            if completed.returncode:
+                return completed.returncode
+        return 0
+
+
+def _partitioned(tokens: Sequence[str]) -> tuple[list[str], bool, list[str]]:
+    """The tokens before the delimiter, whether one was present, and the tokens after it."""
+    if DELIMITER in tokens:
+        cut = list(tokens).index(DELIMITER)
+        return list(tokens[:cut]), True, list(tokens[cut + 1 :])
+    return list(tokens), False, []
 
 
 def loaded(file: Path) -> ModuleType:

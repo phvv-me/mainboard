@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 from cyclopts import App, Parameter
+from plumbum import local as localhost
 from pydantic import JsonValue
 
 import mainboard
@@ -23,6 +24,7 @@ from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .durable import schedule
 from .help import Help
+from .jobs import lanes as lanes_module
 from .listing import Listing
 from .manifest.loading import load
 from .manifest.schema.plot import PlotStyle
@@ -937,6 +939,120 @@ def build(root: Path | None = None) -> App:
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
+
+    lanes = App(name="lanes", help="Run one pytest lane on many hosts, a job per group of cells.")
+    app.command(lanes)
+
+    @lanes.command(name="run")
+    def lanes_run(
+        target: str,
+        *,
+        on: str = "local",
+        group: str = "",
+        per_job: int = 0,
+        rerun: bool = False,
+        timeout: float = 900.0,
+        queue: str = "",
+        walltime: str = "",
+        mem_gb: int = 0,
+        gpus: int = 1,
+        node: str = "",
+        dry_run: bool = False,
+        wait: bool = False,
+        yes: bool = False,
+        agent: bool = False,
+    ) -> int:
+        """Run every cell of a lane on each named host, one dispatched job per group of cells.
+
+        The lane's own parametrization is the plan: its cells are collected here, grouped by a
+        parametrize value or sliced, and each group becomes one job that runs its cells as
+        fresh processes through the runner's `--fresh` mode. `local` runs the groups in place;
+        every other host gets a submission with the lane's declared needs and pins shipped, and
+        `--wait` blocks on every handle through the same durable sweep `wait` runs, which
+        pulls the receipts home. A Windows host cannot take a submission yet and is skipped
+        with its command named.
+
+        target: the lane, `path/to/file.py::test`.
+        on: comma-separated host aliases, `local` for this machine.
+        group: a parametrize name whose value names each job's cells, `model` say.
+        per_job: how many cells one job takes when no name groups them, 0 for all in one.
+        rerun: run cells whose data is already complete.
+        timeout: seconds one cell may take before its process is killed.
+        queue: the scheduler queue for queued hosts.
+        walltime: the walltime for queued hosts.
+        mem_gb: the memory for queued hosts.
+        gpus: cards per job.
+        node: the ledger slug the receipts serve, the directory under `experiments` when unset.
+        dry_run: print the plan and dispatch nothing.
+        wait: block until every dispatched job settles.
+        yes: dispatch without asking.
+        agent: print the compact tabular mode instead of the default rich table.
+        """
+        base = workspace_root()
+        manifest = load(base / project.manifest)
+        with progress(f"collecting {target}"):
+            probe = ["run", "--", "python", "-m", "mainboard.jobs.lanes", "collect", target]
+            cells = lanes_module.parsed(localhost[project.name][probe]())
+        if not cells:
+            raise MissionError(f"{target} collected no cells")
+        groups = lanes_module.grouped(cells, by=group, per_job=per_job)
+        hosts = [alias.strip() for alias in on.split(",") if alias.strip()]
+        served = node or lanes_module.node_of(target)
+        pytest_args = ["-p", "no:randomly", "-q", "--no-header", *(["--rerun"] if rerun else [])]
+        plan = lanes_module.summary(hosts, groups)
+        mode = mode_of(json_mode=False, agent=agent)
+        rows(plan, mode=mode, fields=(), title="lanes")
+        if dry_run:
+            return 0
+        if not yes and sys.stdin.isatty() and not _agreed():
+            raise SystemExit(1)
+        dispatched: list[tuple[str, str, str]] = []
+        exit_code = 0
+        for host in hosts:
+            profile = manifest.hosts.get(host)
+            if profile is not None and profile.platform == "win-64":
+                spelled = " ".join(pytest_args)
+                print(
+                    f"{host}: a Windows host takes no submission yet; run there: "
+                    f"mainboard run --on {host} -- .bin\\mainboard.exe run {target} -- {spelled}",
+                    file=sys.stderr,
+                )
+                continue
+            fresh = ["--fresh", "--timeout", str(timeout)]
+            for chosen in groups:
+                line = [target, "--", *fresh, *chosen.ids, "--", *pytest_args]
+                if host == "local":
+                    code = board("local").run(line)
+                    exit_code = exit_code or code
+                    dispatched.append((host, chosen.name, f"local exit {code}"))
+                    continue
+                with progress(f"submitting {chosen.name} on {host}") as stage:
+                    job = board(host).submit(
+                        joined(line),
+                        watch=stage,
+                        name=f"lanes-{host}-{chosen.name}",
+                        queue=queue,
+                        walltime=walltime,
+                        mem_gb=mem_gb,
+                        gpus=gpus,
+                        node=served,
+                    )
+                dispatched.append((host, chosen.name, job.handle.id))
+        rows(
+            [{"host": h, "group": g, "handle": i} for h, g, i in dispatched],
+            mode=mode,
+            fields=(),
+            title="dispatched",
+        )
+        if not wait:
+            return exit_code
+        for host, name, identity in dispatched:
+            if identity.startswith("local exit"):
+                continue
+            with progress(f"waiting on {identity} ({host}, {name})"):
+                settled = board("local").verdicts().wait(identity, host=host)
+            exit_code = exit_code or settled.code
+        return exit_code
 
     def declared(
         spec: str, job: tuple[str, ...], name: str, given: tuple[str, ...] = ()
