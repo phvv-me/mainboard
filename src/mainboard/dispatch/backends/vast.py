@@ -42,7 +42,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
 
     from ...context.plan import ExecutionPlan
     from ...costs.catalog import Offer
@@ -63,6 +63,10 @@ _CUDA_FIELD = "cuda_max_good"
 # address wait pulling and ended with no container at all (three rentals, 2026-09-12), while hosts
 # at a few Gbps were running inside two minutes.
 _DOWNLOAD_FIELD = "inet_down"
+# How many offers one rental may try when the market takes each one between the search and
+# the create, which Vast answers with this token (RTX 5090 offer 26371154, 2026-09-12).
+_PICK_ATTEMPTS = 3
+_NO_SUCH_ASK = "no_such_ask"
 _DOWNLOAD_FLOOR_MBPS = 500.0
 _CAPABILITY_FIELD = "compute_cap"
 # Local disk per rental, in GB. It is also what an offer search prices storage at, so one number
@@ -134,6 +138,13 @@ def cuda_max_good(offer: Mapping) -> float:
         return float(offer[_CUDA_FIELD])
     except KeyError, TypeError, ValueError:
         return 0.0
+
+
+class OfferTaken(MissionError):
+    """The offer a create named was rented by someone else between the search and the create."""
+
+    def __init__(self, identifier: int | str) -> None:
+        super().__init__(f"vast offer {identifier} was taken before the create landed")
 
 
 def download(offer: Mapping) -> float:
@@ -387,7 +398,12 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         offers = self.search(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr)
         if not offers:
             self.refuse(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr)
-        return max(offers, key=lambda offer: (float(offer["reliability2"]), -self.rate(offer)))
+        return self.best(offers)
+
+    def best(self, offers: Sequence[Mapping]) -> dict:
+        """The most reliable offer of a page, ties going to the cheaper machine."""
+        chosen = max(offers, key=lambda offer: (float(offer["reliability2"]), -self.rate(offer)))
+        return dict(chosen)
 
     def rate(self, offer: Mapping) -> float:
         """What one hour of `offer` costs under this backend's pricing mode."""
@@ -455,21 +471,39 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         """
         self.admit(plan, resources)
         key = identity(plan.profile.vars.get("ssh-key", ""))
-        offer = self.pick(
-            gpu_name=resources.gpu_name,
-            gpus=max(resources.gpus, 1),
-            max_usd_hr=self.hourly_cap(resources, landing=LANDING_SECONDS),
-        )
         marker = f"echo {_EXIT_SENTINEL}$status\nexit $status\n"
         script = f"{seeded(key.public)}\n{waiting()}\n{marker}"
-        handle = self.rented(
-            offer,
-            plan=plan,
-            launch={"runtype": "ssh", "onstart": script},
-            allocation=allocation,
-            resources=resources,
-            setup_s=LANDING_SECONDS,
-        )
+        gpus = max(resources.gpus, 1)
+        cap = self.hourly_cap(resources, landing=LANDING_SECONDS)
+        page = self.search(gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap)
+        if not page:
+            self.refuse(gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap)
+        for _ in range(_PICK_ATTEMPTS):
+            offer = self.best(page)
+            try:
+                handle = self.rented(
+                    offer,
+                    plan=plan,
+                    launch={"runtype": "ssh", "onstart": script},
+                    allocation=allocation,
+                    resources=resources,
+                    setup_s=LANDING_SECONDS,
+                )
+                break
+            except OfferTaken:
+                # The market moved between the search and the create; the next best offer on
+                # the same page is asked for, and the reservation is reopened for it.
+                page = [row for row in page if row["id"] != offer["id"]]
+                logger.warning(
+                    "vast offer %s was taken before the create; picking again", offer["id"]
+                )
+                if not page:
+                    self.refuse(gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap)
+        else:
+            raise MissionError(
+                f"vast took {_PICK_ATTEMPTS} offers out from under the create in a row; the "
+                "market is moving faster than a rental can be placed, try again in a minute"
+            )
         opened = False
         try:
             endpoint = self.opened(handle, key=key)
@@ -535,6 +569,12 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             except ValueError:
                 detail = {}
             reason = detail.get("msg") or detail.get("message") or detail.get("error") or ""
+            if 400 <= refused.code < 500:
+                # The provider validated the request and declined it, so nothing was created
+                # and the reservation can close on its own.
+                allocation.refused()
+            if _NO_SUCH_ASK in str(reason):
+                raise OfferTaken(offer["id"]) from refused
             raise MissionError(
                 f"vast refused offer {offer['id']} (HTTP {refused.code}): {str(reason)[:400]}"
             ) from refused

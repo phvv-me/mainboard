@@ -34,6 +34,18 @@ class Allocation(FrozenModel):
         self.cache.bind(self.record, handle)
         return handle
 
+    def refused(self) -> None:
+        """The provider answered the create with a refusal, so this request allocated nothing.
+
+        A 4xx on the create call is the provider validating the request and declining it before
+        any instance exists, which is the one outcome that lets a request past the API boundary
+        stand as prepared again, to be sent to another offer or closed by `interrupted`;
+        anything ambiguous stays `submitting` for a reconciliation by label.
+        """
+        current = self.cache.creation(self.label, self.record.target)
+        if current.verdict == vocabulary.SUBMITTING:
+            self.cache.reopen(current)
+
     def interrupted(self) -> None:
         """Only a request that never crossed the API boundary is known not to have created."""
         current = self.cache.creation(self.label, self.record.target)

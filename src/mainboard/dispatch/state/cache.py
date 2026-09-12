@@ -257,6 +257,30 @@ class Cache:
             raise ValueError(f"creation {run.creation!r} is no longer prepared; do not resend it")
         return RunRecord.model_validate_json(row["data"])
 
+    def reopen(self, run: RunRecord) -> RunRecord:
+        """Return a submitting creation to prepared, once the provider has declined it.
+
+        The provider's refusal of the create call is proof that nothing was allocated, so the
+        request stands exactly where it did before the boundary and may be sent again or be
+        left to `interrupted` to close.
+        """
+        row = self.connection.execute(
+            "UPDATE runs SET data = json_set(data, '$.state', ?, '$.verdict', ?, '$.lease', "
+            "json('null')) WHERE target = ? AND handle = ? AND submitted_at = ? "
+            "AND json_extract(data, '$.verdict') = ? RETURNING data",
+            (
+                vocabulary.PREPARED,
+                vocabulary.PREPARED,
+                run.target,
+                run.handle,
+                run.submitted_at,
+                vocabulary.SUBMITTING,
+            ),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"creation {run.creation!r} is not submitting; nothing to reopen")
+        return RunRecord.model_validate_json(row["data"])
+
     def creation(self, label: str, target: str) -> RunRecord:
         """Read the same request before or after its provider handle replaced the intent."""
         row = self.connection.execute(

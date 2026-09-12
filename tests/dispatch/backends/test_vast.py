@@ -825,6 +825,63 @@ def test_a_rental_is_created_waiting_for_a_landing_rather_than_running_the_comma
     assert (rental.endpoint.port, rental.endpoint.identity) == (41022, str(key))
 
 
+def test_a_create_refused_as_no_such_ask_re_picks_the_next_offer_on_the_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The market moves between the search and the create, and the next best offer is asked.
+
+    Vast answers a create for an offer someone else just took with `no_such_ask` (RTX 5090
+    offer 26371154, 2026-09-12); that is a definitive nothing-was-created, so the reservation
+    reopens and the next offer on the same page is rented without a second search.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    keypair(tmp_path)
+    monkeypatch.setattr(vast_module, "reachable", lambda endpoint, *, sleeper: endpoint)
+    taken = HTTPError(
+        f"{_ROOT}/asks/11/",
+        400,
+        "Bad Request",
+        Message(),
+        BytesIO(b'{"msg":"error 404/3603: no_such_ask  Instance type by id 11 is not available"}'),
+    )
+    page = {"offers": [offer(11, dph=0.5, reliability2=0.999), offer(22, dph=0.2)]}
+    backend = vast_backend(page, taken, _CREATED, {"success": True}, running(), naps=Naps())
+    resources = Resources(max_usd=1.0, walltime="00:30:00", gpus=1)
+    rental = backend.rent(vast_plan(), resources, allocation=created_request())
+    asked = [url for url in backend.transport.urls if "/asks/" in url]
+    assert asked == [f"{_ROOT}/asks/11/", f"{_ROOT}/asks/22/"], "the taken offer, then the next"
+    assert backend.transport.urls.count(f"{_ROOT}/bundles/") == 1, "one page serves both picks"
+    assert rental.handle == "4242"
+
+
+def test_a_definitive_create_refusal_closes_the_reservation_it_opened() -> None:
+    """A 4xx on the create is the provider declining before any instance exists.
+
+    The reservation crossed the API boundary, so it sat `submitting`; a refusal that proves
+    nothing was created puts it back to prepared, so the same rent can try another offer and
+    the dispatcher's exit can close it, instead of blocking every later request for the same
+    script until someone reconciles a label that never reached the provider.
+    """
+    refused = HTTPError(
+        f"{_ROOT}/asks/11/", 400, "Bad Request", Message(), BytesIO(b'{"msg":"ask expired"}')
+    )
+    backend = vast_backend(refused)
+    allocation = created_request()
+    with pytest.raises(MissionError, match="offer 11"):
+        backend.rented(
+            offer(11, dph=0.17),
+            plan=vast_plan(),
+            launch={"runtype": "ssh"},
+            allocation=allocation,
+            resources=Resources(max_usd=1.0, walltime="00:30:00"),
+        )
+    reopened = allocation.cache.creation(allocation.label, allocation.record.target)
+    assert reopened.verdict == "prepared", "back where it stood before the boundary"
+    allocation.interrupted()
+    closed = allocation.cache.creation(allocation.label, allocation.record.target)
+    assert closed.verdict == "failed", "and the dispatcher's exit closes it"
+
+
 def test_a_rental_that_never_comes_up_is_destroyed_rather_than_left_billing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
