@@ -429,7 +429,8 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
                 f"builds for. The best is {_describe(best, gpu_name)} at compute capability "
                 f"{capability(best)}, below the sm_{self.CAPABILITY_FLOOR // 10} floor. Renting "
                 "it would boot, bill, and die at the first kernel launch with no kernel image "
-                "for its own card. Maxwell, Pascal and Volta went with it; ask for Turing or newer."
+                "for its own card. Maxwell, Pascal and Volta went with it; ask for Turing or "
+                "newer."
             )
         best = max(buildable, key=download)
         raise MissionError(
