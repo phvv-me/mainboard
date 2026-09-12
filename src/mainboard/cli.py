@@ -955,7 +955,7 @@ def build(root: Path | None = None) -> App:
         queue: str = "",
         walltime: str = "",
         mem_gb: int = 0,
-        gpus: int = 1,
+        gpus: int = 0,
         node: str = "",
         dry_run: bool = False,
         wait: bool = False,
@@ -981,7 +981,7 @@ def build(root: Path | None = None) -> App:
         queue: the scheduler queue for queued hosts.
         walltime: the walltime for queued hosts.
         mem_gb: the memory for queued hosts.
-        gpus: cards per job.
+        gpus: cards per job, the host profile's default when 0.
         node: the ledger slug the receipts serve, the directory under `experiments` when unset.
         dry_run: print the plan and dispatch nothing.
         wait: block until every dispatched job settles.
