@@ -5,10 +5,10 @@ import pytest
 from mainboard import MissionError
 from mainboard.dispatch import rentals as rentals_module
 from mainboard.dispatch.rentals import (
-    handoff,
-    identity,
     LANDING_SECONDS,
     LAUNCH,
+    handoff,
+    identity,
     reachable,
     seeded,
     waiting,
