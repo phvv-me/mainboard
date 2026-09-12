@@ -254,15 +254,16 @@ class Sealed(Image):
         lines: list[str] = []
         if self.pins:
             staging = shlex.quote(PINS)
-            lines += [
-                *(
-                    f'if [ ! -e "$mb_root"/{shlex.quote(pin)} ]; then echo '
-                    f"{shlex.quote(f'mainboard: the need {pin} is not on the mirror')} >&2; false; fi"
-                    for pin in self.pins
-                ),
-                f'if [ ! -e "$mb_snap"/{staging} ]; then mkdir -p "$mb_snap"/{shlex.quote(str(PurePosixPath(PINS).parent))}; '
-                f'ln -sfn "$mb_root"/{staging} "$mb_snap"/{staging}; fi',
-            ]
+            parent = shlex.quote(str(PurePosixPath(PINS).parent))
+            for pin in self.pins:
+                absent = shlex.quote(f"mainboard: the need {pin} is not on the mirror")
+                lines.append(
+                    f'if [ ! -e "$mb_root"/{shlex.quote(pin)} ]; then echo {absent} >&2; false; fi'
+                )
+            lines.append(
+                f'if [ ! -e "$mb_snap"/{staging} ]; then mkdir -p "$mb_snap"/{parent}; '
+                f'ln -sfn "$mb_root"/{staging} "$mb_snap"/{staging}; fi'
+            )
         for need in self.needs:
             quoted = shlex.quote(need)
             parent = shlex.quote(str(PurePosixPath(need).parent))
