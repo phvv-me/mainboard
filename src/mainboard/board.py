@@ -516,10 +516,10 @@ class Board:
         plan = self.plan(container="none")
         with open_shell(plan, self.remote_root()) as shell:
             text = shell.run(gpus_command(), activate=True)
-        start = text.rfind('{"schema_version"')
-        if start < 0:
+        line = next((line for line in reversed(text.splitlines()) if line.startswith("{")), "")
+        if not line:
             raise MissionError(f"no occupancy in the probe output: {text.strip()[-240:]}")
-        return Occupancy.model_validate_json(text[start:])
+        return Occupancy.model_validate_json(line)
 
     def stress(self, *, n: int = 8192, repetitions: int = 5) -> StressReport:
         """One device's measured rates and link bandwidths, local or through the host's tool.

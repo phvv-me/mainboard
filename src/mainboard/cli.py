@@ -838,6 +838,10 @@ def build(root: Path | None = None) -> App:
                 continue
             readings[name] = occupancy.model_dump(mode="json")
             listed.extend(occupancy_rows(name, occupancy))
+        if json and not every:
+            # One host prints its reading alone, one line, which is what a remote read parses.
+            print(dumps(readings.get(on, {})))
+            return
         if json:
             print(dumps(readings, indent=2))
             return
