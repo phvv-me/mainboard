@@ -114,10 +114,13 @@ def unframed(log: str) -> str:
     return ""
 
 
-# What the trials plugin prints for a cell whose data a previous run already took, and the
-# pytest summary such a session ends with. A job made only of those cells has nothing to
-# deliver and is still a settled job.
-_COVERED = re.compile(r"complete, run \S+ took it")
+# What the trials plugin prints for a cell whose data a previous run already took, as the
+# coverage heading every session opens with and as the skip reason `-rs` prints, and the pytest
+# summary such a session ends with. A job made only of those cells has nothing to deliver and is
+# still a settled job.
+_COVERED = re.compile(
+    r"^\s*complete \S+ on .*\d+/\d+ from \S+|complete, run \S+ took it", re.MULTILINE
+)
 _ONLY_SKIPS = re.compile(r"^\s*\d+ skipped in [\d.]+s\s*$", re.MULTILINE)
 _ACQUIRED = re.compile(r"\b\d+ (passed|known|failed|error)", re.MULTILINE)
 

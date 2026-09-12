@@ -681,10 +681,12 @@ def test_a_native_job_whose_every_cell_was_already_covered_settles_without_a_rec
     )
     probing(board, monkeypatch, finishing())
     monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: None)
+    # The coverage heading alone, as a quiet session prints it; the skip reason needs `-rs`.
     transcript = (
         "mainboard: fresh process for test_law.py::test_law[0-gpt2]\n"
+        "evidence on NVIDIA GB10 (GPU-1):\n"
         "  complete experiments/node/test_law.py::test_law on GPU-1, gpt2  1/1 from 2026\n"
-        "SKIPPED [1] test_law.py:17: complete, run 20260912T030615Z-01a0 took it; --rerun\n"
+        "s                                    [100%]\n"
         "1 skipped in 0.76s\n"
     )
     monkeypatch.setattr(Job, "transcript", lambda job: transcript)
