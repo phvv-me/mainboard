@@ -171,9 +171,10 @@ class PanelPlot(Plot):
         A Heatmap panel holds exactly one layer. `x` and `y` are numeric columns whose distinct
         values become the ordered categories, `color` the numeric cell value, and an optional
         `text` the cell annotation; cells without a row stay blank. Layer kws: `cmap` (a
-        Matplotlib colormap name), `log` (a logarithmic color scale), `fontsize` for the
-        annotations, `label` for the color bar, `fmt` for the tick labels and `cbar_fmt` for the
-        color bar's, which sits at the cell values.
+        Matplotlib colormap name), `log` (a logarithmic color scale), `vmin` and `vmax` (the
+        color scale's ends, the cell values' by default), `fontsize` for the annotations,
+        `label` for the color bar, `fmt` for the tick labels and `cbar_fmt` for the color bar's,
+        which sits at the cell values when there are at most eight of them.
         """
         panel = self.panel
         if len(panel.layers) != 1:
@@ -203,11 +204,9 @@ class PanelPlot(Plot):
         logarithmic = bool(kws.pop("log", False))
         colormap = mpl.colormaps[str(kws.pop("cmap", "Purples"))]
         values = np.ma.masked_invalid(grid)
-        norm = (
-            LogNorm(values.min(), values.max())
-            if logarithmic
-            else Normalize(values.min(), values.max())
-        )
+        low = float(kws.pop("vmin", values.min()))
+        high = float(kws.pop("vmax", values.max()))
+        norm = LogNorm(low, high) if logarithmic else Normalize(low, high)
         axis = target.subplots()
         mesh = axis.imshow(values, cmap=colormap, norm=norm, aspect="auto", origin="lower", **kws)
         axis.set_xticks(range(len(xs)), [fmt.format(value) for value in xs])
@@ -228,7 +227,9 @@ class PanelPlot(Plot):
                 )
         colorbar = target.colorbar(mesh, ax=axis, fraction=0.05, pad=0.03)
         colorbar.set_label(label)
-        colorbar.set_ticks(sorted(set(values.compressed().tolist())))
+        distinct = sorted(set(values.compressed().tolist()))
+        if len(distinct) <= 8:
+            colorbar.set_ticks(distinct)
         colorbar.ax.yaxis.set_major_formatter(
             FuncFormatter(lambda value, _: bar_fmt.format(value))
         )
