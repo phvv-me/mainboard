@@ -52,6 +52,11 @@ def stress_command(*, n: int, repetitions: int) -> str:
     return f"python -m {_TOOL}.probe.stress --n {n} --repetitions {repetitions}"
 
 
+def gpus_command() -> str:
+    """The command a remote host runs to say who holds each of its cards, as JSON."""
+    return f"{_TOOL} gpus --json"
+
+
 def facts_command() -> str:
     """The command a machine answers with its own hardware snapshot as JSON."""
     return f"{_TOOL} facts --json"

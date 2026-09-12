@@ -1,11 +1,12 @@
 import sys
 from contextlib import suppress
 from functools import partial
-from json import loads
+from json import dumps, loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 from cyclopts import App, Parameter
+from pydantic import JsonValue
 
 import mainboard
 
@@ -25,6 +26,7 @@ from .help import Help
 from .listing import Listing
 from .manifest.loading import load
 from .manifest.schema.plot import PlotStyle
+from .probe.occupancy import rows as occupancy_rows
 from .probe.stress import rows as stress_rows
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
@@ -794,6 +796,52 @@ def build(root: Path | None = None) -> App:
             fields=_fields(fields),
             title="facts",
         )
+
+    @app.command
+    def gpus(
+        on: str = "local", *, every: bool = False, json: bool = False, agent: bool = False
+    ) -> None:
+        """Show who holds each card right now: utilization, memory and the processes on it.
+
+        The screen that says whether a card can take an acquisition. `facts` describes the
+        hardware and `jobs` what this workspace dispatched; a resident server or another user's
+        run appears only here.
+
+        on: the host alias to read, `local` for this machine.
+        every: read this machine and every declared ssh host instead of one host.
+        json: print the readings as JSON instead of the table.
+        agent: print the compact tabular mode instead of the default rich table.
+        """
+        base = workspace_root()
+        manifest = load(base / project.manifest)
+        remote = [alias for alias, profile in manifest.hosts.items() if profile.kind == "ssh"]
+        names = ["local", *remote] if every else [on]
+        listed: list[dict[str, str | int | bool]] = []
+        readings: dict[str, JsonValue] = {}
+        for name in names:
+            try:
+                with progress(f"reading the cards of {name}"):
+                    occupancy = board(name).occupancy()
+            except (MissionError, OSError, ValueError) as error:
+                why = str(error).splitlines()[0][:80]
+                listed.append(
+                    {
+                        "host": name,
+                        "card": "",
+                        "util_pct": 0,
+                        "memory_gb": 0.0,
+                        "of_gb": 0.0,
+                        "free": False,
+                        "holders": f"unreachable: {why}",
+                    }
+                )
+                continue
+            readings[name] = occupancy.model_dump(mode="json")
+            listed.extend(occupancy_rows(name, occupancy))
+        if json:
+            print(dumps(readings, indent=2))
+            return
+        rows(listed, mode=mode_of(json_mode=False, agent=agent), fields=(), title="gpus")
 
     @app.command
     def stress(

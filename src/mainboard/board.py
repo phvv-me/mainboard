@@ -37,7 +37,14 @@ from .dispatch.commandline import joined, vetted
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.jobs.spec import walltime_seconds
 from .dispatch.landing import Landing, renter
-from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts, stress_command
+from .dispatch.onboard import (
+    HostSetup,
+    Onboarding,
+    facts_command,
+    gpus_command,
+    read_facts,
+    stress_command,
+)
 from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shared import logger
@@ -63,6 +70,7 @@ from .jobs.target import Target
 from .manifest.loading import load
 from .monitor import Monitor
 from .nodes import evidence_of
+from .probe.occupancy import Occupancy
 from .probe.snapshot import HostFacts
 from .probe.stress import StressReport
 from .scaffold import Scaffold
@@ -496,6 +504,22 @@ class Board:
             return HostFacts.collected()
         with open_shell(self.plan(container="none"), self.remote_root()) as shell:
             return read_facts(shell.run(facts_command(), activate=True))
+
+    def occupancy(self) -> Occupancy:
+        """Who holds each card of this host right now, local or through the host's own tool.
+
+        A scheduler host answers for its login node, which carries no card, so its allocation's
+        cards are not what this reads; ask `jobs` for what runs there.
+        """
+        if self.local:
+            return Occupancy.collected()
+        plan = self.plan(container="none")
+        with open_shell(plan, self.remote_root()) as shell:
+            text = shell.run(gpus_command(), activate=True)
+        start = text.rfind('{"schema_version"')
+        if start < 0:
+            raise MissionError(f"no occupancy in the probe output: {text.strip()[-240:]}")
+        return Occupancy.model_validate_json(text[start:])
 
     def stress(self, *, n: int = 8192, repetitions: int = 5) -> StressReport:
         """One device's measured rates and link bandwidths, local or through the host's tool.
