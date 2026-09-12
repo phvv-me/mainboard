@@ -25,6 +25,7 @@ from .help import Help
 from .listing import Listing
 from .manifest.loading import load
 from .manifest.schema.plot import PlotStyle
+from .probe.stress import rows as stress_rows
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
 
@@ -792,6 +793,41 @@ def build(root: Path | None = None) -> App:
             mode=mode_of(json_mode=json, agent=agent),
             fields=_fields(fields),
             title="facts",
+        )
+
+    @app.command
+    def stress(
+        on: str = "local",
+        *,
+        json: bool = False,
+        agent: bool = False,
+        n: int = 8192,
+        repetitions: int = 5,
+    ) -> None:
+        """Measure a card's achieved rates per precision and its copy bandwidths.
+
+        on: the host alias to measure, `local` for this machine.
+        json: print the report JSON instead of the table.
+        agent: print the compact tabular mode instead of the default rich table.
+        n: the square GEMM side timed at every precision (FP64 runs at half).
+        repetitions: timed calls per measurement, whose median is kept.
+        """
+        with progress(f"stressing {on}"):
+            report = board(on).stress(n=n, repetitions=repetitions)
+        if json:
+            print(report.model_dump_json())
+            return
+        record(
+            {
+                "device": report.device,
+                "capability": report.capability,
+                "sm_count": report.sm_count,
+                "datasheet_fp32_tflops": round(report.datasheet_fp32_tflops, 1),
+                "rows": list(stress_rows(report)),
+            },
+            mode=mode_of(json_mode=False, agent=agent),
+            fields=(),
+            title="stress",
         )
 
     @app.command

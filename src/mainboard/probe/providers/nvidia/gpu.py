@@ -218,6 +218,14 @@ class NvidiaGPU(GPU):
         return text(raw).split("\x00", 1)[0].strip()
 
     @cached_property
+    def peak_clock_khz(self) -> int:
+        """The maximum SM clock NVML reports, in kHz; 0 when NVML cannot say."""
+        with suppress(*self.apis.nvml_errors):
+            nvml = self.apis.nvml
+            return int(nvml.device_get_max_clock_info(self.handle, nvml.ClockType.CLOCK_SM)) * 1000
+        return 0
+
+    @cached_property
     def peak_bandwidth_gbs(self) -> float:
         """Theoretical peak memory bandwidth in GB/s, 0.0 when NVML will not report it.
 

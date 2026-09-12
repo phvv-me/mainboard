@@ -79,6 +79,11 @@ class GPU(Unit, Registry):
         return Memory(scope="device", source=self.backend, supported=False)
 
     @cached_property
+    def peak_clock_khz(self) -> int:
+        """The highest SM clock the card can run, in kHz; 0 when the backend cannot say."""
+        return 0
+
+    @cached_property
     def peak_bandwidth_gbs(self) -> float:
         """Theoretical peak memory bandwidth in GB/s, 0.0 when the provider cannot say."""
         return 0.0

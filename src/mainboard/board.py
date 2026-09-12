@@ -37,7 +37,7 @@ from .dispatch.commandline import joined, vetted
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
 from .dispatch.jobs.spec import walltime_seconds
 from .dispatch.landing import Landing, renter
-from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts
+from .dispatch.onboard import HostSetup, Onboarding, facts_command, read_facts, stress_command
 from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shared import logger
@@ -64,6 +64,7 @@ from .manifest.loading import load
 from .monitor import Monitor
 from .nodes import evidence_of
 from .probe.snapshot import HostFacts
+from .probe.stress import StressReport
 from .scaffold import Scaffold
 from .tracking import (
     Sampler,
@@ -495,6 +496,25 @@ class Board:
             return HostFacts.collected()
         with open_shell(self.plan(container="none"), self.remote_root()) as shell:
             return read_facts(shell.run(facts_command(), activate=True))
+
+    def stress(self, *, n: int = 8192, repetitions: int = 5) -> StressReport:
+        """One device's measured rates and link bandwidths, local or through the host's tool.
+
+        A remote host answers with its own installed tool, like `facts`; a scheduler host has
+        no card on its login node and is refused with the job to submit instead.
+        """
+        if self.local:
+            probe = shlex.split(stress_command(n=n, repetitions=repetitions))
+            command = localhost[Project().name]["run", "--", *probe]
+            return StressReport.model_validate_json(_report_json(command()))
+        if self.profile.kind in {"pbs", "slurm"}:
+            raise MissionError(
+                f"{self.host} is a scheduler host with no card on its login node; submit "
+                f"packages/{Project().name}/src/{Project().name}/probe/stress.py::app instead"
+            )
+        with open_shell(self.plan(container="none"), self.remote_root()) as shell:
+            text = shell.run(stress_command(n=n, repetitions=repetitions), activate=True)
+        return StressReport.model_validate_json(_report_json(text))
 
     @property
     def floor(self) -> str:
@@ -1491,3 +1511,11 @@ class Board:
         batch_id: the batch to watch.
         """
         return Watch(self, batch_id, bus=self.receipts(batch_id))
+
+
+def _report_json(text: str) -> str:
+    """The report JSON at the end of a probe's captured output, whatever preceded it."""
+    start = text.rfind('{"schema_version"')
+    if start < 0:
+        raise MissionError(f"no stress report in the probe output: {text.strip()[-240:]}")
+    return text[start:]
