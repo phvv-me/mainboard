@@ -11,6 +11,8 @@ from tempfile import NamedTemporaryFile
 from patos import FrozenModel
 from pydantic import Field
 
+from .archive import ParquetArtifacts
+
 
 class Artifact(FrozenModel):
     """A portable content reference, relative to its declared project root."""
@@ -32,7 +34,10 @@ class Artifact(FrozenModel):
         Dispatch mounts result directories outside its source snapshot. References remain
         project-relative across that mount and after fetching; their hash verifies the bytes.
         """
-        data = (root / self.relative).read_bytes()
+        try:
+            data = (root / self.relative).read_bytes()
+        except FileNotFoundError:
+            data = ParquetArtifacts.read(root / self.relative, boundary=root, digest=self.sha256)
         if len(data) != self.size or hashlib.sha256(data).hexdigest() != self.sha256:
             raise ValueError(f"artifact content changed: {self.path}")
         return data

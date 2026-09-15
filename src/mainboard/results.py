@@ -3,7 +3,6 @@
 import json
 import os
 import sqlite3
-from compression import zstd
 from contextlib import closing
 from io import BytesIO
 from pathlib import Path
@@ -14,7 +13,7 @@ import polars as pl
 
 from .dispatch import vocabulary
 from .dispatch.shared import db_file
-from .observe.frames import parse_tail
+from .observe.files import FrameFile
 from .trials.artifacts import Artifact
 
 
@@ -146,12 +145,7 @@ class Results:
         for root in roots:
             owner = root.parents[1]
             for path in sorted(root.glob("*/evidence/artifacts/*/*/events/*.ndjson*")):
-                raw = path.read_bytes()
-                if path.suffix == ".zst":
-                    raw = zstd.decompress(raw)
-                # A live transfer may end inside a UTF-8 character as well as inside JSON.
-                complete, _, _ = raw.rpartition(b"\n")
-                for frame in parse_tail(complete.decode() + "\n"):
+                for frame in FrameFile(path).frames():
                     record = json.dumps(
                         {
                             "project": owner.name,
