@@ -114,6 +114,7 @@ def test_the_install_routes_are_offered_best_first_and_all_read_the_synced_sourc
     assert routes.names == ["uv", "uv-bootstrap", "pip"]
     assert all("packages/tool" in routes.select(name).command for name in routes.names)
     assert "astral.sh/uv" in routes.select("uv-bootstrap").command
+    assert "--python '>=3.14'" in routes.select("uv").command
 
 
 def test_a_workspace_that_vendors_no_source_installs_the_version_it_declares() -> None:
@@ -128,7 +129,9 @@ def test_a_workspace_that_vendors_no_source_installs_the_version_it_declares() -
 
     assert routes.names == ["present", "uv-index", "uv-bootstrap-index", "pip-index"]
     assert all("packages/tool" not in routes.select(name).command for name in routes.names)
-    assert routes.select("uv-index").command == "uv tool install --force 'mainboard>=0.4.8'"
+    assert routes.select("uv-index").command == (
+        "uv tool install --force --python '>=3.14' 'mainboard>=0.4.8'"
+    )
     assert routes.select("pip-index").command.endswith("--upgrade 'mainboard>=0.4.8'")
     assert "astral.sh/uv" in routes.select("uv-bootstrap-index").command
     # A machine that already runs it installs nothing at all.
@@ -151,7 +154,9 @@ def test_the_declared_version_reaches_the_index_command_the_way_a_requirement_sp
     routes = installers(
         PosixShell(machine_with(), plan(), "/repo"), "packages/tool", vendored=False, floor=floor
     )
-    assert routes.select("uv-index").command == f"uv tool install --force {shlex.quote(wanted)}"
+    assert routes.select("uv-index").command == (
+        f"uv tool install --force --python '>=3.14' {shlex.quote(wanted)}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -310,6 +315,7 @@ def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
         "installing",
         "checking",
         "provisioning",
+        "checking",
         "reading",
         "onboarded",
     ]
@@ -380,6 +386,7 @@ def test_onboarding_ships_the_compiled_artifact_unless_told_to_solve_on_the_host
         "installing",
         "checking",
         "provisioning",
+        "checking",
         "reading",
     ]
 
@@ -533,6 +540,11 @@ def test_a_dead_queue_daemon_is_started_once_and_refused_when_it_stays_down(
     setup, _ = onboarding(revived, monkeypatch)
     assert setup.run().host
     assert revived.ran("pueued -d")
+    installed = next(i for i, line in enumerate(revived.lines) if "mainboard install" in line)
+    daemon = next(i for i, line in enumerate(revived.lines) if "pueued -d" in line)
+    assert installed < daemon
+    assert "activate.sh" in revived.lines[daemon]
+    assert "</dev/null >/dev/null 2>&1" in revived.lines[daemon]
 
     dead = machine_with(rules=[("pueue status", 1, ""), *_HEALTHY])
     setup, _ = onboarding(dead, monkeypatch)

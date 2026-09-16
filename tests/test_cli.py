@@ -552,6 +552,17 @@ def test_the_mode_flags_refuse_each_other_before_anything_is_probed(
         build(depot)(["compute", "--json", "--agent"])
 
 
+def test_lanes_refuses_a_windows_roster_before_collecting_or_dispatching(depot: Path) -> None:
+    manifest = depot / "mainboard.toml"
+    original = manifest.read_text()
+    try:
+        manifest.write_text(original + '\n[hosts.homelab]\nplatform = "win-64"\nkind = "ssh"\n')
+        with pytest.raises(MissionError, match="no jobs were dispatched"):
+            build(depot)(["lanes", "run", "missing.py::test", "--on", "gold,homelab", "--yes"])
+    finally:
+        manifest.write_text(original)
+
+
 def test_the_compute_verb_prices_and_credits_the_provider_rows(
     depot: Path,
     relayed: Sequence[Relayed],

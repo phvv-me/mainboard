@@ -80,6 +80,16 @@ outcomes on later passes.
 `run` executes native file targets locally. Use `submit` for remote jobs.
 Collection and help stay local. Plain diagnostic commands use SSH.
 On a cluster, SSH reaches the login endpoint. It provides no batch allocation.
+Windows diagnostic arguments preserve embedded quotes and empty strings through native process
+creation, including `python -c` source. Native Windows collection and direct runs are supported;
+queued submissions remain unsupported. HPC-AI catalog prices absent from the provider response
+are unknown (`null`), never interpreted as free compute.
+`lanes run` refuses a roster containing a Windows host before starting any job; it never
+silently omits that host and returns a misleading success for partial coverage.
+Onboarding selects Python from the tool's declared runtime requirement, not the host's
+older system interpreter. Workspace dependencies still install from the shipped frozen lock.
+The environment is installed before starting its queue service. Startup detaches its streams
+and waits briefly for readiness, so a fresh host need not have a separate global queue install.
 Stopping `wait` does not cancel a job or stop rental billing.
 
 Source snapshots are not deleted automatically. A local job cache cannot prove

@@ -12,11 +12,13 @@
 # host whose uv, pip and mainboard were all present for a directory nobody had shipped it.
 
 import shlex
+from importlib.metadata import metadata
 from typing import TYPE_CHECKING
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from patos import FrozenModel, Resolution, Strategy, StrategyError
+from tenacity import Retrying, retry_if_result, stop_after_attempt, wait_fixed
 
 from ..core.errors import MissionError
 from ..core.project import Project
@@ -237,9 +239,11 @@ def installers(
     dialect = shell.dialect
     fetch_probe, fetch = dialect.uv_bootstrap
     pip_probe, pip = dialect.pip
+    python = shlex.quote(metadata(_TOOL)["Requires-Python"])
+    uv = f"uv tool install --force --python {python}"
     if vendored:
         quoted = shlex.quote(source)
-        editable = f"uv tool install --force --editable {quoted}"
+        editable = f"{uv} --editable {quoted}"
         strategy.register("uv", Installer(shell, probe=dialect.has("uv"), command=editable))
         strategy.register(
             "uv-bootstrap",
@@ -253,7 +257,7 @@ def installers(
         )
         return strategy
     wanted = shlex.quote(f"{_TOOL}{specifier(floor)}")
-    indexed = f"uv tool install --force {wanted}"
+    indexed = f"{uv} {wanted}"
     strategy.register("present", Existing(shell, floor=floor))
     strategy.register("uv-index", Installer(shell, probe=dialect.has("uv"), command=indexed))
     strategy.register(
@@ -472,7 +476,9 @@ class Onboarding:
         since nothing here can daemonize pueue there yet: it runs commands and collects, and a
         `submit` to it refuses on its own until a pueue answers.
         """
-        if not isinstance(pick(self.plan.profile), Pueue) or shell.ok("pueue status"):
+        if not isinstance(pick(self.plan.profile), Pueue) or shell.ok(
+            "pueue status", activate=True
+        ):
             return
         if is_windows(self.plan.profile):
             logger.warning(
@@ -481,8 +487,14 @@ class Onboarding:
                 host,
             )
             return
-        shell.run("pueued -d")
-        if not shell.ok("pueue status"):
+        shell.run("pueued -d </dev/null >/dev/null 2>&1", activate=True)
+        ready = Retrying(
+            retry=retry_if_result(lambda answered: not answered),
+            stop=stop_after_attempt(10),
+            wait=wait_fixed(0.5),
+            retry_error_callback=lambda state: False,
+        )
+        if not ready(shell.ok, "pueue status", activate=True):
             raise MissionError(
                 f"pueued is not answering on {host!r}; install pueue there and start it with "
                 "`pueued -d`, then set the host up again"
@@ -555,11 +567,12 @@ class Onboarding:
             )
             self.watch(f"installing {_TOOL} on {host}")
             winner = bootstrap.tool()
-            self.watch(f"checking pixi and the queue on {host}")
+            self.watch(f"checking pixi on {host}")
             pixi = self.align_pixi(shell, host=host)
-            self.verify_queue(shell, host=host)
             self.watch(f"provisioning {self.env} on {host}")
             bootstrap.environment()
+            self.watch(f"checking the queue on {host}")
+            self.verify_queue(shell, host=host)
             self.watch(f"reading {host} back through its activation")
             hardware = read_facts(shell.run(facts_command(), activate=True))
             setup = HostSetup(

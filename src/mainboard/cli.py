@@ -971,8 +971,8 @@ def build(root: Path | None = None) -> App:
         fresh processes through the runner's `--fresh` mode. `local` runs the groups in place;
         every other host gets a submission with the lane's declared needs and pins shipped, and
         `--wait` blocks on every handle through the same durable sweep `wait` runs, which
-        pulls the receipts home. A Windows host cannot take a submission yet and is skipped
-        with its command named.
+        pulls the receipts home. A Windows host cannot take a submission yet; a roster
+        containing one is refused before any host is dispatched.
 
         target: the lane, `path/to/file.py::test`.
         on: comma-separated host aliases, `local` for this machine.
@@ -994,13 +994,23 @@ def build(root: Path | None = None) -> App:
         """
         base = workspace_root()
         manifest = load(base / project.manifest)
+        hosts = [alias.strip() for alias in on.split(",") if alias.strip()]
+        unsupported = [
+            host
+            for host in hosts
+            if host in manifest.hosts and manifest.hosts[host].platform == "win-64"
+        ]
+        if unsupported:
+            raise MissionError(
+                f"queued lanes do not support Windows hosts: {', '.join(unsupported)}; "
+                "no jobs were dispatched. Use a bounded native run there and collect its receipts."
+            )
         with progress(f"collecting {target}"):
             probe = ["run", "--", "python", "-m", "mainboard.jobs.lanes", "collect", target]
             cells = lanes_module.parsed(localhost[project.name][probe]())
         if not cells:
             raise MissionError(f"{target} collected no cells")
         groups = lanes_module.grouped(cells, by=group, per_job=per_job)
-        hosts = [alias.strip() for alias in on.split(",") if alias.strip()]
         served = node or lanes_module.node_of(target)
         pytest_args = ["-p", "no:randomly", "-q", "--no-header", *(["--rerun"] if rerun else [])]
         plan = lanes_module.summary(hosts, groups)
@@ -1013,15 +1023,6 @@ def build(root: Path | None = None) -> App:
         dispatched: list[tuple[str, str, str]] = []
         exit_code = 0
         for host in hosts:
-            profile = manifest.hosts.get(host)
-            if profile is not None and profile.platform == "win-64":
-                spelled = " ".join(pytest_args)
-                print(
-                    f"{host}: a Windows host takes no submission yet; run there: "
-                    f"mainboard run --on {host} -- .bin\\mainboard.exe run {target} -- {spelled}",
-                    file=sys.stderr,
-                )
-                continue
             fresh = ["--fresh", "--timeout", str(timeout)]
             for chosen in groups:
                 line = [target, "--", *fresh, *chosen.ids, "--", *pytest_args]

@@ -208,7 +208,24 @@ class Windows(Dialect):
         ]
         if activate:
             steps += [f"$env:{key} = {quoted(value)}" for key, value in plan.exports.items()]
-            command = f"{_TOOL} run --env {plan.env} -- {command}"
+            # Windows PowerShell's legacy native-argument binder strips embedded quotes.
+            # Give CreateProcess the CRT-encoded argument vector directly instead. Data such
+            # as Python source, empty strings, percent signs and trailing slashes stays data.
+            arguments = subprocess.list2cmdline(
+                ["run", "--env", plan.env, "--", *shlex.split(command)]
+            )
+            command = "; ".join(
+                [
+                    "$start = New-Object System.Diagnostics.ProcessStartInfo",
+                    f"$start.FileName = {quoted(_TOOL)}",
+                    f"$start.WorkingDirectory = {quoted(root)}",
+                    f"$start.Arguments = {quoted(arguments)}",
+                    "$start.UseShellExecute = $false",
+                    "$process = [System.Diagnostics.Process]::Start($start)",
+                    "$process.WaitForExit()",
+                    "$LASTEXITCODE = $process.ExitCode",
+                ]
+            )
         return "; ".join([*steps, command, "exit $LASTEXITCODE"])
 
     def session(self, host: str, line: str) -> list[str]:
@@ -287,9 +304,9 @@ class HostShell(ABC):
     def close(self) -> None:
         """Release whatever connection the shell held."""
 
-    def ok(self, command: str) -> bool:
+    def ok(self, command: str, *, activate: bool = False) -> bool:
         """Whether `command` exits zero on the host, its output discarded."""
-        retcode, _, _ = self.execute(self.stage(command, activate=False))
+        retcode, _, _ = self.execute(self.stage(command, activate=activate))
         return retcode == 0
 
     def run(self, command: str, *, activate: bool = False) -> str:

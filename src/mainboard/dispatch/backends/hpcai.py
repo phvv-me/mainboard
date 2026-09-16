@@ -214,7 +214,14 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
                 for region in family.get("regionInfos") or []
                 for kind in region.get("instanceTypeInfos") or []
             ]
-        return sorted(rows, key=lambda row: (not row["in_stock"], row["usd_hr"]))
+        return sorted(
+            rows,
+            key=lambda row: (
+                not row["in_stock"],
+                row["usd_hr"] is None,
+                row["usd_hr"] if row["usd_hr"] is not None else 0.0,
+            ),
+        )
 
     def instance(self, handle: str) -> dict:
         """`handle`'s listed instance row, empty once HPC-AI no longer lists it.
@@ -400,13 +407,14 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
         )
 
     @staticmethod
-    def _hourly(kind: Mapping) -> float:
-        """The on-demand hourly rate an instance-type row quotes, 0.0 when it publishes none.
+    def _hourly(kind: Mapping) -> float | None:
+        """The on-demand hourly rate, None when the provider publishes no hourly price.
 
         A type carries one price entry per charge mode (`perHour`, `perDay`, the tide-priced
         `tidePerHour`), and only the plain hourly one is comparable across types.
         """
         for price in kind.get("price") or []:
             if price.get("chargeMode") == "perHour":
-                return float(price["price"])
-        return 0.0
+                value = price.get("price")
+                return float(value) if value is not None else None
+        return None

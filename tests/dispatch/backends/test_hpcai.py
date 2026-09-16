@@ -250,7 +250,7 @@ def test_catalog_flattens_the_console_feed_to_one_row_per_type_per_region() -> N
         }
     )
     rows = backend.catalog()
-    assert [row["instance_type_id"] for row in rows] == ["t-us", "t-mute", "t-eu"]
+    assert [row["instance_type_id"] for row in rows] == ["t-us", "t-eu", "t-mute"]
     assert rows[0] == {
         "gpu": "RTX-4090",
         "gpus": 8,
@@ -260,10 +260,10 @@ def test_catalog_flattens_the_console_feed_to_one_row_per_type_per_region() -> N
         "instance_type_id": "t-us",
         "in_stock": True,
     }
-    assert rows[1] == {
+    assert rows[2] == {
         "gpu": "",
         "gpus": 0,
-        "usd_hr": pytest.approx(0.0),
+        "usd_hr": None,
         "region": "",
         "region_id": "",
         "instance_type_id": "t-mute",
@@ -271,6 +271,14 @@ def test_catalog_flattens_the_console_feed_to_one_row_per_type_per_region() -> N
     }
     assert backend.transport.urls == ["https://www.hpc-ai.com/api/resource/user/instance/list"]
     assert authed_backend({}).catalog() == []
+
+
+@pytest.mark.parametrize(
+    "price", [{"chargeMode": "perHour"}, {"chargeMode": "perHour", "price": None}]
+)
+def test_an_unpriced_hourly_offer_is_unknown_not_free(price: dict) -> None:
+    assert HpcAiBackend._hourly({"price": [price]}) is None
+    assert HpcAiBackend._hourly({"price": [{"chargeMode": "perHour", "price": 0}]}) == 0.0
 
 
 def test_cancel_stops_then_terminates_the_instance_by_id() -> None:

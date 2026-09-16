@@ -1,4 +1,6 @@
 import base64
+import shlex
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -70,10 +72,22 @@ def test_the_windows_stage_sets_location_and_path_and_hands_activation_to_the_ho
     assert bare.endswith("; uv --version; exit $LASTEXITCODE")
     assert "mainboard run" not in bare
     activated = shell.stage("mainboard facts --json", activate=True)
-    assert (
-        "$env:HF_HUB_OFFLINE = '1'; mainboard run --env default -- mainboard facts --json"
-        in activated
-    )
+    assert "$env:HF_HUB_OFFLINE = '1';" in activated
+    assert "$start.FileName = 'mainboard'" in activated
+    assert f"$start.WorkingDirectory = '{_ROOT}'" in activated
+    assert "$start.Arguments = 'run --env default -- mainboard facts --json'" in activated
+    assert "$start.UseShellExecute = $false" in activated
+    assert "$LASTEXITCODE = $process.ExitCode; exit $LASTEXITCODE" in activated
+
+
+def test_windows_native_arguments_bypass_powershell_legacy_quote_loss() -> None:
+    shell = WindowsShell(windows_plan(), _ROOT, ssh=RecordingTransport())
+    args = ["python", "-c", 'print("CUDA ready")', "", "C:\\a b\\", "%PATH%", "$x;&", "it's"]
+    staged = shell.stage(shlex.join(args), activate=True)
+    expected = subprocess.list2cmdline(["run", "--env", "default", "--", *args])
+    assert f"$start.Arguments = {quoted(expected)}" in staged
+    assert "--%" not in staged
+    assert "$process.WaitForExit()" in staged
 
 
 def test_the_windows_shell_runs_each_script_as_its_own_encoded_ssh_one_shot() -> None:
@@ -106,7 +120,7 @@ def test_the_windows_routes_chain_with_semicolons_and_fetch_uv_through_powershel
     assert routes.select("uv-bootstrap").probe == "exit 0"
     assert routes.select("uv-bootstrap").command == (
         "irm https://astral.sh/uv/install.ps1 | iex; "
-        "uv tool install --force --editable packages/tool"
+        "uv tool install --force --python '>=3.14' --editable packages/tool"
     )
     assert routes.select("pip").command.startswith("python -m pip install --user")
     assert " && " not in routes.select("uv-bootstrap").command
@@ -170,12 +184,12 @@ def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
     with caplog.at_level("WARNING", logger="mainboard.dispatch"):
         report = setup.run()
     assert dispatcher.mirrored == [("homelab", _ROOT)]
-    assert transport.ran("uv tool install --force --editable packages/mainboard")
+    assert transport.ran("uv tool install --force --python '>=3.14' --editable packages/mainboard")
     assert transport.ran("mainboard install default --profile homelab")
     assert transport.ran(
         f"Test-Path -LiteralPath '{_ROOT}/.mainboard/envs/default/.pixi/envs/default'"
     )
-    assert transport.ran("mainboard run --env default -- mainboard facts --json")
+    assert transport.ran("$start.Arguments = 'run --env default -- mainboard facts --json'")
     assert not transport.ran("pueued -d")
     assert any("answers no pueue" in message for message in caplog.messages)
     assert (report.installer, report.activate, report.tool) == ("uv", "", "0.1.0")
