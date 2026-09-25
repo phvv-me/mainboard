@@ -43,3 +43,20 @@ def test_event_archive_bounds_parts_and_checks_missing_chunks(tmp_path: Path) ->
     frame.filter(pl.col("ordinal") != 0).write_parquet(first, compression="zstd")
     with pytest.raises(ValueError, match="incomplete"):
         target.read_bytes()
+
+
+def test_an_archive_that_does_not_read_back_its_exact_bytes_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A compaction that lost one byte would replace the live stream with a silent corruption."""
+    source = tmp_path / "events.ndjson"
+    source.write_bytes(b"x" * 100)
+    read = FrameFile.read_bytes
+
+    def lossy(archived: FrameFile) -> bytes:
+        whole = read(archived)
+        return whole[:-1] if archived.path.is_dir() else whole
+
+    monkeypatch.setattr(FrameFile, "read_bytes", lossy)
+    with pytest.raises(ValueError, match="changed bytes"):
+        FrameFile(source).archive()

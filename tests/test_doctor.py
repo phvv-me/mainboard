@@ -305,7 +305,14 @@ def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
     was invisible until a command asked that environment for an interpreter.
     """
     climbed(workspace, "solved")
-    doctor = Doctor(Board(workspace))
+    board = Board(workspace)
+    # The other sections would reach every declared host and run the declared gates.
+    doctor = Doctor(
+        board,
+        survey=FixedSurvey(board, []),
+        probe=answering(0, _SETTLED),
+        settler=sweeping(workspace),
+    )
 
     assert doctor.examined() == ("default", "serving")
     rows = [found for found in doctor.sections() if found.section == "environment"]
@@ -686,15 +693,21 @@ def test_a_superseded_root_with_no_environment_directories_is_clean(workspace: P
     assert doctor.layout().verdict is Verdict.PASS
 
 
+@pytest.mark.parametrize(
+    "legacy",
+    [("ghost", "serving"), ()],
+    ids=["beside environments still served from it", "holding only superseded copies"],
+)
 def test_an_old_root_names_one_rm_rf_per_environment_already_reprovisioned(
-    tmp_path: Path,
+    tmp_path: Path, legacy: tuple[str, ...]
 ) -> None:
     """The old root can hold several environments; only the reprovisioned ones are safe to lose.
 
     default and mcmr exist again under the current layout, so their old copies are superseded
     and named one `rm -rf` each; serving is declared but never reprovisioned, and ghost is not
     even declared any more, so both stay legacy, still served by their own activation script,
-    until `mainboard install <env>` reprovisions them.
+    until `mainboard install <env>` reprovisions them. A root holding only superseded copies
+    has nothing legacy to name.
     """
     (tmp_path / "mainboard.toml").write_text(
         '[workspace]\nname = "lab"\n\n[envs.mcmr]\n\n[envs.serving]\n'
@@ -710,15 +723,15 @@ def test_an_old_root_names_one_rm_rf_per_environment_already_reprovisioned(
         .parts[0]
     )
     old_envs = provisioner.out / held / "envs"
-    for env in ("default", "mcmr", "serving", "ghost"):
+    for env in ("default", "mcmr", *legacy):
         (old_envs / env).mkdir(parents=True)
 
     found = Doctor(board).layout()
 
     assert found.verdict is Verdict.WARN
     assert found.fix == f"rm -rf {old_envs / 'default'} && rm -rf {old_envs / 'mcmr'}"
-    assert "serving" in found.detail
-    assert "ghost" in found.detail
+    assert ("legacy" in found.detail) is bool(legacy)
+    assert all(env in found.detail for env in legacy)
 
 
 def test_the_current_layout_is_never_mistaken_for_the_superseded_one(workspace: Path) -> None:

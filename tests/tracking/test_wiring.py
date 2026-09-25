@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board, ExecutionPlan
+from mainboard import Board, ExecutionPlan, Job
 from mainboard.batch import Mirrored, Receipts, Topic
 from mainboard.batch.runner import directory
 from mainboard.cli import build
@@ -246,6 +246,8 @@ def test_a_quiet_sweep_writes_nothing_and_a_terminal_one_writes_the_last_line(
     fresh = tracking(Board(board.root))
     swept(fresh, monkeypatch, "ok")
     monkeypatch.setattr(fresh.dispatcher, "fetch", lambda handle, **kw: None)
+    # The settled run left no output to capture, and reading it would dial the real host.
+    monkeypatch.setattr(Job, "transcript", lambda job: "")
     fresh.monitor().once()
     published = stream.replay()
     assert [line.topic for line in published] == [

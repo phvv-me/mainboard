@@ -100,6 +100,56 @@ def test_run_selection_reads_only_selected_artifacts_and_keeps_verification(
         results.table("test.v1", runs=["complete"])
 
 
+@pytest.mark.parametrize(
+    ("media_type", "columns", "refusal"),
+    [
+        ("text/csv", {"value": [7]}, "non-Parquet artifact"),
+        ("application/vnd.apache.parquet", {"_trial": ["forged"]}, "reserves the _trial"),
+    ],
+    ids=["a table that is not Parquet", "a payload claiming the provenance column"],
+)
+def test_a_table_refuses_an_artifact_it_could_only_misread(
+    tmp_path: Path, media_type: str, columns: dict[str, list[int] | list[str]], refusal: str
+) -> None:
+    """Guessing at another format, or letting a payload overwrite `_trial`, would forge a row."""
+    project = tmp_path / "research/example"
+    evidence = project / "datasets/experiments/node/evidence"
+    payload = BytesIO()
+    pl.DataFrame(columns).write_parquet(payload)
+    reference = Artifacts(project, evidence / "artifacts/run/case").write(
+        payload.getvalue(), media_type=media_type, schema_name="test.v1"
+    )
+    receipt = evidence / "receipts/run=run/part-0.parquet"
+    receipt.parent.mkdir(parents=True)
+    pl.DataFrame(
+        [{"run": "run", "trial": "case", "artifacts": json.dumps({"t": reference.model_dump()})}]
+    ).write_parquet(receipt)
+    with pytest.raises(ValueError, match=refusal):
+        Results(tmp_path).table("test.v1")
+
+
+def test_a_join_the_catalog_cannot_bind_before_its_views_exist_still_answers(
+    tmp_path: Path,
+) -> None:
+    """DuckDB cannot name a USING join's tables until their columns exist, so all are built.
+
+    A second project that holds no receipts yet contributes no inventory rather than an error.
+    """
+    (tmp_path / "research/empty/datasets/experiments").mkdir(parents=True)
+    receipt = (
+        tmp_path
+        / "research/example/datasets/experiments/node/evidence/receipts/run=r/part-0.parquet"
+    )
+    receipt.parent.mkdir(parents=True)
+    pl.DataFrame(
+        [{"run": "r", "trial": "case", "artifacts": "{}", "host": "h", "commit": "c"}]
+    ).write_parquet(receipt)
+    joined = Results(tmp_path).query(
+        "SELECT run, trials.host FROM trials JOIN runs USING (project, run)"
+    )
+    assert joined.to_dicts() == [{"run": "r", "host": "h"}]
+
+
 @pytest.mark.parametrize("suffix", [".csv", ".parquet", ".json", ".CSV"])
 @pytest.mark.parametrize("from_file", [False, True])
 def test_query_exports_the_same_rows_without_overwriting(

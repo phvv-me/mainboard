@@ -15,14 +15,16 @@ from mainboard.compute import Access, Survey
 from mainboard.deps import Change, Dependencies
 from mainboard.dispatch import Handle, HostSetup
 from mainboard.dispatch.backends import Credentials
+from mainboard.dispatch.dispatcher import Dispatcher
 from mainboard.dispatch.shared import db_file
 from mainboard.dispatch.state import Cache, DownHost, Failed, Finished, MonitorReport
 from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.monitor import Monitor
+from mainboard.probe.stress import Link, Precision, Rate, StressReport
 from mainboard.scaffold import Scaffold, Scaffolded
 from mainboard.verdicts import StreamVerdict, TrialVerdict, Verdicts
 
-from .support import Answer, Lab, Option, Owner, Relayed, build_lab
+from .support import Answer, Lab, Launcher, Option, Owner, Relayed, build_lab
 
 # The trials plugin ships as a pytest entry point, so the only honest way to test its hooks is to
 # run pytest inside pytest, which is what `pytester` is for. It has to be named here because
@@ -166,6 +168,33 @@ def sealed_credentials() -> None:
 
 
 @pytest.fixture(scope="session")
+def posix_bash() -> str:
+    """A real POSIX Bash, never Windows' WSL launcher shim.
+
+    GitHub's Windows image puts ``System32/bash.exe`` on PATH even when no WSL distribution
+    exists. Git for Windows ships the Bash and coreutils that can actually exercise this remote
+    POSIX protocol, so use that installation explicitly instead of trusting the ambiguous name.
+    """
+    if sys.platform != "win32":
+        if bash := shutil.which("bash"):
+            return bash
+        pytest.skip("remote Bash protocol test needs Bash")
+
+    roots = [Path(git).resolve().parent.parent] if (git := shutil.which("git")) else []
+    roots.extend(
+        Path(value) / "Git"
+        for name in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")
+        if (value := os.environ.get(name))
+    )
+    if bash := next(
+        (root / "bin" / "bash.exe" for root in roots if (root / "bin" / "bash.exe").is_file()),
+        None,
+    ):
+        return str(bash)
+    pytest.skip("remote Bash protocol test needs Git for Windows Bash")
+
+
+@pytest.fixture(scope="session")
 def lab_source(tmp_path_factory: pytest.TempPathFactory) -> Lab:
     """The lab built once: two `git init`s and a submodule add are the slow part of any test."""
     return build_lab(tmp_path_factory.mktemp("lab") / "projects")
@@ -238,6 +267,21 @@ def settled() -> StreamVerdict:
     return StreamVerdict(
         stream="smoke-1",
         trials=(TrialVerdict(job="a", handle="4242", target="gold", verdict="ok", exit_code=0),),
+    )
+
+
+def stressed() -> StressReport:
+    """One card's measured limits with a supported rate, a skipped one and a copy path."""
+    return StressReport(
+        device="GH200",
+        capability="9.0",
+        sm_count=132,
+        datasheet_fp32_tflops=66.93,
+        rates=(
+            Rate(precision=Precision.BF16, n=8192, seconds=0.0016, tflops=687.26),
+            Rate(precision=Precision.FP8, n=8192, supported=False, note="no FP8 kernels"),
+        ),
+        links=(Link(path="host_to_device", megabytes=256, gb_s=412.08),),
     )
 
 
@@ -332,6 +376,9 @@ def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Relayed]:
         (Board, "serve", 0),
         (Board, "interact", None),
         (Board, "facts", HostFacts(schema_version=1, hostname="box")),
+        (Board, "stress", stressed()),
+        (Board, "provide", Path("/envs/lab-4f2a")),
+        (Dispatcher, "fetch_path", 3),
         (Dependencies, "add", _MOVED),
         (Dependencies, "remove", _MOVED),
         (Dependencies, "upgrade", _MOVED),
@@ -347,3 +394,11 @@ def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Relayed]:
     ):
         monkeypatch.setattr(owner, verb, relay(verb, answer))
     return calls
+
+
+@pytest.fixture
+def launcher(monkeypatch: pytest.MonkeyPatch) -> Launcher:
+    """The lane collection subprocess replaced by a recorder that prints no cells until told to."""
+    recorder = Launcher()
+    monkeypatch.setattr("mainboard.cli.localhost", recorder)
+    return recorder

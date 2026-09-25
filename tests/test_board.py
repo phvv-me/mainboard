@@ -4,7 +4,7 @@ from pathlib import Path
 from shutil import rmtree
 from threading import Event, Thread
 from time import sleep
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import TYPE_CHECKING, ClassVar, NoReturn
 
 import pytest
@@ -14,7 +14,7 @@ from mainboard import Board, ExecutionPlan, Fleet, HostFacts, Job, MissionError,
 from mainboard.batch import Topic
 from mainboard.board import ProviderJob
 from mainboard.deps import Dependencies
-from mainboard.dispatch import Handle, HostSetup, Verdict
+from mainboard.dispatch import Facts, Handle, HostSetup, Verdict
 from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.backends import (
     Account,
@@ -30,11 +30,14 @@ from mainboard.dispatch.state import RunRecord
 from mainboard.dispatch.transport import Endpoint
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.doctor import Doctor
+from mainboard.engines import Docker
 from mainboard.engines.compile import Provisioner
 from mainboard.engines.compile.prefixes import digest_of
 from mainboard.engines.compile.state import SyncState
 from mainboard.manifest import Container, Engine, Header, Manifest
 from mainboard.monitor import Monitor
+from mainboard.probe.occupancy import Occupancy
+from mainboard.probe.stress import StressReport
 from mainboard.scaffold import Scaffold
 
 from .dispatch.backends.support import BareBackend
@@ -523,6 +526,8 @@ def test_installing_here_provisions_and_activates_in_place(
 ) -> None:
     FakeProvisioner.calls = []
     monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    # A POSIX workstation; the Windows one writes no bash script and is its own test below.
+    monkeypatch.setattr("mainboard.board.platform.system", lambda: "Linux")
     setup = board.install(**given)
     assert ("provision", (expected[0], given.get("resolve", False))) in FakeProvisioner.calls
     assert ("activate", expected) in FakeProvisioner.calls
@@ -636,8 +641,16 @@ def test_providing_builds_the_environment_the_dispatch_pinned_and_sweeps_what_no
     assert built.name == digest_of(where)
 
 
+@pytest.mark.parametrize(
+    ("compiled_at", "behind"),
+    [
+        ("", "compile made on this machine rather than the one the dispatch shipped"),
+        ("/the/dispatching/workspace", "has recompiled over it since"),
+    ],
+    ids=["the ship never landed", "the shipped compile landed and was recompiled over"],
+)
 def test_providing_refuses_an_artifact_this_machine_reads_as_another_environment(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, compiled_at: str, behind: str
 ) -> None:
     """Both sides address a prefix from the same bytes, so two numbers mean one side rewrote them.
 
@@ -647,6 +660,10 @@ def test_providing_refuses_an_artifact_this_machine_reads_as_another_environment
     """
     board = Board(workspace)
     where = compiled_artifact(board)
+    SyncState.path(where).write_text(
+        SyncState(environment="default", solved_by="0.77.0", compiled_at=compiled_at).render(),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(Provisioner, "solver_version", lambda self: "0.79.0")
 
     with pytest.raises(MissionError) as refused:
@@ -658,7 +675,7 @@ def test_providing_refuses_an_artifact_this_machine_reads_as_another_environment
     assert "solved by pixi 0.77.0 while this machine runs pixi 0.79.0" in said
     # And it says which of the two sides is behind, since a dispatch ships the artifact it
     # pinned and the only way the two can disagree is that something wrote over it here.
-    assert "compile made on this machine rather than the one the dispatch shipped" in said
+    assert behind in said
 
 
 def test_addressing_and_providing_use_the_same_host_module_identity(
@@ -1270,6 +1287,8 @@ def test_a_local_containerized_run_goes_through_the_wrapped_line(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A container on the workstation is the one local case Pixi cannot activate directly."""
+    # `auto` resolves whichever runtime the host exposes, and a CI runner may expose none.
+    monkeypatch.setattr(Docker, "is_available", classmethod(lambda cls: True))
     monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
     assert board.run(("true",), container="ngc") == 7
 
@@ -1369,13 +1388,15 @@ def test_a_job_runs_here_through_the_same_runner_with_its_closure_exported(
     """A local run and a dispatched one share the runner, the listing and the variables."""
     FakeProvisioner.calls = []
     monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
+    # The POSIX `env` line; a Windows workstation hands the exports over natively, tested above.
+    monkeypatch.setattr("mainboard.board.platform.system", lambda: "Linux")
     board = Board(lab.root)
 
     assert board.run([f"{Lab.JOB}::app", "--x", "3"]) == 0
 
     [(_, (argv, env))] = [call for call in FakeProvisioner.calls if call[0] == "run"]
     assert env == "default"
-    assert argv[:2] == ["env", f"PYTHONPATH={lab.root}/research/camp"]
+    assert argv[:2] == ["env", f"PYTHONPATH={lab.root / 'research/camp'}"]
     listed = next(item for item in argv if item.startswith("MAINBOARD_CLOSURE="))
     listing = Path(listed.removeprefix("MAINBOARD_CLOSURE="))
     assert listing.is_relative_to(lab.root / ".mainboard/dispatch/jobs")
@@ -1465,3 +1486,112 @@ def test_a_job_cannot_land_on_a_prebuilt_image_that_ships_no_workspace(
         board.rented(BareBackend(), plan, shipment=sealed, resources=Resources())
     plain = board.shipment("python -m foo", plan)
     assert board.rented(BareBackend(), plan, shipment=plain, resources=Resources()).id == "bare-1"
+
+
+def test_a_board_reads_who_holds_each_card_here_or_off_the_last_line_its_tool_printed(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Here the cards are read in place, and a remote reply is read past its login chatter.
+
+    A reply that holds no reading at all is refused rather than read as a host with no cards.
+    """
+    monkeypatch.setattr("mainboard.probe.occupancy.Machine", lambda: SimpleNamespace(gpus=[]))
+    assert board.occupancy().cards == ()
+    reading = Occupancy(hostname="fake-remote").model_dump_json()
+    replies = iter([f"module chatter\n{reading}\n", "module chatter\n"])
+    monkeypatch.setattr(
+        "mainboard.dispatch.shells.connection",
+        lambda host, ssh=None: FakeConnection(next(replies)),
+    )
+    bound = board.on(_MIYABI_G)
+    assert bound.occupancy().hostname == "fake-remote"
+    with pytest.raises(MissionError, match="no occupancy in the probe output"):
+        bound.occupancy()
+
+
+def test_a_stress_probe_is_read_off_its_own_report_wherever_the_card_is(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Here through this workspace's tool, on an ssh host through that host's own.
+
+    Whatever the probe printed before its report is not the report, and a probe that printed
+    none is refused rather than read as a card with no rates.
+    """
+    report = StressReport(device="GH200").model_dump_json()
+    monkeypatch.setattr("mainboard.board.localhost", FakeConnection(f"warming up\n{report}"))
+    monkeypatch.setattr(
+        "mainboard.dispatch.shells.connection",
+        lambda host, ssh=None: FakeConnection("the card fell off the bus\n"),
+    )
+    board = Board(lab.root)
+    assert board.stress(n=64, repetitions=1).device == "GH200"
+    with pytest.raises(MissionError, match="no stress report in the probe output"):
+        board.on(_GOLD).stress()
+
+
+def test_a_scheduler_host_is_refused_a_stress_probe_its_login_node_has_no_card_for(
+    board: Board,
+) -> None:
+    with pytest.raises(MissionError, match="scheduler host with no card on its login node"):
+        board.on(_MIYABI_G).stress()
+
+
+@pytest.mark.parametrize(
+    ("verdict", "said"),
+    [("prepared", "no create attempted"), ("submitting", "inspect the provider by this label")],
+)
+def test_a_creation_with_no_provider_handle_is_not_rebuilt_as_a_job(
+    board: Board, monkeypatch: pytest.MonkeyPatch, verdict: str, said: str
+) -> None:
+    """There is nothing yet to poll or cancel, so the refusal says what to do about the label."""
+    record = RunRecord(
+        handle="intent-1",
+        target="vast",
+        kind="vast",
+        script="job.sh",
+        args="",
+        git_sha="abc1234",
+        dirty=0,
+        submitted_at="2026-08-17T00:00:00",
+        creation="mainboard-intent-1",
+        verdict=verdict,
+    )
+    monkeypatch.setattr(board.dispatcher.cache, "run", lambda handle, target=None: record)
+    with pytest.raises(MissionError, match=f"mainboard-intent-1 has no confirmed.*{said}"):
+        board.job("intent-1")
+
+
+def test_a_host_set_up_once_is_planned_and_run_as_its_probe_found_it(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gold declares neither a root nor a platform, so the onboarding's probe fills both.
+
+    A Windows host found that way is then driven through PowerShell rather than a login bash.
+    """
+    board.dispatcher.cache.save_host(
+        HostSetup(
+            host=_GOLD,
+            root="C:/Users/lab/projects",
+            capabilities=Facts(name=_GOLD, root="C:/Users/lab/projects", platform="Windows AMD64"),
+        )
+    )
+    launched: list[list[str]] = []
+    monkeypatch.setattr(
+        "mainboard.dispatch.shells.subprocess.call",
+        lambda argv: launched.append(argv) or 4,
+    )
+    bound = board.on(_GOLD)
+    assert bound.plan().profile.platform == "win-64"
+    assert bound.remote_root() == "C:/Users/lab/projects"
+    assert bound.run(("true",), container="none") == 4
+    [argv] = launched
+    assert argv[0] == "ssh"
+
+
+def test_a_dispatch_spelled_by_file_brings_home_what_the_job_declared(lab: Lab) -> None:
+    """The job names its own results path, and one the caller named still wins."""
+    board = Board(lab.root)
+    assert board.results(None, command=f"{Lab.JOB}::app") == (
+        "research/camp/experiments/node/evidence"
+    )
+    assert board.results("out", command=f"{Lab.JOB}::app") == "out"

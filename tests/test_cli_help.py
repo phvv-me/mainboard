@@ -53,12 +53,14 @@ def test_help_reads_shipped_files_without_importing_api_modules(
 ) -> None:
     (tmp_path / "README.md").write_text("# Observations\n\nRead zephyr observations.\n")
     (tmp_path / "danger.py").write_text(
-        'raise RuntimeError("this module must not be imported")\n\n'
-        "class Sensor:\n"
-        "    @property\n"
-        "    def reading(self):\n"
-        '        """Read quartz observations without constructing the sensor."""\n'
-        '        raise RuntimeError("nor may a descriptor execute")\n'
+        '''raise RuntimeError("this module must not be imported")
+
+class Sensor:
+    @property
+    def reading(self):
+        """Read quartz observations without constructing the sensor."""
+        raise RuntimeError("nor may a descriptor execute")
+'''
     )
     discovery = Help(build(tmp_path))
     discovery.package = tmp_path
@@ -86,12 +88,62 @@ def test_help_respects_document_boundaries_and_exact_command_precedence(
     assert "--only" in capsys.readouterr().out
 
 
-def test_missing_plot_dependencies_name_the_local_install(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("absent", "raised", "match"),
+    [
+        ("matplotlib", MissionError, r"mainboard\[wandb,plot\]"),
+        ("mainboard.plots.figure", ModuleNotFoundError, r"mainboard\.plots\.figure"),
+    ],
+    ids=["a plot dependency names the local install", "anything else surfaces as itself"],
+)
+def test_a_missing_plot_module_names_the_install_only_when_it_is_a_plot_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    absent: str,
+    raised: type[Exception],
+    match: str,
 ) -> None:
-    monkeypatch.delitem(sys.modules, "mainboard.plots.table", raising=False)
-    monkeypatch.setitem(sys.modules, "seaborn", None)
-    with pytest.raises(MissionError, match=r"mainboard\[wandb,plot\]"):
+    """The install hint is the right answer to a missing extra and a misleading one to a broken
+    install of this tool, which would send its reader to reinstall an extra they already have.
+
+    The plotting modules are forgotten first, so the verb imports them afresh whatever an
+    earlier test already loaded, and the missing module is the one their import really hits.
+    """
+    for name in ("mainboard.plots.figure", "mainboard.plots.panel", "mainboard.plots.table"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, absent, None)
+    with pytest.raises(raised, match=match):
         build(tmp_path)(
             ["plot", "SELECT 1 AS x, 2 AS y", "--x", "x", "--y", "y", "--out", "plot.png"]
         )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "match"),
+    [
+        (["--figure", "demo", "SELECT 1"], "--figure cannot be combined"),
+        (["SELECT 1 AS x", "--x", "x"], "requires --x and --y"),
+        (["--figure", "ghost"], r"no figure 'ghost'; declared figures are \[\]"),
+        (
+            ["SELECT 1 AS x, 2 AS y", "--x", "x", "--y", "y", "--style", "ghost"],
+            r"no plot style 'ghost'; declared styles are \[\]",
+        ),
+    ],
+    ids=[
+        "a figure with its own chart mappings",
+        "a chart without both axes",
+        "an undeclared figure",
+        "an undeclared style",
+    ],
+)
+def test_a_plot_request_that_cannot_mean_one_chart_is_refused_before_any_query_runs(
+    tmp_path: Path, arguments: list[str], match: str
+) -> None:
+    """A figure owns its SQL and mappings, so mixing in a second source would silently lose one;
+    and a misspelled figure or style names what is declared instead of falling back to a
+    default the reader never asked for."""
+    pytest.importorskip("mainboard.plots.figure", exc_type=ModuleNotFoundError)
+    target = tmp_path / "refused.png"
+    with pytest.raises(MissionError, match=match):
+        build(tmp_path)(["plot", *arguments, "--out", str(target)])
+    assert not target.exists()

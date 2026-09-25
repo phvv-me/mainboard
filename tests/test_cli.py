@@ -1,27 +1,30 @@
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from shutil import rmtree
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board, ComputePath, MissionError, Survey
-from mainboard.batch.estimate import JobEstimate
+from mainboard import Board, ComputePath, MissionError, Project, Survey
+from mainboard.batch import JobEstimate
 from mainboard.cli import build, main
 from mainboard.dispatch.shared import db_file
 from mainboard.dispatch.state import Cache, MonitorReport, RunRecord
 from mainboard.dispatch.vocabulary import JobState
+from mainboard.jobs.lanes import Cell
 from mainboard.monitor import Monitor
+from mainboard.probe.occupancy import CardOccupancy, Holder, Occupancy
 from mainboard.staleness import Snapshot
 from mainboard.verdicts import StreamVerdict, Verdicts
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from pydantic import JsonValue
 
-    from .support import Relayed
+    from .support import Launcher, Relayed
 
 _FIELD_VALUE_HEADER = "field\tvalue"
 _MIYABI_G = "miyabi-g"
@@ -143,6 +146,23 @@ _RESOURCES = {
             ["attest", "smoke-1", "--job", "gold-1"],
             ("attest", "local", ("smoke-1",), {"job": "gold-1"}),
         ),
+        (
+            ["stress", "gold", "--n", "1024", "--repetitions", "2"],
+            ("stress", "gold", (), {"n": 1024, "repetitions": 2}),
+        ),
+        (
+            ["provide", "serving", "--source", "compiled", "--expect", "d41d"],
+            ("provide", "local", ("serving", "compiled", "d41d"), {}),
+        ),
+        (
+            ["collect", "results/run", "--on", _MIYABI_G],
+            (
+                "fetch_path",
+                "",
+                (_MIYABI_G,),
+                {"root": "/work/xg25g007/x10537/projects", "path": "results/run"},
+            ),
+        ),
     ],
     ids=[
         "run",
@@ -170,6 +190,9 @@ _RESOURCES = {
         "logs",
         "attest",
         "attest a named job",
+        "stress",
+        "provide",
+        "collect from the profile's root",
     ],
 )
 def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translated(
@@ -234,10 +257,46 @@ def test_the_logs_verb_prints_what_a_job_printed_or_says_nothing_was_kept(
     assert "\x1b" not in printed.out
 
 
-def test_a_job_that_has_not_started_says_where_it_stands_instead_of_only_no_output(
-    depot: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("polled", "code", "shown"),
+    [
+        pytest.param(
+            JobState(
+                handle="3289319",
+                state="Q",
+                verdict="queued",
+                note="estimated start Thu Sep  4 14:00:00 2026",
+            ),
+            2,
+            (
+                f"3289319 is queued on {_MIYABI_G}",
+                "scheduler state Q",
+                "submitted 2026-09-04T09:12:04+00:00",
+                "estimated start Thu Sep  4 14:00:00 2026",
+            ),
+            id="queued-behind-a-full-cluster",
+        ),
+        pytest.param(
+            JobState(handle="3289319", state="F", exit_code=1, verdict="failed"),
+            1,
+            ("no output on file for 3289319",),
+            id="already-settled-by-its-scheduler",
+        ),
+    ],
+)
+def test_an_empty_log_says_where_its_job_stands_and_exits_on_whether_it_still_might_print(
+    depot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    polled: JobState,
+    code: int,
+    shown: tuple[str, ...],
 ) -> None:
-    """The empty log of a job queued behind a full cluster read exactly like a silent job's."""
+    """The empty log of a job queued behind a full cluster read exactly like a silent job's.
+
+    A job its scheduler has already settled will never print, so it gets the plain absence and
+    exit 1, while one that has not started exits 2 with where it stands.
+    """
     monkeypatch.setattr(Verdicts, "captured", lambda self, handle, host="": "")
     Cache(depot / db_file()).record(
         RunRecord(
@@ -251,22 +310,13 @@ def test_a_job_that_has_not_started_says_where_it_stands_instead_of_only_no_outp
             submitted_at="2026-09-04T09:12:04+00:00",
         )
     )
-    queued = JobState(
-        handle="3289319",
-        state="Q",
-        verdict="queued",
-        note="estimated start Thu Sep  4 14:00:00 2026",
-    )
     monkeypatch.setattr(
-        Board, "job", lambda self, handle, host="": SimpleNamespace(poll=lambda: queued)
+        Board, "job", lambda self, handle, host="": SimpleNamespace(poll=lambda: polled)
     )
-    with pytest.raises(SystemExit, match="2"):
+    with pytest.raises(SystemExit, match=f"^{code}$"):
         build(depot)(["logs", "3289319"])
-    printed = capsys.readouterr()
-    assert f"3289319 is queued on {_MIYABI_G}" in printed.err
-    assert "scheduler state Q" in printed.err
-    assert "submitted 2026-09-04T09:12:04+00:00" in printed.err
-    assert "estimated start Thu Sep  4 14:00:00 2026" in printed.err
+    err = capsys.readouterr().err
+    assert all(fragment in err for fragment in shown)
 
 
 @pytest.mark.parametrize(
@@ -746,3 +796,244 @@ def test_submit_carries_every_need_it_was_given_to_the_board(
     [(verb, host, args, options)] = relayed
     assert (verb, host, args) == ("submit", _MIYABI_G, ("true",))
     assert options["needs"] == ("data/a", "data/b")
+
+
+def test_collect_refuses_a_host_without_a_declared_root_before_contacting_it(
+    depot: Path, relayed: Sequence[Relayed]
+) -> None:
+    """Without a root there is no remote path to read, and guessing one could publish the wrong
+    tree, so the refusal names the manifest key to declare and nothing is fetched."""
+    with pytest.raises(MissionError, match=r"declare hosts\.gold\.root"):
+        build(depot)(["collect", "results/run", "--on", "gold"])
+    assert relayed == []
+
+
+def test_a_query_without_sql_reads_the_runs_view(tmp_path: Path) -> None:
+    """The bare verb is the first question anyone asks of collected results: what ran."""
+    implicit, explicit = tmp_path / "implicit.csv", tmp_path / "explicit.csv"
+    with pytest.raises(SystemExit, match="^0$"):
+        build(tmp_path)(["query", "--out", str(implicit)])
+    with pytest.raises(SystemExit, match="^0$"):
+        build(tmp_path)(["query", "SELECT * FROM runs", "--out", str(explicit)])
+    assert implicit.read_text() == explicit.read_text()
+
+
+@pytest.mark.parametrize(
+    ("flags", "shown"),
+    [([], str(Path("/envs/lab-4f2a"))), (["--json"], None)],
+    ids=["the bare prefix a shell captures", "the prefix as json"],
+)
+def test_provide_prints_the_bare_prefix_unless_json_was_asked_for(
+    depot: Path,
+    relayed: Sequence[Relayed],
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    shown: str | None,
+) -> None:
+    """A dispatched job activates whatever this line says, so the bare form is the path alone."""
+    with pytest.raises(SystemExit, match="^0$"):
+        build(depot)(["provide", *flags])
+    out = capsys.readouterr().out
+    if shown is None:
+        assert json.loads(out) == {"prefix": str(Path("/envs/lab-4f2a"))}
+        return
+    assert out == f"{shown}\n"
+
+
+@pytest.mark.parametrize("json_mode", [True, False], ids=["the report json", "the compact record"])
+def test_stress_prints_the_whole_report_or_one_row_per_precision_and_link(
+    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str], json_mode: bool
+) -> None:
+    """The JSON is what a remote read parses back, so it carries every field; the table rounds
+    and names why a precision was skipped rather than printing its zero bare."""
+    with pytest.raises(SystemExit, match="^0$"):
+        build(depot)(["stress", "--json" if json_mode else "--agent"])
+    out = capsys.readouterr().out
+    if json_mode:
+        report = json.loads(out)
+        assert (report["device"], report["datasheet_fp32_tflops"]) == ("GH200", 66.93)
+        assert [rate["precision"] for rate in report["rates"]] == ["bf16", "fp8"]
+        return
+    assert all(
+        fragment in out
+        for fragment in ("GH200", "66.9", "BF16", "687.3", "no FP8 kernels", "412.1")
+    )
+
+
+# One busy card on this machine, and the first line of why gold could not be read, which is all
+# of a failure a table cell has room for; the rest of the message must stay out of the table.
+_READING = Occupancy(
+    hostname="box",
+    at="2026-09-25T00:00:00+00:00",
+    cards=(
+        CardOccupancy(
+            index=0,
+            name="RTX 4090",
+            utilization_pct=97,
+            memory_used_bytes=20_000_000_000,
+            memory_total_bytes=24_000_000_000,
+            holders=(Holder(pid=4242, user="pedro", age_s=7200, command="python train.py"),),
+        ),
+    ),
+)
+_WHY = "ssh: connect to host gold port 22: no route"
+_DETAIL = "the remote traceback nobody reads in a table"
+
+
+def occupied(failure: type[Exception] = MissionError) -> Callable[[Board], Occupancy]:
+    """`Board.occupancy` answering `_READING` here and failing with `failure` on gold."""
+
+    def read(self: Board) -> Occupancy:
+        if self.host == "gold":
+            raise failure(f"{_WHY}\n{_DETAIL}")
+        return _READING
+
+    return read
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected", "indent"),
+    [
+        (["gpus", "--json"], _READING.model_dump(mode="json"), None),
+        (["gpus", "gold", "--json"], {}, None),
+        (["gpus", "--every", "--json"], {"local": _READING.model_dump(mode="json")}, 2),
+    ],
+    ids=[
+        "one host prints its reading alone on one line",
+        "one unreachable host prints an empty reading",
+        "every host keys readings by name and leaves the unreachable out",
+    ],
+)
+def test_the_gpus_verb_prints_json_a_remote_read_parses_back(
+    depot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    expected: dict[str, JsonValue],
+    indent: int | None,
+) -> None:
+    """A single host's reading is one line, which is exactly what `--every` parses off each
+    ssh host, so it must never be wrapped in the fleet's keyed document."""
+    monkeypatch.setattr(Board, "occupancy", occupied())
+    with pytest.raises(SystemExit, match="^0$"):
+        build(depot)(argv)
+    assert capsys.readouterr().out == json.dumps(expected, indent=indent) + "\n"
+
+
+@pytest.mark.parametrize("failure", [MissionError, OSError, ValueError])
+def test_a_host_that_cannot_be_read_costs_the_fleet_table_one_row_and_nothing_else(
+    depot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: type[Exception],
+) -> None:
+    """The screen exists to say which card is free, so one host down must not blank the rest,
+    whether the read failed in ssh, in the tool, or in parsing what came back."""
+    monkeypatch.setattr(Board, "occupancy", occupied(failure))
+    with pytest.raises(SystemExit, match="^0$"):
+        build(depot)(["gpus", "--every", "--agent"])
+    out = capsys.readouterr().out
+    assert "0: RTX 4090" in out
+    assert "4242 pedro 2h python train.py" in out
+    assert f"unreachable: {_WHY}" in out
+    assert _DETAIL not in out
+
+
+# A lane under a node directory, so its receipts serve that node, and the cells it collects:
+# two models, one of them with two seeds, which `--group model` turns into two jobs.
+_LANE = "experiments/sweep/test_lane.py::test_rate"
+_CELLS = (("a-1", "a"), ("b-1", "b"), ("a-2", "a"))
+
+
+def _collected() -> str:
+    """What the collection prints: its `CELL` lines among the noise a pytest run makes."""
+    lines = [
+        "CELL "
+        + Cell(nodeid=f"{_LANE}[{key}]", key=key, params={"model": model}).model_dump_json()
+        for key, model in _CELLS
+    ]
+    return "\n".join(["collecting ...", *lines, "3 tests collected"])
+
+
+@pytest.mark.parametrize(
+    ("printed", "flags", "refusal", "match"),
+    [
+        ("collecting ...\nno tests ran\n", ["--yes"], MissionError, "collected no cells"),
+        (_collected(), ["--dry-run"], SystemExit, "^0$"),
+        (_collected(), [], SystemExit, "^1$"),
+    ],
+    ids=[
+        "a lane that collects nothing is refused",
+        "a dry run prints the plan and stops, never asking",
+        "a declined terminal confirmation stops before any host",
+    ],
+)
+def test_lanes_run_dispatches_nothing_until_a_plan_exists_and_is_agreed(
+    depot: Path,
+    relayed: Sequence[Relayed],
+    launcher: Launcher,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    printed: str,
+    flags: list[str],
+    refusal: type[BaseException],
+    match: str,
+) -> None:
+    """The cells come from a collection inside the workspace environment, never this process,
+    since the lane imports what that environment holds; and the plan prints before anything
+    moves, so a person at a terminal sees what one `y` would dispatch."""
+    launcher.printed = printed
+    monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", lambda: "n")
+    with pytest.raises(refusal, match=match):
+        build(depot)(["lanes", "run", _LANE, "--on", "local,gold", "--group", "model", *flags])
+    assert launcher.argv == [
+        Project().name,
+        *("run", "--", "python", "-m", "mainboard.jobs.lanes", "collect", _LANE),
+    ]
+    assert relayed == []
+    if refusal is SystemExit:
+        assert "a-1 a-2" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("wait", [False, True], ids=["dispatch and return", "--wait settles"])
+def test_lanes_run_runs_local_groups_in_place_and_submits_each_group_to_every_other_host(
+    depot: Path,
+    relayed: Sequence[Relayed],
+    launcher: Launcher,
+    capsys: pytest.CaptureFixture[str],
+    wait: bool,
+) -> None:
+    """One group is one job: `local` runs it in this process's board, any other host gets a
+    submission serving the lane's node, and `--wait` settles only what was submitted, since a
+    local group has already finished by the time the loop reaches it."""
+    launcher.printed = _collected()
+    argv = ["lanes", "run", _LANE, "--on", "local,gold", "--group", "model", "--timeout", "60"]
+    with pytest.raises(SystemExit, match="^0$"):
+        build(depot)([*argv, "--rerun", "--yes", *(["--wait"] if wait else [])])
+
+    def line(*ids: str) -> list[str]:
+        fresh = ["--fresh", "--timeout", "60.0"]
+        return [
+            _LANE,
+            "--",
+            *fresh,
+            *ids,
+            "--",
+            "-p",
+            "no:randomly",
+            "-q",
+            "--no-header",
+            "--rerun",
+        ]
+
+    resources = {"queue": "", "walltime": "", "mem_gb": 0, "gpus": 0, "gpu_name": ""}
+    submitted = {**resources, "max_usd": 0.0, "node": "sweep"}
+    assert relayed == [
+        ("run", "local", (line("a-1", "a-2"),), {}),
+        ("run", "local", (line("b-1"),), {}),
+        ("submit", "gold", (" ".join(line("a-1", "a-2")),), {"name": "lanes-gold-a", **submitted}),
+        ("submit", "gold", (" ".join(line("b-1")),), {"name": "lanes-gold-b", **submitted}),
+        *([("wait", "", ("4242",), {"host": "gold"})] * (2 if wait else 0)),
+    ]
+    assert "local exit 0" in capsys.readouterr().out

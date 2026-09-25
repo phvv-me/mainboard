@@ -1,3 +1,4 @@
+import re
 import sys
 from typing import TYPE_CHECKING
 
@@ -94,3 +95,15 @@ def test_a_wide_table_off_a_terminal_keeps_each_row_on_one_line(
     assert all(value in printed for value in row.values())
     assert sum(line.count("value-") for line in printed.splitlines()) == 10
     assert max(line.count("value-") for line in printed.splitlines()) == 10
+
+
+def test_a_wide_table_on_a_terminal_folds_to_the_terminals_own_width(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A person reading a narrow window gets folded cells, never a row running off the edge."""
+    monkeypatch.setattr(human.Console, "is_terminal", property(lambda self: True))
+    monkeypatch.setenv("COLUMNS", "60")
+    row = {f"column_{index}": f"value-{index:02d}-{'x' * 12}" for index in range(10)}
+    human.render_table([row], title="wide")
+    printed = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+    assert max(len(line) for line in printed.splitlines()) <= 60

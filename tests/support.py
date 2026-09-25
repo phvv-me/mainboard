@@ -7,31 +7,57 @@ from mainboard import Board, ComputePath, HostFacts
 from mainboard.compute import Survey
 from mainboard.deps import Change, Dependencies
 from mainboard.dispatch import HostSetup
+from mainboard.dispatch.dispatcher import Dispatcher
 from mainboard.dispatch.state import MonitorReport
 from mainboard.doctor import Doctor, Section
 from mainboard.monitor import Monitor
+from mainboard.probe.stress import StressReport
 from mainboard.scaffold import Scaffold, Scaffolded
 
 # What a stand-in is handed, what it hands back, and what one recorded call looks like. The
 # verbs pass names and commands positionally and everything else by keyword, so the option
 # values are exactly the scalar kinds a flag parses into.
-type Owner = Board | Dependencies | Doctor | Monitor | Scaffold | Survey
+type Owner = Board | Dependencies | Dispatcher | Doctor | Monitor | Scaffold | Survey
 type Option = str | int | float | bool | dict[str, str] | None
-type Positional = str | tuple[str, ...]
+type Positional = str | tuple[str, ...] | list[str]
 type Answer = (
     int
     | None
+    | Path
     | HostFacts
     | HostSetup
     | MonitorReport
     | Scaffolded
     | SimpleNamespace
+    | StressReport
     | list[Change]
     | list[ComputePath]
     | list[Section]
     | Iterator[MonitorReport]
 )
 type Relayed = tuple[str, str, tuple[Positional, ...], dict[str, Option]]
+
+
+class Launcher:
+    """The `local` command builder the lanes verb collects a lane through, recorded instead.
+
+    The collection is a real subprocess of this tool inside the workspace environment, so what
+    belongs to the verb is the command line it indexed together and how it reads what came
+    back. Calling the built command answers `printed` and runs nothing.
+
+    printed: what the collection prints, its `CELL {json}` lines among any other output.
+    """
+
+    def __init__(self, printed: str = "") -> None:
+        self.printed = printed
+        self.argv: list[str] = []
+
+    def __getitem__(self, tokens: str | list[str]) -> Launcher:
+        self.argv.extend([tokens] if isinstance(tokens, str) else tokens)
+        return self
+
+    def __call__(self) -> str:
+        return self.printed
 
 
 class Lab:
@@ -101,10 +127,19 @@ def build_lab(root: Path) -> Lab:
     lab.write("packages/sub/src/sub/thing.py", "THING = 1\n")
     lab.write(
         "mainboard.toml",
-        '[workspace]\nname = "lab"\n\n'
-        '[hosts.defaults]\nsync = { include = ["research", "packages"] }\n\n'
-        '[hosts.gold]\nkind = "ssh"\nroot = "/repo"\n\n'
-        '[tracking]\nmode = "off"\n',
+        """[workspace]
+name = "lab"
+
+[hosts.defaults]
+sync = { include = ["research", "packages"] }
+
+[hosts.gold]
+kind = "ssh"
+root = "/repo"
+
+[tracking]
+mode = "off"
+""",
     )
     lab.write(".gitignore", "data/\n__pycache__/\n*.pyc\n*_generated.py\n")
     lab.write("packages/core/src/core/__init__.py", "from .util import helper\n")
@@ -122,26 +157,27 @@ def build_lab(root: Path) -> Lab:
     lab.write("research/camp/experiments/node/node.md", "# node\n")
     lab.write(
         Lab.JOB,
-        "import sub.thing\n"
-        "from cyclopts import App\n"
-        "from mainboard.jobs import job\n"
-        "\n"
-        "from ..helper.tools import tool\n"
-        "\n"
-        "app = job(\n"
-        '    needs=("data/corpus",),\n'
-        '    resources=("research/camp/registry.toml",),\n'
-        '    fetch="research/camp/experiments/node/evidence",\n'
-        ")(App())\n"
-        "\n"
-        "\n"
-        "@app.default\n"
-        "def main(x: int = 1) -> int:\n"
-        "    return tool() * x + sub.thing.THING\n"
-        "\n"
-        "\n"
-        "def plain() -> int:\n"
-        "    return 7\n",
+        """import sub.thing
+from cyclopts import App
+from mainboard.jobs import job
+
+from ..helper.tools import tool
+
+app = job(
+    needs=("data/corpus",),
+    resources=("research/camp/registry.toml",),
+    fetch="research/camp/experiments/node/evidence",
+)(App())
+
+
+@app.default
+def main(x: int = 1) -> int:
+    return tool() * x + sub.thing.THING
+
+
+def plain() -> int:
+    return 7
+""",
     )
     lab.write("research/other/experiments/__init__.py", "")
     lab.write("research/other/experiments/node/__init__.py", "")

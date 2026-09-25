@@ -6,9 +6,17 @@ import pytest
 from mainboard import Board, Job, MissionError
 from mainboard.batch.receipts import Event, Receipts, Topic, publish
 from mainboard.batch.runner import directory
-from mainboard.dispatch.state import RunRecord
+from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.monitor import Monitor
-from mainboard.verdicts import StreamVerdict, TrialVerdict, Verdicts, gated, lined, receipted
+from mainboard.verdicts import (
+    StreamVerdict,
+    TrialVerdict,
+    Verdicts,
+    gated,
+    lined,
+    qualified,
+    receipted,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -854,3 +862,96 @@ def test_the_board_hands_out_the_reader_bound_to_itself(board: Board) -> None:
     reader = board.verdicts()
     assert isinstance(reader, Verdicts)
     assert reader.board is board
+
+
+def test_cancelling_a_prepared_creation_claims_it_so_no_create_can_follow(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prepared row has no provider handle yet, so cancelling it is winning the claim on it.
+
+    A creation that claimed it first owns it now, and settling that row as cancelled would
+    leave whatever it rented billing under a row that says nothing is there.
+    """
+    monkeypatch.setattr(Job, "kill", lambda self: pytest.fail("a creation with no handle killed"))
+    recorded(board, "2", name="beaten", verdict="prepared")
+    recorded(board, "3", name="abandoned", verdict="prepared")
+    claim = Cache.leave_prepared
+
+    def beaten(cache: Cache, run: RunRecord, verdict: str) -> RunRecord:
+        claim(cache, run, "submitting")
+        return claim(cache, run, verdict)
+
+    with monkeypatch.context() as racing:
+        racing.setattr(Cache, "leave_prepared", beaten)
+        with pytest.raises(MissionError, match="changed during cancellation"):
+            board.verdicts().cancel("2")
+    assert board.dispatcher.cache.run("2").verdict == "submitting"
+
+    board.verdicts().cancel("3")
+    stored = board.dispatcher.cache.run("3")
+    assert (stored.verdict, stored.reported) == ("cancelled", "cancelled")
+
+
+@pytest.mark.parametrize(
+    ("transcript", "release", "evidence", "reported"),
+    [
+        ('{"trial_receipt": "torn"}\n', None, "unverified", "cancelled"),
+        ("", MissionError("the provider refused the cancel"), "copied", None),
+    ],
+    ids=[
+        "evidence that fails verification is recorded as unverified",
+        "a release that fails leaves the cursor for the next pass",
+    ],
+)
+def test_a_cancel_says_what_it_could_not_verify_and_retries_what_it_could_not_release(
+    board: Board,
+    monkeypatch: pytest.MonkeyPatch,
+    transcript: str,
+    release: MissionError | None,
+    evidence: str,
+    reported: str | None,
+) -> None:
+    """A deliberate stop may lose work, but it never calls lost evidence verified.
+
+    And a run whose release failed may still be billing, so its cursor stays where the durable
+    sweep will find it and release it again.
+    """
+
+    def released(job: Job) -> None:
+        if release is not None:
+            raise release
+
+    recorded(board, "4", name="stopped", target="miyabi-g")
+    monkeypatch.setattr(Job, "kill", lambda self: None)
+    monkeypatch.setattr(Job, "transcript", lambda self: transcript)
+    monkeypatch.setattr(Job, "release", released)
+    board.verdicts().cancel("4")
+    stored = board.dispatcher.cache.run("4")
+    assert (stored.verdict, stored.evidence, stored.reported) == ("cancelled", evidence, reported)
+
+
+def test_a_stream_row_the_sweep_settled_as_failed_says_why(board: Board) -> None:
+    """A joined outcome carries the cause from the log the sweep brought home, as a floor does."""
+    stream = "swept-failure"
+    bus = Receipts(directory(board, stream) / "events.ndjson")
+    publish(bus, stream, Topic.SUBMITTED, job="tex", data={"handle": "3294911", "target": "gold"})
+    recorded(board, "3294911", name=f"batch:{stream}/tex", verdict="failed")
+    (directory(board, stream) / "3294911.log").write_text(
+        "Traceback (most recent call last):\nMemoryError: CUDA out of memory\n", encoding="utf-8"
+    )
+    [row] = board.verdicts().of(stream).trials
+    assert (row.verdict, row.cause) == ("failed", "MemoryError: CUDA out of memory")
+
+
+def test_an_evidence_line_with_no_readable_trial_list_still_qualifies_its_own_run() -> None:
+    """A correction that lost its case list still names the run it is about by handle."""
+    trial = TrialVerdict(job="j", handle="7", target="gold", verdict="ok")
+    correction = Event(
+        at="2026-09-04T00:00:00+00:00",
+        batch="s",
+        topic=Topic.EVIDENCE,
+        job="j",
+        data={"handle": "7", "target": "gold", "status": "unverified", "trials": "torn"},
+    )
+    [row] = qualified((trial,), [correction])
+    assert row.verdict == "unverified"

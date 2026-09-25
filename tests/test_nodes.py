@@ -1,4 +1,7 @@
+from collections.abc import Iterator
 from pathlib import Path
+
+import pytest
 
 from mainboard.nodes import evidence_of
 
@@ -50,3 +53,20 @@ def test_a_workspace_with_no_such_node_names_no_path_at_all(tmp_path: Path) -> N
     # The generated tree is not searched, so a pinned snapshot of this workspace cannot answer
     # for a node of it.
     assert evidence_of(tmp_path, "sources") == ""
+
+
+def test_a_directory_the_walk_cannot_read_is_passed_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another user's scratch or a stale mount beside the node must not cost the node its path."""
+    _tree(tmp_path, "locked/inner", "experiments/fresh_claim")
+    listed = Path.iterdir
+
+    def guarded(directory: Path) -> Iterator[Path]:
+        if directory.name == "locked":
+            raise PermissionError(13, "Permission denied", str(directory))
+        return listed(directory)
+
+    monkeypatch.setattr(Path, "iterdir", guarded)
+
+    assert evidence_of(tmp_path, "fresh_claim") == "experiments/fresh_claim/evidence"
