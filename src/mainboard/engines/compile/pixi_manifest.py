@@ -10,8 +10,7 @@ from pydantic import Field
 from ...core.host import platform_selectors
 from .platforms import PlatformMatrix
 
-# `Toml` backs pydantic fields below, so it must resolve at class-creation time. See the
-# matching comment in platforms.py for why ruff's flake8-type-checking cannot tell.
+# `Toml` backs pydantic fields below, so it must resolve at class-creation time.
 from .toml import Toml
 from .vendor import relocated
 
@@ -21,24 +20,20 @@ if TYPE_CHECKING:
     from ...manifest import Env, Manifest, PlatformScope, Scope, Spec, Toolchain
     from ...manifest.schema.environment import Task
 
-# pixi tables whose values are dependency specs. A ``path`` *source* lives inside one of these
-# specs, never at the dep-name level.
+# pixi tables whose values are dependency specs, where a `path` source lives.
 _DEP_TABLES = ("dependencies", "pypi-dependencies", "dependency-overrides")
 
 _PLATFORMS = "platforms"
 _PYPI_OPTIONS = "pypi-options"
 _DEFAULT_GENERATED_DIR = PurePosixPath(".mainboard")
 
-# One relative path token as a generated file spells it: leading parents and the segments
-# under them. The guards on both ends keep it from biting into a longer path (`/opt/a/../b`)
-# or into ordinary prose that merely begins the same way (`...`).
+# One relative path token (leading parents and the segments under them), guarded against biting
+# into a longer path (`/opt/a/../b`) or prose (`...`).
 _RELATIVE = re.compile(r"(?<![\w./+~@-])\.\.(?:/[\w.+~@-]+)*(?![\w./+~@-])")
 
-# pixi's own `[pypi-options]` fields, the uv settings that shape the Python solve. Anything
-# else declared beside `[python.deps]` configures something other than pixi (chefe's `indexes`
-# aliases, for one) and is not pixi's to read. `dependency-overrides` comes last because it is
-# the only sub-table here, and TOML reads every key after a sub-table header as belonging to
-# that sub-table.
+# pixi's own `[pypi-options]` fields; other keys beside `[python.deps]` (chefe's `indexes`)
+# are not pixi's. `dependency-overrides` is last, the one sub-table, since TOML reads every key
+# after a sub-table header as belonging to it.
 _PYPI_OPTION_KEYS = (
     "index-url",
     "extra-index-urls",
@@ -52,24 +47,19 @@ _PYPI_OPTION_KEYS = (
 )
 
 # The generated dotenv loader, sourced first by pixi activation when `workspace.dotenv` is on.
-# Activation scripts run from the manifest dir (`.mainboard/`), so `../.env` is the workspace
-# root.
 _DOTENV_SH = "dotenv.sh"
 _DOTENV_BAT = "dotenv.bat"
 
-# The generated unset script, sourced right after the dotenv loader so an explicit clear beats a
-# value `.env` filled in. pixi's own `[activation].env` is a string-to-string map with no way to
-# say "not set", so a clear has to be shell rather than a table entry.
+# The generated unset script, sourced after the dotenv loader so a clear beats `.env`.
 _UNSET_SH = "unset.sh"
 _UNSET_BAT = "unset.bat"
 
 
 def cleared(env: dict[str, str | bool]) -> list[str]:
-    """The variables `env` asks to have taken away, in declaration order.
+    """The variables `env` declares `false`, in order.
 
-    A `false` value is a clear rather than a setting. It cannot ride in pixi's own
-    `[activation].env`, which is a string-to-string map, so it becomes shell in the generated
-    unset script instead and every consumer of that activation gets it for free.
+    pixi's `[activation].env` is a string map that cannot say "not set", so a clear becomes the
+    generated unset script.
     """
     return [name for name, value in env.items() if value is False]
 
@@ -77,10 +67,8 @@ def cleared(env: dict[str, str | bool]) -> list[str]:
 def rerooted(path: str, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> str:
     """A workspace-relative path as a generated Pixi manifest must spell it.
 
-    The generated directory's actual pathlib depth determines how many parents lead back to
-    the workspace, so moving a manifest from ``.mainboard/`` to
-    ``.mainboard/envs/serving/`` cannot leave a hand-counted ``../`` behind. An absolute path
-    is already unambiguous and rides through, and an empty one names the workspace root itself.
+    The parents are counted from `generated_dir`'s depth, never by hand. An absolute path rides
+    through, and an empty one names the workspace root.
     """
     if PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute():
         return path
@@ -94,31 +82,15 @@ def anchored(
 ) -> str:
     """One generated file's text, with every workspace-relative spelling resolved against `root`.
 
-    The inverse of `rerooted`, for a generated file read from somewhere other than the directory
-    it was compiled into. A compile writes each declared location relative to that directory, so
-    the artifact is the same bytes on every machine and those bytes can address an environment.
-    Copy the pair anywhere else and every one of those spellings quietly means something else: a
-    prefix sits one directory deeper than the environment shard, so `path = "../../.."`, the way
-    a workspace that installs itself names its own root, arrived there meaning the workspace's
-    own generated directory, and pixi refused it as not a Python project.
+    The inverse of `rerooted`, for a file copied away from where it was compiled (a prefix sits
+    one directory deeper, so `"../../.."` meant the generated directory and pixi refused it).
+    Textual, since the lock and dotenv loader spell the same locations. Every spelling landing
+    inside the workspace is rewritten, not only the one `rerooted` writes: pixi 0.79 re-spelled
+    `../../../.mainboard/vendor/atpx` as `../../vendor/atpx`, which escaped an exact-prefix match
+    and left a Miyabi wave importing no torch (2026-09-06).
 
-    Textual because the spellings are not only the manifest's: the lock beside it records the
-    same local sources, and the generated dotenv loader sources `.env` by the same route.
-
-    ANY spelling that lands inside the workspace, not only the one `rerooted` writes. This used
-    to match the exact parent prefix and nothing else, which held for as long as the only local
-    source was the workspace root itself. A vendored path dependency is the first location under
-    the root that a compile names, and pixi does not keep the spelling it was handed: 0.79 wrote
-    `path = "../../../.mainboard/vendor/atpx"` back into its lock as `../../vendor/atpx`, the
-    same directory with the `.mainboard` segment collapsed into one fewer parent. That token
-    began with two parents rather than three, rode into the prefix untouched, and resolved to
-    `<root>/.mainboard/prefixes/vendor/atpx`: `error extracting extension from ...`, then
-    `Failed to update PyPI packages`, and a whole Miyabi wave importing no torch at all
-    (2026-09-06).
-
-    root: the workspace root the file's relative paths were written against.
-    generated_dir: the workspace-relative directory it was compiled into, whose depth decides
-        which relative spellings can reach the workspace at all.
+    generated_dir: the directory it was compiled into, whose depth decides which relative
+        spellings reach the workspace.
     """
     return _rewritten(
         text,
@@ -130,32 +102,15 @@ def anchored(
 def normalized(
     text: str, *, root: PurePath, generated_dir: PurePath = _DEFAULT_GENERATED_DIR
 ) -> str:
-    """One generated file's text with every location in the workspace spelled one way.
+    """One generated file's text with every workspace location spelled one way, for a digest.
 
-    The form a digest is taken over, and it has to answer for both ways a location reaches a
-    generated file as something other than the way this package writes it.
+    pixi re-spells locations it was handed (as `pixi_lock.canonical` handles one level up), and
+    `{{ config_root }}` renders each machine's own root into `[activation.env]`: the workstation
+    pinned a4c06131efc5808c, the host read fc4975ef2096b9ac, and four Miyabi jobs died with no
+    prefix built (2026-09-06). The root is written back out rather than activation stripped,
+    so a real change to what a workspace exports still moves the address.
 
-    pixi rewrites a location it was handed into whatever spelling it prefers, and two spellings
-    of one directory are one dependency: `pixi_lock.canonical` exists for the same reason, one
-    level up.
-
-    And a compile is machine-independent in everything but one thing, `config_root`, which
-    renders to the manifest's own directory so that a host mirroring the repository elsewhere
-    exports its own root. The monorepo declares `PYTHONPATH = "{{ config_root }}:..."` on
-    exactly that promise, so its compiled `[activation.env]` carries `/home/pedro/projects` here
-    and `/work/xg25g007/x10537/projects` there. That is correct for the variable and fatal for
-    an address: the workstation pinned a4c06131efc5808c, the host recompiled and read
-    fc4975ef2096b9ac, and four Miyabi jobs died at environment prime with no prefix ever built
-    (2026-09-06). `Compiler._resolution_manifest` had already learned this about the lock's own
-    digest, in its own words, that leaving activation in would make it depend on where the
-    workspace happens to live and refuse every host whose root differs. An address owes the same.
-
-    Stripping activation instead would be the cheaper answer and the wrong one: a workspace that
-    really does change what it exports would then keep serving a prefix built before the change.
-    The machine's own root is written back out and everything else still counts.
-
-    root: the workspace root the file was compiled for, whose spelling is the one thing about it
-        that is this machine's rather than this workspace's.
+    root: the workspace root the file was compiled for, the one machine-specific spelling.
     """
     spelled = _unrooted(text, root=root, generated_dir=generated_dir)
     return _rewritten(
@@ -177,8 +132,7 @@ def _unrooted(text: str, *, root: PurePath, generated_dir: PurePath) -> str:
 def _rewritten(text: str, *, generated_dir: PurePath, spell: Callable[[str], str]) -> str:
     """Every relative path token in `text` that reaches inside the workspace, respelled.
 
-    A token that climbs past the root is left exactly as it stands: it names something no mirror
-    carries and no rewrite can make portable, and inventing a location for it would hide that.
+    A token climbing past the root is left as it stands: no mirror carries what it names.
     """
 
     def replace(match: re.Match[str]) -> str:
@@ -189,12 +143,10 @@ def _rewritten(text: str, *, generated_dir: PurePath, spell: Callable[[str], str
 
 
 def _inside(token: str, *, generated_dir: PurePath) -> str | None:
-    """Where a relative token resolves under the workspace root, None once it climbs past it.
+    """Where a relative token resolves under the workspace root (`""` for the root), else None.
 
-    Pure arithmetic over the spelling, so the answer is the same on a machine where neither
-    location exists. An empty answer is the workspace root itself.
+    Pure arithmetic over the spelling; pathlib already drops every `.` component.
     """
-    # pathlib already drops every `.` component from `parts`, so only `..` needs arithmetic.
     parts: list[str] = []
     for part in (*generated_dir.parts, *PurePosixPath(token).parts):
         if part != "..":
@@ -211,20 +163,11 @@ def self_installed(
 ) -> list[str]:
     """Every workspace-relative directory a compiled manifest installs as an editable package.
 
-    The packages whose own source a job imports rather than a copy of: an editable install puts
-    that source directory on `sys.path` instead of copying anything into the environment, so
-    where the directory is decides what the job imports. A workspace installing its own root
-    (`path = "."`, how a research repository ships its `src/`) is the case this exists for.
-
-    Read from the compiled manifest rather than from the workspace manifest, because this is the
-    file the environment is built from and the one the digest is taken over, so what a job puts
-    on its path and what its prefix installs can never be two different rosters. A path that is
-    not inside the workspace is left out: it does not travel with a mirror and no snapshot of
-    one freezes it.
+    An editable's directory decides what a job imports, as when a workspace installs its own
+    root (`path = "."`). Read from the compiled manifest the prefix is built and digested from,
+    so the two rosters never differ. Paths outside the workspace never travel and are left out.
 
     manifest: the compiled `pixi.toml`'s text.
-    generated_dir: the directory it was compiled into, whose depth decides how a
-        workspace-relative path is spelled inside it.
     """
     parents = rerooted("", generated_dir=generated_dir)
     declared = [
@@ -237,11 +180,7 @@ def self_installed(
 
 
 def _editable_specs(value: Toml) -> Iterator[dict[str, Toml]]:
-    """Every editable dependency spec anywhere in a compiled manifest's tables.
-
-    Everywhere, because a dependency table stands under the workspace, under a feature and under
-    a platform target, and a workspace that installs itself for one platform installs itself.
-    """
+    """Every editable dependency spec in the workspace, feature and platform-target tables."""
     if isinstance(value, dict):
         for key, item in value.items():
             if key in _DEP_TABLES and isinstance(item, dict):
@@ -258,7 +197,7 @@ def _editable_specs(value: Toml) -> Iterator[dict[str, Toml]]:
 
 
 def _platform_name(entry: Toml) -> str:
-    """Pixi platform name carried by a bare string or named descriptor."""
+    """The Pixi platform name a bare string or named descriptor carries."""
     if isinstance(entry, str):
         return entry
     if isinstance(entry, dict):
@@ -269,18 +208,14 @@ def _platform_name(entry: Toml) -> str:
 
 
 def _table(value: Toml | None) -> dict[str, Toml]:
-    """Concrete table held by a recursive TOML value, empty for every scalar shape."""
+    """The table a TOML value holds, empty for every other shape."""
     return dict(value) if isinstance(value, dict) else {}
 
 
 def _reroot_source(name: str, spec: Toml, *, generated_dir: PurePath) -> Toml:
-    """A single dep spec with a local ``path`` source shifted up out of the generated directory.
+    """A dep spec with its local `path` source rerooted, at its vendored location if outside.
 
-    A path that leaves the workspace root is spelled at its vendored location first, so what a
-    compiled artifact records is inside the root and the same distance from it on every machine.
-    See `vendor` for why a path that resolves here resolves nowhere on a host.
-
-    A bare version string, or a table without ``path``, rides through untouched.
+    See `vendor` for why a path leaving the root resolves nowhere on a host.
     """
     if isinstance(spec, dict) and isinstance(path := spec.get("path"), str):
         return {**spec, "path": rerooted(relocated(name, path), generated_dir=generated_dir)}
@@ -288,12 +223,7 @@ def _reroot_source(name: str, spec: Toml, *, generated_dir: PurePath) -> Toml:
 
 
 def _reparent(value: Toml, *, generated_dir: PurePath) -> Toml:
-    """Reroot local path deps in the compiled tables, leaving everything else as is.
-
-    Only a ``path`` carried as a dependency *source* (a value under a ``dependencies`` or
-    ``pypi-dependencies`` table) is shifted, so a dependency literally named ``path`` keeps its
-    version untouched.
-    """
+    """Reroot the `path` sources in dependency tables, so a dependency named `path` is kept."""
     if isinstance(value, dict):
         return {
             key: {
@@ -310,12 +240,7 @@ def _reparent(value: Toml, *, generated_dir: PurePath) -> Toml:
 
 
 def spec_toml(spec: Spec) -> Toml:
-    """The smallest TOML representation of one dependency spec.
-
-    A bare version string when nothing else was declared, otherwise a table carrying the
-    version (dropped when it is the unconstrained default) beside every extra key (`path`,
-    `editable`, `git`, ...).
-    """
+    """The smallest TOML for one spec: a bare version, else a table without a `*` version."""
     extra = spec.model_extra or {}
     if not extra:
         return spec.version
@@ -324,17 +249,10 @@ def spec_toml(spec: Spec) -> Toml:
 
 
 def _layered(declared: Mapping[str, Spec], *, over: Mapping[str, Spec]) -> dict[str, Spec]:
-    """Each requirement _layered over the one it shadows, the way `Spec.merged` layers a scope.
+    """Each requirement layered over the one it shadows, the way `Spec.merged` layers a scope.
 
-    A pixi `[target]` dependency replaces its scope's own rather than narrowing it, so an
-    overlay entry has to arrive already carrying whatever the scope said about that package.
-    Otherwise `python = "*"` beside a declared `python = ">=3.14.6,<3.15"` reads as "python is
-    present on this platform too" and compiles to "any python at all here", which is how a floor
-    a workspace states once stops reaching one platform and lets that target's solve drift onto
-    an interpreter nobody asked for.
-
-    declared: the overlay's own requirements.
-    over: the requirements it shadows, empty for a scope that overlays nothing.
+    A pixi `[target]` dependency replaces its scope's own, so an overlay `python = "*"` would
+    otherwise drop a declared `>=3.14.6,<3.15` floor on that platform.
     """
     return {
         name: spec.merged(over[name]) if name in over else spec for name, spec in declared.items()
@@ -342,14 +260,9 @@ def _layered(declared: Mapping[str, Spec], *, over: Mapping[str, Spec]) -> dict[
 
 
 def dependency_tables(scope: Scope, *, over: Scope | None = None) -> dict[str, Toml]:
-    """Compile one scope's conda and Python dependencies into Pixi dependency tables.
+    """Compile one scope's conda and Python dependencies; other ecosystems are the second stage.
 
-    Only the `python` ecosystem is understood beyond conda deps, mainboard's own
-    simplification, python+conda through pixi for now, every other declared ecosystem table
-    (`nodejs`, `rust`, ...) rides in the manifest but is not yet translated.
-
-    over: the scope this one overlays, when it compiles into a `[target]` table rather than
-        standing on its own. See `_layered` for why an overlay must not be compiled bare.
+    over: the scope this one overlays when it compiles into a `[target]` table (see `_layered`).
     """
     shadowed = over.deps if over else {}
     merged = _layered(scope.deps, over=shadowed)
@@ -366,12 +279,7 @@ def dependency_tables(scope: Scope, *, over: Scope | None = None) -> dict[str, T
 
 
 def pypi_options(scope: Scope) -> dict[str, Toml]:
-    """Compile one scope's `[python]` solver settings into pixi's `[pypi-options]`.
-
-    The settings sit beside `[python.deps]` as untyped extras, so the manifest never lags a uv
-    feature, and only the keys pixi itself defines are forwarded. `dependency-overrides` is a
-    dependency table like any other, so a local `path` in one is rerooted with the rest of them.
-    """
+    """Forward the pixi-defined `[python]` extras (untyped, never lagging uv) as pypi-options."""
     python: Toolchain | None = scope.toolchains().get("python")
     declared = (python.model_extra or {}) if python else {}
     return {key: declared[key] for key in _PYPI_OPTION_KEYS if key in declared}
@@ -380,15 +288,9 @@ def pypi_options(scope: Scope) -> dict[str, Toml]:
 def selected_manifest(manifest: Manifest, environment: str) -> Manifest:
     """The compile-visible manifest projection for one logical environment.
 
-    The default environment is root plus dev. A named inherited environment is root plus that
-    environment, without dev. A ``no-default`` environment starts from its own scopes alone.
-    Unrelated named environments are always removed, so neither their dependencies nor their
-    local project metadata can enter this shard's manifest, state, or lock.
-
-    Non-compile tables are reset before validating the projection. They never reach a generated
-    file, and a host or engine may legitimately name an unrelated environment removed above.
-    Keeping those references would make a compile-only projection fail whole-manifest
-    referential validation even though no compiler reads them.
+    `default` is root plus dev, a named environment root plus itself, a `no-default` one itself
+    alone; unrelated environments never enter the shard. Non-compile tables are dropped, since a
+    host naming a removed environment would fail referential validation.
     """
     selected = manifest.environment(environment)
     body = manifest.model_dump(mode="python", round_trip=True)
@@ -424,6 +326,15 @@ class PixiManifest(FrozenModel):
         """Environment values exported only while Pixi selects this target scope."""
         return {"env": dict(scope.env)} if scope.env else {}
 
+    @classmethod
+    def platform_target(cls, scope: PlatformScope, *, over: Scope) -> dict[str, Toml]:
+        """One `[target.<platform>]` table: the overlay's dependencies and activation."""
+        activation = cls.platform_activation(scope)
+        return {
+            **dependency_tables(scope, over=over),
+            **({"activation": activation} if activation else {}),
+        }
+
     @staticmethod
     def activation_table(
         m: Manifest,
@@ -431,13 +342,10 @@ class PixiManifest(FrozenModel):
         windows: bool = False,
         generated_dir: PurePath = _DEFAULT_GENERATED_DIR,
     ) -> dict[str, Toml]:
-        """The `[activation]` table, exported env vars and the scripts pixi sources on entry.
+        """The `[activation]` table: exported env vars and the scripts pixi sources on entry.
 
-        The generated dotenv loader lives beside the manifest and is sourced first, so a
-        variable it loads is already visible to the rest of pixi's own activation and to every
-        script the workspace declares after it. Those declared scripts are workspace-relative,
-        the way everything else in the manifest is written, and are rerooted like any other
-        declared location.
+        The dotenv loader comes first so every later script sees what it loads; declared
+        scripts are workspace-relative and rerooted.
         """
         scripts: list[Toml] = [
             *([_DOTENV_BAT if windows else _DOTENV_SH] if m.workspace.dotenv else []),
@@ -467,11 +375,8 @@ class PixiManifest(FrozenModel):
     def task(spec: Task, *, generated_dir: PurePath = _DEFAULT_GENERATED_DIR) -> Toml:
         """Translate a manifest task into pixi's (`run` -> `cmd`, `depends` -> `depends-on`).
 
-        A task that runs a command runs it from the repo root, one directory up from the
-        generated `.mainboard/`, so repo-relative commands (`python -m pkg`) resolve as
-        written, and a `dir` rebases that root. A command-less aggregator (only `depends`)
-        carries no working directory, pixi rejects `cwd` without a `cmd`, so the rebase is
-        skipped for it.
+        A command runs from the repo root, rebased by `dir`. An aggregator gets no `cwd`, which
+        pixi rejects without a `cmd`.
         """
         out: dict[str, Toml] = {}
         if isinstance(spec, str):
@@ -496,16 +401,10 @@ class PixiManifest(FrozenModel):
     ) -> Toml:
         """One `[feature.<name>]` table: the env's own feature table, platforms and tasks.
 
-        An environment declaring `no-default` starts from nothing but itself, and pixi reads
-        that exclusion as covering the workspace `[activation]` table too, not only the deps.
-        A clear is not a setting though. It is the workspace saying a variable must not be
-        present at all, which an isolated environment has more reason to honour rather than
-        less, and a variable the calling shell exported reaches an activated command whatever
-        the environment solved from. So the generated unset script is carried into an isolated
-        feature's own activation, and the environments that do include the default feature
-        already source it there and are left alone.
+        pixi's `no-default` also drops the workspace `[activation]`, but a clear must still
+        hold, so an isolated feature carries the unset script in its own activation.
 
-        clearing: whether the workspace `[env]` table takes any variable away at all.
+        clearing: whether the workspace `[env]` table takes any variable away.
         windows: whether this feature can run on a Windows target.
         """
         body: dict[str, Toml] = {
@@ -546,16 +445,9 @@ class PixiManifest(FrozenModel):
         if env.platforms:
             body[_PLATFORMS] = env.platforms
         target = {
-            platform: {
-                **dependency_tables(scope, over=env),
-                **(
-                    {"activation": activation}
-                    if (activation := cls.platform_activation(scope))
-                    else {}
-                ),
-            }
+            platform: table
             for platform, scope in env.on.items()
-            if dependency_tables(scope, over=env) or scope.env
+            if (table := cls.platform_target(scope, over=env))
         }
         if target:
             body["target"] = target
@@ -573,9 +465,8 @@ class PixiManifest(FrozenModel):
     ) -> tuple[dict[str, Toml], dict[str, Toml]]:
         """The features and sole logical environment carried by one Pixi shard.
 
-        The default shard owns the synthetic dev and platform-routing features. A named shard
-        owns only its named feature; Pixi implicitly layers the root default feature unless
-        that environment declared ``no-default``. No unrelated logical environment is emitted.
+        The default shard owns the synthetic dev and platform-routing features, a named shard
+        only its own (Pixi layers the root feature unless `no-default`).
         """
         clearing = bool(cleared(m.env))
         workspace_platforms = tuple(
@@ -617,11 +508,9 @@ class PixiManifest(FrozenModel):
 
     @staticmethod
     def workspace_platforms(platforms: PlatformMatrix, environment: str) -> list[Toml]:
-        """Only the platform descriptors the selected environment can actually solve.
+        """Only the platform descriptors the selected environment can solve.
 
-        Named floor variants are addressed by name from the environment's feature. When no
-        explicit route is needed, the matrix already contains only the shared bare platform
-        entries relevant to this selected-manifest projection.
+        Without an explicit route the matrix already holds only the relevant bare entries.
         """
         names = (
             platforms.default
@@ -644,12 +533,7 @@ class PixiManifest(FrozenModel):
     ) -> Self:
         """Build one environment shard's Pixi manifest from a validated Mainboard manifest.
 
-        `hosts`, `containers` and `vars` belong to other subsystems (remote dispatch, base
-        images, template interpolation) and are never read here.
-
-        project_name: the tool's own name (`Project().name`), naming the synthetic
-            `<project_name>-platforms` feature so a rename never hardcodes it.
-        environment: the sole logical environment this shard carries.
+        project_name: names the synthetic `<project_name>-platforms` feature.
         generated_dir: workspace-relative directory containing the generated manifest.
         """
         m = selected_manifest(m, environment)
@@ -672,14 +556,7 @@ class PixiManifest(FrozenModel):
             generated_dir=generated_dir,
         )
         targets: dict[str, Toml] = {
-            platform: {
-                **dependency_tables(scope, over=m),
-                **(
-                    {"activation": activation}
-                    if (activation := cls.platform_activation(scope))
-                    else {}
-                ),
-            }
+            platform: cls.platform_target(scope, over=m)
             for platform, scope in m.on.items()
             if platform in selectors
         }
@@ -726,7 +603,7 @@ class PixiManifest(FrozenModel):
         return cls.model_validate(_reparent(payload, generated_dir=generated_dir))
 
     def to_toml(self) -> str:
-        """Render to `pixi.toml` text (hyphenated table names via the field aliases)."""
+        """Render to `pixi.toml` text, hyphenated names via the field aliases."""
         body = self.model_dump(by_alias=True, exclude_defaults=True)
         body["workspace"][_PLATFORMS] = self.platform_array(body["workspace"][_PLATFORMS])
         return tomlkit.dumps(body)

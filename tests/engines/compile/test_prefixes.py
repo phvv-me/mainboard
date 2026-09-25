@@ -51,12 +51,7 @@ def artifact(tmp_path: Path, manifest_from: Callable[[str], Manifest]) -> Callab
 
 @pytest.fixture
 def self_installing(artifact: Callable[[str], Path]) -> Path:
-    """A compiled artifact for a workspace that installs its own root as an editable package.
-
-    Which is how a research repository ships its own `src/`, and the one shape whose every
-    declared location is written relative to the shard it was compiled into: the workspace root
-    itself, the same root in the lock beside it, and `.env` in the generated dotenv loader.
-    """
+    """An artifact whose workspace installs its own root, in the manifest, lock and dotenv."""
     source = artifact("self")
     (source / "pixi.toml").write_text(
         f'{_WORKSPACE}\n[pypi-dependencies]\nw = {{ path = "../../..", editable = true }}\n',
@@ -78,12 +73,6 @@ def prefixes(tmp_path: Path, manifest_from: Callable[[str], Manifest]) -> Prefix
 def test_an_environment_is_addressed_by_the_artifact_it_would_be_built_from(
     artifact: Callable[[str], Path], prefixes: Prefixes
 ) -> None:
-    """The manifest and the lock decide every package that lands, so they are the identity.
-
-    Path arithmetic only, and the same arithmetic on both sides of an ssh connection: the
-    dispatcher pins a digest into a snapshot on a host it has asked nothing of yet, and the host
-    builds into the very directory the job was told to activate.
-    """
     one, other = artifact("one"), artifact("other")
 
     assert digest_of(one) != digest_of(other)
@@ -265,8 +254,6 @@ def test_relocated_second_stage_paths_and_generated_inputs_keep_one_identity(
 def test_half_an_artifact_names_no_environment_and_says_which_command_makes_one(
     artifact: Callable[[str], Path], prefixes: Prefixes
 ) -> None:
-    """Building from a manifest whose lock is missing is how a prefix ends up describing one
-    lock and containing another."""
     source = artifact("one")
     (source / "pixi.lock").unlink()
 
@@ -280,12 +267,7 @@ def test_a_second_lock_builds_beside_the_first_and_never_into_it(
     prefixes: Prefixes,
     tool_paths: Mapping[str, str],
 ) -> None:
-    """The whole point: a queued job's environment survives the next solve.
-
-    A wave dispatched against one lock kept running while a second lock was installed over the
-    one shared prefix, and died importing sqlite3 against a half-reconciled environment. Here
-    the second lock is a second directory, and the first is untouched down to its bytes.
-    """
+    """A queued job's environment survives the next solve, down to its bytes."""
     hooked(fp, tool_paths["pixi"])
     fp.register([fp.any()], stdout="environment ready\n", occurrences=8)
     first = prefixes.materialize(artifact("one"))
@@ -313,15 +295,7 @@ def test_a_workspace_that_installs_itself_is_built_against_its_root_and_not_the_
     tmp_path: Path,
     tool_paths: Mapping[str, str],
 ) -> None:
-    """A compiled artifact names every location relative to the shard it was compiled into.
-
-    A prefix is not that shard, so a verbatim copy carried `path = "../../.."` one directory
-    deeper and pixi read the workspace as its own generated tree: `Failed to build
-    reproducibility @ .../.mainboard`, `does not appear to be a Python project`, four Miyabi jobs
-    dead on 2026-09-05, and every workspace with a self-install with them. So the copy is
-    anchored where it lands, in the manifest, in the lock that records the same local source,
-    and in the generated shell the activation sources by name and could not find at all.
-    """
+    """A verbatim copy read `../../..` as the generated tree; four Miyabi jobs died."""
     hooked(fp, tool_paths["pixi"])
     fp.register([fp.any()], stdout="environment ready\n", occurrences=8)
     digest = digest_of(self_installing)
@@ -346,12 +320,6 @@ def test_one_artifact_is_one_environment_at_every_root_that_builds_it(
     tmp_path: Path,
     tool_paths: Mapping[str, str],
 ) -> None:
-    """Two machines hold one lock at two paths, and a blessing has to travel between them.
-
-    So the identity stays over the artifact's own bytes and the absolute root enters only the
-    copy each workspace builds for itself, which is also what lets a job activate an environment
-    built from a pinned tree that no longer stands.
-    """
     hooked(fp, tool_paths["pixi"])
     fp.register([fp.any()], stdout="environment ready\n", occurrences=16)
     here, there = (
@@ -371,7 +339,6 @@ def test_an_environment_already_built_is_answered_and_never_built_again(
     prefixes: Prefixes,
     tool_paths: Mapping[str, str],
 ) -> None:
-    """Which is what lets every job of a wave call this on the way in without a race."""
     hooked(fp, tool_paths["pixi"])
     fp.register([fp.any()], stdout="environment ready\n", occurrences=8)
     source = artifact("one")
@@ -440,7 +407,6 @@ def test_materialize_refuses_second_stage_declarations_changed_after_compile(
 def test_an_interrupted_build_is_never_mistaken_for_a_finished_one(
     artifact: Callable[[str], Path], prefixes: Prefixes
 ) -> None:
-    """A prefix is safe to activate when it is stamped, not when its directory exists."""
     digest = digest_of(artifact("one"))
     (prefixes.path(digest) / ".pixi").mkdir(parents=True)
 
@@ -450,13 +416,7 @@ def test_an_interrupted_build_is_never_mistaken_for_a_finished_one(
 def test_prune_keeps_every_environment_a_pinned_tree_still_names(
     prefixes: Prefixes, tmp_path: Path
 ) -> None:
-    """A queued job's tree is what proves its environment is in use, whatever its age.
-
-    So the sweep that drops the source trees nothing is owed from drops the prefixes with them,
-    and never the one a wave that has not started yet will activate. The newest `KEEP` stand
-    unconditionally, since the wave running now and the wave just dispatched are both live
-    before anything has pinned them.
-    """
+    """A pinned tree proves its environment in use; the newest `KEEP` always stand."""
     for age, name in enumerate(("kept", "stale", "recent", "newest")):
         (prefixes.base / name).mkdir(parents=True)
         os.utime(prefixes.base / name, (1_000_000 + age, 1_000_000 + age))
@@ -482,7 +442,6 @@ def test_prune_keeps_every_environment_a_pinned_tree_still_names(
 def test_prune_on_a_host_that_has_never_built_anything_is_not_an_error(
     prefixes: Prefixes,
 ) -> None:
-    """It runs from the same sweep as the snapshot prune, against every mirrored host."""
     assert prefixes.prune(live=()) == []
 
 
@@ -492,11 +451,7 @@ def test_a_prefix_a_peer_finished_while_this_build_waited_for_the_lock_is_taken_
     prefixes: Prefixes,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A wave's jobs all find the prefix missing at once, and only the first may build it.
-
-    So the question is asked again under the lock, and a prefix another job finished in the
-    meantime is answered untouched, without a single pixi call from this one.
-    """
+    """Asked again under the lock, so a peer's finished prefix costs no pixi call."""
     source = artifact("raced")
     looked = prefixes.built
 
@@ -520,7 +475,6 @@ def test_a_prefix_a_peer_finished_while_this_build_waited_for_the_lock_is_taken_
 def test_a_pinned_tree_whose_environment_is_not_a_link_names_no_prefix(
     prefixes: Prefixes, tmp_path: Path
 ) -> None:
-    """Only a link says which addressed environment a tree activates; a directory says none."""
     sources = tmp_path / "sources"
     (sources / "abc" / ".mainboard" / "envs" / "default" / ".pixi").mkdir(parents=True)
 

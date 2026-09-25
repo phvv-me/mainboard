@@ -6,6 +6,7 @@ from plumbum import local
 
 from mainboard import MissionError
 from mainboard.engines.compile.backend import Process, Tool
+from mainboard.engines.compile.backend import tool as tool_module
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -37,11 +38,6 @@ def test_flags_convert_keyword_options_to_cli_args() -> None:
 
 
 def test_a_tool_names_the_binary_it_runs_and_pins_nothing_by_default() -> None:
-    """A tool's binary name is required only where it is used.
-
-    A backend running through another tool names no binary, so the name is demanded at the
-    one boundary that needs it rather than of every subclass.
-    """
     tool = _PythonTool()
     assert str(tool.command) == _PYTHON
     assert tool.scope() == ()
@@ -65,11 +61,6 @@ def test_within_cwd_runs_in_the_declared_directory(tmp_path: Path) -> None:
 def test_a_failed_run_raises_or_preserves_its_code_depending_on_who_asked(
     fp: FakeProcess,
 ) -> None:
-    """A run raises on failure and a passthrough relays the exit.
-
-    Raising keeps a failed install from being reported as green, while a transparent
-    passthrough has to exit with whatever the wrapped command exited.
-    """
     fp.register([_PYTHON, "hi"], returncode=0)
     assert _PythonTool()("hi") is None
 
@@ -103,11 +94,6 @@ def test_a_deferred_tool_builds_the_same_command_without_waiting(
 def test_on_windows_a_manager_runs_by_its_pathext_spelling_and_a_script_under_cmd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """conda ships `npm` as a POSIX script beside `npm.cmd`; only the launcher is a program."""
-    from plumbum import local
-
-    from mainboard.engines.compile.backend import tool as tool_module
-
     (tmp_path / "npm").write_text("#!/bin/sh\n")
     (tmp_path / "npm.cmd").write_text("@echo off\n")
     for program in ("node.exe", "cmd.exe"):

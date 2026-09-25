@@ -53,7 +53,6 @@ _TABLE = st.dictionaries(WORDS, SPECS, max_size=3)
 def test_the_smallest_toml_for_a_spec_keeps_everything_it_declared(
     version: str, extras: dict[str, Json]
 ) -> None:
-    """A bare version renders as a string, and an unconstrained one is dropped beside extras."""
     spec = Spec.model_validate({"version": version, **extras})
     rendered = spec_toml(spec)
     assert Spec.model_validate(rendered) == spec
@@ -73,7 +72,6 @@ def test_the_smallest_toml_for_a_spec_keeps_everything_it_declared(
     ],
 )
 def test_rerooted_shifts_only_a_workspace_relative_location(declared: str, compiled: str) -> None:
-    """One rule for every declared location, since they all resolve from `.mainboard/`."""
     assert rerooted(declared) == compiled
 
 
@@ -113,7 +111,6 @@ def test_workspace_platform_selection_accepts_pixis_defensive_descriptor_shapes(
 def test_dependency_tables_compile_conda_and_python_and_nothing_else(
     body: dict[str, Json], tables: dict[str, Toml]
 ) -> None:
-    """Every other declared ecosystem rides in the manifest untranslated, on purpose."""
     assert dependency_tables(Scope.model_validate(body)) == tables
 
 
@@ -150,11 +147,7 @@ def test_dependency_tables_compile_conda_and_python_and_nothing_else(
 def test_a_platform_overlay_never_widens_what_the_scope_it_overlays_pinned(
     overlay: dict[str, Json], tables: dict[str, Toml]
 ) -> None:
-    """A pixi `[target]` dependency replaces rather than narrows, so the floor must ride along.
-
-    Without this, `python = "*"` in an `[on.osx]` overlay compiles to "any python at all on
-    osx" and that platform's solve drifts onto an interpreter nobody asked for.
-    """
+    """A pixi `[target]` dependency replaces rather than narrows, so the floor must ride along."""
     scope = Scope.model_validate(
         {"deps": {"python": ">=3.14.6,<3.15"}, "python": {"deps": {"torch": ">=2.9"}}}
     )
@@ -189,11 +182,7 @@ def test_a_platform_overlay_never_widens_what_the_scope_it_overlays_pinned(
 def test_pypi_options_forward_only_the_settings_pixi_defines(
     body: dict[str, Json], options: Mapping[str, Toml]
 ) -> None:
-    """Non-solve settings pass through and overrides are emitted last.
-
-    A setting beside the deps that configures something other than the solve stays put, and
-    the trailing override sub-table keeps TOML from swallowing the scalars after it.
-    """
+    """The trailing override sub-table keeps TOML from swallowing the scalars after it."""
     assert list(pypi_options(Scope.model_validate(body)).items()) == list(options.items())
 
 
@@ -216,7 +205,6 @@ def test_pypi_options_forward_only_the_settings_pixi_defines(
 def test_a_task_takes_pixis_own_keys_and_runs_from_the_repo_root(
     spec: Task, translated: dict[str, Toml]
 ) -> None:
-    """pixi rejects a `cwd` without a `cmd`, so an aggregator is the one task left unrebased."""
     assert PixiManifest.task(spec) == translated
 
 
@@ -248,7 +236,6 @@ def test_a_task_takes_pixis_own_keys_and_runs_from_the_repo_root(
 def test_the_activation_table_sources_the_dotenv_loader_before_declared_scripts(
     header: str, table: dict[str, Toml], manifest_from: Callable[[str], Manifest]
 ) -> None:
-    """A declared script is workspace-relative, so it is rerooted like any other location."""
     manifest = manifest_from(f'[workspace]\nname = "w"\n{header}')
     assert PixiManifest.activation_table(manifest) == table
 
@@ -308,14 +295,7 @@ def test_a_cleared_variable_reaches_an_environment_that_excludes_the_default_fea
     shared: dict[str, Toml] | None,
     manifest_from: Callable[[str], Manifest],
 ) -> None:
-    """`no-default` is a statement about the solve, and pixi applies it to activation too.
-
-    So an environment declaring it saw neither the workspace's settings nor its clears, and a
-    `[env] X = false` meant to guarantee a clean arithmetic environment silently stopped at the
-    one environment the GPU work actually runs under. A clear says the variable must not be
-    present at all, which isolation is a reason to honour rather than to skip, while a setting
-    is exactly what an isolated environment opted out of.
-    """
+    """A clear must hold in the no-default environment the GPU work runs under."""
     manifest = manifest_from(
         f'[workspace]\nname = "w"\n[env]\n{declared}\n'
         "[envs.vserve]\nno-default = true\n[envs.tools]\n"
@@ -376,7 +356,6 @@ def test_every_declared_dependency_reaches_exactly_one_generated_table(
     dev: dict[str, str],
     served: dict[str, str],
 ) -> None:
-    """Nothing declared is lost on the way into pixi's tables, and nothing else is invented."""
     manifest = Manifest.model_validate(
         {
             "workspace": {"name": "w"},
@@ -405,7 +384,6 @@ def test_every_declared_dependency_reaches_exactly_one_generated_table(
 def test_a_dependency_literally_named_path_keeps_its_version(
     manifest_from: Callable[[str], Manifest],
 ) -> None:
-    """Only a `path` carried as a dependency *source* is a location to be rerooted."""
     manifest = manifest_from('[workspace]\nname = "w"\n[deps]\npath = "*"\n')
     assert PixiManifest.from_manifest(manifest, project_name=_PROJECT).dependencies["path"] == "*"
 

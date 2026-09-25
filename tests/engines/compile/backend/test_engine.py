@@ -39,7 +39,6 @@ def test_home_prefers_pixi_home_and_falls_back_to_the_users_own_directory(
 def test_command_prefers_pixi_on_path_and_falls_back_to_pixi_home(
     monkeypatch: pytest.MonkeyPatch, tool_paths: Mapping[str, str], isolated_pixi_home: Path
 ) -> None:
-    """A non-login remote shell can drop `PIXI_HOME/bin` from PATH without pixi being absent."""
     assert str(PixiEngine().command) == tool_paths["pixi"]
 
     binary = PixiEngine.binary_path()
@@ -54,7 +53,6 @@ def test_windows_pixi_commands_supply_the_real_home_regardless_of_the_launchers_
     monkeypatch: pytest.MonkeyPatch,
     inherited: str | None,
 ) -> None:
-    """Pixi receives the actual profile without changing the calling process environment."""
     monkeypatch.setattr("platform.system", lambda: "Windows")
     if inherited is None:
         monkeypatch.delenv("HOME", raising=False)
@@ -84,7 +82,6 @@ def test_installed_binary_bootstraps_only_when_missing(
 
 
 def test_bootstrap_runs_the_official_installer_and_raises_when_it_fails(fp: FakeProcess) -> None:
-    """`pip install mainboard` brings no pixi binary, so the engine installs one on first use."""
     command = PixiEngine.installer()
     fp.register(command.formulate(), returncode=0)
     PixiEngine().bootstrap()
@@ -113,7 +110,6 @@ def test_bootstrap_runs_the_official_installer_and_raises_when_it_fails(fp: Fake
 def test_the_appended_shell_file_matches_what_the_installer_would_edit(
     monkeypatch: pytest.MonkeyPatch, environment: Mapping[str, str], appended: str
 ) -> None:
-    """The installer edits a personal startup file, so the engine can name which one."""
     monkeypatch.delenv("PIXI_NO_PATH_UPDATE", raising=False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
     for name, value in environment.items():
@@ -135,7 +131,6 @@ def test_bootstrap_names_the_shell_file_the_installer_appends_to(
     shell: str,
     notice: str,
 ) -> None:
-    """One printed line, so nobody discovers the edit by finding it in their own dotfile."""
     monkeypatch.delenv("PIXI_NO_PATH_UPDATE", raising=False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr("shutil.which", lambda name: sys.executable if name == "sh" else None)
@@ -172,7 +167,6 @@ def test_windows_installer_uses_powershell_and_edits_no_shell_file(
 def test_the_installer_names_the_required_shell_when_none_is_available(
     monkeypatch: pytest.MonkeyPatch, system: str, message: str
 ) -> None:
-    """A failed bootstrap identifies the one platform shell the official installer needs."""
     monkeypatch.setattr("platform.system", lambda: system)
     monkeypatch.setattr("shutil.which", lambda name: None)
 
