@@ -54,8 +54,8 @@ the scanned modules. Broad searches show twenty hits and the full match count.
 
 `facts` pairs the hardware with a software census (operating system and version,
 shells, filesystem case sensitivity, symlink and long-path support, the git
-settings a clone inherits, git, git-lfs, gh, rsync, ssh, tar, uv, pixi,
-tectonic, node, cargo and nvcc versions, the NVIDIA driver with its CUDA, each
+settings a clone inherits, git, git-lfs, gh, ssh, uv, pixi, tectonic, node,
+cargo and nvcc versions, the NVIDIA driver with its CUDA, each
 card's compute capability and memory) and judges it against the workspace: a
 platform the manifest or its lock does not cover, a driver below `[system] cuda`,
 locked CUDA builds the driver cannot run or that carry no kernels for the card,
