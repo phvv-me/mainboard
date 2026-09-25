@@ -128,7 +128,7 @@ def life(tmp_path: Path) -> Path:
             "experiments/__init__.py": "",
             "experiments/search.py": _SEARCH,
             "experiments/broken.py": "def (:\n",
-            "experiments/nul.py": b"\0",
+            "experiments/zeroed.py": b"\0",
             "experiments/gone.py": "import lib\n",
         },
     )
