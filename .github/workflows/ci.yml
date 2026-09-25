@@ -5,50 +5,25 @@ on:
   workflow_call: # publish.yml runs this exact gate on main before publishing
   workflow_dispatch: # manual runs (e.g. to validate main directly between releases)
 
+# The gate itself is `[tool.mainboard.ci]` in pyproject.toml, and `mainboard ci` is the only thing
+# that runs it, here, on a developer's machine and across `--matrix` alike. This file only
+# chooses the runners and bootstraps uv, so it has nothing left to drift from. A runner of a
+# platform the table does not support fails the job rather than checking nothing.
 jobs:
-  test:
+  gate:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            pytest_args: ""
-          - os: macos-latest
-            pytest_args: ""
-          - os: windows-latest
-            pytest_args: --no-cov
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
       # A published package stands on its own, so the bootstrap is the official uv action and
-      # nothing of ours. mainboard provisions environments for a living and still cannot use
-      # itself to build itself, which is the one case that stays on plain `uv run`.
+      # nothing of ours. `requires-python` is `>=3.14`, which setup-uv provisions even when the
+      # runner image does not carry it.
       - uses: astral-sh/setup-uv@v7
         with:
-          # One interpreter, because `requires-python` is `>=3.14` and uv refuses anything
-          # below it. setup-uv provisions it even when the runner image does not carry it.
           python-version: "3.14"
           enable-cache: true
-      # The dev tooling is a dependency group, which uv installs by default, so the sync needs
-      # no flags. The `uv run` steps below reuse that environment without pruning it.
-      - run: uv sync --locked
-      # These read the checked-out source rather than the host operating system, so one Linux
-      # run is the whole static-analysis contract; repeating them on all three runners adds no
-      # platform evidence.
-      - if: runner.os == 'Linux'
-        run: uv run ruff check .
-      - if: runner.os == 'Linux'
-        run: uv run ruff format --check .
-      # Both independent checkers gate the same source. Their distinct structural models caught
-      # different defects during the Windows port, so neither is a report-only substitute for the
-      # other, and types-psutil is declared in the standalone dev group they install from here.
-      - if: runner.os == 'Linux'
-        run: uv run mypy src
-      - if: runner.os == 'Linux'
-        run: uv run pyrefly check
-      # Linux and macOS each meet the package's 100% branch-coverage gate. Windows runs that
-      # same suite without the threshold because its deliberate Bash/symlink skips make
-      # a per-host coverage total meaningless; it still exercises native path, process, shell
-      # and ACL-preserving generated-file behavior. Matrix data changes the option without
-      # duplicating the command.
-      - run: uv run pytest ${{ matrix.pytest_args }}
+      # `--locked` refuses a stale lock before the tool that checks for one is even installed.
+      - run: uv run --locked mainboard ci

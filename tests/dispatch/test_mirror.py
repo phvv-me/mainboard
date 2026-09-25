@@ -334,10 +334,22 @@ def test_a_payload_the_agent_stopped_reading_ends_quietly_and_the_refusal_is_wha
 def test_an_unreachable_host_and_a_missing_ssh_both_read_as_unreachable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ssh's own 255 with a transport phrase is a fact about the host, not the agent."""
+    """ssh's own 255 with a transport phrase is a fact about the host, not the agent.
+
+    The ssh that answers is this interpreter saying what ssh says of a name no resolver knows,
+    so the link's own spawn runs and nothing leaves this machine.
+    """
+    spawn = subprocess.Popen
+    said = "import sys; sys.stderr.write('ssh: Could not resolve hostname nowhere.invalid\\n')"
+
+    def unresolved(argv: list[str], **options) -> subprocess.Popen[bytes]:
+        assert argv[0] == "ssh" and "nowhere.invalid" in argv
+        return spawn([sys.executable, "-c", f"{said}; sys.exit(255)"], **options)
+
+    monkeypatch.setattr(subprocess, "Popen", unresolved)
     link = SshLink("nowhere.invalid", SshTransport(connect_timeout=2.0))
     assert link.ssh.destination("nowhere.invalid") == "nowhere.invalid"
-    with pytest.raises(HostUnreachable):
+    with pytest.raises(HostUnreachable, match="unreachable: .*resolve hostname"):
         Agent(link, patience=30.0).ask({"survey": {}})
 
     def absent(*args, **kwargs):

@@ -12,6 +12,8 @@ from mainboard.dispatch.schedulers import HostUnreachable
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState
 from mainboard.jobs.beacon import Progress
+from mainboard.probe import system
+from mainboard.probe.census import Census
 from mainboard.pulse import Pulse, Pulses
 
 if TYPE_CHECKING:
@@ -116,8 +118,14 @@ def onboarded(host: str = "gold") -> HostSetup:
     ids=["a projection over the probed fields", "the default rich table", "the compact record"],
 )
 def test_the_facts_verb_prints_this_machines_own_probe(
-    depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], fragments: tuple[str, ...]
+    depot: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    fragments: tuple[str, ...],
 ) -> None:
+    """The probe is this machine's own, its software census asked of nothing that answers."""
+    monkeypatch.setattr(system, "Census", lambda: Census(runner=lambda _command: (127, "")))
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["facts", *flags])
     out = capsys.readouterr().out

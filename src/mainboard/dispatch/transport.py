@@ -10,7 +10,7 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv buil
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, suppress
-from math import ceil
+from math import ceil, isinf
 from pathlib import Path
 from typing import IO, NoReturn
 
@@ -229,7 +229,7 @@ class SshTransport(FrozenModel):
         *,
         operation: str,
         input_text: str | None = None,
-        bounded: bool = True,
+        timeout: float | None = None,
     ) -> tuple[int, str, str]:
         """Run one ssh process and answer its exit status with what it wrote.
 
@@ -240,7 +240,8 @@ class SshTransport(FrozenModel):
         host: the alias or destination, named in every failure.
         operation: what the command is for, named in every failure.
         input_text: explicit UTF-8 input, otherwise the native null device.
-        bounded: hold the process to the control deadline; False lets an install run its course.
+        timeout: seconds the process may run, the control deadline when None; `math.inf` lets
+            an install run its course.
         """
         returncode, stdout, stderr = self.__communicate(
             command,
@@ -248,7 +249,7 @@ class SshTransport(FrozenModel):
             operation=operation,
             input_text=input_text,
             sink=subprocess.PIPE,
-            timeout=self.deadline if bounded else None,
+            timeout=self.deadline if timeout is None else (None if isinf(timeout) else timeout),
         )
         self.__check(returncode, stderr, host=host, operation=operation)
         return returncode, stdout or "", stderr or ""

@@ -28,7 +28,7 @@ from .support import Answer, Lab, Launcher, Option, Owner, Relayed, build_lab
 # The trials plugin ships as a pytest entry point, so the only honest way to test its hooks is to
 # run pytest inside pytest, which is what `pytester` is for. It has to be named here because
 # pytest reads `pytest_plugins` from the top-level conftest alone.
-pytest_plugins = ["pytester"]
+pytest_plugins = ["pytester", "mainboard.testing"]
 
 # The stand-in for "this module was never imported", so the tracking seal restores absence as
 # faithfully as it restores a module.

@@ -16,6 +16,7 @@ from .batch.spec import BatchSpec, Selection
 from .board import Board
 from .center.migrate import Migration
 from .center.verify import Verification
+from .ci import LocalLeg, Matrix, Package
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
 
     from .batch.estimate import JobEstimate
     from .batch.watch import BatchStatus
+    from .ci import Result as CiResult
     from .deps import Change
     from .dispatch.onboard import HostSetup
     from .dispatch.state import MonitorReport
@@ -933,6 +935,57 @@ def build(root: Path | None = None) -> App:
         steps = [step.strip() for step in only.split(",") if step.strip()]
         linter = Linter(root, load(root / project.manifest), check=check, only=steps)
         return _linted(linter.lint(files), json_mode=json)
+
+    ci = App(name="ci", help="Run a package's CI gate, the very steps its GitHub workflow runs.")
+    app.command(ci)
+
+    @ci.default
+    def ci_run(
+        package: Path | None = None,
+        *,
+        matrix: bool = False,
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> int:
+        """Run the gate `[tool.mainboard.ci]` declares, exactly as the package's CI job runs it.
+
+        The package is the nearest directory at or above PACKAGE whose pyproject.toml declares a
+        gate, and needs no workspace. Its steps run in order from the package directory and stop
+        at the first failure; each step's output goes to stderr as it settles, the table to
+        stdout. With `--matrix` the gate also runs, at the same time, on every `[ci] hosts` entry
+        of a supported platform this machine is not, the working tree shipped there as it
+        stands, and only failing steps print their output. Exits 1 when any step failed.
+
+        package: a directory inside the package, the working directory when omitted.
+        matrix: also run on one declared host per other platform, the check before a push.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over leg/os/step/verdict/seconds.
+        """
+        found = Package.found((package or Path.cwd()).resolve())
+        if matrix:
+            planned = Matrix.planned(found, board("local"))
+            with progress(f"running the gate on {len(planned.legs)} legs"):
+                results = planned.run()
+            for result in results:
+                if result.failed:
+                    _told(result)
+            for family in planned.uncovered:
+                _said(f"no leg ran on {family}; declare a host of it in [ci] hosts")
+        else:
+            leg = LocalLeg(found.root)
+            results = []
+            for result in leg.run(found.definition.on(leg.family)):
+                _told(result)
+                results.append(result)
+        rows(
+            [result.row() for result in results],
+            mode=mode_of(json_mode=json, agent=agent),
+            fields=_fields(fields) or _CI_COLUMNS,
+            title="ci",
+        )
+        return 1 if any(result.failed for result in results) else 0
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
@@ -1851,6 +1904,7 @@ _GIT_STATUS_COLUMNS = (
     "published",
 )
 _GIT_STEP_COLUMNS = ("repo", "outcome", "detail")
+_CI_COLUMNS = ("leg", "os", "step", "verdict", "seconds")
 _GIT_CHECK_COLUMNS = ("repo", "check", "verdict", "detail")
 
 # The columns the job listing always carries, so a cache nobody has dispatched from still renders
@@ -1999,6 +2053,12 @@ def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: st
 def _said(line: str) -> None:
     """One line a wait says while it blocks, on stderr and at once."""
     print(line, file=sys.stderr, flush=True)
+
+
+def _told(result: CiResult) -> None:
+    """One settled step's transcript, on stderr and at once, nothing for a step never run."""
+    if transcript := result.transcript:
+        _said(transcript)
 
 
 def _agreed() -> bool:
