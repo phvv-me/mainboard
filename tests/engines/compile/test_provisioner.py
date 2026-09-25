@@ -166,7 +166,9 @@ def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
     synced: list[str],
 ) -> None:
     activated: list[str] = []
-    monkeypatch.setattr(Pixi, "cache_windows_activation", lambda self, env: activated.append(env))
+    monkeypatch.setattr(
+        Pixi, "cache_windows_activation", lambda self, env, binaries: activated.append(env)
+    )
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     provisioner.recompiled()
     provisioner.pixi.lock.write_text("version: 7\n", encoding="utf-8")
@@ -230,6 +232,28 @@ def test_an_environment_nothing_installed_is_never_synced_on_the_way_in(
     assert synced == []
 
 
+@pytest.mark.usefixtures("synced")
+def test_a_run_finds_the_crates_the_second_stage_installed_ahead_of_path(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Crates live in the generated directory's own cargo root, never in the conda prefix."""
+    seen: list[str] = []
+
+    def run(pixi: Pixi, command: Sequence[str], env: str = "default") -> int:
+        seen.append(local.env["PATH"])
+        return 0
+
+    monkeypatch.setattr(Pixi, "run", run)
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+    provisioner.recompiled()
+    cargo = provisioner.environment_dir() / "cargo" / "bin"
+    cargo.mkdir(parents=True)
+
+    provisioner.run(("bookokrat",))
+
+    assert seen[0].split(os.pathsep)[0] == str(cargo)
+
+
 def test_running_after_a_manifest_edit_retakes_the_activation_the_recompile_invalidated(
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
@@ -238,7 +262,7 @@ def test_running_after_a_manifest_edit_retakes_the_activation_the_recompile_inva
 ) -> None:
     observed: list[str] = []
     monkeypatch.setattr(
-        Pixi, "cache_windows_activation", lambda self, env: observed.append("activation")
+        Pixi, "cache_windows_activation", lambda self, env, binaries: observed.append("activation")
     )
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     provisioner.pixi.manifest.parent.mkdir(parents=True)
@@ -274,7 +298,7 @@ def test_a_ready_environment_caches_its_windows_activation_after_provisioning(
     )
     monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
     monkeypatch.setattr(
-        Pixi, "cache_windows_activation", lambda self, env: observed.append("activation")
+        Pixi, "cache_windows_activation", lambda self, env, binaries: observed.append("activation")
     )
 
     Provisioner(tmp_path, manifest_from(_BARE)).provision()

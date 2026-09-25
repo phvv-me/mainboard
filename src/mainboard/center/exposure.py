@@ -52,8 +52,9 @@ _STARTUP = {"zsh": (".zshenv",), "bash": (".profile", ".bashrc"), "sh": (".profi
 # The PATH a fresh POSIX login starts from, before any startup file adds to it.
 _BARE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
-# A path segment only a Mainboard environment prefix carries, which marks a stale user PATH entry.
-_PREFIX_MARK = os.sep.join(("", ".pixi", "envs", ""))
+# A path segment only a Mainboard environment carries, its prefix and second-stage directories
+# alike, which marks a stale user PATH entry.
+_PREFIX_MARK = os.sep.join(("", Project().out_dir, "envs", ""))
 
 # This tool, which every agent shell must reach wherever uv put it.
 _TOOL = Project().name

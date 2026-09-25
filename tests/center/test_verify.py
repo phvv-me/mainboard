@@ -307,8 +307,13 @@ def test_the_tree_rows_name_absent_behind_and_unsaved_owned_repositories(
 def test_an_installed_environment_is_put_on_every_shell_s_path_and_proved_there(
     station: Board, home: Path
 ) -> None:
-    """Only commands of declared packages are asked about, from every shell the census found."""
+    """Only commands of declared packages are asked about, from every shell the census found.
+
+    The second stage's directories (the cargo root's `bin/`) join the prefix's on the PATH file.
+    """
     root = installed(station, {"pueue": ["bin/pueue"], "undeclared": ["bin/stray"]})
+    crates = Provisioner(station.root, station.manifest).environment_dir() / "cargo" / "bin"
+    crates.mkdir(parents=True)
     shells = Shells({"/bin/zsh": str(root / "bin"), "/bin/bash": str(root / "bin")})
     system = System(system="Linux", shells={"zsh": "/bin/zsh", "bash": "/bin/bash"})
 
@@ -322,6 +327,7 @@ def test_an_installed_environment_is_put_on_every_shell_s_path_and_proved_there(
     assert rows[1].detail == "1 of 1 resolve into the environment"
     assert all("pueue" in command[-1] and "stray" not in command[-1] for command in shells.ran)
     assert (home / ".zshenv").is_file()
+    assert str(crates) in (home / ".config" / "mainboard" / "path.sh").read_text()
 
 
 def test_left_alone_the_suite_reads_this_machine_and_smokes_the_real_environment(

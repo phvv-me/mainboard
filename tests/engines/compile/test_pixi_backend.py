@@ -540,19 +540,22 @@ def test_windows_caches_pixis_complete_activation_after_provisioning(
     tool_paths: Mapping[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = {
-        "environment_variables": {"SSL_CERT_FILE": "C:/prefix/ssl/cacert.pem"},
-        "activation_scripts": [],
-    }
+    """The second-stage directories lead the recorded `Path`, as `activate.sh` puts them."""
+    variables = {"SSL_CERT_FILE": "C:/prefix/ssl/cacert.pem", "Path": "C:/prefix"}
+    payload = {"environment_variables": variables, "activation_scripts": []}
+    cargo = pixi.manifest.parent / "cargo" / "bin"
     monkeypatch.setattr("platform.system", lambda: "Linux")
-    pixi.cache_windows_activation("default")
+    pixi.cache_windows_activation("default", [cargo])
     assert not pixi.windows_activation_cache.exists()
     monkeypatch.setattr("platform.system", lambda: "Windows")
     fp.register([fp.any()], stdout=json.dumps(payload))
 
-    pixi.cache_windows_activation("default")
+    pixi.cache_windows_activation("default", [cargo])
 
-    assert json.loads(pixi.windows_activation_cache.read_text()) == payload
+    assert json.loads(pixi.windows_activation_cache.read_text()) == {
+        **payload,
+        "environment_variables": {**variables, "Path": os.pathsep.join([str(cargo), "C:/prefix"])},
+    }
     assert " ".join(fp.calls[0]) == (
         f"{tool_paths['pixi']} shell-hook --manifest-path {pixi.manifest} "
         "--frozen --json -e default"

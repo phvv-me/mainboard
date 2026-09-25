@@ -222,10 +222,8 @@ class Provisioner:
         with GeneratedFiles(directory=self.out).locked() as files:
             if shard.compiler.stale():
                 shard.compiler.write(files)
-        with shard.pixi.activated(env):
-            installed = [str(directory) for directory in self.binaries(env)]
-            with local.env(PATH=os.pathsep.join([*installed, str(local.env["PATH"])])):
-                yield
+        with shard.pixi.activated(env), self.leading(env):
+            yield
 
     def run(
         self,
@@ -236,7 +234,7 @@ class Provisioner:
     ) -> int:
         """Compile stale generated files, then let Pixi's cross-platform runner run `command`."""
         shard = self.refreshed(env)
-        with local.cwd(str(self.root)), self.runtime(shard, env):
+        with local.cwd(str(self.root)), self.runtime(shard, env), self.leading(env):
             if exports:
                 return shard.pixi.run(command, env, exports=exports)
             return shard.pixi.run(command, env)
@@ -246,7 +244,7 @@ class Provisioner:
     ) -> CommandResult:
         """Compile stale files, then capture a bounded command through Pixi."""
         shard = self.refreshed(env)
-        with local.cwd(str(self.root)), self.runtime(shard, env):
+        with local.cwd(str(self.root)), self.runtime(shard, env), self.leading(env):
             return shard.pixi.capture(command, env, timeout=timeout)
 
     @staticmethod
@@ -273,7 +271,7 @@ class Provisioner:
                 shard.compiler.write(files)
             self.synchronized(shard, env)
         if recompiled and shard.pixi.ready(env):
-            shard.pixi.cache_windows_activation(env)
+            shard.pixi.cache_windows_activation(env, self.binaries(env))
         return shard
 
     def synchronized(self, shard: _EnvironmentShard, env: str) -> None:
@@ -303,6 +301,16 @@ class Provisioner:
             if directory.is_dir()
         ]
 
+    @contextmanager
+    def leading(self, env: str) -> Generator[None]:
+        """Put `env`'s second-stage binary directories ahead of PATH for the block.
+
+        `pixi run` then puts the prefix's own directories ahead of them.
+        """
+        installed = [str(directory) for directory in self.binaries(env)]
+        with local.env(PATH=os.pathsep.join([*installed, str(local.env["PATH"])])):
+            yield
+
     def provision(
         self, env: str = "default", *, resolve: bool = False, refresh: bool = False
     ) -> None:
@@ -325,4 +333,4 @@ class Provisioner:
                 return
             shard.stage.install(env, resolve=resolve or refresh)
             if shard.pixi.ready(env):
-                shard.pixi.cache_windows_activation(env)
+                shard.pixi.cache_windows_activation(env, self.binaries(env))

@@ -57,9 +57,9 @@ class Ecosystem(Registry, abc.ABC):
         """Runtime and dev requirements together."""
         return self.table.all_deps()
 
+    @abc.abstractmethod
     def binary_dirs(self) -> tuple[Path, ...]:
         """Directories this toolchain links executables into, beyond the prefix's own `bin/`."""
-        return ()
 
     def generate(self, files: Writer) -> None:
         """Write what the installer reads; `files` is valid only under the sync lock."""

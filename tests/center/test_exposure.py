@@ -245,11 +245,15 @@ def test_a_powershell_alias_is_named_with_the_profile_line_that_removes_it(
 
 
 def entries(data: st.DataObject, folders: list[str], root: Path) -> tuple[list[str], list[str]]:
-    """A user PATH mixing the environment's folders, stale prefixes and unrelated entries."""
+    """A user PATH mixing the environment's folders, stale environments and unrelated entries.
+
+    A stale entry is an older environment's prefix or second-stage directory alike.
+    """
     others = [str(root / "other" / word) for word in data.draw(st.lists(WORDS, unique=True))]
     stale = [
-        str(root / "old" / ".pixi" / "envs" / word / "bin")
+        str(root / "old" / ".mainboard" / "envs" / word / inner)
         for word in data.draw(st.lists(WORDS, unique=True, max_size=3))
+        for inner in (Path(".pixi", "envs", word, "bin"), Path("cargo", "bin"))
     ]
     present = data.draw(st.sets(st.sampled_from(folders)))
     held = data.draw(st.permutations([*present, *stale, *others]))

@@ -13,6 +13,7 @@ from plumbum.commands.base import BoundEnvCommand
 
 from ....core import MissionError, Project
 from ....core.host import current_platform
+from ....runtime.activation import prepended
 from .engine import PixiEngine
 from .process import Process
 from .repair import EnvironmentAudit
@@ -284,8 +285,12 @@ class Pixi(Tool):
     def windows_activation_cache(self) -> Path:
         return self.manifest.parent / _WINDOWS_ACTIVATION
 
-    def cache_windows_activation(self, env: str) -> None:
-        """Persist Pixi's full Windows activation, including every conda package hook."""
+    def cache_windows_activation(self, env: str, binaries: Sequence[Path]) -> None:
+        """Persist Pixi's full Windows activation, including every conda package hook.
+
+        binaries: the second-stage executable directories, recorded leading the activated `PATH`
+            the way `activate.sh` puts them, since every Windows entry reads this record instead.
+        """
         if platform.system() != "Windows":
             return
         text = self.within_cwd(
@@ -296,8 +301,11 @@ class Pixi(Tool):
             "-e",
             env,
         )
-        json.loads(text)
-        self.windows_activation_cache.write_text(text, encoding="utf-8")
+        recorded = json.loads(text)
+        variables = recorded["environment_variables"]
+        path = next((name for name in variables if name.upper() == "PATH"), "PATH")
+        prepended(variables, path, binaries)
+        self.windows_activation_cache.write_text(json.dumps(recorded), encoding="utf-8")
 
     def recorded_environment(self, env: str, base: Mapping[str, str]) -> dict[str, str]:
         """`base` entered into `env` the way a restricted command enters it, as a plain mapping.

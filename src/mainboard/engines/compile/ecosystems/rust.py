@@ -11,8 +11,12 @@ if TYPE_CHECKING:
 
     from ....manifest.schema.spec import Spec
 
-# cargo's own record of what it installed under a `--root`, the only place an installed crate
-# and its version are written down.
+# The cargo root, in the environment's generated directory rather than its prefix: conda packages
+# built with cargo (dust) ship their own `.crates.toml` into the prefix, so a record kept there is
+# shared, and diffing it once uninstalled a conda package's binary (2026-09-25).
+_ROOT = "cargo"
+
+# cargo's own record of what it installed under its root, crate names and versions.
 _RECORD = ".crates.toml"
 
 # Source keys a spec may carry, each spelled as the cargo flag of the same name.
@@ -20,17 +24,19 @@ _SOURCES = ("git", "path", "branch", "tag", "rev")
 
 
 class Rust(Ecosystem):
-    """The Rust toolchain: crates installed into the environment prefix, sharing its `bin/`.
+    """The Rust toolchain: crates installed into a cargo root only this environment's installs use.
 
-    cargo runs as `pixi run cargo`: it lives inside the environment, and a crate linking a conda
-    library needs the environment's compiler and pkg-config settings to build.
+    Every crate that root's record names is one mainboard installed, so a dropped crate can be
+    uninstalled without touching a file a conda package owns. cargo runs as `pixi run cargo`: it
+    lives inside the environment, and a crate linking a conda library needs the environment's
+    compiler and pkg-config settings to build.
     """
 
     toolchain: ClassVar[str] = "rust"
 
     @property
-    def prefix(self) -> Path:
-        return self.pixi.env_prefix(self.env)
+    def install_root(self) -> Path:
+        return self.out / _ROOT
 
     @staticmethod
     def install_args(spec: Spec) -> list[str]:
@@ -59,12 +65,17 @@ class Rust(Ecosystem):
             return True
 
     def cargo(self, verb: str, *args: str) -> None:
-        self.pixi("run", "cargo", verb, "--root", str(self.prefix), *args, environment=self.env)
+        self.pixi(
+            "run", "cargo", verb, "--root", str(self.install_root), *args, environment=self.env
+        )
+
+    def binary_dirs(self) -> tuple[Path, ...]:
+        return (self.install_root / "bin",)
 
     def installed(self) -> dict[str, str]:
-        """Every crate cargo recorded under the prefix, name to version."""
+        """Every crate cargo recorded under the root, name to version."""
         try:
-            record = (self.prefix / _RECORD).read_text(encoding="utf-8")
+            record = (self.install_root / _RECORD).read_text(encoding="utf-8")
         except FileNotFoundError:
             return {}
         # A key reads `"name version (source)"`; one missing the version is skipped.
@@ -103,6 +114,4 @@ class Rust(Ecosystem):
                 else current == spec.version
             ):
                 continue
-            # A rebuilt prefix can keep a binary cargo lost the record of, and cargo refuses to
-            # overwrite a binary it never recorded, so every install forces.
-            self.cargo("install", *self.install_args(spec), "--force", name)
+            self.cargo("install", *self.install_args(spec), name)

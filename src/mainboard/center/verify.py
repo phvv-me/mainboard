@@ -177,7 +177,6 @@ class Verification:
         search = os.pathsep.join(
             [
                 *map(str, self._folders()),
-                *map(str, self.provisioner.binaries("default")),
                 os.environ.get("PATH", ""),
             ]
         )
@@ -266,9 +265,12 @@ class Verification:
         return [exposure.apply(), *exposure.verify(names)]
 
     def _folders(self) -> list[Path]:
-        """The default environment's executable directories, in PATH order."""
+        """Every executable directory of the default environment, in PATH order."""
         prefix = self.provisioner.pixi_for("default").env_prefix("default")
-        return directories(prefix, self.system.system or platform.system())
+        return [
+            *directories(prefix, self.system.system or platform.system()),
+            *self.provisioner.binaries("default"),
+        ]
 
     def _smoke(self) -> tuple[int, str]:
         """Run the smoke command in the default environment, bounded."""

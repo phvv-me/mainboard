@@ -181,7 +181,7 @@ class Prefixes:
             ActivationScript(
                 target / ACTIVATION, pixi.shell_hook(self.environment), binaries
             ).write(modules)
-            pixi.cache_windows_activation(self.environment)
+            pixi.cache_windows_activation(self.environment, binaries)
             files.write(target / STAMP, f"{digest}\n")
         return target
 

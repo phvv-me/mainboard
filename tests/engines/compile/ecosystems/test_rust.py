@@ -9,6 +9,8 @@ from mainboard.manifest import Spec
 from mainboard.manifest.schema.spec import Json
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from pytest_subprocess import FakeProcess
 
     from mainboard.engines.compile.backend import Pixi
@@ -18,11 +20,11 @@ if TYPE_CHECKING:
 _REGISTRY = "(registry+https://example.com)"
 
 
-def _record(rust: Rust, *entries: str) -> None:
-    """Write the `.crates.toml` cargo leaves under the install root."""
-    rust.prefix.mkdir(parents=True, exist_ok=True)
+def _record(root: Path, *entries: str) -> None:
+    """Write the `.crates.toml` cargo leaves under an install root."""
+    root.mkdir(parents=True, exist_ok=True)
     body = "\n".join(f'"{entry}" = ["binary"]' for entry in entries)
-    (rust.prefix / ".crates.toml").write_text(f"[v1]\n{body}\n")
+    (root / ".crates.toml").write_text(f"[v1]\n{body}\n")
 
 
 @pytest.mark.parametrize(
@@ -70,16 +72,16 @@ def test_only_a_readable_constraint_can_report_an_installed_crate_as_drifted(
         ),
     ],
 )
-def test_what_cargo_recorded_under_the_prefix_is_read_back_by_name_and_version(
+def test_what_cargo_recorded_under_the_root_is_read_back_by_name_and_version(
     entries: tuple[str, ...], installed: dict[str, str], bind: Bind
 ) -> None:
     rust = bind(Rust, {})
     if entries:
-        _record(rust, *entries)
+        _record(rust.install_root, *entries)
     assert rust.installed() == installed
 
 
-def test_sync_installs_a_missing_crate_against_the_environment_prefix(
+def test_sync_installs_a_missing_crate_into_a_root_the_generated_directory_owns(
     bind: Bind, pixi: Pixi, fp: FakeProcess, tool_paths: Mapping[str, str]
 ) -> None:
     rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
@@ -87,47 +89,60 @@ def test_sync_installs_a_missing_crate_against_the_environment_prefix(
 
     rust.sync(resolve=True)
 
-    assert rust.prefix == pixi.env_prefix("default")
-    assert rust.binary_dirs() == ()
+    assert rust.install_root == pixi.manifest.parent / "cargo"
+    assert rust.binary_dirs() == (rust.install_root / "bin",)
     assert " ".join(fp.calls[0]) == (
         f"{tool_paths['pixi']} run --manifest-path {pixi.manifest} --environment default "
-        f"cargo install --root {rust.prefix} --version >=14 --force ripgrep"
+        f"cargo install --root {rust.install_root} --version >=14 ripgrep"
     )
 
 
-def test_sync_leaves_a_crate_that_already_satisfies_its_constraint_alone(
-    bind: Bind, fp: FakeProcess
+def test_sync_never_uninstalls_a_crate_a_conda_package_recorded_in_the_prefix(
+    bind: Bind, pixi: Pixi, fp: FakeProcess
 ) -> None:
-    rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
-    _record(rust, f"ripgrep 14.1.0 {_REGISTRY}")
+    """dust ships its own `.crates.toml` into the prefix; only mainboard's root is diffed."""
+    rust = bind(Rust, {"deps": {"ripgrep": "14.1.0"}})
+    _record(pixi.env_prefix("default"), f"dust 1.2.6 {_REGISTRY}")
+    _record(rust.install_root, f"ripgrep 14.1.0 {_REGISTRY}")
 
     rust.sync(resolve=True)
 
     assert not fp.calls
 
 
-def test_sync_uninstalls_what_was_dropped_and_forces_a_reinstall_over_what_drifted(
+def test_sync_leaves_a_crate_that_already_satisfies_its_constraint_alone(
     bind: Bind, fp: FakeProcess
 ) -> None:
     rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
-    _record(rust, f"ripgrep 13.0.0 {_REGISTRY}", f"orphan 1.0 {_REGISTRY}")
+    _record(rust.install_root, f"ripgrep 14.1.0 {_REGISTRY}")
+
+    rust.sync(resolve=True)
+
+    assert not fp.calls
+
+
+def test_sync_uninstalls_what_was_dropped_and_reinstalls_what_drifted(
+    bind: Bind, fp: FakeProcess
+) -> None:
+    rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
+    _record(rust.install_root, f"ripgrep 13.0.0 {_REGISTRY}", f"orphan 1.0 {_REGISTRY}")
     for _ in range(2):
         fp.register([fp.any()], stdout="done\n")
 
     rust.sync(resolve=True)
 
-    assert list(fp.calls[0])[-4:] == ["uninstall", "--root", str(rust.prefix), "orphan"]
-    assert list(fp.calls[1])[-4:] == ["--version", ">=14", "--force", "ripgrep"]
+    assert list(fp.calls[0])[-4:] == ["uninstall", "--root", str(rust.install_root), "orphan"]
+    assert list(fp.calls[1])[-3:] == ["--version", ">=14", "ripgrep"]
 
 
 def test_frozen_registry_install_keeps_exact_version_and_native_lock(
     bind: Bind, fp: FakeProcess
 ) -> None:
     rust = bind(Rust, {"deps": {"ripgrep": {"version": "14.1.0", "locked": True}}})
-    _record(rust, f"ripgrep 14.0.0 {_REGISTRY}")
+    _record(rust.install_root, f"ripgrep 14.0.0 {_REGISTRY}")
     fp.register([fp.any()], stdout="installed\n")
     rust.sync()
-    assert list(fp.calls[0])[-5:] == ["--version", "14.1.0", "--locked", "--force", "ripgrep"]
+    assert list(fp.calls[0])[-4:] == ["--version", "14.1.0", "--locked", "ripgrep"]
 
 
 @pytest.mark.parametrize(

@@ -142,6 +142,7 @@ def test_binary_dirs_gathers_every_directory_the_toolchains_link_into(
     assert stage.binary_dirs("default") == [
         stage.out / "go" / "bin",
         stage.out / "node_modules" / ".bin",
+        stage.out / "cargo" / "bin",
     ]
 
 
