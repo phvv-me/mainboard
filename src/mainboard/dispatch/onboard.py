@@ -60,7 +60,8 @@ class HostSetup(FrozenModel):
     tool: the tool version the machine reports once installed.
     pixi: the pixi version the machine runs, which every setup and sync brings to the fleet's
         one pinned version, so a host that quietly moved shows here instead of in a dead wave.
-    capabilities: the host as the bootstrap probe found it, None for an in-place install.
+    capabilities: the host as the bootstrap probe found it, its root the one set up there; None
+        for an in-place install.
     hardware: the host's hardware snapshot, read back through the new activation.
     onboarded_at: ISO-8601 time the install finished.
     synced_at: ISO-8601 time the workspace was last mirrored here, empty until one lands after
@@ -466,9 +467,10 @@ class Onboarding:
         if sync_only:
             return self._sync(host)
         self.watch(f"probing {host}")
-        capabilities = probe_capabilities(host)
+        probed = probe_capabilities(host)
+        capabilities = probed.model_copy(update={"root": self.root or probed.root})
         self.plan = self.resolved(capabilities)
-        root = self.root or capabilities.root
+        root = capabilities.root
         with open_shell(self.plan, root) as shell:
             bootstrap = Bootstrap(shell, resolve=self.resolve, floor=self.floor)
             self._mirror(host, root)
