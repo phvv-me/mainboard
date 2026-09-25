@@ -189,25 +189,34 @@ def test_the_calls_around_the_command_travel_as_this_tools_own_verbs() -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the handover is a POSIX shell script")
+@pytest.mark.parametrize("pbs", [False, True], ids=["a queue passing the path", "PBS on stdin"])
 def test_a_rendered_script_run_by_sh_hands_over_to_the_tool_on_its_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, pbs: bool
 ) -> None:
-    """End to end: `sh` runs the script, the tool it finds runs the record, receipts come back."""
+    """End to end: `sh` runs the script, the tool it finds runs the record, receipts come back.
+
+    PBS may feed the script to the shell on stdin rather than pass its path, which is why the
+    record travels inline, and under it everything the job says, the activation's chatter
+    included, lands in the log a later poll reads.
+    """
     tool = shutil.which("mainboard", path=str(Path(sys.executable).parent))
     if tool is None:
         pytest.skip("the tool's console script is not installed beside this interpreter")
     (tmp_path / ".mainboard").mkdir()
-    (tmp_path / ".mainboard" / "activate.sh").write_text("true\n", encoding="utf-8")
+    (tmp_path / ".mainboard" / "activate.sh").write_text("echo activating\n", encoding="utf-8")
     receipt = '{"trial_receipt": {"run_id": "sh"}}'
     command = f"printf '%s\\n' {shlex.quote(receipt)} >> \"$MAINBOARD_RECEIPTS\"; exit 3"
     script = tmp_path / "job.sh"
-    script.write_text(spec(cmd=command, root=tmp_path.as_posix()).render(pbs=False))
+    rendered = spec(cmd=command, root=tmp_path.as_posix(), walltime="00:10:00")
+    script.write_text(rendered.render(pbs=pbs), encoding="utf-8")
     done = subprocess.run(
-        ["sh", str(script)],
+        ["sh"] if pbs else ["sh", str(script)],
+        input=script.read_text(encoding="utf-8") if pbs else None,
         env={
             **os.environ,
             "HOME": str(tmp_path),
             "PATH": f"{Path(tool).parent}:{os.environ['PATH']}",
+            "PBS_JOBID": "42.opbs",
         },
         capture_output=True,
         text=True,
@@ -215,5 +224,8 @@ def test_a_rendered_script_run_by_sh_hands_over_to_the_tool_on_its_path(
         check=False,
     )
     assert done.returncode == 3, done.stderr
-    assert receipts_in(done.stdout) == (receipt,)
-    assert not (tmp_path / state_dir()).exists()
+    logs = tmp_path / state_dir() / "logs"
+    output = (logs / "42.log").read_text(encoding="utf-8") if pbs else done.stdout
+    assert output.startswith("activating\n")
+    assert receipts_in(output) == (receipt,)
+    assert (logs / "42.exit").is_file() is pbs

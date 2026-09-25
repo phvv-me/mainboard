@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import gettempdir
 from time import monotonic
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING
 
 from ..core.project import Project
 from ..dispatch.evidence import RECEIPTS_VAR, framed
@@ -112,7 +112,6 @@ class Runner:
         self.receipts = Receipts()
         self.tree: ProcessTree | None = None
         self.signalled = 0
-        self.log: TextIO | None = None
         self.deadline = monotonic() + walltime_seconds(job.walltime) if job.walltime else None
 
     def run(self) -> int:
@@ -170,11 +169,7 @@ class Runner:
         """Run the command from the pinned tree under the walltime and answer its status."""
         self.flush()
         process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=the job's own command, run the way its dispatch spelled it since=2026-09-25
-            self.argv(environment),
-            cwd=self.job.root,
-            env=environment,
-            stdout=self.log,
-            stderr=self.log,
+            self.argv(environment), cwd=self.job.root, env=environment
         )
         self.tree = ProcessTree(process, grace=self.grace)
         remaining = None if self.deadline is None else max(self.deadline - monotonic(), 0.0)
@@ -222,7 +217,7 @@ class Runner:
             cwd=call.cwd or self.job.root,
             env={**environment, **self.credentials(call)},
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL if quiet else self.log,
+            stderr=subprocess.DEVNULL if quiet else None,
         )
 
     def sample(self, environment: Mapping[str, str]) -> subprocess.Popen[bytes] | None:
@@ -259,12 +254,14 @@ class Runner:
         return self.environ["PBS_JOBID"].split(".", maxsplit=1)[0]
 
     def say(self, text: str, *, error: bool = False) -> None:
-        """Write one line of the runner's own into the job's output, nothing for empty text."""
-        if not text:
-            return
-        stream = self.log or (sys.stderr if error else sys.stdout)
-        stream.write(text if text.endswith("\n") else f"{text}\n")
-        stream.flush()
+        """Write one line of the runner's own into the job's output, nothing for empty text.
+
+        Straight to the descriptor, the way a shell's `echo` writes, so the line lands wherever
+        the command's own output goes, a PBS log included, in the order it was said.
+        """
+        if text:
+            self.flush()
+            os.write(2 if error else 1, (text if text.endswith("\n") else f"{text}\n").encode())
 
     def flush(self) -> None:
         """Flush this runner's own streams, so a child's output lands after what came before."""
@@ -277,18 +274,27 @@ class Runner:
 
         A PBS server spools a job's output where no poll looks, and purges the job from its own
         records soon after it ends, so the job appends to its own log under the dispatch state
-        directory and writes its exit status beside it.
+        directory and writes its exit status beside it. The runner's own standard streams are
+        what move, the way `exec >> log 2>&1` moved a script's, so the activation, the command
+        and anything the runner itself says or raises all land in the one log; they are put back
+        when the run ends.
         """
         if not self.job.logs:
             yield
             return
         Path(self.job.logs).mkdir(parents=True, exist_ok=True)
-        with (Path(self.job.logs) / f"{self.job_id}.log").open("a", encoding="utf-8") as log:
-            self.log = log
-            try:
-                yield
-            finally:
-                self.log = None
+        self.flush()
+        kept = [os.dup(stream) for stream in (1, 2)]
+        with (Path(self.job.logs) / f"{self.job_id}.log").open("ab") as log:
+            for stream in (1, 2):
+                os.dup2(log.fileno(), stream)
+        try:
+            yield
+        finally:
+            self.flush()
+            for stream, descriptor in zip((1, 2), kept, strict=True):
+                os.dup2(descriptor, stream)
+                os.close(descriptor)
 
     @contextmanager
     def endings(self) -> Generator[None]:
