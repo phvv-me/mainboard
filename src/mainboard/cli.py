@@ -932,7 +932,7 @@ def build(root: Path | None = None) -> App:
             title="check",
         )
 
-    lint = App(name="lint", help="Normalize, format and lint workspace files in one pass.")
+    lint = App(name="lint")
     app.command(lint)
 
     def linter(root: Path) -> Linter:
@@ -959,7 +959,12 @@ def build(root: Path | None = None) -> App:
 
     @lint.command(name="commit")
     def lint_commit() -> int:
-        """Lint exactly what the commit being made records, the pre-commit hook's command."""
+        """Lint the files the commit being made touches, the pre-commit hook's command.
+
+        The files are read as they stand in the work tree, so a file staged in part is checked
+        whole. A rewrite fails the commit, since what git is about to record is the unrewritten
+        copy in the index.
+        """
         root = workspace_root()
         report = linter(root).lint(Inventory(root).staged())
         return _linted(report, advice="stage the rewritten files and commit again")
