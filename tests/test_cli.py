@@ -18,7 +18,6 @@ from mainboard.dispatch.vocabulary import JobState
 from mainboard.jobs.lanes import Cell
 from mainboard.monitor import Monitor
 from mainboard.probe.occupancy import CardOccupancy, Holder, Occupancy
-from mainboard.staleness import Snapshot
 from mainboard.verdicts import StreamVerdict, Verdicts
 
 if TYPE_CHECKING:
@@ -503,51 +502,64 @@ def test_the_submit_expectation_names_what_comes_home_before_anything_moves(
     assert "results NOT pulled back (no --fetch, no --node)" in silent
 
 
-def test_the_entry_point_says_the_staleness_line_before_anything_else(
-    depot: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """An edited source tree names its own reinstall on every invocation, to stderr."""
-    monkeypatch.setattr(
-        "mainboard.cli.staleness.check",
-        lambda: Snapshot(
-            installed=True, stale=True, detail="the source moved", fix=("reinstall", "it")
-        ),
-    )
-    monkeypatch.chdir(depot)
-    monkeypatch.setattr("sys.argv", ["mainboard", "check"])
-    with pytest.raises(SystemExit, match="0"):
-        main()
-    printed = capsys.readouterr()
-    assert "the source moved; run `mainboard self-update` to fix it" in printed.err
-
-
 @pytest.mark.parametrize(
-    ("stale", "detail", "code"),
-    [(False, "matches the source tree", 0), (True, "drifted", 3)],
-    ids=["fresh", "stale"],
+    ("argv", "code", "reached"),
+    [
+        pytest.param(
+            ["run", "pytest", "--noconftest", "-x"],
+            "0",
+            [("run", "local", (("pytest", "--noconftest", "-x"),), {"env": "", "container": ""})],
+            id="run-a-command-whose-flags-this-tool-never-had",
+        ),
+        pytest.param(
+            ["run", "--env", "serving", "python", "-", "--", "-q"],
+            "0",
+            [
+                (
+                    "run",
+                    "local",
+                    (("python", "-", "--", "-q"),),
+                    {"env": "serving", "container": ""},
+                )
+            ],
+            id="run-stdin-python-its-own-delimiter-kept",
+        ),
+        pytest.param(
+            ["submit", "--on", _MIYABI_G, "--yes", "python", "train.py", "--epochs", "3"],
+            "0",
+            [("submit", _MIYABI_G, ("python train.py --epochs 3",), {**_RESOURCES})],
+            id="submit-a-command-with-flags",
+        ),
+        pytest.param(
+            ["submit", "--on", _MIYABI_G, "--walltim", "01:00:00", "python", "x"],
+            "1",
+            [],
+            id="a-misspelled-option-before-the-command-is-refused",
+        ),
+    ],
 )
-def test_self_update_runs_the_fix_only_when_the_snapshot_is_stale(
+def test_the_entry_point_hands_everything_from_the_command_on_to_the_command(
     depot: Path,
+    relayed: Sequence[Relayed],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    stale: bool,
-    detail: str,
-    code: int,
+    argv: list[str],
+    code: str,
+    reached: list[Relayed],
 ) -> None:
-    """A fresh or checked-out snapshot has nothing to reinstall and says so instead."""
-    monkeypatch.setattr(
-        "mainboard.cli.staleness.check",
-        lambda: Snapshot(installed=True, stale=stale, detail=detail, fix=("do", "it")),
-    )
-    ran: list[Snapshot] = []
-    monkeypatch.setattr("mainboard.cli.staleness.refresh", lambda found: ran.append(found) or 3)
-    with pytest.raises(SystemExit, match=str(code)):
-        build(depot)(["self-update"])
-    assert bool(ran) is stale
-    if not stale:
-        assert f"mainboard: {detail}" in capsys.readouterr().out
+    """`run pytest --noconftest` is `uv run`'s grammar, and a typo in this tool's options is not.
+
+    The snapshot is brought current before any of it, and nothing about that reaches stdout.
+    """
+    refreshed: list[str] = []
+    monkeypatch.setattr("mainboard.cli.staleness.current", lambda: refreshed.append("current"))
+    monkeypatch.setattr("sys.argv", ["mainboard", *argv])
+    with pytest.raises(SystemExit, match=code):
+        main()
+    assert refreshed == ["current"]
+    assert relayed == reached
+    if code != "0":
+        assert "--walltim" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

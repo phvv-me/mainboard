@@ -1156,7 +1156,7 @@ class Board:
         run locally here; remote jobs require submit for allocation and source transfer.
         A command naming a declared task
         is resolved by pixi inside the generated workspace instead of by the
-        shell, which is what makes `run test` and `run -- pytest -q` the same verb.
+        shell, which is what makes `run test` and `run pytest -q` the same verb.
 
         Local file targets use the same runner and closure format as submitted jobs.
         Collection and help remain local and do not allocate remote resources.

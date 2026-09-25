@@ -17,6 +17,7 @@ from .board import Board
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .delimiter import Delimiter
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .dispatch.dispatcher import Dispatcher
@@ -66,17 +67,17 @@ def build(root: Path | None = None) -> App:
         """
         Help(app).show(" ".join(query))
 
-    # Everything after `--` is another program's argv and must reach it untouched. cyclopts
-    # honours the `--` delimiter for its own help flags but not for its version flag, so the two
-    # passthrough verbs give up `--version` entirely (the root app still answers it) rather than
-    # answering `run -- python --version` with this tool's version.
+    # A trailing-command verb hands its command on verbatim, from the first token that is not one
+    # of its own options, so `run pytest --noconftest` needs no `--` (see `delimiter.py`, which
+    # places it). cyclopts honours the delimiter for its own help flags but not for its version
+    # flag, so these verbs give up `--version` entirely (the root app still answers it) rather
+    # than answering `run python --version` with this tool's version.
     #
     # The command tokens are deliberately NOT `allow_leading_hyphen`. That annotation told
     # cyclopts to stop recognising options for this parameter, which meant an option this CLI
     # does not know was folded into the user's command instead of refused, and then failed on
-    # the remote host minutes later (four jobs lost this way, 2026-08-25). Without it cyclopts
-    # refuses `--walltim` by name at parse time, and everything after `--` still binds here as
-    # positional argv, flags and all, which is the behaviour the delimiter is for.
+    # the remote host minutes later (four jobs lost this way, 2026-08-25). The placement walks
+    # only declared options, so `--walltim` before the command is still refused by name.
     @app.command(version_flags=[])
     def run(
         *command: str,
@@ -91,8 +92,8 @@ def build(root: Path | None = None) -> App:
         remote diagnostic commands execute over SSH, on a cluster's login
         endpoint rather than in a batch allocation. The exit code is the command's own.
 
-        command: the command tokens, everything after `--`, its own flags included; a job's
-            arguments follow `--` the same way.
+        command: the command tokens, from the first token that is not an option of this verb,
+            passed on verbatim with its own flags; a job's arguments follow `--`.
         on: the host alias the command runs on, `local` for this machine.
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
@@ -133,8 +134,8 @@ def build(root: Path | None = None) -> App:
         host and zero for owned hardware. At a terminal the dispatch then asks once; in a
         script or under `--yes` it proceeds, and the line is printed either way.
 
-        command: the command tokens, or `path/to/file.py::name` and, after `--`, the arguments
-            the job's application takes.
+        command: the command tokens, from the first token that is not an option of this verb,
+            or `path/to/file.py::name` and, after `--`, the arguments its application takes.
         on: the host alias the job targets.
         gpu_name: the GPU type to rent, for a metered provider host.
         max_usd: the spend cap a provider host refuses to submit without.
@@ -347,20 +348,6 @@ def build(root: Path | None = None) -> App:
             payload.pop("snippet")
         record(payload, mode=mode, fields=_fields(fields), title="new")
 
-    @app.command(name="self-update")
-    def self_update() -> int:
-        """Reinstall the running snapshot from its own source tree, if the two have drifted apart.
-
-        The exact command the staleness nag already names, run for you rather than copied by
-        hand. A checkout running its own source has nothing to reinstall, and a snapshot that
-        already matches its source has nothing to do, so either says so and exits zero.
-        """
-        found = staleness.check()
-        if not found.stale:
-            print(f"{project.name}: {found.detail}")
-            return 0
-        return staleness.refresh(found)
-
     @app.command
     def doctor(env: str = "", *, json: bool = False, agent: bool = False, fields: str = "") -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
@@ -445,7 +432,8 @@ def build(root: Path | None = None) -> App:
         interactive allocation first, so the terminal lands on a compute node rather than on the
         login node the request was made from.
 
-        command: a command to run instead of handing over the terminal, everything after `--`.
+        command: a command to run instead of handing over the terminal, from the first token
+            that is not an option of this verb.
         on: the host alias the session opens on.
         env: an environment name overriding the profile's choice.
         queue: the queue the allocation targets, the profile's declared choice when omitted.
@@ -1802,13 +1790,14 @@ def _changes(report: MonitorReport) -> list[dict[str, str]]:
 def main() -> None:
     """Console entry point, `MissionError` printed without a traceback.
 
-    The staleness line prints first and to stderr, so an edited source tree names its own
-    reinstall on every invocation instead of silently answering from an old snapshot.
+    The snapshot is brought up to its source first, which re-executes this same command on the
+    new code when the source moved, and says so on stderr only. A trailing-command verb then gets
+    the `--` its command implies, so nothing typed after the command is ever read as this tool's.
     """
     install_traceback()
-    if line := staleness.check().warning:
-        print(line, file=sys.stderr)
+    staleness.current()
+    app = build()
     try:
-        build()(sys.argv[1:])
+        app(Delimiter(app).placed(sys.argv[1:]))
     except MissionError as error:
         _exit_on_mission_error(error)
