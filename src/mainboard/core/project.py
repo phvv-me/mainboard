@@ -2,6 +2,8 @@ from pathlib import Path
 
 from patos import FrozenModel
 
+from .membership import Membership
+
 _PACKAGE = __name__.split(".")[0]
 
 
@@ -40,7 +42,22 @@ class Project(FrozenModel):
         return f"{self.out_dir}/activate{suffix}.sh"
 
     def find_root(self, start: Path) -> Path:
-        """Walk up from `start` to the nearest directory holding the manifest."""
+        """The workspace `start` lies in: the nearest manifest upward, or the one composing it.
+
+        Inside a member, the ancestor whose `[workspace] members` claims that member is the
+        workspace, the way cargo finds its workspace root, so a member's tasks are reachable
+        from its own directory; cloned alone, the member's manifest is the nearest and only one.
+        """
+        nearest = self._nearest(start)
+        for ancestor in nearest.parents:
+            if (ancestor / self.manifest).is_file() and Membership.declared(
+                ancestor, self.manifest
+            ).claims(nearest):
+                return ancestor
+        return nearest
+
+    def _nearest(self, start: Path) -> Path:
+        """The nearest directory at or above `start` holding a manifest."""
         for directory in (start, *start.parents):
             if (directory / self.manifest).is_file():
                 return directory
