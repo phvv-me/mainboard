@@ -9,6 +9,7 @@ from .environment import Env, Task
 from .figures.figure import FigureSpec
 from .gate import Gate
 from .host import HostProfile
+from .paper import Paper
 from .plot import PlotStyle
 from .scope import PlatformScope, Scope
 from .template import Template
@@ -32,6 +33,7 @@ class Manifest(Scope):
     `[gates.*]` names the commands `doctor` asks for a verdict, `[templates.*]`
     names the project templates `new` renders, and `[tracking]` names where a
     batch's receipts are mirrored beyond this workspace's own files.
+    `[papers.*]` names the manuscripts `paper` builds and checks against their page rule.
     `[plots.*]` names palette, theme, and output settings for result charts.
     `[admission.<card>]` says how idle a named card must be before a trial measures on it.
 
@@ -48,7 +50,8 @@ class Manifest(Scope):
     # The tables no compile reads, the exact complement of what `PixiManifest.from_manifest`
     # and the second stage translate. `[gates]` is what `doctor` asks, `[templates]` is what
     # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
-    # `[hosts]` are how a job reaches a machine, `[plots]` is how results are drawn, and `[vars]`
+    # `[hosts]` are how a job reaches a machine, `[papers]` is what `paper` builds, `[plots]` is
+    # how results are drawn, and `[vars]`
     # has already been folded into every string that quotes it by the time a manifest
     # validates, so a var a compiled table really uses moves the digest through that table's own
     # rendered value. None of them reaches a generated file, so editing one must not make every
@@ -62,6 +65,7 @@ class Manifest(Scope):
             "figures",
             "gates",
             "hosts",
+            "papers",
             "plots",
             "templates",
             "tracking",
@@ -83,6 +87,7 @@ class Manifest(Scope):
     containers: dict[str, Container] = {}
     hosts: dict[str, HostProfile] = {}
     admission: dict[str, Admission] = {}
+    papers: dict[str, Paper] = {}
     plots: dict[str, PlotStyle] = {}
     figures: dict[str, FigureSpec] = {}
 

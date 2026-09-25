@@ -32,9 +32,10 @@ from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.doctor import Doctor
 from mainboard.engines import Docker
 from mainboard.engines.compile import Provisioner
+from mainboard.engines.compile.backend.result import CommandResult
 from mainboard.engines.compile.prefixes import digest_of
 from mainboard.engines.compile.state import SyncState
-from mainboard.manifest import Container, Manifest
+from mainboard.manifest import Container, Manifest, Paper
 from mainboard.monitor import Monitor
 from mainboard.probe.occupancy import Occupancy
 from mainboard.scaffold import Scaffold
@@ -1536,3 +1537,26 @@ def test_a_dispatch_spelled_by_file_brings_home_what_the_job_declared(lab: Lab) 
         "research/camp/experiments/node/evidence"
     )
     assert board.results("out", command=f"{Lab.JOB}::app") == "out"
+
+
+def test_a_declared_paper_builds_through_the_workspace_environment(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine a manuscript builds with is the one the workspace's own lock pins."""
+    papers = {"head": Paper(dir="papers/head", limit=9, ends="Conclusion")}
+    board.shared["manifest"] = board.manifest.model_copy(update={"papers": papers})
+    ran: list[tuple[list[str], str, float | None]] = []
+
+    def capture(
+        self: Provisioner, command: Sequence[str], env: str = "default", *, timeout: float | None
+    ) -> CommandResult:
+        ran.append((list(command), env, timeout))
+        return CommandResult(0, "", "")
+
+    monkeypatch.setattr(Provisioner, "capture", capture)
+    paper = board.paper("head")
+    assert paper.directory == board.root / "papers" / "head"
+    paper.run(["tectonic", "--version"])
+    assert ran == [(["tectonic", "--version"], "default", 900.0)]
+    with pytest.raises(MissionError, match=r"no paper 'tail'; declared papers are \['head'\]"):
+        board.paper("tail")

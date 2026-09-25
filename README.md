@@ -151,6 +151,28 @@ than out of memory. The topics and payloads are written down in one place,
 `batch/receipts.py`, so the file transport can become a broker without anything
 downstream noticing.
 
+## Papers
+
+A manuscript is declared once and checked on every build:
+
+```toml
+[papers.head]
+dir = "research/llm-head/papers/iclr-2027-llm-head/latex"
+main = "paper.tex"      # the default
+limit = 9               # the last page the main text may reach
+ends = "Conclusion"     # the section that must end by that page
+```
+
+```console
+$ mainboard paper head                        # build, then report and exit 1 on any problem
+$ mainboard paper head --show "Pareto front"  # and render the page carrying that phrase to PNG
+```
+
+The build is tectonic from the workspace environment. The report names every
+error, undefined reference and citation, multiply defined label and overfull box
+by `file:line`, the page count, the page each section starts on, and the last
+page SyncTeX places any line of `ends` on, unnumbered statements excluded.
+
 ## One file
 
 ```toml

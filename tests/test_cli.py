@@ -564,7 +564,7 @@ def test_check_on_a_host_prints_the_plan_it_resolves_to(
 @pytest.mark.parametrize(
     ("flags", "fields"),
     [
-        ([], {"workspace", "environments", "containers", "hosts", "tasks"}),
+        ([], {"workspace", "environments", "containers", "hosts", "papers", "tasks"}),
         (["--fields", "workspace, , hosts"], {"workspace", "hosts"}),
     ],
     ids=["the whole declared surface", "a projection that trims and drops blank entries"],

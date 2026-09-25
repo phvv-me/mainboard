@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from .batch.watch import BatchStatus
     from .deps import Change
     from .dispatch.state import MonitorReport
+    from .manuscript import Report
     from .render.values import Node
     from .verdicts import StreamVerdict
 
@@ -838,9 +839,41 @@ def build(root: Path | None = None) -> App:
             "environments": tuple(sorted(manifest.envs)),
             "containers": tuple(sorted(manifest.containers)),
             "hosts": tuple(sorted(manifest.profiles())),
+            "papers": tuple(sorted(manifest.papers)),
             "tasks": tuple(sorted(manifest.tasks)),
         }
         record(payload, mode=mode, fields=_fields(fields), title="check")
+
+    @app.command
+    def paper(
+        name: str,
+        *,
+        show: tuple[str, ...] = (),
+        dpi: int = 110,
+        json: bool = False,
+        agent: bool = False,
+    ) -> int:
+        """Build a declared manuscript and report everything wrong with it, exiting 1 on any.
+
+        Built with tectonic in the workspace environment, then read back: errors, undefined
+        references and citations, multiply defined labels and overfull boxes with the file and
+        line each comes from, the page count, the page every section starts on, and whether
+        the section `[papers.<name>] ends` names ends by page `limit`.
+
+        name: the `[papers.<name>]` manuscript.
+        show: a phrase from the manuscript, repeatable; the page it appears on is rendered to a
+            PNG beside the build and its path printed.
+        dpi: the resolution a shown page renders at.
+        json: print the whole report as canonical JSON instead of the default rich tables.
+        agent: print the compact tabular mode instead of the default rich tables.
+        """
+        manuscript = board("local").paper(name)
+        with progress(f"building {name}"):
+            report = manuscript.check()
+        _report(report, mode=mode_of(json_mode=json, agent=agent))
+        for phrase in show:
+            print(manuscript.show(phrase, dpi=dpi))
+        return 1 if report.problems else 0
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
@@ -1461,6 +1494,8 @@ _ESTIMATE_COLUMNS = (
     "p90_usd",
 )
 _DISPATCH_COLUMNS = ("job", "target", "state", "handle", "kind", "reason")
+_SECTION_COLUMNS = ("number", "title", "page", "within")
+_PROBLEM_COLUMNS = ("kind", "where", "detail")
 _STATUS_COLUMNS = ("job", "target", "handle", "state", "verdict", "detail")
 _VERDICT_COLUMNS = (
     "job",
@@ -1629,6 +1664,40 @@ def _status(status: BatchStatus, *, mode: str | None, fields: Sequence[str]) -> 
         mode=mode,
         fields=fields,
         title=f"{status.batch}: {status.running} running",
+    )
+
+
+def _report(report: Report, *, mode: str | None) -> None:
+    """Print one manuscript check: the summary, where each section starts, and every problem.
+
+    The JSON mode prints the report whole, one document a script can read; the other modes
+    print three tables, the problem table naming its columns even when it is empty so a clean
+    build still says so.
+    """
+    if mode == "json":
+        record(report.model_dump(mode="json"), mode=mode, fields=(), title="paper")
+        return
+    summary: dict[str, Node] = {
+        "pdf": report.pdf,
+        "pages": report.pages,
+        "limit": report.limit,
+        "ends": report.ends,
+        "ends_on": report.ends_on,
+        "problems": len(report.problems),
+    }
+    record(summary, mode=mode, fields=(), title=f"paper: {report.paper}")
+    last = report.limit or report.pages
+    rows(
+        [{**section.model_dump(), "within": section.page <= last} for section in report.sections],
+        mode=mode,
+        fields=_SECTION_COLUMNS,
+        title="sections",
+    )
+    rows(
+        [problem.model_dump(mode="json") for problem in report.problems],
+        mode=mode,
+        fields=_PROBLEM_COLUMNS,
+        title="problems",
     )
 
 

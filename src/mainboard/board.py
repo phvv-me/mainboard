@@ -2,6 +2,7 @@ import os
 import platform
 import shlex
 import time
+from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 from threading import RLock
@@ -68,6 +69,7 @@ from .jobs.call import Fresh
 from .jobs.closure import Closure
 from .jobs.target import Target
 from .manifest.loading import load
+from .manuscript import Manuscript
 from .monitor import Monitor
 from .nodes import evidence_of
 from .probe.occupancy import Occupancy
@@ -99,6 +101,10 @@ if TYPE_CHECKING:
 # `route`'s answer for the schedulers reached over ssh, the family whose hosts run the work
 # themselves rather than renting an instance to run it on.
 _SSH_FAMILY = "ssh-family"
+
+# How long one manuscript build may take. A first build downloads the engine's bundle, so the
+# ceiling is minutes, and a TeX run looping on a bad macro still ends inside it.
+_PAPER_SECONDS = 900.0
 
 
 class Job:
@@ -800,6 +806,25 @@ class Board:
             built = self.shared.get(key) or build()
             self.shared[key] = built
             return cast("Built", built)
+
+    def paper(self, name: str) -> Manuscript:
+        """The declared manuscript `name`, built and checked through this workspace's environment.
+
+        name: the `[papers.<name>]` key.
+        """
+        try:
+            declared = self.manifest.papers[name]
+        except KeyError:
+            raise MissionError(
+                f"no paper {name!r}; declared papers are {sorted(self.manifest.papers)}"
+            ) from None
+        provisioner = Provisioner(self.root, self.manifest)
+        return Manuscript(
+            name,
+            declared,
+            root=self.root,
+            run=partial(provisioner.capture, env=self.plan().env, timeout=_PAPER_SECONDS),
+        )
 
     def plan(self, *, env: str = "", container: str = "") -> ExecutionPlan:
         """The resolved execution plan for this board's host.

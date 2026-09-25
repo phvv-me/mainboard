@@ -6,6 +6,7 @@ from .schema.figures.layer import Layer
 from .schema.figures.panel import Panel
 from .schema.host import HostProfile, Sync
 from .schema.observe import Observe
+from .schema.paper import Paper
 from .schema.queue import Defaults, QueuePolicy
 from .schema.root import Manifest
 from .schema.scope import PlatformScope, Scope
@@ -27,6 +28,7 @@ __all__ = [
     "HostProfile",
     "Manifest",
     "Observe",
+    "Paper",
     "PlatformScope",
     "QueuePolicy",
     "Scope",
