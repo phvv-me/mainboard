@@ -108,9 +108,6 @@ class Collector:
                     output.flush()
                     os.fsync(output.fileno())
 
-    def _changed(self, source: Path, *, target: Path) -> bool:
-        return not target.exists() or self._duplicate(source, target=target)
-
     def _pending(self, staged: Path) -> list[tuple[Path, Path]]:
         """Preflight conflicts while retaining existing evidence and logical project paths."""
         pending = []
@@ -118,7 +115,7 @@ class Collector:
             target = self.root / source.relative_to(staged)
             if not target.resolve().is_relative_to(self.root):
                 raise ValueError(f"collection destination escapes workspace: {target}")
-            if self._changed(source, target=target):
+            if not target.exists() or self._duplicate(source, target=target):
                 pending.append((source, target))
         return pending
 

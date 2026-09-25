@@ -22,11 +22,6 @@ _WORDS = st.sampled_from(sorted(VERDICTS))
 
 
 def test_the_table_declares_exactly_the_lifecycle_dispatch_promises() -> None:
-    """A cancel is reachable from both live states, since it never waits for the job to start.
-
-    A skipped job is terminal from the start and reachable from nowhere: it was never dispatched,
-    so nothing about it can move.
-    """
     assert VERDICTS[QUEUED] == {RUNNING, VANISHED, CANCELLED}
     assert VERDICTS[RUNNING] == {OK, FAILED, VANISHED, TIMEOUT, CANCELLED}
     assert {OK, FAILED, VANISHED, UNKNOWN, TIMEOUT, CANCELLED, SKIPPED} == TERMINAL
@@ -46,11 +41,7 @@ def test_the_table_declares_exactly_the_lifecycle_dispatch_promises() -> None:
 def test_only_a_declared_move_is_allowed_and_every_other_one_raises(
     start: str, target: str
 ) -> None:
-    """A settled terminal sliding back to `running` is the regression the table exists to stop.
-
-    start: the verdict the tracker was built at.
-    target: the verdict a scheduler then reported.
-    """
+    """A settled terminal sliding back to `running` is the regression the table exists to stop."""
     machine = tracker(start)
     if target in VERDICTS[start]:
         assert machine.to(target) == target

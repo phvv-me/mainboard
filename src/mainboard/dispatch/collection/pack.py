@@ -25,7 +25,10 @@ def pack(root: str, *, relative: str, known: Mapping[str, str] = MappingProxyTyp
                         digest.update(chunk)
                 if digest.hexdigest() == expected:
                     continue
-            _write(archive, path, base=base)
+            if path.parent.name == "events" and path.name == "live.ndjson":
+                _snapshot(archive, path, base=base)
+            else:
+                _immutable(archive, path, base=base)
 
 
 def _paths(base: Path, relative: str) -> Iterator[Path]:
@@ -59,14 +62,6 @@ def _is_excluded(path: Path) -> bool:
         or (path.parent.name == "events" and path.name == "status.json")
         or (path.parent.name == "objects" and fnmatch.fnmatch(path.name, "tmp????????"))
     )
-
-
-def _write(archive: ZipFile, path: Path, *, base: Path) -> None:
-    """Keep event snapshots distinct from files that must remain immutable during copying."""
-    if path.parent.name == "events" and path.name == "live.ndjson":
-        _snapshot(archive, path, base=base)
-    else:
-        _immutable(archive, path, base=base)
 
 
 def _immutable(archive: ZipFile, path: Path, *, base: Path) -> None:
