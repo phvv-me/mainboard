@@ -302,13 +302,14 @@ class Monitor:
                     boundary=self.board.root,
                 )
 
-    def asked(self, record: RunRecord) -> Run | None:
+    def asked(self, record: RunRecord) -> Run | Failed | None:
         """Ask `record`'s target for its held dispatch again, None while the quota is still full.
 
         A quota refusal is not a verdict, so a target that still has no room leaves the row
         exactly as it was and the next sweep asks again. Any other refusal is: a queue that does
         not exist and an account without permission answer the same way every twenty minutes
-        forever, so the row settles as failed with what the target said and stops asking.
+        forever, so the row settles as failed with what the target said and stops asking, and
+        that failure is returned for this pass to report, the only pass that still sees the row.
 
         record: the held run, whose `request` is the dispatch to make.
         """
@@ -324,9 +325,13 @@ class Monitor:
                 vocabulary.FAILED,
             )
             logger.warning("held dispatch for %s refused: %s", record.target, refusal)
-            return None
+            return Failed(
+                handle=record.handle,
+                target=record.target,
+                reason=f"held dispatch refused: {refusal}",
+            )
 
-    def held(self) -> tuple[list[Resumed], list[Held]]:
+    def held(self) -> tuple[list[Resumed], list[Held], list[Failed]]:
         """Ask every quota-held dispatch's target for room again, in the order they were held.
 
         This is what makes a hold a delay rather than a loss. A wave that meets a group's job
@@ -337,10 +342,12 @@ class Monitor:
         A request that goes through replaces its own placeholder row: the run is recorded under
         the handle the target gave it, the held row is dropped, and the batch that asked for it
         is told through its own receipts, since the batch's watch reads submissions from there
-        and would otherwise never learn the job had gone.
+        and would otherwise never learn the job had gone. A request refused for good is returned
+        as failed rather than waiting, since its row has already settled.
         """
         resumed: list[Resumed] = []
         waiting: list[Held] = []
+        refused: list[Failed] = []
         for record in reversed(self.cache.live()):
             if record.verdict != vocabulary.HELD:
                 continue
@@ -350,11 +357,14 @@ class Monitor:
                     Held(handle=record.handle, target=record.target, reason=record.reason)
                 )
                 continue
+            if isinstance(run, Failed):
+                refused.append(run)
+                continue
             self.cache.forget(record)
             self.submitted(record, run)
             resumed.append(Resumed(handle=run.handle.id, target=record.target, name=record.name))
             logger.info("held dispatch went through as %s on %s", run.handle.id, record.target)
-        return resumed, waiting
+        return resumed, waiting, refused
 
     def submitted(self, record: RunRecord, run: Run) -> None:
         """Tell the stream that asked for `record` that its job finally went out.
@@ -492,9 +502,8 @@ class Monitor:
         """
         running = 0
         finished: list[Finished] = []
-        failed: list[Failed] = []
         self.quiet.clear()
-        resumed, waiting = self.held()
+        resumed, waiting, failed = self.held()
         fleet = self.board.fleet()
         records = self.cache.tracked()
         for record in records:

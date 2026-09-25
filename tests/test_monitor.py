@@ -8,17 +8,18 @@ from getpass import getuser
 from hashlib import sha256
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, NoReturn
 
 import pytest
 from filelock import FileLock
 from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import Board, Job, MissionError
+from mainboard.batch import Receipts, Topic
 from mainboard.batch.runner import directory
 from mainboard.cli import build
 from mainboard.costs.catalog import Offer
-from mainboard.dispatch import SshTransport
+from mainboard.dispatch import Handle, SshTransport, vocabulary
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch.backends import HpcAiBackend, VastBackend
 from mainboard.dispatch.lease import Lease
@@ -45,8 +46,6 @@ from .support import Lab
 
 if TYPE_CHECKING:
     from urllib.request import Request
-
-    from mainboard.dispatch import Handle
 
     from .dispatch.backends.support import Reply
 
@@ -83,6 +82,21 @@ class Instance(HpcAiBackend):
         transport = FakeTransport(*Instance.replies)
         Instance.calls = transport.calls
         super().__init__(transport=transport)
+
+
+@pytest.fixture(autouse=True)
+def silent_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every host a sweep here reaches for over ssh never answers, unless a test says otherwise.
+
+    A settled run's log is read over its own connection before anything is released, so a test
+    that pinned only the probe and the pull would otherwise dial the developer's real hosts and
+    pass or fail on whether they answered. A host that is not there is what CI sees anyway.
+    """
+
+    def unreachable(host: str, ssh: SshTransport | None = None) -> NoReturn:
+        raise HostUnreachable(f"ssh connect to {host!r} failed: no host answers a test")
+
+    monkeypatch.setattr("mainboard.board.connection", unreachable)
 
 
 def rented(status: str = "exited", *, exit_code: int = 0) -> list[Reply]:
@@ -736,13 +750,12 @@ def test_a_native_job_whose_every_cell_was_already_covered_settles_without_a_rec
     probing(board, monkeypatch, finishing())
     monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: None)
     # The coverage heading alone, as a quiet session prints it; the skip reason needs `-rs`.
-    transcript = (
-        "mainboard: fresh process for test_law.py::test_law[0-gpt2]\n"
-        "evidence on NVIDIA GB10 (GPU-1):\n"
-        "  complete experiments/node/test_law.py::test_law on GPU-1, gpt2  1/1 from 2026\n"
-        "s                                    [100%]\n"
-        "1 skipped in 0.76s\n"
-    )
+    transcript = """mainboard: fresh process for test_law.py::test_law[0-gpt2]
+evidence on NVIDIA GB10 (GPU-1):
+  complete experiments/node/test_law.py::test_law on GPU-1, gpt2  1/1 from 2026
+s                                    [100%]
+1 skipped in 0.76s
+"""
     monkeypatch.setattr(Job, "transcript", lambda job: transcript)
     report = board.monitor().once()
     assert [finished.handle for finished in report.finished] == ["35"]
@@ -897,6 +910,273 @@ def test_watch_repeats_the_pass_at_the_given_interval(
     probing(board, monkeypatch, finishing())
     passes = list(islice(board.monitor().watch(0.0), 2))
     assert [report.changed for report in passes] == [True, False]
+
+
+def held(handle: str, request: vocabulary.Request | None) -> RunRecord:
+    """One dispatch a quota held, recorded with the request the sweep offers again."""
+    record = seed(handle, verdict="held").model_copy(
+        update={"request": request, "reason": "would exceed limit on resource njobs"}
+    )
+    Cache().record(record)
+    return record
+
+
+def due(record: RunRecord) -> RunRecord:
+    """`record` under a rental lease whose release deadline has already passed, recorded."""
+    leased = record.model_copy(
+        update={
+            "lease": Lease(
+                offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
+                release_by=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        }
+    )
+    Cache().record(leased)
+    return leased
+
+
+@pytest.mark.parametrize(
+    ("offered", "answer", "verdict"),
+    [
+        (None, None, "held"),
+        (
+            vocabulary.Request(target=_HOST, command="job.sh"),
+            MissionError("qsub: would exceed limit on resource njobs-g"),
+            "held",
+        ),
+        (
+            vocabulary.Request(target=_HOST, command="job.sh"),
+            SystemExit("qsub failed (rc=1): qsub: Unknown queue: nope"),
+            "failed",
+        ),
+    ],
+    ids=[
+        "a row that kept no request has nothing to offer",
+        "a quota still full leaves the row exactly as it was",
+        "any other refusal settles the row as failed and stops asking",
+    ],
+)
+def test_a_held_dispatch_is_asked_for_again_only_while_the_answer_can_change(
+    board: Board,
+    monkeypatch: pytest.MonkeyPatch,
+    offered: vocabulary.Request | None,
+    answer: BaseException | None,
+    verdict: str,
+) -> None:
+    """A quota says "not now", while a missing queue answers the same way forever."""
+    record = held("50", offered)
+
+    def dispatch(asked: vocabulary.Request) -> Job:
+        assert answer is not None
+        raise answer
+
+    monkeypatch.setattr(board, "dispatch", dispatch)
+    resumed, _, _ = board.monitor().held()
+    assert resumed == []
+    stored = board.dispatcher.cache.run(record.handle)
+    assert (stored.verdict, stored.reported) == (verdict, None if verdict == "held" else verdict)
+
+
+def test_a_refused_held_dispatch_is_reported_failed_rather_than_still_held(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pass that settles a refusal is the only one that can report it; the row is gone after.
+
+    It used to be counted as held and running on that pass and then dropped, so the refusal never
+    reached any report's failed list and lived only in a log line.
+    """
+    held("52", vocabulary.Request(target=_HOST, command="job.sh"))
+
+    def dispatch(asked: vocabulary.Request) -> Job:
+        raise SystemExit("qsub failed (rc=1): qsub: Unknown queue: nope")
+
+    monkeypatch.setattr(board, "dispatch", dispatch)
+    report = board.monitor().once()
+    assert (report.held, report.running) == ([], 0)
+    assert [(row.handle, row.target) for row in report.failed] == [("52", _HOST)]
+    assert "Unknown queue: nope" in report.failed[0].reason
+
+
+def test_a_held_dispatch_that_goes_through_replaces_its_placeholder_row(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run nobody batched has no stream to tell, so the row swap is the whole of it."""
+    held("51", vocabulary.Request(target=_HOST, command="job.sh"))
+    taken = Handle(id="J51", host=_HOST, root="/work", kind="pbs")
+    monkeypatch.setattr(board, "dispatch", lambda asked: Job(board, taken))
+    resumed, waiting, _ = board.monitor().held()
+    assert [(row.handle, row.target) for row in resumed] == [("J51", _HOST)]
+    assert waiting == []
+    assert board.dispatcher.cache.live() == []
+
+
+def test_a_deadline_sweep_leaves_alone_what_it_cannot_or_need_not_release(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a confirmed rental whose own lease ran out is released at the deadline.
+
+    A creation still being prepared has nothing to release, a queued job stops billing with
+    its queue, a newer run reusing the handle is not the one whose lease ran out, and a kind
+    nothing can route stays tracked with why rather than failing the whole pass.
+    """
+    due(seed("52", kind=Rented.name, verdict="prepared"))
+    due(seed("53", kind="pbs"))
+    reused = due(seed("54", target="vast", kind=Rented.name))
+    Cache().record(
+        reused.model_copy(update={"submitted_at": "2026-08-18T00:00:00", "lease": None})
+    )
+    due(seed("55", target="vast", kind="retired-provider"))
+    monkeypatch.setattr(Rented, "cancel", lambda self, handle: pytest.fail("released"))
+    [failed] = board.monitor().expired()
+    assert failed.handle == "55"
+    assert "deadline identity check failed" in failed.reason
+
+
+def test_a_running_job_brings_its_results_so_far_home_every_pass(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run killed before it ends still leaves this machine every fragment it wrote so far."""
+    seed("56", fetch_path="results/run")
+    probing(
+        board,
+        monkeypatch,
+        lambda handle: JobState(handle=handle.id, state="R", verdict="running", stage="running"),
+    )
+    pulled: list[str] = []
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda handle, **kw: pulled.append(handle.id))
+    assert board.monitor().once().running == 1
+    assert pulled == ["56"]
+
+
+@pytest.mark.parametrize(
+    ("evidence", "state", "release", "reason", "reported"),
+    [
+        (
+            "not_started",
+            "F",
+            None,
+            "provisioning ended before a native launch was attempted",
+            "failed",
+        ),
+        ("unverified", "cancelled", None, "explicit cancellation", "failed"),
+        (
+            "not_started",
+            "F",
+            MissionError("provider unavailable"),
+            "release failed and will be retried",
+            None,
+        ),
+    ],
+    ids=[
+        "a rental that never launched is released and settled",
+        "a cancelled run's lost evidence is released without being called delivered",
+        "a release that fails leaves the row for the next pass",
+    ],
+)
+def test_a_run_with_no_evidence_to_collect_is_released_and_settled_without_a_pull(
+    board: Board,
+    monkeypatch: pytest.MonkeyPatch,
+    evidence: str,
+    state: str,
+    release: MissionError | None,
+    reason: str,
+    reported: str | None,
+) -> None:
+    """Nothing launched or the stop was deliberate, so a transfer would only wait on nothing."""
+    Cache().record(seed("57", fetch_path="results/run").model_copy(update={"evidence": evidence}))
+    probing(
+        board,
+        monkeypatch,
+        lambda handle: JobState(handle=handle.id, state=state, verdict="failed"),
+    )
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: pytest.fail("pulled"))
+
+    def released(job: Job) -> None:
+        if release is not None:
+            raise release
+
+    monkeypatch.setattr(Job, "release", released)
+    [failed] = board.monitor().once().failed
+    assert reason in failed.reason
+    assert board.dispatcher.cache.run("57").reported == reported
+
+
+@pytest.mark.parametrize(
+    ("checkpointed", "refusal"),
+    [
+        (False, "copied evidence has no recoverable local receipt log"),
+        (True, "copied trial receipts are missing from the local log"),
+    ],
+    ids=[
+        "a copy nothing on this machine remembers",
+        "a copy whose receipts the local log lost",
+    ],
+)
+def test_evidence_already_copied_is_settled_from_this_machine_or_not_at_all(
+    board: Board, monkeypatch: pytest.MonkeyPatch, checkpointed: bool, refusal: str
+) -> None:
+    """A rental's disk may be gone by the retry, so the copy here is the only evidence left."""
+    record = seed("58", name="copied", fetch_path="results/run")
+    receipt = json.dumps({"trial_receipt": {"run": "r", "case_id": "c"}})
+    if checkpointed:
+        board.monitor().evidence(record, (receipt,), status="copied")
+    else:
+        board.dispatcher.cache.delivery(record, "copied")
+    probing(board, monkeypatch, finishing())
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: pytest.fail("refetched"))
+    [failed] = board.monitor().once().failed
+    assert refusal in failed.reason
+    assert board.dispatcher.cache.run("58").reported is None
+
+
+def test_an_evidence_status_keeps_only_well_formed_trials_and_survives_an_unsaved_event(
+    board: Board, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The raw lines stay in the captured log, and the cache is the status the sweep acts on."""
+    record = seed("59", name="statused")
+    receipts = (
+        json.dumps({"trial_receipt": {"run": "r", "case_id": "c"}}),
+        json.dumps({"trial_receipt": "torn"}),
+        "not json at all",
+    )
+    monitor = board.monitor()
+    monitor.evidence(record, receipts, status="copied")
+    bus = Receipts(directory(board, "statused") / "events.ndjson")
+    [event] = [event for event in bus.replay() if event.topic == Topic.EVIDENCE]
+    assert event.data["trials"] == [["r", "c"]]
+
+    def unwritable(*args: str, **kwargs: str) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr("mainboard.monitor.publish", unwritable)
+    caplog.set_level(logging.ERROR)
+    monitor.evidence(record, receipts, status="verified")
+    assert board.dispatcher.cache.run("59").evidence == "verified"
+    assert "could not be saved" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("receipt", "fault", "refusal"),
+    [
+        ({"trial_receipt": {"artifacts": []}}, ValueError, "malformed trial receipt"),
+        (
+            {"trial_receipt": {"artifacts": {"table": {"path": "t.parquet"}}}},
+            MissionError,
+            "no fetch was declared",
+        ),
+    ],
+    ids=["artifacts that are not a mapping", "artifacts a run never declared a fetch for"],
+)
+def test_a_receipt_that_cannot_be_checked_is_refused_rather_than_settled(
+    board: Board,
+    receipt: dict[str, dict[str, list[str] | dict[str, dict[str, str]]]],
+    fault: type[Exception],
+    refusal: str,
+) -> None:
+    """A receipt pointing at bytes nobody brought home proves nothing about them."""
+    record = seed("60")
+    with pytest.raises(fault, match=refusal):
+        board.monitor().verify(record, board.job("60"), None, (json.dumps(receipt),))
 
 
 class Systemd:
