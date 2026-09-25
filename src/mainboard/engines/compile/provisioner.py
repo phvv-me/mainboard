@@ -8,6 +8,7 @@ from plumbum import local
 
 from ...core import MissionError, Project
 from ...manifest.schema.environment import Env
+from ...runtime.activation import Runtime
 from .backend import Pixi
 from .compiler import Compiler
 from .ecosystems import SecondStage
@@ -289,7 +290,7 @@ class Provisioner:
         execute the same manifest without mainboard maintaining a second command grammar.
         """
         shard = self.refreshed(env)
-        with local.cwd(str(self.root)):
+        with local.cwd(str(self.root)), self.runtime(shard, env):
             if exports:
                 return shard.pixi.run(command, env, exports=exports)
             return shard.pixi.run(command, env)
@@ -299,8 +300,24 @@ class Provisioner:
     ) -> CommandResult:
         """Compile stale files, then capture a bounded command through Pixi."""
         shard = self.refreshed(env)
-        with local.cwd(str(self.root)):
+        with local.cwd(str(self.root)), self.runtime(shard, env):
             return shard.pixi.capture(command, env, timeout=timeout)
+
+    @staticmethod
+    @contextmanager
+    def runtime(shard: _EnvironmentShard, env: str) -> Generator[None]:
+        """Hand Pixi an environment the runtime step has already added its facts to.
+
+        pixi's own activation leaves every variable this step sets alone, so setting them on the
+        way in is the same as a job's runner setting them after entering the environment, which
+        is what keeps a local run and a dispatched one in one world.
+
+        shard: the environment's compile stack, whose prefix the step reads.
+        env: the environment being entered.
+        """
+        added = Runtime(shard.pixi.env_prefix(env)).changes(dict(local.env))
+        with local.env(**added):
+            yield
 
     def refreshed(self, env: str) -> _EnvironmentShard:
         """``env``'s compile stack with its generated files current, ready to run a command in.

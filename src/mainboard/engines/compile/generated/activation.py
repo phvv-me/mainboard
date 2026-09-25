@@ -1,6 +1,9 @@
 import shlex
+import sys
 from functools import cache
 from typing import TYPE_CHECKING
+
+from ....core.project import Project
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -67,10 +70,12 @@ class ActivationScript:
     The script sources the module init, `module purge`s, `module load`s the pinned modules
     (`modules` is a per-host `name -> version` map, since Lmod stacks differ machine to
     machine), then applies pixi's own activation (the same env vars, PATH, and activation
-    scripts `Provisioner.activated()` applies), and finally exports the directories the
-    second-stage toolchains linked their executables into. Sourcing it makes `python -m
-    <module>` and an npm-installed tool alike Just Work from a bare PBS or interactive shell.
-    Declared modules must load successfully; only an empty module map skips this stage.
+    scripts `Provisioner.activated()` applies), exports the directories the second-stage
+    toolchains linked their executables into, and finally evaluates what
+    `runtime.activation` prints, run by the very interpreter that wrote the script so no PATH
+    decides which tool answers. Sourcing it makes `python -m <module>` and an npm-installed tool
+    alike Just Work from a bare PBS or interactive shell. Declared modules must load
+    successfully; only an empty module map skips this stage.
 
     binaries: directories to prepend to PATH after pixi's own activation, the same ones
         `Provisioner.activated()` exports in-process.
@@ -82,7 +87,7 @@ class ActivationScript:
         self.binaries = binaries
 
     def render(self, modules: Mapping[str, str]) -> str:
-        """The `activate.sh` text: module init + purge + load, pixi activation, then PATH.
+        """The `activate.sh` text: modules, pixi activation, PATH, then the runtime step.
 
         With no ``modules`` declared the whole module block is omitted, so the script never
         purges whatever stack the surrounding job had loaded.
@@ -100,6 +105,7 @@ class ActivationScript:
                 # Windows `;` into a script only bash reads, so the whole PATH arrived as one
                 # unusable entry.
                 binaries=":".join(shlex.quote(str(path)) for path in self.binaries),
+                runtime=shlex.join([sys.executable, "-m", f"{Project().name}.runtime.activation"]),
             )
         )
 

@@ -1,5 +1,7 @@
+import os
 import shlex
 import subprocess
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -45,6 +47,28 @@ def test_the_written_script_loads_the_modules_applies_the_hook_and_exports_the_s
     assert "_mainboard_nounset=1" in text
     assert "set -u" in text
     assert f"export PATH='{linked}':\"$PATH\"" in text
+    runtime = shlex.join([sys.executable, "-m", "mainboard.runtime.activation"])
+    assert f'eval "$({runtime})"' in text
+    assert text.index("export FOO=bar") < text.index(runtime)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a POSIX shell sources the activation")
+def test_sourcing_the_script_finishes_with_what_the_runtime_step_adds(
+    tmp_path: Path, posix_bash: str
+) -> None:
+    """The prefix pixi's hook entered gets its build search path from the runtime step."""
+    prefix = tmp_path / "prefix"
+    (prefix / "lib" / "pkgconfig").mkdir(parents=True)
+    hook = f"export CONDA_PREFIX={shlex.quote(str(prefix))}"
+    path = ActivationScript(tmp_path / "activate.sh", hook=hook).write({})
+    result = subprocess.run(
+        [posix_bash, "-c", f'source {shlex.quote(str(path))} && printf %s "$PKG_CONFIG_PATH"'],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": os.environ["PATH"], "HOME": str(tmp_path)},
+    )
+    assert result.stdout == str(prefix / "lib" / "pkgconfig"), result.stderr
 
 
 def test_render_omits_every_block_the_host_declared_nothing_for(tmp_path: Path) -> None:
