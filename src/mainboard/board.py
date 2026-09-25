@@ -712,6 +712,14 @@ class Board:
         bound.host = host
         return bound
 
+    def declares(self, host: str) -> bool:
+        """Whether `host` is this machine, a declared host or a held rental, one worth asking.
+
+        A run recorded on any other host outlived its machine (a released rental, a host taken
+        out of the manifest), so no sweep contacts it and a cancel settles it without asking.
+        """
+        return host == "local" or host in self.manifest.profiles()
+
     def once[Built](self, key: str, build: Callable[[], Built]) -> Built:
         """The one `key` this workspace shares, built on first ask and never a second time.
 

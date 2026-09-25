@@ -1281,8 +1281,8 @@ def build(root: Path | None = None) -> App:
         settled on the session's own outcome, and a running job silent past `--stall` on an idle
         card ends the wait with exit 4 rather than holding it to the timeout.
 
-        handle: the job to wait on, as `submit` printed it, or a batch id as `batch run`
-            printed it, which waits for every job of the batch.
+        handle: the job to wait on, as `submit` printed it or by the name `jobs` prints, or a
+            batch id as `batch run` printed it, which waits for every job of the batch.
         on: the host alias narrowing a handle recorded on several hosts.
         timeout: give up after this many seconds, exiting 2 with the job still in flight, an
             hour unless said otherwise; 0 waits as long as it takes.
@@ -1327,7 +1327,7 @@ def build(root: Path | None = None) -> App:
         Exits 0 having printed output, 2 for a run still in flight that has printed none, and 1
         when nothing was captured and nothing is coming, so a script can tell the three apart.
 
-        handle: the job to read, as `submit` printed it.
+        handle: the job to read, as `submit` printed it or by the name `jobs` prints.
         on: the host alias narrowing a handle recorded on several hosts.
         """
         workspace = board("local")
@@ -1349,12 +1349,14 @@ def build(root: Path | None = None) -> App:
         record claiming it still ran, so a cancellation lost its receipt trail. This kills
         through the backend the run was dispatched under, whether that is pueue, PBS or a
         provider API, writes the terminal verdict, publishes the settled receipt, and ends the
-        rental, which is the only thing that stops a provider charging.
+        rental, which is the only thing that stops a provider charging. A run on a host the
+        manifest no longer declares, a released rental say, has nothing left to ask, so it
+        settles cancelled with that cause and its evidence marked unverified.
 
         Exits the settled code, so a cancelled run exits 1: the stop was deliberate, and a
         completion check must still never call a stopped run complete.
 
-        handle: the job to cancel, as `submit` printed it.
+        handle: the job to cancel, as `submit` printed it or by the name `jobs` prints.
         on: the host alias narrowing a handle recorded on several hosts.
         fields: a comma-separated projection over the verdict columns.
         """
@@ -1377,7 +1379,8 @@ def build(root: Path | None = None) -> App:
         holds every run a harness ever took and reading them as one stream lets a failure from
         months ago condemn a clean re-run today.
 
-        target: a receipts store directory, a stream id, a receipts file, or a dispatched handle.
+        target: a receipts store directory, a stream id, a receipts file, or a dispatched handle
+            or job name.
         on: the host alias narrowing a handle recorded on several hosts.
         run: which run of a receipts store to score, its newest when unset.
         fields: a comma-separated projection over the verdict columns.

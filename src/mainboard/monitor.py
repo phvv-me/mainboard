@@ -56,10 +56,11 @@ class Sweep:
     """Every tracked run rebuilt and resolved, one query per target rather than one per run.
 
     A cache holding a thousand runs on one box costs one query, not a thousand round trips, and
-    a run whose verdict is already terminal costs nothing. A target that cannot be resolved (no
-    declared root, a host that will not answer, a provider API that refuses, or one that goes
-    quiet halfway) is recorded once with why; its unanswered runs simply have no state here and
-    are left for the next pass.
+    a run whose verdict is already terminal costs nothing. A target that cannot be resolved (one
+    the manifest no longer declares, no declared root, a host that will not answer, a provider
+    API that refuses, or one that goes quiet halfway) is recorded once with why; its unanswered
+    runs simply have no state here and are left for the next pass. An undeclared target is never
+    contacted: its machine is gone, and asking cost every pass an ssh timeout.
 
     runs: each record's rebuilt run.
     states: each record's current state, absent where its target could not be resolved.
@@ -81,6 +82,9 @@ class Sweep:
                 groups.setdefault((record.target, record.kind), []).append(record)
         for (target, kind), owned in groups.items():
             if target in self.down:
+                continue
+            if not board.declares(target):
+                self.down[target] = f"{target} is no longer declared; `cancel` settles its runs"
                 continue
             try:
                 self.settle(kind, owned)

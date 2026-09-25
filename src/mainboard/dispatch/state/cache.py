@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 # The `runs` identity every single-row write matches, bound by `_identity`.
 _IDENTITY = "target = ? AND handle = ? AND submitted_at = ?"
 
+# The name `jobs` prints for a run: its label, else the script it was submitted as.
+_LABEL = "coalesce(nullif(json_extract(data, '$.name'), ''), json_extract(data, '$.script'))"
+
 
 class RunRecord(FrozenModel):
     """One dispatched job's provenance, the `runs` table row payload.
@@ -325,24 +328,30 @@ class Cache:
     def run(self, handle: str, target: str | None = None) -> RunRecord:
         """The newest run dispatched as `handle` (older rows are history), narrowed to `target`.
 
-        A handle recorded on several targets is ambiguous without `target` and raises rather than
-        guessing a host.
+        `handle` may also be the name `jobs` prints for a run, its label or else its script, the
+        spelling an operator copies off that table; a handle wins where both match. A handle
+        recorded on several targets, or a name on several runs, raises with the candidates
+        rather than guessing one.
         """
-        rows = self.connection.execute(
-            "SELECT data FROM runs WHERE handle = ? ORDER BY submitted_at DESC", (handle,)
-        ).fetchall()
-        runs = [RunRecord.model_validate_json(row["data"]) for row in rows]
-        if target is not None:
-            runs = [run for run in runs if run.target == target]
+        runs = self._runs("handle", handle, target) or self._runs(_LABEL, handle, target)
         if not runs:
             where = f" on {target!r}" if target else ""
             raise LookupError(f"no recorded run {handle!r}{where}")
-        targets = sorted({run.target for run in runs})
-        if len(targets) > 1:
+        candidates = sorted({f"{run.target} {run.handle}" for run in runs})
+        if len(candidates) > 1:
             raise LookupError(
-                f"handle {handle!r} is recorded on {', '.join(targets)}; pass the target"
+                f"{handle!r} names runs {', '.join(candidates)}; pass one handle and its host"
             )
         return runs[0]
+
+    def _runs(self, column: str, value: str, target: str | None) -> list[RunRecord]:
+        """Every row whose `column` expression is `value`, on `target` if given, newest first."""
+        rows = self.connection.execute(
+            f"SELECT data FROM runs WHERE {column} = ? AND target = coalesce(?, target) "
+            "ORDER BY submitted_at DESC",
+            (value, target),
+        ).fetchall()
+        return [RunRecord.model_validate_json(row["data"]) for row in rows]
 
     def save_host(self, setup: HostSetup) -> HostSetup:
         """Stamp `setup` with the current time and upsert it by alias.
