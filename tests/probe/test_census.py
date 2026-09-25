@@ -1,7 +1,7 @@
 import json
 import platform
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -363,11 +363,21 @@ def test_the_driver_names_its_cuda_and_every_card_it_lists(
     assert machine.nvidia() == (cuda, cards)
 
 
+def _unnamed(name: str) -> int:
+    """A `sysconf` that knows no such name, as one lacking `SC_PHYS_PAGES` answers."""
+    raise ValueError(name)
+
+
+@pytest.mark.parametrize("sysconf", [None, _unnamed], ids=["windows", "no-physical-pages"])
 def test_a_unified_card_on_a_system_that_cannot_say_its_memory_holds_none(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, sysconf: Callable[[str], int] | None
 ) -> None:
-    """Windows has no `sysconf`, so a card reporting no memory there is budgeted nothing."""
-    monkeypatch.delattr(census.os, "sysconf", raising=False)
+    """Windows has no `sysconf`, and another may not know the name, so a card reporting no
+    memory there is budgeted nothing."""
+    if sysconf is None:
+        monkeypatch.delattr(census.os, "sysconf", raising=False)
+    else:
+        monkeypatch.setattr(census.os, "sysconf", sysconf, raising=False)
     assert Census.card_memory("[N/A]") == {"vram_mb": 0, "unified": True}
 
 

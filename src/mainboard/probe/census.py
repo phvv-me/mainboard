@@ -270,9 +270,10 @@ class Census:
         """A card's memory in MiB from its `memory.total`, the system's when it has none."""
         if memory.isdigit():
             return {"vram_mb": int(memory)}
+        sysconf: Callable[[str], int] | None = getattr(os, "sysconf", None)  # none on Windows
         try:
-            pages = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
-        except AttributeError, ValueError, OSError:
+            pages = sysconf("SC_PHYS_PAGES") * sysconf("SC_PAGE_SIZE") if sysconf else 0
+        except ValueError, OSError:
             pages = 0
         return {"vram_mb": pages // 2**20, "unified": True}
 
