@@ -41,7 +41,7 @@ def pulse(
 def test_a_wait_says_each_cell_once_as_it_lands_and_beats_once_per_look() -> None:
     """Looks are spaced, since each reads whole logs over the network, and a cell is said once."""
     looked, clock, said = Looked(), Clock(), []
-    vigil = Vigil(looked, say=said.append, clock=clock)  # the default stall threshold
+    vigil = Vigil(looked, say=said.append, clock=clock)
     records = [run("1")]
     looked.pulses = {records[0]: pulse(cells=(("a.py::t[x]", "passed"),), gpu=97)}
 

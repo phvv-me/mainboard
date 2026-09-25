@@ -17,7 +17,6 @@ from mainboard.verdicts import (
     gated,
     lined,
     qualified,
-    receipted,
     stopped,
 )
 from mainboard.vigil import Linger, Look, Vigil
@@ -26,6 +25,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _STREAM = "study-receipts"
+
+
+def receipt(run: str, case: str, **fields: str) -> str:
+    """One printed `trial_receipt` line for `case` of `run`, passed unless `fields` say not."""
+    return json.dumps(
+        {"trial_receipt": {"run": run, "case_id": case, "outcome": "passed", **fields}}
+    )
 
 
 @pytest.mark.parametrize("status", ["pending", "copied"])
@@ -39,19 +45,7 @@ def test_a_cached_success_is_not_delivered_before_its_first_evidence_event(
     assert board.verdicts().handled("79").trials[0].verdict == "blocked"
     under = directory(board, "crashed-before-event")
     under.mkdir(parents=True, exist_ok=True)
-    (under / "receipts.ndjson").write_text(
-        json.dumps(
-            {
-                "trial_receipt": {
-                    "run": "r",
-                    "case_id": "case",
-                    "outcome": "passed",
-                    "verdict": "validated",
-                }
-            }
-        )
-        + "\n"
-    )
+    (under / "receipts.ndjson").write_text(receipt("r", "case", verdict="validated") + "\n")
     assert board.verdicts().of("crashed-before-event").code == 2
 
 
@@ -62,29 +56,11 @@ def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidenc
     under = directory(board, "lost-transfer")
     under.mkdir(parents=True, exist_ok=True)
     path = under / "receipts.ndjson"
-    payload = {
-        "trial_receipt": {
-            "run": "first-run",
-            "case_id": "same-case",
-            "outcome": "passed",
-            "verdict": "validated",
-        }
-    }
-    original = json.dumps(payload) + "\n"
-    second = (
-        json.dumps(
-            {
-                "trial_receipt": {
-                    "run": "second-run",
-                    "case_id": "same-case",
-                    "outcome": "passed",
-                    "verdict": "validated",
-                }
-            }
-        )
-        + "\n"
+    original = "".join(
+        receipt(run, "same-case", verdict="validated") + "\n"
+        for run in ("first-run", "second-run")
     )
-    path.write_text(original + second)
+    path.write_text(original)
     publish(
         Receipts(under / "events.ndjson"),
         "lost-transfer",
@@ -103,9 +79,9 @@ def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidenc
     first = next(trial for trial in result.trials if trial.run)
     assert (first.verdict, first.settled) == ("unverified", "validated")
     assert {trial.run for trial in result.trials if trial.run} == {"first-run"}
-    second_trial = next(trial for trial in lined(path) if trial.run == "second-run")
-    assert second_trial.verdict == "passed"
-    assert path.read_text() == original + second
+    second = next(trial for trial in lined(path) if trial.run == "second-run")
+    assert second.verdict == "passed"
+    assert path.read_text() == original
     assert board.dispatcher.cache.run("77").verdict == "ok"
 
 
@@ -144,50 +120,38 @@ def recorded(
 def published(board: Board, stream: str) -> None:
     """A stream holding one job of every outcome a batch can leave behind."""
     bus = Receipts(directory(board, stream) / "events.ndjson")
-    publish(
-        bus,
-        stream,
-        Topic.SUBMITTED,
-        job="a",
-        data={"handle": "1", "target": "gold", "kind": "ssh", "command": "true", "node": "law"},
-    )
-    publish(bus, stream, Topic.STATE, job="a", data={"handle": "1", "state": "F", "verdict": "ok"})
-    publish(
-        bus,
-        stream,
-        Topic.SETTLED,
-        job="a",
-        data={"handle": "1", "verdict": "ok", "exit_code": 0, "detail": "results/run"},
-    )
-    publish(
-        bus,
-        stream,
-        Topic.SUBMITTED,
-        job="b",
-        data={"handle": "2", "target": "gold", "kind": "ssh", "command": "false"},
-    )
-    publish(
-        bus, stream, Topic.STATE, job="b", data={"handle": "2", "state": "R", "verdict": "running"}
-    )
-    # A job settled under an older handle and dispatched again: the stale settlement must not
-    # silence the run of it that is still going.
-    publish(
-        bus,
-        stream,
-        Topic.SETTLED,
-        job="b",
-        data={"handle": "0", "verdict": "failed", "exit_code": 1, "detail": "old run"},
-    )
-    publish(bus, stream, Topic.REFUSED, job="c", data={"target": "vast", "reason": "no key"})
-    publish(bus, stream, Topic.SUBMITTED, job="d", data={"handle": "4", "target": "gold"})
+    lines: list[tuple[Topic, str, dict[str, str | int]]] = [
+        (
+            Topic.SUBMITTED,
+            "a",
+            {"handle": "1", "target": "gold", "command": "true", "node": "law"},
+        ),
+        (Topic.STATE, "a", {"handle": "1", "state": "F", "verdict": "ok"}),
+        (
+            Topic.SETTLED,
+            "a",
+            {"handle": "1", "verdict": "ok", "exit_code": 0, "detail": "results/run"},
+        ),
+        (Topic.SUBMITTED, "b", {"handle": "2", "target": "gold", "command": "false"}),
+        (Topic.STATE, "b", {"handle": "2", "state": "R", "verdict": "running"}),
+        # Settled under an older handle and dispatched again: the stale settlement must not
+        # silence the run of it that is still going.
+        (
+            Topic.SETTLED,
+            "b",
+            {"handle": "0", "verdict": "failed", "exit_code": 1, "detail": "old"},
+        ),
+        (Topic.REFUSED, "c", {"target": "vast", "reason": "no key"}),
+        (Topic.SUBMITTED, "d", {"handle": "4", "target": "gold"}),
+    ]
+    for topic, job, data in lines:
+        publish(bus, stream, topic, job=job, data=data)
 
 
 def dispatched(board: Board, stream: str, lines: tuple[tuple[str, Topic, str, str], ...]) -> None:
-    """A stream of dispatch lines stamped by the test, in the order it wants them appended.
+    """Dispatch lines stamped by the test and appended in its order, bypassing `publish`.
 
-    Written through the envelope rather than through `publish` because both halves of this are
-    about clocks: the stamps have to be chosen, and the file order has to be free to disagree
-    with them the way a broker's redelivery does.
+    The file order must be free to disagree with the stamps, the way a broker's redelivery does.
     """
     bus = Receipts(directory(board, stream) / "events.ndjson")
     for at, topic, job, said in lines:
@@ -206,13 +170,10 @@ def dispatched(board: Board, stream: str, lines: tuple[tuple[str, Topic, str, st
 
 
 def test_the_newest_dispatch_line_decides_the_row_whatever_its_topic(board: Board) -> None:
-    """Taken, turned away and held on a quota are three answers to one request.
+    """Taken, turned away and held on a quota answer one request, so the last answer stands.
 
-    So the last answer is the true one. Four jobs miyabi-g's `njobs-g` limit refused at 13:43
-    went out at 18:43 under new handles (2026-09-04), and a fold that consulted the refusal
-    because it was a refusal buried the run that actually went. The stamps decide it rather than
-    the order the lines landed in, since the envelope contract promises no order at all and a
-    file is only accidentally in one.
+    Refusals at 13:43 went out at 18:43 under new handles (miyabi-g njobs-g, 2026-09-04). The
+    stamps decide, not the file order, which the envelope contract never promises.
     """
     stream = "superseded"
     dispatched(
@@ -245,13 +206,8 @@ def test_the_newest_dispatch_line_decides_the_row_whatever_its_topic(board: Boar
 
 
 def test_a_job_a_wave_left_out_gets_a_row_that_is_already_over(board: Board) -> None:
-    """A `--only` wave's unselected jobs were invisible to the verb that reports the batch.
-
-    They had no row at all, because the row set was built from the three answers a target gives
-    and nothing was ever offered to a target for these. Now the skip is the row, terminal from
-    the start: nothing dispatched cannot move, so the stream neither waits on it nor counts it
-    as a failure.
-    """
+    """A `--only` wave's unselected jobs are a row terminal from the start, neither waited on
+    nor counted as a failure, since nothing dispatched cannot move."""
     stream = "left-out"
     dispatched(
         board,
@@ -282,14 +238,8 @@ def test_a_job_a_wave_left_out_gets_a_row_that_is_already_over(board: Board) -> 
 
 
 def test_a_skip_never_outranks_a_dispatch_however_much_newer_it_is(board: Board) -> None:
-    """A skip says no offer was made in this wave, not that an earlier run unhappened.
-
-    Nine jobs of the rep92 batch ran at 13:43 and were left out of the 18:43 `--only` wave
-    (2026-09-04), so ranking the skip by its clock alone would have thrown nine outcomes away.
-    A skip decides a row exactly when nothing was ever dispatched for the job, which is also
-    what makes the other direction work: a wave that skips a job and then dispatches it reports
-    the dispatch.
-    """
+    """A skip says no offer was made in this wave, not that an earlier run unhappened (rep92,
+    2026-09-04); a wave that skips a job and then dispatches it reports the dispatch."""
     stream = "waves"
     dispatched(
         board,
@@ -310,13 +260,8 @@ def test_a_skip_never_outranks_a_dispatch_however_much_newer_it_is(board: Board)
 
 
 def test_a_stream_reads_the_outcome_the_durable_sweep_already_settled(board: Board) -> None:
-    """A batched job's settled line has exactly one publisher, and it is not the sweep.
-
-    So a batch whose watching session died is probed, pulled and memoized by the cron pass with
-    nothing ever reaching its stream, and reading the stream alone left thirteen finished jobs
-    saying `running` beside their thirteen pulled logs (2026-09-04). The registry row is that
-    outcome, and it is joined onto the rows the receipts left in flight.
-    """
+    """A batch whose watching session died is settled by the cron pass in the registry only, so
+    the registry row is joined onto the rows the receipts left in flight (2026-09-04)."""
     stream = "swept-batch"
     bus = Receipts(directory(board, stream) / "events.ndjson")
     publish(bus, stream, Topic.SUBMITTED, job="tex", data={"handle": "3294910", "target": "gold"})
@@ -355,11 +300,7 @@ def test_a_stream_reads_the_outcome_the_durable_sweep_already_settled(board: Boa
 def test_a_measurement_taken_under_contention_says_so_on_every_row_of_its_run(
     board: Board, attested: dict | None, flagged: str
 ) -> None:
-    """A contended artifact otherwise looks exactly as authoritative as a clean one.
-
-    Only the unwelcome half is rendered, so a column full of the word `idle` never buries the
-    one row that matters, and the busy figure rides along so a reader weighs it.
-    """
+    """A contended artifact otherwise looks exactly as authoritative as a clean one."""
     stream = f"contention-{flagged.count('%')}-{attested is not None}"
     bus = Receipts(directory(board, stream) / "events.ndjson")
     publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "9", "target": "gold"})
@@ -379,16 +320,14 @@ def test_a_measurement_taken_under_contention_says_so_on_every_row_of_its_run(
 def test_a_stream_answers_with_one_settled_row_per_job_and_the_completion_exit(
     board: Board,
 ) -> None:
-    """The stream read is the anti-fabrication read: rows come from the receipts alone.
+    """Rows come from the receipts alone, and a stream that produced rows carries no note.
 
-    A settled job carries its node, exit code and detail; a re-dispatched job ignores the old
-    run's settlement and reads as running; a refusal is terminal in its own words; a job that
-    was submitted and never probed still has a row. Anything still in flight makes the whole
-    stream exit 2, since a completion check must not call a running batch done.
+    A re-dispatched job ignores the old run's settlement, a refusal is terminal in its own
+    words, and a job submitted but never probed still has a row.
     """
     published(board, _STREAM)
     settled = board.verdicts().of(_STREAM)
-    assert settled.stream == _STREAM
+    assert (settled.stream, settled.note) == (_STREAM, "")
     by_job = {trial.job: trial for trial in settled.trials}
     assert by_job["a"] == TrialVerdict(
         job="a",
@@ -435,12 +374,8 @@ def test_the_stream_exit_ranks_failure_over_flight_over_doubt(
 def test_a_receipts_file_reads_both_written_shapes_and_skips_what_is_neither(
     board: Board, tmp_path: Path
 ) -> None:
-    """One verb over an events log and a harness's own `trial_receipt` lines.
-
-    The reproducibility evidence files are real streams, so the file mode accepts the printed
-    receipt shape beside the envelope shape, tolerates a torn line the way replay does, and a
-    receipt that names no outcome still settles as ok because the harness printed it at all.
-    """
+    """Both shapes are read and a torn line skipped; a receipt naming no outcome, or whose
+    payload is not even a mapping, still settles ok because the harness printed it at all."""
     path = tmp_path / "receipts.jsonl"
     event = {
         "at": "2026-08-25T00:00:00+00:00",
@@ -449,7 +384,7 @@ def test_a_receipts_file_reads_both_written_shapes_and_skips_what_is_neither(
         "job": "a",
         "data": {"handle": "1", "target": "gold"},
     }
-    receipt = {
+    printed = {
         "trial_receipt": {
             "run_id": "r1",
             "outcome": "passed",
@@ -459,10 +394,11 @@ def test_a_receipts_file_reads_both_written_shapes_and_skips_what_is_neither(
         }
     }
     bare = {"trial_receipt": {"kind": "gemm", "median_ms": 0.01}}
-    lines = [json.dumps(event), "  ", json.dumps(receipt), json.dumps(bare), "not json", "[1]"]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    garbage = {"trial_receipt": ["not", "a", "mapping"]}
+    lines = [json.dumps(event), "  ", json.dumps(printed), json.dumps(bare), json.dumps(garbage)]
+    path.write_text("\n".join([*lines, "not json", "[1]"]), encoding="utf-8")
     settled = board.verdicts().of(str(path))
-    assert [trial.job for trial in settled.trials] == ["a", "r1", ""]
+    assert [trial.job for trial in settled.trials] == ["a", "r1", "", ""]
     assert settled.trials[1] == TrialVerdict(
         job="r1",
         node="invariance-tax-law",
@@ -470,13 +406,8 @@ def test_a_receipts_file_reads_both_written_shapes_and_skips_what_is_neither(
         producer="lab",
         gates="2 passed",
     )
-    assert settled.trials[2].verdict == "ok"
+    assert (settled.trials[2].verdict, settled.trials[3].verdict) == ("ok", "ok")
     assert lined(path) == settled.trials
-
-
-def test_a_trial_receipt_payload_that_is_not_a_mapping_still_answers() -> None:
-    """A harness that printed garbage under the key gets an empty row, not a refusal."""
-    assert receipted(["not", "a", "mapping"]).verdict == "ok"
 
 
 @pytest.mark.parametrize(
@@ -498,11 +429,7 @@ def test_the_gate_sweep_summarizes_to_the_first_non_passing_gate(sweep: object, 
 def test_a_handle_answers_from_its_registry_row_when_the_workspace_tracked_nothing(
     board: Board,
 ) -> None:
-    """The registry is the durable floor, so a run with no receipts still settles.
-
-    The fixture manifest tracks nothing, which is exactly the workspace whose receipts are
-    absent, and the row carries the node the dispatch recorded.
-    """
+    """The registry is the durable floor, so a run in a workspace tracking nothing settles."""
     recorded(board, "71", name="tax-run", verdict="ok")
     settled = board.verdicts().of("71")
     assert settled.stream == "tax-run"
@@ -520,56 +447,40 @@ def test_a_handle_answers_from_its_registry_row_when_the_workspace_tracked_nothi
     assert settled.code == 0
 
 
-def test_a_failed_row_says_what_it_said_on_the_way_out(board: Board) -> None:
-    """Thirty two GH200 jobs printed thirty two identical `failed` rows (2026-09-05).
+_IMPORT = "ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found"
 
-    The line that told anyone anything was in the log the sweep had already brought home, one
-    directory over from the receipts this verb reads, and finding it meant knowing that. It is a
-    column now: the last thing the run said, which for a traceback is its exception and for a
-    loader failure is the symbol that was missing.
-    """
-    recorded(board, "9", name="doomed", verdict="failed")
+
+@pytest.mark.parametrize(
+    ("verdict", "log", "cause"),
+    [
+        pytest.param(
+            "failed",
+            f'Traceback (most recent call last):\n  File "run.py", line 1, in <module>\n'
+            f"    import sqlite3\n{_IMPORT}\nmainboard-receipts-begin\n"
+            "mainboard-receipt:e30K\nmainboard-receipts-end\nexit=1\n",
+            _IMPORT,
+            id="a-failed-row-names-its-exception-not-its-frames-receipts-or-exit-stamp",
+        ),
+        pytest.param("ok", "all good\n", "", id="a-clean-row-is-never-read-for-a-cause"),
+    ],
+)
+def test_a_failed_row_says_what_it_said_on_the_way_out(
+    board: Board, verdict: str, log: str, cause: str
+) -> None:
+    """Thirty two GH200 jobs printed identical `failed` rows while the line that explained each
+    sat in the log the sweep had already brought home (2026-09-05)."""
+    recorded(board, "9", name="doomed", verdict=verdict)
     stored = directory(board, "doomed") / "9.log"
     stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_text(
-        "Traceback (most recent call last):\n"
-        '  File "run.py", line 1, in <module>\n'
-        "    import sqlite3\n"
-        "ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found\n"
-        "mainboard-receipts-begin\n"
-        "mainboard-receipt:e30K\n"
-        "mainboard-receipts-end\n"
-        "exit=1\n",
-        encoding="utf-8",
-    )
-
+    stored.write_text(log, encoding="utf-8")
     [row] = board.verdicts().of("9").trials
-
-    assert row.cause == ("ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found")
-    # The frames above it, the receipts frame below it and the wrapper's own exit stamp are not
-    # the cause: one is where, one is the wrapper's channel and the last is a column of its own.
-    assert "File" not in row.cause
-    assert row.exit_code is None or "exit=" not in row.cause
-
-
-def test_a_clean_row_carries_no_cause_and_is_never_read_for_one(board: Board) -> None:
-    """A run that ended well has nothing to explain, and a live one has printed nothing home."""
-    recorded(board, "8", name="fine", verdict="ok")
-    stored = directory(board, "fine") / "8.log"
-    stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_text("all good\n", encoding="utf-8")
-
-    assert board.verdicts().of("8").trials[0].cause == ""
+    assert row.cause == cause
 
 
 def test_every_dispatched_row_carries_the_provenance_its_mirror_could_not_derive(
     board: Board,
 ) -> None:
-    """A row measured on a host with no history still names the commit and the bytes it ran.
-
-    Joined onto settled rows as much as onto live ones, since what a run was measured from does
-    not stop being true when the job ends, and the mirror it ran in never knew it.
-    """
+    """A row measured on a mirror with no history still names the commit and bytes it ran."""
     recorded(board, "3", name="sealed", verdict="ok", commit="e975499f" * 5, digest="9a" * 32)
     recorded(board, "1", name=_STREAM, verdict="ok", commit="c0ffee" * 6, digest="7b" * 32)
     published(board, _STREAM)
@@ -578,8 +489,6 @@ def test_every_dispatched_row_carries_the_provenance_its_mirror_could_not_derive
     receipted_row = next(row for row in board.verdicts().of(_STREAM).trials if row.handle == "1")
 
     assert (alone.commit, alone.digest) == ("e975499f" * 5, "9a" * 32)
-    # And a row the receipts settled carries it too, joined from the registry, since the stream
-    # a batch writes has no column for what the dispatch was taken from.
     assert (receipted_row.commit, receipted_row.digest) == ("c0ffee" * 6, "7b" * 32)
 
 
@@ -604,51 +513,20 @@ def test_same_named_host_jobs_keep_their_own_state_and_child_receipts(
     recorded(board, remote, name=stream, target="miyabi-g", verdict="ok")
     recorded(board, active, name=stream, target="crimson")
     bus = Receipts(directory(board, stream) / "events.ndjson")
-    for handle, target in [(remote, "miyabi-g"), (active, "crimson")]:
-        if missing_submission and target == "crimson":
-            continue
+    launchers = [("miyabi-g", remote), ("crimson", active)]
+    for target, handle in launchers[:1] if missing_submission else launchers:
         publish(
-            bus,
-            stream,
-            Topic.SUBMITTED,
-            job=stream,
-            data={"handle": handle, "target": target},
+            bus, stream, Topic.SUBMITTED, job=stream, data={"handle": handle, "target": target}
         )
-    publish(
-        bus,
-        stream,
-        Topic.STATE,
-        job=stream,
-        data={"handle": active, "state": "Running", "verdict": "running"},
-    )
+    flying = {"handle": active, "state": "Running", "verdict": "running"}
+    publish(bus, stream, Topic.STATE, job=stream, data=flying)
+    ended = {"handle": remote, "state": "F", "verdict": "ok", "exit_code": 0}
     for topic in (Topic.STATE, Topic.SETTLED):
-        publish(
-            bus,
-            stream,
-            topic,
-            job=stream,
-            data={
-                "handle": remote,
-                "state": "F",
-                "verdict": "ok",
-                "exit_code": 0,
-            },
-        )
+        publish(bus, stream, topic, job=stream, data=ended)
     receipts = []
-    for target, handle in [("miyabi-g", remote), ("crimson", active)]:
+    for target, handle in launchers:
         cases = [[f"{target}-{index}", f"case-{index}"] for index in range(3)]
-        for run, case in cases:
-            receipts.append(
-                json.dumps(
-                    {
-                        "trial_receipt": {
-                            "run": run,
-                            "case_id": case,
-                            "outcome": "passed",
-                        }
-                    }
-                )
-            )
+        receipts.extend(receipt(run, case) for run, case in cases)
         publish(
             bus,
             stream,
@@ -666,17 +544,13 @@ def test_same_named_host_jobs_keep_their_own_state_and_child_receipts(
     original = "\n".join(receipts) + "\n"
     path.write_text(original)
 
-    waiting = board.verdicts().handled(active, host="crimson")
-    assert waiting.code == 2  # Passing children do not prove that the launcher ended.
-    assert waiting.trials[0].verdict == "running"
-    assert {trial.run for trial in waiting.trials if trial.run} == {
-        f"crimson-{index}" for index in range(3)
-    }
-    finished = board.verdicts().handled(remote, host="miyabi-g")
-    assert finished.code == 0
-    assert {trial.run for trial in finished.trials if trial.run} == {
-        f"miyabi-g-{index}" for index in range(3)
-    }
+    for target, handle, code in [("crimson", active, 2), ("miyabi-g", remote, 0)]:
+        settled = board.verdicts().handled(handle, host=target)
+        # Passing children do not prove that the launcher ended.
+        assert (settled.code, settled.trials[0].verdict) == (code, "running" if code else "ok")
+        assert {row.run for row in settled.trials if row.run} == {
+            f"{target}-{i}" for i in range(3)
+        }
     assert board.verdicts().of(stream).code == 2
     assert path.read_text() == original
 
@@ -693,11 +567,7 @@ def test_a_target_that_is_nothing_at_all_is_refused_with_the_three_shapes_named(
 def test_wait_sweeps_the_monitor_path_until_terminal_and_answers_from_the_receipts(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every poll is the durable pass the cron runs, so waiting settles rather than watches.
-
-    The stand-in sweep terminalizes the run on its second pass exactly as a real one would
-    write the cache, and the answer is the registry-derived row with the job's own exit code.
-    """
+    """Every poll is the durable pass the cron runs, so waiting settles rather than watches."""
     recorded(board, "9", name="waited")
     passes: list[int] = []
 
@@ -746,26 +616,26 @@ def test_wait_on_a_batch_id_sweeps_until_every_job_settles_and_answers_the_batch
     assert settled.code == 1
 
 
-def test_wait_on_a_batch_id_gives_up_at_the_deadline_with_the_batch_still_in_flight(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("batch", [False, True], ids=["a-handle", "a-batch-id"])
+def test_wait_gives_up_at_the_deadline_and_reports_the_run_still_in_flight(
+    board: Board, monkeypatch: pytest.MonkeyPatch, batch: bool
 ) -> None:
-    stream = "smoke-2"
-    bus = Receipts(directory(board, stream) / "events.ndjson")
-    publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "1", "target": "gold"})
+    """A bounded wait is the contract: exit 2 with the truth, never a hang."""
+    if batch:
+        bus = Receipts(directory(board, "smoke-2") / "events.ndjson")
+        publish(bus, "smoke-2", Topic.SUBMITTED, job="a", data={"handle": "1", "target": "gold"})
+    else:
+        recorded(board, "8", name="smoke-2")
     monkeypatch.setattr(Monitor, "once", lambda monitor: None)
-    settled = board.verdicts().wait(stream, timeout=1e-6, interval=0.0, poll=lambda s: None)
-    assert settled.stream == stream
-    assert settled.code == 2
+    waited = "smoke-2" if batch else "8"
+    settled = board.verdicts().wait(waited, timeout=1e-6, interval=0.0, poll=lambda s: None)
+    assert (settled.stream, settled.code, settled.trials[0].verdict) == ("smoke-2", 2, "running")
 
 
 def test_cancel_kills_through_the_backend_and_settles_the_record_in_the_same_pass(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cancellation with no receipt trail is what killing a job over ssh by hand leaves behind.
-
-    Killing, settling, publishing and releasing are one pass, and the reported cursor moves last
-    so a cancel killed halfway repeats rather than loses the outcome.
-    """
+    """Killing, settling and releasing are one pass, the reported cursor moving last."""
     recorded(board, "7", name="doomed", target="miyabi-g")
     acted: list[str] = []
     monkeypatch.setattr(Monitor, "once", lambda monitor: acted.append("swept"))
@@ -797,11 +667,7 @@ def test_cancel_kills_through_the_backend_and_settles_the_record_in_the_same_pas
 def test_an_empty_table_says_why_instead_of_reading_as_a_failure(
     board: Board, tmp_path: Path, body: str, said: str
 ) -> None:
-    """An empty table is the one answer a reader cannot act on, since it looks the same either way.
-
-    The two shapes are named rather than the tools that write them, so a harness earns the same
-    reading by printing the same line and nothing here has to learn what that harness is called.
-    """
+    """An empty table is the one answer a reader cannot act on, so the note says why."""
     path = tmp_path / "evidence.jsonl"
     path.write_text(body, encoding="utf-8")
     settled = board.verdicts().of(str(path))
@@ -809,12 +675,6 @@ def test_an_empty_table_says_why_instead_of_reading_as_a_failure(
     assert said in settled.note
     # Still exit 3: receipts that prove nothing prove nothing, whatever the note explains.
     assert settled.code == 3
-
-
-def test_a_stream_that_did_produce_rows_carries_no_note_at_all(board: Board) -> None:
-    """The note exists for the empty case, so a table that says something says only that."""
-    published(board, _STREAM)
-    assert board.verdicts().of(_STREAM).note == ""
 
 
 def test_the_captured_tail_is_preferred_over_a_backend_that_may_no_longer_exist(
@@ -854,17 +714,6 @@ def test_cancelling_a_run_that_already_settled_touches_nothing(
     assert (settled.trials[0].verdict, settled.code) == ("ok", 0)
 
 
-def test_wait_gives_up_at_the_deadline_and_reports_the_run_still_in_flight(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A bounded wait is the contract: exit 2 with the truth, never a hang."""
-    recorded(board, "8", name="stuck")
-    monkeypatch.setattr(Monitor, "once", lambda monitor: None)
-    settled = board.verdicts().wait("8", timeout=0.000001, poll=lambda seconds: None)
-    assert settled.code == 2
-    assert settled.trials[0].verdict == "running"
-
-
 def test_the_board_hands_out_the_reader_bound_to_itself(board: Board) -> None:
     reader = board.verdicts()
     assert isinstance(reader, Verdicts)
@@ -874,11 +723,8 @@ def test_the_board_hands_out_the_reader_bound_to_itself(board: Board) -> None:
 def test_cancelling_a_prepared_creation_claims_it_so_no_create_can_follow(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A prepared row has no provider handle yet, so cancelling it is winning the claim on it.
-
-    A creation that claimed it first owns it now, and settling that row as cancelled would
-    leave whatever it rented billing under a row that says nothing is there.
-    """
+    """Cancelling a handle-less prepared row is winning its claim; one a creation won first is
+    left alone, since settling it would hide whatever it rented."""
     monkeypatch.setattr(Job, "kill", lambda self: pytest.fail("a creation with no handle killed"))
     recorded(board, "2", name="beaten", verdict="prepared")
     recorded(board, "3", name="abandoned", verdict="prepared")
@@ -918,11 +764,7 @@ def test_a_cancel_says_what_it_could_not_verify_and_retries_what_it_could_not_re
     evidence: str,
     reported: str | None,
 ) -> None:
-    """A deliberate stop may lose work, but it never calls lost evidence verified.
-
-    And a run whose release failed may still be billing, so its cursor stays where the durable
-    sweep will find it and release it again.
-    """
+    """A stop never calls lost evidence verified, and a failed release keeps the cursor."""
 
     def released(job: Job) -> None:
         if release is not None:
@@ -967,11 +809,7 @@ def test_an_evidence_line_with_no_readable_trial_list_still_qualifies_its_own_ru
 def test_a_wait_stops_with_its_own_exit_status_on_a_job_silent_on_an_idle_card(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stalled job used to hold its waiter to the whole hour; now the wait says so and ends.
-
-    What the vigil looks at is the run still running after the pass, and the answer is the
-    run's own row with the stall beside it, exit 4 rather than the timeout's 2.
-    """
+    """The vigil looks at the run still running after the pass; the answer exits 4, not 2."""
     recorded(board, "8", name="stuck", verdict="running")
     looked: list[list[str]] = []
 
@@ -991,11 +829,7 @@ def test_a_wait_stops_with_its_own_exit_status_on_a_job_silent_on_an_idle_card(
 def test_a_job_whose_session_ended_while_its_process_lingers_settles_on_the_session(
     board: Board, monkeypatch: pytest.MonkeyPatch, session: int, verdict: str, code: int
 ) -> None:
-    """`1 known in 27s` and then half an hour of `running` (2026-09-19): the answer was written.
-
-    The lingering process is stopped the way a cancel stops it, evidence first, and the run
-    settles on what its session said rather than as cancelled.
-    """
+    """`1 known in 27s`, then half an hour of `running` (2026-09-19): it settles on the session."""
     recorded(board, "7", name="lingered", target="miyabi-g", verdict="running")
     acted: list[str] = []
     monkeypatch.setattr(Monitor, "once", lambda monitor: None)

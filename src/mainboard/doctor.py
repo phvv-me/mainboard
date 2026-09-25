@@ -30,14 +30,19 @@ if TYPE_CHECKING:
 # The tool this workspace answers to, so no message below spells the binary's name.
 _TOOL = Project().name
 
-# The compute paths that are usable as they stand, so a survey row outside this set is
-# something the report has to say a word about.
+# The compute paths usable as they stand; every other survey row earns a word.
 _USABLE = frozenset({Access.HERE, Access.KEYED})
 
-# What a gate cannot mean, because a gate is argv. The runner hands each token to the command as
-# an argument, so a declared `a && b` runs `a` with three arguments and reports whatever that
-# came to: the pipeline nobody ran reads as a gate that passed. These are refused by name, which
-# is the only way a gate can say what it meant and be told it cannot be said here.
+# What the fleet row says about the paths in each state that is not usable, in reading order.
+_UNUSABLE = {
+    Access.REACHABLE: "answering but never set up",
+    Access.PROVISIONED: "cached setup, job readiness unverified",
+    Access.UNREACHABLE: "not answering",
+    Access.UNKEYED: "no credentials here",
+}
+
+# What a gate cannot mean, because a gate is argv: a declared `a && b` runs `a` with three
+# arguments, and the pipeline nobody ran reads as a gate that passed. These are refused by name.
 _SHELL_GRAMMAR = frozenset({"&&", "||", "|", ";", ">", ">>", "<", "&", "2>", "2>&1"})
 
 
@@ -46,12 +51,10 @@ class Doctor:
 
     The sections answer the questions asked before starting work: does the manifest still say
     something coherent, is the environment on this disk the one it describes, what compute can
-    be reached, and does every gate this workspace declares still come back clean. A gate is a
-    command in the manifest, so which further questions get asked is the workspace's decision
-    rather than this package's, and a tool joins the report by being declared instead of by
-    being known here. Every probe is bounded and they run together, so the whole report takes as
-    long as its slowest single question, and a section that cannot answer says so rather than
-    taking the report down with it.
+    be reached, and does every declared gate still come back clean. A gate is a manifest
+    command, so a tool joins the report by being declared rather than known here. Every probe is
+    bounded and they run together, so the report takes as long as its slowest question, and a
+    section that cannot answer says so rather than taking the report down.
     """
 
     def __init__(
@@ -63,9 +66,7 @@ class Doctor:
         probe: Callable[[str, float], tuple[int, str]] | None = None,
         settler: Settler | None = None,
     ) -> None:
-        """board: the workspace being examined.
-
-        env: the environment to examine, the board profile's own when empty.
+        """env: the environment to examine, the board profile's own when empty.
         survey: the fleet probe, the workspace's own when None.
         probe: runs a declared gate's command under its deadline and answers with its exit
             status and output, the workspace runner when None.
@@ -80,15 +81,12 @@ class Doctor:
     def environment(self, env: str = "") -> Section:
         """Whether what is installed answers to the manifest, and still imports.
 
-        Three separate ways a workspace goes wrong and one line covering all three. The lock
-        may have been solved from a manifest this one no longer is, an environment may have
-        been provisioned before an edit nobody re-installed, and a wheel may have lost the
-        files it declared underneath pixi, which no lock ever notices because the lock only
-        knows the package is recorded as installed.
-
-        A row carrying more than one of them names the command that repairs each, since they are
-        not the same command and a single one leaves the reader guessing which findings it was
-        meant to cover.
+        The lock may have been solved from a manifest this one no longer is, the environment
+        provisioned before an edit nobody re-installed, or a wheel may have lost its files
+        underneath pixi, which no lock notices. Each finding names the command that repairs THAT
+        finding (a stale lock needs `--resolve`, the others the install the lock describes), since
+        one command for the row left the reader guessing which findings it covered. The row names
+        its environment, since the report carries one row per declared environment.
 
         env: the environment to examine, this report's own when empty.
         """
@@ -98,9 +96,9 @@ class Doctor:
         pixi = provisioner.pixi_for(environment)
         compiler = provisioner.compiler_for(environment)
         install = f"{_TOOL} install {environment}"
+        row = partial(Section, section="environment")
         if not pixi.manifest.exists():
-            return Section(
-                section="environment",
+            return row(
                 verdict=Verdict.WARN,
                 detail=f"{environment}: nothing compiled yet",
                 fix=f"{install} --resolve",
@@ -115,24 +113,15 @@ class Doctor:
             or state.environment != environment
             or state.solved_from != compiler.resolution_digest()
         )
-        # Each finding beside the command that repairs THAT finding, because they are not the
-        # same command. A lock nothing on this disk solved needs the solve `--resolve` allows; a
-        # prefix built before an edit, and a wheel that lost its files, are both put right by the
-        # install the lock already describes. One command for the whole row named the strongest
-        # of them and left the reader to work out which findings it actually covered.
         findings: list[tuple[str, str]] = []
         solver = provisioner.solver_version()
         if solver != PIXI_VERSION:
-            # The lock is pixi's file, and each version writes some of it differently. A machine
-            # off the fleet's one pixi rewrites the lock it is handed and builds an environment
-            # at an address nothing dispatched it against, which is a whole dead wave and no
-            # message anywhere: 2026-09-05, a workstation on 0.77 against a host on 0.79.
+            # Each pixi version writes some of the lock differently, so a machine off the fleet's
+            # pixi rewrites the lock it is handed and builds at an address nothing dispatched
+            # against: a whole dead wave and no message (2026-09-05, 0.77 against a host on 0.79).
+            here = f"pixi {solver or 'is not installed'} here"
             findings.append(
-                (
-                    f"pixi {solver or 'is not installed'} here, and the fleet is pinned to "
-                    f"{PIXI_VERSION}",
-                    POSIX_INSTALLER,
-                )
+                (f"{here}, and the fleet is pinned to {PIXI_VERSION}", POSIX_INSTALLER)
             )
         if lock_stale:
             findings.append(
@@ -143,23 +132,14 @@ class Doctor:
         if damaged:
             findings.append((f"needs reinstalling: {', '.join(damaged)}", install))
         if findings:
-            # Named, because the report now carries one row per declared environment and a row
-            # that says only what is broken leaves the reader counting rows to find out where.
-            return Section(
-                section="environment",
+            return row(
                 verdict=Verdict.FAIL,
                 detail=f"{environment}: " + "; ".join(fault for fault, _ in findings),
                 fix="; ".join(dict.fromkeys(repair for _, repair in findings)),
             )
         if not installed:
-            return Section(
-                section="environment",
-                verdict=Verdict.WARN,
-                detail=f"never installed: {environment}",
-                fix=install,
-            )
-        return Section(
-            section="environment",
+            return row(verdict=Verdict.WARN, detail=f"never installed: {environment}", fix=install)
+        return row(
             verdict=Verdict.PASS,
             detail=f"{environment} is provisioned, fresh and whole, on pixi {solver}",
         )
@@ -167,28 +147,17 @@ class Doctor:
     def fleet(self, setups: Mapping[str, HostSetup] | None = None) -> Section:
         """What compute this workspace can reach, and what stands between it and the rest.
 
-        Nothing here fails. A host that is asleep and a provider nobody has a key for are both
-        facts about the world rather than about this workspace, and calling them broken would
-        make the exit status mean the network instead of the code.
+        Nothing here fails: a sleeping host and an unkeyed provider are facts about the world, and
+        calling them broken would make the exit status mean the network instead of the code.
 
-        setups: the onboarding records, read on the cache's own thread when this section runs
-            inside the report's pool; the survey reads them itself when None.
+        setups: the onboarding records (see `sections`), read by the survey itself when None.
         """
         paths = self.survey.paths(setups)
         ready = [path for path in paths if path.access in _USABLE]
-        cold = [path.name for path in paths if path.access is Access.REACHABLE]
-        cached = [path.name for path in paths if path.access is Access.PROVISIONED]
-        down = [path.name for path in paths if path.access is Access.UNREACHABLE]
-        unkeyed = [path.name for path in paths if path.access is Access.UNKEYED]
         notes = [
-            note
-            for note in (
-                f"answering but never set up: {', '.join(cold)}" if cold else "",
-                f"cached setup, job readiness unverified: {', '.join(cached)}" if cached else "",
-                f"not answering: {', '.join(down)}" if down else "",
-                f"no credentials here: {', '.join(unkeyed)}" if unkeyed else "",
-            )
-            if note
+            f"{label}: {', '.join(names)}"
+            for access, label in _UNUSABLE.items()
+            if (names := [path.name for path in paths if path.access is access])
         ]
         if not notes:
             return Section(
@@ -204,26 +173,20 @@ class Doctor:
     def hosts(self, setups: Mapping[str, HostSetup] | None = None) -> Section:
         """Whether an onboarded host's environment still matches the manifest as it reads now.
 
-        A host is provisioned once and the manifest can move any number of times after that,
-        and nothing before this ever asked the two again whether they still agreed. This is the
-        same digest `environment` already asks of this machine, compared instead against what
-        each host was last provisioned from. A host onboarded before this field existed answers
-        `unrecorded` rather than diverged, since there is nothing to compare against yet.
+        The same digest `environment` asks of this machine, compared against what each host was
+        last provisioned from, since the manifest moves after a host is provisioned. A host with
+        no recorded digest has nothing to compare against and never counts as diverged; one whose
+        environment the manifest no longer declares does.
 
-        setups: the onboarding records, read on the cache's own thread when this section runs
-            inside the report's pool; the survey reads them itself when None.
+        setups: the onboarding records (see `sections`), read from the survey when None.
         """
         setups = self.survey.onboarded() if setups is None else setups
         provisioner = Provisioner(self.board.root, self.board.manifest)
-        diverged: list[str] = []
-        for host, setup in setups.items():
-            try:
-                current = provisioner.compiler_for(setup.env).digest()
-            except MissionError:
-                current = ""
-            if setup.digest and setup.digest != current:
-                diverged.append(host)
-        diverged.sort()
+        diverged = sorted(
+            host
+            for host, setup in setups.items()
+            if setup.digest and setup.digest != _digest(provisioner, setup.env)
+        )
         if not diverged:
             return Section(
                 section="hosts",
@@ -240,62 +203,46 @@ class Doctor:
     def gate(self, name: str) -> Section:
         """One declared verification gate's own verdict on this workspace.
 
-        Four findings, and the order they are told apart in is the order they mean different
-        things. A clean exit is the gate saying so. A gate that named where its failures live
-        and printed them is broken, in the words it chose, since what counts as a failure is its
-        judgment and stays there. A gate that promised a report and produced none never ran at
-        all, usually because nothing installed it, which is a word rather than a broken
-        workspace. Anything else is a plain command that exited nonzero, and its last line is
-        where such a command puts its complaint.
+        Told apart in the order they mean different things. A clean exit is the gate saying so.
+        A gate that printed where its failures live is broken in the words it chose, since what
+        counts as a failure is its judgment. A gate that promised a report and produced none never
+        ran, usually because nothing installed it, which is a word rather than a broken
+        workspace. Anything else is a plain command that exited nonzero, whose last line is its
+        complaint.
 
         name: the `[gates.<name>]` table this section reports on.
         """
         gate = self.board.manifest.gates[name]
+        row = partial(Section, section=name)
         repair = f"{_TOOL} run -- {gate.run}"
         try:
             status, output = self.probe(gate.run, gate.timeout)
         except ProcessTimedOut:
-            return Section(
-                section=name,
-                verdict=Verdict.WARN,
-                detail=f"`{gate.run}` did not answer within {gate.timeout:.0f}s",
-                fix=repair,
-            )
+            detail = f"`{gate.run}` did not answer within {gate.timeout:.0f}s"
+            return row(verdict=Verdict.WARN, detail=detail, fix=repair)
         if not status:
-            return Section(
-                section=name, verdict=Verdict.PASS, detail=f"`{gate.run}` reports nothing broken"
-            )
+            return row(verdict=Verdict.PASS, detail=f"`{gate.run}` reports nothing broken")
         if breakages := gate.breakages(output):
-            return Section(
-                section=name,
-                verdict=Verdict.FAIL,
-                detail=f"{len(breakages)} breakages: {', '.join(breakages)}",
-                fix=repair,
-            )
+            detail = f"{len(breakages)} breakages: {', '.join(breakages)}"
+            return row(verdict=Verdict.FAIL, detail=detail, fix=repair)
         if gate.report:
-            return Section(
-                section=name,
-                verdict=Verdict.WARN,
-                detail=f"`{gate.run}` exited {status} without a report, is it installed",
-                fix=gate.install or repair,
-            )
-        return Section(
-            section=name,
-            verdict=Verdict.FAIL,
-            detail=Doctor._complaint(output) or f"`{gate.run}` exited {status}",
-            fix=repair,
+            detail = f"`{gate.run}` exited {status} without a report, is it installed"
+            return row(verdict=Verdict.WARN, detail=detail, fix=gate.install or repair)
+        complaint = next(
+            (line.strip() for line in reversed(output.splitlines()) if line.strip()), ""
+        )
+        return row(
+            verdict=Verdict.FAIL, detail=complaint or f"`{gate.run}` exited {status}", fix=repair
         )
 
     def layout(self) -> Section:
         """Whether the old root still holds an environment directory, one line per name.
 
-        The generated tree keeps every pixi prefix under its own environment directory, and a
-        workspace provisioned before that layout keeps the old root's `envs/`, one directory per
-        environment it built there. An environment the current layout has since reproduced is
-        dead weight, safe to remove; one it has not is still what its own activation script
-        serves, and deleting it would take a working environment down rather than tidy anything.
-        The old root is named from the current layout rather than spelled out here, so the check
-        follows the layout.
+        A workspace provisioned before every pixi prefix moved under its own environment
+        directory keeps the old root's `envs/`. An environment the current layout has since
+        reproduced is dead weight, safe to remove; one it has not is still served by its own
+        activation script, and deleting it would take a working environment down. The old root
+        is derived from the current layout, so the check follows the layout.
         """
         provisioner = Provisioner(self.board.root, self.board.manifest)
         prefix = provisioner.pixi_for().env_prefix("default")
@@ -332,8 +279,7 @@ class Doctor:
     def _reprovisioned(provisioner: Provisioner, name: str) -> bool:
         """Whether `name` already exists again under the current layout.
 
-        A name the manifest no longer declares raises before any path is even built, and reads
-        the same as one still declared but not yet reinstalled: both are legacy either way.
+        A name the manifest no longer declares raises, and is legacy like one not yet reinstalled.
         """
         try:
             return provisioner.pixi_for(name).env_prefix(name).is_dir()
@@ -363,16 +309,12 @@ class Doctor:
     def sections(self) -> list[Section]:
         """Every section, the manifest first because everything after it reads the manifest.
 
-        A manifest that will not load is the whole report, since an environment digest, a host
-        roster, a task list and the gate roster itself are all things that manifest was going to
-        supply, and inventing verdicts for them from a file nobody could parse would say nothing
-        true.
+        A manifest that will not load is the whole report, since every other section reads it.
 
-        Everything durable the pool will need is read here first, on this thread. The dispatch
-        cache is one SQLite connection that only its opening thread may use, so a fleet probe
-        that reached for the onboarding records from inside the pool would open that connection
-        there and leave the interpreter closing it from here at exit. The shared subsystems are
-        built here for the same reason, which is also why building them is locked.
+        The onboarding records are read here, on this thread: the dispatch cache is one SQLite
+        connection only its opening thread may use, and a fleet probe reaching for them inside the
+        pool opened it there and left the interpreter closing it from here at exit. The shared
+        subsystems are built here for the same reason, which is also why building them is locked.
         """
         manifest = self.manifest()
         if manifest.verdict is Verdict.FAIL:
@@ -393,24 +335,18 @@ class Doctor:
     def examined(self) -> tuple[str, ...]:
         """Every environment this report covers: the one it was asked about, or all declared.
 
-        A workspace installs several and a report on `default` alone says nothing about the one
-        a serving host actually runs, which is exactly the row somebody opens a doctor for: an
-        environment nobody has provisioned since an edit is invisible until a command asks it
-        for an interpreter.
+        A report on `default` alone says nothing about the one a serving host runs, which stays
+        invisible until a command asks it for an interpreter.
         """
-        if self.env:
-            return (self.env,)
-        return ("default", *self.board.manifest.envs)
+        return (self.env,) if self.env else ("default", *self.board.manifest.envs)
 
     def settling(self) -> Section:
         """Whether a periodic pass settles dispatched jobs with no session holding it open.
 
-        A sweep scheduled inside the terminal that dispatched the jobs dies with that terminal,
-        and an outcome must never depend on the agent that asked for it staying alive, so the
-        row asks this workspace's own settler whether its pass is installed, armed, and when it
-        last ran. Each workspace has its own timer, so this is never another workspace's answer.
-        Nothing here fails: a workstation with no periodic pass is a machine to configure rather
-        than a workspace that is broken.
+        A sweep inside the dispatching terminal dies with it, and an outcome must never depend on
+        the agent staying alive, so this asks the workspace's own settler (never another
+        workspace's timer) whether its pass is installed, armed, and when it last ran. Nothing
+        fails: a machine with no periodic pass is one to configure, not a broken workspace.
         """
         found = self.settler.state()
         return Section(
@@ -423,11 +359,9 @@ class Doctor:
     def snapshot(self) -> Section:
         """Whether the installed CLI snapshot still answers for the source tree it was built from.
 
-        The one drift a lock never notices, since the snapshot is a uv tool environment beside
-        the workspace rather than inside it. A checkout running its own source has nothing to
-        be stale against and passes with that word.
-
-        Refresh uses the current source files, independent of version-control state.
+        The one drift a lock never notices, since the snapshot is a uv tool environment beside the
+        workspace. A checkout running its own source passes with that word. The refresh reads the
+        source files as they are, whatever version control says.
         """
         found = staleness.check()
         if found.stale:
@@ -440,10 +374,8 @@ class Doctor:
         """Run `command` through this workspace's own runner, bounded, and capture what it said.
 
         The same staged line `run` uses, so a gate is reached through the environment this
-        workspace installed rather than through whatever interpreter happens to be on PATH when
-        the report is asked for.
+        workspace installed rather than whatever interpreter is on PATH.
 
-        command: the gate's command line.
         timeout: the gate's own deadline in seconds.
         """
         argv = split(command)
@@ -459,8 +391,10 @@ class Doctor:
         )
         return result.returncode, result.stdout
 
-    @staticmethod
-    def _complaint(output: str) -> str:
-        """The last thing a command said, which is where a command line tool puts its complaint."""
-        spoken = [line.strip() for line in output.splitlines() if line.strip()]
-        return spoken[-1] if spoken else ""
+
+def _digest(provisioner: Provisioner, env: str) -> str:
+    """`env`'s current manifest digest, empty when the manifest no longer declares it."""
+    try:
+        return provisioner.compiler_for(env).digest()
+    except MissionError:
+        return ""

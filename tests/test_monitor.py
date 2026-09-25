@@ -57,8 +57,7 @@ _VAST_INSTANCE = "https://console.vast.ai/api/v0/instances/13/"
 class Rented(VastBackend):
     """Vast's own backend under a test-only kind, so a sweep drives its real cancel path.
 
-    The sweep builds its backend out of the registry rather than out of the test, so the queued
-    replies and the calls that answered them live on the class, the one channel the two share.
+    The sweep builds its backend from the registry, so replies and calls live on the class.
     """
 
     name = "vast-rental"
@@ -86,12 +85,8 @@ class Instance(HpcAiBackend):
 
 @pytest.fixture(autouse=True)
 def silent_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every host a sweep here reaches for over ssh never answers, unless a test says otherwise.
-
-    A settled run's log is read over its own connection before anything is released, so a test
-    that pinned only the probe and the pull would otherwise dial the developer's real hosts and
-    pass or fail on whether they answered. A host that is not there is what CI sees anyway.
-    """
+    """Every host a sweep reaches over ssh never answers, unless a test says otherwise, so a
+    test pinning only the probe and pull never dials the developer's real hosts."""
 
     def unreachable(host: str, ssh: SshTransport | None = None) -> NoReturn:
         raise HostUnreachable(f"ssh connect to {host!r} failed: no host answers a test")
@@ -100,12 +95,10 @@ def silent_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def rented(status: str = "exited", *, exit_code: int = 0) -> list[Reply]:
-    """The replies one Vast post-mortem takes, the instance row, its log url, and the log.
+    """The replies one Vast post-mortem takes: the instance row, then its log url and log twice.
 
-    Any container that has been up costs a log fetch, since the wrapper's marker is the only
-    thing that knows the command ended and the container's own status does not. A run that
-    settles on that marker then reads the log a second time, to capture the output before the
-    release destroys the instance, so the upload pair is queued twice.
+    A container that has been up costs a log fetch, since only the wrapper's marker knows the
+    command ended, and settling reads the log again to capture it before the release.
     """
     log = f"training done\nmainboard-exit:{exit_code}\n"
     upload: list[Reply] = [{"result_url": "https://s3.example/logs/7.log"}, log]
@@ -158,15 +151,34 @@ def seed(
     return run
 
 
+def due(record: RunRecord) -> RunRecord:
+    """`record` under a rental lease whose release deadline has already passed, recorded."""
+    leased = record.model_copy(
+        update={
+            "lease": Lease(
+                offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
+                release_by=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        }
+    )
+    Cache().record(leased)
+    return leased
+
+
+def native(handle: str) -> RunRecord:
+    """A dispatched native pytest trial fetching its evidence directory, recorded."""
+    record = seed(handle, fetch_path="research/project/datasets/node")
+    native = record.model_copy(
+        update={"script": "research/project/experiments/node/test_law.py::test_law"}
+    )
+    Cache().record(native)
+    return native
+
+
 def probing(
     board: Board, monkeypatch: pytest.MonkeyPatch, answer: Callable[[Handle], JobState]
 ) -> list[list[str]]:
-    """Pin the board's batched scheduler probe to `answer`, one entry per round trip it made.
-
-    The seam is the batched probe rather than the single one, since a sweep asks each host once
-    about every handle it still owes an answer on. What the returned list therefore says is both
-    which handles were probed and how many times the host was actually reached for them.
-    """
+    """Pin the board's batched scheduler probe to `answer`, returning the handles of each trip."""
     trips: list[list[str]] = []
 
     def states(handles: Sequence[Handle]) -> dict[str, JobState]:
@@ -203,16 +215,7 @@ def test_due_rentals_release_without_waiting_for_a_host_or_transfer(
 ) -> None:
     monkeypatch.setenv("VAST_API_KEY", "test-key")
     record = seed("13", target="vast", kind=Rented.name, verdict=verdict)
-    record = record.model_copy(
-        update={
-            "lease": Lease(
-                offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
-                release_by=datetime.now(UTC) - timedelta(seconds=1),
-            ),
-            "evidence": "pending",
-        }
-    )
-    board.dispatcher.cache.record(record)
+    due(record.model_copy(update={"evidence": "pending"}))
     Rented.replies = [{"success": True}]
     monkeypatch.setattr(board, "job", lambda *args, **kwargs: pytest.fail("host probed"))
     failed = board.monitor().expired()
@@ -227,16 +230,7 @@ def test_failed_deadline_deletion_stays_tracked_for_retry(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("VAST_API_KEY", "test-key")
-    record = seed("13", target="vast", kind=Rented.name, verdict="running")
-    record = record.model_copy(
-        update={
-            "lease": Lease(
-                offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
-                release_by=datetime.now(UTC) - timedelta(seconds=1),
-            ),
-        }
-    )
-    board.dispatcher.cache.record(record)
+    due(seed("13", target="vast", kind=Rented.name, verdict="running"))
     Rented.replies = [{"success": False}]
     failed = board.monitor().expired()
     assert "release failed" in failed[0].reason
@@ -249,17 +243,7 @@ def test_deadline_deletion_does_not_depend_on_a_healthy_receipt_stream(
 ) -> None:
     monkeypatch.setenv("VAST_API_KEY", "test-key")
     for handle in ("13", "14"):
-        record = seed(handle, target="vast", kind=Rented.name, verdict="running")
-        board.dispatcher.cache.record(
-            record.model_copy(
-                update={
-                    "lease": Lease(
-                        offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
-                        release_by=datetime.now(UTC) - timedelta(seconds=1),
-                    ),
-                }
-            )
-        )
+        due(seed(handle, target="vast", kind=Rented.name, verdict="running"))
     monitor = board.monitor()
 
     def broken(*args, **kwargs) -> None:
@@ -302,11 +286,7 @@ def test_a_finished_job_is_pulled_reported_and_announced_once(
 def test_a_finished_job_reports_only_the_results_it_could_actually_bring_back(
     board: Board, monkeypatch: pytest.MonkeyPatch, fetch_path: str | None
 ) -> None:
-    """The verdict lands whatever the transfer did.
-
-    One missing artifact is a warning in the log, never a sweep that dies holding every
-    other job's outcome.
-    """
+    """One missing artifact is never a sweep that dies holding every other job's outcome."""
     seed("3", fetch_path=fetch_path)
     probing(board, monkeypatch, finishing())
 
@@ -360,12 +340,7 @@ def test_a_failed_job_carries_a_network_free_reason(
 def test_a_run_that_died_mid_campaign_still_brings_its_receipts_home(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A store that stages and renames every fragment keeps 399 when trial 400 of 500 kills it.
-
-    The pull used to sit inside the clean branch, so exactly the runs whose partial evidence is
-    least reproducible, an OOM at trial 400 or a metered rental hitting its cap, were the ones
-    it was thrown away for. The exit code decides the verdict here and nothing else.
-    """
+    """An OOM at trial 400 of 500 leaves 399 staged fragments, pulled whatever the exit code."""
     seed("25", fetch_path="results/partial")
     probing(board, monkeypatch, finishing(verdict="failed", exit_code=137))
     pulled: list[str] = []
@@ -389,11 +364,7 @@ def test_a_run_that_died_mid_campaign_still_brings_its_receipts_home(
 def test_a_verdict_the_cache_already_holds_costs_no_probe(
     board: Board, monkeypatch: pytest.MonkeyPatch, reported: str | None, changed: bool
 ) -> None:
-    """A terminal verdict can never change.
-
-    That is also what keeps a finished job the queue has already forgotten from reading back
-    as vanished.
-    """
+    """A terminal verdict can never change, so the queue forgetting a job cannot vanish it."""
     seed("6", verdict="ok", reported=reported)
     trips = probing(board, monkeypatch, finishing())
     report = board.monitor().once()
@@ -430,23 +401,12 @@ def test_a_down_host_is_reported_once_and_its_jobs_left_for_the_next_pass(
     assert len(board.dispatcher.cache.tracked()) == 2
 
 
-def test_a_host_the_manifest_can_no_longer_resolve_is_reported_not_raised(board: Board) -> None:
-    seed("11", target="gold")  # the fixture's gold profile declares no root
-    [host] = board.monitor().once().unreachable_hosts
-    assert host.host == "gold"
-    assert "root" in host.reason
-
-
 def test_a_target_that_will_not_answer_is_asked_once_whatever_kinds_its_runs_carry(
     board: Board,
 ) -> None:
-    """A host redeclared under another scheduler leaves older runs carrying the older kind.
-
-    Which scheduler answers for a run is the kind it was dispatched under, so those runs are two
-    groups on one target. The target is still one machine, so the second group is not reached for
-    once the first has said the machine is not there.
-    """
-    seed("19", target="gold", kind="pbs")
+    """A host redeclared under another scheduler splits its runs into two kind groups, but it is
+    one machine the manifest can no longer resolve, reported once rather than raised."""
+    seed("19", target="gold", kind="pbs")  # the fixture's gold profile declares no root
     seed("20", target="gold", kind="ssh")
     report = board.monitor().once()
     assert [(host.host, "root" in host.reason) for host in report.unreachable_hosts] == [
@@ -480,11 +440,7 @@ def test_a_finished_rental_is_settled_and_then_ended(
     replies: Sequence[Reply],
     ended: list[str],
 ) -> None:
-    """A provider run is cancelled the moment its verdict is terminal.
-
-    A finished command does not end a provider run, so the cancel follows here where the
-    scheduler path deliberately never makes one.
-    """
+    """A finished command does not end a provider run, so the cancel follows its verdict."""
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     monkeypatch.setenv("HPCAI_API_KEY", "key-123")
     seed("13", target="rented", kind=backend.name)
@@ -498,13 +454,8 @@ def test_a_finished_rental_is_settled_and_then_ended(
 def test_a_rental_vast_restarted_settles_on_its_marker_and_stops_billing(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The money leak end to end: a finished command whose container Vast brought straight back.
-
-    An instance is held at its intended status, so the container the command exited from restarts
-    and reads `running` again. Every sweep believed it, so the run never settled, the rental was
-    never cancelled, and eight instances were still billing after their campaign had finished
-    ($2.35 against $0.65 expected, 2026-08-26). The marker settles it and the release destroys it.
-    """
+    """Vast restarts an exited container, which read `running` again, so eight instances kept
+    billing after their campaign ($2.35 against $0.65, 2026-08-26); the marker settles it."""
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     seed("23", target="rented", kind=Rented.name)
     Rented.replies = [*rented(status="running"), {"success": True}]
@@ -519,13 +470,7 @@ def test_a_rental_vast_restarted_settles_on_its_marker_and_stops_billing(
 def test_the_cancel_verb_destroys_the_rental_rather_than_leaving_it_stopped(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every path that lets a rental go reaches one call, and that call has to be the destroy.
-
-    A stopped Vast instance is not a released one: it still holds its machine and still bills for
-    the disk it sits on. The verb kills through the backend and then releases, which is the same
-    idempotent destroy twice by design, since a cancel killed between the two must repeat rather
-    than leave the meter running.
-    """
+    """A stopped Vast instance still bills its disk, so kill and release both destroy it."""
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     seed("24", target="rented", kind=Rented.name)
     Rented.replies = [
@@ -556,12 +501,7 @@ def test_a_finished_scheduler_job_is_never_cancelled(
 def test_a_settled_rentals_output_and_receipts_come_home_before_the_instance_is_destroyed(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only the exit code used to survive a run, and a rented disk dies with the rental.
-
-    The capture must happen before the release, since releasing destroys the instance and its
-    log goes with it, and the framed receipts are lifted out so `verdict` can settle on trials
-    a printed line would have been truncated out of.
-    """
+    """A rented disk dies with the rental, so its log and framed receipts are captured first."""
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     seed("21", target="rented", kind=Rented.name, name="trial-a")
     receipt = json.dumps({"trial_receipt": {"run_id": "r1", "outcome": "passed"}})
@@ -695,33 +635,11 @@ def test_competing_monitor_does_not_read_a_stale_settlement_cursor(
     assert board.monitor().once().finished[0].handle == "33"
 
 
-def test_a_native_job_without_any_captured_receipt_cannot_settle_an_empty_transfer(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    record = seed("34", fetch_path="research/project/datasets/node")
-    board.dispatcher.cache.record(
-        record.model_copy(
-            update={"script": "research/project/experiments/node/test_law.py::test_law"}
-        )
-    )
-    probing(board, monkeypatch, finishing())
-    monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: None)
-    monkeypatch.setattr(Job, "transcript", lambda job: "")
-    monkeypatch.setattr(Job, "release", lambda job: pytest.fail("evidence was not delivered"))
-    report = board.monitor().once()
-    assert not report.finished and "no captured receipt" in report.failed[0].reason
-
-
 def test_a_native_job_that_failed_before_its_first_receipt_settles_as_failed(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Only a run claiming success owes a receipt, so a crash is settled once, not every pass."""
-    record = seed("36", fetch_path="research/project/datasets/node")
-    board.dispatcher.cache.record(
-        record.model_copy(
-            update={"script": "research/project/experiments/node/test_law.py::test_law"}
-        )
-    )
+    native("36")
     probing(board, monkeypatch, finishing("failed", 1))
     pulls: list[str] = []
     monkeypatch.setattr(board.dispatcher, "fetch", lambda handle, **kw: pulls.append(handle.id))
@@ -736,17 +654,9 @@ def test_a_native_job_that_failed_before_its_first_receipt_settles_as_failed(
 def test_a_native_job_whose_every_cell_was_already_covered_settles_without_a_receipt(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A lane group re-run on a covered card skips every cell and captures nothing.
-
-    That is a settled job with nothing to deliver, not a broken transfer: the transcript
-    carries the plugin's own words for a cell a previous run took, and only skips.
-    """
-    record = seed("35", fetch_path="research/project/datasets/node")
-    board.dispatcher.cache.record(
-        record.model_copy(
-            update={"script": "research/project/experiments/node/test_law.py::test_law"}
-        )
-    )
+    """A lane group re-run on a covered card skips every cell: nothing to deliver, not a broken
+    transfer, as the plugin's own words for a cell a previous run took say."""
+    native("35")
     probing(board, monkeypatch, finishing())
     monkeypatch.setattr(board.dispatcher, "fetch", lambda *a, **kw: None)
     # The coverage heading alone, as a quiet session prints it; the skip reason needs `-rs`.
@@ -766,7 +676,8 @@ s                                    [100%]
 def test_queued_native_submission_cannot_verify_an_empty_transfer(
     lab: Lab, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    """Keep the native identity through real rendering, submission, and settlement."""
+    """A native trial with no captured receipt cannot settle an empty transfer, its identity kept
+    through real rendering, submission, and settlement."""
     manifest = lab.root / "mainboard.toml"
     lab.write(
         "mainboard.toml",
@@ -922,20 +833,6 @@ def held(handle: str, request: vocabulary.Request | None) -> RunRecord:
     return record
 
 
-def due(record: RunRecord) -> RunRecord:
-    """`record` under a rental lease whose release deadline has already passed, recorded."""
-    leased = record.model_copy(
-        update={
-            "lease": Lease(
-                offer=Offer(provider="vast", gpu="RTX 5080", rate_usd_hr=1),
-                release_by=datetime.now(UTC) - timedelta(seconds=1),
-            )
-        }
-    )
-    Cache().record(leased)
-    return leased
-
-
 @pytest.mark.parametrize(
     ("offered", "answer", "verdict"),
     [
@@ -981,11 +878,8 @@ def test_a_held_dispatch_is_asked_for_again_only_while_the_answer_can_change(
 def test_a_refused_held_dispatch_is_reported_failed_rather_than_still_held(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The pass that settles a refusal is the only one that can report it; the row is gone after.
-
-    It used to be counted as held and running on that pass and then dropped, so the refusal never
-    reached any report's failed list and lived only in a log line.
-    """
+    """The pass that settles a refusal is the only one that can report it; the row is gone after,
+    so counting it held that pass left the refusal only in a log line."""
     held("52", vocabulary.Request(target=_HOST, command="job.sh"))
 
     def dispatch(asked: vocabulary.Request) -> Job:
@@ -1014,12 +908,8 @@ def test_a_held_dispatch_that_goes_through_replaces_its_placeholder_row(
 def test_a_deadline_sweep_leaves_alone_what_it_cannot_or_need_not_release(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only a confirmed rental whose own lease ran out is released at the deadline.
-
-    A creation still being prepared has nothing to release, a queued job stops billing with
-    its queue, a newer run reusing the handle is not the one whose lease ran out, and a kind
-    nothing can route stays tracked with why rather than failing the whole pass.
-    """
+    """Only a confirmed rental whose own lease ran out is released: not a prepared creation, a
+    queued job, or a newer run reusing the handle; an unroutable kind stays tracked with why."""
     due(seed("52", kind=Rented.name, verdict="prepared"))
     due(seed("53", kind="pbs"))
     reused = due(seed("54", target="vast", kind=Rented.name))
@@ -1181,11 +1071,8 @@ def test_a_receipt_that_cannot_be_checked_is_refused_rather_than_settled(
 
 
 class Systemd:
-    """A stand-in user manager: it records every command and answers as a machine in one state.
-
-    The one seam between this suite and systemd. The unit files are real, written into a
-    temporary unit directory, and only the four queries a settler makes are answered here, so
-    the whole install path runs without arming anything on the machine running the tests.
+    """A stand-in user manager recording every command; the unit files stay real, so the whole
+    install path runs without arming anything on the machine running the tests.
 
     active: what `show` reports for the timer's ActiveState.
     last_run: what `show` reports for its LastTriggerUSec, `n/a` for a timer that never ran.
@@ -1245,9 +1132,18 @@ class Recorded(Settler):
         return self.answer
 
 
-def systemd(root: Path, units: Path, manager: Systemd) -> SystemdUser:
+@pytest.fixture
+def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A workspace on a machine whose PATH has every binary a unit names."""
+    monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    return workspace
+
+
+def systemd(root: Path, manager: Systemd) -> SystemdUser:
     """A user-timer settler for `root` over a temporary unit directory and a stand-in manager."""
-    return SystemdUser(root, units=units, shell=manager)
+    return SystemdUser(root, units=root.parent / "units", shell=manager)
 
 
 @pytest.mark.parametrize(
@@ -1286,19 +1182,10 @@ def test_a_period_nobody_can_read_names_the_spellings_instead_of_guessing(writte
         Every.parse(written)
 
 
-def test_installing_the_pass_writes_both_units_and_arms_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The durable form of the sweep: the machine's own manager runs it, not a session.
-
-    Everything the unit says is read back off the disk, since a unit file is the whole contract
-    between this tool and systemd.
-    """
-    monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
-    root, units = tmp_path / "workspace", tmp_path / "units"
-    root.mkdir()
+def test_installing_the_pass_writes_both_units_and_arms_them(root: Path) -> None:
+    """Everything is read back off the disk, since a unit file is the whole systemd contract."""
     manager = Systemd(last_run="Thu 2026-09-04 09:20:31 JST", lingering=False)
-    settler = systemd(root, units, manager)
+    settler = systemd(root, manager)
     found = settler.install(Every.parse("20m"))
     service = settler.service.read_text(encoding="utf-8")
     timer = settler.timer.read_text(encoding="utf-8")
@@ -1327,7 +1214,7 @@ def test_a_machine_with_no_periodic_pass_names_the_command_that_installs_one(
 ) -> None:
     """Nothing is asked of the manager, since a unit that is not there cannot be armed."""
     manager = Systemd()
-    found = systemd(tmp_path / "workspace", tmp_path / "units", manager).state()
+    found = systemd(tmp_path / "workspace", manager).state()
     assert (found.installed, found.active, found.detail.startswith("no periodic pass")) == (
         False,
         False,
@@ -1358,21 +1245,13 @@ def test_a_machine_with_no_periodic_pass_names_the_command_that_installs_one(
     ],
 )
 def test_an_installed_timer_is_judged_by_what_the_manager_says_about_it(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    manager: Systemd,
-    silent: bool,
-    fix: str,
-    fragment: str,
+    root: Path, manager: Systemd, silent: bool, fix: str, fragment: str
 ) -> None:
     """What is on disk is only half the answer; the other half is whether it is running.
 
     silent: the manager goes quiet after the install, the machine whose user bus is gone.
     """
-    monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
-    root, units = tmp_path / "workspace", tmp_path / "units"
-    root.mkdir()
-    settler = systemd(root, units, manager)
+    settler = systemd(root, manager)
     settler.install(Every.parse("20m"))
     manager.refusing = silent
     found = settler.state()
@@ -1387,36 +1266,25 @@ def test_an_installed_timer_is_judged_by_what_the_manager_says_about_it(
     ids=["the manager's own last line is the refusal", "a manager that refuses silently"],
 )
 def test_a_manager_that_refuses_the_arming_refuses_the_install(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str, fragment: str
+    root: Path, output: str, fragment: str
 ) -> None:
     """A pass a person believes is running and is not is worse than no pass at all."""
-    monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
-    root = tmp_path / "workspace"
-    root.mkdir()
-    settler = systemd(root, tmp_path / "units", Systemd(enable=(1, output)))
     with pytest.raises(MissionError, match=fragment):
-        settler.install(Every.parse("20m"))
+        systemd(root, Systemd(enable=(1, output))).install(Every.parse("20m"))
 
 
 def test_a_workstation_with_no_snapshot_on_path_has_nothing_for_a_timer_to_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("mainboard.durable.which", lambda name: None)
-    root = tmp_path / "workspace"
-    root.mkdir()
     with pytest.raises(MissionError, match="no mainboard on PATH"):
-        systemd(root, tmp_path / "units", Systemd()).install(Every.parse("20m"))
+        systemd(root, Systemd()).install(Every.parse("20m"))
 
 
-def test_removing_the_pass_disarms_it_before_taking_its_units_away(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_removing_the_pass_disarms_it_before_taking_its_units_away(root: Path) -> None:
     """A unit systemd no longer has a file for is one it cannot be told to stop."""
-    monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
-    root, units = tmp_path / "workspace", tmp_path / "units"
-    root.mkdir()
     manager = Systemd()
-    settler = systemd(root, units, manager)
+    settler = systemd(root, manager)
     settler.install(Every.parse("20m"))
     timer = settler.timer.name
     found = settler.remove()
@@ -1427,14 +1295,9 @@ def test_removing_the_pass_disarms_it_before_taking_its_units_away(
     assert settler.remove().installed is False
 
 
-def test_a_timer_whose_service_file_somebody_deleted_still_says_what_is_left(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_timer_whose_service_file_somebody_deleted_still_says_what_is_left(root: Path) -> None:
     """The row exists to say what is wrong, so half an installation cannot take it down."""
-    monkeypatch.setattr("mainboard.durable.which", lambda name: f"/usr/bin/{name}")
-    root, units = tmp_path / "workspace", tmp_path / "units"
-    root.mkdir()
-    settler = systemd(root, units, Systemd())
+    settler = systemd(root, Systemd())
     settler.install(Every.parse("20m"))
     settler.service.unlink()
     found = settler.state()

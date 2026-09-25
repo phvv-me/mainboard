@@ -59,11 +59,11 @@ def survey(
     *,
     reach: Callable[[str], str] = lambda host: "",
     providers: tuple[ProviderBackend, ...] = (),
+    here: HostFacts | None = None,
 ) -> Survey:
     """A survey whose every network touch is injected, this machine's facts included."""
-    return Survey(
-        board, facts=lambda: facts("NVIDIA GeForce RTX 4090"), reach=reach, providers=providers
-    )
+    found = here or facts("NVIDIA GeForce RTX 4090")
+    return Survey(board, facts=lambda: found, reach=reach, providers=providers)
 
 
 def named(paths: Sequence[ComputePath]) -> dict[str, ComputePath]:
@@ -86,31 +86,35 @@ def test_summary_counts_identical_gpus_and_always_names_the_memory(
 
 
 @pytest.mark.parametrize(
-    "refusal", ["", "ssh connect to 'gold' timed out"], ids=["one round trip lands", "it refuses"]
+    ("reply", "answer"),
+    [
+        pytest.param("mainboard-reachable\r\n", "", id="one round trip lands"),
+        pytest.param(
+            HostUnreachable("ssh connect to 'gold' timed out"), "timed out", id="refused"
+        ),
+        pytest.param("", "expected survey marker", id="a silent exit is not reachability"),
+        pytest.param("unexpected shell output", "expected survey marker", id="no marker"),
+    ],
 )
 def test_reachable_answers_with_the_refusal_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch, refusal: str
+    monkeypatch: pytest.MonkeyPatch, reply: str | HostUnreachable, answer: str
 ) -> None:
-    """The probe is bounded and its failure is an answer, since a survey stays a listing."""
+    """The probe is bounded and its failure is an answer, since a survey stays a listing.
+
+    A successful ssh exit without the echoed marker proves nothing answered.
+    """
 
     def run(self: SshTransport, command: tuple[str, ...], host: str, *, operation: str) -> str:
         assert command[-2:] == ("echo", "mainboard-reachable")
         assert operation == "survey"
-        if refusal:
-            raise HostUnreachable(refusal)
-        return "mainboard-reachable\r\n"
+        if isinstance(reply, HostUnreachable):
+            raise reply
+        return reply
 
     monkeypatch.setattr(SshTransport, "run", run)
-    assert reachable(_GOLD) == refusal
+    assert answer in reachable(_GOLD)
+    assert bool(reachable(_GOLD)) is bool(answer)
     assert signature(reachable).parameters["ssh"].default.deadline < 30
-
-
-@pytest.mark.parametrize("reply", ["", "unexpected shell output"])
-def test_a_successful_ssh_exit_without_the_marker_is_not_reachability(
-    monkeypatch: pytest.MonkeyPatch, reply: str
-) -> None:
-    monkeypatch.setattr(SshTransport, "run", lambda self, command, host, operation: reply)
-    assert "expected survey marker" in reachable("homelab")
 
 
 def test_the_first_row_is_this_machine_with_its_own_hardware(board: Board) -> None:
@@ -169,44 +173,65 @@ def test_a_host_row_says_only_what_the_probe_and_the_onboarding_record_support(
     assert row.cached_at == (setup.onboarded_at if setup else "")
 
 
-def test_cached_hardware_keeps_its_original_observation_after_a_later_sync(board: Board) -> None:
-    setup = HostSetup(
-        host="homelab",
-        root="C:/projects",
-        hardware=facts("RTX 5080"),
-        onboarded_at="2026-09-01T01:00:00+00:00",
-        synced_at="2026-09-09T23:00:00+00:00",
-    )
-    row = survey(board).machine("homelab", HostProfile(kind="ssh"), setup)
-    assert row.access is Access.PROVISIONED
-    assert row.cached_at == setup.onboarded_at
-    assert setup.synced_at not in row.detail
-    assert "cached" in row.detail and "RTX 5080" in row.detail
+_NOTE = "Native managed SSH route only; generic submit is unsupported"
 
 
-@pytest.mark.parametrize("recorded", [False, True])
-def test_manifest_status_note_names_a_supported_route_without_claiming_readiness(
-    board: Board, *, recorded: bool
+@pytest.mark.parametrize(
+    ("profile", "setup", "access", "said", "unsaid"),
+    [
+        pytest.param(
+            HostProfile(kind="ssh"),
+            HostSetup(
+                host="homelab",
+                root="C:/projects",
+                hardware=facts("RTX 5080"),
+                onboarded_at="2026-09-01T01:00:00+00:00",
+                synced_at="2026-09-09T23:00:00+00:00",
+            ),
+            Access.PROVISIONED,
+            ("cached", "RTX 5080", "(observed 2026-09-01T01:00:00+00:00)"),
+            ("2026-09-09T23:00:00+00:00",),
+            id="cached hardware keeps its original observation after a later sync",
+        ),
+        *(
+            pytest.param(
+                HostProfile(kind="ssh", vars={"status-note": _NOTE}),
+                setup,
+                access,
+                (_NOTE,),
+                ("mainboard setup homelab",),
+                id=f"a status note names a supported route {when} without claiming readiness",
+            )
+            for setup, access, when in (
+                (None, Access.REACHABLE, "before setup"),
+                (HostSetup(host="homelab", root="C:/managed"), Access.PROVISIONED, "after setup"),
+            )
+        ),
+        *(
+            pytest.param(
+                HostProfile(kind=kind),
+                HostSetup(host=_MIYABI_G, root="/work/projects", hardware=facts()),
+                Access.PROVISIONED,
+                ("login endpoint only", "GPU availability not checked", "mainboard jobs"),
+                (),
+                id=f"a {kind} login probe does not claim compute node availability",
+            )
+            for kind in ("pbs", "slurm")
+        ),
+    ],
+)
+def test_a_host_row_names_what_its_record_and_profile_say_and_nothing_more(
+    board: Board,
+    profile: HostProfile,
+    setup: HostSetup | None,
+    access: Access,
+    said: tuple[str, ...],
+    unsaid: tuple[str, ...],
 ) -> None:
-    note = "Native managed SSH route only; generic submit is unsupported"
-    profile = HostProfile(kind="ssh", vars={"status-note": note})
-    setup = HostSetup(host="homelab", root="C:/managed") if recorded else None
     row = survey(board).machine("homelab", profile, setup)
-    assert row.access is (Access.PROVISIONED if recorded else Access.REACHABLE)
-    assert note in row.detail
-    assert "mainboard setup homelab" not in row.detail
-
-
-@pytest.mark.parametrize("kind", ["pbs", "slurm"])
-def test_scheduler_login_probe_does_not_claim_compute_node_availability(
-    board: Board, kind: str
-) -> None:
-    setup = HostSetup(host=_MIYABI_G, root="/work/projects", hardware=facts())
-    row = survey(board).machine(_MIYABI_G, HostProfile(kind=kind), setup)
-    assert row.access is Access.PROVISIONED
-    assert "login endpoint only" in row.detail
-    assert "GPU availability not checked" in row.detail
-    assert "mainboard jobs" in row.detail
+    assert row.access is access
+    assert all(fragment in row.detail for fragment in said)
+    assert not any(fragment in row.detail for fragment in unsaid)
 
 
 def test_a_provider_with_a_key_carries_its_credit_and_a_live_rate(
@@ -326,10 +351,5 @@ def test_a_machine_row_carries_every_finding_that_is_not_a_pass(board: Board) ->
     assert judged.issues.startswith("platform: win-64 is not among the declared platforms")
     older = HostSetup(host="gold", root="/p", hardware=facts("RTX 4090"))
     assert survey(board).machine(_GOLD, HostProfile(kind="ssh"), older).issues == ""
-    here = Survey(
-        board,
-        facts=lambda: HostFacts(memory_total_bytes=10**9, system=census),
-        reach=lambda host: "",
-        providers=(),
-    ).here()
+    here = survey(board, here=HostFacts(memory_total_bytes=10**9, system=census)).here()
     assert "platform:" in here.issues

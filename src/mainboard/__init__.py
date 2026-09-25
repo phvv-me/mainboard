@@ -1,12 +1,9 @@
 # The library facade, resolved on first touch rather than at import.
 #
-# `mainboard.cli` is a console entry point, so every command run from a terminal executes this
-# file before its own verb, and naming a subsystem here used to mean importing it whether or not
-# that verb had any use for it. The profiler alone is 15 ms of a 250 ms start for a `doctor` that
-# profiles nothing. PEP 562 keeps the flat spelling every caller already writes, `from mainboard
-# import Board`, and charges for a name only when something actually reads it. This replaces the
-# `__lazy_modules__` declaration that sat here, which was a forward-compatible note to a PEP 810
-# interpreter and inert on the one this package runs on.
+# Every command run from a terminal executes this file before its own verb, and importing each
+# subsystem here charged every verb for all of them (the profiler alone was 15 ms of a 250 ms
+# `doctor` start). PEP 562 keeps the flat `from mainboard import Board` and charges for a name only
+# when something reads it; a PEP 810 `__lazy_modules__` declaration is inert on this interpreter.
 
 from importlib import import_module
 from typing import TYPE_CHECKING
@@ -31,9 +28,8 @@ if TYPE_CHECKING:
     from .profile.study import Study as ProfileStudy
     from .results import Results
 
-# Where each exported name lives and what it is called there, which is the whole facade. The
-# second half of each pair is only ever different for the two `Study` classes, an experiment's
-# and a profile's, which the flat namespace has to tell apart.
+# Where each exported name lives and what it is called there, which is the whole facade; the two
+# differ only for the experiment's and the profile's `Study`, which the flat namespace tells apart.
 _HOMES: dict[str, tuple[str, str]] = {
     "Board": (".board", "Board"),
     "Collection": (".profile.profiler", "Collection"),
@@ -100,13 +96,9 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
-    """One exported name, importing the module that defines it on first ask.
+    """One exported name, imported on first ask and bound here so later reads are plain lookups.
 
-    Bound onto this module afterwards, so a name costs its import once and is a plain attribute
-    lookup from then on. Anything this facade never exported raises the same `AttributeError` a
-    missing module attribute always did.
-
-    name: the exported name being read.
+    Anything this facade never exported raises the usual missing-attribute `AttributeError`.
     """
     home = _HOMES.get(name)
     if home is None:

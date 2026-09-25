@@ -46,6 +46,7 @@ from .support import Lab
 if TYPE_CHECKING:
     from mainboard.dispatch.shipment import Shipment
     from mainboard.dispatch.transport import SshTransport
+    from mainboard.manifest.schema.queue import Defaults
 
 _GOLD = "gold"
 _MIYABI_G = "miyabi-g"
@@ -64,7 +65,6 @@ class FakeConnection:
     """The one ssh connection a bound board opens, answering every bound command with `reply`."""
 
     def __init__(self, reply: str) -> None:
-        """reply: what running the staged line answers with."""
         self.reply = reply
 
     def __call__(self) -> str:
@@ -122,7 +122,9 @@ class FakeProvisioner:
     def runs_here(self, env: str) -> bool:
         return True
 
-    def run(self, command: Sequence[str], env: str) -> int:
+    def run(
+        self, command: Sequence[str], env: str, *, exports: dict[str, str] | None = None
+    ) -> int:
         FakeProvisioner.calls.append(("run", (command, env)))
         return {("true",): 0, ("false",): 1}.get(tuple(command), 0)
 
@@ -239,16 +241,8 @@ def installed(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Boar
     otherwise outlive it and make a later test read an environment nobody installed.
     """
     for environment in ("default", "serving"):
-        fingerprint = (
-            workspace
-            / ".mainboard"
-            / "envs"
-            / environment
-            / ".pixi"
-            / "envs"
-            / environment
-            / "conda-meta"
-        )
+        fingerprint = workspace / f".mainboard/envs/{environment}/.pixi/envs/{environment}"
+        fingerprint = fingerprint / "conda-meta"
         fingerprint.mkdir(parents=True)
         (fingerprint / ".pixi-environment-fingerprint").write_text("installed\n")
     bindir = workspace / "bin"
@@ -261,20 +255,45 @@ def installed(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Boar
         yield Board(workspace)
 
 
+def declare(
+    board: Board,
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    *,
+    like: str = _GOLD,
+    **update: str | Defaults,
+) -> None:
+    """Swap `board`'s manifest for one declaring `host` as `like`'s profile, `update` applied."""
+    profile = board.manifest.profile(like).model_copy(update=update)
+    hosts = {**board.manifest.hosts, host: profile}
+    monkeypatch.setitem(
+        board.shared, "manifest", board.manifest.model_copy(update={"hosts": hosts})
+    )
+    monkeypatch.setitem(board.shared, "resolver", None)
+
+
+def record(**fields: str) -> RunRecord:
+    """A dispatch-cache row for a miyabi-g PBS job, `fields` overriding."""
+    return RunRecord(
+        **{
+            "handle": "4242",
+            "target": _MIYABI_G,
+            "kind": "pbs",
+            "script": "job.sh",
+            "args": "",
+            "git_sha": "abc1234",
+            "dirty": 0,
+            "submitted_at": "2026-08-17T00:00:00",
+            **fields,
+        }
+    )
+
+
 def cloud_job(board: Board, monkeypatch: pytest.MonkeyPatch, *, fetch: str = "") -> ProviderJob:
     """A submitted `ProviderJob` routed to the shared `fakecloud`-kind backend."""
     FakeCloud.submitted = []
     FakeCloud.cancelled = []
-    manifest = board.manifest.model_copy(
-        update={
-            "hosts": {
-                **board.manifest.hosts,
-                "cloudbox": board.manifest.profile(_GOLD).model_copy(update={"kind": "fakecloud"}),
-            }
-        }
-    )
-    monkeypatch.setitem(board.shared, "manifest", manifest)
-    monkeypatch.setitem(board.shared, "resolver", None)
+    declare(board, monkeypatch, "cloudbox", kind="fakecloud")
     submitted = board.on("cloudbox").submit("python train.py", mem_gb=8, fetch=fetch or None)
     assert isinstance(submitted, ProviderJob)
     return submitted
@@ -350,9 +369,10 @@ def test_a_local_run_executes_the_wrapped_line_and_answers_with_its_exit_code(
     assert FakeProvisioner.calls[-1] == ("run", ((command,), "default"))
 
 
-def test_a_local_container_run_executes_its_wrapped_shell_line(
+def test_a_local_containerized_run_goes_through_the_wrapped_line(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A container on the workstation is the one local case Pixi cannot activate directly."""
     opened: list[str | tuple[str, str]] = []
 
     class LocalShell:
@@ -360,15 +380,12 @@ def test_a_local_container_run_executes_its_wrapped_shell_line(
             opened.append(command)
             return self
 
-    def line(self: Board, command: str, **options: str) -> str:
-        del self, command, options
-        return "wrapped command"
-
-    monkeypatch.setattr(Board, "line", line)
+    # `auto` resolves whichever runtime the host exposes, and a CI runner may expose none.
+    monkeypatch.setattr(Docker, "is_available", classmethod(lambda cls: True))
     monkeypatch.setattr("mainboard.board.localhost", LocalShell())
     monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
     assert board.run(("true",), container="ngc") == 7
-    assert opened == ["bash", ("-lc", "wrapped command")]
+    assert opened == ["bash", ("-lc", board.line("true", container="ngc"))]
 
 
 def test_a_local_auto_container_asks_the_runtime_registry_to_choose(
@@ -514,26 +531,43 @@ def test_a_dispatch_that_serves_a_node_brings_that_nodes_evidence_home(
 
 
 @pytest.mark.parametrize(
-    ("given", "expected"),
+    ("system", "given", "activated"),
     [
-        ({"env": "serving", "resolve": True}, ("serving", {})),
-        ({"profile": _MIYABI_G}, ("default", {"singularity": "4.2.1"})),
+        pytest.param(
+            "Linux", {"env": "serving", "resolve": True}, ("serving", {}), id="a named environment"
+        ),
+        pytest.param(
+            "Linux",
+            {"profile": _MIYABI_G},
+            ("default", {"singularity": "4.2.1"}),
+            id="the module stack of a named profile",
+        ),
+        pytest.param("Windows", {}, None, id="windows, where nothing sources a bash activation"),
     ],
-    ids=["a named environment", "the module stack of a named profile"],
 )
 def test_installing_here_provisions_and_activates_in_place(
-    board: Board, monkeypatch: pytest.MonkeyPatch, given: dict[str, str | bool], expected: tuple
+    board: Board,
+    monkeypatch: pytest.MonkeyPatch,
+    system: str,
+    given: dict[str, str | bool],
+    activated: tuple[str, dict[str, str]] | None,
 ) -> None:
+    """`activate.sh` is bash by construction, so a Windows install writes none and names none.
+
+    Writing one there handed the reader a script their own shell cannot run, whose PATH was
+    built for a different world, and then named it as the way into the environment.
+    """
     FakeProvisioner.calls = []
     monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
-    # A POSIX workstation; the Windows one writes no bash script and is its own test below.
-    monkeypatch.setattr("mainboard.board.platform.system", lambda: "Linux")
+    monkeypatch.setattr("mainboard.board.platform.system", lambda: system)
     setup = board.install(**given)
-    assert ("provision", (expected[0], given.get("resolve", False))) in FakeProvisioner.calls
-    assert ("activate", expected) in FakeProvisioner.calls
-    assert setup.host == "local"
-    assert setup.installer == "in-place"
-    assert setup.activate.endswith(f"{expected[0]}-activate.sh")
+    env = activated[0] if activated else "default"
+    assert ("provision", (env, given.get("resolve", False))) in FakeProvisioner.calls
+    assert [call for call in FakeProvisioner.calls if call[0] == "activate"] == (
+        [("activate", activated)] if activated else []
+    )
+    assert setup.activate == (f"/repo/.mainboard/{env}-activate.sh" if activated else "")
+    assert (setup.host, setup.installer) == ("local", "in-place")
     assert setup.tool
 
 
@@ -681,62 +715,28 @@ def test_providing_refuses_an_artifact_this_machine_reads_as_another_environment
 def test_addressing_and_providing_use_the_same_host_module_identity(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A dispatch pinned under another module stack is refused rather than built."""
     bound = board.on(_MIYABI_G)
     plan = bound.plan(env="default", container="none")
     where = compiled_artifact(bound)
     expected = digest_of(where, modules=plan.profile.modules)
     monkeypatch.setattr("mainboard.board.Prefixes", FakePrefixes)
+    monkeypatch.setattr(Provisioner, "solver_version", lambda self: "0.77.0")
     assert expected != digest_of(where)
     assert bound.addressed(plan, "/remote").endswith(f"/default/{expected}")
     assert bound.provide("default", str(where), expected).name == expected
-
-
-def test_providing_refuses_a_dispatch_with_a_different_module_stack(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    bound = board.on(_MIYABI_G)
-    where = compiled_artifact(bound)
-    monkeypatch.setattr(Provisioner, "solver_version", lambda self: "0.77.0")
     with pytest.raises(MissionError, match="the dispatch pinned"):
         bound.provide("default", str(where), digest_of(where))
 
 
-def test_installing_here_on_windows_writes_no_bash_activation_and_names_none(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`activate.sh` is bash by construction and nothing on Windows sources it.
-
-    Writing one there handed the reader a script their own shell cannot run, whose PATH was
-    built for a different world, and then named it as the way into the environment.
-    """
-    FakeProvisioner.calls = []
-    monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
-    monkeypatch.setattr("mainboard.board.platform.system", lambda: "Windows")
-
-    setup = board.install()
-
-    assert setup.activate == ""
-    assert ("provision", ("default", False)) in FakeProvisioner.calls
-    assert not [call for call in FakeProvisioner.calls if call[0] == "activate"]
-
-
-@pytest.mark.parametrize(
-    ("host", "env", "expected"),
-    [
-        (_MIYABI_G, "serving", ("serving", _REMOTE_ROOT)),
-        (_GOLD, "", ("serving", "")),
-    ],
-    ids=["a named environment on a rooted host", "the environment the profile itself names"],
-)
-def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
-    board: Board, monkeypatch: pytest.MonkeyPatch, host: str, env: str, expected: tuple[str, str]
-) -> None:
-    """gold declares `env = "serving"`, so setting gold up must not fall back to default."""
-    seen: dict[str, str | int | bool] = {}
-    report = HostSetup(host=host, root="/repo", installer="uv")
+@pytest.fixture
+def onboarded(monkeypatch: pytest.MonkeyPatch) -> dict[str, str | bool | tuple[str, ...]]:
+    """What the onboarding a host install built was handed, `Onboarding` itself replaced."""
+    seen: dict[str, str | bool | tuple[str, ...]] = {}
 
     class FakeOnboarding:
         def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, floor):
+            self.host = plan.host
             seen.update(
                 host=plan.host,
                 root=root,
@@ -749,72 +749,80 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
 
         def run(self, *, sync_only: bool = False) -> HostSetup:
             seen["sync_only"] = sync_only
-            return report
+            return HostSetup(host=self.host, root="/repo", installer="uv")
 
     monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
-    assert board.on(host).install(env) is report
-    assert seen == {
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("host", "options", "expected"),
+    [
+        pytest.param(
+            _MIYABI_G,
+            {"env": "serving"},
+            ("serving", _REMOTE_ROOT, False),
+            id="a named environment on a rooted host",
+        ),
+        pytest.param(
+            _GOLD, {}, ("serving", "", False), id="the environment the profile itself names"
+        ),
+        pytest.param(
+            _GOLD,
+            {"sync_only": True},
+            ("serving", "", True),
+            id="a sync of a host already onboarded",
+        ),
+    ],
+)
+def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
+    board: Board,
+    onboarded: dict[str, str | bool | tuple[str, ...]],
+    host: str,
+    options: dict[str, str | bool],
+    expected: tuple[str, str, bool],
+) -> None:
+    """gold declares `env = "serving"`, so setting gold up must not fall back to default."""
+    env, root, sync_only = expected
+    assert board.on(host).install(**options).host == host
+    assert onboarded == {
         "host": host,
-        "root": expected[1],
-        "env": expected[0],
+        "root": root,
+        "env": env,
         "artifact": (
-            f".mainboard/envs/{expected[0]}/pixi.toml",
-            f".mainboard/envs/{expected[0]}/pixi.lock",
-            f".mainboard/envs/{expected[0]}/state.toml",
+            f".mainboard/envs/{env}/pixi.toml",
+            f".mainboard/envs/{env}/pixi.lock",
+            f".mainboard/envs/{env}/state.toml",
         ),
         "resolve": False,
         "containerized": False,
-        "sync_only": False,
+        "sync_only": sync_only,
         "digested": True,
     }
 
 
-def test_sync_only_reaches_the_onboarding_and_is_refused_on_this_machine(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_sync_only_is_refused_on_this_machine(board: Board) -> None:
     """This machine has no onboarding to shortcut, so the flag refuses rather than no-op."""
-    seen: dict[str, bool] = {}
-    report = HostSetup(host=_GOLD, root="/repo", installer="uv")
-
-    class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, floor):
-            pass
-
-        def run(self, *, sync_only: bool = False) -> HostSetup:
-            seen["sync_only"] = sync_only
-            return report
-
-    monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
-    assert board.on(_GOLD).install(sync_only=True) is report
-    assert seen == {"sync_only": True}
-
     with pytest.raises(MissionError, match="--sync-only"):
         board.install(sync_only=True)
 
 
 def test_a_stale_lock_is_refused_before_the_mirror_leaves_for_a_host(
-    board: Board, monkeypatch: pytest.MonkeyPatch
+    board: Board,
+    monkeypatch: pytest.MonkeyPatch,
+    onboarded: dict[str, str | bool | tuple[str, ...]],
 ) -> None:
     """The host would refuse the same lock after minutes of copying, so this machine asks first."""
-    reached: list[str] = []
-
-    class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, floor):
-            reached.append("onboarding")
-
-        def run(self, *, sync_only: bool = False) -> HostSetup:
-            return HostSetup(host=_GOLD, root="/repo", installer="uv")
 
     def refuse(self) -> None:
         raise MissionError("pixi.lock was not solved from this manifest")
 
-    monkeypatch.setattr("mainboard.board.Onboarding", FakeOnboarding)
     monkeypatch.setattr("mainboard.engines.compile.compiler.Compiler.vouch", refuse)
     with pytest.raises(MissionError, match="not solved from this manifest"):
         board.on(_GOLD).install()
-    assert reached == []
+    assert onboarded == {}
     assert board.on(_GOLD).install(resolve=True).installer == "uv"
-    assert reached == ["onboarding"]
+    assert onboarded["resolve"] is True
 
 
 @pytest.mark.parametrize("environment", ["default", "serving"])
@@ -894,16 +902,7 @@ def test_interact_hands_an_ssh_host_terminal_to_that_hosts_own_tool(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An ssh box is already the machine the work runs on, so nothing is allocated for it."""
-    rooted = board.manifest.model_copy(
-        update={
-            "hosts": {
-                **board.manifest.hosts,
-                _GOLD: board.manifest.profile(_GOLD).model_copy(update={"root": "/home/p/lab"}),
-            }
-        }
-    )
-    monkeypatch.setitem(board.shared, "manifest", rooted)
-    monkeypatch.setitem(board.shared, "resolver", None)
+    declare(board, monkeypatch, _GOLD, root="/home/p/lab")
     seen, replace = interacting()
 
     with pytest.raises(Replaced):
@@ -923,48 +922,30 @@ def test_interact_hands_an_ssh_host_terminal_to_that_hosts_own_tool(
 def test_interact_asks_a_queued_host_for_an_allocation_before_the_terminal(
     board: Board,
 ) -> None:
-    """A PBS terminal belongs on an allocated node, never on the login node that asked."""
+    """A PBS terminal belongs on an allocated node, never on the login node that asked.
+
+    A kept session lives in tmux on the far side, so a dropped terminal leaves the allocation
+    up and asking again attaches to it.
+    """
     seen, replace = interacting()
-    with pytest.raises(Replaced):
-        board.on(_MIYABI_G).interact(replace=replace)
-    staged = seen[0][3]
+    for keep in (False, True):
+        with pytest.raises(Replaced):
+            board.on(_MIYABI_G).interact(keep=keep, replace=replace)
+    staged, kept = seen[0][3], seen[1][3]
     assert f"cd {_REMOTE_ROOT}" in staged
     assert "module load singularity/4.2.1" in staged
     assert staged.endswith("qsub -I -q debug-g -l walltime=00:30:00 -W group_list=xg25g007'")
-
-
-def test_a_kept_interactive_session_lives_in_tmux_on_the_far_side(board: Board) -> None:
-    """A dropped terminal leaves the allocation up, and asking again attaches to it."""
-    seen, replace = interacting()
-    with pytest.raises(Replaced):
-        board.on(_MIYABI_G).interact(keep=True, replace=replace)
-    [argv] = seen
-    staged = argv[3]
-    assert f"tmux new-session -A -s {board.project.name}-{_MIYABI_G} " in staged
-    assert "qsub -I" in staged
+    assert f"tmux new-session -A -s {board.project.name}-{_MIYABI_G} " in kept
+    assert "qsub -I" in kept
 
 
 def test_interact_prefers_the_declared_interactive_queue_over_the_batch_one(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A site that routes interactive work elsewhere says so once, on the profile."""
-    profile = board.manifest.profile(_MIYABI_G)
-    routed = board.manifest.model_copy(
-        update={
-            "hosts": {
-                **board.manifest.hosts,
-                _MIYABI_G: profile.model_copy(
-                    update={
-                        "defaults": profile.defaults.model_copy(
-                            update={"interact_queue": "interact-g"}
-                        )
-                    }
-                ),
-            }
-        }
-    )
-    monkeypatch.setitem(board.shared, "manifest", routed)
-    monkeypatch.setitem(board.shared, "resolver", None)
+    defaults = board.manifest.profile(_MIYABI_G).defaults
+    routed = defaults.model_copy(update={"interact_queue": "interact-g"})
+    declare(board, monkeypatch, _MIYABI_G, like=_MIYABI_G, defaults=routed)
     seen, replace = interacting()
 
     with pytest.raises(Replaced):
@@ -990,18 +971,7 @@ def test_interact_refuses_what_it_cannot_hand_a_terminal_to(
     board: Board, monkeypatch: pytest.MonkeyPatch, host: str, options: dict[str, str], refusal: str
 ) -> None:
     """The scheduler's own rejection arrives minutes later; this one arrives before the ssh."""
-    rented = board.manifest.model_copy(
-        update={
-            "hosts": {
-                **board.manifest.hosts,
-                "cloudbox": board.manifest.profile(_GOLD).model_copy(
-                    update={"kind": "fakecloud", "root": "/rented"}
-                ),
-            }
-        }
-    )
-    monkeypatch.setitem(board.shared, "manifest", rented)
-    monkeypatch.setitem(board.shared, "resolver", None)
+    declare(board, monkeypatch, "cloudbox", kind="fakecloud", root="/rented")
     with pytest.raises(MissionError, match=refusal):
         board.on(host).interact(**options)
 
@@ -1078,16 +1048,7 @@ def test_a_rentable_provider_is_landed_on_rather_than_handed_a_bare_command(
     FakeProvisioner.calls = []
     monkeypatch.setattr("mainboard.board.Provisioner", FakeProvisioner)
     monkeypatch.setattr("mainboard.board.Landing", FakeLanding)
-    manifest = board.manifest.model_copy(
-        update={
-            "hosts": {
-                **board.manifest.hosts,
-                "rentbox": board.manifest.profile(_GOLD).model_copy(update={"kind": "fakerental"}),
-            }
-        }
-    )
-    monkeypatch.setitem(board.shared, "manifest", manifest)
-    monkeypatch.setitem(board.shared, "resolver", None)
+    declare(board, monkeypatch, "rentbox", kind="fakerental")
     bound = board.on("rentbox")
     run = bound.submit("python train.py", max_usd=0.5, walltime="00:30:00")
     assert isinstance(run, ProviderJob)
@@ -1222,18 +1183,8 @@ def test_job_rebuilds_a_dispatched_run_from_the_cache(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A fresh process addresses an already-running job the way the one that submitted it did."""
-    record = RunRecord(
-        handle="4242",
-        target=_MIYABI_G,
-        kind="pbs",
-        script="job.sh",
-        args="",
-        git_sha="abc1234",
-        dirty=0,
-        submitted_at="2026-08-17T00:00:00",
-        fetch_path="results/run",
-    )
-    monkeypatch.setattr(board.dispatcher.cache, "run", lambda handle, target=None: record)
+    rebuilt = record(fetch_path="results/run")
+    monkeypatch.setattr(board.dispatcher.cache, "run", lambda handle, target=None: rebuilt)
     job = board.job(4242)
     assert job.handle.id == "4242"
     assert job.handle.host == _MIYABI_G
@@ -1250,16 +1201,6 @@ def test_a_bound_board_picks_the_module_runtime_for_an_automatic_container(board
     containerize = bound.containerizer(plan, _REMOTE_ROOT)
     assert containerize is not None
     assert "python" in containerize(["python"])
-
-
-def test_a_local_containerized_run_goes_through_the_wrapped_line(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A container on the workstation is the one local case Pixi cannot activate directly."""
-    # `auto` resolves whichever runtime the host exposes, and a CI runner may expose none.
-    monkeypatch.setattr(Docker, "is_available", classmethod(lambda cls: True))
-    monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
-    assert board.run(("true",), container="ngc") == 7
 
 
 @pytest.mark.parametrize("arguments", ["--fresh", "--fresh --timeout 180"])
@@ -1390,7 +1331,7 @@ def test_a_job_runs_here_through_the_same_runner_with_its_closure_exported(
     lab.write(file, "def test_draft():\n    raise RuntimeError('must not acquire')\n")
     collected: list[str] = []
     monkeypatch.setattr(
-        FakeProvisioner, "run", lambda self, command, env: collected.extend(command) or 0
+        FakeProvisioner, "run", lambda self, command, env, **_: collected.extend(command) or 0
     )
     board.run([file, "--", "--collect-only"])
     assert "--collect-only" in collected and any("sha256:" in value for value in collected)
@@ -1407,16 +1348,7 @@ def test_research_admission_precedes_scheduler_or_provider_work(
     monkeypatch.setattr("mainboard.board.Landing", FakeLanding)
     monkeypatch.setattr(Board, "containerizer", lambda self, plan, root: None)
     board = Board(lab.root)
-    manifest = board.manifest.model_copy(
-        update={
-            "hosts": {
-                **board.manifest.hosts,
-                "rentbox": board.manifest.profile(_GOLD).model_copy(update={"kind": "fakerental"}),
-            }
-        }
-    )
-    monkeypatch.setitem(board.shared, "manifest", manifest)
-    monkeypatch.setitem(board.shared, "resolver", None)
+    declare(board, monkeypatch, "rentbox", kind="fakerental")
     staged = []
     submitted = []
     monkeypatch.setattr(Board, "stage", lambda self, root: staged.append(root))
@@ -1486,19 +1418,14 @@ def test_a_creation_with_no_provider_handle_is_not_rebuilt_as_a_job(
     board: Board, monkeypatch: pytest.MonkeyPatch, verdict: str, said: str
 ) -> None:
     """There is nothing yet to poll or cancel, so the refusal says what to do about the label."""
-    record = RunRecord(
+    intent = record(
         handle="intent-1",
         target="vast",
         kind="vast",
-        script="job.sh",
-        args="",
-        git_sha="abc1234",
-        dirty=0,
-        submitted_at="2026-08-17T00:00:00",
         creation="mainboard-intent-1",
         verdict=verdict,
     )
-    monkeypatch.setattr(board.dispatcher.cache, "run", lambda handle, target=None: record)
+    monkeypatch.setattr(board.dispatcher.cache, "run", lambda handle, target=None: intent)
     with pytest.raises(MissionError, match=f"mainboard-intent-1 has no confirmed.*{said}"):
         board.job("intent-1")
 

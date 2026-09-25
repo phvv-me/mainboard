@@ -1,5 +1,4 @@
 import sys
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import pytest
@@ -56,7 +55,7 @@ def rendering(fp: FakeProcess, destination: Path, *, tasks: bool = True) -> None
 def test_a_project_lands_under_its_templates_home_with_its_rows_read_back(
     workspace: Path, templates: None, fp: FakeProcess
 ) -> None:
-    """The default template renders where it says and pastes nothing itself.
+    """One argument stands in for the questionnaire, and the render pastes nothing itself.
 
     The first declared template is the default, and the task rows it writes are read back
     for the caller to paste, since the root manifest is a hand-curated file and half of that
@@ -69,20 +68,22 @@ def test_a_project_lands_under_its_templates_home_with_its_rows_read_back(
     assert made.tasks == str(workspace / _HOME / "scratch-probe" / _TASKS)
     assert made.snippet == _ROWS
     assert made.paste == f"{workspace / 'mainboard.toml'} [tasks]"
-    assert str(workspace / _FIRST) in " ".join(fp.calls[0])
+    staged = " ".join(fp.calls[0])
+    assert str(workspace / _FIRST) in staged
+    for answer in ("--defaults", "project_name=Scratch Probe", "description=Scratch Probe"):
+        assert answer in staged
+    assert "home=monorepo" in staged
 
 
 @pytest.mark.parametrize(
     ("template", "source", "landing"),
     [
-        ("", _FIRST, f"{_HOME}/probe"),
         ("tool", _SECOND, "probe"),
         (_FIRST, _FIRST, f"{_HOME}/probe"),
         (_UNDECLARED, _UNDECLARED, "probe"),
         ("gh:owner/templates.git", "gh:owner/templates.git", "probe"),
     ],
     ids=[
-        "the workspace's first declared template is the default",
         "naming a template is naming its home too",
         "spelling out a declared template's own path is naming that template",
         "a path nobody declared is a template too",
@@ -101,55 +102,25 @@ def test_where_a_template_resolves_from_decides_where_the_project_lands(
     assert expected_source in " ".join(fp.calls[0])
 
 
-@pytest.mark.parametrize(
-    ("given", "landing", "tasks", "present", "absent"),
-    [
-        (
-            {},
-            f"{_HOME}/scratch-probe",
-            True,
-            ("project_name=Scratch Probe", "description=Scratch Probe", "home=monorepo"),
-            (),
-        ),
-        (
-            {
-                "dest": "apart",
-                "description": "Measures one thing well.",
-                "answers": {"home": "standalone", "first_paper": "d"},
-            },
-            "apart",
-            False,
-            (
-                "description=Measures one thing well.",
-                "home=standalone",
-                "first_paper=d",
-            ),
-            ("home=monorepo",),
-        ),
-    ],
-    ids=[
-        "one argument stands in for the questionnaire",
-        "the manifest settles what is always the same and a caller settles the rest",
-    ],
-)
-def test_the_answers_come_from_the_name_the_workspace_and_the_caller(
-    workspace: Path,
-    templates: None,
-    fp: FakeProcess,
-    given: dict[str, str | dict[str, str]],
-    landing: str,
-    tasks: bool,
-    present: Sequence[str],
-    absent: Sequence[str],
+def test_the_manifest_settles_what_is_always_the_same_and_a_caller_settles_the_rest(
+    workspace: Path, templates: None, fp: FakeProcess
 ) -> None:
-    rendering(fp, workspace / landing, tasks=tasks)
-    made = Board(workspace).scaffold().render("Scratch Probe", **given)
+    rendering(fp, workspace / "apart", tasks=False)
+    made = (
+        Board(workspace)
+        .scaffold()
+        .render(
+            "Scratch Probe",
+            dest="apart",
+            description="Measures one thing well.",
+            answers={"home": "standalone", "first_paper": "d"},
+        )
+    )
     staged = " ".join(fp.calls[0])
-    assert "--defaults" in staged
-    assert all(answer in staged for answer in present)
-    assert not any(answer in staged for answer in absent)
-    assert (made.snippet == _ROWS) is tasks
-    assert (made.paste != "") is tasks
+    for answer in ("description=Measures one thing well.", "home=standalone", "first_paper=d"):
+        assert answer in staged
+    assert "home=monorepo" not in staged
+    assert (made.snippet, made.paste) == ("", "")
 
 
 @pytest.mark.parametrize(

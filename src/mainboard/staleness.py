@@ -1,26 +1,18 @@
-# The installed snapshot's own freshness, kept current without anyone asking. The CLI on PATH is
-# a uv tool snapshot of the package source, so an edit to that source silently changes nothing
-# until someone reinstalls. The trap earned a standing check, and the check earned a nag that
-# printed on every invocation until somebody ran the reinstall by hand: 139 copies of it in seven
-# sessions, 186 filters written to hide it, and eleven `--json` parses that had to work around it.
-# A line nobody acts on is noise, so the snapshot now does the reinstall itself and re-executes
-# the command it was asked for on the new code, and nothing about any of it touches stdout.
+# The installed snapshot keeps itself current. The CLI on PATH is a uv tool snapshot of the
+# package source, so a source edit changes nothing until a reinstall. A nag asking for that
+# reinstall printed on every invocation (139 copies in seven sessions, 186 filters written to hide
+# it, eleven `--json` parses working around it), so the snapshot now reinstalls itself and
+# re-executes the command on the new code, never touching stdout.
 #
-# The uv receipt beside the installed environment says exactly which directory the snapshot was
-# built from and with which extras, so the check needs no configuration: digest the source tree,
-# remember what it looked like when this snapshot first ran, and refresh the moment the tree moves
-# past it.
+# The uv receipt beside the snapshot names its source directory and extras, so the check needs no
+# configuration. It digests source and pyproject names, sizes and mtimes (never contents, to stay
+# in the low milliseconds a CLI startup affords; pyproject because a runtime dependency changes
+# what the command can do), records the digest on the snapshot's first run because uv owns the
+# install and offers no hook, and refreshes once the tree moves past it. The blind spot is an edit
+# landing between install and first run, which the next edit clears.
 #
-# The digest is over source and pyproject names, sizes and mtimes rather than contents, which
-# keeps the whole check in the low milliseconds a CLI startup can afford. Package metadata is
-# part of the snapshot because changing a runtime dependency changes what the installed command
-# can do even when no Python module moved. The digest is recorded on the snapshot's first run
-# rather than at install because uv owns the install and offers no hook. The one blind spot that
-# buys is an edit landing between the install and the first run, which the next edit clears.
-#
-# Windows cannot replace an interpreter that is running, and this process is running the one the
-# reinstall rebuilds. There the update is handed to a worker that waits for this process to exit,
-# and the command at hand answers from the snapshot it started on, saying so on stderr once.
+# Windows cannot replace the running interpreter, so there the update goes to a worker that waits
+# for this process to exit, and the command answers from its snapshot, saying so once on stderr.
 
 import hashlib
 import json
@@ -43,25 +35,19 @@ from .core.project import Project
 from .engines.compile.backend.engine import PixiEngine
 from .engines.compile.backend.process import Process
 
-# The file uv writes beside every tool it installs, naming the source of the snapshot.
 _RECEIPT = "uv-receipt.toml"
-
-# Where this check remembers the source tree the running snapshot answered for.
 _STATE = "source-state.json"
-
-# The lock two processes finding the same snapshot stale take turns under, beside the state.
 _LOCK = "self-update.lock"
 
 # The extra a plain reinstall silently drops, so the named command always carries it.
 _EXTRA = "wandb"
 
-# The exact package Pixi supplies to the otherwise isolated self-update process. uv is never a
-# host-level prerequisite or a binary Mainboard searches for: Pixi resolves and runs this package
-# inside its own cached exec environment.
+# uv is never a host prerequisite: Pixi resolves and runs this exact package in its cached exec
+# environment.
 _UV = "uv=0.12.7"
 
-# The helper has to outlive the launcher it replaces. Its Pixi exec environment is independent
-# of the uv tool directory, so these packages remain available while uv removes and rebuilds it.
+# The worker's Pixi exec environment is independent of the uv tool directory, so these packages
+# outlive the launcher while uv removes and rebuilds it.
 _DEFERRED_SPECS = ("python=3.14", "psutil=7.2.2", "cyclopts=4.23")
 
 # Set in the environment of the process a refresh re-executes, so an update that did not take
@@ -75,27 +61,24 @@ _LOCK_SECONDS = 300.0
 # How long the reinstall itself may take before it is abandoned.
 _INSTALL_SECONDS = 600.0
 
-# How long a scheduled Windows update is trusted to still be on its way. Every command run while
-# the launcher is waiting to be released finds the same stale snapshot, and scheduling a worker
-# for each of them races several uv installs over one tool directory.
+# How long a scheduled Windows update is trusted to still be on its way. Every command run
+# meanwhile finds the same stale snapshot, and a worker for each would race uv installs over one
+# tool directory.
 _PENDING_SECONDS = 600.0
 
 
 class Snapshot(FrozenModel):
     """What the running snapshot knows about its own source.
 
-    installed: whether this process runs from a uv tool snapshot at all; a checkout running
-        its own source has nothing to be stale against.
-    stale: whether the source tree has moved past what this snapshot was recorded against.
-    detail: the one line behind the answer.
-    uv: the reinstall as a bare uv argv, empty when nothing needs one. Carried whole rather than
-        sliced out of the Pixi command: the deferred Windows worker runs exactly this once the
-        launcher it replaces has exited.
-    source: the package directory the snapshot was installed from, absolute, and the workspace
-        the deferred worker writes its log into.
-    tool: the uv tool directory holding the snapshot, where its receipt and state live.
-    marker: the identity of the install this answer was read from, which is how a process that
-        waited on another's reinstall knows the snapshot already moved.
+    installed: whether this process runs from a uv tool snapshot; a checkout has nothing to be
+        stale against.
+    uv: the reinstall as a bare uv argv, empty when nothing needs one; the deferred Windows
+        worker runs exactly this.
+    source: the absolute package directory the snapshot was installed from, where the deferred
+        worker writes its log.
+    tool: the uv tool directory holding the snapshot, its receipt and state.
+    marker: the identity of the install this answer was read from, so a process that waited on
+        another's reinstall knows the snapshot already moved.
     """
 
     installed: bool
@@ -121,7 +104,7 @@ class Refresh:
     """
 
     def __init__(self, found: Snapshot) -> None:
-        """found: a stale snapshot from `check()`, carrying its tool directory and source."""
+        """found: a stale snapshot from `check()`."""
         self.found = found
         self.tool = found.tool or Path(sys.prefix)
 
@@ -151,11 +134,10 @@ class Refresh:
         return _marker(self.tool / _RECEIPT) != self.found.marker
 
     def reinstall(self) -> str:
-        """Run the Pixi-owned reinstall with its output held back, answering why it failed.
+        """Run the Pixi-owned reinstall, answering why it failed ("" on success).
 
-        Held back rather than streamed because stdout belongs to the verb this process is about
-        to run, and a machine-readable document must be the only thing on it. A failure brings
-        the tail of what the installer said.
+        Output is held back because stdout belongs to the verb about to run; a failure brings the
+        installer's last line.
         """
         try:
             result = PixiEngine().within_cwd(
@@ -171,9 +153,8 @@ class Refresh:
     def defer(self) -> None:
         """Hand the Windows update to a worker that runs once this launcher has exited.
 
-        One worker per stale snapshot: a marker beside the worker's log says one is already on
-        its way, and the worker removes it when it is done, so the commands run meanwhile answer
-        from the snapshot they have without scheduling another install over the same directory.
+        One worker per stale snapshot: a marker beside its log says one is on its way until the
+        worker removes it, so commands run meanwhile schedule no second install.
         """
         log = _refresh_log(self.found.source)
         pending = log.with_suffix(".pending")
@@ -182,30 +163,19 @@ class Refresh:
             if time() - pending.stat().st_mtime < _PENDING_SECONDS:
                 return
         pending.write_text(str(os.getpid()), encoding="utf-8")
-        worker = Path(__file__).with_name("_refresh.py")
-        specs = tuple(token for spec in _DEFERRED_SPECS for token in ("--spec", spec))
-        PixiEngine().defer(
-            "exec",
-            "--spec",
-            _UV,
-            *specs,
-            "python",
-            str(worker),
-            str(os.getpid()),
-            str(log),
-            "--",
-            *self.found.uv,
-        )
+        worker = str(Path(__file__).with_name("_refresh.py"))
+        specs = [token for spec in (_UV, *_DEFERRED_SPECS) for token in ("--spec", spec)]
+        pid = str(os.getpid())
+        PixiEngine().defer("exec", *specs, "python", worker, pid, str(log), "--", *self.found.uv)
         say(f"{self.found.detail}; it updates itself once this command exits")
 
 
 def current() -> None:
     """Keep this process on its source's newest code, the first thing every invocation does.
 
-    A fresh snapshot, and a checkout running its own source, return at once. A stale one is
-    refreshed and the command re-executed on it, so the caller never learns anything happened
-    beyond one line on stderr. A process that is itself the re-execution never refreshes again:
-    if its snapshot is still stale the update did not take, and it says so instead of looping.
+    A stale snapshot is refreshed and the command re-executed on it, with one line on stderr. The
+    re-execution itself never refreshes again: still stale means the update did not take, and it
+    says so instead of looping.
     """
     again = os.environ.pop(REFRESHED, None) is not None
     found = check()
@@ -224,11 +194,7 @@ def say(line: str) -> None:
 
 
 def _refresh_log(source: Path | None) -> Path:
-    """Durable deferred-update log under `source`'s workspace, beside this one when there is none.
-
-    source: the package directory the snapshot was installed from, None when the receipt named
-        no source at all.
-    """
+    """Durable deferred-update log under `source`'s workspace, the working directory's if None."""
     return (source or Path.cwd()) / Project().out_dir / "self-update.log"
 
 
@@ -237,8 +203,7 @@ def check(package: Path | None = None) -> Snapshot:
 
     package: the installed package directory, this module's own when None.
     """
-    home = package or Path(__file__).resolve().parent
-    root = tool_root(home)
+    root = tool_root(package or Path(__file__).resolve().parent)
     if root is None:
         return Snapshot(installed=False, detail="running from source")
     receipt = root / _RECEIPT
@@ -257,9 +222,8 @@ def check(package: Path | None = None) -> Snapshot:
         return Snapshot(installed=True, detail=f"no source tree at {source}")
     extras = ",".join(requirement.get("extras") or [_EXTRA])
     interpreter = _durable_interpreter(declared["tool"].get("python"))
-    # Absolute, because the deferred Windows worker runs it from wherever pixi's exec
-    # environment happens to stand rather than from the directory the receipt was written
-    # relative to.
+    # Absolute, because the deferred Windows worker runs from wherever pixi's exec environment
+    # stands, not the directory the receipt is relative to.
     uv = (
         "uv",
         "tool",
@@ -272,10 +236,9 @@ def check(package: Path | None = None) -> Snapshot:
         Project().name,
         "--force",
     )
-    current = digest(source)
+    tree = digest(source)
     marker = _marker(receipt)
-    recorded = _recorded(root / _STATE, marker=marker, current=current)
-    if recorded == current:
+    if _recorded(root / _STATE, marker=marker, current=tree) == tree:
         return Snapshot(installed=True, detail="snapshot matches the source tree")
     return Snapshot(
         installed=True,
@@ -291,35 +254,26 @@ def check(package: Path | None = None) -> Snapshot:
 def _durable_interpreter(declared: str | None) -> Path | None:
     """An existing uv-tool interpreter that does not belong to generated project state.
 
-    Reusing uv's exact managed-Python path keeps updates deterministic and avoids another
-    interpreter download. A Pixi or Mainboard environment is different: it is replaceable
-    workspace output, so retaining it in the tool receipt makes the public launcher depend on a
-    shard that may move or be rebuilt. Missing interpreters are likewise left for uv to replace.
+    Reusing uv's managed-Python path keeps updates deterministic and avoids a download. A Pixi or
+    Mainboard environment is replaceable workspace output the public launcher must not depend on;
+    a missing interpreter is likewise left for uv to replace.
     """
     if not declared:
         return None
     interpreter = Path(declared)
-    generated = {".mainboard", ".pixi"}
-    if generated & {part.casefold() for part in interpreter.parts}:
-        return None
-    return interpreter if interpreter.is_file() else None
+    generated = {".mainboard", ".pixi"} & {part.casefold() for part in interpreter.parts}
+    return None if generated or not interpreter.is_file() else interpreter
 
 
 def digest(source: Path) -> str:
-    """One cheap digest of runtime source and package metadata, with contents unread.
-
-    source: the tree to fingerprint.
-    """
-    fingerprint = hashlib.sha256()
+    """One cheap digest of runtime source and the package's pyproject, with contents unread."""
     package = source.parent
-    files = [
-        *sorted(
-            path
-            for path in source.rglob("*")
-            if path.is_file() and "__pycache__" not in path.parts
-        ),
-        *(metadata for metadata in (package / "pyproject.toml",) if metadata.is_file()),
-    ]
+    files = sorted(
+        path for path in source.rglob("*") if path.is_file() and "__pycache__" not in path.parts
+    )
+    if (metadata := package / "pyproject.toml").is_file():
+        files.append(metadata)
+    fingerprint = hashlib.sha256()
     for path in files:
         stat = path.stat()
         line = f"{path.relative_to(package)}:{stat.st_size}:{stat.st_mtime_ns}\n"
@@ -328,14 +282,8 @@ def digest(source: Path) -> str:
 
 
 def tool_root(package: Path) -> Path | None:
-    """The uv tool directory holding `package`'s snapshot, None when it runs from a checkout.
-
-    package: the imported package's own directory.
-    """
-    for parent in package.parents:
-        if (parent / _RECEIPT).is_file():
-            return parent
-    return None
+    """The uv tool directory holding the imported `package`'s snapshot, None from a checkout."""
+    return next((parent for parent in package.parents if (parent / _RECEIPT).is_file()), None)
 
 
 def _marker(receipt: Path) -> str:
@@ -346,9 +294,8 @@ def _marker(receipt: Path) -> str:
 def _recorded(state: Path, *, marker: str, current: str) -> str:
     """The digest recorded for this install, `current` recorded fresh on a new install.
 
-    A state file that is missing, torn or from another install is replaced with `current`, so
-    the first run after an install is the baseline every later run compares against. A tool
-    directory that cannot be written leaves the check answering fresh rather than failing the
+    A state file missing, torn or from another install is replaced, so the first run after an
+    install is the baseline. An unwritable tool directory answers fresh rather than failing the
     command that asked.
     """
     with suppress(OSError, json.JSONDecodeError):

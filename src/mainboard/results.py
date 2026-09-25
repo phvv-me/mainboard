@@ -35,15 +35,14 @@ class Results:
     def query(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> pl.DataFrame:
         """Query a fresh local snapshot of runs, trials, events, artifacts, and dispatch jobs.
 
-        sql: SELECT text or a UTF-8 file Path; strings are never interpreted as filenames.
-            Relative file paths and paths inside SQL use the caller's current directory,
-            not this Results root or the SQL file's parent.
+        sql: SELECT text or a UTF-8 file Path; strings are never filenames. Relative paths, of
+            the file or inside SQL, use the caller's current directory, not this root or the
+            SQL file's parent.
         project: a research directory name; omitted means all projects, still labeled.
-        Network refresh belongs to Mainboard monitor, not to an implicit SQL side effect.
-        Jobs separate the last backend_state from the command verdict. The settled flag
-        reads the monitor's completion cursor, not current provider liveness.
-        Event recorded_at values are UTC timestamps without a timezone annotation; local
-        queries never install extensions or need ICU to interpret event offsets.
+        Network refresh belongs to Mainboard monitor, never an SQL side effect. Jobs separate
+        the last backend_state from the command verdict; `settled` reads the monitor's
+        completion cursor, not provider liveness. Event recorded_at is naive UTC, so a query
+        never installs extensions or needs ICU.
         """
         if isinstance(sql, Path):
             try:
@@ -66,8 +65,7 @@ class Results:
     def export(self, sql: str | Path, path: Path, *, project: str = "") -> Path:
         """Export one SELECT to a new CSV, Parquet, or JSON file, inferred from its suffix.
 
-        Publish only a complete file. An existing destination is never overwritten.
-        SQL text and UTF-8 file Paths use the same query contract as `query`.
+        Only a complete file is published and an existing destination is never overwritten.
         """
         frame = self.query(sql, project=project)
         writers: dict[str, Callable[[Path], None]] = {
@@ -110,15 +108,14 @@ class Results:
                 continue
             if reference.media_type != "application/vnd.apache.parquet":
                 raise ValueError(f"{schema} contains a non-Parquet artifact")
-            root = Path(row["root"])
-            relative = reference.relative
             # References may be project- or workspace-relative. Match only this project's
             # location, including when Results is opened on the project itself.
+            root = Path(row["root"])
             root = next(
                 (
                     parent
                     for parent in root.parents
-                    if relative.is_relative_to(root.relative_to(parent).as_posix())
+                    if reference.relative.is_relative_to(root.relative_to(parent).as_posix())
                 ),
                 root,
             )

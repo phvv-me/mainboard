@@ -1,9 +1,8 @@
 # The durable form of `mainboard monitor`: the periodic settling pass installed into the
-# machine's own service manager instead of into a session's terminal. A cron an agent starts
-# dies with that agent, and thirty five PBS jobs whose outcomes were owed to it die unsettled
-# with it, so the pass has to belong to the machine. Linux answers with a user systemd timer,
-# which needs no root and survives every terminal. Another platform is a refusal naming itself
-# until an implementation for it is registered below, one class and one line.
+# machine's own service manager, not a session's terminal. A cron an agent starts dies with that
+# agent, and thirty five PBS jobs owed to it died unsettled, so the pass belongs to the machine.
+# Linux answers with a user systemd timer, which needs no root and survives every terminal.
+# Another platform is a refusal naming itself until an implementation is registered below.
 
 import platform
 import re
@@ -27,18 +26,16 @@ if TYPE_CHECKING:
 
 # The tool this workspace answers to, so no unit file or message below spells the binary's name.
 _TOOL = Project().name
-
 # The one pass a period runs, the same line a person types at a terminal.
 _PASS = ("monitor", "--json")
-
 # Where a pass appends what it settled, beside the rest of the generated state.
 _LOG = "monitor.log"
-
 # The period a message suggests when nothing is installed, the one the campaign cron ran at.
 _SUGGESTED = "20m"
-
 # How long a service manager may take to answer before it is read as saying nothing.
 _DEADLINE = 10.0
+# The timer properties a state read asks the user manager for.
+_SHOWN = ("--property=ActiveState", "--property=LastTriggerUSec")
 
 # `20m`, `1h`, `90s`: a whole number of one unit, the way systemd itself writes a period.
 _WRITTEN = re.compile(r"(\d+)([smh])")
@@ -51,11 +48,9 @@ type Shell = Callable[[Sequence[str]], tuple[int, str]]
 def locally(command: Sequence[str], deadline: float = _DEADLINE) -> tuple[int, str]:
     """Run `command` here under a deadline, its output joined, answering rather than raising.
 
-    A service manager that will not answer, or is not installed at all, is one that says
-    nothing, and every caller here already reads silence as "no periodic pass runs", so neither
-    is worth an exception.
+    A service manager that hangs or is not installed says nothing, and every caller already
+    reads silence as "no periodic pass runs", so neither is worth an exception.
 
-    command: the program and its arguments.
     deadline: seconds the command may take before it counts as no answer.
     """
     program, *arguments = command
@@ -80,10 +75,7 @@ class Every(FrozenModel):
 
     @classmethod
     def parse(cls, written: str) -> Every:
-        """`20m`, `1h`, `90s` or a bare `0`, refusing anything else by naming the spellings.
-
-        written: the period as the caller wrote it.
-        """
+        """`20m`, `1h`, `90s` or a bare `0`, refusing anything else by naming the spellings."""
         said = written.strip()
         if said == "0":
             return cls(seconds=0, written=said)
@@ -122,11 +114,9 @@ class Settling(FrozenModel):
 class Settler(ABC):
     """One machine's way of running the settling pass on a period, and of saying whether it does.
 
-    The seam a second platform fills. Everything above it is written in terms of these three
-    answers, so a launchd or a Task Scheduler implementation joins by subclassing here and
-    registering itself in `SETTLERS` ahead of the null answer, and no caller changes. A settler
-    belongs to one workspace, fixed at construction, so one machine can settle several
-    workspaces at once, each through its own instance.
+    The seam a second platform fills: a launchd or Task Scheduler implementation subclasses here
+    and registers in `SETTLERS` ahead of the null answer, and no caller changes. A settler belongs
+    to one workspace, fixed at construction, so one machine can settle several at once.
     """
 
     def __init__(self, root: Path) -> None:
@@ -135,10 +125,7 @@ class Settler(ABC):
 
     @abstractmethod
     def install(self, every: Every) -> Settling:
-        """Install and arm the pass at `every`, answering with what now runs.
-
-        every: the period between passes.
-        """
+        """Install and arm the pass at `every`, answering with what now runs."""
 
     @abstractmethod
     def remove(self) -> Settling:
@@ -154,18 +141,14 @@ class SystemdUser(Settler):
 
     A user timer needs no root and outlives every terminal, but a user manager is torn down when
     its last session ends unless that user lingers, so the linger state rides in every answer
-    rather than being left as a footnote nobody reads until a reboot loses a night of settling.
-    One machine may settle several workspaces, each through its own timer: the unit names carry
-    an eight-hex-digit stamp of this settler's root, which is what keeps them apart in
-    `systemctl --user list-timers`.
+    rather than waiting for a reboot to lose a night of settling. The unit names carry an
+    eight-hex-digit stamp of this settler's root, which keeps several workspaces' timers apart.
     """
 
     def __init__(self, root: Path, units: Path | None = None, shell: Shell = locally) -> None:
-        """root: the workspace this settler belongs to, the source of the unit names' stamp.
+        """units: the user unit directory, the XDG one when None.
 
-        units: the user unit directory, the XDG one when None.
-        shell: runs one command and answers with its status and output, this machine's when
-            left alone.
+        shell: runs one command and answers with its status and output.
         """
         super().__init__(root)
         self.units = (
@@ -186,7 +169,7 @@ class SystemdUser(Settler):
 
     @property
     def _stamp(self) -> str:
-        """Eight hex digits of blake2b over the resolved root, apart from any other workspace's."""
+        """Eight hex digits of blake2b over the resolved root."""
         return blake2b(str(self.root.resolve()).encode(), digest_size=4).hexdigest()
 
     @staticmethod
@@ -197,11 +180,8 @@ class SystemdUser(Settler):
     def install(self, every: Every) -> Settling:
         """Write both units, reload the user manager and arm the timer.
 
-        Installing twice is installing once: the unit files are rewritten from this settler's
-        root and `every` and the enable is idempotent, so changing the period is the same
-        command.
-
-        every: the period between passes.
+        Idempotent: the units are rewritten from the root and `every` and the enable is repeatable,
+        so changing the period is the same command.
         """
         log = self.root / Project().out_dir / _LOG
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -229,9 +209,8 @@ class SystemdUser(Settler):
     def state(self) -> Settling:
         """What the installed units and the user manager say together.
 
-        The period, the log and the workspace are read back out of the units on disk rather
-        than remembered here, so the row describes what actually runs on this machine, including
-        a timer some earlier version of this tool wrote for this same workspace.
+        The period, log and workspace are read back out of the units on disk, so the row says
+        what actually runs, including a timer an earlier version of this tool wrote.
         """
         if not self.timer.is_file():
             return Settling(
@@ -244,7 +223,6 @@ class SystemdUser(Settler):
         shown = self._shown()
         every = self._setting(self.timer, "OnUnitActiveSec")
         log = self._setting(self.service, "StandardOutput").removeprefix("append:")
-        root = self._setting(self.service, "WorkingDirectory")
         active = shown.get("ActiveState") == "active"
         triggered = shown.get("LastTriggerUSec", "")
         last_run = "" if triggered in ("", "n/a") else triggered
@@ -254,7 +232,7 @@ class SystemdUser(Settler):
         return Settling(
             installed=True,
             active=active,
-            root=root,
+            root=self._setting(self.service, "WorkingDirectory"),
             every=every,
             last_run=last_run,
             log=log,
@@ -282,16 +260,7 @@ class SystemdUser(Settler):
 
     def _shown(self) -> dict[str, str]:
         """The timer properties the user manager reports, empty when it will not answer."""
-        status, output = self.shell(
-            (
-                "systemctl",
-                "--user",
-                "show",
-                self.timer.name,
-                "--property=ActiveState",
-                "--property=LastTriggerUSec",
-            )
-        )
+        status, output = self.shell(("systemctl", "--user", "show", self.timer.name, *_SHOWN))
         if status:
             return {}
         pairs = (line.partition("=") for line in output.splitlines() if "=" in line)
@@ -342,8 +311,8 @@ class SystemdUser(Settler):
     def _setting(unit: Path, key: str) -> str:
         """One `Key=value` line out of an installed unit, empty when the unit has no such line.
 
-        A unit file somebody deleted by hand leaves the row describing what is left rather than
-        taking the report down, which is the whole point of a report that says what is wrong.
+        A unit deleted by hand leaves the row describing what is left rather than taking down a
+        report whose point is saying what is wrong.
         """
         try:
             text = unit.read_text(encoding="utf-8")
@@ -362,9 +331,9 @@ class SystemdUser(Settler):
 class Unsupported(Settler):
     """The answer on a machine whose service manager this tool cannot install a pass into.
 
-    Registered last, so it answers for exactly the platforms no implementation above claimed.
-    It refuses in one sentence naming the platform rather than pretending to install something,
-    since a pass a person believes is running and is not is worse than no pass at all.
+    Registered last, so it answers for exactly the platforms nothing above claimed. It refuses
+    in one sentence naming the platform, since a pass a person believes runs and does not is
+    worse than no pass at all.
     """
 
     def install(self, every: Every) -> Settling:
@@ -391,10 +360,8 @@ class Unsupported(Settler):
         )
 
 
-# The platform registry, walked in order: the first implementation this machine can run wins,
-# and the null answer at the end catches every platform none of them claimed. Registered by
-# class rather than by instance, since which one wins never depends on the workspace a caller
-# is asking for.
+# Walked in order, the first implementation this machine can run winning and the null answer
+# catching the rest. Registered by class, since which one wins never depends on the workspace.
 SETTLERS: Strategy[type[Settler]] = Strategy("settler")
 SETTLERS.register("systemd", SystemdUser)
 SETTLERS.register("none", Unsupported)
@@ -406,11 +373,7 @@ def settler(root: Path) -> Settler:
 
 
 def schedule(root: Path, every: str) -> Settling:
-    """Install the durable settling pass at `every`, or remove it when that period is zero.
-
-    root: the workspace whose dispatched jobs the pass settles.
-    every: how often one pass runs, `20m`, or `0` to remove what is installed.
-    """
+    """Install the durable settling pass for `root` at `every` (`20m`), or remove it at `0`."""
     period = Every.parse(every)
     machine = settler(root)
     return machine.install(period) if period.seconds else machine.remove()

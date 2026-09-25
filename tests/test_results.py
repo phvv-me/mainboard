@@ -17,19 +17,38 @@ from mainboard.observe import Frame, Kind, encode
 from mainboard.trials.artifacts import Artifacts
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
+
+type Row = Mapping[str, str | int]
+
+
+def stored(project: Path, run: str, rows: list[Row], *, experiment: str = "node") -> Path:
+    """`rows` as the one receipt part of `run` in `project`'s `experiment`, its path returned."""
+    part = (
+        project / f"datasets/experiments/{experiment}/evidence/receipts/run={run}/part-0.parquet"
+    )
+    part.parent.mkdir(parents=True)
+    pl.DataFrame(rows).write_parquet(part)
+    return part
+
+
+def streamed(path: Path, job: str, payloads: list[dict]) -> None:
+    """`payloads` as consecutive sample frames of `job`'s event stream at `path`."""
+    path.parent.mkdir(parents=True)
+    frames = (
+        Frame(job=job, kind=Kind.sample, offset=offset, at=datetime.now(UTC), payload=payload)
+        for offset, payload in enumerate(payloads)
+    )
+    path.write_text("".join(map(encode, frames)), encoding="utf-8")
 
 
 def test_experiment_scope_does_not_open_unrelated_evidence(tmp_path: Path) -> None:
-    root = tmp_path / "research/example/datasets/experiments"
-    receipt = root / "selected/evidence/receipts/run=sample/part-0.parquet"
-    receipt.parent.mkdir(parents=True)
-    pl.DataFrame({"run": ["selected"], "trial": ["case"], "artifacts": ["{}"]}).write_parquet(
-        receipt
-    )
-    unrelated = root / "unrelated/evidence/receipts/run=sample/part-0.parquet"
-    unrelated.parent.mkdir(parents=True)
-    unrelated.write_bytes(b"not a receipt")
+    project = tmp_path / "research/example"
+    row = {"run": "selected", "trial": "case", "artifacts": "{}"}
+    stored(project, "sample", [row], experiment="selected")
+    stored(project, "sample", [row], experiment="unrelated").write_bytes(b"not a receipt")
+    root = project / "datasets/experiments"
     event = root / "unrelated/evidence/artifacts/run/case/events/live.ndjson"
     event.parent.mkdir(parents=True)
     event.write_text("not an event")
@@ -57,38 +76,16 @@ def test_run_selection_reads_only_selected_artifacts_and_keeps_verification(
     reference = writer.write(
         payload.getvalue(), media_type="application/vnd.apache.parquet", schema_name="test.v1"
     )
-    receipt = evidence / "receipts/run=complete/part-0.parquet"
-    receipt.parent.mkdir(parents=True)
-    pl.DataFrame(
-        [
-            {
-                "run": "complete",
-                "trial": "case",
-                "artifacts": json.dumps({"table": reference.model_dump()}),
-            }
-        ]
-    ).write_parquet(receipt)
-    live = evidence / "artifacts/running/case/events/live.ndjson"
-    live.parent.mkdir(parents=True)
+    artifacts = json.dumps({"table": reference.model_dump()})
+    stored(project, "complete", [{"run": "complete", "trial": "case", "artifacts": artifacts}])
     missing = {**reference.model_dump(), "path": "datasets/experiments/node/not-yet-collected"}
-    live.write_text(
-        "".join(
-            encode(
-                Frame(
-                    job="running/case",
-                    kind=Kind.sample,
-                    offset=i,
-                    at=datetime.now(UTC),
-                    payload=payload,
-                )
-            )
-            for i, payload in enumerate(
-                [
-                    {"topic": "started", "trial": "case", "data": {"run": "running"}},
-                    {"topic": "artifact", "trial": "case", "data": {"name": "table", **missing}},
-                ]
-            )
-        )
+    streamed(
+        evidence / "artifacts/running/case/events/live.ndjson",
+        "running/case",
+        [
+            {"topic": "started", "trial": "case", "data": {"run": "running"}},
+            {"topic": "artifact", "trial": "case", "data": {"name": "table", **missing}},
+        ],
     )
     results = Results(tmp_path)
     assert results.table("test.v1", runs=["complete"])["value"].to_list() == [7]
@@ -119,11 +116,8 @@ def test_a_table_refuses_an_artifact_it_could_only_misread(
     reference = Artifacts(project, evidence / "artifacts/run/case").write(
         payload.getvalue(), media_type=media_type, schema_name="test.v1"
     )
-    receipt = evidence / "receipts/run=run/part-0.parquet"
-    receipt.parent.mkdir(parents=True)
-    pl.DataFrame(
-        [{"run": "run", "trial": "case", "artifacts": json.dumps({"t": reference.model_dump()})}]
-    ).write_parquet(receipt)
+    artifacts = json.dumps({"t": reference.model_dump()})
+    stored(project, "run", [{"run": "run", "trial": "case", "artifacts": artifacts}])
     with pytest.raises(ValueError, match=refusal):
         Results(tmp_path).table("test.v1")
 
@@ -136,14 +130,8 @@ def test_a_join_the_catalog_cannot_bind_before_its_views_exist_still_answers(
     A second project that holds no receipts yet contributes no inventory rather than an error.
     """
     (tmp_path / "research/empty/datasets/experiments").mkdir(parents=True)
-    receipt = (
-        tmp_path
-        / "research/example/datasets/experiments/node/evidence/receipts/run=r/part-0.parquet"
-    )
-    receipt.parent.mkdir(parents=True)
-    pl.DataFrame(
-        [{"run": "r", "trial": "case", "artifacts": "{}", "host": "h", "commit": "c"}]
-    ).write_parquet(receipt)
+    row = {"run": "r", "trial": "case", "artifacts": "{}", "host": "h", "commit": "c"}
+    stored(tmp_path / "research/example", "r", [row])
     joined = Results(tmp_path).query(
         "SELECT run, trials.host FROM trials JOIN runs USING (project, run)"
     )
@@ -171,19 +159,24 @@ def test_query_exports_the_same_rows_without_overwriting(
 
 
 @pytest.mark.parametrize(
-    ("sql", "suffix", "message"),
+    ("sql", "suffix", "message", "from_file"),
     [
-        ("SELECT 1", ".xlsx", "output suffix"),
-        ("CREATE TABLE invented(x INTEGER)", ".csv", "one SELECT"),
-        ("SELECT 1; SELECT 2", ".json", "one SELECT"),
+        pytest.param("SELECT 1", ".xlsx", "output suffix", False, id="an-unknown-suffix"),
+        pytest.param("CREATE TABLE t(x INTEGER)", ".csv", "one SELECT", False, id="not-a-select"),
+        pytest.param("SELECT 1; SELECT 2", ".json", "one SELECT", False, id="two-selects"),
+        pytest.param("", ".parquet", "one SELECT", True, id="an-empty-sql-file"),
+        pytest.param("SELECT 1; SELECT 2", ".parquet", "one SELECT", True, id="a-file-of-two"),
+        pytest.param("CREATE TABLE t(x INTEGER)", ".parquet", "one SELECT", True, id="a-file-ddl"),
     ],
 )
 def test_bad_exports_create_no_destination(
-    tmp_path: Path, sql: str, suffix: str, message: str
+    tmp_path: Path, sql: str, suffix: str, message: str, from_file: bool
 ) -> None:
+    source = tmp_path / "refused.sql"
+    source.write_text(sql, encoding="utf-8")
     target = tmp_path / f"refused{suffix}"
     with pytest.raises(ValueError, match=message):
-        Results(tmp_path).export(sql, target)
+        Results(tmp_path).export(source if from_file else sql, target)
     assert not target.exists()
 
 
@@ -199,20 +192,9 @@ def test_cli_export_uses_project_scope_and_prints_the_path(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], from_file: bool
 ) -> None:
     for project in ["one", "two"]:
-        directory = tmp_path / "research" / project / "datasets/experiments/node/evidence/receipts"
-        directory = directory / "run=sample"
-        directory.mkdir(parents=True)
-        pl.DataFrame(
-            {
-                "run": [project],
-                "trial": ["case"],
-                "verdict": ["validated"],
-                "artifacts": ["{}"],
-                "host": ["miyabi-g"],
-                "card_name": ["GH200"],
-                "commit": ["source"],
-            }
-        ).write_parquet(directory / "part-0.parquet")
+        row = {"run": project, "trial": "case", "verdict": "validated", "artifacts": "{}"}
+        provenance = {"host": "miyabi-g", "card_name": "GH200", "commit": "source"}
+        stored(tmp_path / "research" / project, "sample", [{**row, **provenance}])
     target = tmp_path / "scoped.parquet"
     sql = "SELECT project, run FROM runs"
     source = tmp_path / "scoped.sql"
@@ -312,16 +294,6 @@ def test_sql_file_errors_name_the_file(tmp_path: Path) -> None:
         results.query(source)
 
 
-@pytest.mark.parametrize("sql", ["", "SELECT 1; SELECT 2", "CREATE TABLE hidden(x INTEGER)"])
-def test_sql_files_obey_the_single_select_guard(tmp_path: Path, sql: str) -> None:
-    source = tmp_path / "refused.sql"
-    source.write_text(sql, encoding="utf-8")
-    target = tmp_path / "refused.parquet"
-    with pytest.raises(ValueError, match="one SELECT"):
-        Results(tmp_path).export(source, target)
-    assert not target.exists()
-
-
 def test_cli_query_rejects_two_sources_before_reading_a_file(tmp_path: Path) -> None:
     with pytest.raises(MissionError, match="mutually exclusive"):
         build(tmp_path)(["query", "SELECT 1", "--file", str(tmp_path / "missing.sql")])
@@ -400,48 +372,25 @@ def test_transferred_tables_keep_source_context_but_read_collected_bytes(
         "repository": source,
         "params": {"precision": "bf16"},
     }
-    receipt = evidence / "receipts/run=run/part-0.parquet"
-    receipt.parent.mkdir(parents=True)
-    pl.DataFrame(
-        [
-            {
-                **context,
-                "params": json.dumps(context["params"]),
-                "artifacts": json.dumps(
-                    {
-                        "events": (directory / "events").relative_to(writer.root).as_posix(),
-                        "table": reference.model_dump(),
-                        **({"alias": reference.model_dump()} if receipt_alias else {}),
-                    }
-                ),
-            }
-        ]
-    ).write_parquet(receipt)
+    artifacts = {
+        "events": (directory / "events").relative_to(writer.root).as_posix(),
+        "table": reference.model_dump(),
+        **({"alias": reference.model_dump()} if receipt_alias else {}),
+    }
+    row = {**context, "params": json.dumps(context["params"]), "artifacts": json.dumps(artifacts)}
+    stored(project, "run", [row])
     if events:
-        stream = directory / "events/live.ndjson"
-        stream.parent.mkdir(parents=True)
-        payloads = [
-            {"topic": "started", "trial": "case", "data": context},
-            {
-                "topic": "artifact",
-                "trial": "case",
-                "data": {"name": "table", **reference.model_dump()},
-            },
-        ]
-        stream.write_text(
-            "".join(
-                encode(
-                    Frame(
-                        job="run/case",
-                        kind=Kind.sample,
-                        offset=i,
-                        at=datetime.now(UTC),
-                        payload=payload,
-                    )
-                )
-                for i, payload in enumerate(payloads)
-            ),
-            encoding="utf-8",
+        streamed(
+            directory / "events/live.ndjson",
+            "run/case",
+            [
+                {"topic": "started", "trial": "case", "data": context},
+                {
+                    "topic": "artifact",
+                    "trial": "case",
+                    "data": {"name": "table", **artifacts["table"]},
+                },
+            ],
         )
     results = Results(project if from_project else tmp_path)
     table = results.table("test.v1", project=project.name)
@@ -465,24 +414,9 @@ def test_transferred_tables_keep_source_context_but_read_collected_bytes(
 
 def test_receipt_projects_use_local_ownership_and_union_different_schemas(tmp_path: Path) -> None:
     for project in ("one", "two"):
-        directory = (
-            tmp_path / "research" / project / "datasets/experiments/node/evidence/receipts/run=run"
-        )
-        directory.mkdir(parents=True)
-        pl.DataFrame(
-            [
-                {
-                    "run": project,
-                    "trial": "case",
-                    "verdict": "known",
-                    "artifacts": "{}",
-                    "host": "node",
-                    "card_name": "GPU",
-                    "commit": "source",
-                    project: 1,
-                }
-            ]
-        ).write_parquet(directory / "part-0.parquet")
+        row = {"run": project, "trial": "case", "verdict": "known", "artifacts": "{}", project: 1}
+        provenance = {"host": "node", "card_name": "GPU", "commit": "source"}
+        stored(tmp_path / "research" / project, "run", [{**row, **provenance}])
     assert Results(tmp_path).query(
         "SELECT project, one, two FROM trials ORDER BY project"
     ).to_dicts() == [
@@ -492,8 +426,6 @@ def test_receipt_projects_use_local_ownership_and_union_different_schemas(tmp_pa
 
 
 def test_wide_trial_context_does_not_repeat_the_artifact_index(tmp_path: Path) -> None:
-    directory = tmp_path / "datasets/experiments/node/evidence/receipts/run=wide"
-    directory.mkdir(parents=True)
     references = {
         f"row-{index}": {
             "path": f"datasets/experiments/node/evidence/artifacts/wide/objects/{index}",
@@ -503,19 +435,9 @@ def test_wide_trial_context_does_not_repeat_the_artifact_index(tmp_path: Path) -
         }
         for index in range(2048)
     }
-    pl.DataFrame(
-        [
-            {
-                "run": "wide",
-                "trial": "case",
-                "verdict": "known",
-                "params": '{"precision":"bf16"}',
-                "artifacts": json.dumps(references),
-                "host": "GH200",
-                "extra_provenance": "preserved",
-            }
-        ]
-    ).write_parquet(directory / "part-0.parquet")
+    row = {"run": "wide", "trial": "case", "verdict": "known", "params": '{"precision":"bf16"}'}
+    provenance = {"host": "GH200", "extra_provenance": "preserved"}
+    stored(tmp_path, "wide", [{**row, "artifacts": json.dumps(references), **provenance}])
     rows = Results(tmp_path).query("SELECT context FROM artifacts")
     assert rows.height == len(references)
     contexts = [json.loads(value) for value in rows["context"]]
@@ -525,11 +447,8 @@ def test_wide_trial_context_does_not_repeat_the_artifact_index(tmp_path: Path) -
 
 
 def test_old_receipts_keep_missing_fields_null_without_inventing_artifacts(tmp_path: Path) -> None:
-    directory = tmp_path / "datasets/experiments/node/evidence/receipts/run=old"
-    directory.mkdir(parents=True)
-    pl.DataFrame(
-        [{"run": "old", "trial": "case", "verdict": "known", "measured": '{"rmse":0.25}'}]
-    ).write_parquet(directory / "part-0.parquet")
+    row = {"run": "old", "trial": "case", "verdict": "known", "measured": '{"rmse":0.25}'}
+    stored(tmp_path, "old", [row])
     results = Results(tmp_path)
     assert results.query(
         "SELECT run, trial, artifacts, host, card_name, commit, measured FROM trials"

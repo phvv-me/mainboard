@@ -1,18 +1,13 @@
 # What a `wait` says while it blocks, and the two things it decides on its own.
 #
-# A wait used to be silent for an hour and then answer, so whoever was waiting polled beside it.
-# Now it says each test cell's outcome as the cell lands and one heartbeat per look, the cells
-# counted, the output's silence and the busiest card, on stderr so the verdict a script parses
-# stays the only thing on stdout.
+# A wait used to be silent for an hour, so whoever waited polled beside it. Now it says each
+# test cell as it lands and one heartbeat per look on stderr, keeping stdout for the verdict.
 #
-# It decides two things. A job whose pytest session has ended but whose process has not, after
-# a grace period of silence, is settled on what the session said, since the outcome is already
-# written and the process holding the allocation is only failing to exit (a library job read
-# `running` for half an hour after `1 known in 27s`, 2026-09-19). And a job that has printed
-# nothing for the stall threshold while its host's cards sit idle is called stalled, so the wait
-# ends with a distinct exit status instead of burning its whole timeout on a process doing
-# nothing. A card nobody can read cheaply does not veto the call: on a cluster the silence alone
-# decides.
+# A job whose pytest session ended but whose process has not, past a grace period of silence, is
+# settled on what the session said (a library job read `running` for half an hour after `1 known
+# in 27s`, 2026-09-19). A job silent for the stall threshold while its host's cards sit idle is
+# stalled, so the wait ends with a distinct exit status instead of burning its whole timeout. A
+# card nobody can read cheaply does not veto the call: on a cluster the silence alone decides.
 
 from math import inf
 from time import monotonic
@@ -28,17 +23,13 @@ if TYPE_CHECKING:
     from .dispatch.state import RunRecord
     from .pulse import Pulses
 
-# How often a wait looks at its jobs' output. Far less often than it polls their schedulers,
-# since a look reads each whole log over the network.
+# How often a wait looks at its jobs' output, far rarer than its scheduler polls since a look
+# reads each whole log over the network.
 LOOK_SECONDS = 30.0
-
 # How long a running job may print nothing on an idle card before a wait calls it stalled.
 STALL_SECONDS = 1200.0
-
-# How long a job's process may outlive its finished pytest session before it is settled on the
-# session's own exit status.
+# How long a process may outlive its finished pytest session before it settles on the session.
 LINGER_SECONDS = 120.0
-
 # The busiest a card may be and still count as idle.
 IDLE_PCT = 5
 
@@ -46,8 +37,6 @@ IDLE_PCT = 5
 class Linger(FrozenModel):
     """A job whose pytest session ended while its process lives on.
 
-    handle: the scheduler or provider handle.
-    target: the host it was dispatched to.
     session: the session's exit status, what the job settles on.
     """
 
@@ -60,7 +49,7 @@ class Look(FrozenModel):
     """What one look decided.
 
     lingering: the jobs to settle now on the sessions they already finished.
-    stalled: why the wait should stop calling the job alive, empty while nothing stalled.
+    stalled: why the wait should stop calling a job alive, empty while nothing stalled.
     """
 
     lingering: tuple[Linger, ...] = ()
@@ -78,9 +67,8 @@ class Vigil:
         say: Callable[[str], None],
         clock: Callable[[], float] = monotonic,
     ) -> None:
-        """pulses: the looks at the hosts.
+        """stall: seconds of silence on an idle card that call a job stalled, 0 never.
 
-        stall: seconds of silence on an idle card that call a job stalled, 0 never.
         say: where each line goes, stderr at a command line.
         clock: monotonic seconds, spacing the looks.
         """
@@ -92,10 +80,7 @@ class Vigil:
         self.last = -inf
 
     def look(self, records: Sequence[RunRecord]) -> Look:
-        """Look at `records` if a look is due: say what landed, beat once, and decide.
-
-        records: the live runs the wait still blocks on.
-        """
+        """Look at the live `records` if a look is due: say what landed, beat once, and decide."""
         if self.clock() - self.last < LOOK_SECONDS:
             return Look()
         self.last = self.clock()
@@ -135,10 +120,7 @@ def silence(pulse: Pulse) -> str:
 
 
 def heartbeat(pulses: Iterable[Pulse]) -> str:
-    """One line over every job a look saw: cells, failures, the freshest output, the busiest card.
-
-    pulses: at least one job's pulse.
-    """
+    """One line over at least one job's pulse: cells, failures, freshest output, busiest card."""
     seen = list(pulses)
     totals = [pulse.progress.total for pulse in seen]
     total = "?" if None in totals else str(sum(total or 0 for total in totals))

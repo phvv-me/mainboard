@@ -19,34 +19,24 @@ from .support import Clock, run
 def test_a_job_is_only_called_quiet_once_it_has_been_seen_printing_nothing_new(
     tmp_path: Path,
 ) -> None:
-    """One look cannot tell silence from a job that just printed, so the first says nothing.
-
-    The memory is on disk, so a second process looking later knows what the first saw; output
-    that grew resets the silence, and a job that printed nothing yet has no pulse at all, since
-    its log cannot tell a queue from a hang. A host that did not answer leaves its runs out.
-    """
+    """The on-disk memory lets a later process know what the first look saw; growth resets the
+    silence, and a job that printed nothing yet has no pulse, since a queue looks like a hang."""
     board = SimpleNamespace(root=tmp_path)
     clock = Clock()
     output = {"1": f"{CELLS} 2\n{CELL} passed a.py::t[x]\n", "2": ""}
-    busy = Reading(gpu_pct=97)
 
     def read(records: Sequence[RunRecord]) -> dict[RunRecord, Reading]:
         readings = {
             record: Reading(output=output[record.handle], gpu_pct=97) for record in records
         }
-        return {**readings, run("3", target="gone"): busy}
+        return {**readings, run("3", target="gone"): Reading(gpu_pct=97)}
 
     looks = [run("1"), run("2")]
     first = Pulses(board, read=read, clock=clock).taken(looks)
     assert list(first) == [looks[0]]
-    assert first[looks[0]] == Pulse(
-        handle="1",
-        target="gold",
-        progress=first[looks[0]].progress,
-        quiet_s=None,
-        gpu_pct=97,
-    )
-    assert first[looks[0]].progress.counted == "1/2"
+    seen = first[looks[0]]
+    assert seen == Pulse(handle="1", target="gold", progress=seen.progress, gpu_pct=97)
+    assert seen.progress.counted == "1/2"
 
     clock.now += 45
     later = Pulses(board, read=read, clock=clock).taken(looks)

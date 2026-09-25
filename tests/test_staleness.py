@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Thread
 
@@ -16,65 +17,99 @@ from mainboard.engines.compile.backend.engine import PixiEngine
 from mainboard.engines.compile.backend.result import CommandResult
 from mainboard.staleness import Refresh, Snapshot, check, digest, tool_root
 
-_RECEIPT = '[tool]\nrequirements = [{ name = "mainboard", extras = ["wandb"], directory = %s }]\n'
+
+def bump(path: Path) -> None:
+    """Move `path`'s clock forward: an edit to a source file, a reinstall to a receipt."""
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+
+@dataclass
+class Layout:
+    """A uv tool layout beside a source checkout: the receipt, the package, and the tree."""
+
+    package: Path
+    tool: Path
+    source: Path
+
+    def declare(self, requirement: str = 'extras = ["wandb"], ', *, head: str = "") -> None:
+        """Write the receipt naming `source`, with `requirement` fields and `head` lines."""
+        entry = f'name = "mainboard", {requirement}directory = {json.dumps(str(self.source))}'
+        (self.tool / "uv-receipt.toml").write_text(
+            f"[tool]\n{head}requirements = [{{ {entry} }}]\n",
+            encoding="utf-8",
+        )
+
+    def edit(self) -> None:
+        bump(self.source / "src" / "mainboard" / "cli.py")
+
+    def stale(self) -> Snapshot:
+        """The snapshot recorded, then edited past: what every refresh starts from."""
+        check(self.package)
+        self.edit()
+        found = check(self.package)
+        assert found.stale
+        return found
+
+
+def layout_at(tmp_path: Path, checkout: str) -> Layout:
+    source = tmp_path / checkout
+    (source / "src" / "mainboard" / "__pycache__").mkdir(parents=True)
+    (source / "src" / "mainboard" / "cli.py").write_text("code", encoding="utf-8")
+    (source / "src" / "mainboard" / "__pycache__" / "cli.pyc").write_text("bytecode")
+    (source / "pyproject.toml").write_text('[project]\nname = "mainboard"\n', encoding="utf-8")
+    tool = tmp_path / "tool"
+    package = tool / "lib" / "site-packages" / "mainboard"
+    package.mkdir(parents=True, exist_ok=True)
+    found = Layout(package=package, tool=tool, source=source)
+    found.declare()
+    return found
 
 
 @pytest.fixture
-def snapshot(tmp_path: Path) -> Path:
-    """A uv tool layout beside a source checkout: the receipt, the package, and the tree."""
-    source = tmp_path / "checkout"
-    (source / "src" / "mainboard").mkdir(parents=True)
-    (source / "src" / "mainboard" / "cli.py").write_text("code")
-    (source / "pyproject.toml").write_text('[project]\nname = "mainboard"\n', encoding="utf-8")
-    (source / "src" / "mainboard" / "__pycache__").mkdir()
-    (source / "src" / "mainboard" / "__pycache__" / "cli.pyc").write_text("bytecode")
-    tool = tmp_path / "tool"
-    package = tool / "lib" / "site-packages" / "mainboard"
-    package.mkdir(parents=True)
-    (tool / "uv-receipt.toml").write_text(_RECEIPT % json.dumps(str(source)), encoding="utf-8")
-    return package
+def snapshot(tmp_path: Path) -> Layout:
+    return layout_at(tmp_path, "checkout")
 
 
-def touched(source: Path) -> None:
-    """Move one source file's clock forward, the edit the whole check exists to catch."""
-    edited = source / "src" / "mainboard" / "cli.py"
-    stat = edited.stat()
-    os.utime(edited, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+@pytest.fixture
+def linux(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """A Linux host whose re-executions are recorded rather than performed."""
+    replaced: list[list[str]] = []
+    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Linux")
+    monkeypatch.setattr("mainboard.staleness.os.execv", lambda path, argv: replaced.append(argv))
+    monkeypatch.delenv(staleness.REFRESHED, raising=False)
+    return replaced
 
 
-def test_package_metadata_moves_the_snapshot_even_when_runtime_source_does_not(
-    snapshot: Path,
-) -> None:
-    """A dependency edit must reinstall the tool rather than leaving its imports unchanged."""
-    check(snapshot)
-    metadata = snapshot.parents[2].parent / "checkout" / "pyproject.toml"
-    metadata.write_text(
-        '[project]\nname = "mainboard"\ndependencies = ["cuda-bindings"]\n',
-        encoding="utf-8",
-    )
-
-    assert check(snapshot).stale is True
+@pytest.fixture
+def windows(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
+    """A Windows host whose deferred workers are recorded rather than started."""
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
+    monkeypatch.setattr("mainboard.staleness.os.getpid", lambda: 314)
+    monkeypatch.setattr("mainboard.staleness.PixiEngine.defer", lambda self, *a: calls.append(a))
+    return calls
 
 
 def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_moves(
-    snapshot: Path,
+    snapshot: Layout, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The whole lifecycle: record, agree, drift, warn, reinstall, record again.
 
     The first run after an install is the baseline, an unchanged tree keeps agreeing with it,
-    an edit flips the answer to stale with the receipt's own extras in the named command, and
-    a reinstall (a rewritten receipt) invalidates the old baseline so the fresh snapshot
-    records the edited tree as its own.
+    an edit flips the answer to stale with the receipt's own extras in the named command (which
+    needs no git), asking again never heals it, and a reinstall (a rewritten receipt)
+    invalidates the old baseline so the fresh snapshot records the edited tree as its own.
     """
-    tool = snapshot.parents[2]
-    first = check(snapshot)
-    assert first == Snapshot(installed=True, detail="snapshot matches the source tree")
-    assert check(snapshot).stale is False
-    source = tool.parent / "checkout"
-    touched(source)
-    stale = check(snapshot)
+    monkeypatch.setenv("PATH", "")
+    assert check(snapshot.package) == Snapshot(
+        installed=True, detail="snapshot matches the source tree"
+    )
+    assert check(snapshot.package).stale is False
+    snapshot.edit()
+    stale = check(snapshot.package)
     assert stale.stale is True
-    assert str(source) in stale.detail
+    assert str(snapshot.source) in stale.detail
     assert stale.fix == (
         "exec",
         "--spec",
@@ -85,23 +120,24 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
         "--reinstall-package",
         "mainboard",
         "--from",
-        f"{source}[wandb]",
+        f"{snapshot.source}[wandb]",
         "mainboard",
         "--force",
     )
-    receipt = tool / "uv-receipt.toml"
-    stat = receipt.stat()
-    os.utime(receipt, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
-    assert check(snapshot).stale is False
+    assert check(snapshot.package) == stale
+    bump(snapshot.tool / "uv-receipt.toml")
+    assert check(snapshot.package).stale is False
 
 
-def stale(snapshot: Path) -> Snapshot:
-    """The fixture's snapshot recorded, then edited past: what every refresh starts from."""
-    check(snapshot)
-    touched(snapshot.parents[2].parent / "checkout")
-    found = check(snapshot)
-    assert found.stale
-    return found
+def test_package_metadata_moves_the_snapshot_even_when_runtime_source_does_not(
+    snapshot: Layout,
+) -> None:
+    """A dependency edit must reinstall the tool rather than leaving its imports unchanged."""
+    check(snapshot.package)
+    (snapshot.source / "pyproject.toml").write_text(
+        '[project]\nname = "mainboard"\ndependencies = ["cuda-bindings"]\n', encoding="utf-8"
+    )
+    assert check(snapshot.package).stale is True
 
 
 @pytest.mark.parametrize(
@@ -119,7 +155,8 @@ def stale(snapshot: Path) -> Snapshot:
     ],
 )
 def test_a_stale_snapshot_reinstalls_itself_quietly_and_reexecutes_the_same_command(
-    snapshot: Path,
+    snapshot: Layout,
+    linux: list[list[str]],
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
     installer: CommandResult | Exception,
@@ -131,9 +168,8 @@ def test_a_stale_snapshot_reinstalls_itself_quietly_and_reexecutes_the_same_comm
     reinstall that fails leaves the command answering from the snapshot it has, with the
     installer's own last word on stderr rather than a silent loop.
     """
-    found = stale(snapshot)
+    found = snapshot.stale()
     ran: list[tuple[str, ...]] = []
-    replaced: list[list[str]] = []
 
     def install(
         self: PixiEngine, action: Callable[..., CommandResult], *argv: str
@@ -143,18 +179,15 @@ def test_a_stale_snapshot_reinstalls_itself_quietly_and_reexecutes_the_same_comm
             raise installer
         return installer
 
-    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Linux")
     monkeypatch.setattr(PixiEngine, "within_cwd", install)
-    monkeypatch.setattr("mainboard.staleness.os.execv", lambda path, argv: replaced.append(argv))
     monkeypatch.setattr("mainboard.staleness.sys.orig_argv", ["python", "mainboard", "jobs"])
-    monkeypatch.delenv(staleness.REFRESHED, raising=False)
 
     Refresh(found).run()
 
     printed = capfd.readouterr()
     assert printed.out == ""
     assert ran == [found.fix]
-    assert (replaced == [[sys.executable, "mainboard", "jobs"]]) is updated
+    assert (linux == [[sys.executable, "mainboard", "jobs"]]) is updated
     assert (os.environ.get(staleness.REFRESHED) == "1") is updated
     monkeypatch.delenv(staleness.REFRESHED, raising=False)
     if updated:
@@ -165,37 +198,33 @@ def test_a_stale_snapshot_reinstalls_itself_quietly_and_reexecutes_the_same_comm
 
 
 def test_a_second_process_waits_its_turn_and_only_reexecutes_on_the_install_it_waited_for(
-    snapshot: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    snapshot: Layout,
+    linux: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Nine jobs starting at once on a synced host reinstall once, and one never waits forever."""
-    found = stale(snapshot)
-    receipt = snapshot.parents[2] / "uv-receipt.toml"
-    stat = receipt.stat()
-    os.utime(receipt, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
-    replaced: list[list[str]] = []
-    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Linux")
+    found = snapshot.stale()
+    bump(snapshot.tool / "uv-receipt.toml")
     monkeypatch.setattr(
         PixiEngine, "within_cwd", lambda *args: pytest.fail("the install already happened")
     )
-    monkeypatch.setattr("mainboard.staleness.os.execv", lambda path, argv: replaced.append(argv))
 
     Refresh(found).run()
     monkeypatch.delenv(staleness.REFRESHED, raising=False)
-    assert len(replaced) == 1
+    assert len(linux) == 1
 
     monkeypatch.setattr("mainboard.staleness._LOCK_SECONDS", 0.01)
-    with FileLock(snapshot.parents[2] / "self-update.lock", thread_local=False):
+    with FileLock(snapshot.tool / "self-update.lock", thread_local=False):
         worker = Thread(target=Refresh(found).run)
         worker.start()
         worker.join()
-    assert len(replaced) == 1
+    assert len(linux) == 1
     assert "another update held its lock" in capsys.readouterr().err
 
 
 def test_windows_hands_the_update_to_one_worker_that_outlives_the_launcher(
-    snapshot: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    snapshot: Layout, windows: list[tuple[str, ...]], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A running Windows interpreter cannot be replaced, so the update waits for it to exit.
 
@@ -203,18 +232,13 @@ def test_windows_hands_the_update_to_one_worker_that_outlives_the_launcher(
     the worker has finished finds the pending marker and schedules nothing more, until the
     marker is old enough that its worker can no longer be on its way.
     """
-    found = stale(snapshot)
-    calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
-    monkeypatch.setattr("mainboard.staleness.os.getpid", lambda: 314)
-    monkeypatch.setattr("mainboard.staleness.PixiEngine.defer", lambda self, *a: calls.append(a))
-    assert found.source is not None
-    log = found.source / ".mainboard" / "self-update.log"
+    found = snapshot.stale()
+    log = snapshot.source / ".mainboard" / "self-update.log"
 
     Refresh(found).run()
     Refresh(found).run()
 
-    assert calls == [
+    assert windows == [
         (
             "exec",
             "--spec",
@@ -238,7 +262,7 @@ def test_windows_hands_the_update_to_one_worker_that_outlives_the_launcher(
     assert capsys.readouterr().err.count("updates itself once this command exits") == 1
     os.utime(pending, (0, 0))
     Refresh(found).run()
-    assert len(calls) == 2
+    assert len(windows) == 2
 
 
 @pytest.mark.parametrize(
@@ -250,7 +274,7 @@ def test_windows_hands_the_update_to_one_worker_that_outlives_the_launcher(
     ],
 )
 def test_every_invocation_starts_on_its_sources_newest_code(
-    snapshot: Path,
+    snapshot: Layout,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     moved: bool,
@@ -259,7 +283,7 @@ def test_every_invocation_starts_on_its_sources_newest_code(
     said: str,
 ) -> None:
     """The entry check, and the one environment flag that keeps a failed update from looping."""
-    found = stale(snapshot) if moved else check(snapshot)
+    found = snapshot.stale() if moved else check(snapshot.package)
     monkeypatch.setattr("mainboard.staleness.check", lambda: found)
     ran: list[Snapshot] = []
     monkeypatch.setattr(Refresh, "run", lambda self: ran.append(self.found))
@@ -275,51 +299,38 @@ def test_every_invocation_starts_on_its_sources_newest_code(
     assert said in printed.err
 
 
-def test_the_refresh_preserves_an_existing_durable_interpreter(snapshot: Path) -> None:
-    """A uv-managed interpreter remains the exact self-update contract."""
-    tool = snapshot.parents[2]
-    source = tool.parent / "checkout"
-    interpreter = tool.parent / "uv" / "python" / "cpython-3.14.7" / "python.exe"
-    interpreter.parent.mkdir(parents=True)
-    interpreter.write_text("python")
-    (tool / "uv-receipt.toml").write_text(
-        "[tool]\n"
-        f"python = {json.dumps(str(interpreter))}\n"
-        f'requirements = [{{ name = "mainboard", directory = {json.dumps(str(source))} }}]\n',
-        encoding="utf-8",
-    )
-    check(snapshot)
-    touched(source)
+@pytest.mark.parametrize(
+    ("interpreter", "kept"),
+    [
+        pytest.param(
+            ("uv", "python", "cpython-3.14.7", "python.exe"), True, id="a-uv-managed-python"
+        ),
+        pytest.param(
+            ("checkout", ".mainboard", "envs", "tool", ".pixi", "python.exe"),
+            False,
+            id="a-project-environment-python",
+        ),
+    ],
+)
+def test_the_refresh_keeps_only_a_durable_interpreter(
+    snapshot: Layout, tmp_path: Path, interpreter: tuple[str, ...], kept: bool
+) -> None:
+    """A uv-managed interpreter remains the exact self-update contract, while replaceable
+    generated state never becomes the public launcher's Python home.
+    """
+    python = tmp_path.joinpath(*interpreter)
+    python.parent.mkdir(parents=True)
+    python.write_text("python")
+    snapshot.declare("", head=f"python = {json.dumps(str(python))}\n")
 
-    assert check(snapshot).fix[4:10] == (
-        "tool",
-        "install",
-        "--reinstall-package",
-        "mainboard",
-        "--python",
-        str(interpreter),
-    )
+    fix = snapshot.stale().fix
 
-
-def test_the_refresh_does_not_retain_a_project_environment_interpreter(snapshot: Path) -> None:
-    """Replaceable generated state never becomes the public launcher's Python home."""
-    tool = snapshot.parents[2]
-    source = tool.parent / "checkout"
-    interpreter = source / ".mainboard" / "envs" / "tool" / ".pixi" / "python.exe"
-    interpreter.parent.mkdir(parents=True)
-    interpreter.write_text("python")
-    (tool / "uv-receipt.toml").write_text(
-        "[tool]\n"
-        f"python = {json.dumps(str(interpreter))}\n"
-        f'requirements = [{{ name = "mainboard", directory = {json.dumps(str(source))} }}]\n',
-        encoding="utf-8",
-    )
-    check(snapshot)
-    touched(source)
-
-    fix = check(snapshot).fix
-    assert "--python" not in fix
-    assert str(interpreter) not in fix
+    assert (
+        fix[4:10]
+        == ("tool", "install", "--reinstall-package", "mainboard", "--python", str(python))
+    ) is kept
+    assert (str(python) in fix) is kept
+    assert "[wandb]" in fix[-3]
 
 
 def test_a_checkout_running_its_own_source_has_nothing_to_be_stale_against(
@@ -334,135 +345,87 @@ def test_a_checkout_running_its_own_source_has_nothing_to_be_stale_against(
 @pytest.mark.parametrize(
     ("receipt", "said"),
     [
-        ("not toml at all [", "names no source directory"),
-        ('[tool]\nrequirements = [{ name = "mainboard" }]\n', "names no source directory"),
-        ('[tool]\nrequirements = [{ name = "other", directory = "x" }]\n', "names no source"),
+        pytest.param("not toml at all [", "names no source directory", id="torn receipt"),
+        pytest.param(
+            '[tool]\nrequirements = [{ name = "mainboard" }]\n',
+            "names no source directory",
+            id="no directory",
+        ),
+        pytest.param(
+            '[tool]\nrequirements = [{ name = "other", directory = "x" }]\n',
+            "names no source",
+            id="another tool's requirement",
+        ),
+        pytest.param(
+            '[tool]\nrequirements = [{ name = "mainboard", directory = "gone" }]\n',
+            "no source tree at",
+            id="a directory that lost its source tree",
+        ),
     ],
-    ids=["torn receipt", "no directory", "another tool's requirement"],
 )
 def test_a_receipt_that_cannot_vouch_for_a_source_is_installed_but_never_stale(
-    snapshot: Path, receipt: str, said: str
+    snapshot: Layout, receipt: str, said: str
 ) -> None:
     """A snapshot uv cannot explain warns nobody, since there is no tree to compare against."""
-    (snapshot.parents[2] / "uv-receipt.toml").write_text(receipt)
-    found = check(snapshot)
+    (snapshot.tool / "uv-receipt.toml").write_text(receipt)
+    found = check(snapshot.package)
     assert found == Snapshot(installed=True, detail=found.detail)
     assert said in found.detail
 
 
-def test_a_receipt_whose_directory_lost_its_source_tree_says_where_it_looked(
-    snapshot: Path, tmp_path: Path
-) -> None:
-    (snapshot.parents[2] / "uv-receipt.toml").write_text(
-        _RECEIPT % json.dumps(str(tmp_path / "gone")), encoding="utf-8"
-    )
-    found = check(snapshot)
-    assert found.stale is False
-    assert "no source tree at" in found.detail
-
-
-def test_a_receipt_without_extras_still_names_the_wandb_extra(snapshot: Path) -> None:
-    """The extra is load-bearing, so the named command never drops it."""
-    source = snapshot.parents[2].parent / "checkout"
-    (snapshot.parents[2] / "uv-receipt.toml").write_text(
-        "[tool]\n"
-        f'requirements = [{{ name = "mainboard", directory = {json.dumps(str(source))} }}]\n',
-        encoding="utf-8",
-    )
-    check(snapshot)
-    touched(source)
-    assert any("[wandb]" in argument for argument in check(snapshot).fix)
-
-
 def test_a_torn_state_file_and_an_unwritable_tool_directory_both_answer_fresh(
-    snapshot: Path,
+    snapshot: Layout,
 ) -> None:
     """The check never fails the command that asked, whatever the state file's condition."""
-    tool = snapshot.parents[2]
-    (tool / "source-state.json").write_text("torn {")
-    assert check(snapshot).stale is False
-    held = json.loads((tool / "source-state.json").read_text())
-    assert set(held) == {"marker", "digest"}
-    (tool / "source-state.json").unlink()
-    tool.chmod(0o555)
+    state = snapshot.tool / "source-state.json"
+    state.write_text("torn {")
+    assert check(snapshot.package).stale is False
+    assert set(json.loads(state.read_text())) == {"marker", "digest"}
+    state.unlink()
+    snapshot.tool.chmod(0o555)
     try:
-        assert check(snapshot).stale is False
+        assert check(snapshot.package).stale is False
     finally:
-        tool.chmod(0o755)
+        snapshot.tool.chmod(0o755)
 
 
-def test_the_digest_reads_names_sizes_and_clocks_and_never_bytecode(snapshot: Path) -> None:
+def test_the_digest_reads_names_sizes_and_clocks_and_never_bytecode(snapshot: Layout) -> None:
     """Content is unread on purpose, so the check stays in CLI-startup budget."""
-    source = snapshot.parents[2].parent / "checkout" / "src"
+    source = snapshot.source / "src"
     before = digest(source)
     assert digest(source) == before
     (source / "mainboard" / "__pycache__" / "extra.pyc").write_text("more")
     assert digest(source) == before
-    touched(source.parent)
+    snapshot.edit()
     assert digest(source) != before
 
 
-def test_the_stale_state_survives_a_repeat_ask_without_rerecording(snapshot: Path) -> None:
-    """A stale answer stays stale until a reinstall, never healed by asking twice."""
-    check(snapshot)
-    touched(snapshot.parents[2].parent / "checkout")
-    assert staleness.check(snapshot).stale is True
-    assert staleness.check(snapshot).stale is True
-
-
-def test_refresh_advice_needs_no_git(snapshot: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PATH", "")
-    check(snapshot)
-    touched(snapshot.parents[2].parent / "checkout")
-    found = check(snapshot)
-    assert found.stale
-    assert "git" not in " ".join(found.fix)
-
-
-def test_a_refresh_without_a_source_logs_beside_the_working_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A snapshot that names no source still gets a durable log, next to where it ran."""
-    monkeypatch.chdir(tmp_path)
-    assert staleness._refresh_log(None) == tmp_path / Project().out_dir / "self-update.log"
-
-
 def test_a_reinstall_names_its_source_absolutely_and_the_worker_reads_it_off_the_snapshot(
-    snapshot: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, windows: list[tuple[str, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One reading of the receipt answers both callers, and a bracket in a path survives it.
 
     The deferred worker used to recover its argv by slicing four tokens off the pixi command and
     its log directory by cutting the `--from` token at the first `[`, which is the extras
     separator and also an ordinary character in a directory name. Both now come off the snapshot
-    that read the receipt.
+    that read the receipt. A checkout without a pyproject still digests, and a snapshot naming
+    no source logs beside the working directory.
     """
-    tool = snapshot.parents[2]
-    source = tool.parent / "check[out]"
-    (source / "src" / "mainboard").mkdir(parents=True)
-    (source / "src" / "mainboard" / "cli.py").write_text("code", encoding="utf-8")
-    (tool / "uv-receipt.toml").write_text(_RECEIPT % json.dumps(str(source)), encoding="utf-8")
-    check(snapshot)
-    touched(source)
+    snapshot = layout_at(tmp_path, "check[out]")
+    (snapshot.source / "pyproject.toml").unlink()
+    found = snapshot.stale()
 
-    found = check(snapshot)
-
-    assert found.stale is True
-    assert found.source == source
+    assert found.source == snapshot.source
     assert found.uv[0] == "uv" and found.uv[-1] == "--force"
-    assert f"{source}[wandb]" in found.uv
+    assert f"{snapshot.source}[wandb]" in found.uv
     assert found.fix == ("exec", "--spec", staleness._UV, *found.uv)
-    assert staleness._refresh_log(found.source) == source / Project().out_dir / "self-update.log"
-
-    calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
-    monkeypatch.setattr("mainboard.staleness.os.getpid", lambda: 7)
-    monkeypatch.setattr(
-        "mainboard.staleness.PixiEngine.defer", lambda self, *args: calls.append(args)
-    )
+    log = snapshot.source / Project().out_dir / "self-update.log"
+    assert staleness._refresh_log(found.source) == log
 
     Refresh(found).run()
 
-    handed = calls[0]
+    handed = windows[0]
     assert handed[handed.index("--") + 1 :] == found.uv
-    assert str(source / Project().out_dir / "self-update.log") in handed
+    assert str(log) in handed
+    monkeypatch.chdir(tmp_path)
+    assert staleness._refresh_log(None) == tmp_path / Project().out_dir / "self-update.log"

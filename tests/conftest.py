@@ -36,16 +36,11 @@ _ABSENT = object()
 
 _MANIFEST = Project().manifest
 
-# Hypothesis runs derandomized here, which buys two things this suite needs. The gate demands
-# every line and branch on every run, so a property that reaches a branch has to reach it again
-# tomorrow, and a fixed example set is what makes that true. It also drops the example database,
-# so a checkout with no `.hypothesis` directory behaves exactly like one that has run before.
-# The default budget is small because the suite is a fast inner loop; `--hypothesis-profile=deep`
-# spends a much larger one when someone is hunting rather than gating.
-_SHARED = {
-    "deadline": None,
-    "suppress_health_check": [HealthCheck.function_scoped_fixture],
-}
+# Hypothesis runs derandomized: the gate demands every line and branch on every run, so a property
+# that reaches a branch must reach it again tomorrow, and with no example database a fresh checkout
+# behaves like one that has run before. The budget is small for a fast inner loop;
+# `--hypothesis-profile=deep` spends a much larger one when someone is hunting rather than gating.
+_SHARED = {"deadline": None, "suppress_health_check": [HealthCheck.function_scoped_fixture]}
 settings.register_profile("fast", derandomize=True, max_examples=30, **_SHARED)
 settings.register_profile("deep", max_examples=500, **_SHARED)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "fast"))
@@ -133,16 +128,12 @@ tool = "templates/tool"
 def sealed_tracking() -> Iterator[None]:
     """Keep every test off the real tracking SDK, whatever a manifest under test declares.
 
-    Tracking is on by default, so a workspace fixture that says nothing about it would open real
-    runs from inside the suite. Halting the import is the tightest seal available: the sink
-    refuses exactly as it does on a machine that never installed the package, `Mirrored` absorbs
-    that refusal exactly as it absorbs any other, and no test can reach the network by
-    forgetting a table. A test that wants a sink installs its own stand-in over this one and
-    wins, since it patches later and is undone first.
+    Tracking is on by default, so a manifest silent about it would open real runs. Halting the
+    import makes the sink refuse as on a machine without the package, which `Mirrored` absorbs
+    like any refusal. A test wanting a sink patches its own stand-in later and so wins.
 
-    The save and restore is written by hand rather than through `monkeypatch`, because asking a
-    root autouse fixture for `monkeypatch` moves that fixture's teardown after every package
-    conftest's, and one of them clears caches a test had patched.
+    The restore is by hand because asking a root autouse fixture for `monkeypatch` moves its
+    teardown after every package conftest's, one of which clears caches a test had patched.
     """
     held = sys.modules.get("wandb", _ABSENT)
     sys.modules["wandb"] = None
@@ -157,11 +148,9 @@ def sealed_tracking() -> Iterator[None]:
 def sealed_credentials() -> None:
     """Keep the developer's own workspace `.env` out of every test.
 
-    The credential loader merges that file into the process environment the first time a backend
-    looks a key up, so a suite running inside a real workspace would inherit whatever keys the
-    machine holds and a test that clears one would watch it come straight back. Marking the
-    shared loader spent before each test makes the whole suite read the same on a keyed machine
-    as on a bare one, and the loader's own tests unseal it onto a workspace they built.
+    The loader merges that file into the environment on the first key lookup, so a test clearing
+    a key would watch it come back. Marked spent, the suite reads the same on a keyed machine as
+    on a bare one; the loader's own tests unseal it onto a workspace they built.
     """
     Credentials().loaded = True
 
@@ -170,9 +159,8 @@ def sealed_credentials() -> None:
 def posix_bash() -> str:
     """A real POSIX Bash, never Windows' WSL launcher shim.
 
-    GitHub's Windows image puts ``System32/bash.exe`` on PATH even when no WSL distribution
-    exists. Git for Windows ships the Bash and coreutils that can actually exercise this remote
-    POSIX protocol, so use that installation explicitly instead of trusting the ambiguous name.
+    GitHub's Windows image puts ``System32/bash.exe`` on PATH even with no WSL distribution, so
+    Windows takes Git for Windows' Bash and coreutils explicitly rather than the ambiguous name.
     """
     if sys.platform != "win32":
         if bash := shutil.which("bash"):
@@ -201,11 +189,10 @@ def lab_source(tmp_path_factory: pytest.TempPathFactory) -> Lab:
 
 @pytest.fixture
 def lab(lab_source: Lab, tmp_path: Path) -> Iterator[Lab]:
-    """A private copy of the lab, so a test can dirty it, and the modules it imported forgotten.
+    """A private copy of the lab to dirty, the modules the runner imported from it forgotten after.
 
     A copy keeps the submodule whole: its `.git` file points into the superproject's own
-    `.git/modules`, which travels with the tree. The runner imports the lab's packages for
-    real, so their names are dropped from `sys.modules` and its root from `sys.path` after.
+    `.git/modules`, which travels with the tree.
     """
     root = tmp_path / "projects"
     shutil.copytree(lab_source.root, root, symlinks=True)
@@ -227,24 +214,20 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-# The three tables the shared dispatch database keeps, emptied together after any test that
-# wrote to one of them.
+# The shared dispatch database's tables, emptied together after any test that wrote to one.
 _TABLES = ("runs", "hosts", "history")
 
-# The tmpfs the kernel already offers. The shared workspace below is a SQLite file being written
-# to and little else, every WAL commit is one fsync, and that fsync costs milliseconds on a real
-# disk against microseconds here. A directory made under it is as hermetic as any other.
+# The kernel's tmpfs: the shared workspace below is mostly SQLite writes, each WAL commit one
+# fsync that costs milliseconds on a real disk against microseconds here.
 _MEMORY = Path("/dev/shm")
 
 # The handle a recorded submit answers with, so a test reads a fixed id out of the rendered row.
 _HANDLE = Handle(id="4242", host="miyabi-g", root="/work/p", kind="pbs")
 
-# The task rows a rendered project leaves for the workspace to paste, the one payload the `new`
-# verb prints beside its record rather than inside it.
+# The task rows a rendered project leaves to paste, which `new` prints beside its record.
 _SNIPPET = 'sc-baseline = { run = "python -m experiments.baseline.run execute" }\n'
 
-# One dependency edit as the curator reports it, the constraint that moved and the pin its solve
-# dragged along, which is the two-row shape every dependency verb renders.
+# One dependency edit, the constraint that moved and the pin its solve dragged along.
 _MOVED = [
     Change(name="tqdm", where="[dev.python.deps]", before="absent", after=">=4.70.0, <5"),
     Change(name="tqdm", where="pixi.lock", before="absent", after="4.70.0"),
@@ -289,10 +272,8 @@ def surveyed() -> list[ComputePath]:
 def station() -> Iterator[Path]:
     """The one workspace the root-level modules share, its dispatch database created once.
 
-    That database was this slice's whole cost. A board opens it the moment anything reaches for
-    a dispatcher, and creating a fresh SQLite file is fsync bound at tens of milliseconds, so a
-    workspace per test paid for one per test. Nothing in the file is test-specific, so it is
-    built once here and emptied after whichever test wrote to it.
+    Creating a SQLite file is fsync bound at tens of milliseconds and any board reaching for a
+    dispatcher opens it, so a workspace per test paid that per test; `depot` empties it instead.
     """
     under = _MEMORY if os.access(_MEMORY, os.W_OK) else None
     root = Path(mkdtemp(dir=under, prefix="mainboard-station-"))
@@ -306,8 +287,7 @@ def station() -> Iterator[Path]:
 def depot(station: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """`station` entered as the working directory, with whatever a test recorded dropped after.
 
-    The row count is asked for before anything is deleted because most tests write nothing at
-    all, and a `DELETE` that finds no rows still opens a transaction the shared file must sync.
+    Rows are counted first since most tests write none, and even an empty `DELETE` syncs.
     """
     monkeypatch.setenv("MC_TEST_SCRATCH", "/scratch/lab")
     monkeypatch.chdir(station)
@@ -333,10 +313,8 @@ def board(depot: Path) -> Board:
 def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Relayed]:
     """Every board call a CLI verb makes, recorded as `(verb, host, args, options)` instead.
 
-    The verbs are a dispatch table over the board, so what belongs to the CLI is which method
-    each one reaches and what it turned its flags into. Everything past that seam is tested
-    where it lives. Each stand-in answers with the shape the verb goes on to render, so the
-    printing stays real while nothing behind the seam runs.
+    Each stand-in answers with the shape the verb goes on to render, so the printing stays real
+    while nothing behind the seam runs.
     """
     calls: list[Relayed] = []
 

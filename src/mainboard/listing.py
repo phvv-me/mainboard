@@ -1,12 +1,10 @@
-# What `mainboard jobs` shows: every dispatched run still in flight, with what its own scheduler
-# says about it right now, and the most recently settled ones behind them.
+# What `mainboard jobs` shows: every run still in flight with its scheduler's word on it now,
+# then the most recently settled ones.
 #
-# The verb used to print the twenty newest rows of the dispatch cache with whatever state had
-# last been memoized in them, which on a wave of thirty five jobs meant fifteen invisible runs
-# and a blank state column for every live one. The operator went to ssh and `qstat` by hand to
-# learn that the debug queue was starting two jobs at a time. So the live runs are never
-# truncated, they carry their backend's own live state rather than a remembered one, and the
-# truncation that is left says so out loud.
+# The verb used to print the cache's twenty newest rows with their memoized state, so a wave of
+# thirty five jobs showed fifteen invisible runs and a blank state on every live one, and the
+# operator ran `qstat` over ssh to learn the debug queue was starting two at a time. So live runs
+# are never truncated, carry their backend's live state, and any truncation left says so.
 
 from typing import TYPE_CHECKING
 
@@ -26,32 +24,27 @@ if TYPE_CHECKING:
     from .dispatch.vocabulary import JobState
     from .pulse import Pulse
 
-
-# The verdicts whose row is worth a reason. A cancel is a decision somebody made and a skip is a
-# job nobody dispatched, so neither has an output to explain itself with.
+# The verdicts whose row is worth a reason. A cancel is somebody's decision and a skip was never
+# dispatched, so neither has output to explain itself with.
 _FAILURES = frozenset({vocabulary.FAILED, vocabulary.TIMEOUT})
 
 
 class JobRow(FrozenModel):
     """One dispatched run as the listing prints it.
 
-    state: what the run is doing now, its backend's live word for a job still in flight and its
-        settled verdict once it has ended.
-    host: the target it was dispatched to.
-    name: the run's label, the job script it was submitted as when the dispatch named none.
-    handle: the scheduler or provider handle.
-    since: when the run entered that state, as the backend reports it, falling back to the
-        dispatch time while the backend says nothing about when; empty once it has settled.
+    state: the backend's live word while in flight, the settled verdict once ended.
+    name: the run's label, else the job script it was submitted as.
+    since: when the run entered that state per the backend, else the dispatch time; empty once
+        settled.
     starts: when the backend expects a queued run to start, empty where it estimates none.
-    submitted_at: when the run was dispatched.
-    cause: why a settled run failed, its own last meaningful output line. Empty for a live run,
-        which has printed nothing home yet, and for one that ended clean.
-    cells: a running test job's cells landed out of its total, `3/12`, with how many failed
-        after it when any did; empty where its log reports none.
+    cause: a settled failure's last meaningful output line; empty for a live run, which has
+        printed nothing home yet, and for a clean one.
+    cells: a running test job's cells landed out of its total, `3/12`, plus how many failed
+        when any did; empty where its log reports none.
     quiet_s: seconds since a running job's output last grew, empty until a look has seen it
         twice, since one look cannot tell silence from a job that just printed.
-    gpu_pct: the busiest card on the host a running job runs on, empty where that is not one
-        cheap command away, a cluster's login node or a rented machine.
+    gpu_pct: the busiest card on a running job's host, empty where that is not one cheap
+        command away (a cluster's login node, a rented machine).
     """
 
     state: str
@@ -71,8 +64,7 @@ class Listed(FrozenModel):
     """One listing: the rows it prints and the one line saying what it could not.
 
     rows: every live run, then the settled tail, newest first inside each.
-    note: what the table leaves out and which hosts went quiet, empty when it holds everything
-        and every host answered.
+    note: what the table leaves out and which hosts went quiet, empty when nothing is missing.
     """
 
     rows: tuple[JobRow, ...]
@@ -82,18 +74,15 @@ class Listed(FrozenModel):
 class Listing:
     """Every live dispatched run, resolved against its own host, and the settled tail behind it.
 
-    The live rows are the point, so they are never cut to a limit and never answered from memory:
-    a job the cache last saw queued may be running now, and that difference is the whole reason
-    somebody types this verb. Resolving them costs one query per host rather than one per job,
-    the same batched probe the durable sweep already makes, so a wave of thirty five jobs on one
-    cluster is one `qstat`. A host that will not answer costs its own runs their live state and
-    nothing else: those rows fall back to what the cache remembers and the note names the host.
+    Live rows are never cut to a limit nor answered from memory: a job last seen queued may be
+    running now, which is why somebody types this verb. Resolution is the sweep's batched probe,
+    one query per host (a thirty five job wave on one cluster is one `qstat`). A quiet host costs
+    only its own runs their live state: they fall back to the cache and the note names the host.
     """
 
     def __init__(self, board: Board, *, limit: int, pulses: Pulses | None = None) -> None:
-        """board: the workspace whose cache holds the runs and whose hosts answer for them.
+        """limit: how many settled runs to show behind the live ones.
 
-        limit: how many settled runs to show behind the live ones.
         pulses: the look at running jobs' output and cards, the workspace's own when None.
         """
         self.board = board
@@ -126,12 +115,10 @@ class Listing:
     def flying(record: RunRecord, state: JobState | None, pulse: Pulse | None) -> JobRow:
         """One live run's row, from what its host just said or from the cache when it went quiet.
 
-        The state column is the lifecycle's own live word, `queued`, `running`, or `finished`
-        for a job whose queue is done with it and whose sweep has not settled it yet, since those
-        are the distinctions a person is reading this table for. A backend that maps neither
-        stage onto the lifecycle leaves its own raw word (`Queued` in a pueue status), and a host
-        that answered nothing leaves the cache's memory of it. A running job carries its pulse:
-        cells landed, how long its output has been quiet, and its host's busiest card.
+        The state is the lifecycle's live word, `queued`, `running`, or `finished` for a job its
+        queue is done with but the sweep has not settled, the distinctions a reader wants. A
+        backend mapping neither stage leaves its raw word (`Queued` in a pueue status). A running
+        job carries its pulse: cells landed, output quiet time, and its host's busiest card.
         """
         live = state.phase if state else ""
         progress = pulse.progress if pulse else Progress()
@@ -150,11 +137,9 @@ class Listing:
         )
 
     def landed(self, record: RunRecord) -> JobRow:
-        """One settled run's row, read from the cache, since a terminal verdict cannot move.
+        """One settled run's row from the cache, since a terminal verdict cannot move.
 
-        A failure carries what it said on the way out, off the log the sweep already brought
-        home. Thirty two GH200 jobs that all died on one loader line printed thirty two
-        identical `failed` rows here, and the line was on this disk the whole time.
+        A failure carries its `diagnosis.reason`, off the log the sweep already brought home.
         """
         verdict = record.verdict or vocabulary.UNKNOWN
         return JobRow(
@@ -169,9 +154,8 @@ class Listing:
     def note(self, *, shown: int, quiet: Mapping[str, str]) -> str:
         """What this listing leaves out and which hosts went quiet, empty when it leaves nothing.
 
-        A table that silently stops at its limit is the fault this verb was fixed for, so the
-        count is stated whenever anything was cut, and a host whose live state is missing is
-        named rather than left to read as a run that stopped moving.
+        A table silently stopping at its limit is the fault this verb was fixed for, and a quiet
+        host is named rather than left to read as runs that stopped moving.
         """
         total = self.cache.total()
         said = [f"{host} did not answer: {why}" for host, why in quiet.items()]

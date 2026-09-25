@@ -3,6 +3,7 @@ import os
 import platform
 import shlex
 import time
+from copy import copy
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
@@ -105,10 +106,6 @@ if TYPE_CHECKING:
     from .probe.system import System
     from .runtime.job import ToolCall
 
-# `route`'s answer for the schedulers reached over ssh, the family whose hosts run the work
-# themselves rather than renting an instance to run it on.
-_SSH_FAMILY = "ssh-family"
-
 # How long one manuscript build may take. A first build downloads the engine's bundle, so the
 # ceiling is minutes, and a TeX run looping on a bad macro still ends inside it.
 _PAPER_SECONDS = 900.0
@@ -118,20 +115,16 @@ class Job:
     """One dispatched run, addressed as an object instead of handle flags."""
 
     def __init__(self, board: Board, handle: Handle) -> None:
-        """board: the host-bound board that submitted this job.
-
-        handle: the dispatch handle identifying it on the scheduler.
-        """
+        """board: the host-bound board that submitted this job."""
         self.board = board
         self.handle = handle
 
     @property
     def scheduler(self) -> Scheduler:
-        """The backend that answers for this run, selected on the kind it was dispatched under.
+        """The backend selected on the kind this run was dispatched under, not today's profile.
 
-        The recorded kind rather than whatever the host's profile says today, which is the rule
-        every other probe already follows (`Dispatcher.state`, `Dispatcher.states`, and the
-        sweep's own grouping). A host whose declared kind changed under a live job would
+        Every other probe follows the recorded kind too (`Dispatcher.state`, `Dispatcher.states`,
+        the sweep's grouping); a host whose declared kind changed under a live job would
         otherwise have that job killed through a scheduler that never took it.
         """
         return registry.SCHEDULERS.select(self.handle.kind, default="ssh")
@@ -147,10 +140,10 @@ class Job:
             return self.scheduler.logs(remote, self.handle.root, handle=self.handle.id)
 
     def transcript(self) -> str:
-        """The run's captured output, empty when this backend keeps none or will not answer.
+        """The tolerant twin of `logs`: empty when this backend keeps none or will not answer.
 
-        The tolerant twin of `logs`, for a settle that wants the output if it can have it and
-        must never fail the sweep over a host that went quiet between the probe and the read.
+        A settle wants the output if it can have it and must never fail the sweep over a host
+        that went quiet between the probe and the read.
         """
         try:
             return self.logs()
@@ -161,9 +154,8 @@ class Job:
     def poll(self) -> JobState:
         """The job's state now, raising `HostUnreachable` when its host will not answer.
 
-        The unabsorbed read a durable sweep wants, since a sweep has to say which host went
-        quiet rather than quietly try again, and `state` is this same probe with the blip
-        absorbed for a caller polling on its own cadence.
+        A durable sweep has to say which host went quiet rather than quietly try again; `state`
+        is the same probe with the blip absorbed.
         """
         return self.board.dispatcher.state(self.handle)
 
@@ -172,18 +164,16 @@ class Job:
         self.board.dispatcher.fetch(self.handle)
 
     def release(self) -> None:
-        """Let go of whatever a settled job still holds, which for a scheduler is nothing.
+        """Nothing to let go of: a queue stops charging when the job ends, so no kill is sent.
 
-        A queue stops charging when the job ends, so a finished pueue or PBS job needs no kill
-        and never gets one. The verb exists because a provider-backed run keeps billing until it
-        is cancelled, and a sweep settling either kind says the same thing to both.
+        The verb exists because a provider run bills until cancelled, and a sweep settling
+        either kind says the same thing to both.
         """
 
     def state(self) -> JobState | None:
-        """One non-blocking probe of the job's current scheduler state.
+        """One non-blocking probe, None when the host could not be reached on this tick.
 
-        None when the host could not be reached on this tick, which is a reason to look again
-        rather than a verdict; `wait` is the same probe under a blocking loop.
+        None is a reason to look again rather than a verdict; `wait` is the blocking loop.
         """
         return self.board.dispatcher.probe(self.handle)
 
@@ -196,15 +186,12 @@ class Job:
 class ProviderJob:
     """One provider-dispatched run, the transport-free twin of `Job`.
 
-    Only the lifecycle is guaranteed here, since only the lifecycle is on every backend. Logs and
-    artifact delivery are capabilities, so each is asked for by contract first and refuses with
-    the backend's own advice when that backend never had one.
+    Only the lifecycle is on every backend. Logs and artifact delivery are capabilities, asked
+    for by contract first and refused with the backend's own advice when it has none.
     """
 
     def __init__(self, board: Board, backend: ProviderBackend, handle: Handle) -> None:
         """board: the workspace bound to the provider host.
-
-        backend: the provider backend instance that submitted this run.
 
         handle: the dispatch handle carrying the provider's opaque run id.
         """
@@ -230,7 +217,7 @@ class ProviderJob:
         """The run's captured output, empty when this provider keeps none or will not answer.
 
         A rented machine's disk dies with the rental, so logs and artifacts must both be read
-        before release. A provider without logs answers an empty string rather than a refusal.
+        before release.
         """
         if not isinstance(self.backend, LogSource):
             return ""
@@ -241,10 +228,9 @@ class ProviderJob:
             return ""
 
     def pull(self) -> None:
-        """Bring the run's recorded results path back, refusing when this provider cannot.
+        """Bring the handle's recorded results path back, refusing when this provider cannot.
 
-        The same no-argument verb the scheduler side carries, reading the path off the handle
-        the dispatch recorded, so one sweep pulls either kind of run without asking which it has.
+        The same no-argument verb as `Job.pull`, so one sweep pulls either kind of run.
         """
         path = self.handle.fetch_path
         if not path:
@@ -267,12 +253,11 @@ class ProviderJob:
             raise MissionError(self.backend.refusal(Delivery, handle=self.handle.id, path=path))
 
     def release(self) -> None:
-        """End the rental, which is the only thing that stops a provider charging for it.
+        """End the rental, the only thing that stops a provider charging for it.
 
-        A finished command does not end a provider run. Vast holds the instance at its intended
-        status and restarts the exited container until someone cancels (thirteen re-runs in five
-        minutes, verified live 2026-08-19), and an HPC-AI instance keeps running until it is
-        terminated, so a settled verdict has to be followed by this or the meter never stops.
+        A finished command does not end a provider run. Vast holds the instance and restarts the
+        exited container until cancelled (thirteen re-runs in five minutes, verified live
+        2026-08-19), and an HPC-AI instance runs until terminated.
         """
         self.backend.cancel(self.handle.id)
 
@@ -291,21 +276,18 @@ class ProviderJob:
             poll(interval)
 
 
-# A dispatched run, whichever of the two worlds took it. Both shapes answer `poll`, `pull` and
-# `release` the same way, which is what lets one durable sweep settle a queued job and a rented
-# instance without asking which it is holding.
+# A dispatched run from either world. Both answer `poll`, `pull` and `release` alike, so one
+# durable sweep settles a queued job and a rented instance without asking which it holds.
 type Run = Job | ProviderJob
 
 
 class Board:
     """The one addressable interface: a workspace, pivoted onto a host by `on`.
 
-    `Board()` finds the manifest like git finds a repository. The unbound
-    board is this machine; `board.on("gold")` is the same board bound to a
-    declared host, where `run`, `submit`, and `facts` keep the same shapes
-    while the profile decides scheduler, environment, container, and queue
-    policy. The composed subsystems stay public for anything the facade does
-    not carry.
+    `Board()` finds the manifest like git finds a repository. The unbound board is this machine;
+    `board.on("gold")` is the same board bound to a declared host, where `run`, `submit` and
+    `facts` keep their shapes while the profile decides scheduler, environment, container and
+    queue policy. The composed subsystems stay public for anything the facade does not carry.
     """
 
     def __init__(self, root: Path | None = None, *, host: str = "local") -> None:
@@ -323,9 +305,8 @@ class Board:
     def dispatcher(self) -> Dispatcher:
         """The dispatch core, rooted at this workspace and shared across every host pivot.
 
-        Rooted rather than left to the working directory, so a command typed in a subdirectory
-        reads the same run registry, stages into the same jobs directory and mirrors the same
-        tree as one typed at the root.
+        Rooted rather than left to the cwd, so a command typed in a subdirectory reads the same
+        run registry, stages into the same jobs directory and mirrors the same tree.
         """
         return self.once("dispatcher", lambda: Dispatcher(root=self.root))
 
@@ -347,12 +328,10 @@ class Board:
     def announce(self, label: str, run: Run, *, command: str, host: str, node: str = "") -> None:
         """Open this run's own receipts stream, so a dispatch outside a batch is tracked too.
 
-        A batch publishes its own submissions and is skipped here, so no line is written twice.
+        A batch publishes its own submissions and is skipped, so no line is written twice.
 
         label: the run's dispatch label, which says both where it belongs and who publishes it.
-        run: the dispatched run, for the handle its stream is keyed on.
         command: what the job runs, recorded as this run's config.
-        host: the target it was dispatched to.
         node: the ledger slug the run serves, carried on the line only when one was declared.
         """
         if is_batched(label) or not self.manifest.tracking.on:
@@ -373,24 +352,19 @@ class Board:
         )
 
     def attest(self, stream: str, *, job: str) -> None:
-        """Publish one attestation of this machine into `stream`'s receipts and return.
+        """Publish one attestation of this machine into `stream`'s receipts.
 
-        The synchronous, once-only twin of `samples`. It reads the machine it is called on, so a
-        dispatched job runs it on the node that will do the work rather than on the one that
-        dispatched it, which is the only reading that describes the measurement's conditions.
-
-        stream: the receipts stream the attestation belongs to.
-        job: the job inside that stream this reading describes.
+        The synchronous, once-only twin of `samples`. It reads the machine it runs on, so a
+        dispatched job attests the node doing the work, the only reading that describes the
+        measurement's conditions.
         """
         Sampler(self.receipts(stream), stream=stream, job=job, interval=0.0).attest()
 
     def attesting(self, tracked: tuple[str, str], *, root: str) -> ToolCall | None:
-        """The call this job makes to attest to its own machine, None when none does.
+        """The call this job makes to attest its own machine, None when tracking is off.
 
-        A sibling of `sampling`, gated on the same declaration, since both are the workspace's
-        tracking lane reaching a host and neither is worth staging on a workspace that tracks
-        nothing. Unlike the sampler this one carries no interval, because an attestation happens
-        exactly once and its whole value is that it happens before the work.
+        Gated like `sampling`, but with no interval: an attestation happens exactly once and its
+        whole value is that it happens before the work.
 
         tracked: the stream and job the attestation belongs to.
         root: the workspace root on the host.
@@ -403,21 +377,15 @@ class Board:
     def batch(self, spec: BatchSpec, *, selection: Selection | None = None) -> Batch:
         """The declared batch over this workspace, ready to prepare, price and dispatch.
 
-        Host-independent like `monitor`, since a batch names a target per job and fans across
-        the fleet rather than running on whichever host a board happens to be bound to.
+        Host-independent, since a batch names a target per job and fans across the fleet.
 
-        spec: the declared batch.
-        selection: which of the plan's jobs to act on, all of them when None. The batch keeps its
-            identity and its receipts stream either way, so a plan sent out in waves is one batch.
+        selection: which of the plan's jobs to act on, all when None. The batch keeps its
+            identity and receipts stream either way, so a plan sent out in waves is one batch.
         """
         return Batch(self, spec, bus=self.receipts(spec.batch_id), selection=selection)
 
     def compute(self) -> Survey:
-        """The survey of every compute path this workspace can reach, this machine included.
-
-        Host-independent like `monitor`, since one pass covers the whole fleet at once; a board
-        bound to a host hands back the same whole-workspace survey an unbound one does.
-        """
+        """The host-independent survey of every compute path this workspace reaches, here too."""
         return Survey(self)
 
     def containerizer(
@@ -437,11 +405,7 @@ class Board:
         return lambda argv: runtime.command(container, prefix_bind=plan.prefix(root), argv=argv)
 
     def deps(self) -> Dependencies:
-        """The manifest's declared requirements, editable and re-solvable from here.
-
-        Host-independent like `monitor` and `compute`, since a dependency belongs to the
-        workspace rather than to whichever machine happens to install it.
-        """
+        """The manifest's declared requirements, editable and re-solvable; host-independent."""
         return Dependencies(self)
 
     def doctor(self, env: str = "") -> Doctor:
@@ -452,10 +416,7 @@ class Board:
         return Doctor(self, env=env)
 
     def git(self) -> Tree:
-        """This workspace's repository tree: the root and every submodule under it, as one.
-
-        Host-independent like `deps`, since the repositories live in this workspace's checkout.
-        """
+        """This workspace's checkout: the root repository and every submodule, as one tree."""
         return Tree(self.root, self.manifest.git)
 
     def expectation(
@@ -472,14 +433,11 @@ class Board:
     ) -> JobEstimate:
         """What one submit on this host is expected to cost, admitted and priced before dispatch.
 
-        The same resource resolution `submit` runs, then the queue policy check a dispatch
-        would enforce anyway, so a request the policy refuses dies here in one sentence rather
-        than after an ssh round trip. The price is the estimator's, a provider's metered rate
-        for a rented host and zero for hardware this workspace owns, with the declared walltime
-        standing in for the runtime the way a batch spec's `runtime_s` does. Nothing connects,
-        nothing rents, nothing dispatches.
-
-        command: the command the submit would run.
+        The resource resolution `submit` runs, then the queue policy check, so a refused request
+        dies here in one sentence rather than after an ssh round trip. The price is the
+        estimator's (a provider's metered rate, zero on owned hardware), with the declared
+        walltime standing in for the runtime as a batch spec's `runtime_s` does. Nothing
+        connects, rents or dispatches.
         """
         plan = self.plan()
         resources = self.resources(
@@ -515,9 +473,8 @@ class Board:
     def facts(self) -> HostFacts:
         """The host's probed hardware facts as the versioned wire snapshot.
 
-        A remote host answers with its own installed tool, the one `install` puts there, so the
-        probe never depends on this workspace's mainboard being importable by whatever
-        interpreter the host happens to ship.
+        A remote host answers with the tool `install` put there, so the probe never depends on
+        this workspace's mainboard importing under whatever interpreter the host ships.
         """
         if self.local:
             return HostFacts.collected(self.root)
@@ -529,21 +486,18 @@ class Board:
 
         The judge `compute`, `setup` and `center verify` share, so a driver below the CUDA floor
         is the same row whichever verb found it.
-
-        system: the host's census, as its facts carry it.
         """
         return Fitness(self.root, self.manifest).judge(system, host=self.host)
 
     def occupancy(self) -> Occupancy:
         """Who holds each card of this host right now, local or through the host's own tool.
 
-        A scheduler host answers for its login node, which carries no card, so its allocation's
-        cards are not what this reads; ask `jobs` for what runs there.
+        A scheduler host answers for its card-less login node, not its allocations; ask `jobs`
+        for what runs there.
         """
         if self.local:
             return Occupancy.collected()
-        plan = self.plan(container="none")
-        with open_shell(plan, self.remote_root()) as shell:
+        with open_shell(self.plan(container="none"), self.remote_root()) as shell:
             text = shell.run(gpus_command(), activate=True)
         line = next((line for line in reversed(text.splitlines()) if line.startswith("{")), "")
         if not line:
@@ -552,11 +506,10 @@ class Board:
 
     @property
     def floor(self) -> str:
-        """The version this workspace declares for the tool itself, empty when it declares none.
+        """The tool version this workspace declares, empty when it declares none.
 
-        A workspace that vendors the tool's source has the source and needs no version. One that
-        consumes it from an index says which one it needs in the same place it says everything
-        else it depends on, so a host with no vendored source installs exactly that.
+        A workspace vendoring the tool's source needs no version; one consuming it from an index
+        names it like any other dependency, and a host with no vendored source installs that.
         """
         declared = self.manifest.requirement(self.project.name)
         return declared.version if declared is not None else ""
@@ -576,18 +529,11 @@ class Board:
     ) -> HostSetup:
         """Install an environment for this board's host, in place here or by onboarding over ssh.
 
-        An unbound board installs on this machine. A board bound to a host alias runs the whole
-        onboarding there instead, mirroring the workspace, installing the tool from that mirror,
-        provisioning the environment with the host's own tool, and probing what it became.
-
-        Which environment that is comes from the same resolver every other verb uses, so an
-        empty `env` means the host profile's declared choice rather than a hardcoded `default`.
-        Setting a host up therefore installs what the manifest already says that host runs, and
-        naming an environment stays the override it always was.
-
-        `resolve` means the same thing on both sides: this workspace may solve. A host is sent
-        the artifact this workspace already solved and installs from it, so onboarding never
-        puts a host's own compiler in the lock's dependency path.
+        A board bound to a host runs the whole onboarding there: mirror the workspace, install
+        the tool from the mirror, provision with the host's own tool, probe what it became. An
+        empty `env` means the profile's declared choice rather than `default`, so setting a host
+        up installs what the manifest says it runs. A host installs from the artifact this
+        workspace already solved, so its own compiler never enters the lock's dependency path.
 
         env: the environment name, the host profile's own when empty.
         resolve: allow a fresh dependency solve, refused otherwise when the lock cannot vouch
@@ -596,9 +542,9 @@ class Board:
         profile: the declared host profile describing this machine, so the generated activation
             carries that host's module stack; this board's own host when empty.
         watch: announces each onboarding stage as it begins.
-        sync_only: re-mirror and re-provision an already onboarded host without reinstalling
-            the tool or re-probing its hardware, neither of which changed when only the
-            manifest moved; refused on this machine, which has no onboarding to skip parts of.
+        sync_only: re-mirror and re-provision an onboarded host without reinstalling the tool or
+            re-probing its hardware, neither of which changed when only the manifest moved;
+            refused on this machine, which has no onboarding to skip parts of.
         """
         if sync_only and self.local:
             raise MissionError(
@@ -608,10 +554,11 @@ class Board:
         plan = self.resolver.plan(profile or self.host, env=env, container="none")
         provisioner = Provisioner(self.root, self.manifest)
         if not self.local:
+            compiler = provisioner.compiler_for(plan.env)
             if not resolve:
                 # The host will refuse a lock this manifest did not solve; ask here first,
                 # before the mirror and the remote install spend minutes reaching that answer.
-                provisioner.compiler_for(plan.env).vouch()
+                compiler.vouch()
             return Onboarding(
                 self.dispatcher,
                 plan,
@@ -619,13 +566,18 @@ class Board:
                 artifact=provisioner.artifact_for(plan.env),
                 resolve=resolve,
                 watch=watch,
-                digest=provisioner.compiler_for(plan.env).digest(),
+                digest=compiler.digest(),
                 floor=self.floor,
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
-        # An environment solved for a platform this machine cannot run has no prefix to
-        # activate here; its lock ships with `setup` to the host that runs it.
-        activate = self.activation(provisioner, plan) if provisioner.runs_here(plan.env) else ""
+        # A platform this machine cannot run has no prefix to activate here; its lock ships with
+        # `setup`. `activate.sh` is bash, which nothing on Windows sources: a Windows workspace
+        # activates through the activation pixi cached at provisioning, so none is named.
+        activate = (
+            str(provisioner.activate(plan.env, modules=plan.profile.modules))
+            if provisioner.runs_here(plan.env) and platform.system() != "Windows"
+            else ""
+        )
         return HostSetup(
             host=self.host,
             root=str(self.root),
@@ -634,21 +586,6 @@ class Board:
             installer="in-place",
             tool=version(self.project.name),
         )
-
-    def activation(self, provisioner: Provisioner, plan: ExecutionPlan) -> str:
-        """Write the shell script a bare shell activates this environment from, where one runs.
-
-        `activate.sh` is bash by construction, and nothing on Windows sources it: writing one
-        there hands the reader a script their own shell cannot run, with a PATH built for a
-        different world. A Windows workspace activates through the activation pixi cached when
-        it was provisioned, so this says so by writing nothing and naming nothing.
-
-        provisioner: the provisioner that has just installed the environment.
-        plan: the resolved execution context, whose profile carries this host's module stack.
-        """
-        if platform.system() == "Windows":
-            return ""
-        return str(provisioner.activate(plan.env, modules=plan.profile.modules))
 
     def interact(
         self,
@@ -661,26 +598,15 @@ class Board:
     ) -> NoReturn:
         """Hand this terminal a session on the bound host, inside its mirrored workspace.
 
-        The counterpart of `shell` for a machine that is not this one, and the verb that ends
-        the habit of ssh'ing in by hand and retyping the `cd` and the queue flags. This process
-        is replaced by the ssh rather than wrapping it, so the session owns the terminal and
-        every signal reaching it, and leaving the session lands back where the user started.
-
-        Each scheduler decides what a session is on its own host, since the answer genuinely
-        differs. An ssh box is already the machine the work runs on, so its own tool takes the
-        terminal, while a queued cluster must be asked for an allocation first and hands the
-        terminal to a compute node. The staging around either is the `cd`, `PATH` and modules
-        every other remote command gets, and nothing more, because whatever answers on the far
-        side owns the activation.
-
-        A kept session runs inside a tmux session on the far side, named for this workspace
-        and host, so the terminal can drop and the allocation stays up on the cluster; asking
-        again with `keep` reattaches to it instead of asking the scheduler for another node.
+        The counterpart of `shell` for another machine. This process is replaced by the ssh, so
+        the session owns the terminal and its signals and leaving it lands where the user began.
+        Each scheduler decides what a session is: an ssh box hands the terminal to its own tool,
+        a queued cluster first allocates a compute node. The staging is only the `cd`, `PATH`
+        and modules every remote command gets; the far side owns activation. A kept session
+        runs in a tmux session named for this workspace and host, so the terminal can drop while
+        the allocation stays up, and `keep` again reattaches instead of allocating another node.
 
         command: a command to run instead of handing over the terminal, its own flags included.
-        env: an environment name overriding the profile's choice.
-        queue: the queue the allocation targets, the profile's own when empty.
-        walltime: the session's wall-clock limit, the profile's own when empty.
         keep: hold the session in tmux on the far side and reattach to one already held.
         replace: the process-replacing exec, injectable so a test can read the argv it built.
         """
@@ -690,7 +616,7 @@ class Board:
                 "this machine."
             )
         plan = self.plan(env=env, container="none")
-        if route(plan.profile.kind) != _SSH_FAMILY:
+        if route(plan.profile.kind) != "ssh-family":
             raise MissionError(
                 f"host {self.host!r} rents instances through {plan.profile.kind!r} and hands "
                 f"out no terminal. Run `{self.project.name} submit --on {self.host}` instead."
@@ -718,18 +644,15 @@ class Board:
             # starts one, so the same verb both opens and returns to a held allocation.
             held = f"{self.project.name}-{self.host}"
             staged = f"tmux new-session -A -s {shlex.quote(held)} {shlex.quote(staged)}"
-        # A bounded transport is what a poll wants and the opposite of what a session wants, so
-        # the user's own ssh config owns this one connection.
+        # A bounded transport suits a poll, not a session, so the user's ssh config owns this one.
         replace("ssh", dialect.session(self.host, staged))
 
     def job(self, handle: str | int, *, host: str = "") -> Run:
         """The dispatched run `handle`, rebuilt from the dispatch cache as whichever kind it is.
 
-        A fresh process addresses an already-running job the same way the process that
-        submitted it did, without reassembling a `Handle` from the run registry and the host
-        profile by hand. The kind the cache recorded decides which world it comes back from, a
-        scheduler job bound to its host's workspace or a provider run bound to its backend, so a
-        rental outlives the process that started it exactly as a queued job does.
+        A fresh process addresses a running job as the submitting one did, with no `Handle`
+        reassembled by hand. The recorded kind decides the world it returns from, so a rental
+        outlives the process that started it exactly as a queued job does.
 
         handle: the scheduler handle or provider run id the job was dispatched under.
         host: the alias to disambiguate a handle recorded on several hosts.
@@ -744,40 +667,27 @@ class Board:
             raise MissionError(
                 f"creation {record.creation} has no confirmed provider handle; {action}"
             )
-        destination = route(record.kind)
-        if destination != "ssh-family":
-            return ProviderJob(
-                self.on(record.target),
-                destination(),
-                Handle(
-                    id=record.handle,
-                    host=record.target,
-                    root="",
-                    kind=record.kind,
-                    fetch_path=record.fetch_path,
-                ),
-            )
         bound = self.on(record.target)
-        return Job(
-            bound,
-            Handle(
-                id=record.handle,
-                host=record.target,
-                root=bound.remote_root(),
-                kind=record.kind,
-                fetch_path=record.fetch_path,
-            ),
+        rebuilt = partial(
+            Handle,
+            id=record.handle,
+            host=record.target,
+            kind=record.kind,
+            fetch_path=record.fetch_path,
         )
+        destination = route(record.kind)
+        if destination == "ssh-family":
+            return Job(bound, rebuilt(root=bound.remote_root()))
+        return ProviderJob(bound, destination(), rebuilt(root=""))
 
     def line(self, command: str, *, env: str = "", container: str = "") -> str:
         """The staged shell line this board's host would run `command` through.
 
-        The one place the staging is assembled, cd, PATH, modules, then the environment or the
-        container, so a caller that wants the command's output rather than its exit code runs
-        the very line `run` runs instead of restaging it a second way.
+        The one place the staging (cd, PATH, modules, then environment or container) is
+        assembled, so a caller wanting the output rather than the exit code runs the very line
+        `run` runs.
 
         command: the shell command, or a declared task name and its arguments.
-        env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
         """
         plan = self.plan(env=env, container=container)
@@ -790,11 +700,7 @@ class Board:
         )
 
     def monitor(self) -> Monitor:
-        """The durable sweep over every job this workspace's dispatch cache still owes an outcome.
-
-        Host-independent, since one pass covers every target at once; a board bound to a host
-        hands back the same whole-workspace sweep an unbound one does.
-        """
+        """The host-independent durable sweep over every job the dispatch cache owes an outcome."""
         return Monitor(self)
 
     def on(self, host: str) -> Board:
@@ -802,29 +708,19 @@ class Board:
 
         host: a declared host alias, or any ssh-config alias for defaults.
         """
-        bound = Board.__new__(Board)
-        bound.project = self.project
-        bound.root = self.root
+        bound = copy(self)
         bound.host = host
-        bound.shared = self.shared
-        bound.guard = self.guard
         return bound
 
     def once[Built](self, key: str, build: Callable[[], Built]) -> Built:
         """The one `key` this workspace shares, built on first ask and never a second time.
 
-        Under a lock, because the first ask routinely comes from a worker thread. A doctor
-        report asks four questions at once and a survey probes a whole fleet in a pool, so two
-        threads reaching an unbuilt subsystem together would each build one, and a second
-        dispatch cache is a second SQLite connection owned by whichever thread happened to win.
-        The lock is reentrant since one build reads another, a resolver needing the manifest.
-        A build that raises is not remembered, so a manifest that will not parse is re-read and
-        re-refused rather than answered from a half-filled cache. Emptying a slot is how a
-        caller that swaps one shared value (a test rewriting the manifest) makes the values
-        derived from it be built again.
-
-        key: what is being shared.
-        build: makes it, called once at most.
+        Locked because the first ask routinely comes from a worker thread (a doctor asks four
+        questions at once, a survey probes a fleet in a pool), and two threads building a
+        dispatcher would open a second SQLite connection owned by whichever thread won. The lock
+        is reentrant since one build reads another. A build that raises is not remembered, so an
+        unparsable manifest is re-read and re-refused. Emptying a slot makes the values derived
+        from it be rebuilt (a test rewriting the manifest).
         """
         with self.guard:
             built = self.shared.get(key) or build()
@@ -832,10 +728,7 @@ class Board:
             return cast("Built", built)
 
     def paper(self, name: str) -> Manuscript:
-        """The declared manuscript `name`, built and checked through this workspace's environment.
-
-        name: the `[papers.<name>]` key.
-        """
+        """The declared manuscript `name` (`[papers.<name>]`), built through this environment."""
         try:
             declared = self.manifest.papers[name]
         except KeyError:
@@ -872,9 +765,8 @@ class Board:
     def receipts(self, stream: str) -> Bus:
         """Where one stream's events go: this workspace's own file, plus whatever it declared.
 
-        The composition root for tracking, here rather than inside any one flow, so a batch, a
-        plain submit and a study all mirror the same way and none of them has to know that a
-        reporting service exists. A workspace whose `[tracking]` table says `off` gets the file
+        The composition root for tracking, so a batch, a plain submit and a study all mirror the
+        same way and none knows a reporting service exists. `[tracking]` set `off` gets the file
         alone and every caller is unchanged.
 
         stream: the receipts stream, a batch id, a study id, or one run's own name.
@@ -910,22 +802,18 @@ class Board:
     ) -> Handle:
         """Dispatch `shipment` and retain the rental before any workspace provisioning.
 
-        A rental is set up the way a declared host is, so it is shipped the same artifact
-        `install` ships gold: this workstation solved the lock and the machine installs frozen
-        against it. The lock is asked to vouch for the manifest here, before the rental opens,
-        since a refusal a minute later is a refusal that has already cost money. A plan that
-        brings its own container skips all of it, since a prebuilt image already holds everything
-        its command needs.
+        A rental is shipped the artifact `install` ships gold: this workstation solved the lock
+        and the machine installs frozen against it. The lock vouches here, before the rental
+        opens, since a refusal a minute later has already cost money. A plan bringing its own
+        container skips all of it, since a prebuilt image already holds everything.
 
-        backend: the provider backend this dispatch resolved to.
-        plan: the resolved execution context for the provider host.
         shipment: what the job runs and ships. A job spelled by file needs a workspace to ship
             its closure into, so a plan whose image is the whole environment refuses it.
         resources: the resolved request, whose spend cap and walltime bound the rental.
         name: the label retained with the allocated handle.
         node: the research node served by the dispatch.
-        watch: announces each landing stage as it begins, since a landing is minutes of mirror,
-            install and provisioning that would otherwise stand silent on a metered box.
+        watch: announces each landing stage, since a landing is minutes of mirror, install and
+            provisioning that would otherwise stand silent on a metered box.
         """
         renting = renter(backend, plan)
         if renting is None:
@@ -964,12 +852,9 @@ class Board:
     def dispatch(self, asked: Request) -> Run:
         """Make the dispatch `asked` describes, whichever host it names.
 
-        The one way a held request is asked for again, so a retry made by the durable sweep is
-        the same dispatch the batch made and not a second spelling of it. Every default is
-        resolved here rather than remembered from the first attempt, which is what makes a
-        request held overnight land under whatever the manifest says in the morning.
-
-        asked: the dispatch as it was originally requested.
+        The one way a held request is asked for again, so the durable sweep's retry is the
+        batch's dispatch and not a second spelling of it. Defaults resolve now rather than being
+        remembered, so a request held overnight lands under the morning's manifest.
         """
         return self.on(asked.target).submit(
             asked.command,
@@ -992,20 +877,17 @@ class Board:
     def provide(self, env: str = "", source: str = "", expect: str = "") -> Path:
         """Build the immutable environment a dispatched job activates, once, and name it.
 
-        The verb a host runs for itself. A dispatch pins the digest of the compiled artifact it
-        ships into the snapshot the job runs from, and this is what turns that digest into a
-        built environment: one directory per lock, never written to again, so a wave queued
-        against one lock keeps it however many times the workspace re-solves while it waits.
-
-        Called again for an environment that is already built, it answers where it is and
-        touches nothing, which is what lets every job of a wave call it and one of them build.
+        The verb a host runs for itself. A dispatch pins the digest of the artifact it ships
+        into the job's snapshot, and this turns that digest into one directory per lock, never
+        written again, so a wave queued against one lock keeps it however often the workspace
+        re-solves. Called for an environment already built it answers where it is and touches
+        nothing, so every job of a wave can call it and one builds.
 
         env: the environment to build, the host profile's own when empty.
         source: the directory holding the compiled artifact to build from, workspace-relative
             or absolute; this workspace's own generated environment when empty.
         expect: the digest the dispatch pinned, refused when this machine reads the artifact as
-            a different environment; unchecked when empty, which is what a build nobody
-            dispatched still wants.
+            a different environment; unchecked when empty, as a build nobody dispatched wants.
         """
         plan = self.plan(env=env, container="none")
         provisioner = Provisioner(self.root, self.manifest)
@@ -1014,8 +896,8 @@ class Board:
             self.__pinned(where, expect, provisioner, modules=plan.profile.modules)
         prefixes = Prefixes(self.root, self.manifest, plan.env)
         built = prefixes.materialize(where, modules=plan.profile.modules)
-        # Building is also the moment to let go of what nothing names any more, since this is
-        # the machine that holds both the prefixes and the trees that point at them.
+        # This machine holds both the prefixes and the trees that point at them, so building is
+        # the moment to let go of what nothing names any more.
         dropped = prefixes.prune(live=prefixes.referenced(Path(Snapshots(str(self.root)).base)))
         if dropped:
             logger.info(
@@ -1033,26 +915,32 @@ class Board:
     ) -> None:
         """Refuse to build when this machine reads the shipped artifact as another environment.
 
-        Both sides must agree on the generated files, selected second-stage declarations, and
-        ordered host modules. The refusal also names both Pixi versions, since lock rewrites
-        were another source of identity drift. Building anyway would put an environment at a
-        path no queued job will ever activate.
-
-        where: the compiled artifact this build would read.
-        expect: the digest the dispatch pinned.
-        provisioner: this workspace's compile stack, which knows the pixi running here.
+        Both sides must agree on the generated files, selected second-stage declarations and
+        ordered host modules; building anyway would put an environment at a path no queued job
+        will activate. The refusal names both pixis, since lock rewrites also drift identity.
         """
         arrived = digest_of(where, modules=modules)
         if arrived == expect:
             return
         state = SyncState.load(where)
+        # A dispatch ships the artifact it pinned, so a mismatch means something here wrote over
+        # it. The recorded root tells which: the dispatching workspace's means the ship landed
+        # and was recompiled over, this machine's means it never landed and the mirror's stale
+        # compile stands.
+        behind = (
+            "the dispatching workspace's own compile is what landed and something on this "
+            "machine has recompiled over it since"
+            if state.compiled_at and Path(state.compiled_at) != self.root
+            else "this is a compile made on this machine rather than the one the dispatch "
+            "shipped, which is a mirror left behind by a manifest edit"
+        )
         solved = state.solved_by or "an unrecorded pixi"
         raise MissionError(
             f"{where} describes environment {arrived}, but the dispatch pinned {expect}. "
             "Check the selected second-stage runtime and ordered host modules as well as the "
             "generated files. That "
             f"artifact was compiled for {state.compiled_at or 'an unrecorded root'} from "
-            f"manifest {state.compiled_from[:12] or 'nothing'}, so {self.__behind(state)}. It "
+            f"manifest {state.compiled_from[:12] or 'nothing'}, so {behind}. It "
             f"was solved by pixi {solved} while this machine runs pixi "
             f"{provisioner.solver_version() or 'none'}: a pixi that is not the one the fleet is "
             f"pinned to ({PIXI_VERSION}) rewrites the lock while provisioning and moves the "
@@ -1061,50 +949,20 @@ class Board:
             "compile the dispatch addressed."
         )
 
-    def __behind(self, state: SyncState) -> str:
-        """Which side of a refused prime is holding the older compile, said in one clause.
-
-        A dispatch ships the artifact it pinned, so the two can only disagree when something
-        here wrote over it, and the root recorded beside it is what tells the two apart: the
-        dispatching workspace's root means the shipped compile arrived and this machine then
-        recompiled the mirror on top of it, and this machine's own root means the ship never
-        landed and what stands here is a local compile of whatever the mirror last held.
-
-        state: the blessing recorded beside the artifact that was read.
-        """
-        if state.compiled_at and Path(state.compiled_at) != self.root:
-            return (
-                "the dispatching workspace's own compile is what landed and something on this "
-                "machine has recompiled over it since"
-            )
-        return (
-            "this is a compile made on this machine rather than the one the dispatch shipped, "
-            "which is a mirror left behind by a manifest edit"
-        )
-
     def imports(self, plan: ExecutionPlan) -> tuple[str, ...]:
         """The workspace-relative directories a job imports this workspace's own packages from.
 
-        A prefix is addressed by content, so one serves every tree whose manifest and lock agree,
-        and its editable installs therefore point at the machine's own workspace root: the
-        mirror. A sync landing between two waves then moves that source under jobs already
-        queued or running, which is the one thing about a dispatched job a shared prefix cannot
-        freeze. Anchoring the prefix at the snapshot instead only trades it for a worse fault,
-        since snapshots are pruned a few deep while prefixes stand.
+        A content-addressed prefix serves every tree whose manifest and lock agree, so its
+        editable installs point at the machine's workspace root, the mirror, and a sync between
+        two waves moves source under queued jobs. Anchoring the prefix at the snapshot trades
+        that for worse, since snapshots are pruned a few deep while prefixes stand. So the job
+        puts the pinned tree's import roots on `PYTHONPATH` ahead of the environment, and the
+        prefix keeps only the editable install's dependency metadata.
 
-        So the job freezes it rather than the prefix: the pinned tree's own import roots go on
-        `PYTHONPATH`, ahead of everything the environment adds, and what the prefix keeps of the
-        editable install is the dependency metadata, which is all it was needed for here.
-
-        An editable install puts one directory on `sys.path`: `src/` when the package keeps its
-        code there and the package directory itself when it does not. That is read off this
-        workspace, which is the tree every mirror and snapshot is a copy of.
-
-        A path dependency that lives outside the root is compiled at `.mainboard/vendor/<dist>`
-        (see `engines.compile.vendor`), which is inside it, so a vendored house package reaches
-        this roster with the workspace's own packages and needs nothing said about it here.
-
-        plan: the resolved execution context whose environment is being dispatched.
+        An editable install puts `src/` on `sys.path` when the package keeps its code there and
+        the package directory otherwise, read off this workspace, which every mirror and
+        snapshot copies. An out-of-root path dependency is compiled at `.mainboard/vendor/<dist>`
+        (see `engines.compile.vendor`), inside the root, so it arrives here with the rest.
         """
         where = Provisioner(self.root, self.manifest).environment_dir(plan.env)
         try:
@@ -1120,14 +978,11 @@ class Board:
     def addressed(self, plan: ExecutionPlan, root: str) -> str:
         """Where on `root`'s host the immutable environment this dispatch pins is built.
 
-        Content-addressed from this workspace's own compiled artifact, which is the same bytes
-        the mirror ships and the snapshot hardlinks, so the digest the dispatch pins and the one
-        the host arrives at when it builds are the same number reached independently.
+        Content-addressed from this workspace's compiled artifact, the bytes the mirror ships
+        and the snapshot hardlinks, so the pinned digest and the one the host reaches when it
+        builds agree independently. With nothing compiled it answers empty and the dispatch
+        reaches the mirror's own environment.
 
-        A workspace with nothing compiled has no environment to address and answers with
-        nothing, which leaves the dispatch reaching the mirror's own the way it always did.
-
-        plan: the resolved execution context whose environment is being addressed.
         root: the workspace root on the host.
         """
         if plan.containerized:
@@ -1155,9 +1010,9 @@ class Board:
     ) -> Resources:
         """The resolved resource request for this host, profile defaults filling what is unset.
 
-        The one resolution `submit` and `expectation` share, so what a submit is priced at is
-        what it actually asks for. Expression-valued defaults are evaluated against `attempt`,
-        so a retry escalates instead of dying to the same ceiling twice.
+        Shared by `submit` and `expectation`, so a submit is priced at what it asks for.
+        Expression-valued defaults are evaluated against `attempt`, so a retry escalates
+        instead of dying to the same ceiling twice.
 
         plan: an already-resolved execution plan, this board's own when None.
         """
@@ -1178,23 +1033,19 @@ class Board:
     def run(self, command: Sequence[str], *, env: str = "", container: str = "") -> int:
         """Run `command` through the host's activated plan, returning its exit code.
 
-        Local commands execute in place. Remote diagnostic commands use one SSH
-        connection, including a batch cluster's login endpoint. Native file targets
-        run locally here; remote jobs require submit for allocation and source transfer.
-        A command naming a declared task
-        is resolved by pixi inside the generated workspace instead of by the
-        shell, which is what makes `run test` and `run pytest -q` the same verb.
-
-        Local file targets use the same runner and closure format as submitted jobs.
-        Collection and help remain local and do not allocate remote resources.
+        Local commands execute in place; remote ones use one ssh connection, a batch cluster's
+        login endpoint included. A declared task name is resolved by pixi inside the generated
+        workspace rather than by the shell, which makes `run test` and `run pytest -q` one verb.
+        A job file target runs here only, through the runner and closure format submitted jobs
+        use; remotely it needs `submit` for allocation and source transfer, while collection and
+        help stay local and allocate nothing.
 
         command: exact command argv, or a declared task name and its arguments, or a job.
-        env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
         """
         plan = self.plan(env=env, container=container)
         target = Target.spelled(command, self.root)
-        exported: dict[str, str] = {}
+        exported: dict[str, str] | None = None
         if target is not None:
             if not self.local:
                 raise MissionError(
@@ -1210,11 +1061,7 @@ class Board:
             else:
                 command = shipment.locally(self.root, closure=listing)
         if self.local and not plan.containerized:
-            if exported:
-                return Provisioner(self.root, self.manifest).run(
-                    command, plan.env, exports=exported
-                )
-            return Provisioner(self.root, self.manifest).run(command, plan.env)
+            return Provisioner(self.root, self.manifest).run(command, plan.env, exports=exported)
         if not self.local and is_windows(plan.profile):
             with open_shell(plan, self.remote_root()) as shell:
                 return shell.foreground(task_line(self.manifest, joined(command), env=plan.env))
@@ -1235,12 +1082,8 @@ class Board:
     ) -> Sampler:
         """This machine read into `stream`'s receipts for as long as the block runs.
 
-        The in-process half of the live lane, for code that wants its own machine on the same
-        run its receipts are on. A dispatched job gets the same thing without asking, since its
-        script starts this through the CLI.
+        The in-process half of the live lane; a dispatched job gets the same through the CLI.
 
-        stream: the receipts stream the samples belong to.
-        job: the job inside that stream these readings describe.
         interval: seconds between readings, the manifest's own when 0.
         seconds: a hard stop, 0 to sample until the caller stops it.
         parent: a process to end with, 0 for none.
@@ -1259,15 +1102,12 @@ class Board:
     ) -> ToolCall | None:
         """The call this job makes so it samples itself, None when nothing samples it.
 
-        Staging the credential is part of building the call rather than a step beside it,
-        because the two are the same decision: a host is asked to ship its own series, so it is
-        given the one variable that lets it, and a host that is asked for nothing is told
-        nothing. A machine with no credential here still samples, into a queued offline run.
+        A host asked to ship its own series gets the credential staged by `stage`; one without a
+        credential still samples, into a queued offline run.
 
         tracked: the stream and job the samples belong to.
         root: the workspace root on the host.
-        resources: the resolved request, whose walltime bounds the sampler the way it bounds
-            the job.
+        resources: the resolved request, whose walltime bounds the sampler as it bounds the job.
         """
         declared = self.manifest.tracking
         if not declared.on:
@@ -1291,26 +1131,17 @@ class Board:
         *,
         replace: Callable[[str, list[str], Mapping[str, str]], NoReturn] = os.execve,
     ) -> NoReturn:
-        """Hand this terminal to an interactive shell inside the workspace environment.
+        """Hand this terminal to an interactive `pixi shell` inside the workspace environment.
 
-        pixi already owns interactive activation, so the shell is `pixi shell` pointed at the
-        generated workspace rather than a second activation written here. This process is
-        replaced instead of wrapped, so the shell owns the terminal and every signal reaching
-        it, and leaving the shell lands back where the user started rather than in a parent
-        this tool left waiting. An environment nothing provisioned is refused the way a wrapped
-        command is, naming the one command that fixes it, since a shell on whatever interpreter
-        the machine happens to ship is exactly what the staging exists to prevent.
-
-        The shell enters frozen, so opening one reads the lock and never rewrites it. Left to
-        itself pixi treats entering an environment as a reason to bring the lock up to date
-        with the manifest, which turns the everyday way into a workspace into an implicit solve
-        nobody asked for, and this tool has one deliberate door for that, `install --resolve`.
-
-        Replacing a process drops the environment a spawned child would have inherited, so the
-        workspace's declared floors are handed over explicitly, and so is what the runtime step
-        adds, the same step a local `run` and a dispatched job take. Without the floors, a host
-        that cannot present the virtual package fails on `shell` alone while every other verb
-        works.
+        pixi owns interactive activation, so there is no second activation here. This process
+        is replaced rather than wrapped, so the shell owns the terminal and its signals and
+        leaving it lands where the user began. An unprovisioned environment is refused naming
+        the fix, since a shell on the machine's own interpreter is what staging prevents. The
+        shell enters `--frozen`: pixi would otherwise treat entering as a reason to re-solve the
+        lock, and `install --resolve` is the one deliberate door for that. Exec drops what a
+        spawned child would inherit, so the declared floors and the runtime step's changes are
+        passed explicitly; without the floors a host lacking the virtual package fails on
+        `shell` alone.
 
         env: the environment name, the host profile's own when empty.
         replace: the process-replacing exec, injectable so a test can read what it was handed.
@@ -1332,16 +1163,12 @@ class Board:
     def stage(self, root: str) -> None:
         """Put the one credential this host's jobs need where the job's runner will read it.
 
-        A dispatched job ships its own live series, which needs the key on the machine running
-        the job rather than on the one that dispatched it. Exactly one variable is written, into
-        its own file with no group or world permission, so the host gets what the lane needs and
-        nothing else this workspace holds. It is passed over stdin rather than as an argument,
-        so it never appears in a process listing, and it is never logged. A machine holding no
-        credential stages nothing, and its jobs queue offline for a later `wandb sync`.
-
-        Staged once per dispatch by `submit` rather than by each line that needs it, since
-        both the sampler and the attestation read the same file and two ssh round trips writing
-        the same bytes buy nothing.
+        A dispatched job ships its own live series, so the key must be on the machine running
+        it. Exactly one variable is written, to its own file with no group or world permission,
+        passed over stdin so it never shows in a process listing, and never logged. A machine
+        holding no credential stages nothing and its jobs queue offline for a later `wandb
+        sync`. `submit` stages once per dispatch, since the sampler and the attestation read
+        the same file.
 
         root: the workspace root on the host.
         """
@@ -1377,23 +1204,17 @@ class Board:
 
         A command line ships the mirror; a job spelled `path/to/file.py::name` ships its closure
         and runs through the runner. Both are one `Shipment`, read once, so everything below
-        agrees about what runs and what tree it is.
+        agrees on what runs from which tree. Unset resources come from `resources`.
 
-        Unset resources fall back to the host profile's declared defaults,
-        with expression-valued defaults evaluated against `attempt` so a
-        retry escalates instead of dying to the same ceiling twice.
+        A provider host is dispatched through its backend and recorded in the same dispatch
+        cache. Monitor must run to collect evidence and request release, so install its
+        periodic pass for unattended jobs; provider outages can delay release, and a command
+        exit or local timeout alone does not stop billing.
 
-        A provider host is dispatched through its backend rather than over ssh, and the run it
-        hands back is recorded in the same dispatch cache a queued job lands in. Monitor must
-        run to collect evidence and request release. Install its periodic pass for unattended
-        jobs. Provider outages can delay release. A command exit or local timeout alone does
-        not stop billing.
+        Every dispatch is tracked, so an unnamed run is named here: its stream needs a key that
+        outlives this process, since the settling sweep may be a cron on another day, and the
+        run registry keeps exactly one such field.
 
-        Every dispatch is tracked, which is why a run that named itself nothing is named here.
-        A stream needs one key that outlives this process, since the sweep that settles the run
-        may be a cron on another day, and the run registry already keeps exactly one such field.
-
-        command: the command the generated job runs.
         gpu_name: the GPU type a provider backend rents, ignored by the ssh family.
         max_usd: the spend cap a provider backend refuses to submit without.
         attempt: the 1-based try number, feeding the default expressions.
@@ -1401,13 +1222,11 @@ class Board:
             unset, then the node's own evidence directory when the run serves one.
         node: the ledger slug this run serves, carried into its record and receipts.
         needs: data paths a job reads on the host, joining the ones its file declares.
-        watch: announces the stages that happen on the far side and take long enough to be
-            worth saying: every step of a rental's landing, and the priming of a queued host's
-            environment.
+        watch: announces the far-side stages long enough to be worth saying: every step of a
+            rental's landing, and the priming of a queued host's environment.
         """
-        # Before the plan, before the resources, and before any transport: a command a shell
-        # cannot run costs a scheduler round trip on owned hardware and a whole rental on a
-        # metered one, since a provider bills from boot and never learns the command never ran.
+        # Before any plan or transport: a command a shell cannot run costs a scheduler round
+        # trip on owned hardware and a whole rental on a metered one, billed from boot.
         command = vetted(command)
         plan = self.plan(env=env, container=container)
         shipment = self.shipment(command, plan, needs=needs)
@@ -1425,9 +1244,8 @@ class Board:
             attempt=attempt,
             plan=plan,
         )
-        # A run that arrived without a name is minted one, content-addressed over the target,
-        # the command and this instant, so its receipts stream has a durable key and
-        # `mainboard jobs` reads better for it too.
+        # Content-addressed over the target, the command and this instant, so the receipts
+        # stream has a durable key and `mainboard jobs` reads better for it too.
         fingerprint = run_id({"host": plan.host, "command": shipment.spelling, "at": time.time()})
         label = name or f"{plan.host}-{fingerprint[:8]}"
         tracked = streamed(label, handle="")
@@ -1451,8 +1269,8 @@ class Board:
             root = self.remote_root()
             self.stage(root)
             provisioner = Provisioner(self.root, self.manifest)
-            # Before the address is taken and before the mirror leaves, so the pin, the shipped
-            # artifact and the manifest this command was invoked under are one thing.
+            # Before the address is taken and the mirror leaves, so the pin, the shipped artifact
+            # and the manifest this command was invoked under are one thing.
             provisioner.recompiled(plan.env)
             run = Job(
                 self,
@@ -1503,10 +1321,9 @@ class Board:
     ) -> Shipment:
         """The shipment of one job: its closure over this workspace's import roots, sealed.
 
-        target: the job as spelled.
         plan: the resolved execution context whose environment names the import roots, and
-            whose compiled prefix is where a distribution's installed shape is read from: this
-            workspace's own copy of the environment, the lock the host installs frozen from.
+            whose compiled prefix (this workspace's copy of the lock the host installs frozen
+            from) is where a distribution's installed shape is read.
         needs: data paths declared at dispatch time, joining the ones the job file declares.
         """
         # Reject malformed runner arguments before building or dispatching a snapshot.
@@ -1521,15 +1338,11 @@ class Board:
         return Shipment.of_closure(closure, root=self.root)
 
     def results(self, fetch: str | None, *, node: str = "", command: str = "") -> str:
-        """What this dispatch pulls back: `fetch` when it names one, else `node`'s own evidence.
+        """What this dispatch pulls back: `fetch`, the job's declared path, or `node`'s evidence.
 
-        A run that named the ledger node it serves has already said where its receipts go, since
-        a node is a directory and its evidence is the directory inside it. Asking the caller to
-        repeat that as a `--fetch` is how a whole GH200 wave's receipts stayed on the cluster
-        (2026-09-05), so the node answers for itself and an explicit path still wins.
-
-        fetch: the results path the caller declared, None or empty for none.
-        node: the ledger slug this run serves, empty when it serves none.
+        A node is a directory and its evidence the directory inside it, so it answers for
+        itself: making callers repeat it as `--fetch` is how a whole GH200 wave's receipts
+        stayed on the cluster (2026-09-05). An explicit path still wins.
         """
         if not fetch and command:
             target = Target.spelled(shlex.split(command), self.root)
@@ -1538,20 +1351,13 @@ class Board:
         return fetch or evidence_of(self.root, node)
 
     def verdicts(self) -> Verdicts:
-        """The receipts-derived outcomes of this workspace's runs, the anti-fabrication read.
-
-        Host-independent like `monitor`, since receipts belong to the workspace rather than to
-        whichever host a board happens to be bound to.
-        """
+        """The receipts-derived outcomes of this workspace's runs, the anti-fabrication read."""
         return Verdicts(self)
 
     def watch(self, batch_id: str) -> Watch:
         """The live view over an already-dispatched batch, found by id alone.
 
-        No spec, since everything a live view needs is durable: the batch's receipts name its
-        handles and the dispatch cache says what became of them. A process that dispatched
-        nothing can therefore take over watching a batch another one started.
-
-        batch_id: the batch to watch.
+        Everything it needs is durable (the receipts name the handles, the dispatch cache says
+        what became of them), so a process that dispatched nothing can watch another's batch.
         """
         return Watch(self, batch_id, bus=self.receipts(batch_id))

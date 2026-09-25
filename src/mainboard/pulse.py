@@ -1,15 +1,12 @@
-# How a live dispatched job is doing right now: how far through its cells it is, how long since
-# its output last grew, and how busy the cards of the host it runs on are.
-#
-# `wait` blocked in silence and `jobs` said only `running`, so every agent that needed to know
-# more wrote its own loop around `logs` and `nvidia-smi`. This is that loop, once. The cells come
-# off the beacon the runner writes into the log (`jobs/beacon.py`). The silence is measured, not
-# guessed: each look remembers how long the output was and when it last grew, in a small file
-# beside the dispatch state, so a `jobs` run after a `wait` knows what the wait saw, and a job is
-# only ever called quiet after it has been seen at least twice. The cards are read only where
-# that is one more command over a connection already open to read the log, which means a host
-# whose scheduler runs the job on that host; a cluster's login node carries no card of the job's
-# and a rented machine is not asked at all.
+# How a live dispatched job is doing right now: how far through its cells, how long since its
+# output last grew, and how busy its host's cards are. `wait` blocked in silence and `jobs` said
+# only `running`, so every agent wrote its own loop around `logs` and `nvidia-smi`; this is that
+# loop, once. The cells come off the runner's beacon in the log (`jobs/beacon.py`). The silence
+# is measured: each look remembers the output's length and when it last grew in a file beside
+# the dispatch state, so a `jobs` after a `wait` knows what the wait saw, and a job is called
+# quiet only once seen twice. Cards are read only where that is one more command over the
+# connection already open for the log, a host whose scheduler runs the job there; a cluster's
+# login node carries no card of the job's and a rented machine is not asked.
 
 import json
 import os
@@ -37,20 +34,15 @@ if TYPE_CHECKING:
 
 # The family of schedulers reached over ssh, whose logs are read over one connection per host.
 _SSH_FAMILY = "ssh-family"
-
 # The scheduler kinds whose jobs run on the machine the connection lands on, so its cards are
 # the job's cards. A PBS or Slurm login node runs nothing of the job's.
 _ON_HOST = frozenset({"ssh", "local"})
-
 # The one query that reads every card's busyness, one integer percentage per line.
 _UTILIZATION = ("nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits")
-
 # Where the looks remember each live job's output, beside the rest of the dispatch state.
 _MEMORY = "pulse.json"
-
-# How long a job nobody looked at stays remembered. Another process may be watching a job this
-# look was not asked about, so the memory keeps every job a day past its last growth rather than
-# only the ones this look saw.
+# Seconds a job stays remembered past its last growth, since another process may be watching
+# a job this look was not asked about.
 _FORGET = 86400.0
 
 
@@ -72,8 +64,6 @@ type Reader = Callable[[Sequence[RunRecord]], dict[RunRecord, Reading]]
 class Pulse(FrozenModel):
     """One live job as a look found it.
 
-    handle: the scheduler or provider handle.
-    target: the host it was dispatched to.
     progress: what its beacon says so far.
     quiet_s: seconds since its output last grew, None until it has been seen twice.
     gpu_pct: the busiest card on its host, None where unknown.
@@ -92,10 +82,8 @@ class Pulses:
     def __init__(
         self, board: Board, *, read: Reader | None = None, clock: Callable[[], float] = time
     ) -> None:
-        """board: the workspace whose dispatch state the memory lives beside.
+        """read: the look at the hosts, a `Probe` of `board` when None.
 
-        read: the look at the hosts, one connection per ssh host and one API read per rental
-            when None.
         clock: wall-clock seconds, shared across processes since the memory outlives them.
         """
         self.read = read or Probe(board)
@@ -103,11 +91,9 @@ class Pulses:
         self.memory = board.root / Project().out_dir / _MEMORY
 
     def taken(self, records: Sequence[RunRecord]) -> dict[RunRecord, Pulse]:
-        """Every record's pulse, leaving out a run whose host did not answer and one that has
-        printed nothing yet, which may still be waiting in its queue for all its log can say.
-
-        records: the running runs to look at. A queued run has printed nothing and is not a
-            caller's to pass, since its silence is the queue's.
+        """Every running record's pulse, leaving out a run whose host did not answer and one that
+        printed nothing yet, which may still be queued for all its log can say. A queued run is
+        not a caller's to pass, since its silence is the queue's.
         """
         if not records:
             return {}
@@ -145,10 +131,7 @@ class Pulses:
         return {}
 
     def remembered(self, held: dict[str, tuple[int, float]]) -> None:
-        """Write the memory back whole.
-
-        A look that cannot write it still answers; the next one simply knows less.
-        """
+        """Write the memory back whole; a look that cannot still answers, the next knows less."""
         with suppress(OSError):
             self.memory.parent.mkdir(parents=True, exist_ok=True)
             staged = self.memory.with_suffix(f".{os.getpid()}.tmp")
@@ -160,7 +143,6 @@ class Probe:
     """The look itself: each ssh host once for all its runs' logs, each rental on its own."""
 
     def __init__(self, board: Board) -> None:
-        """board: the workspace that rebuilds each run from its record."""
         self.board = board
 
     def __call__(self, records: Sequence[RunRecord]) -> dict[RunRecord, Reading]:
@@ -193,7 +175,7 @@ class Probe:
 
 
 def logged(remote: Machine, root: str, record: RunRecord) -> str:
-    """`record`'s captured output over an open connection, empty when its scheduler has none.
+    """`record`'s output over an open connection, empty when its scheduler has none.
 
     The scheduler is the one the run was dispatched under, whatever the host's profile says now.
     """
@@ -207,8 +189,8 @@ def logged(remote: Machine, root: str, record: RunRecord) -> str:
 def utilization(remote: Machine) -> int | None:
     """The busiest card's utilization on `remote`, None where no card or no driver answers.
 
-    Asked through a login shell, the way every other probe on a host is, so the driver's tool
-    is found wherever that host's profile puts it.
+    Asked through a login shell like every other probe, so the driver's tool is found wherever
+    that host's profile puts it.
     """
     status, said, _ = remote["bash"][["-lc", shlex.join(_UTILIZATION)]].run(retcode=None)
     readings = [int(word) for word in str(said).split() if word.isdigit()]

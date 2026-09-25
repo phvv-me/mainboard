@@ -118,11 +118,11 @@ class Help:
             *self._docs(),
             *self._python(),
         )
-        matches = []
-        for name, description, location in candidates:
-            searchable = f"{name}\n{description}".casefold().replace("_", "-")
-            if all(term in searchable for term in terms):
-                matches.append((name, location, self._excerpt(description, terms)))
+        matches = [
+            (name, location, self._excerpt(description, terms))
+            for name, description, location in candidates
+            if all(term in f"{name}\n{description}".casefold().replace("_", "-") for term in terms)
+        ]
         if not matches:
             raise MissionError(f"no help matches {query!r} in commands, documentation, or Python")
         console = Console(markup=False)
