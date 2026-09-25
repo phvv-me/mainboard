@@ -2,40 +2,50 @@ import re
 import sys
 from typing import TYPE_CHECKING
 
+import pytest
+
 from mainboard.render import human
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Sequence
+
+    from mainboard.render.values import Row
+
+_WIDE = {f"column_{index}": f"value-{index:02d}-{'x' * 12}" for index in range(10)}
 
 
-def test_a_table_prints_every_row_under_its_title_and_projects_to_the_given_fields(
+@pytest.mark.parametrize(
+    ("rows", "fields", "shown", "hidden"),
+    [
+        ([{"a": "1", "b": "2"}, {"a": "3", "b": "4"}], None, ["a", "b", "1", "4"], []),
+        ([{"a": "1", "b": "2", "c": "3"}], ["c"], ["3"], ["a"]),
+        ([{"a": None}], None, [], ["None"]),
+        # rich would read a manifest table heading as a style tag and print nothing.
+        ([{"where": "[dev.python.deps]"}], None, ["[dev.python.deps]"], []),
+    ],
+    ids=["every_column", "projected", "empty_cell", "bracketed_cell"],
+)
+def test_a_table_prints_its_cells_as_data_under_its_title(
     capsys: pytest.CaptureFixture[str],
+    rows: Sequence[Row],
+    fields: Sequence[str] | None,
+    shown: list[str],
+    hidden: list[str],
 ) -> None:
-    """Columns come off the data unless a caller names them, and then only those are shown."""
-    human.render_table([{"a": "1", "b": "2"}, {"a": "3", "b": "4"}], title="jobs")
+    human.render_table(rows, fields=fields, title="jobs")
     printed = capsys.readouterr().out
-    assert "jobs" in printed
-    assert all(token in printed for token in ("a", "b", "1", "4"))
-    human.render_table([{"a": "1", "b": "2", "c": "3"}], fields=["c"])
-    narrowed = capsys.readouterr().out
-    assert "3" in narrowed
-    assert "a" not in narrowed
+    assert all(token in printed for token in ["jobs", *shown])
+    assert not any(token in printed for token in hidden)
 
 
-def test_a_table_with_nothing_to_show_prints_nothing_and_an_empty_cell_prints_blank(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """No rows is no output at all, and a missing value is a gap rather than the word `None`."""
+def test_a_table_with_no_rows_prints_nothing(capsys: pytest.CaptureFixture[str]) -> None:
     human.render_table([])
     assert not capsys.readouterr().out.strip()
-    human.render_table([{"a": None}])
-    assert "None" not in capsys.readouterr().out
 
 
 def test_a_long_cell_wraps_rather_than_cut_to_an_ellipsis(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A handle or a digest is only useful whole, so a narrow table folds it instead."""
     handle = "e775" * 40
     human.render_table([{"handle": handle}], title="verdict")
     printed = capsys.readouterr().out
@@ -44,16 +54,7 @@ def test_a_long_cell_wraps_rather_than_cut_to_an_ellipsis(
     assert handle in "".join(character for character in printed if character.isalnum())
 
 
-def test_a_cell_in_square_brackets_survives_the_render(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A manifest table heading is data, and rich would otherwise read it as a style tag."""
-    human.render_table([{"where": "[dev.python.deps]"}])
-    assert "[dev.python.deps]" in capsys.readouterr().out
-
-
 def test_progress_uses_the_live_spinner_on_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A block reaching several stages says which one it is on instead of standing still."""
     monkeypatch.setattr(human.Console, "is_terminal", property(lambda self: True))
     stages: list[str] = []
     with human.progress("working") as stage:
@@ -65,11 +66,6 @@ def test_progress_uses_the_live_spinner_on_a_terminal(monkeypatch: pytest.Monkey
 def test_progress_prints_each_stage_as_its_own_line_off_a_terminal(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A background job piped to a log gets real lines instead of a spinner nobody renders.
-
-    `Console.status` answers every `.update()` with silence off a terminal and prints once at
-    the very end, so a long onboarding piped to a log stood indistinguishable from a hang.
-    """
     monkeypatch.setattr(human.Console, "is_terminal", property(lambda self: False))
     with human.progress("working") as stage:
         stage("first stage")
@@ -78,7 +74,6 @@ def test_progress_prints_each_stage_as_its_own_line_off_a_terminal(
 
 
 def test_install_traceback_installs_a_rich_excepthook(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The CLI error boundary, restored afterwards so the suite keeps its own hook."""
     default = sys.excepthook
     monkeypatch.setattr(sys, "excepthook", default)
     human.install_traceback()
@@ -88,11 +83,9 @@ def test_install_traceback_installs_a_rich_excepthook(monkeypatch: pytest.Monkey
 def test_a_wide_table_off_a_terminal_keeps_each_row_on_one_line(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A pipe has no width, so a ten-column row is never folded into five-character shreds."""
-    row = {f"column_{index}": f"value-{index:02d}-{'x' * 12}" for index in range(10)}
-    human.render_table([row], title="wide")
+    human.render_table([_WIDE], title="wide")
     printed = capsys.readouterr().out
-    assert all(value in printed for value in row.values())
+    assert all(value in printed for value in _WIDE.values())
     assert sum(line.count("value-") for line in printed.splitlines()) == 10
     assert max(line.count("value-") for line in printed.splitlines()) == 10
 
@@ -100,10 +93,8 @@ def test_a_wide_table_off_a_terminal_keeps_each_row_on_one_line(
 def test_a_wide_table_on_a_terminal_folds_to_the_terminals_own_width(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A person reading a narrow window gets folded cells, never a row running off the edge."""
     monkeypatch.setattr(human.Console, "is_terminal", property(lambda self: True))
     monkeypatch.setenv("COLUMNS", "60")
-    row = {f"column_{index}": f"value-{index:02d}-{'x' * 12}" for index in range(10)}
-    human.render_table([row], title="wide")
+    human.render_table([_WIDE], title="wide")
     printed = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
     assert max(len(line) for line in printed.splitlines()) <= 60

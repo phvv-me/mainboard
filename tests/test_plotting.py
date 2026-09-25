@@ -50,12 +50,6 @@ def test_invalid_plot_data_is_not_silently_dropped(
     assert not list(tmp_path.iterdir())
 
 
-def test_bars_require_explicit_sql_aggregation(tmp_path: Path) -> None:
-    frame = pl.DataFrame({"x": [1, 1], "y": [2.0, 4.0]})
-    with pytest.raises(ValueError, match="aggregate.*SQL"):
-        plotting.Plot(frame).save(tmp_path / "refused.png", x="x", y="y", kind="bar")
-
-
 @pytest.mark.parametrize(
     ("names", "dpi", "kind", "message"),
     [
@@ -63,13 +57,15 @@ def test_bars_require_explicit_sql_aggregation(tmp_path: Path) -> None:
         (("plot.png",), 0, "scatter", "output path and a positive DPI"),
         (("plot.png", "plot.png"), None, "scatter", "must be distinct"),
         (("plot.png",), None, "pie", "scatter, line, or bar"),
+        (("plot.png",), None, "bar", "aggregate.*SQL"),
+        (("ok.png", "bad.xyz"), None, "scatter", "unsupported plot extension"),
     ],
-    ids=["no_output", "zero_dpi", "repeated_output", "unknown_kind"],
+    ids=["no_output", "zero_dpi", "repeated_output", "unknown_kind", "repeated_bar", "bad_format"],
 )
 def test_a_malformed_request_is_refused_before_anything_is_written(
     tmp_path: Path, names: tuple[str, ...], dpi: int | None, kind: str, message: str
 ) -> None:
-    frame = pl.DataFrame({"x": [1], "y": [2.0]})
+    frame = pl.DataFrame({"x": [1, 1], "y": [2.0, 4.0]})
     paths = [tmp_path / name for name in names]
     with pytest.raises(ValueError, match=message):
         plotting.Plot(frame).save(*paths, x="x", y="y", kind=kind, dpi=dpi)
@@ -101,14 +97,6 @@ def test_explicit_style_colors_paint_every_hue_level_and_refuse_a_missing_one(
     assert not plotting.plt.get_fignums()
 
 
-def test_bad_output_formats_leave_no_partial_render(tmp_path: Path) -> None:
-    frame = pl.DataFrame({"x": [1], "y": [2.0]})
-    with pytest.raises(ValueError, match="unsupported plot extension"):
-        plotting.Plot(frame).save(tmp_path / "ok.png", tmp_path / "bad.xyz", x="x", y="y")
-    assert not list(tmp_path.iterdir())
-    assert not plotting.plt.get_fignums()
-
-
 @pytest.mark.parametrize("from_file", [False, True])
 def test_cli_plot_uses_sql_and_requested_dpi(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], from_file: bool
@@ -118,42 +106,35 @@ def test_cli_plot_uses_sql_and_requested_dpi(
     source = tmp_path / "plot.sql"
     source.write_text(sql, encoding="utf-8")
     query = ["--file", str(source)] if from_file else [sql]
+    flags = ["--x", "width", "--y", "readings", "--out", str(path), "--dpi", "100"]
     with pytest.raises(SystemExit, match="^0$"):
-        build(tmp_path)(
-            [
-                "plot",
-                *query,
-                "--x",
-                "width",
-                "--y",
-                "readings",
-                "--out",
-                str(path),
-                "--dpi",
-                "100",
-            ]
-        )
+        build(tmp_path)(["plot", *query, *flags])
     assert capsys.readouterr().out.strip() == str(path)
     image = plotting.plt.imread(path)
     assert image.shape[1] == 640
 
 
-@pytest.mark.parametrize("source", [[], ["SELECT 1", "--file", "missing.sql"]])
-def test_cli_plot_requires_exactly_one_query_source(tmp_path: Path, source: list[str]) -> None:
+@pytest.mark.parametrize(
+    ("source", "error", "message"),
+    [
+        ([], MissionError, "SQL statement"),
+        (["SELECT 1", "--file", "missing.sql"], MissionError, "SQL statement"),
+        (["--file", "refused.sql"], ValueError, "one SELECT"),
+    ],
+    ids=["no_source", "two_sources", "two_statements"],
+)
+def test_cli_plot_takes_exactly_one_single_statement_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: list[str],
+    error: type[Exception],
+    message: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "refused.sql").write_text("SELECT 1 AS x, 2 AS y; SELECT 3", encoding="utf-8")
     target = tmp_path / "refused.png"
-    with pytest.raises(MissionError, match="SQL statement"):
+    with pytest.raises(error, match=message):
         build(tmp_path)(["plot", *source, "--x", "x", "--y", "y", "--out", str(target)])
-    assert not target.exists()
-
-
-def test_cli_plot_file_rejects_multiple_statements(tmp_path: Path) -> None:
-    source = tmp_path / "refused.sql"
-    source.write_text("SELECT 1 AS x, 2 AS y; SELECT 3", encoding="utf-8")
-    target = tmp_path / "refused.png"
-    with pytest.raises(ValueError, match="one SELECT"):
-        build(tmp_path)(
-            ["plot", "--file", str(source), "--x", "x", "--y", "y", "--out", str(target)]
-        )
     assert not target.exists()
 
 
@@ -238,19 +219,10 @@ dpi=100
 
     monkeypatch.setattr(plotting.Plot, "_publish", inspect_style)
     output = tmp_path / "paper.png"
+    style = ["--style", "paper"] if explicit else []
     with pytest.raises(SystemExit, match="^0$"):
         build(tmp_path)(
-            [
-                "plot",
-                "SELECT 1 AS x, 2 AS y",
-                "--x",
-                "x",
-                "--y",
-                "y",
-                *(["--style", "paper"] if explicit else []),
-                "--out",
-                str(output),
-            ]
+            ["plot", "SELECT 1 AS x, 2 AS y", "--x", "x", "--y", "y", *style, "--out", str(output)]
         )
     assert plotting.plt.imread(output).shape[:2] == (200, 325)
     assert captured == [12]

@@ -12,11 +12,9 @@ if TYPE_CHECKING:
 def encode(rows: Sequence[Row], *, fields: Sequence[str] | None = None) -> str:
     """Columns-once text, a header line of field names then one tab-separated line per row.
 
-    A cell holding a tab, a newline, or a leading quote is JSON-encoded, the leading-quote
-    case closing the one ambiguity that would otherwise collide with an encoded cell on
-    `decode`; every other cell keeps its plain string form.
+    A cell holding a tab, a newline, or a leading quote is JSON-encoded (a plain leading quote
+    would read as an encoded cell on `decode`); every other cell keeps its plain string form.
 
-    rows: the records to encode, each a flat field-name to value mapping.
     fields: the column order and projection, every key from the first row when None.
     """
     columns = columns_of(rows, fields)

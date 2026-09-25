@@ -106,8 +106,7 @@ class RoundedBar(FancyBboxPatch):
         start = foot[along] - math.copysign(radius, length)
         box = [0.0, 0.0, 0.0, 0.0]
         box[along], box[along + 2] = min(start, head[along]), abs(head[along] - start)
-        box[across] = (foot[across] + head[across]) / 2 - span / 2
-        box[across + 2] = span
+        box[across], box[across + 2] = (foot[across] + head[across]) / 2 - span / 2, span
         self.set_bounds(*box)
         self.set_boxstyle("round", pad=0, rounding_size=radius)
         limits = list(axes.bbox.extents)
