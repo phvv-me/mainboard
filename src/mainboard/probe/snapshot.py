@@ -1,4 +1,5 @@
 import platform
+from pathlib import Path
 
 from patos import FrozenOpenModel
 
@@ -6,6 +7,7 @@ from ..engines.compile.backend import PixiEngine
 from .enums import Scheduler
 from .facts.fabric import Fabric, FabricPort
 from .machine import Machine
+from .system import System
 
 _SCHEMA_VERSION = 1
 
@@ -56,6 +58,9 @@ class HostFacts(FrozenOpenModel):
         addressed, and until it was printed here nobody could see two hosts disagreeing.
     gpus: detected GPUs with name, memory capacity, and dispatch key, empty when none.
     fabric: detected InfiniBand/RoCE fabric ports, empty when none.
+    system: the operating system, filesystem, git settings, tools and NVIDIA driver, read by the
+        same census `center migrate` sends to a machine with no tool on it yet, so a finding
+        about a host never depends on which verb looked. Empty from a host whose tool predates it.
     """
 
     schema_version: int = _SCHEMA_VERSION
@@ -69,10 +74,15 @@ class HostFacts(FrozenOpenModel):
     pixi: str = ""
     gpus: tuple[GpuFact, ...] = ()
     fabric: tuple[FabricPort, ...] = ()
+    system: System = System()
 
     @classmethod
-    def collected(cls) -> HostFacts:
-        """Probe the current host into one serializable snapshot."""
+    def collected(cls, root: Path | None = None) -> HostFacts:
+        """Probe the current host into one serializable snapshot.
+
+        root: where the workspace lives, whose filesystem the census measures; the working
+            directory when None, which is the workspace for a host answering `facts` over ssh.
+        """
         machine = Machine()
         host = machine.host
         cgroup, scratch = host.cgroup_memory, host.scratch
@@ -98,4 +108,5 @@ class HostFacts(FrozenOpenModel):
                 for gpu in machine.gpus
             ),
             fabric=Fabric.probe(),
+            system=System.collected(root or Path.cwd()),
         )

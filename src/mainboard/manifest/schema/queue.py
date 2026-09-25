@@ -42,6 +42,10 @@ class Defaults(Declared):
     backend refuses to submit without, declared once per host rather than
     retyped on every submit.
 
+    `vram_gb` is the card memory a job on this host needs, which a batch default has no other
+    way to say: `facts`, `compute`, `setup` and `center verify` flag a host whose largest card
+    holds less, before a job finds out by running out of memory. Zero declares no need.
+
     `interact_queue` is the one queue name a batch default cannot stand in for.
     A site that routes interactive allocations somewhere else entirely (Miyabi
     sends them to the parent `interact-g` router while every batch job goes to
@@ -53,6 +57,7 @@ class Defaults(Declared):
     walltime: str = "00:30:00"
     mem_gb: str = ""
     gpus: int = Field(default=0, ge=0)
+    vram_gb: int = Field(default=0, ge=0)
     gpu_name: str = ""
     max_usd: float = Field(default=0.0, ge=0.0)
 

@@ -6,6 +6,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from mainboard import HostFacts, Machine
+from mainboard.engines.compile.backend import PixiEngine
 from mainboard.probe import (
     GPU,
     CgroupMemory,
@@ -16,8 +17,28 @@ from mainboard.probe import (
     Scheduler,
     Scratch,
 )
+from mainboard.probe.system import System
 
 _GIB = 1024**3
+
+
+@pytest.fixture(autouse=True)
+def surveyed(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Every root the software census was asked about, the census itself never run.
+
+    The census reads this machine's shells, tools and driver, and the pixi version is a real
+    subprocess too, which is exactly what a snapshot test must not depend on, so each collection
+    records where it asked and answers a fixed box with no pixi on it.
+    """
+    asked: list[Path] = []
+
+    def collected(cls: type[System], root: Path) -> System:
+        asked.append(root)
+        return System(system="Linux", arch="x86_64", root=str(root))
+
+    monkeypatch.setattr(System, "collected", classmethod(collected))
+    monkeypatch.setattr(PixiEngine, "version", lambda self: "")
+    return asked
 
 
 def test_collected_reads_every_probe_into_one_wire_portable_snapshot(
@@ -56,6 +77,7 @@ def test_collected_reads_every_probe_into_one_wire_portable_snapshot(
 
     facts = HostFacts.collected()
     assert facts.schema_version == 1
+    assert facts.system.platform == "linux-64"
     assert (facts.cgroup.limit_bytes, facts.cgroup.capped) == (100 * _GIB, True)
     assert (facts.scratch.path, facts.scratch.source) == (str(Path("/local")), "LOCALDIR")
     assert facts.scratch.free_bytes == 50 * _GIB
@@ -81,6 +103,23 @@ def test_an_unavailable_scratch_tier_serializes_its_path_as_null(
     facts = HostFacts.collected()
     assert facts.scratch.path is None
     assert json.loads(facts.model_dump_json())["scratch"]["path"] is None
+
+
+def test_the_census_is_asked_about_the_workspace_root_or_else_the_working_directory(
+    monkeypatch: pytest.MonkeyPatch, surveyed: list[Path], tmp_path: Path
+) -> None:
+    """A host answering `facts` over ssh runs in its workspace, so the cwd stands in for a root.
+
+    A caller that knows where the workspace lives, the center judging a clone about to land,
+    names that root, and the census measures that filesystem instead.
+    """
+    monkeypatch.setattr(Fabric, "probe", classmethod(lambda cls: ()))
+    monkeypatch.chdir(tmp_path)
+    workspace = tmp_path / "projects"
+
+    assert HostFacts.collected(workspace).system.root == str(workspace)
+    assert HostFacts.collected().system.root == str(Path.cwd())
+    assert surveyed == [workspace, Path.cwd()]
 
 
 # Building a whole nested snapshot per example is the expensive part, and a round trip either

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mainboard.engines.compile.pixi_lock import canonical
+from mainboard.engines.compile.pixi_lock import canonical, packages
 from mainboard.engines.compile.prefixes import digest_of
 
 # The two spellings one workspace's lock actually had on 2026-09-05, cut down to the platform
@@ -150,3 +150,57 @@ def test_a_roster_line_naming_no_platform_keeps_its_place_at_the_top() -> None:
 def test_a_lock_with_no_platform_roster_is_read_exactly_as_it_stands(lock: str) -> None:
     """There is nothing to relabel, so the text is its own canonical form."""
     assert canonical(lock) == lock
+
+
+@pytest.mark.parametrize("lock", [SOLVED_BY_0_77, SOLVED_BY_0_79], ids=["pixi 0.77", "pixi 0.79"])
+def test_the_packages_a_lock_installs_are_keyed_by_subdirectory_whatever_pixi_labelled_them(
+    lock: str,
+) -> None:
+    """A machine finding asks for `linux-64`, never for `p1` or `linux-64-system`.
+
+    So both spellings of one lock answer the same subdirectories with the same locations.
+    """
+    assert packages(lock) == {
+        "linux-64": [_X86],
+        "linux-aarch64": [_ARM],
+        "osx-arm64": [_MAC],
+    }
+
+
+def test_every_environment_and_every_kind_of_location_counts_toward_its_platform() -> None:
+    """A lock holding two environments installs both, conda and PyPI alike.
+
+    A platform the roster never declared keeps its own label, a platform named with nothing
+    under it is still reported as locked but empty, and a line that is not a package entry of
+    some platform, such as one standing before the first label or the extras continuing a PyPI
+    entry, is never counted.
+    """
+    wheel = "https://download.pytorch.org/whl/cu128/torch-2.9.0%2Bcu128-cp314-linux_x86_64.whl"
+    lock = SOLVED_BY_0_79.replace(
+        "packages:\n- conda:",
+        f"""  dev:
+    packages:
+      - conda: a-stray-line-before-any-label
+      linux-64-system:
+      - pypi: {wheel}
+        extras:
+        - cuda: an-extra-that-is-no-package
+      win-64:
+      - conda: https://conda.anaconda.org/conda-forge/win-64/bzip2.conda
+      osx-64:
+packages:
+- conda:""",
+        1,
+    )
+
+    found = packages(lock)
+
+    assert found["linux-64"] == [_X86, wheel]
+    assert found["win-64"] == ["https://conda.anaconda.org/conda-forge/win-64/bzip2.conda"]
+    assert found["osx-64"] == []
+
+
+@pytest.mark.parametrize("lock", ["", "version: 7\npackages: []\n"], ids=["empty", "no roster"])
+def test_a_lock_with_nothing_solved_installs_nothing(lock: str) -> None:
+    """No platform mapping means no platform is locked, rather than a parse failure."""
+    assert packages(lock) == {}

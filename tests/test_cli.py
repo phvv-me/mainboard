@@ -681,6 +681,7 @@ def test_the_compute_verb_prices_and_credits_the_provider_rows(
         "credit_usd": 42.5,
         "observed_at": payload[2]["observed_at"],
         "cached_at": "",
+        "issues": "",
     }
 
 
