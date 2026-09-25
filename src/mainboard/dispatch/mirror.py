@@ -240,9 +240,8 @@ class Delta(FrozenModel):
         path whose kind changed, or a link whose target did, is pruned before it is remade,
         since neither a directory nor a link is replaced by a rename.
 
-        local: what this workspace holds.
         held: what the target described.
-        protected: rules for paths the target keeps whether or not this workspace holds them.
+        protected: paths the target keeps whether or not this workspace holds them.
         modes: whether the target keeps execute bits.
         """
         files = tuple(
@@ -257,18 +256,15 @@ class Delta(FrozenModel):
             and not protected.matches(path, directory=theirs.kind == DIRECTORY)
         )
         remade = set(stale)
+        placed = [
+            (path, entry)
+            for path, entry in sorted(local.items())
+            if path not in held or path in remade
+        ]
         return cls(
             files=files,
-            directories=tuple(
-                path
-                for path, entry in sorted(local.items())
-                if entry.kind == DIRECTORY and (path not in held or path in remade)
-            ),
-            links=tuple(
-                (path, entry.detail)
-                for path, entry in sorted(local.items())
-                if entry.kind == LINK and (path not in held or path in remade)
-            ),
+            directories=tuple(path for path, entry in placed if entry.kind == DIRECTORY),
+            links=tuple((path, entry.detail) for path, entry in placed if entry.kind == LINK),
             delete=stale,
         )
 
@@ -296,12 +292,10 @@ def _differs(mine: Entry, theirs: Entry | None, *, modes: bool) -> bool:
     """Whether the target's copy of a file is missing or holds other bytes or another mode."""
     if theirs is None or theirs.kind != FILE:
         return True
-    if (mine.size, mine.detail) != (theirs.size, theirs.detail):
-        return True
-    return (
+    return (mine.size, mine.detail) != (theirs.size, theirs.detail) or (
         modes
         and None not in (mine.executable, theirs.executable)
-        and (mine.executable != theirs.executable)
+        and mine.executable != theirs.executable
     )
 
 

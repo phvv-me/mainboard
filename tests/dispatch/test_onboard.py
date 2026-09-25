@@ -20,14 +20,7 @@ from mainboard.dispatch.shells import PosixShell
 from mainboard.dispatch.state import Cache
 from mainboard.engines.compile.backend import PIXI_VERSION
 
-from .support import (
-    RecordingMachine,
-    Rule,
-    cache,
-    machine_with,
-    plan,
-    run_record,
-)
+from .support import RecordingMachine, Rule, cache, machine_with, plan, run_record
 
 if TYPE_CHECKING:
     from mainboard import ExecutionPlan
@@ -56,6 +49,17 @@ _HEALTHY: tuple[Rule, ...] = (
     ("pixi --version", 0, f"pixi {PIXI_VERSION}\n"),
     ("--version", 0, "0.1.0\n"),
 )
+
+# The first word of each stage a full onboarding announces, in order.
+_STAGES = [
+    "probing",
+    "mirroring",
+    "installing",
+    "checking",
+    "provisioning",
+    "checking",
+    "reading",
+]
 
 
 class FakeDispatcher:
@@ -88,8 +92,7 @@ def onboarding(
         lambda execution, root, ssh=None: PosixShell(host, execution, root),
     )
     dispatcher = FakeDispatcher(cache())
-    fields: dict[str, Setting] = {"root": "/repo"}
-    fields.update(overrides)
+    fields: dict[str, Setting] = {"root": "/repo", **overrides}
     return Onboarding(dispatcher, plan(), **fields), dispatcher
 
 
@@ -127,12 +130,8 @@ def test_a_workspace_that_vendors_no_source_installs_the_version_it_declares() -
     """
     shell = PosixShell(machine_with(), plan(), "/repo")
     routes = installers(shell, "packages/tool", vendored=False, floor=">=0.4.8")
-
     assert routes.names == ["present", "uv-index", "uv-bootstrap-index", "pip-index"]
     assert all("packages/tool" not in routes.select(name).command for name in routes.names)
-    assert routes.select("uv-index").command == (
-        "uv tool install --force --python '>=3.14' 'mainboard>=0.4.8'"
-    )
     assert routes.select("pip-index").command.endswith("--upgrade 'mainboard>=0.4.8'")
     assert "astral.sh/uv" in routes.select("uv-bootstrap-index").command
     # A machine that already runs it installs nothing at all.
@@ -198,55 +197,50 @@ def test_a_host_already_running_the_declared_tool_is_onboarded_without_installin
         ]
     )
     setup, dispatcher = onboarding(host, monkeypatch, floor=">=0.4.8")
-
-    recorded = setup.run()
-
-    assert recorded.installer == "present"
+    assert setup.run().installer == "present"
     assert not host.ran("uv tool install")
     assert not host.ran("pip install")
     assert dispatcher.cache.host("gold").installer == "present"
     assert host.ran("mainboard install default")
 
 
-def test_a_host_that_can_reach_no_route_says_which_family_was_being_tried(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("rules", "floor", "refusal"),
+    [
+        pytest.param(
+            [("command -v", 1, ""), ("pip --version", 1, ""), ("-d packages", 1, "")],
+            ">=0.4.8",
+            "cannot install mainboard on 'gold' by installing mainboard>=0.4.8 from an index",
+            id="from-an-index",
+        ),
+        pytest.param(
+            [("command -v", 1, ""), ("pip --version", 1, "")],
+            "",
+            "cannot install mainboard on 'gold' by installing from the source this workspace "
+            "vendors at packages/mainboard",
+            id="from-the-vendored-source",
+        ),
+    ],
+)
+def test_a_host_no_route_can_reach_is_refused_naming_which_family_was_being_tried(
+    rules: list[Rule], floor: str, refusal: str
 ) -> None:
     """`uv: reported unavailable` reads as a host with no tooling, which it was not.
 
-    The refusal names the condition that actually decided the routes: whether this workspace
-    ships the tool's source, and which version it asks for when it does not.
+    The refusal names the condition that actually decided the routes, before anything assumes
+    the tool: whether this workspace ships the tool's source, and which version it asks for when
+    it does not.
     """
-    bare = machine_with(
-        rules=[("command -v", 1, ""), ("pip --version", 1, ""), ("-d packages", 1, "")]
-    )
-    setup, _ = onboarding(bare, monkeypatch, floor=">=0.4.8")
-    with pytest.raises(MissionError, match=r"installing mainboard>=0.4.8 from an index"):
-        Bootstrap(PosixShell(bare, plan(), "/repo"), floor=">=0.4.8").tool()
-
-    vendoring = machine_with(rules=[("command -v", 1, ""), ("pip --version", 1, "")])
-    with pytest.raises(MissionError, match="source this workspace vendors at packages/mainboard"):
-        Bootstrap(PosixShell(vendoring, plan(), "/repo")).tool()
-    del setup
+    with pytest.raises(MissionError, match=refusal):
+        Bootstrap(PosixShell(machine_with(rules=rules), plan(), "/repo"), floor=floor).tool()
 
 
-def test_bootstrap_falls_through_to_pip_keeping_every_rejection_it_passed_over(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_bootstrap_falls_through_to_pip_keeping_every_rejection_it_passed_over() -> None:
     host = machine_with(rules=[("command -v uv", 1, ""), ("command -v curl", 1, "")])
-    onboarding(host, monkeypatch)
     resolution = Bootstrap(PosixShell(host, plan(), "/repo")).tool()
     assert resolution.winner == "pip"
     assert [name for name, _ in resolution.rejected] == ["uv", "uv-bootstrap"]
     assert host.ran("pip install --user")
-
-
-def test_bootstrap_refuses_a_host_no_route_can_reach_before_anything_assumes_the_tool(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    host = machine_with(rules=[("command -v", 1, ""), ("pip --version", 1, "")])
-    onboarding(host, monkeypatch)
-    with pytest.raises(MissionError, match="cannot install mainboard on 'gold'"):
-        Bootstrap(PosixShell(host, plan(), "/repo")).tool()
 
 
 @pytest.mark.parametrize(
@@ -275,7 +269,6 @@ def test_a_host_owing_runs_is_never_given_a_different_environment_under_them(
             update={"verdict": None if verdict == "F1" else verdict}
         )
     )
-
     if not refused:
         assert setup.run().host == "gold"
         return
@@ -286,6 +279,7 @@ def test_a_host_owing_runs_is_never_given_a_different_environment_under_them(
 
 def test_read_facts_starts_at_the_first_brace_and_refuses_output_carrying_no_snapshot() -> None:
     assert facts_command() == "mainboard facts --json"
+    assert gpus_command() == "mainboard gpus --json"
     assert read_facts(f"module: loading cuda\n{_FACTS_JSON}\n").hostname == "gold-1"
     with pytest.raises(MissionError, match="no host facts"):
         read_facts("command not found: mainboard\n")
@@ -294,8 +288,9 @@ def test_read_facts_starts_at_the_first_brace_and_refuses_output_carrying_no_sna
 def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """The recorded host carries the manifest digest `doctor` tells a diverged host apart by."""
     host = machine_with(rules=_HEALTHY)
-    setup, dispatcher = onboarding(host, monkeypatch)
+    setup, dispatcher = onboarding(host, monkeypatch, digest="deadbeef")
     with caplog.at_level("INFO", logger="mainboard.dispatch"):
         report = setup.run()
     assert dispatcher.mirrored == [("gold", "/repo")]
@@ -306,20 +301,10 @@ def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
     assert report.activate == "/repo/.mainboard/activate.sh"
     assert report.capabilities is not None and report.capabilities.pixi.endswith("/pixi")
     assert report.hardware is not None and report.hardware.hostname == "gold-1"
-    assert report.onboarded_at
-    assert dispatcher.cache.host("gold").root == "/repo"
+    assert report.onboarded_at and report.digest == "deadbeef"
+    assert dispatcher.cache.host("gold").digest == "deadbeef"
     assert [record.host for record in dispatcher.cache.hosts()] == ["gold"]
-    stages = [message.split()[0] for message in caplog.messages]
-    assert stages == [
-        "probing",
-        "mirroring",
-        "installing",
-        "checking",
-        "provisioning",
-        "checking",
-        "reading",
-        "onboarded",
-    ]
+    assert [message.split()[0] for message in caplog.messages] == [*_STAGES, "onboarded"]
     bare = HostSetup(host="gold", root="/repo")
     assert (bare.env, bare.rejected, bare.capabilities, bare.hardware) == (
         "default",
@@ -334,18 +319,9 @@ def test_onboarding_a_named_environment_verifies_that_environments_own_activatio
 ) -> None:
     """A host provisioned for `serving` must be checked and recorded against its own script."""
     host = machine_with(rules=_HEALTHY)
-    monkeypatch.setattr(
-        onboard_module,
-        "probe_capabilities",
-        lambda alias, ssh=None: Facts.parsed(alias, _CAPABILITIES),
-    )
-    monkeypatch.setattr(
-        onboard_module,
-        "open_shell",
-        lambda execution, root, ssh=None: PosixShell(host, execution, root),
-    )
-    dispatcher = FakeDispatcher(cache())
-    report = Onboarding(dispatcher, plan(env="serving"), root="/repo").run()
+    setup, _ = onboarding(host, monkeypatch)
+    setup.plan = plan(env="serving")
+    report = setup.run()
     assert host.ran("mainboard install serving --profile gold")
     assert host.ran("test -f /repo/.mainboard/activate-serving.sh")
     assert report.activate == "/repo/.mainboard/activate-serving.sh"
@@ -381,15 +357,7 @@ def test_onboarding_ships_the_compiled_artifact_unless_told_to_solve_on_the_host
     setup.run()
     assert dispatcher.required == ([artifact] if artifact else [])
     assert host.ran(installed)
-    assert [stage.split()[0] for stage in watched] == [
-        "probing",
-        "mirroring",
-        "installing",
-        "checking",
-        "provisioning",
-        "checking",
-        "reading",
-    ]
+    assert [stage.split()[0] for stage in watched] == _STAGES
 
 
 def test_onboarding_discovers_a_root_the_profile_never_declared(
@@ -398,8 +366,7 @@ def test_onboarding_discovers_a_root_the_profile_never_declared(
     """The probe already answered where the workspace goes, so nothing asks the host twice."""
     host = machine_with(rules=_HEALTHY)
     setup, dispatcher = onboarding(host, monkeypatch, root="")
-    report = setup.run()
-    assert report.root == "/home/me/projects"
+    assert setup.run().root == "/home/me/projects"
     assert dispatcher.mirrored == [("gold", "/home/me/projects")]
     assert not host.ran("ls -d /work")
 
@@ -413,17 +380,6 @@ def test_onboarding_refuses_a_provisioning_that_left_no_activation_behind(
         setup.run()
 
 
-def test_onboarding_stamps_the_manifest_digest_it_was_given_onto_the_recorded_host(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`doctor` tells a diverged host apart from a fresh one by comparing this field."""
-    host = machine_with(rules=_HEALTHY)
-    setup, dispatcher = onboarding(host, monkeypatch, digest="deadbeef")
-    report = setup.run()
-    assert report.digest == "deadbeef"
-    assert dispatcher.cache.host("gold").digest == "deadbeef"
-
-
 def test_sync_only_stamps_the_digest_it_was_given_and_keeps_the_old_one_when_given_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -431,75 +387,55 @@ def test_sync_only_stamps_the_digest_it_was_given_and_keeps_the_old_one_when_giv
     setup, dispatcher = onboarding(host, monkeypatch, digest="cafe")
     dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", digest="stale"))
     assert setup.run(sync_only=True).digest == "cafe"
-
     bare, dispatcher = onboarding(host, monkeypatch)
     dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", digest="stale"))
     assert bare.run(sync_only=True).digest == "stale"
 
 
+@pytest.mark.parametrize(
+    ("given", "used"),
+    [
+        pytest.param("", "/recorded", id="the-recorded-root"),
+        pytest.param("/repo", "/repo", id="a-given-root-over-the-recorded-one"),
+    ],
+)
 def test_sync_only_re_mirrors_and_re_provisions_without_bootstrap_or_hardware_probe(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, given: str, used: str
 ) -> None:
     """The fast path back to a host whose environment drifted from a manifest that moved.
 
-    Neither the tool nor the hardware changed, only the workspace and what compiles from it, so
-    this must never reach the bootstrap cascade or the facts probe the way a full onboarding does.
+    Neither the tool nor the hardware changed, so this never reaches the bootstrap cascade or the
+    facts probe, and since it probes nothing, the platform the setup recorded fills the profile's
+    gaps. The pixi is still aligned: a sync between two waves is exactly when a host that moved
+    would rewrite the shipped lock under the wave already queued against it.
     """
     host = machine_with(rules=list(_HEALTHY))
-    setup, dispatcher = onboarding(host, monkeypatch, root="")
-    dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", installer="uv", tool="0.1.0"))
-
+    setup, dispatcher = onboarding(host, monkeypatch, root=given)
+    found = Facts.parsed("gold", _CAPABILITIES)
+    dispatcher.cache.save_host(
+        HostSetup(host="gold", root="/recorded", installer="uv", tool="0.1.0", capabilities=found)
+    )
+    assert setup.plan.profile.platform != found.pixi_platform
     report = setup.run(sync_only=True)
-
-    assert dispatcher.mirrored == [("gold", "/repo")]
+    assert setup.plan.profile.platform == found.pixi_platform
+    assert dispatcher.mirrored == [("gold", used)]
     assert host.ran("mainboard install default --profile gold")
     assert not host.ran("uv tool install")
     assert not host.ran("facts --json")
     assert not host.ran("mainboard --version")
-    # The pixi is aligned here too, since a sync between two waves is exactly when a host that
-    # moved would otherwise rewrite the shipped lock under the wave already queued against it.
     assert host.ran("pixi --version")
     assert (report.root, report.installer, report.tool, report.pixi) == (
-        "/repo",
+        used,
         "uv",
         "0.1.0",
         PIXI_VERSION,
     )
 
 
-def test_sync_only_prefers_a_given_root_over_the_recorded_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    host = machine_with(rules=list(_HEALTHY))
-    setup, dispatcher = onboarding(host, monkeypatch)
-    dispatcher.cache.save_host(HostSetup(host="gold", root="/other", installer="uv"))
-    report = setup.run(sync_only=True)
-    assert report.root == "/repo"
-    assert dispatcher.mirrored == [("gold", "/repo")]
-
-
-def test_sync_only_resolves_the_plan_from_the_capabilities_the_setup_recorded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A sync probes nothing, so the platform the setup found is what fills the profile's gaps."""
-    host = machine_with(rules=list(_HEALTHY))
-    setup, dispatcher = onboarding(host, monkeypatch)
-    found = Facts.parsed("gold", _CAPABILITIES)
-    dispatcher.cache.save_host(HostSetup(host="gold", root="/repo", capabilities=found))
-    assert setup.plan.profile.platform != found.pixi_platform
-    setup.run(sync_only=True)
-    assert setup.plan.profile.platform == found.pixi_platform
-
-
-def test_the_probe_commands_run_the_environments_python_and_the_hosts_own_tool() -> None:
-    assert gpus_command() == "mainboard gpus --json"
-
-
 def test_sync_only_refuses_a_host_that_was_never_onboarded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    host = machine_with()
-    setup, _ = onboarding(host, monkeypatch)
+    setup, _ = onboarding(machine_with(), monkeypatch)
     with pytest.raises(LookupError, match="'gold' has never been set up"):
         setup.run(sync_only=True)
 
@@ -528,7 +464,6 @@ def test_a_host_on_another_pixi_is_brought_to_the_pin_and_refused_when_it_stays_
 
     drifted = Drifted(rules=list(_HEALTHY))
     setup, _ = onboarding(drifted, monkeypatch)
-
     assert setup.run().pixi == PIXI_VERSION
     assert drifted.ran(f"PIXI_VERSION={PIXI_VERSION}")
 

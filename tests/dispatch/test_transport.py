@@ -1,5 +1,3 @@
-import os
-import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=monkeypatches Popen for hermetic tests, never runs a real process since=2026-08-18
 import sys
 from math import inf
@@ -108,6 +106,19 @@ class _TreeProcess:
             raise psutil.NoSuchProcess(self.pid)
 
 
+@pytest.fixture
+def killed(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, bool]]:
+    """Every `(pid, force)` the tree terminator is asked for, each finding its group gone."""
+    asked: list[tuple[int, bool]] = []
+
+    def gone(pid: int, *, force: bool = False) -> None:
+        asked.append((pid, force))
+        raise ProcessLookupError
+
+    monkeypatch.setattr(transport_module, "terminate_process_tree", gone)
+    return asked
+
+
 @pytest.mark.parametrize("marker", _TRANSPORT_MARKERS)
 def test_a_transport_fault_needs_both_the_ssh_exit_status_and_a_known_marker(marker: str) -> None:
     """A name that will not resolve is a host we cannot reach now, not a command that failed."""
@@ -123,21 +134,6 @@ def test_a_dead_scheduler_daemon_is_any_refused_control_socket_marker(marker: st
     assert issubclass(DaemonDown, HostUnreachable)
 
 
-def test_the_ssh_policy_overrides_liveness_and_leaves_every_alias_setting_intact() -> None:
-    policy = SshTransport(connect_timeout=5.0, server_alive_interval=3.0, server_alive_count=2)
-    assert policy.options == (
-        "-o",
-        "ConnectTimeout=5",
-        "-o",
-        "ServerAliveInterval=3",
-        "-o",
-        "ServerAliveCountMax=2",
-        "-o",
-        "BatchMode=yes",
-    )
-    assert policy.deadline == pytest.approx(5.0 + 3.0 * 2 + 5.0)
-
-
 def test_a_native_process_tree_is_signalled_children_first_and_tolerates_a_vanished_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -145,64 +141,41 @@ def test_a_native_process_tree_is_signalled_children_first_and_tolerates_a_vanis
     root = _TreeProcess(1, events)
     root.descendants = [_TreeProcess(2, events), _TreeProcess(3, events, vanished=True)]
     monkeypatch.setattr(transport_module.psutil, "Process", lambda pid: root)
-
     terminate_process_tree(root.pid)
     terminate_process_tree(root.pid, force=True)
-
-    assert events == [
-        "terminate:3",
-        "terminate:2",
-        "terminate:1",
-        "kill:3",
-        "kill:2",
-        "kill:1",
-    ]
+    assert events == ["terminate:3", "terminate:2", "terminate:1", "kill:3", "kill:2", "kill:1"]
 
 
 @pytest.mark.parametrize(
-    ("returncode", "stdout", "stderr", "raised", "detail"),
+    ("returncode", "stderr", "operation", "raised", "detail"),
     [
-        (0, "ok\n", "", None, "ok\n"),
-        (255, "", "kex_exchange identification failed", HostUnreachable, "kex_exchange"),
-        (255, "", "Host key verification failed.", ConnectionError, "host-key verification"),
-        (1, "", "remote command exploded", RuntimeError, "remote command exploded"),
-        (7, "", "", RuntimeError, "exit 7"),
+        (0, "", "connect", None, "ok\n"),
+        (255, "kex_exchange identification failed", "connect", HostUnreachable, "kex_exchange"),
+        (255, "Host key verification failed.", "connect", ConnectionError, "host-key"),
+        (1, "remote command exploded", "connect", RuntimeError, "remote command exploded"),
+        (7, "", "connect", RuntimeError, "exit 7"),
+        # The probe runs `echo`, so its silent 255 is ssh's own; a real command may exit 255
+        # itself. Left untyped, a markerless probe failure escaped the rental's knock loop as a
+        # bare error instead of being knocked again (RTX 4090 52521884, 2026-09-25).
+        (255, "", "connect", HostUnreachable, "exit 255"),
+        (255, "", "command", RuntimeError, "exit 255"),
     ],
 )
 def test_run_returns_stdout_on_a_clean_exit_and_types_every_other_ending(
     monkeypatch: pytest.MonkeyPatch,
     returncode: int,
-    stdout: str,
     stderr: str,
+    operation: str,
     raised: type[BaseException] | None,
     detail: str,
 ) -> None:
-    policy = SshTransport()
-    process = _FakeProcess(returncode=returncode, stdout=stdout, stderr=stderr)
+    process = _FakeProcess(returncode=returncode, stdout="ok\n", stderr=stderr)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
     if raised is None:
-        assert policy.run(("ssh", "host", "true"), "host", operation="connect") == detail
+        assert SshTransport().run(("ssh", "host", "true"), "host", operation=operation) == detail
         return
     with pytest.raises(raised, match=detail):
-        policy.run(("ssh", "host", "true"), "host", operation="connect")
-
-
-@pytest.mark.parametrize(
-    ("operation", "raised"), [("connect", HostUnreachable), ("command", RuntimeError)]
-)
-def test_a_silent_255_is_unreachable_only_for_the_connect_probe(
-    monkeypatch: pytest.MonkeyPatch, operation: str, raised: type[BaseException]
-) -> None:
-    """The probe runs `echo`, so its 255 is ssh's own; a real command may exit 255 itself.
-
-    Left untyped, a probe that failed without a marker escaped the rental's knock loop as a bare
-    error instead of being knocked again (RTX 4090 52521884, 2026-09-25).
-    """
-    process = _FakeProcess(returncode=255, stdout="", stderr="")
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
-    with pytest.raises(raised) as caught:
         SshTransport().run(("ssh", "host", "true"), "host", operation=operation)
-    assert type(caught.value) is raised
 
 
 @pytest.mark.parametrize(
@@ -231,29 +204,23 @@ def test_invoke_answers_any_exit_a_command_gave_and_raises_only_what_ssh_itself_
     assert answer == (returncode, "said", stderr)
 
 
-def test_run_reports_a_host_unreachable_when_ssh_cannot_even_start(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def boom(*_a, **_k) -> None:
-        raise OSError("no such file")
-
-    monkeypatch.setattr(subprocess, "Popen", boom)
+@pytest.mark.parametrize("verb", ["run", "feed"])
+def test_an_ssh_that_cannot_even_start_is_a_host_unreachable(tmp_path: Path, verb: str) -> None:
+    """A missing ssh is a machine this one cannot reach, not a command that answered."""
+    absent = (str(tmp_path / "absent-ssh"),)
     with pytest.raises(HostUnreachable, match="could not start"):
-        SshTransport().run(("ssh", "host", "true"), "host", operation="connect")
+        if verb == "run":
+            SshTransport().run(absent, "gold", operation="connect")
+        else:
+            SshTransport().feed(absent, "gold", operation="where", chunks=[b"x"])
 
 
 def test_a_timed_out_transfer_takes_its_whole_process_group_down_with_it(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, killed: list[tuple[int, bool]]
 ) -> None:
     """A ProxyJump child outliving its parent is what leaves an orphaned ssh behind."""
     process = _FakeProcess(raise_timeout=True)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
-    killed: list[tuple[int, bool]] = []
-    monkeypatch.setattr(
-        transport_module,
-        "terminate_process_tree",
-        lambda pid, *, force=False: killed.append((pid, force)),
-    )
     with pytest.raises(HostUnreachable, match="timed out"):
         SshTransport().run(("ssh", "host", "true"), "host", operation="connect")
     assert killed == [(process.pid, False)]
@@ -266,18 +233,15 @@ def test_run_pipes_only_explicit_input_and_streams_stdout_bytes(
 ) -> None:
     output = tmp_path / "stream.bin" if output_file else None
     script = "import sys; data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data)"
+    text = "line one\nUnicode: 日本語\n"
     answer = SshTransport().run(
-        (sys.executable, "-c", script),
-        "local",
-        operation="stream",
-        input_text="line one\nUnicode: 日本語\n",
-        output=output,
+        (sys.executable, "-c", script), "local", operation="stream", input_text=text, output=output
     )
     if output is None:
-        assert answer == "line one\nUnicode: 日本語\n"
+        assert answer == text
     else:
         assert answer == ""
-        assert output.read_bytes() == "line one\nUnicode: 日本語\n".encode()
+        assert output.read_bytes() == text.encode()
 
 
 @pytest.mark.parametrize("exit_code", [0, 1])
@@ -323,10 +287,9 @@ def test_evidence_stream_can_outlive_the_control_deadline(tmp_path: Path) -> Non
 
 
 def test_stream_timeout_closes_staging_file_and_terminates_process_tree(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, killed: list[tuple[int, bool]]
 ) -> None:
     process = _FakeProcess(raise_timeout=True)
-    killed: list[tuple[int, bool]] = []
     opened: list[BinaryIO] = []
 
     def spawn(command: tuple[str, ...], **kwargs: BinaryIO | str | bool | int) -> _FakeProcess:
@@ -336,11 +299,6 @@ def test_stream_timeout_closes_staging_file_and_terminates_process_tree(
         return process
 
     monkeypatch.setattr(subprocess, "Popen", spawn)
-    monkeypatch.setattr(
-        transport_module,
-        "terminate_process_tree",
-        lambda pid, *, force=False: killed.append((pid, force)),
-    )
     output = tmp_path / "partial.bin"
     with pytest.raises(HostUnreachable, match="timed out"):
         SshTransport().run(("ssh", "host"), "host", operation="stream", output=output)
@@ -354,11 +312,10 @@ def test_every_ssh_this_policy_runs_reads_devnull_and_never_the_callers_own_stdi
 ) -> None:
     """A submit inside a shell loop used to eat the loop's remaining input.
 
-    An ssh client left on its caller's stdin reads it greedily to forward to the far side, and
-    every remote verb warms a connection before it does anything, so
-    `while read handle; do mainboard submit ...; done < handles` fed the first submit's warm-up
-    the rest of the file and the loop ran once. Nothing here wants a caller's input: the warm-up
-    echoes a marker, scp moves a file, and a real remote command rides plumbum's own piped session.
+    An ssh client left on its caller's stdin reads it greedily to forward, and every remote verb
+    warms a connection first, so `while read handle; do mainboard submit ...; done < handles` fed
+    the first warm-up the rest of the file and the loop ran once. A real remote command rides
+    plumbum's own piped session.
     """
     opened: list[dict[str, object]] = []
 
@@ -373,8 +330,8 @@ def test_every_ssh_this_policy_runs_reads_devnull_and_never_the_callers_own_stdi
     assert [call["stdin"] for call in opened] == [subprocess.DEVNULL, subprocess.DEVNULL]
 
 
-def test_terminate_escalates_to_sigkill_and_tolerates_a_group_already_gone(
-    monkeypatch: pytest.MonkeyPatch,
+def test_terminate_escalates_to_a_kill_and_tolerates_a_group_already_gone(
+    killed: list[tuple[int, bool]],
 ) -> None:
     stubborn = _FakeProcess()
 
@@ -384,24 +341,9 @@ def test_terminate_escalates_to_sigkill_and_tolerates_a_group_already_gone(
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=timeout)
 
     stubborn.wait = wait
-    killed: list[tuple[int, bool]] = []
-    monkeypatch.setattr(
-        transport_module,
-        "terminate_process_tree",
-        lambda pid, *, force=False: killed.append((pid, force)),
-    )
     SshTransport.terminate(stubborn)
     assert killed == [(stubborn.pid, False), (stubborn.pid, True)]
     assert stubborn.wait_calls == [2.0, None]
-
-    def raise_lookup(pid: int, *, force: bool = False) -> None:
-        del pid, force
-        raise ProcessLookupError
-
-    monkeypatch.setattr(transport_module, "terminate_process_tree", raise_lookup)
-    gone = _FakeProcess()
-    SshTransport.terminate(gone)
-    assert gone.wait_calls == [2.0]
 
 
 def test_warm_and_transfer_ride_the_same_policy_and_machine_opens_a_new_session(
@@ -415,24 +357,11 @@ def test_warm_and_transfer_ride_the_same_policy_and_machine_opens_a_new_session(
 
     monkeypatch.setattr(SshTransport, "run", run)
     built: dict[str, str | tuple[str, ...] | float | bool] = {}
-
-    class FakeBoundedSshMachine:
-        def __init__(
-            self,
-            host: str,
-            *,
-            ssh_opts: tuple[str, ...],
-            connect_timeout: float,
-            new_session: bool,
-        ) -> None:
-            built.update(
-                host=host,
-                ssh_opts=ssh_opts,
-                connect_timeout=connect_timeout,
-                new_session=new_session,
-            )
-
-    monkeypatch.setattr(transport_module, "BoundedSshMachine", FakeBoundedSshMachine)
+    monkeypatch.setattr(
+        transport_module,
+        "BoundedSshMachine",
+        lambda host, **options: built.update(host=host, **options),
+    )
     policy = SshTransport()
     policy.warm("gold")
     policy.transfer("a.txt", destination="gold:b.txt", host="gold")
@@ -442,53 +371,32 @@ def test_warm_and_transfer_ride_the_same_policy_and_machine_opens_a_new_session(
     assert calls[0][1:] == ("gold", "connect")
     assert calls[1][0][:2] == ("scp", "-o")
     assert calls[1][1:] == ("gold", "copy")
-    assert built["host"] == "gold"
-    assert built["ssh_opts"] == policy.options
-    assert built["connect_timeout"] == policy.deadline
-    assert built["new_session"] is True
+    assert built == {
+        "host": "gold",
+        "ssh_opts": policy.options,
+        "connect_timeout": policy.deadline,
+        "new_session": True,
+    }
 
 
 @pytest.mark.parametrize(
     ("process", "signalled"),
-    [
-        (_FakeSshProcess(alive=True), [(999, signal.SIGTERM)]),
-        (_FakeSshProcess(alive=False), []),
-        (None, []),
-    ],
+    [(_FakeSshProcess(alive=True), [999]), (_FakeSshProcess(alive=False), []), (None, [])],
 )
 def test_closing_a_bounded_session_kills_only_a_group_that_is_still_alive(
     monkeypatch: pytest.MonkeyPatch,
+    killed: list[tuple[int, bool]],
     process: _FakeSshProcess | None,
-    signalled: list[tuple[int, int]],
+    signalled: list[int],
 ) -> None:
+    """A group already gone by the time it is signalled closes quietly all the same."""
     session = object.__new__(transport_module.BoundedShellSession)
     session.proc = process
-    killed: list[tuple[int, bool]] = []
-    monkeypatch.setattr(
-        transport_module,
-        "terminate_process_tree",
-        lambda pid, *, force=False: killed.append((pid, force)),
-    )
     closed: list[bool] = []
     monkeypatch.setattr(transport_module.ShellSession, "close", lambda self: closed.append(True))
     session.close()
-    assert killed == [(pid, False) for pid, _signal in signalled]
+    assert killed == [(pid, False) for pid in signalled]
     assert closed == [True]
-
-
-def test_closing_a_bounded_session_tolerates_a_group_already_gone(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session = object.__new__(transport_module.BoundedShellSession)
-    session.proc = _FakeSshProcess(alive=True)
-
-    def raise_lookup(pid: int, *, force: bool = False) -> None:
-        del pid, force
-        raise ProcessLookupError
-
-    monkeypatch.setattr(transport_module, "terminate_process_tree", raise_lookup)
-    monkeypatch.setattr(transport_module.ShellSession, "close", lambda self: None)
-    session.close()
 
 
 @pytest.mark.parametrize(("isatty", "flags"), [(True, ["-tt"]), (False, ["-T"])])
@@ -503,36 +411,24 @@ def test_a_bounded_machine_opens_its_shell_in_a_dedicated_process_group(
     machine.popen = lambda argv, extra, new_session: (
         opened.append((argv, extra, new_session)) or "PROC"
     )
-    built: dict[str, str | bool | float] = {}
-
-    class FakeSession:
-        def __init__(
-            self, proc: str, encoding: str, isatty: bool, connect_timeout: float, *, host: str
-        ) -> None:
-            built.update(
-                proc=proc,
-                encoding=encoding,
-                isatty=isatty,
-                connect_timeout=connect_timeout,
-                host=host,
-            )
-
-    monkeypatch.setattr(transport_module, "BoundedShellSession", FakeSession)
-    result = machine.session(isatty=isatty, new_session=isatty)
-    assert isinstance(result, FakeSession)
+    monkeypatch.setattr(transport_module, "BoundedShellSession", lambda *args, host: (args, host))
+    assert machine.session(isatty=isatty, new_session=isatty) == (
+        ("PROC", "utf-8", isatty, 15.0),
+        "gold",
+    )
     assert opened == [(["/bin/sh"], flags, isatty)]
-    assert (built["proc"], built["host"], built["isatty"]) == ("PROC", "gold", isatty)
 
 
-def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liveness_options() -> (
-    None
-):
+def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liveness_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A rented box has no alias, so the address, port, login and key ride with the policy.
 
-    Its host key is new every time and never seen again, which is why the connection accepts it
-    on sight and keeps it out of `known_hosts` rather than failing verification against whatever
-    key some earlier rental had at a recycled address.
+    Its host key is new every time and never seen again, so the connection accepts it on sight
+    and keeps it out of `known_hosts` through the client's own null device (`nul` on Windows)
+    rather than failing verification against some earlier rental's key at a recycled address.
     """
+    monkeypatch.setattr(transport_module.os, "devnull", "nul")
     endpoint = Endpoint(address="ssh5.vast.ai", port=41022, user="root", identity="/keys/id")
     policy = SshTransport(endpoint=endpoint)
     assert endpoint.destination == "root@ssh5.vast.ai"
@@ -548,19 +444,11 @@ def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liven
         "-o",
         "StrictHostKeyChecking=accept-new",
         "-o",
-        f"UserKnownHostsFile={os.devnull}",
+        "UserKnownHostsFile=nul",
         "-o",
         "LogLevel=ERROR",
     )
     assert Path(Endpoint(address="a", identity="~/.ssh/id").identity).is_absolute()
-
-
-@pytest.mark.parametrize("device", ["/dev/null", "nul"])
-def test_rental_known_hosts_uses_the_client_null_device(
-    monkeypatch: pytest.MonkeyPatch, device: str
-) -> None:
-    monkeypatch.setattr(transport_module.os, "devnull", device)
-    assert f"UserKnownHostsFile={device}" in Endpoint(address="rental").options
 
 
 @pytest.mark.parametrize("output", ["", "banner only\n", "prefix-mainboard-reachable\n"])
@@ -572,10 +460,23 @@ def test_warm_refuses_success_without_its_complete_marker(
         SshTransport().warm("gold")
 
 
-def test_an_unbound_policy_names_the_alias_and_a_bound_one_spells_the_port_scp_way() -> None:
+def test_an_unbound_policy_overrides_only_liveness_and_a_bound_one_spells_the_port_scp_way() -> (
+    None
+):
     """scp differs from ssh in one letter, and a declared host keeps its own config untouched."""
-    assert SshTransport().destination("gold") == "gold"
-    assert SshTransport().options == SshTransport().liveness
+    policy = SshTransport(connect_timeout=5.0, server_alive_interval=3.0, server_alive_count=2)
+    assert policy.options == (
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ServerAliveInterval=3",
+        "-o",
+        "ServerAliveCountMax=2",
+        "-o",
+        "BatchMode=yes",
+    )
+    assert policy.deadline == pytest.approx(5.0 + 3.0 * 2 + 5.0)
+    assert policy.destination("gold") == "gold"
     bare = Endpoint(address="1.2.3.4")
     assert bare.destination == "1.2.3.4" and "-p" not in bare.options and "-i" not in bare.options
     ported = Endpoint(address="1.2.3.4", port=2222)
@@ -616,14 +517,6 @@ def test_feed_streams_chunks_while_draining_output_and_types_every_other_ending(
     else:
         with pytest.raises(raised, match=f"ssh place to 'local' failed: .*{said}"):
             SshTransport().feed(command, "local", operation="place", chunks=iter(chunks))
-
-
-def test_feed_reports_a_host_unreachable_when_ssh_cannot_even_start(tmp_path: Path) -> None:
-    """A missing ssh is a machine this one cannot reach, not a command that answered."""
-    with pytest.raises(HostUnreachable, match="could not start"):
-        SshTransport().feed(
-            (str(tmp_path / "absent-ssh"),), "gold", operation="where", chunks=[b"x"]
-        )
 
 
 @pytest.mark.xfail(

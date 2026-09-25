@@ -20,11 +20,16 @@ needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git on th
 
 
 def seed(root: Path, *files: str) -> None:
-    """Create each relative path under `root` (parents included) with token content."""
-    for relative in files:
+    """Create each relative path under `root` (parents included) with its own name as content."""
+    write(root, {relative: relative for relative in files})
+
+
+def write(root: Path, files: dict[str, str]) -> None:
+    """Create each relative path under `root` (parents included) holding its given text."""
+    for relative, text in files.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(relative, encoding="utf-8")
+        path.write_text(text, encoding="utf-8")
 
 
 @pytest.fixture
@@ -135,13 +140,16 @@ def test_the_ignore_files_are_read_once_each_and_a_repository_answers_to_its_own
     Its `info/exclude` joins its root, through the `.git` file a submodule carries as well.
     """
     monkeypatch.setattr(sync_module.shutil, "which", lambda name: None)
-    seed(tmp_path, ".gitignore", "pkg/.gitignore", "lib/.git/info/exclude", "sub/.git")
-    (tmp_path / ".gitignore").write_text("*.scratch\nbuild/\n", encoding="utf-8")
-    (tmp_path / "pkg/.gitignore").write_text("!keep.scratch\n", encoding="utf-8")
-    (tmp_path / "lib/.git/info/exclude").write_text("*.local\n", encoding="utf-8")
-    (tmp_path / "sub/.git").write_text("gitdir: ../modules/sub\n", encoding="utf-8")
-    seed(tmp_path, "modules/sub/info/exclude")
-    (tmp_path / "modules/sub/info/exclude").write_text("*.tmp\n", encoding="utf-8")
+    write(
+        tmp_path,
+        {
+            ".gitignore": "*.scratch\nbuild/\n",
+            "pkg/.gitignore": "!keep.scratch\n",
+            "lib/.git/info/exclude": "*.local\n",
+            "sub/.git": "gitdir: ../modules/sub\n",
+            "modules/sub/info/exclude": "*.tmp\n",
+        },
+    )
     reads: list[Path] = []
     original = sync_module._read
     monkeypatch.setattr(sync_module, "_read", lambda path: reads.append(path) or original(path))
@@ -164,7 +172,7 @@ def test_the_files_a_repository_would_ship_count_a_link_that_leads_to_a_file(
 ) -> None:
     monkeypatch.setattr(sync_module.shutil, "which", lambda name: None)
     seed(tmp_path, "src/run.py", "src/.env", "src/__pycache__/x.pyc", "src/data.scratch")
-    (tmp_path / ".gitignore").write_text("*.scratch\n", encoding="utf-8")
+    write(tmp_path, {".gitignore": "*.scratch\n"})
     try:
         (tmp_path / "src/alias.py").symlink_to("run.py")
         (tmp_path / "src/folder").symlink_to("..", target_is_directory=True)
@@ -184,15 +192,17 @@ def test_a_submodule_ships_its_tracked_build_sources_under_a_parent_that_ignores
     registered answers the same way. A host keeps what the repository's own rules ignore and
     loses what they do not.
     """
-    (home / ".gitconfig").write_text("[core]\n\texcludesFile = ~/global-ignore\n")
-    (home / "global-ignore").write_text("*.swp\n", encoding="utf-8")
+    write(
+        home,
+        {".gitconfig": "[core]\n\texcludesFile = ~/global-ignore\n", "global-ignore": "*.swp\n"},
+    )
     work, host = tmp_path / "work", tmp_path / "host"
-    seed(work, ".gitignore", "src/app.py", "build/out.o", "build/forced.txt", "src/x.swp")
-    (work / ".gitignore").write_text("build/\n", encoding="utf-8")
+    seed(work, "src/app.py", "build/out.o", "build/forced.txt", "src/x.swp")
+    write(work, {".gitignore": "build/\n"})
     git(work, "init", "-q")
     mcmr = work / "packages/mcmr"
-    seed(mcmr, ".gitignore", "src/graph/build/building.rs", "target/debug/x")
-    (mcmr / ".gitignore").write_text("target/\n", encoding="utf-8")
+    seed(mcmr, "src/graph/build/building.rs", "target/debug/x")
+    write(mcmr, {".gitignore": "target/\n"})
     git(mcmr, "init", "-q")
     git(mcmr, "add", ".")
     git(mcmr, "commit", "-q", "-m", "mcmr")
@@ -244,7 +254,7 @@ def test_a_submodule_ships_its_tracked_build_sources_under_a_parent_that_ignores
 
 @needs_git
 def test_a_repository_git_cannot_read_refuses_by_what_git_said(tmp_path: Path, home: Path) -> None:
-    (tmp_path / ".git").write_text("not a gitdir\n", encoding="utf-8")
+    write(tmp_path, {".git": "not a gitdir\n"})
     with pytest.raises(MissionError, match="git could not list"):
         GitignoreFilter(tmp_path).tracked(["src"])
 
@@ -262,7 +272,6 @@ def test_a_workspace_git_does_not_answer_for_lists_nothing(
 def test_the_global_excludes_default_to_the_xdg_file_when_git_names_none(
     tmp_path: Path, home: Path
 ) -> None:
-    seed(home, ".config/git/ignore")
-    (home / ".config/git/ignore").write_text("*.orig\n", encoding="utf-8")
+    write(home, {".config/git/ignore": "*.orig\n"})
     git(tmp_path, "init", "-q")
     assert GitignoreFilter(tmp_path).ignored("patch.orig")

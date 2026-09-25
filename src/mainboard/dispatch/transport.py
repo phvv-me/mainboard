@@ -1,9 +1,6 @@
 # Bounded SSH transport policy, the machines it reaches, and its shared failure vocabulary. A
 # transport fault is the ssh link itself failing; it reads identically to a real failure (exit
 # 255 with a stderr phrase).
-#
-# A policy carries an `Endpoint` when the machine it opens is not in `~/.ssh/config` at all,
-# which is the whole difference between a declared host and one rented for a single job.
 
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp options), not untrusted input since=2026-08-17
@@ -12,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, suppress
 from math import ceil, isinf
 from pathlib import Path
-from typing import IO, NoReturn
+from typing import IO
 
 import psutil
 from patos import FrozenModel
@@ -40,15 +37,13 @@ _TRANSPORT_MARKERS = (
     "control socket",
     "control master",
     "timed out",
-    # An ssh that would not authenticate never opened a session, so no command ran and there is
-    # nothing to read an answer out of. Treating it as a real command answer is what let a
-    # `Permission denied (keyboard-interactive)` on an expired credential raise a bare
-    # `RuntimeError` out of `Job.transcript`, whose own contract says a host that went quiet
-    # costs its transcript and no other job's outcome, and take a whole monitor sweep down.
+    # An ssh that would not authenticate ran no command. Read as a command answer, an expired
+    # credential's `Permission denied (keyboard-interactive)` raised a bare `RuntimeError` out of
+    # `Job.transcript` (whose contract costs a quiet host only its transcript) and took a whole
+    # monitor sweep down.
     "permission denied",
     "too many authentication failures",
 )
-
 
 # A dead scheduler daemon (pueue's `pueued`) refuses its own control socket, distinct from an
 # ssh transport fault, so it surfaces as `daemon down` and a revive restarts it.
@@ -56,17 +51,13 @@ _DAEMON_DOWN_MARKERS = ("connecting to the daemon", "connection refused", ".sock
 
 
 def terminate_process_tree(pid: int, *, force: bool = False) -> None:
-    """Terminate one process tree with the operating system's native primitive.
+    """Terminate (or with `force`, kill) one process tree, children first, on every platform.
 
-    psutil supplies one process-tree traversal on every platform, including ProxyJump children,
-    without maintaining separate POSIX-signal and Windows process APIs.
-
-    pid: root process identifier.
-    force: kill rather than request graceful termination.
+    psutil walks the tree natively everywhere, ProxyJump children included, so no separate
+    POSIX-signal and Windows process code exists.
     """
     root = psutil.Process(pid)
-    processes = [*reversed(root.children(recursive=True)), root]
-    for process in processes:
+    for process in [*reversed(root.children(recursive=True)), root]:
         with suppress(psutil.Error):
             (process.kill if force else process.terminate)()
 
@@ -74,38 +65,33 @@ def terminate_process_tree(pid: int, *, force: bool = False) -> None:
 class HostUnreachable(Exception):
     """An ssh transport failure, so a host's state is unknown right now rather than settled.
 
-    Raised when the ssh connection itself failed (a refused control-master session, a dropped
-    link, a timeout) rather than the remote command running and exiting non-zero. Wait and
-    connect loops absorb a few of these with backoff, so a transient blip is never misread as a
-    finished or vanished job, nor as a host that cannot be reached at all; a persistent outage
-    still surfaces once the retry budget is spent.
+    The connection itself failed (a refused control-master session, a dropped link, a timeout),
+    not a remote command exiting non-zero. Wait and connect loops absorb a few with backoff, so
+    a transient blip is never misread as a finished or vanished job; a persistent outage still
+    surfaces once the retry budget is spent.
     """
 
 
 class DaemonDown(HostUnreachable):
     """A host's scheduler daemon is down (a dead pueue `pueued`), so its jobs cannot resolve now.
 
-    A subclass of `HostUnreachable`, so every wait/poll/status path that already rides out an
-    unreachable host treats a dead daemon the same way rather than crashing on the raw client
-    error. The reason it carries, `daemon down`, is what a durable monitor surfaces per host, and
-    reviving the host restarts the daemon to recover.
+    Every path that rides out an unreachable host rides this out too, rather than crashing on the
+    raw client error. Its reason, `daemon down`, is what a durable monitor surfaces per host, and
+    reviving the host restarts the daemon.
     """
 
 
 class Endpoint(FrozenModel):
     """Where ssh reaches one machine `~/.ssh/config` has never heard of.
 
-    A declared host is an alias and the user's own config answers every question about it. A
-    machine rented for one job has no alias and no entry: it is an address, a port, a login and
-    a key, all four minted minutes ago, so they ride with the policy that opens the connection
-    instead of with a file nobody edited. Its host key is new by construction and will never be
-    seen again, so it is accepted on sight and kept out of `known_hosts`, which is also what
-    stops a recycled provider address from failing verification against the key some earlier
-    rental had at it.
+    A declared host is an alias its user's config answers for. A machine rented for one job has
+    only an address, port, login and key minted minutes ago, so they ride with the policy. Its
+    host key is new and never seen again, so it is accepted on sight and kept out of
+    `known_hosts`, which also stops a recycled provider address failing verification against an
+    earlier rental's key.
 
-    address: the hostname or IP ssh connects to.
-    port: the ssh port, 0 for ssh's own default.
-    user: the login, empty for whatever ssh would choose.
+    port: 0 for ssh's own default.
+    user: empty for whatever ssh would choose.
     identity: the private key file, empty to leave that to ssh's agent and config.
     """
 
@@ -117,12 +103,8 @@ class Endpoint(FrozenModel):
     @field_validator("identity")
     @classmethod
     def expanded(cls, value: str) -> str:
-        """A key path with `~` resolved and forward slashes, the one spelling every reader takes.
-
-        ssh receives it as one argument with no shell, and ssh and its config file accept forward
-        slashes on Windows too, so a Windows key path is written `C:/Users/...` rather than in
-        its native spelling.
-        """
+        """The key path with `~` resolved, in forward slashes, which ssh and its config accept on
+        Windows too (`C:/Users/...`); ssh receives it as one argument with no shell."""
         return Path(value).expanduser().as_posix() if value else value
 
     @property
@@ -148,15 +130,15 @@ class Endpoint(FrozenModel):
 
     @property
     def scp_options(self) -> tuple[str, ...]:
-        """`options` as scp spells them, which differs in one letter: its port flag is `-P`."""
+        """`options` as scp spells them: its port flag is `-P`."""
         return tuple("-P" if option == "-p" else option for option in self.options)
 
 
 class SshTransport(FrozenModel):
-    """One bounded OpenSSH policy while preserving user aliases and ProxyJump settings.
+    """One bounded OpenSSH policy that preserves user aliases and ProxyJump settings.
 
-    An `endpoint` binds the policy to a machine that has no alias to preserve, which is what
-    lets a rented box ride the same mirror, install and pin path a declared host does.
+    endpoint: binds the policy to a machine with no alias, so a rented box rides the same
+        mirror, install and pin path a declared host does.
     """
 
     connect_timeout: float = Field(default=15.0, gt=0.0)
@@ -200,13 +182,16 @@ class SshTransport(FrozenModel):
 
     @staticmethod
     def terminate(process: subprocess.Popen[bytes]) -> None:
-        """Terminate the whole SSH process group so ProxyJump children cannot remain."""
+        """Terminate the whole SSH process group so ProxyJump children cannot remain, killing it
+        when it has not exited two seconds later."""
         with suppress(ProcessLookupError, PermissionError, psutil.Error):
             terminate_process_tree(process.pid)
         try:
             process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
-            SshTransport.__force_killpg(process)
+            with suppress(ProcessLookupError, PermissionError, psutil.Error):
+                terminate_process_tree(process.pid, force=True)
+            process.wait()
 
     def transfer(self, source: str, *, destination: str, host: str) -> None:
         """Copy one file through the bounded SSH policy."""
@@ -216,10 +201,7 @@ class SshTransport(FrozenModel):
     def machine(self, host: str) -> BoundedSshMachine:
         """A persistent SSH session with a dedicated local process group."""
         return BoundedSshMachine(
-            host,
-            ssh_opts=self.options,
-            connect_timeout=self.deadline,
-            new_session=True,
+            host, ssh_opts=self.options, connect_timeout=self.deadline, new_session=True
         )
 
     def invoke(
@@ -231,17 +213,16 @@ class SshTransport(FrozenModel):
         input_text: str | None = None,
         timeout: float | None = None,
     ) -> tuple[int, str, str]:
-        """Run one ssh process and answer its exit status with what it wrote.
+        """Run one ssh process and answer its exit status with its stdout and stderr.
 
-        A transport fault or a host-key failure is raised as itself, since neither is an answer;
-        any other exit status comes back, because a probe that exits non-zero answered.
+        A transport fault or a host-key failure raises, since neither is an answer; any other
+        exit status comes back, because a probe that exits non-zero answered.
 
         command: the full argv, `ssh` first.
-        host: the alias or destination, named in every failure.
-        operation: what the command is for, named in every failure.
+        host, operation: named in every failure.
         input_text: explicit UTF-8 input, otherwise the native null device.
-        timeout: seconds the process may run, the control deadline when None; `math.inf` lets
-            an install run its course.
+        timeout: seconds, the control deadline when None; `math.inf` lets an install run its
+            course.
         """
         returncode, stdout, stderr = self.__communicate(
             command,
@@ -252,7 +233,7 @@ class SshTransport(FrozenModel):
             timeout=self.deadline if timeout is None else (None if isinf(timeout) else timeout),
         )
         self.__check(returncode, stderr, host=host, operation=operation)
-        return returncode, stdout or "", stderr or ""
+        return returncode, stdout, stderr
 
     def run(
         self,
@@ -268,10 +249,9 @@ class SshTransport(FrozenModel):
         input_text: explicit UTF-8 input, otherwise stdin is the native null device. Never
             inherit the caller's input, which an SSH warm-up could consume from a shell loop.
         output: caller-owned staging file for raw stdout bytes, otherwise capture text. A
-            streamed operation returns an empty string and retains partial bytes on failure.
-            The caller owns validation and publication of the completed staging file.
-            Bulk streams allow ten minutes; control calls retain the shorter deadline.
-            SSH keepalives and process-tree termination apply to both paths.
+            streamed operation returns an empty string, keeps partial bytes on failure and gets
+            the ten-minute stream deadline rather than the control one; the caller validates and
+            publishes the file. Keepalives and process-tree termination apply either way.
         """
         with ExitStack() as stack:
             sink = (
@@ -285,39 +265,22 @@ class SshTransport(FrozenModel):
                 sink=sink,
                 timeout=self.stream_deadline if output is not None else self.deadline,
             )
-        if returncode == 0:
-            return stdout or ""
-        self.__check(returncode, stderr, host=host, operation=operation)
-        raise RuntimeError(f"ssh {operation} to {host!r} failed: {_detail(stderr, returncode)}")
+        return self.__answer(returncode, stdout, stderr, host=host, operation=operation)
 
     def feed(
         self, command: tuple[str, ...], host: str, *, operation: str, chunks: Iterable[bytes]
     ) -> str:
-        """Run one ssh process fed `chunks` on its stdin, answering what it printed.
+        """Run one ssh process fed `chunks` on its stdin (closed after the last), answering what
+        it printed.
 
-        The path for more than fits in memory at once, a tree of receipts streamed as one tar,
-        and for what must never ride an argv, since a secret in stdin is in no process listing.
-        Output is drained on its own threads while the input is written, so neither side of the
-        pipe can fill and stall the other. SSH keepalives bound the liveness, not a wall clock:
-        a transfer runs as long as bytes keep moving.
-
-        command: the full argv, `ssh` first.
-        host: the alias or destination, named in every failure.
-        operation: what the command is for, named in every failure.
-        chunks: the bytes to write, in order; stdin closes after the last.
+        The path for more than fits in memory, a tree of receipts streamed as one tar, and for a
+        secret, which in stdin is in no process listing. Output drains on its own threads while
+        input is written, so neither pipe can fill and stall the other. Keepalives bound the
+        liveness, not a wall clock: a transfer runs as long as bytes keep moving.
         """
-        try:
-            process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh argv built from typed fields, not untrusted input since=2026-09-25
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-        except OSError as error:
-            raise HostUnreachable(
-                f"ssh {operation} to {host!r} could not start: {error}"
-            ) from error
+        process = self.__spawn(
+            command, host, operation=operation, stdin=subprocess.PIPE, stdout=subprocess.PIPE
+        )
         assert process.stdin is not None and process.stdout is not None
         assert process.stderr is not None
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -329,11 +292,21 @@ class SshTransport(FrozenModel):
             with suppress(BrokenPipeError):
                 process.stdin.close()
             stdout, stderr = _decoded(out.result()), _decoded(err.result())
-        returncode = process.wait()
-        if returncode == 0:
-            return stdout
-        self.__check(returncode, stderr, host=host, operation=operation)
-        raise RuntimeError(f"ssh {operation} to {host!r} failed: {_detail(stderr, returncode)}")
+        return self.__answer(process.wait(), stdout, stderr, host=host, operation=operation)
+
+    @staticmethod
+    def __spawn(
+        command: tuple[str, ...], host: str, *, operation: str, stdin: int, stdout: int | IO[bytes]
+    ) -> subprocess.Popen[bytes]:
+        """Start `command` in its own process group; an ssh that cannot start is unreachable."""
+        try:
+            return subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh/scp argv built from typed fields, not untrusted input since=2026-08-16
+                command, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE, start_new_session=True
+            )
+        except OSError as error:
+            raise HostUnreachable(
+                f"ssh {operation} to {host!r} could not start: {error}"
+            ) from error
 
     def __communicate(
         self,
@@ -345,27 +318,29 @@ class SshTransport(FrozenModel):
         sink: int | IO[bytes],
         timeout: float | None,
     ) -> tuple[int, str, str]:
-        """Run `command` in its own process group and return its status, stdout and stderr."""
-        try:
-            process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh/scp argv built from typed fields, not untrusted input since=2026-08-16
-                command,
-                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-                stdout=sink,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-        except OSError as error:
-            raise HostUnreachable(
-                f"ssh {operation} to {host!r} could not start: {error}"
-            ) from error
+        """Run `command`, killing its group on timeout, and return its status, stdout, stderr."""
+        stdin = subprocess.PIPE if input_text is not None else subprocess.DEVNULL
+        process = self.__spawn(command, host, operation=operation, stdin=stdin, stdout=sink)
         # Bytes both ways, because a text-mode pipe on Windows writes every `\n` of the input as
         # `\r\n`, and the bash reading it on the host takes that `\r` as part of each command.
         sent = None if input_text is None else input_text.encode("utf-8")
         try:
             stdout, stderr = process.communicate(input=sent, timeout=timeout)
         except subprocess.TimeoutExpired as error:
-            self.__raise_after_terminating(process, host=host, operation=operation, cause=error)
+            self.terminate(process)
+            raise HostUnreachable(
+                f"ssh {operation} to {host!r} timed out after {error.timeout:g}s"
+            ) from error
         return process.returncode, _decoded(stdout), _decoded(stderr)
+
+    def __answer(
+        self, returncode: int, stdout: str, stderr: str, *, host: str, operation: str
+    ) -> str:
+        """`stdout` of a clean exit, else the typed failure the ending names."""
+        if returncode == 0:
+            return stdout
+        self.__check(returncode, stderr, host=host, operation=operation)
+        raise RuntimeError(f"ssh {operation} to {host!r} failed: {_detail(stderr, returncode)}")
 
     @staticmethod
     def __check(returncode: int, stderr: str, *, host: str, operation: str) -> None:
@@ -387,27 +362,6 @@ class SshTransport(FrozenModel):
         output = self.run(("ssh", *self.options, host, "echo", marker), host, operation="connect")
         if marker not in output.splitlines():
             raise RuntimeError(f"ssh connect to {host!r} returned without the expected marker")
-
-    @staticmethod
-    def __force_killpg(process: subprocess.Popen[bytes]) -> None:
-        """Escalate to SIGKILL after a SIGTERM'd process group failed to exit in time."""
-        with suppress(ProcessLookupError, PermissionError, psutil.Error):
-            terminate_process_tree(process.pid, force=True)
-        process.wait()
-
-    def __raise_after_terminating(
-        self,
-        process: subprocess.Popen[bytes],
-        *,
-        host: str,
-        operation: str,
-        cause: subprocess.TimeoutExpired,
-    ) -> NoReturn:
-        """Kill `process`'s group, then translate its `communicate()` timeout for the caller."""
-        self.terminate(process)
-        raise HostUnreachable(
-            f"ssh {operation} to {host!r} timed out after {cause.timeout:g}s"
-        ) from cause
 
 
 def _decoded(output: bytes | None) -> str:

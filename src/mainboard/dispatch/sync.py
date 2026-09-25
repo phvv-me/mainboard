@@ -2,13 +2,12 @@
 # the permanent denylist, the host's own filter patterns, and the lock that serializes one
 # target's mirrors.
 #
-# The file set is decided per repository the way git decides it. Where git answers on this
-# machine, each repository in the workspace lists its own files: every file it tracks, whatever
-# an ignore file says, and the untracked files its own ignore files leave. A parent's ignore file
-# never reaches into a repository nested below it, which is what once dropped a submodule's
-# tracked `build/` sources under the monorepo's `build/` rule and broke the host's Rust build.
-# Where git does not answer, the same ignore files are read directly, repository boundaries
-# included. The host's excludes and the denylist then apply on top of either.
+# The file set is decided per repository the way git decides it: where git answers, each
+# repository lists every file it tracks, whatever an ignore file says, and the untracked files
+# its own ignore files leave. A parent's ignore file never reaches into a nested repository,
+# which is what once dropped a submodule's tracked `build/` sources under the monorepo's
+# `build/` rule and broke the host's Rust build. Without git the same ignore files are read
+# directly, repository boundaries included. The host's excludes and the denylist apply on top.
 
 import hashlib
 import shutil
@@ -124,7 +123,6 @@ class SyncLock:
         traceback: TracebackType | None,
     ) -> None:
         """Release the kernel lock even when the mirror raises."""
-        del exc_type, exc_value, traceback
         if self.lock.is_locked:
             self.lock.release()
 
@@ -132,15 +130,13 @@ class SyncLock:
 class GitignoreFilter:
     """The workspace's ignore files as one rule set, and its repositories' own file lists.
 
-    The rules are read the way git reads them: the root file and every nested `.gitignore`
-    apply from the directory that declares them, a deeper file overriding its parents, and a
-    repository's `info/exclude` and the user's global excludes join at its root, where a
-    parent's rules stop. Each file is read once, the first time a walk or a question reaches its
-    directory, and the compiled rules travel to a target as they are, so a host prunes by exactly
-    the rules this machine shipped by and needs no ignore parser of its own.
+    Read the way git reads them: every `.gitignore` applies from its own directory, a deeper one
+    overriding its parents, and a repository's `info/exclude` and the user's global excludes join
+    at its root, where a parent's rules stop. Each file is read once, when a walk or a question
+    first reaches its directory, and the compiled rules travel to a target as they are, so a host
+    prunes by exactly the rules shipped and needs no ignore parser of its own.
 
-    root: the repo whose ignore files decide; defaults to the current working directory, the
-        repo you dispatch from.
+    root: the repo whose ignore files decide, the current working directory by default.
     """
 
     def __init__(self, root: Path | None = None) -> None:
@@ -183,11 +179,8 @@ class GitignoreFilter:
         return Scope(roots, ignore=self.rules, deny=deny, keep=listing.kept, listed=listing.files)
 
     def files(self, directory: str) -> list[str]:
-        """The source files under `directory`, a link counted when it leads to a file.
-
-        The same set a mirror ships, read without history: from each repository's own list
-        where git answers, from the ignore files where it does not.
-        """
+        """The source files under `directory` a mirror ships, a link counted when it leads to a
+        file."""
         scope = self.scope([directory], deny=patterns(ALWAYS_EXCLUDE))
         return sorted(
             entry.path
@@ -198,11 +191,9 @@ class GitignoreFilter:
     def tracked(self, roots: Sequence[str], *, deny: Rules | None = None) -> Listing | None:
         """Every file its repository would call source under `roots`, or None without git.
 
-        Each repository answers for itself, the workspace and every repository inside it, a
-        registered submodule or a nested clone alike: every file it tracks, whatever any ignore
-        file says, and the untracked files its own ignore files leave. A path it tracks but no
-        longer holds is left out by the walk that states it. Git also names the tracked files
-        its ignore files would drop, which a target is told to keep.
+        Each repository answers for itself, a registered submodule or a nested clone alike. A
+        path it tracks but no longer holds is left out by the walk that states it. The tracked
+        files its ignore files would drop are listed as `kept`, which a target is told to keep.
 
         deny: what is excluded whatever the repositories say, so a repository nested where it
             claims is never asked at all.
@@ -228,11 +219,11 @@ class GitignoreFilter:
         """One repository's files, those it tracks but ignores, and the repositories nested in
         it, as workspace paths.
 
-        Its tracked files come from its index whole, read once for as long as the index stands;
-        its untracked files come from a walk narrowed to `specs`, which is not cheap, and a
-        pathspec reaching into a submodule is left to that submodule, since git refuses one.
+        Tracked files come from its index whole; untracked ones from a walk narrowed to `specs`,
+        which is not cheap, and a pathspec reaching into a submodule is left to that submodule,
+        since git refuses one.
 
-        repository: the repository's root, workspace-relative, "" for the workspace itself.
+        repository: workspace-relative root, "" for the workspace itself.
         specs: the pathspecs inside it that are in scope, empty for all of it.
         """
         indexed, links = self.__indexed(repository)
@@ -286,10 +277,12 @@ class GitignoreFilter:
     @cached_property
     def __excludes(self) -> list[tuple[str, bool]]:
         """The user's global excludes, which join every repository's rules at its root."""
-        configured = self.__run(["config", "--path", "--get", "core.excludesFile"], check=False)
-        default = Path.home() / ".config" / "git" / "ignore"
-        chosen = Path(configured.strip()) if configured.strip() else default
-        return _read(chosen)
+        configured = self.__run(
+            ["config", "--path", "--get", "core.excludesFile"], check=False
+        ).strip()
+        return _read(
+            Path(configured) if configured else Path.home() / ".config" / "git" / "ignore"
+        )
 
     def __listed(
         self, repository: str, options: Sequence[str], specs: Sequence[str] = ()
