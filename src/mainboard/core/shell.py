@@ -1,4 +1,5 @@
 import shlex
+from collections.abc import Callable
 from string.templatelib import Interpolation, Template
 from typing import TYPE_CHECKING
 
@@ -23,42 +24,27 @@ def foreground(command: BaseCommand) -> int:
 
 
 def sh(template: Template) -> str:
-    """A shell line from a t-string, every interpolation quoted on the way in.
+    """A shell line from a t-string, every interpolation passed through `shlex.quote`.
 
-    `sh(t"cd {root} && {command}")` renders with each interpolated value
-    passed through `shlex.quote`, so a hostile path or argument cannot break
-    out of its word. Passing a plain string is a `TypeError` by construction,
-    which makes unquoted composition unrepresentable at the call site.
+    `sh(t"cd {root} && {command}")` keeps a hostile path or argument inside its word, and a plain
+    string is a `TypeError`, so unquoted composition is unrepresentable at the call site.
     """
-    parts: list[str] = []
-    for item in _templated(template):
-        if isinstance(item, Interpolation):
-            parts.append(shlex.quote(str(item.value)))
-        else:
-            parts.append(item)
-    return "".join(parts)
+    return _render(template, lambda item: shlex.quote(str(item.value)))
 
 
 def script(template: Template) -> str:
     """A shell fragment from a t-string, interpolations landed verbatim.
 
-    The companion for composing trusted, already-quoted fragments (a `sh`
-    result, a rendered activation snippet) into a larger line, keeping the
-    t-string type discipline while opting out of double quoting.
+    For composing trusted, already-quoted fragments (a `sh` result, a rendered activation snippet)
+    into a larger line without quoting them twice.
     """
-    parts: list[str] = []
-    for item in _templated(template):
-        if isinstance(item, Interpolation):
-            parts.append(str(item.value))
-        else:
-            parts.append(item)
-    return "".join(parts)
+    return _render(template, lambda item: str(item.value))
 
 
-def _templated(template: Template) -> Template:
+def _render(template: Template, convert: Callable[[Interpolation], str]) -> str:
     if not isinstance(template, Template):
         raise TypeError(
             f"expected a t-string, got {type(template).__name__}; "
             'write t"..." so interpolations stay quotable'
         )
-    return template
+    return "".join(convert(item) if isinstance(item, Interpolation) else item for item in template)

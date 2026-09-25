@@ -1,4 +1,5 @@
 from ..core.errors import MissionError
+from ..manifest.schema.container import Container
 from ..manifest.schema.root import Manifest
 from .plan import ExecutionPlan
 
@@ -11,32 +12,31 @@ class Resolver:
         self.manifest = manifest
 
     def plan(self, host: str = "local", *, env: str = "", container: str = "") -> ExecutionPlan:
-        """The execution plan for `host`, overrides winning over the profile.
+        """The execution plan for `host` (`local` for this machine), overrides beating the profile.
 
-        host: the host alias, `local` for this machine.
-        env: an environment name overriding the profile's choice.
-        container: a container name overriding the profile's, `none` forcing bare.
+        container: a container name, `none` forcing bare.
         """
         profile = self.manifest.profile(host)
         chosen_env = env or profile.env
         self.manifest.environment(chosen_env)
-        chosen_container = container or profile.container
-        if container == "none":
-            chosen_container = ""
-        base = None
-        if chosen_container:
-            try:
-                base = self.manifest.containers[chosen_container]
-            except KeyError:
-                raise MissionError(
-                    f"no container {chosen_container!r}; declared containers are "
-                    f"{sorted(self.manifest.containers)}"
-                ) from None
         return ExecutionPlan(
             host=host,
             profile=profile,
             env=chosen_env,
-            container=base,
+            container=self._container(
+                "" if container == "none" else container or profile.container
+            ),
             vars={**self.manifest.vars, **profile.vars},
             exports=profile.exports,
         )
+
+    def _container(self, name: str) -> Container | None:
+        if not name:
+            return None
+        try:
+            return self.manifest.containers[name]
+        except KeyError:
+            declared = sorted(self.manifest.containers)
+            raise MissionError(
+                f"no container {name!r}; declared containers are {declared}"
+            ) from None
