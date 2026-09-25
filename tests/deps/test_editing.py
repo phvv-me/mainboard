@@ -46,7 +46,6 @@ _NEW = WORDS.filter(lambda word: word not in _DECLARED)
 def test_adding_a_requirement_and_dropping_it_leaves_the_file_byte_identical(
     text: str, path: tuple[str, ...], name: str, spec: str
 ) -> None:
-    """The round trip is the proof that nothing but the one line was ever touched."""
     edited = ManifestText(text)
     edited.put(path, name, spec=spec)
     edited.put(path, name, spec=spec)
@@ -60,7 +59,6 @@ def test_adding_a_requirement_and_dropping_it_leaves_the_file_byte_identical(
 def test_a_new_entry_keeps_the_column_and_the_comment_that_introduces_the_next_table(
     text: str,
 ) -> None:
-    """Alignment is read off the table, and a heading comment stays with the table it announces."""
     edited = ManifestText(text)
     edited.put(_DEV_PYTHON, "tqdm", spec=">=4.70.0, <5")
     written = edited.text().splitlines()
@@ -84,7 +82,6 @@ def test_a_new_entry_keeps_the_column_and_the_comment_that_introduces_the_next_t
 
 
 def test_a_table_the_manifest_never_had_is_written_as_one_heading(text: str) -> None:
-    """A new ecosystem reads as `[rust.deps]`, the way every other table is written."""
     edited = ManifestText(text)
     edited.put(("rust", "deps"), "ripgrep", spec=">=14, <15")
     written = edited.text()
@@ -94,7 +91,6 @@ def test_a_table_the_manifest_never_had_is_written_as_one_heading(text: str) -> 
 
 
 def test_dropping_the_last_requirement_takes_the_table_it_left_empty_with_it(text: str) -> None:
-    """`put` writes a table the manifest never had, so `drop` must be able to unwrite it."""
     edited = ManifestText(text)
     edited.put(("rust", "deps"), "ripgrep", spec=">=14, <15")
     edited.put(("rust", "deps"), "fd", spec=">=10")
@@ -113,7 +109,6 @@ def test_dropping_the_last_requirement_takes_the_table_it_left_empty_with_it(tex
 def test_constraint_reports_a_version_or_the_source_standing_in_for_one(
     text: str, name: str, expected: str
 ) -> None:
-    """A requirement carrying a source has no range, so it answers with how it is written."""
     assert ManifestText(text).constraint(_PYTHON, name) == expected
 
 
@@ -129,7 +124,6 @@ def test_constraint_reports_a_version_or_the_source_standing_in_for_one(
 def test_declares_answers_for_a_missing_key_table_or_branch(
     text: str, path: tuple[str, ...], name: str, present: bool
 ) -> None:
-    """Asking about a table that is not there is a question with an answer, not a failure."""
     assert ManifestText(text).declares(path, name) is present
 
 
@@ -143,6 +137,5 @@ def test_declares_answers_for_a_missing_key_table_or_branch(
 def test_reaching_a_table_that_is_not_there_names_the_heading_it_wanted(
     text: str, path: tuple[str, ...], match: str
 ) -> None:
-    """A missing table and a key path landing on a value are both mistakes worth naming."""
     with pytest.raises(MissionError, match=match):
         ManifestText(text).table(path)

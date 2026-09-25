@@ -12,7 +12,6 @@ from mainboard.manifest.render.interpolate import Interpolator
 def test_the_vocabulary_covers_the_mise_names(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`[vars]` renders in declaration order and reaches every string the tree carries."""
     monkeypatch.setenv("MC_RENDER_TEST", "live")
     tree = {
         "vars": {"home": "{{ config_root }}", "cpus": "{{ num_cpus() }}"},
@@ -31,7 +30,6 @@ def test_the_vocabulary_covers_the_mise_names(
 
 
 def test_exec_returns_stdout_and_a_failure_names_the_command(tmp_path: Path) -> None:
-    """A shell-free command is in the vocabulary, so a failure still has to be readable."""
     command = shlex.join((sys.executable, "-c", "print('mission')"))
     template = f"{{{{ exec({json.dumps(command)}) }}}}"
     assert Interpolator(tmp_path).rendered({"who": template}) == {
@@ -45,6 +43,5 @@ def test_exec_returns_stdout_and_a_failure_names_the_command(tmp_path: Path) -> 
 
 
 def test_vars_must_be_a_table(tmp_path: Path) -> None:
-    """Everything else reads `vars.*` as a mapping, so a scalar here is caught at the source."""
     with pytest.raises(MissionError, match=r"\[vars\] must be a table"):
         Interpolator(tmp_path).rendered({"vars": "nope"})

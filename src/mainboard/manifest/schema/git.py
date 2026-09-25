@@ -4,22 +4,15 @@ _MEGABYTE = 1 << 20
 
 
 class GitPolicy(Declared):
-    """How `git` operates this workspace's repository tree: whose repositories, and what enters.
+    """How `git` operates the repository tree (the workspace and its submodules, recursively).
 
-    The tree is the workspace repository and every submodule under it, recursively, and most of
-    that tree is other people's code pinned for reference. A repository is this workspace's own
-    when the owner in its remote URL is the workspace root's own owner or one named here, and
-    every verb that writes (pull, commit, push) touches only those. The rest are read, never
-    committed to, never pushed.
+    Only repositories whose remote owner is the root's own or listed are written (pull, commit,
+    push); the rest are read only.
 
-    owners: remote owners (a GitHub user or organization) whose repositories this workspace
-        commits to and pushes, compared case-insensitively; the root's own owner always is.
-    ceiling_mb: the largest file a commit takes, in megabytes. Git LFS files are exempt, since
-        what enters history for them is a pointer of a few hundred bytes.
-    never_commit: git glob pathspecs, relative to each repository, whose content a commit leaves
-        alone: an untracked file there stays untracked and a change there stays unstaged, even
-        one staged by hand. Only a deletion staged by hand goes through, so what history already
-        holds can still leave it.
+    owners: GitHub users or organizations, compared case-insensitively.
+    ceiling_mb: the largest file a commit takes; Git LFS pointers are exempt.
+    never_commit: git glob pathspecs per repository a commit leaves alone, even when staged by
+        hand, except a hand-staged deletion.
     """
 
     owners: list[str] = []
@@ -28,7 +21,6 @@ class GitPolicy(Declared):
 
     @property
     def ceiling_bytes(self) -> int:
-        """The file-size ceiling in bytes."""
         return int(self.ceiling_mb * _MEGABYTE)
 
     @property
@@ -42,10 +34,6 @@ class GitPolicy(Declared):
         return [f":(glob){pattern}" for pattern in self.never_commit]
 
     def owns(self, owner: str, root_owner: str) -> bool:
-        """Whether a repository whose remote names `owner` is this workspace's own.
-
-        owner: the owner parsed from the repository's remote URL, empty when it has none.
-        root_owner: the owner of the workspace root's own remote.
-        """
+        """Whether a repository whose remote names `owner` (empty for none) is this workspace's."""
         mine = {name.casefold() for name in (*self.owners, root_owner) if name}
         return bool(owner) and owner.casefold() in mine

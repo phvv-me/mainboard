@@ -3,9 +3,7 @@ from pydantic import ConfigDict, Field
 from ...core.base import kebab
 from .scope import PlatformScope, Scope
 
-# A task is a bare command line, or a table of the keys pixi's own task takes: `run`, `dir`,
-# `depends` and friends as strings and string lists, plus an `env` table of variables the task
-# runs under.
+# A bare command line, or a table of pixi's task keys (`run`, `dir`, `depends`) plus `env`.
 type Task = str | dict[str, str | list[str] | dict[str, str]]
 
 

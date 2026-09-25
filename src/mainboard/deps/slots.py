@@ -9,11 +9,8 @@ if TYPE_CHECKING:
 
     from ..manifest import Manifest, Scope
 
-# The default resolver's own name. Its requirements sit directly under a scope, while every
-# other ecosystem hides behind a table named after the runtime package that installs it.
+# The default resolver, whose requirements sit directly under a scope rather than a named table.
 _CONDA = "conda"
-
-# The two table names a scope reaches its requirements through, runtime first.
 _DEPS = "deps"
 _DEV = "dev"
 
@@ -21,8 +18,7 @@ _DEV = "dev"
 class Slot(FrozenModel):
     """One dependency table in the manifest, addressed by the key path that reaches it.
 
-    path: the table's key path, `("dev", "python", "deps")` for `[dev.python.deps]`.
-    ecosystem: whose resolver reads the table, `conda` for the manifest's default one.
+    path: `("dev", "python", "deps")` for `[dev.python.deps]`.
     """
 
     path: tuple[str, ...]
@@ -30,22 +26,16 @@ class Slot(FrozenModel):
 
     @property
     def table(self) -> str:
-        """The table heading a reader of the manifest would look for."""
         return f"[{'.'.join(self.path)}]"
 
 
 def candidates(*, ecosystem: str, env: str, dev: bool) -> tuple[Slot, ...]:
     """Every table a requirement of this shape may live in, the preferred one first.
 
-    A manifest spells a development-only requirement two ways and both are declared house
-    style, `[dev.python.deps]` beside the conda `[dev.deps]` and `[nodejs.dev]` beside the
-    runtime table it belongs to. Rather than pick one and rewrite the other, the caller takes
-    the first of these that the manifest already carries and falls back to the first listed, so
-    an edit lands where its neighbours already are.
+    Dev requirements have two house spellings (`[dev.python.deps]`, `[nodejs.dev]`); the caller
+    takes the first the manifest already carries, so an edit lands beside its neighbours.
 
-    ecosystem: the resolver the requirement belongs to.
     env: an environment name, the whole manifest when empty.
-    dev: whether the requirement is development-only.
     """
     base = ("envs", env) if env else ()
     if ecosystem == _CONDA:
@@ -68,15 +58,7 @@ def candidates(*, ecosystem: str, env: str, dev: bool) -> tuple[Slot, ...]:
 
 
 def declared(manifest: Manifest) -> dict[Slot, tuple[str, ...]]:
-    """Every requirement the manifest declares, by the table declaring it.
-
-    The schema already discovers which tables are dependency tables, `deps` on a scope and the
-    runtime-named ecosystems riding in its extras, so the walk here only says which scopes
-    exist and lets each one name its own. A table declaring nothing is left out, which is what
-    makes membership here mean the manifest really carries that table.
-
-    manifest: the validated workspace manifest.
-    """
+    """Every requirement the manifest declares, by table; an empty table is left out."""
     found: dict[Slot, tuple[str, ...]] = {}
     for path, scope in _scopes(manifest):
         if scope.deps:

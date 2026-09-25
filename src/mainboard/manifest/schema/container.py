@@ -11,11 +11,10 @@ class EnvMode(StrEnum):
 
 
 class Guardrail(StrEnum):
-    """Automated protections applied when layering an env onto a base image.
+    """Protections applied when layering an env onto a base image.
 
-    `unset_pip_constraint` clears the `PIP_CONSTRAINT` NGC images bake in,
-    unwritable inside a SIF. `pin_system_packages` stops a resolver from
-    shadowing the image's tuned builds (torch and friends) with generic wheels.
+    `unset_pip_constraint` clears the `PIP_CONSTRAINT` NGC images bake in (unwritable in a SIF);
+    `pin_system_packages` keeps a resolver from shadowing the image's tuned torch builds.
     """
 
     UNSET_PIP_CONSTRAINT = auto()
@@ -23,13 +22,10 @@ class Guardrail(StrEnum):
 
 
 class Container(Declared):
-    """A base image the environment layers onto instead of rebuilding.
+    """A fixed base image the environment layers onto from a bound host prefix.
 
-    The runtime is a registry key (`apptainer`, `docker`, `podman`) or `auto`,
-    which picks the first runtime available on the executing host. Binds use
-    the runtime's `source:target` syntax; a bare path binds to itself. The
-    environment prefix always lives on a bound host path, never in the image,
-    so a fixed off-the-shelf image serves every dependency change.
+    runtime: `apptainer`, `docker`, `podman`, or `auto` for the first available on the host.
+    binds: the runtime's `source:target` syntax; a bare path binds to itself.
     """
 
     image: str

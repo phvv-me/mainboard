@@ -10,20 +10,11 @@ from .spec import Json
 class Gate(Declared):
     """One declared verification gate: a command whose exit status verdicts a `doctor` section.
 
-    This is how a workspace teaches the report to ask a question no table of its own could
-    answer. A gate names a command and nothing else about the tool behind it, so a proof
-    workbench, a schema checker and a house linter all join the report the same way, by exiting
-    zero when they are happy, and adding one is an edit to the manifest rather than to this
-    package.
-
-    run: the command line the section runs, staged through the workspace's own environment.
-    report: dotted path to the failure list inside the command's JSON output, so a broken gate
-        names what broke rather than only that something did. A gate that declares one and then
-        prints none is read as a tool that never ran, which is a different finding from a
-        workspace that is broken.
-    install: the command that puts this gate's tool on the machine, offered as the repair when
-        the gate answers with no report at all.
-    timeout: how many seconds the gate may take before it counts as hung.
+    run: the command line, staged through the workspace's own environment.
+    report: dotted path to the failure list in the command's JSON output; declaring one and
+        printing none reads as a tool that never ran.
+    install: the command putting the tool on the machine, the repair offered for no report.
+    timeout: seconds before the gate counts as hung.
     """
 
     run: str
@@ -40,10 +31,7 @@ class Gate(Declared):
         return value
 
     def breakages(self, output: str) -> list[str]:
-        """The failures this gate's declared report names, empty when `output` carries none.
-
-        output: everything the gate's command printed.
-        """
+        """The failures the declared report names in `output`, empty when it carries none."""
         if not self.report or (start := output.find("{")) < 0:
             return []
         try:

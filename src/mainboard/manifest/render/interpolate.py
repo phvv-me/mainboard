@@ -17,12 +17,7 @@ if TYPE_CHECKING:
 
 @cache
 def _engine() -> SandboxedEnvironment:
-    """The sandboxed template engine, built the first time a manifest actually carries a template.
-
-    Most manifests carry none, and jinja2 is 6 ms of a cold start that this package's console
-    entry point pays on every command, so the import waits for a string with `{{` or `{%` in it
-    rather than for a manifest being loaded at all.
-    """
+    """The sandboxed template engine, built on the first template, since jinja2 costs 6 ms."""
     from jinja2 import StrictUndefined
     from jinja2.sandbox import SandboxedEnvironment
 
@@ -38,12 +33,10 @@ type Scope = dict[str, Json | Callable[..., Json]]
 class Interpolator:
     """Renders `{{ }}` templates across a parsed manifest tree.
 
-    The vocabulary follows mise's proven names: `config_root`, `env(name,
-    default)`, `num_cpus()`, `arch()`, `os_name()`, and `exec(cmd)`. `[vars]`
-    entries render first, in declaration order, each seeing the ones before
-    it, then every string in the tree renders with `vars.*` in scope. Strings
-    without `{{` pass through untouched, which is what keeps submit-time
-    expressions (`mem_gb = "attempt * 50"`) out of load-time rendering.
+    mise's names: `config_root`, `env(name, default)`, `num_cpus()`, `arch()`, `os_name()`,
+    `exec(cmd)`. `[vars]` render first in order, each seeing its predecessors, then every string
+    with `vars.*` in scope. Strings without templates pass through, keeping submit-time
+    expressions (`mem_gb = "attempt * 50"`) out of load time.
     """
 
     def __init__(self, root: Path) -> None:
@@ -59,10 +52,7 @@ class Interpolator:
         }
 
     def rendered(self, tree: dict[str, Json]) -> dict[str, Json]:
-        """The manifest tree with every template string rendered in place.
-
-        tree: the parsed TOML document.
-        """
+        """The parsed manifest tree with every template string rendered."""
         scope = dict(self.globals)
         variables = self.__rendered_vars(tree, scope)
         scope["vars"] = variables

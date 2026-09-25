@@ -10,11 +10,7 @@ _SOURCE_FIELDS = _SOURCES | {"branch", "tag", "rev", "subdirectory", "index"}
 
 
 class Spec(FlexModel):
-    """One dependency requirement: a version string or a table with extras.
-
-    Unknown keys (`path`, `editable`, `git`, `index`, channel pins) ride through
-    to the solver untyped, so the manifest never lags a solver feature.
-    """
+    """One dependency requirement; unknown keys (`path`, `git`, pins) reach the solver untyped."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -22,12 +18,10 @@ class Spec(FlexModel):
 
     @property
     def is_editable(self) -> bool:
-        """Whether this requirement is an editable local install."""
         return bool((self.model_extra or {}).get("editable"))
 
     @property
     def is_path(self) -> bool:
-        """Whether this requirement points at a local path dependency."""
         return "path" in (self.model_extra or {})
 
     @model_validator(mode="before")
@@ -41,11 +35,8 @@ class Spec(FlexModel):
     def merged(self, over: Self) -> Self:
         """This spec layered over `over`, later keys winning key-by-key.
 
-        A location source and a registry version are alternative requirements, not two keys that
-        narrow each other. Declaring either on the upper layer therefore removes the other's
-        inherited source coordinates before ordinary extras are merged.
-
-        over: the lower-precedence spec being overlaid.
+        A source and a registry version are alternatives, so declaring either on top drops the
+        other's inherited coordinates first.
         """
         base = {"version": over.version, **(over.model_extra or {})}
         extras = self.model_extra or {}

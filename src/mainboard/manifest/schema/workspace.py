@@ -4,10 +4,8 @@ from patos import Model
 class Header(Model):
     """Workspace identity and solve surface.
 
-    scripts: shell scripts pixi sources on every entry into an environment, workspace-relative
-        and running after the generated dotenv loader. It is the home for the setup a static
-        table cannot express, a library path fanned out across installed wheels or a toolchain
-        variable computed from what the environment actually holds.
+    scripts: workspace-relative shell scripts pixi sources after the dotenv loader on every
+        entry, for setup a static table cannot express (a library path across installed wheels).
     """
 
     name: str

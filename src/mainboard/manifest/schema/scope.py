@@ -10,10 +10,8 @@ from .toolchain import Toolchain
 class Scope(FlexModel):
     """A dependency-carrying unit: the root manifest, an overlay, or an env.
 
-    `deps` is the conda table; every other table riding in the extras whose
-    value parses as a `Toolchain` is an ecosystem keyed by its runtime package
-    name (`[python.deps]`, `[nodejs.deps]`), discovered rather than enumerated
-    so a new ecosystem never edits this schema.
+    `deps` is the conda table; any extra table holding `deps` or `dev` is an ecosystem keyed by
+    its runtime package (`[python.deps]`), discovered so a new one never edits this schema.
     """
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
@@ -21,10 +19,7 @@ class Scope(FlexModel):
     deps: dict[str, Spec] = {}
 
     def merged(self, over: Self) -> Self:
-        """This scope layered over `over`: conda deps and each ecosystem merge.
-
-        over: the lower-precedence scope being overlaid.
-        """
+        """This scope layered over `over`: conda deps and each ecosystem merge."""
         deps = dict(over.deps)
         for name, spec in self.deps.items():
             deps[name] = spec.merged(deps[name]) if name in deps else spec
@@ -50,15 +45,7 @@ class Scope(FlexModel):
         return found
 
     def requirement(self, name: str) -> Spec | None:
-        """The requirement this scope declares for `name`, in conda or any ecosystem, else None.
-
-        One question asked of the whole scope rather than of each table in turn, because a
-        workspace that depends on a package does not care which ecosystem it arrives through and
-        neither does anything that reads the answer. Conda first, since `[deps]` is the default
-        resolver, then each ecosystem in declaration order.
-
-        name: the package to look for.
-        """
+        """The requirement for `name` in conda, else in the first ecosystem declaring it."""
         if name in self.deps:
             return self.deps[name]
         for chain in self.toolchains().values():
