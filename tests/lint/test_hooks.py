@@ -18,7 +18,7 @@ def test_the_hook_lands_where_git_reads_it_and_calls_lint_commit(
     if hooks_path:
         repository.git("config", "core.hooksPath", hooks_path)
 
-    path = GitHook(repository.root).install()
+    path = GitHook(repository.root, hook="pre-commit", command="lint commit").install()
 
     expected = repository.root / (hooks_path or ".git/hooks") / "pre-commit"
     assert path.resolve() == expected.resolve()
@@ -31,7 +31,7 @@ def test_a_hook_needs_a_git_work_tree(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
 
     with pytest.raises(MissionError, match="not in a git work tree"):
-        GitHook(tmp_path).install()
+        GitHook(tmp_path, hook="pre-commit", command="lint commit").install()
 
 
 @pytest.mark.parametrize(

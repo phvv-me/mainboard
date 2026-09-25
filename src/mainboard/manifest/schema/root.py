@@ -4,6 +4,7 @@ from pydantic import model_validator
 
 from ...core.errors import MissionError
 from .admission import Admission
+from .ci import Ci
 from .container import Container
 from .environment import Env, Task
 from .figures.figure import FigureSpec
@@ -45,6 +46,7 @@ class Manifest(Scope):
     enters a commit.
     `[lint]` names what `lint` leaves alone, which directories own their files, and the
     formatters and linters it runs over them.
+    `[ci]` names the hosts `ci --matrix` runs a package's gate on beside this machine.
 
     `[env]` sets a variable to a string and clears one with `false`. Clearing
     is not the same as setting an empty string, which is what the table could
@@ -61,16 +63,17 @@ class Manifest(Scope):
     # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
     # `[hosts]` are how a job reaches a machine, `[papers]` is what `paper` builds, `[plots]` is
     # how results are drawn, `[git]` is how the repository tree is committed and pushed, `[lint]`
-    # is what `lint` runs, and `[vars]` has already been folded into every string that quotes it
-    # by the time a manifest validates, so a var a compiled table really uses moves the digest
-    # through that table's own rendered value. None of them reaches a generated file, so editing
-    # one must not make every installed environment stale. The classification is proved table by
-    # table against the compiler's own output in `tests/engines/compile/test_compiler.py`, so a
-    # table added to the schema is refused until somebody decides which side of this line it
-    # sits on.
+    # is what `lint` runs, `[ci]` is where a package's gate runs, and `[vars]` has already been
+    # folded into every string that quotes it by the time a manifest validates, so a var a
+    # compiled table really uses moves the digest through that table's own rendered value. None
+    # of them reaches a generated file, so editing one must not make every installed environment
+    # stale. The classification is proved table by table against the compiler's own output in
+    # `tests/engines/compile/test_compiler.py`, so a table added to the schema is refused until
+    # somebody decides which side of this line it sits on.
     uncompiled: ClassVar[frozenset[str]] = frozenset(
         {
             "admission",
+            "ci",
             "containers",
             "figures",
             "gates",
@@ -104,6 +107,7 @@ class Manifest(Scope):
     figures: dict[str, FigureSpec] = {}
     git: GitPolicy = GitPolicy()
     lint: Lint = Lint()
+    ci: Ci = Ci()
 
     @model_validator(mode="after")
     def env_values_set_or_clear(self) -> Manifest:

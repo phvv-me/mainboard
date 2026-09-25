@@ -10,6 +10,7 @@ import re
 import shlex
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=ssh argv built from typed fields, not untrusted input since=2026-09-11
 from abc import ABC, abstractmethod
+from math import inf
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Self
 
@@ -23,6 +24,8 @@ from .transport import BoundedSshMachine, SshTransport
 from .wrapping import activation, connection, wrap
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from ..context.plan import ExecutionPlan
     from ..manifest.schema.host import HostProfile
     from .transport import Machine
@@ -92,6 +95,14 @@ class Dialect(ABC):
         """The argv that hands this terminal to `line` on `host`."""
 
     @abstractmethod
+    def one_shot(self, ssh: SshTransport, host: str, line: str) -> tuple[str, ...]:
+        """The argv of one ssh process that runs the staged `line` on `host` and returns."""
+
+    @abstractmethod
+    def invocation(self, argv: Sequence[str]) -> str:
+        """`argv` as one command of this shell, every word passed on as it is."""
+
+    @abstractmethod
     def has(self, tool: str) -> str:
         """The probe exiting zero when `tool` is on the host's PATH."""
 
@@ -150,6 +161,14 @@ class Posix(Dialect):
         # `-t` forces the pty the far side needs, and the staged line is quoted whole because
         # ssh joins its argv back into one string for the remote login shell to parse.
         return ["ssh", "-t", host, f"bash -lc {shlex.quote(line)}"]
+
+    def one_shot(self, ssh: SshTransport, host: str, line: str) -> tuple[str, ...]:
+        # ssh joins its argv back into one string for the remote login shell, so the line is
+        # quoted whole, exactly as `session` hands it over.
+        return ("ssh", *ssh.options, ssh.destination(host), f"bash -lc {shlex.quote(line)}")
+
+    def invocation(self, argv: Sequence[str]) -> str:
+        return shlex.join(argv)
 
     def has(self, tool: str) -> str:
         return f"command -v {tool}"
@@ -230,6 +249,13 @@ class Windows(Dialect):
 
     def session(self, host: str, line: str) -> list[str]:
         return ["ssh", "-t", host, *POWERSHELL[:1], "-NoProfile", "-EncodedCommand", encoded(line)]
+
+    def one_shot(self, ssh: SshTransport, host: str, line: str) -> tuple[str, ...]:
+        return ("ssh", *ssh.options, ssh.destination(host), *POWERSHELL, encoded(line))
+
+    def invocation(self, argv: Sequence[str]) -> str:
+        # The call operator runs a program named by a string, and each word rides as a literal.
+        return " ".join(["&", *(quoted(word) for word in argv)])
 
     def has(self, tool: str) -> str:
         return _exit_on(f"Get-Command {tool} -ErrorAction SilentlyContinue")
@@ -404,12 +430,11 @@ class WindowsShell(HostShell):
 
     def argv(self, script: str) -> tuple[str, ...]:
         """The ssh argv running `script` through PowerShell on the host."""
-        destination = self.ssh.destination(self.plan.host)
-        return ("ssh", *self.ssh.options, destination, *POWERSHELL, encoded(script))
+        return self.dialect.one_shot(self.ssh, self.plan.host, script)
 
     def execute(self, line: str) -> tuple[int, str, str]:
         retcode, out, err = self.ssh.invoke(
-            self.argv(line), self.plan.host, operation="run", bounded=False
+            self.argv(line), self.plan.host, operation="run", timeout=inf
         )
         return retcode, out, plain_errors(err)
 

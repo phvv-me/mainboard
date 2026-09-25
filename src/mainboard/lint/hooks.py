@@ -11,31 +11,40 @@ from .git import git, printed
 # and a type checker's full dump would crowd out the edit it is about.
 _CONTEXT = 4000
 
-# Git runs a hook through its own POSIX shell on every platform, Git for Windows included, so
-# one line of `sh` is the whole script and everything it does lives in Python.
-_SCRIPT = f"""#!/bin/sh
-# Written by `{Project().name} lint install-hook`: lint what this commit records.
-exec {Project().name} lint commit
-"""
-
 
 class GitHook:
-    """The pre-commit hook that makes every `git commit` in the workspace run `lint commit`.
+    """A git hook that runs one of this tool's verbs, and nothing else, before git goes on.
 
-    root: the workspace root, inside the git work tree whose hook is written.
+    Git runs a hook through its own POSIX shell on every platform, Git for Windows included, so
+    one line of `sh` is the whole script and everything it does lives in Python.
+
+    root: a directory inside the git work tree whose hook is written.
+    hook: the hook's name, `pre-commit` or `pre-push`.
+    command: the verb and its arguments the hook runs, `lint commit` say.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, hook: str, command: str) -> None:
         self.root = root
+        self.hook = hook
+        self.command = command
+
+    @property
+    def script(self) -> str:
+        """The hook's whole text."""
+        tool = Project().name
+        return (
+            f"#!/bin/sh\n# Written by `{tool} {self.command.split()[0]} install-hook`.\n"
+            f"exec {tool} {self.command}\n"
+        )
 
     def install(self) -> Path:
         """Write the hook where git reads it, `core.hooksPath` and worktrees honored."""
-        answer = git(self.root, "rev-parse", "--git-path", "hooks/pre-commit")
+        answer = git(self.root, "rev-parse", "--git-path", f"hooks/{self.hook}")
         if answer.returncode:
             raise MissionError(f"{self.root} is not in a git work tree to install a hook into")
         path = self.root / printed(answer.stdout).strip()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_SCRIPT, encoding="utf-8", newline="\n")
+        path.write_text(self.script, encoding="utf-8", newline="\n")
         path.chmod(0o755)
         return path
 

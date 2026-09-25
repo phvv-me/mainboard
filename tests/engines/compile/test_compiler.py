@@ -45,6 +45,7 @@ _EDITS: dict[str, Json] = {
     "tasks": {"build": "make"},
     "gates": {"lint": "ruff check ."},
     "git": {"owners": ["phvv-me"], "ceiling-mb": 10},
+    "ci": {"hosts": ["gold"]},
     "templates": {"lib": "templates/lib"},
     "tracking": {"project": "lab", "interval": 30},
     "containers": {"cuda": {"image": "docker://nvidia/cuda"}},

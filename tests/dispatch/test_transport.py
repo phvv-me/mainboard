@@ -3,6 +3,7 @@ import shlex
 import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=monkeypatches Popen for hermetic tests, never runs a real process since=2026-08-18
 import sys
+from math import inf
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -230,7 +231,7 @@ def test_invoke_answers_any_exit_a_command_gave_and_raises_only_what_ssh_itself_
         with pytest.raises(raised):
             SshTransport().invoke(command, "host", operation="probe")
         return
-    answer = SshTransport().invoke(command, "host", operation="probe", bounded=False)
+    answer = SshTransport().invoke(command, "host", operation="probe", timeout=inf)
     assert answer == (returncode, "said", stderr)
 
 

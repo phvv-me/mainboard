@@ -97,6 +97,48 @@ dev = [
     "types-pyyaml>=6.0",
 ]
 
+# The CI gate, the one definition every place that checks this package runs. `mainboard ci` runs
+# it from a checkout, the pre-push hook runs it with `--matrix` on a host of each platform, and
+# the GitHub workflow is only a checkout and that same verb, so a step cannot pass locally and be
+# missing on a runner, or the reverse. The first step is the lock: `--locked` refuses a uv.lock
+# the manifest has moved past, which is the failure that used to reach CI before anyone ran it.
+# Every step runs on all three platforms, the type checkers included, since each narrows
+# `sys.platform` branches to the host it runs on. Coverage is the one platform difference:
+# Windows skips the Bash, rsync and symlink tests on purpose, so its per-host total cannot meet
+# the threshold and it runs the same suite without one.
+[tool.mainboard.ci]
+os = ["linux", "osx", "win"]
+
+[[tool.mainboard.ci.steps]]
+name = "lock"
+run = "uv sync --locked"
+
+[[tool.mainboard.ci.steps]]
+name = "lint"
+run = "uv run ruff check ."
+
+[[tool.mainboard.ci.steps]]
+name = "format"
+run = "uv run ruff format --check ."
+
+[[tool.mainboard.ci.steps]]
+name = "mypy"
+run = "uv run mypy src"
+
+[[tool.mainboard.ci.steps]]
+name = "pyrefly"
+run = "uv run pyrefly check"
+
+[[tool.mainboard.ci.steps]]
+name = "test"
+run = "uv run pytest"
+only = ["linux", "osx"]
+
+[[tool.mainboard.ci.steps]]
+name = "test"
+run = "uv run pytest --no-cov"
+only = ["win"]
+
 # The contextual lane reads a hosted model, so it names one rather than inheriting the default
 # `codex` backend this workspace retired. DeepSeek V4 Pro carries a one-million-token window,
 # which is what lets a whole package's evidence ride in one pack instead of many.
