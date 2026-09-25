@@ -201,7 +201,7 @@ class Pueue:
     ) -> str:
         del resources  # pueue has no queue-side resource request; the script is self-contained.
         arg_str = " ".join(shlex.quote(arg) for arg in args)
-        command = f"bash {shlex.quote(script)} {arg_str}".rstrip()
+        command = f"sh {shlex.quote(script)} {arg_str}".rstrip()
         return add(command, machine=remote, root=root, label=Path(script).stem)
 
     @staticmethod

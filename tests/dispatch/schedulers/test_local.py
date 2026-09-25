@@ -14,7 +14,7 @@ def test_the_local_backend_runs_the_script_in_the_foreground_with_nothing_to_que
     assert handle == "job.sh"
     # The staged script path is workspace-relative, so the run enters the tree it was pinned to
     # first; the login shell's home is not that tree on any host worth dispatching to.
-    assert remote.calls[-1] == ["bash", "-lc", "cd /repo && bash job.sh --x 1"]
+    assert remote.calls[-1] == ["bash", "-lc", "cd /repo && sh job.sh --x 1"]
     assert backend.logs(remote, "/repo", handle=handle) == "output\n"
     # A queue that keeps nothing answers for every handle asked about rather than leaving it
     # absent, so a caller batching a whole host never re-asks one job at a time.

@@ -33,6 +33,7 @@ from mainboard.dispatch.state import Cache
 from mainboard.dispatch.sync import binary
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
+from mainboard.runtime.job import PrefixActivation, ToolCall, WorkspaceActivation
 
 from ..support import Lab
 from .support import (
@@ -41,6 +42,7 @@ from .support import (
     machine_with,
     pins_on_this_host,
     plan,
+    recorded,
     run_record,
     setgid_inherits,
 )
@@ -194,14 +196,18 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
         resources=Resources(),
     )
     [generated] = (workdir / ".mainboard" / "dispatch" / "jobs").glob("job-*.sh")
-    text = generated.read_text()
-    # The script activates through the snapshot this dispatch pinned, whose `.mainboard` is a
-    # symlink back to the mirror, so the job gets the mirror's environment out of a tree whose
-    # code no later sync can rewrite.
+    job = recorded(generated.read_text())
+    # The job activates through the snapshot this dispatch pinned, whose `.mainboard` is a
+    # symlink back to the mirror, so it gets the mirror's environment out of a tree whose code
+    # no later sync can rewrite.
     pinned = dispatcher.pinned("/repo", source=dispatcher.source())
     assert pinned.startswith("/repo/.mainboard/dispatch/sources/")
-    assert f"{pinned}/.mainboard/activate-serving.sh" in text
-    assert f"{pinned}/.mainboard/envs/serving/.pixi/envs/serving/bin" in text
+    assert job.activation == WorkspaceActivation(
+        script=f"{pinned}/.mainboard/activate-serving.sh",
+        prefix=f"{pinned}/.mainboard/envs/serving/.pixi/envs/serving",
+        refusal=job.activation.refusal,
+    )
+    assert "mainboard install serving --on gold" in job.activation.refusal
 
 
 def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
@@ -236,8 +242,8 @@ def test_run_containerized_wraps_the_command_via_the_builder_or_refuses_without_
         containerize=lambda inner: ["apptainer", "exec", "image.sif", *inner],
     )
     [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    text = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text()
-    assert "apptainer exec image.sif bash -c 'python -m foo' || status=$?" in text
+    job = recorded((workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text())
+    assert job.container == ("apptainer", "exec", "image.sif", "bash", "-c", "python -m foo")
 
 
 def test_submit_admits_the_request_before_a_single_ssh_connection(
@@ -393,18 +399,31 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     )
 
     [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    body = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
-    assert f"cd /repo && mainboard provide default --source {root}/.mainboard/envs/default" in body
-    # And it names the address the dispatch pinned, so a host that reads the shipped artifact as
+    job = recorded(
+        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
+    )
+    # It names the address the dispatch pinned, so a host that reads the shipped artifact as
     # another environment says which two addresses and which two pixis instead of building one
-    # beside the one every job of the wave is waiting for.
-    assert "--expect abcd1234" in body
-    assert f"source {prefix}/activate.sh" in body
-    assert f"export LD_LIBRARY_PATH={prefix}/.pixi/envs/default/lib${{LD_LIBRARY_PATH:+" in body
-    assert body.index("provide default") < body.index("activate.sh")
-    # Nothing in the job asks pixi to reconcile anything, which is what made a shared prefix a
-    # race in the first place.
-    assert "run --env" not in body
+    # beside the one every job of the wave is waiting for. It runs from the mirror, where built
+    # environments live, and nothing in the job asks pixi to reconcile anything, which is what
+    # made a shared prefix a race in the first place.
+    assert job.provide == ToolCall(
+        args=(
+            "provide",
+            "default",
+            "--source",
+            f"{root}/.mainboard/envs/default",
+            "--expect",
+            "abcd1234",
+        ),
+        cwd="/repo",
+    )
+    assert job.activation == PrefixActivation(
+        prefix=prefix, env="default", refusal=job.activation.refusal
+    )
+    assert f"no completed environment with the expected identity at {prefix}" in (
+        job.activation.refusal
+    )
     # And the tree points at that environment rather than at the mirror's mutable one.
     [built] = [line for line in machine.lines if "mb_snap=" in line]
     assert f"ln -s {prefix}/.pixi " in built
@@ -438,16 +457,15 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
     )
 
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    body = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
+    job = recorded(
+        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
+    )
     assert pinned != "/repo"
     # The vendored root rides with the workspace's own: a house package that lives outside the
     # root is compiled inside it, so the tree a job is pinned to carries it like any other.
-    assert (
-        f"export PYTHONPATH={pinned}/src:{pinned}/packages/lab-core/src:"
-        f"{pinned}/.mainboard/vendor/sample-lib/src" in body
+    assert job.pythonpath == (
+        f"{pinned}/src:{pinned}/packages/lab-core/src:{pinned}/.mainboard/vendor/sample-lib/src"
     )
-    assert "export PYTHONPATH=/repo/src" not in body
-    assert "unset PYTHONPATH" not in body
 
 
 def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_is(
@@ -488,13 +506,16 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     # Data resident only on the host must not become a required local transfer. The
     # snapshot still refuses an absent mirror need before the scheduler sees a job.
     assert ["data/corpus"] not in dispatcher.required[0]
-    body = (workdir / staged).read_text(encoding="utf-8")
-    assert f"export PYTHONPATH={pinned}/research/camp:{pinned}/packages/core/src" in body
-    assert f"export MAINBOARD_CLOSURE={pinned}/{CLOSURE}" in body
-    assert "export MAINBOARD_FIRST_PARTY=core:experiments" in body
-    assert "export MAINBOARD_DEFERRED=cutoken" in body
-    assert f"export MAINBOARD_SOURCE={captured.identity}" in body
-    assert f"cd {pinned}" in body
+    job = recorded((workdir / staged).read_text(encoding="utf-8"))
+    assert job.pythonpath == f"{pinned}/research/camp:{pinned}/packages/core/src"
+    assert job.variables == {
+        "MAINBOARD_SOURCE": captured.identity,
+        "MAINBOARD_SOURCE_DIGEST": captured.digest,
+        "MAINBOARD_CLOSURE": f"{pinned}/{CLOSURE}",
+        "MAINBOARD_FIRST_PARTY": "core:experiments",
+        "MAINBOARD_DEFERRED": "cutoken",
+    }
+    assert job.root == pinned
     [built] = [line for line in machine.lines if "mb_snap=" in line]
     assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --filter' in built
     assert "--files-from=-" in built
@@ -522,9 +543,10 @@ def test_a_containerized_job_has_no_environment_of_its_own_to_build(
         containerize=lambda argv: ["apptainer", "exec", "img.sif", *argv],
     )
     [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    assert "provide" not in (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(
-        encoding="utf-8"
+    job = recorded(
+        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
     )
+    assert job.provide is None
 
 
 def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
@@ -551,12 +573,8 @@ def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
 
     [asked] = [line for line in machine.lines if "provide" in line]
     assert asked.startswith("cd /repo && ")
-    # In a subshell, so the directory it changes into never becomes the job's own.
-    assert (
-        "( cd /repo && mainboard provide default --source /repo/.mainboard/dispatch/sources/"
-        in asked
-    )
-    assert asked.endswith(" )")
+    assert "mainboard provide default --source /repo/.mainboard/dispatch/sources/" in asked
+    assert asked.endswith(" --expect abcd1234 >/dev/null")
     assert [told for told in announced if told.startswith("built default on gold for /repo")]
 
 

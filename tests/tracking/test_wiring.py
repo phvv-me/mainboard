@@ -1,9 +1,10 @@
+import json
 import subprocess
 import sys
 from collections.abc import Sequence
 from time import monotonic, sleep
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
@@ -15,6 +16,7 @@ from mainboard.dispatch import Handle
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Tracking
+from mainboard.runtime.job import ToolCall
 
 from .support import FakeWandb, keyed
 
@@ -23,6 +25,14 @@ if TYPE_CHECKING:
 
 _HOST = "miyabi-g"
 _ROOT = "/work/p"
+
+
+class Asked(NamedTuple):
+    """What one submit asked the dispatcher's run for."""
+
+    name: str
+    sampler: ToolCall | None
+    root: str
 
 
 class FakeRemote:
@@ -81,9 +91,9 @@ def test_a_sampler_takes_the_interval_the_manifest_declared(board: Board) -> Non
     assert tuned.samples("s", job="j", interval=1.5).interval == 1.5
 
 
-def submitting(board: Board, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
+def submitting(board: Board, monkeypatch: pytest.MonkeyPatch) -> list[Asked]:
     """Pin the dispatcher's own run to a stand-in, recording what each submit asked it for."""
-    asked: list[dict[str, str]] = []
+    asked: list[Asked] = []
 
     def fake_run(
         plan: ExecutionPlan,
@@ -91,10 +101,10 @@ def submitting(board: Board, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, 
         *,
         root: str,
         name: str = "",
-        sampler: str = "",
+        sampler: ToolCall | None = None,
         **rest: str | int | float | bool,
     ) -> Handle:
-        asked.append({"name": name, "sampler": sampler, "root": root})
+        asked.append(Asked(name=name, sampler=sampler, root=root))
         return Handle(id="77", host=plan.host, root=root, kind=plan.profile.kind)
 
     monkeypatch.setattr(board.dispatcher, "run", fake_run)
@@ -110,8 +120,8 @@ def test_a_run_that_named_itself_nothing_is_named_here_so_its_stream_has_a_key(
     monkeypatch.setattr("mainboard.board.connection", FakeRemote)
     board.on(_HOST).submit("python train.py")
     [seen] = asked
-    assert seen["name"].startswith(f"{_HOST}-") and seen["sampler"] == ""
-    stream = seen["name"]
+    assert seen.name.startswith(f"{_HOST}-") and seen.sampler is None
+    stream = seen.name
     [line] = Receipts(directory(board, stream) / "events.ndjson").replay()
     assert (line.topic, line.job, line.data["handle"]) == (Topic.SUBMITTED, stream, "77")
     assert line.data["target"] == _HOST and line.data["command"] == "python train.py"
@@ -130,7 +140,8 @@ def test_a_batch_job_still_watches_itself_though_only_the_batch_publishes_for_it
     keyed(monkeypatch)
     asked = submitting(tracking(board, interval=20.0), monkeypatch)
     board.on(_HOST).submit("echo hi", name="batch:smoke-1/gold-1")
-    assert "mainboard sample smoke-1 --job gold-1" in asked[0]["sampler"]
+    sampler = asked[0].sampler
+    assert sampler is not None and sampler.args[:4] == ("sample", "smoke-1", "--job", "gold-1")
     assert not (directory(board, "smoke-1") / "events.ndjson").exists()
 
 
@@ -146,11 +157,14 @@ def test_a_dispatched_job_is_handed_the_line_that_makes_it_watch_itself(
         "mainboard.dispatch.shells.connection", lambda host, ssh=None: FakeRemote()
     )
     board.on(_HOST).submit("python train.py", walltime="01:00:00")
-    line = asked[0]["sampler"]
-    assert "mainboard sample" in line and "--interval 15 --seconds 3600" in line
+    stream = asked[0].name
+    assert asked[0].sampler == ToolCall(
+        args=("sample", stream, "--job", stream, "--interval", "15", "--seconds", "3600"),
+        credentials=f"{asked[0].root}/.mainboard/tracking.json",
+    )
     [(command, text)] = FakeRemote.piped
-    assert "umask 077" in command and "tracking.env" in command
-    assert text.startswith("WANDB_API_KEY=") and "secret" in text
+    assert "umask 077" in command and "tracking.json" in command
+    assert json.loads(text) == {"WANDB_API_KEY": "secret"}
 
 
 def test_a_machine_holding_no_credential_stages_nothing_and_still_samples(
@@ -161,7 +175,8 @@ def test_a_machine_holding_no_credential_stages_nothing_and_still_samples(
     asked = submitting(tracking(board, interval=5.0), monkeypatch)
     monkeypatch.setattr("mainboard.board.connection", FakeRemote)
     board.on(_HOST).submit("python train.py")
-    assert "mainboard sample" in asked[0]["sampler"]
+    sampler = asked[0].sampler
+    assert sampler is not None and sampler.args[0] == "sample"
     assert FakeRemote.piped == []
 
 
@@ -181,7 +196,7 @@ def test_nothing_is_sampled_and_nothing_is_staged_when_the_lane_is_off(
 ) -> None:
     FakeRemote.piped = []
     monkeypatch.setattr("mainboard.board.connection", FakeRemote)
-    assert board.sampling(("s", "j"), root=_ROOT, resources=Resources()) == ""
+    assert board.sampling(("s", "j"), root=_ROOT, resources=Resources()) is None
     board.stage(_ROOT)
     assert FakeRemote.piped == []
 

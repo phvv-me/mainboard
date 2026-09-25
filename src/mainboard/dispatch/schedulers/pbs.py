@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     from ..transport import Machine
 
-# The exit artifact the generated PBS job script traps out on the host: one `exit=N` line.
+# The exit artifact a PBS job's runner writes on the host: one `exit=N` line.
 _EXIT_ARTIFACT = re.compile(r"exit=(\d+)")
 
 
@@ -173,10 +173,10 @@ class Pbs:
     def autopsy(self, remote: Machine, root: str, *, handle: str) -> JobState:
         """Settle a handle the scheduler no longer remembers from its on-host exit artifact.
 
-        The generated PBS job script traps its exit into `{STATE_DIR}/logs/<bare jobid>.exit`,
-        so a job that finished after the server purged its history still reconciles to a real
-        `ok`/`failed` with its exit code. No artifact (a hand-written script, a SIGKILL that ran
-        no trap) means the job is genuinely `vanished`.
+        A PBS job's runner writes its exit into `{STATE_DIR}/logs/<bare jobid>.exit`, so a job
+        that finished after the server purged its history still reconciles to a real
+        `ok`/`failed` with its exit code. No artifact (a hand-written script, a SIGKILL that left
+        the runner no chance to write it) means the job is genuinely `vanished`.
         """
         artifact = shlex.quote(f"{root}/{state_dir()}/logs/{bare(handle)}.exit")
         out = login_run(remote, f"cat {artifact} 2>/dev/null")

@@ -1,40 +1,25 @@
 # Render a scheduler job script from a single command, so users stop hand-writing one shell
-# script per experiment. `JobSpec` is the value object; the script text lives in jinja
-# templates under `templates/`.
+# script per experiment. `JobSpec` is the value object. What the script does is a `runtime.Job`
+# record the host's own tool carries out; the script itself is only the handover, since a
+# scheduler still wants a file it can run and PBS reads its directives from that file's header.
 
 import shlex
-from functools import cache
-from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
 from ...context.plan import ExecutionPlan
-from ..evidence import framing, staging
-from ..shared import state_dir
-from ..wrapping import activation_stage, frozen_activation
-
-if TYPE_CHECKING:
-    from jinja2 import Environment
-
-
-@cache
-def _templates() -> Environment:
-    """The job script templates shipped with the package, loaded on the first render.
-
-    `trim_blocks`/`lstrip_blocks` make the `{% %}` control lines vanish from the rendered shell
-    text; `keep_trailing_newline` keeps the scripts newline-terminated like any shell file.
-
-    Built here rather than at import because jinja2 is 6 ms of a cold start that this package's
-    console entry point pays on every command, and only a dispatch renders a job script.
-    """
-    from jinja2 import Environment, PackageLoader
-
-    return Environment(  # ruff:ignore[jinja2-autoescape-false]  reason=renders shell scripts, not HTML; autoescape would corrupt them since=2026-08-16
-        loader=PackageLoader("mainboard.dispatch.jobs", "templates"),
-        keep_trailing_newline=True,
-        trim_blocks=True,
-        lstrip_blocks=True,
-    )
+from ...core.project import Project
+from ...runtime.job import Job, PrefixActivation, ToolCall, WorkspaceActivation
+from ..shared import (
+    CLOSURE_VAR,
+    COMMIT_VAR,
+    DEFERRED_VAR,
+    DIGEST_VAR,
+    FIRST_PARTY_VAR,
+    SOURCE_VAR,
+    state_dir,
+)
+from ..wrapping import USER_BINS, absent, activation, missing
 
 
 class JobSpec(FrozenModel):
@@ -44,17 +29,17 @@ class JobSpec(FrozenModel):
     so `render(pbs=True)` requires one, resolved by the caller from the host's queue defaults
     (never invented here). A schedulerless host (pueue/bash/slurm) enforces a cap only when the
     caller explicitly chose one: an invisible default that kills correct work is worse than a
-    hung job a monitor can see and cancel. When a cap is set, the wrapper stamps `mainboard:
+    hung job a monitor can see and cancel. When a cap is set, the runner stamps `mainboard:
     killed at walltime HH:MM:SS` into the log so a triage view decodes the stop.
 
     cmd: the command to run (e.g. `python -m experiments.x.run --model X`).
-    plan: the resolved execution context, which names the host and the environment the script
-        activates. Carrying the plan rather than a prefix and an environment name separately is
-        what makes it impossible to render a script whose prefix and environment disagree.
-    root: the tree on the host the script runs from, which is the snapshot of the mirror this
+    plan: the resolved execution context, which names the host and the environment the job
+        enters. Carrying the plan rather than a prefix and an environment name separately is
+        what makes it impossible to render a job whose prefix and environment disagree.
+    root: the tree on the host the job runs from, which is the snapshot of the mirror this
         dispatch pinned. Its `.mainboard/` is a symlink back to the mirror, so activating
         through it hands the job the mirror's environment while its code stays frozen.
-    queue/select/gpus/account/mem_gb: PBS header values (ignored when rendering a bash wrapper).
+    queue/select/gpus/account/mem_gb: PBS header values (ignored when rendering a plain script).
     walltime: `HH:MM:SS` cap; empty means the bare `#PBS` requirement is unmet (a PBS render
         raises) or, on a schedulerless host, that the job runs uncapped.
     pythonpath: explicit `PYTHONPATH` the job runs under, empty for an isolated default. A
@@ -65,23 +50,17 @@ class JobSpec(FrozenModel):
         imports come only from its own environment; False keeps the inherited value for a
         caller that deliberately relies on it. An explicit `pythonpath` replaces the inherited
         value outright and is therefore isolated the same way.
-    container_command: a preformatted shell command that already wraps the inner `cmd` in a
-        container runtime invocation; when set, the body runs this instead of a bare `bash -c`.
+    container: the argv that runs `cmd` inside a container runtime, empty for a bare command.
     prefix: the built environment this job activates, addressed by the content of the manifest
-        and lock it was dispatched with. Set, the script activates exactly that directory and
-        asks nothing to reconcile it; empty, it falls back to the workspace's own activation,
-        which is what an interactive run and a hand-written script still want.
-    provide: a preformatted shell line the script runs before it activates anything, which
-        builds that environment when the host does not have it yet. Empty for a job whose
-        environment is an image, and for a caller that renders a script by hand.
-    sampler: a preformatted shell line the script runs before the command, for a host that
-        watches itself while the job runs. Opaque text here on purpose, since a job script is
-        the one place that decision can be carried onto a machine that is not this one, and
-        rendering it is not the same as knowing what it says.
-    attestation: a preformatted shell line the script runs in the foreground immediately before
-        the command, recording what the machine looked like as the work started. Opaque for the
-        same reason `sampler` is, and ordered before it in the script because a reading taken
-        after the command is under way describes the command rather than the conditions.
+        and lock it was dispatched with. Set, the job enters exactly that directory and asks
+        nothing to reconcile it; empty, it enters the workspace's own environment, which is what
+        an interactive run and a hand-written script still want.
+    provide: builds that environment before the job enters it, when the host does not have it
+        yet. None for a job whose environment is an image.
+    sampler: watches the host beside the command, None for a host that watches nothing.
+    attestation: records what the machine looked like immediately before the command, None for
+        none. Ordered before the sampler because a reading taken after the command is under way
+        describes the command rather than the conditions.
     source: the captured SHA-256 content identity, exported as `MAINBOARD_SOURCE`.
     commit: historical metadata only; new dispatches leave this empty.
     digest: that tree's content digest, exported as `MAINBOARD_SOURCE_DIGEST`. A preflight on a
@@ -93,8 +72,8 @@ class JobSpec(FrozenModel):
         exported as `MAINBOARD_FIRST_PARTY` beside the closure for the runner's finder.
     deferred: top-level names whose whole distribution the closure left to the environment,
         colon-joined, exported as `MAINBOARD_DEFERRED` so the runner's finder admits them.
-    exports: the host profile's `[hosts.<name>.exports]`, written as `export KEY=VALUE` lines
-        before the command so every job on that host runs in the world its profile declares.
+    exports: the host profile's `[hosts.<name>.exports]`, set after everything else so every
+        job on that host runs in the world its profile declares.
     """
 
     cmd: str
@@ -108,11 +87,11 @@ class JobSpec(FrozenModel):
     mem_gb: int | None = None
     pythonpath: str = ""
     isolate_pythonpath: bool = True
-    container_command: str = ""
+    container: tuple[str, ...] = ()
     prefix: str = ""
-    provide: str = ""
-    sampler: str = ""
-    attestation: str = ""
+    provide: ToolCall | None = None
+    sampler: ToolCall | None = None
+    attestation: ToolCall | None = None
     source: str = ""
     commit: str = ""
     digest: str = ""
@@ -122,18 +101,22 @@ class JobSpec(FrozenModel):
     exports: dict[str, str] = {}
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
-        """The job script text: a full PBS script when `pbs`, else a bash wrapper.
+        """The job script text: the `#PBS` header when `pbs`, then the handover to the tool.
 
-        The PBS header always carries `-j oe` and redirects merged output directly into
-        `{STATE_DIR}/logs/<bare jobid>.log`. Its exit trap appends the final status after that
-        output and writes the same status to `{STATE_DIR}/logs/<bare jobid>.exit` so a job the
-        server later purges can still be autopsied.
+        The script is POSIX `sh` and does one thing, `exec` the host's own tool on the job
+        record, which travels inline so a scheduler that feeds the script to its shell on stdin
+        runs it as surely as one that passes its path. The per-user install directories lead
+        `PATH` first, since a batch shell is not a login shell and may not have them.
+
+        Under PBS the runner appends the merged output to `{STATE_DIR}/logs/<bare jobid>.log`
+        and the final status to `{STATE_DIR}/logs/<bare jobid>.exit`, so a job the server later
+        purges can still be autopsied; the header's `-j oe` merges the two streams PBS spools.
 
         `ngpus` joins the `select=` chunk only when `gpus` > 0 and `gpu_in_select`; some GPU
         queues hand the GPU out with the queue and reject an explicit `ngpus`, so such a host
         passes `gpu_in_select=False`. `mem=NNgb` joins the same chunk when `mem_gb` is set.
 
-        pbs: render the PBS header script instead of the bash wrapper.
+        pbs: render the PBS header and hand PBS the output and walltime.
         gpu_in_select: whether a GPU request belongs in the `select=` chunk.
         """
         if pbs and not self.walltime:
@@ -141,43 +124,69 @@ class JobSpec(FrozenModel):
                 "a PBS job needs an explicit walltime; resolve one from the host's queue "
                 "defaults before rendering"
             )
-        template = _templates().get_template("pbs_job.sh.j2" if pbs else "bash_job.sh.j2")
-        ngpus = f":ngpus={self.gpus}" if self.gpus and gpu_in_select else ""
-        mem = f":mem={self.mem_gb}gb" if self.mem_gb else ""
-        chunk = f"select={self.select}{ngpus}{mem}"
-        return template.render(
-            cmd=shlex.quote(self.cmd),
-            queue=self.queue,
-            walltime=self.walltime,
-            walltime_seconds=walltime_seconds(self.walltime) if self.walltime else 0,
-            chunk=chunk,
-            account=self.account,
-            pythonpath=shlex.quote(self.pythonpath) if self.pythonpath else "",
+        record = shlex.quote(self.job(pbs=pbs).model_dump_json())
+        handover = f'PATH="{":".join(USER_BINS)}:$PATH" exec {Project().name} job {record}'
+        lines = [
+            "#!/bin/sh",
+            *(self.directives(gpu_in_select=gpu_in_select) if pbs else ()),
+            f"# A {Project().name} job. The record below is what runs; this line hands it over.",
+            handover,
+        ]
+        return "\n".join(lines) + "\n"
+
+    def job(self, *, pbs: bool) -> Job:
+        """The record the host's tool runs, the walltime and the output left to PBS under it.
+
+        pbs: the job runs under PBS, which enforces the walltime and spools the output itself.
+        """
+        return Job(
+            command=self.cmd,
+            root=self.root,
+            activation=self.activation(),
+            container=self.container,
+            walltime="" if pbs else self.walltime,
+            logs=f"{self.root}/{state_dir()}/logs" if pbs else "",
+            pythonpath=self.pythonpath,
             isolate_pythonpath=self.isolate_pythonpath,
-            activation=(
-                frozen_activation(self.prefix, self.plan.env)
-                if self.prefix
-                else activation_stage(self.plan, self.root)
-            ),
-            container_command=self.container_command,
+            variables=self.variables(),
             provide=self.provide,
-            sampler=self.sampler,
             attestation=self.attestation,
-            source=shlex.quote(self.source) if self.source else "",
-            commit=shlex.quote(self.commit) if self.commit else "",
-            digest=shlex.quote(self.digest) if self.digest else "",
-            closure=shlex.quote(self.closure) if self.closure else "",
-            first_party=shlex.quote(self.first_party) if self.first_party else "",
-            deferred=shlex.quote(self.deferred) if self.deferred else "",
-            root=shlex.quote(self.root),
-            exports=[(key, shlex.quote(value)) for key, value in self.exports.items()],
-            receipts_staging=staging(),
-            receipts_framing=framing(),
-            state_dir=state_dir(),
+            sampler=self.sampler,
         )
 
+    def activation(self) -> PrefixActivation | WorkspaceActivation:
+        """The environment the job enters: its addressed prefix, or the workspace's own."""
+        if self.prefix:
+            return PrefixActivation(
+                prefix=self.prefix, env=self.plan.env, refusal=absent(self.prefix, self.plan.env)
+            )
+        installed = self.plan.prefix(self.root)
+        return WorkspaceActivation(
+            script=activation(self.root, env=self.plan.env),
+            prefix=installed,
+            refusal=missing(self.plan, installed),
+        )
 
-def walltime_seconds(walltime: str) -> int:
-    """A `HH:MM:SS` walltime as whole seconds, for the bash host's `timeout` wrapper."""
-    hours, minutes, seconds = (int(part) for part in walltime.split(":"))
-    return hours * 3600 + minutes * 60 + seconds
+    def variables(self) -> dict[str, str]:
+        """The provenance the job exports, then the host profile's exports over it."""
+        provenance = {
+            SOURCE_VAR: self.source,
+            COMMIT_VAR: self.commit,
+            DIGEST_VAR: self.digest,
+            CLOSURE_VAR: self.closure,
+            FIRST_PARTY_VAR: self.first_party,
+            DEFERRED_VAR: self.deferred,
+        }
+        return {name: value for name, value in provenance.items() if value} | self.exports
+
+    def directives(self, *, gpu_in_select: bool) -> list[str]:
+        """The `#PBS` header lines: queue, chunk, walltime, group and merged output."""
+        ngpus = f":ngpus={self.gpus}" if self.gpus and gpu_in_select else ""
+        mem = f":mem={self.mem_gb}gb" if self.mem_gb else ""
+        return [
+            f"#PBS -q {self.queue}",
+            f"#PBS -l select={self.select}{ngpus}{mem}",
+            f"#PBS -l walltime={self.walltime}",
+            *([f"#PBS -W group_list={self.account}"] if self.account else []),
+            "#PBS -j oe",
+        ]

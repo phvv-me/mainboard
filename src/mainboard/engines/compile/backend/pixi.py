@@ -20,7 +20,7 @@ from .tool import Tool
 from .windows_task import WindowsTaskRunner
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Generator, Mapping, Sequence
 
     from plumbum.commands.base import BaseCommand
 
@@ -358,6 +358,32 @@ class Pixi(Tool):
         )
         json.loads(text)
         self.windows_activation_cache.write_text(text, encoding="utf-8")
+
+    def recorded_environment(self, env: str, base: Mapping[str, str]) -> dict[str, str]:
+        """`base` inside ``env`` as the recorded Windows activation describes it.
+
+        The same activation a restricted command enters, as a plain mapping for a caller that
+        starts its own process: the recorded variables over `base`, the declared clears taken
+        out, and the prefix's executable directories leading `PATH`.
+
+        env: the environment the record activates.
+        base: the environment being entered from.
+        """
+        exported, scripts = self._cached_windows_activation()
+        cleared: set[str] = set()
+        for script in scripts:
+            self._apply_generated_activation(script, exported, cleared)
+        entered = {
+            name: value for name, value in {**base, **exported}.items() if name not in cleared
+        }
+        prefix = self.env_prefix(env)
+        binaries = [
+            str(directory)
+            for directory in (prefix, prefix / "Scripts", prefix / "Library" / "bin")
+            if directory.is_dir()
+        ]
+        entered["PATH"] = os.pathsep.join([*binaries, entered.get("PATH", "")])
+        return entered
 
     def _cached_windows_activation(self) -> tuple[dict[str, str], list[Path]]:
         """Load the complete activation Pixi recorded when this prefix was provisioned."""

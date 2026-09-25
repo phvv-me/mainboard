@@ -4,7 +4,8 @@ from collections.abc import Sequence
 import pytest
 
 from mainboard.batch import Topic
-from mainboard.tracking import Sampler, attesting_line, host_env, sampling_line
+from mainboard.runtime.job import ToolCall
+from mainboard.tracking import Sampler, attesting, host_env, sampling
 
 from ..batch.support import Recorder
 
@@ -113,13 +114,11 @@ def test_an_attestation_says_what_the_machine_was_doing_before_the_work_started(
     assert [line.topic for line in bus.replay()] == [Topic.ATTESTED]
 
 
-def test_the_attesting_line_runs_in_the_foreground_and_never_fails_the_job() -> None:
+def test_the_attestation_is_this_tools_own_verb_carrying_the_staged_credential() -> None:
     """A reading taken beside the command describes the command, not the conditions it got."""
-    line = attesting_line(root="/repo", stream=_STREAM, job=_JOB)
-    assert f"mainboard attest {_STREAM} --job {_JOB}" in line
-    assert not line.rstrip().endswith("&")
-    assert line.rstrip().endswith("|| true")
-    assert host_env("/repo") in line
+    assert attesting(root="/repo", stream=_STREAM, job=_JOB) == ToolCall(
+        args=("attest", _STREAM, "--job", _JOB), credentials=host_env("/repo")
+    )
 
 
 def test_a_machine_with_no_accelerator_and_no_cap_still_reads_as_something() -> None:
@@ -166,24 +165,25 @@ def test_the_loop_stops_the_moment_it_is_told_to() -> None:
 
 
 @pytest.mark.parametrize(
-    ("interval", "carries"),
-    [(0.0, False), (10.0, True)],
-    ids=["a job that samples nothing", "a job that watches itself"],
+    ("interval", "seconds", "sampled"),
+    [
+        (0.0, 1800.0, None),
+        (10.0, 1800.0, ("--interval", "10", "--seconds", "1800")),
+        (5.0, 0.0, ("--interval", "5")),
+    ],
+    ids=["a job that samples nothing", "a job that watches itself", "no wall budget"],
 )
 def test_a_dispatched_job_starts_the_sampler_itself_or_is_left_alone(
-    interval: float, carries: bool
+    interval: float, seconds: float, sampled: tuple[str, ...] | None
 ) -> None:
     """The seam that carries the live lane onto a machine that is not this one."""
-    line = sampling_line(root="/work/p", stream=_STREAM, job=_JOB, interval=interval, seconds=1800)
-    assert bool(line) is carries
-    if not carries:
-        return
-    assert host_env("/work/p") in line
-    assert "mainboard sample smoke-1 --job trial-a --interval 10 --seconds 1800" in line
-    assert line.endswith("&") and '--parent "$$"' in line
-
-
-def test_a_job_with_no_wall_budget_still_ends_with_its_own_shell() -> None:
-    line = sampling_line(root="/work/p", stream=_STREAM, job=_JOB, interval=5)
-    assert "--seconds" not in line and '--parent "$$"' in line
-    assert host_env("/work/p") == "/work/p/.mainboard/tracking.env"
+    call = sampling(root="/work/p", stream=_STREAM, job=_JOB, interval=interval, seconds=seconds)
+    expected = (
+        None
+        if sampled is None
+        else ToolCall(
+            args=("sample", _STREAM, "--job", _JOB, *sampled), credentials=host_env("/work/p")
+        )
+    )
+    assert call == expected
+    assert host_env("/work/p") == "/work/p/.mainboard/tracking.json"

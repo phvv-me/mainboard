@@ -116,7 +116,7 @@ def test_the_backend_submits_lists_and_reads_a_task_back() -> None:
     )
     assert handle == "5"
     assert submitting.calls[-1][:4] == ["pueue", "add", "--print-task-id", "--label"]
-    assert submitting.calls[-1][-1] == "bash job.sh --x 1"
+    assert submitting.calls[-1][-1] == "sh job.sh --x 1"
     queue = machine_with(
         status_json(
             {"id": 0, "label": "job", "status": {"Running": {"start": "t0"}}},

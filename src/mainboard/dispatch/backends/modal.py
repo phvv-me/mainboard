@@ -29,8 +29,8 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 from ...core.errors import MissionError
+from ...runtime.job import walltime_seconds
 from ..evidence import framing, staging
-from ..jobs.spec import walltime_seconds
 from ..vocabulary import JobState
 from .base import (
     Account,
