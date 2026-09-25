@@ -121,11 +121,11 @@ def workspace_session(*, env: str, command: Sequence[str], resources: Resources)
 
 
 def log_path(root: str, *, handle: str) -> str:
-    """The captured merged stdout+stderr path a rendered job script writes for `handle`.
+    """The captured merged stdout+stderr path a job writes for `handle`.
 
-    Both the PBS and bash job templates write to this same `{STATE_DIR}/logs/<stem>.log` path
-    (the PBS stem drops the `.<server>` suffix `qstat` appends), so a backend can read a job's
-    output straight off the host filesystem without an on-host executor in the loop.
+    A PBS job's runner and SLURM's `--output` both write to this same
+    `{STATE_DIR}/logs/<stem>.log` path (the PBS stem drops the `.<server>` suffix `qstat`
+    appends), so a backend can read a job's output straight off the host filesystem.
     """
     stem = handle.split(".", maxsplit=1)[0]
     return f"{root}/{state_dir()}/logs/{stem}.log"

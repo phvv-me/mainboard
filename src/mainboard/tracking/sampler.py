@@ -10,7 +10,6 @@
 # NDJSON first and reach whatever the workspace declared second. That is what lets this run
 # unchanged on a laptop, on gold, and on a compute node with no route out.
 
-import shlex
 from threading import Event as Flag
 from threading import Thread
 from time import monotonic
@@ -21,6 +20,7 @@ import psutil
 from ..batch.receipts import Topic, publish
 from ..core.project import Project
 from ..probe.machine import Machine
+from ..runtime.job import ToolCall
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -37,7 +37,7 @@ _JOIN_S = 5.0
 # The file a host keeps the one tracking credential in, written by whoever dispatches and read
 # by the job itself. Its own file rather than the workspace `.env`, so staging it can never
 # overwrite what that host already declares, and one known path to audit, rotate or delete.
-_HOST_ENV = "tracking.env"
+_HOST_ENV = "tracking.json"
 
 # Compute utilization above which an accelerator counts as already working, the same threshold
 # `probe.gating.gpu_busy` judges a machine by, so one workspace has one idea of busy.
@@ -225,46 +225,43 @@ class Sampler:
 
 
 def host_env(root: str) -> str:
-    """Where a host keeps the tracking credential a dispatched job reads.
+    """Where a host keeps the tracking credential a dispatched job reads, as a JSON object.
 
     root: the workspace root on that host.
     """
     return f"{root}/{Project().out_dir}/{_HOST_ENV}"
 
 
-def attesting_line(*, root: str, stream: str, job: str) -> str:
-    """The shell line a dispatched job runs so it attests to its own machine before it works.
+def attesting(*, root: str, stream: str, job: str) -> ToolCall:
+    """The call a dispatched job makes so it attests to its own machine before it works.
 
-    The foreground twin of `sampling_line`, and foreground is the whole point: a reading taken
-    beside the command describes the command, while a reading taken before it describes the
-    conditions the command was handed. It carries the staged credential the same way, and its
-    output is discarded because an attestation belongs in the receipts rather than in the log
-    the job's own output belongs in. A failure to attest never stops the job, since a missing
-    attestation is a row that says nothing and a refused dispatch is a run that never happened.
+    The foreground twin of `sampling`, and foreground is the whole point: a reading taken beside
+    the command describes the command, while a reading taken before it describes the conditions
+    the command was handed. It carries the staged credential the same way, its output is
+    discarded because an attestation belongs in the receipts rather than in the log, and a
+    failure to attest never stops the job, since a missing attestation is a row that says
+    nothing and a refused dispatch is a run that never happened.
 
     root: the workspace root on the host, where the staged credential lives.
     stream: the receipts stream the attestation belongs to.
     job: the job inside that stream.
     """
-    attest = shlex.join([Project().name, "attest", stream, "--job", job])
-    staged = shlex.quote(host_env(root))
-    return f"( set -a; . {staged} 2>/dev/null; set +a; {attest} ) >/dev/null 2>&1 || true"
+    return ToolCall(args=("attest", stream, "--job", job), credentials=host_env(root))
 
 
-def sampling_line(
+def sampling(
     *, root: str, stream: str, job: str, interval: float, seconds: float = 0.0
-) -> str:
-    """The shell line a dispatched job runs so it samples itself, empty when it should not.
+) -> ToolCall | None:
+    """The call a dispatched job makes so it samples itself, None when it should not.
 
-    This is the seam that carries the live lane onto a machine that is not this one. A job
-    script starts the tool the host already has, in the environment the script already
-    activated, and the sampler publishes into that host's own receipts and onward to whatever
-    the workspace declared. Nothing about it is configured on the host.
+    This is the seam that carries the live lane onto a machine that is not this one. The job's
+    runner starts the tool the host already has, in the environment the job already entered, and
+    the sampler publishes into that host's own receipts and onward to whatever the workspace
+    declared. Nothing about it is configured on the host.
 
-    Three things keep it from outliving its job. It follows the job script's own process, so it
-    ends when the job ends however the job ends; it carries the same wall budget the job was
-    given; and its output goes nowhere, since a sampler must never write into a captured log the
-    job's own output belongs in.
+    Three things keep it from outliving its job. The runner hands it its own pid to follow and
+    stops it when the command ends; it carries the same wall budget the job was given; and its
+    output goes nowhere, since a sampler must never write into the log the job's output owns.
 
     root: the workspace root on the host, where the staged credential lives.
     stream: the receipts stream the samples belong to.
@@ -273,21 +270,9 @@ def sampling_line(
     seconds: the job's own wall budget as a hard stop, 0 for none.
     """
     if interval <= 0:
-        return ""
-    sample = shlex.join(
-        [
-            Project().name,
-            "sample",
-            stream,
-            "--job",
-            job,
-            "--interval",
-            f"{interval:g}",
-            *(("--seconds", f"{seconds:g}") if seconds else ()),
-        ]
-    )
-    staged = shlex.quote(host_env(root))
-    return (
-        f"( set -a; . {staged} 2>/dev/null; set +a; "
-        f'exec {sample} --parent "$$" ) >/dev/null 2>&1 &'
+        return None
+    budget = ("--seconds", f"{seconds:g}") if seconds else ()
+    return ToolCall(
+        args=("sample", stream, "--job", job, "--interval", f"{interval:g}", *budget),
+        credentials=host_env(root),
     )

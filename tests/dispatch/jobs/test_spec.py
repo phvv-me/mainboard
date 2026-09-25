@@ -1,15 +1,29 @@
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from mainboard.dispatch.jobs import JobSpec, walltime_seconds
+from mainboard.dispatch.evidence import receipts_in
+from mainboard.dispatch.jobs import JobSpec
+from mainboard.dispatch.shared import state_dir
+from mainboard.runtime.job import PrefixActivation, ToolCall, WorkspaceActivation, walltime_seconds
 
-from ..support import FieldValue, plan
+from ..support import FieldValue, plan, recorded
 
 
-def spec(**overrides: FieldValue) -> JobSpec:
+def spec(**overrides: FieldValue | ToolCall | tuple[str, ...]) -> JobSpec:
     """A `JobSpec` for gold's default environment under `/repo`, overridden field by field."""
-    fields: dict[str, FieldValue] = {"cmd": "run", "plan": plan(), "root": "/repo"}
+    fields: dict[str, FieldValue | ToolCall | tuple[str, ...]] = {
+        "cmd": "run",
+        "plan": plan(),
+        "root": "/repo",
+    }
     fields.update(overrides)
     return JobSpec.model_validate(fields)
 
@@ -19,11 +33,23 @@ def spec(**overrides: FieldValue) -> JobSpec:
     minutes=st.integers(min_value=0, max_value=59),
     seconds=st.integers(min_value=0, max_value=59),
 )
-def test_a_walltime_converts_to_the_whole_seconds_the_timeout_wrapper_counts(
+def test_a_walltime_converts_to_the_whole_seconds_the_runner_counts(
     hours: int, minutes: int, seconds: int
 ) -> None:
     walltime = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
     assert walltime_seconds(walltime) == hours * 3600 + minutes * 60 + seconds
+
+
+@given(
+    command=st.text(min_size=1) | st.sampled_from(["a\u2028b", "x\x85y", "'\"$(rm -rf /)\"'"]),
+    value=st.text(),
+)
+def test_the_script_hands_the_host_the_exact_record_whatever_the_command_holds(
+    command: str, value: str
+) -> None:
+    """Quotes, newlines and shell syntax are data in the record, never script text."""
+    job = spec(cmd=command, exports={"NOTE": value}).job(pbs=False)
+    assert recorded(spec(cmd=command, exports={"NOTE": value}).render(pbs=False)) == job
 
 
 def test_a_pbs_render_needs_an_explicit_walltime_and_carries_the_full_header() -> None:
@@ -38,12 +64,30 @@ def test_a_pbs_render_needs_an_explicit_walltime_and_carries_the_full_header() -
         mem_gb=100,
         gpus=1,
     ).render(pbs=True)
-    assert "#PBS -q short-g" in text
-    assert "#PBS -l select=1:ngpus=1:mem=100gb" in text
-    assert "#PBS -l walltime=06:00:00" in text
-    assert "#PBS -W group_list=xg25g007" in text
-    assert "trap 'mainboard_exit $?' EXIT" in text
-    assert "bash -c 'python -m foo'" in text
+    assert text.splitlines()[:7] == [
+        "#!/bin/sh",
+        "#PBS -q short-g",
+        "#PBS -l select=1:ngpus=1:mem=100gb",
+        "#PBS -l walltime=06:00:00",
+        "#PBS -W group_list=xg25g007",
+        "#PBS -j oe",
+        "# A mainboard job. The record below is what runs; this line hands it over.",
+    ]
+    # PBS enforces the walltime and spools the output itself, so the runner does neither.
+    job = recorded(text)
+    assert (job.command, job.walltime, job.logs) == (
+        "python -m foo",
+        "",
+        "/repo/.mainboard/dispatch/logs",
+    )
+
+
+def test_the_handover_puts_the_per_user_tools_first_and_replaces_the_shell() -> None:
+    """A batch shell is not a login shell, so the tool is found by the directories it lives in."""
+    handover = spec().render(pbs=False).splitlines()[-1]
+    assert handover.startswith(
+        'PATH="$HOME/.local/bin:$HOME/.pixi/bin:$HOME/.cargo/bin:$PATH" exec mainboard job '
+    )
 
 
 def test_a_gpu_queue_that_rejects_an_explicit_count_keeps_it_out_of_the_select_chunk() -> None:
@@ -51,142 +95,137 @@ def test_a_gpu_queue_that_rejects_an_explicit_count_keeps_it_out_of_the_select_c
     assert "group_list" not in bare
     without_gpu = spec(walltime="00:10:00", gpus=1).render(pbs=True, gpu_in_select=False)
     assert "ngpus" not in without_gpu
-    assert "select=1" in without_gpu
+    assert "#PBS -l select=1\n" in without_gpu
 
 
-def test_a_bash_render_caps_the_job_only_when_a_walltime_was_chosen() -> None:
+def test_a_plain_render_caps_the_job_only_when_a_walltime_was_chosen() -> None:
     """An invisible cap killing correct work is worse than a hung job a monitor can cancel."""
     capped = spec(walltime="00:05:00").render(pbs=False)
-    assert "timeout --kill-after=30s 300 bash" in capped
-    assert "mainboard: killed at walltime 00:05:00" in capped
-    uncapped = spec().render(pbs=False)
-    assert "timeout" not in uncapped
-    assert "MAINBOARD_TIMED" not in uncapped
+    assert "#PBS" not in capped
+    assert (recorded(capped).walltime, recorded(capped).logs) == ("00:05:00", "")
+    assert recorded(spec().render(pbs=False)).walltime == ""
 
 
-def test_every_render_activates_the_plans_own_environment_or_refuses_to_start() -> None:
+def test_every_job_enters_the_plans_own_environment_or_refuses_to_start() -> None:
     """A queued job and an interactive run must land in the same interpreter."""
-    default = spec().render(pbs=False)
-    assert "if [ -f /repo/.mainboard/activate.sh ]" in default
-    assert "elif [ -f /repo/.chefe/activate.sh ]" in default
-    assert "export PATH=/repo/.mainboard/envs/default/.pixi/envs/default/bin:$PATH" in default
-    assert (
-        "found no default environment at /repo/.mainboard/envs/default/.pixi/envs/default on gold"
-        in default
+    default = spec().job(pbs=False).activation
+    assert default == WorkspaceActivation(
+        script="/repo/.mainboard/activate.sh",
+        prefix="/repo/.mainboard/envs/default/.pixi/envs/default",
+        refusal=default.refusal,
     )
-    assert "mainboard setup gold --env default" in default
-    assert "exit 1" in default
-    serving = spec(plan=plan(env="serving")).render(pbs=False)
-    assert "if [ -f /repo/.mainboard/activate-serving.sh ]" in serving
-    assert "/repo/.mainboard/activate.sh" not in serving
+    assert "found no default environment at /repo/.mainboard/envs/default" in default.refusal
+    assert "mainboard setup gold --env default" in default.refusal
+    serving = spec(plan=plan(env="serving")).job(pbs=False).activation
+    assert isinstance(serving, WorkspaceActivation)
+    assert serving.script == "/repo/.mainboard/activate-serving.sh"
 
 
-def test_the_rendered_body_quotes_the_command_and_owns_its_pythonpath() -> None:
-    quoted = spec(cmd="python -m foo --name 'a b'").render(pbs=False)
-    assert "bash -c 'python -m foo --name" in quoted
-    assert "unset PYTHONPATH" in quoted
-    assert "PYTHONPATH" not in spec(isolate_pythonpath=False).render(pbs=False)
-    assert "export PYTHONPATH=/repo/src" in spec(pythonpath="/repo/src").render(pbs=False)
-    contained = spec(container_command="apptainer exec image.sif bash -c 'run'").render(pbs=False)
-    assert "apptainer exec image.sif bash -c 'run' || status=$?" in contained
-    assert contained.count("bash -c 'run'") == 1
-    # The command's own status is kept and re-raised, so framing the receipts back after it
-    # costs the job none of its exit code.
-    assert contained.splitlines()[-1] == "exit $status"
+def test_an_addressed_environment_is_entered_frozen_and_never_reconciled() -> None:
+    """The activation is the prefix's own, which stops a job asking pixi to reconcile anything."""
+    prefix = "/repo/.mainboard/prefixes/default/abcd1234"
+    frozen = spec(prefix=prefix).job(pbs=False).activation
+    assert frozen == PrefixActivation(prefix=prefix, env="default", refusal=frozen.refusal)
+    assert "mainboard provide default` rebuilds exactly it" in frozen.refusal
 
 
-def test_a_dispatched_job_learns_which_source_it_is_and_only_when_one_was_declared() -> None:
-    stamped = spec(source="abc1234-dirty").render(pbs=False)
-    assert "export MAINBOARD_SOURCE=abc1234-dirty" in stamped
-    assert "unset PYTHONPATH" in stamped
-    silent = spec().render(pbs=False)
-    assert "MAINBOARD_SOURCE" not in silent
+def test_the_job_owns_its_pythonpath_command_and_container() -> None:
+    job = spec(cmd="python -m foo --name 'a b'", pythonpath="/repo/src").job(pbs=False)
+    assert (job.command, job.pythonpath, job.isolate_pythonpath) == (
+        "python -m foo --name 'a b'",
+        "/repo/src",
+        True,
+    )
+    assert not spec(isolate_pythonpath=False).job(pbs=False).isolate_pythonpath
+    contained = spec(container=("apptainer", "exec", "image.sif", "bash", "-c", "run"))
+    assert contained.job(pbs=False).container == (
+        "apptainer",
+        "exec",
+        "image.sif",
+        "bash",
+        "-c",
+        "run",
+    )
 
 
-def test_a_dispatched_job_carries_the_provenance_a_mirror_cannot_derive() -> None:
+def test_a_dispatched_job_carries_the_provenance_a_mirror_cannot_derive_and_nothing_empty() -> (
+    None
+):
     """A snapshot has no `.git`, so a preflight there can read neither HEAD nor a worktree.
 
     The dispatcher can read both, so it declares them: the commit says which revision this is,
     and the digest says these exact bytes, which is what a run seals itself against where there
-    is no history to ask. Without them a runner has to be handed the number by hand at submit
-    time, which is what the reproducibility campaign's own `--expect-source` was (2026-09-05).
+    is no history to ask. A dispatch that could read neither says neither, rather than exporting
+    an empty claim, and a host's exports come after every fact about the run.
     """
-    sealed = spec(source="e975499", commit="e975499f" * 5, digest="9a" * 32).render(pbs=False)
-
-    assert f"export MAINBOARD_SOURCE_COMMIT={'e975499f' * 5}" in sealed
-    assert f"export MAINBOARD_SOURCE_DIGEST={'9a' * 32}" in sealed
-    # Declared before the command, like every other fact about the run, so a preflight inside it
-    # can refuse before anything is measured.
-    assert sealed.index("MAINBOARD_SOURCE_DIGEST") < sealed.index("bash -c")
-    # And a dispatch that could read neither says neither, rather than exporting an empty claim.
-    assert "MAINBOARD_SOURCE_COMMIT" not in spec(source="e975499").render(pbs=False)
-
-
-def test_an_addressed_environment_is_activated_frozen_and_first_on_the_library_path() -> None:
-    """Thirty two GH200 jobs died importing sqlite3 against `/lib64`'s libstdc++.
-
-    The prefix's own `lib` was second on the loader's path, so a moment when the environment was
-    mid-reconciliation sent every one of them to the system library and a `CXXABI_1.3.15` that
-    is not in it. The prefix goes first here, and the activation is the prefix's own rather than
-    the workspace's, which is what stops a job asking pixi to reconcile anything at all.
-    """
-    prefix = "/repo/.mainboard/prefixes/default/abcd1234"
-    frozen = spec(prefix=prefix).render(pbs=False)
-
-    assert f"source {prefix}/activate.sh" in frozen
-    assert f"export LD_LIBRARY_PATH={prefix}/.pixi/envs/default/lib${{LD_LIBRARY_PATH:+" in frozen
-    assert "mainboard install" not in frozen
-    # The workspace's own activation is what a job with no addressed environment still gets.
-    assert "/repo/.mainboard/activate.sh" in spec().render(pbs=False)
-
-
-def test_a_hosts_exports_are_written_before_the_command_and_quoted_as_the_shell_needs() -> None:
-    """`HF_HUB_OFFLINE` on a cluster reaches the job as one export line, and a space survives."""
-    body = spec(exports={"HF_HUB_OFFLINE": "1", "NOTE": "two words"}).render(pbs=False)
-    assert "export HF_HUB_OFFLINE=1\n" in body
-    assert "export NOTE='two words'\n" in body
-    assert body.index("export HF_HUB_OFFLINE=1") < body.index("bash -c")
-
-
-def test_a_sealed_job_exports_its_closure_and_the_first_party_roster_before_the_command() -> None:
-    """The runner refuses a first-party import the listing does not name, so both ride ahead."""
     sealed = spec(
-        cmd="python -m mainboard.jobs.call a/run.py::app --",
-        closure="/repo/.mainboard/dispatch/sources/k/.mainboard/dispatch/jobs/closure-ab.tsv",
+        source="e975499",
+        commit="e975499f" * 5,
+        digest="9a" * 32,
+        closure="/repo/.mainboard/dispatch/sources/k/.mainboard-closure",
         first_party="core:experiments",
         deferred="cutoken",
-    ).render(pbs=False)
+        exports={"HF_HUB_OFFLINE": "1", "NOTE": "two words"},
+    ).job(pbs=False)
+    assert list(sealed.variables.items()) == [
+        ("MAINBOARD_SOURCE", "e975499"),
+        ("MAINBOARD_SOURCE_COMMIT", "e975499f" * 5),
+        ("MAINBOARD_SOURCE_DIGEST", "9a" * 32),
+        ("MAINBOARD_CLOSURE", "/repo/.mainboard/dispatch/sources/k/.mainboard-closure"),
+        ("MAINBOARD_FIRST_PARTY", "core:experiments"),
+        ("MAINBOARD_DEFERRED", "cutoken"),
+        ("HF_HUB_OFFLINE", "1"),
+        ("NOTE", "two words"),
+    ]
+    assert spec(source="e975499").job(pbs=False).variables == {"MAINBOARD_SOURCE": "e975499"}
 
-    assert (
-        "export MAINBOARD_CLOSURE="
-        "/repo/.mainboard/dispatch/sources/k/.mainboard/dispatch/jobs/closure-ab.tsv"
-    ) in sealed
-    assert "export MAINBOARD_FIRST_PARTY=core:experiments" in sealed
-    assert "export MAINBOARD_DEFERRED=cutoken" in sealed
-    assert sealed.index("MAINBOARD_FIRST_PARTY") < sealed.index("bash -c")
-    plain = spec().render(pbs=False)
-    assert "MAINBOARD_CLOSURE" not in plain and "MAINBOARD_FIRST_PARTY" not in plain
-    assert "MAINBOARD_DEFERRED" not in plain
+
+def test_the_calls_around_the_command_travel_as_this_tools_own_verbs() -> None:
+    build = ToolCall(args=("provide", "default", "--source", "x"), cwd="/repo")
+    watch = ToolCall(args=("sample", "s", "--job", "j"), credentials="/repo/.mainboard/t.json")
+    attest = ToolCall(args=("attest", "s", "--job", "j"))
+    job = recorded(spec(provide=build, sampler=watch, attestation=attest).render(pbs=False))
+    assert (job.provide, job.sampler, job.attestation) == (build, watch, attest)
 
 
-def test_the_command_runs_from_the_pinned_tree_whatever_an_earlier_stage_changed_into() -> None:
-    """Provisioning changes directory into the mirror; a relative path must still name frozen code.
+@pytest.mark.skipif(sys.platform == "win32", reason="the handover is a POSIX shell script")
+@pytest.mark.parametrize("pbs", [False, True], ids=["a queue passing the path", "PBS on stdin"])
+def test_a_rendered_script_run_by_sh_hands_over_to_the_tool_on_its_path(
+    tmp_path: Path, pbs: bool
+) -> None:
+    """End to end: `sh` runs the script, the tool it finds runs the record, receipts come back.
 
-    The build runs in a subshell so the change never leaks, and the body re-enters the tree it
-    was pinned to immediately before the command all the same.
+    PBS may feed the script to the shell on stdin rather than pass its path, which is why the
+    record travels inline, and under it everything the job says, the activation's chatter
+    included, lands in the log a later poll reads.
     """
-    text = spec(
-        cmd="python -m foo",
-        root="/repo/.mainboard/dispatch/sources/k",
-        provide="( cd /repo && mainboard provide default --source x >/dev/null )",
-    ).render(pbs=False)
-    lines = text.splitlines()
-    command = lines.index("bash -c 'python -m foo' || status=$?")
-    assert lines[command - 2] == "cd /repo/.mainboard/dispatch/sources/k"
-    assert (
-        lines.index(
-            "( cd /repo && mainboard provide default --source x >/dev/null ) || echo "
-            '"mainboard: could not build the environment this job was dispatched with"'
-        )
-        < command
+    tool = shutil.which("mainboard", path=str(Path(sys.executable).parent))
+    if tool is None:
+        pytest.skip("the tool's console script is not installed beside this interpreter")
+    (tmp_path / ".mainboard").mkdir()
+    (tmp_path / ".mainboard" / "activate.sh").write_text("echo activating\n", encoding="utf-8")
+    receipt = '{"trial_receipt": {"run_id": "sh"}}'
+    command = f"printf '%s\\n' {shlex.quote(receipt)} >> \"$MAINBOARD_RECEIPTS\"; exit 3"
+    script = tmp_path / "job.sh"
+    rendered = spec(cmd=command, root=tmp_path.as_posix(), walltime="00:10:00")
+    script.write_text(rendered.render(pbs=pbs), encoding="utf-8")
+    done = subprocess.run(
+        ["sh"] if pbs else ["sh", str(script)],
+        input=script.read_text(encoding="utf-8") if pbs else None,
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "PATH": f"{Path(tool).parent}:{os.environ['PATH']}",
+            "PBS_JOBID": "42.opbs",
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
     )
+    assert done.returncode == 3, done.stderr
+    logs = tmp_path / state_dir() / "logs"
+    output = (logs / "42.log").read_text(encoding="utf-8") if pbs else done.stdout
+    assert output.startswith("activating\n")
+    assert receipts_in(output) == (receipt,)
+    assert (logs / "42.exit").is_file() is pbs

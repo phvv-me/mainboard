@@ -46,8 +46,8 @@ _SLURM_LIVE = {SlurmState.PENDING, SlurmState.RUNNING, SlurmState.SUSPENDED, Slu
 _SQUEUE_FORMAT = "%i|%j|%T|%P|%M"
 _SACCT_FORMAT = "JobID,State,ExitCode"
 
-# `%j` is SLURM's own job-id substitution in `--output`; same merged-output convention the
-# PBS/bash job templates write to.
+# `%j` is SLURM's own job-id substitution in `--output`; the same merged-output convention a PBS
+# job's runner writes to.
 _LOG_TEMPLATE = f"{state_dir()}/logs/%j.log"
 
 

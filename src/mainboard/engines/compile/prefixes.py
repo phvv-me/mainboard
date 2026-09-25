@@ -215,8 +215,9 @@ class Prefixes:
         other. Nothing after the stamp ever writes here again.
 
         The activation script is written here too, for this prefix and no other, because that is
-        what a dispatched job sources: the mirror's own script names the mutable environment and
-        would send every job back to the one thing this exists to stop sharing.
+        what a dispatched job enters: the mirror's own script names the mutable environment and
+        would send every job back to the one thing this exists to stop sharing. On Windows the
+        activation pixi records is kept beside it, since that record is what a job enters there.
 
         source: the directory holding the compiled artifact to build from.
         modules: the host's declared module stack, carried into the activation script.
@@ -250,6 +251,7 @@ class Prefixes:
             ActivationScript(
                 target / ACTIVATION, pixi.shell_hook(self.environment), binaries
             ).write(modules)
+            pixi.cache_windows_activation(self.environment)
             files.write(target / STAMP, f"{digest}\n")
         return target
 

@@ -32,6 +32,7 @@ from mainboard.dispatch.snapshots import CLOSURE, Snapshots
 from mainboard.dispatch.state import Cache
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
+from mainboard.runtime.job import PrefixActivation, ToolCall, WorkspaceActivation
 
 from ..support import Lab
 from .support import (
@@ -42,6 +43,7 @@ from .support import (
     links_on_this_host,
     machine_with,
     plan,
+    recorded,
     run_record,
     setgid_inherits,
 )
@@ -127,7 +129,7 @@ class RecordingMirror:
 
 
 @pytest.fixture
-def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+def pushes(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
     """Every push a dispatch makes, recorded instead of carried."""
     monkeypatch.setattr(dispatch_module, "Mirror", RecordingMirror)
     monkeypatch.setattr(RecordingMirror, "pushes", [])
@@ -223,14 +225,18 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
         resources=Resources(),
     )
     [generated] = (workdir / ".mainboard" / "dispatch" / "jobs").glob("job-*.sh")
-    text = generated.read_text()
-    # The script activates through the snapshot this dispatch pinned, whose `.mainboard` is a
-    # symlink back to the mirror, so the job gets the mirror's environment out of a tree whose
-    # code no later sync can rewrite.
+    job = recorded(generated.read_text())
+    # The job activates through the snapshot this dispatch pinned, whose `.mainboard` is a
+    # symlink back to the mirror, so it gets the mirror's environment out of a tree whose code
+    # no later sync can rewrite.
     pinned = dispatcher.pinned("/repo", source=dispatcher.source())
     assert pinned.startswith("/repo/.mainboard/dispatch/sources/")
-    assert f"{pinned}/.mainboard/activate-serving.sh" in text
-    assert f"{pinned}/.mainboard/envs/serving/.pixi/envs/serving/bin" in text
+    assert job.activation == WorkspaceActivation(
+        script=f"{pinned}/.mainboard/activate-serving.sh",
+        prefix=f"{pinned}/.mainboard/envs/serving/.pixi/envs/serving",
+        refusal=job.activation.refusal,
+    )
+    assert "mainboard setup gold --env serving" in job.activation.refusal
 
 
 def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
@@ -265,8 +271,8 @@ def test_run_containerized_wraps_the_command_via_the_builder_or_refuses_without_
         containerize=lambda inner: ["apptainer", "exec", "image.sif", *inner],
     )
     [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    text = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text()
-    assert "apptainer exec image.sif bash -c 'python -m foo' || status=$?" in text
+    job = recorded((workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text())
+    assert job.container == ("apptainer", "exec", "image.sif", "bash", "-c", "python -m foo")
 
 
 def test_submit_admits_the_request_before_a_single_ssh_connection(
@@ -426,18 +432,31 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     )
 
     [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    body = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
-    assert f"cd /repo && mainboard provide default --source {root}/.mainboard/envs/default" in body
-    # And it names the address the dispatch pinned, so a host that reads the shipped artifact as
+    job = recorded(
+        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
+    )
+    # It names the address the dispatch pinned, so a host that reads the shipped artifact as
     # another environment says which two addresses and which two pixis instead of building one
-    # beside the one every job of the wave is waiting for.
-    assert "--expect abcd1234" in body
-    assert f"source {prefix}/activate.sh" in body
-    assert f"export LD_LIBRARY_PATH={prefix}/.pixi/envs/default/lib${{LD_LIBRARY_PATH:+" in body
-    assert body.index("provide default") < body.index("activate.sh")
-    # Nothing in the job asks pixi to reconcile anything, which is what made a shared prefix a
-    # race in the first place.
-    assert "run --env" not in body
+    # beside the one every job of the wave is waiting for. It runs from the mirror, where built
+    # environments live, and nothing in the job asks pixi to reconcile anything, which is what
+    # made a shared prefix a race in the first place.
+    assert job.provide == ToolCall(
+        args=(
+            "provide",
+            "default",
+            "--source",
+            f"{root}/.mainboard/envs/default",
+            "--expect",
+            "abcd1234",
+        ),
+        cwd="/repo",
+    )
+    assert job.activation == PrefixActivation(
+        prefix=prefix, env="default", refusal=job.activation.refusal
+    )
+    assert f"no completed environment with the expected identity at {prefix}" in (
+        job.activation.refusal
+    )
     # And the tree points at that environment rather than at the mirror's mutable one.
     [request] = dispatcher.pins.requests
     assert request["pin"]["prefix"] == prefix
@@ -471,16 +490,15 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
     )
 
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    body = (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
+    job = recorded(
+        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
+    )
     assert pinned != "/repo"
     # The vendored root rides with the workspace's own: a house package that lives outside the
     # root is compiled inside it, so the tree a job is pinned to carries it like any other.
-    assert (
-        f"export PYTHONPATH={pinned}/src:{pinned}/packages/lab-core/src:"
-        f"{pinned}/.mainboard/vendor/sample-lib/src" in body
+    assert job.pythonpath == (
+        f"{pinned}/src:{pinned}/packages/lab-core/src:{pinned}/.mainboard/vendor/sample-lib/src"
     )
-    assert "export PYTHONPATH=/repo/src" not in body
-    assert "unset PYTHONPATH" not in body
 
 
 def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_is(
@@ -521,13 +539,16 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     # Data resident only on the host must not become a required local transfer. The
     # snapshot still refuses an absent mirror need before the scheduler sees a job.
     assert ["data/corpus"] not in dispatcher.required[0]
-    body = (workdir / staged).read_text(encoding="utf-8")
-    assert f"export PYTHONPATH={pinned}/research/camp:{pinned}/packages/core/src" in body
-    assert f"export MAINBOARD_CLOSURE={pinned}/{CLOSURE}" in body
-    assert "export MAINBOARD_FIRST_PARTY=core:experiments" in body
-    assert "export MAINBOARD_DEFERRED=cutoken" in body
-    assert f"export MAINBOARD_SOURCE={captured.identity}" in body
-    assert f"cd {pinned}" in body
+    job = recorded((workdir / staged).read_text(encoding="utf-8"))
+    assert job.pythonpath == f"{pinned}/research/camp:{pinned}/packages/core/src"
+    assert job.variables == {
+        "MAINBOARD_SOURCE": captured.identity,
+        "MAINBOARD_SOURCE_DIGEST": captured.digest,
+        "MAINBOARD_CLOSURE": f"{pinned}/{CLOSURE}",
+        "MAINBOARD_FIRST_PARTY": "core:experiments",
+        "MAINBOARD_DEFERRED": "cutoken",
+    }
+    assert job.root == pinned
     [request] = dispatcher.pins.requests
     image = request["pin"]["image"]
     assert (image["kind"], image["listing"], image["needs"]) == (
@@ -557,9 +578,10 @@ def test_a_containerized_job_has_no_environment_of_its_own_to_build(
         containerize=lambda argv: ["apptainer", "exec", "img.sif", *argv],
     )
     [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    assert "provide" not in (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(
-        encoding="utf-8"
+    job = recorded(
+        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
     )
+    assert job.provide is None
 
 
 def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
@@ -586,12 +608,8 @@ def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
 
     [asked] = [line for line in machine.lines if "provide" in line]
     assert asked.startswith("cd /repo && ")
-    # In a subshell, so the directory it changes into never becomes the job's own.
-    assert (
-        "( cd /repo && mainboard provide default --source /repo/.mainboard/dispatch/sources/"
-        in asked
-    )
-    assert asked.endswith(" )")
+    assert "mainboard provide default --source /repo/.mainboard/dispatch/sources/" in asked
+    assert asked.endswith(" --expect abcd1234 >/dev/null")
     assert [told for told in announced if told.startswith("built default on gold for /repo")]
 
 
@@ -660,6 +678,14 @@ def test_submit_refuses_a_broken_environment_and_names_the_host_a_scheduler_reje
         lambda host: machine_with(rules=[("true", 1, "ModuleNotFoundError: no torch")]),
     )
     with pytest.raises(SystemExit, match="environment on 'gold' is broken: ModuleNotFoundError"):
+        dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
+    # A host whose tool predates the job runner would queue the job and lose it at start.
+    monkeypatch.setattr(
+        dispatch_module,
+        "connection",
+        lambda host: machine_with(rules=[("job --help", 1, 'Error: Unknown command "job"')]),
+    )
+    with pytest.raises(SystemExit, match=r"cannot run a job .*`mainboard setup gold`"):
         dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
 
 
@@ -862,7 +888,7 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
 @pytest.mark.parametrize("resource", ["project", "project/output", "project/output/row.json"])
 def test_explicit_output_resource_is_refused_before_transfer(
     workdir: Path,
-    recorded: list[dict[str, object]],
+    pushes: list[dict[str, object]],
     recorded_run: bool,
     resource: str,
 ) -> None:
@@ -882,7 +908,7 @@ def test_explicit_output_resource_is_refused_before_transfer(
             extra=[resource],
             fetch="" if recorded_run else "project/output",
         )
-    assert recorded == []
+    assert pushes == []
 
 
 def test_submission_records_outputs_before_releasing_the_mirror_lock(
@@ -916,7 +942,7 @@ def test_mirror_refuses_unsafe_declared_output_protection(workdir: Path, path: s
 
 
 def test_every_host_is_mirrored_by_its_own_python_whatever_its_os(
-    workdir: Path, recorded: list[dict[str, object]]
+    workdir: Path, pushes: list[dict[str, object]]
 ) -> None:
     """A Windows host takes the same mirror as any other, asked through the Python it names."""
     (workdir / "src").mkdir()
@@ -926,7 +952,7 @@ def test_every_host_is_mirrored_by_its_own_python_whatever_its_os(
         kind="ssh", root="C:/w", platform="win-64", python="py -3", sync={"include": ["src"]}
     )
     assert instance.mirror(plan(host="homelab", profile=profile), "C:/w") == ["src"]
-    [push] = recorded
+    [push] = pushes
     agent = push["agent"]
     assert (push["root"], agent.host, agent.python) == ("C:/w", "homelab", "py -3")
     assert instance.cache.host("homelab").synced_at
@@ -944,7 +970,7 @@ def test_a_second_request_while_a_creation_is_unresolved_is_refused_before_any_p
 
 
 def test_mirror_refuses_an_undeclared_include_and_warns_about_a_stale_one(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch, recorded: list[dict[str, object]]
+    workdir: Path, monkeypatch: pytest.MonkeyPatch, pushes: list[dict[str, object]]
 ) -> None:
     instance = Dispatcher(root=workdir)
     empty = HostProfile(kind="ssh", root="/repo", sync={"include": []})
@@ -958,7 +984,7 @@ def test_mirror_refuses_an_undeclared_include_and_warns_about_a_stale_one(
     warned: list[tuple[str, tuple[int | str, ...]]] = []
     monkeypatch.setattr(dispatch_module.logger, "warning", lambda msg, *a: warned.append((msg, a)))
     instance.mirror(plan(profile=partly), "/repo")
-    [push] = recorded
+    [push] = pushes
     [scope] = push["scopes"]
     assert scope.roots == ("src",)
     [(message, args)] = warned
@@ -967,7 +993,7 @@ def test_mirror_refuses_an_undeclared_include_and_warns_about_a_stale_one(
 
 
 def test_mirror_ships_a_required_group_by_name_or_refuses_an_incomplete_one(
-    workdir: Path, recorded: list[dict[str, object]]
+    workdir: Path, pushes: list[dict[str, object]]
 ) -> None:
     """The compiled artifact must ride the mirror whole, since a half lock installs nothing."""
     (workdir / "src").mkdir()
@@ -981,7 +1007,7 @@ def test_mirror_ships_a_required_group_by_name_or_refuses_an_incomplete_one(
         instance.mirror(host, "/repo", required=[group])
     (envdir / "pixi.lock").write_text("y")
     instance.mirror(host, "/repo", required=[group], extra=[group[0]])
-    [push] = recorded
+    [push] = pushes
     assert push["named"] == list(group)
 
 
@@ -989,7 +1015,7 @@ def test_mirror_ships_a_required_group_by_name_or_refuses_an_incomplete_one(
 @pytest.mark.parametrize("resource", ("src/.card.lock.local.0", "src/.card.lock.local/input.json"))
 def test_mirror_refuses_explicit_card_lease_resources_before_transfer(
     workdir: Path,
-    recorded: list[dict[str, object]],
+    pushes: list[dict[str, object]],
     spelling: str,
     resource: str,
 ) -> None:
@@ -1006,7 +1032,7 @@ def test_mirror_refuses_explicit_card_lease_resources_before_transfer(
             required=[(resource,)] if spelling == "required" else (),
             extra=(resource,) if spelling == "extra" else (),
         )
-    assert recorded == []
+    assert pushes == []
 
 
 @pytest.mark.usefixtures("on_this_machine")
@@ -1108,7 +1134,7 @@ def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refe
 
 
 def test_a_workspace_with_nothing_vendored_ships_one_scope(
-    workdir: Path, recorded: list[dict[str, object]]
+    workdir: Path, pushes: list[dict[str, object]]
 ) -> None:
     """The rule costs a workspace that declares no outside dependency nothing at all."""
     (workdir / "src").mkdir()
@@ -1117,7 +1143,7 @@ def test_a_workspace_with_nothing_vendored_ships_one_scope(
 
     instance.mirror(host, "/repo")
 
-    [push] = recorded
+    [push] = pushes
     assert len(push["scopes"]) == 1
 
 

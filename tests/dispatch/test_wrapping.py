@@ -1,16 +1,15 @@
-import subprocess
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 import pytest
 
 from mainboard.dispatch import HostUnreachable, SshTransport
 from mainboard.dispatch import wrapping as wrapping_module
 from mainboard.dispatch.wrapping import (
+    absent,
     activation,
     activation_stage,
     argv,
     connection,
-    frozen_activation,
     wrap,
 )
 from mainboard.manifest import Container, HostProfile
@@ -82,16 +81,21 @@ def test_the_activation_stage_tries_the_named_script_then_the_prefix_then_refuse
     assert activation("/repo") == "/repo/.mainboard/activate.sh"
     assert activation("/repo", env="serving") == "/repo/.mainboard/activate-serving.sh"
     default = activation_stage(plan(), "/repo")
-    assert "/repo/.chefe/activate.sh" in default
+    assert default.startswith("if [ -f /repo/.mainboard/activate.sh ]")
     assert "elif [ -d /repo/.mainboard/envs/default/.pixi/envs/default/bin ]" in default
-    assert default.endswith("exit 1; fi")
+    # The default environment may run on a bare PATH, since an interactive command may need
+    # nothing activated at all.
+    assert default.endswith(
+        "else export PATH=/repo/.mainboard/envs/default/.pixi/envs/default/bin:$PATH; fi"
+    )
     serving = activation_stage(plan(env="serving"), "/repo")
     assert "if [ -f /repo/.mainboard/activate-serving.sh ]" in serving
-    assert ".chefe" not in serving
     assert "envs/default" not in serving
+    assert serving.endswith("exit 1; fi")
 
 
 def test_the_refusal_names_the_command_that_provisions_the_environment_where_it_ran() -> None:
+    """Naming an environment is the user stating which interpreter they want."""
     remote = activation_stage(plan(env="vserve"), "/repo")
     assert (
         "found no vserve environment at /repo/.mainboard/envs/vserve/.pixi/envs/vserve on gold"
@@ -101,57 +105,15 @@ def test_the_refusal_names_the_command_that_provisions_the_environment_where_it_
     here = activation_stage(plan(host="local", env="vserve"), "/repo")
     assert "mainboard install vserve`" in here
     assert "--on" not in here
-
-
-def test_a_named_environment_is_never_optional_however_the_caller_asks() -> None:
-    """Naming an environment is the user stating which interpreter they want."""
-    assert "exit 1" in activation_stage(plan(env="vserve"), "/repo", optional=True)
     assert "found no vserve environment" in wrap(
         plan(env="vserve"), "/repo", command="python -c 1"
     )
 
 
-@pytest.mark.parametrize(
-    ("stamp", "script", "succeeds"),
-    [
-        (None, True, False),
-        ("wrong\n", True, False),
-        ("a123\n", False, False),
-        ("a123\n", True, True),
-    ],
-)
-def test_frozen_activation_requires_completion_and_matching_identity(
-    tmp_path: Path, posix_bash: str, stamp: str | None, script: bool, succeeds: bool
-) -> None:
-    """The snippet runs on a POSIX host, so its prefix is spelled and its files are written so."""
-    prefix = tmp_path / "prefix with spaces" / "a123"
-    (prefix / ".pixi/envs/default/bin").mkdir(parents=True)
-    if stamp is not None:
-        (prefix / ".mainboard-prefix").write_text(stamp, newline="\n")
-    if script:
-        (prefix / "activate.sh").write_text("export MAINBOARD_TEST_ACTIVATED=yes\n", newline="\n")
-    command = frozen_activation(prefix.as_posix(), "default")
-    command += '\n[ "$MAINBOARD_TEST_ACTIVATED" = yes ]'
-    result = subprocess.run([posix_bash, "-c", command], capture_output=True, text=True, timeout=5)
-    assert (result.returncode == 0) == succeeds
-    if not succeeds:
-        assert "no completed environment with the expected identity" in result.stderr
-
-
-def test_frozen_activation_propagates_a_failed_activation_script(
-    tmp_path: Path, posix_bash: str
-) -> None:
-    prefix = tmp_path / "a123"
-    prefix.mkdir()
-    (prefix / ".mainboard-prefix").write_text("a123\n", newline="\n")
-    (prefix / "activate.sh").write_text("return 7\n", newline="\n")
-    result = subprocess.run(
-        [posix_bash, "-c", frozen_activation(prefix.as_posix(), "default")],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    assert result.returncode == 7
+def test_an_unfinished_prefix_refuses_by_naming_the_one_command_that_rebuilds_it() -> None:
+    refusal = absent("/repo/.mainboard/prefixes/default/a123", "serving")
+    assert "no completed environment with the expected identity at /repo/" in refusal
+    assert "`mainboard provide serving` rebuilds exactly it" in refusal
 
 
 @pytest.mark.parametrize(("login", "flag"), [(True, "-lc"), (False, "-c")])

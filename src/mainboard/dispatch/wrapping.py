@@ -2,7 +2,6 @@
 # workspace root, stack per-user install dirs onto `PATH`, load modules, then env/container.
 
 import shlex
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from tenacity import retry as tenacity_retry
@@ -10,7 +9,6 @@ from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from ..core.project import Project
 from ..engines.compile.generated.activation import module_specs
-from ..engines.compile.prefixes import ACTIVATION, STAMP
 from .transport import BoundedSshMachine, HostUnreachable, SshTransport
 
 if TYPE_CHECKING:
@@ -20,7 +18,7 @@ if TYPE_CHECKING:
 
 # Per-user install dirs prepended to PATH first, so an already-installed `mainboard` is found
 # on a fresh host before any env is even activated.
-_USER_BINS = ("$HOME/.local/bin", "$HOME/.pixi/bin", "$HOME/.cargo/bin")
+USER_BINS = ("$HOME/.local/bin", "$HOME/.pixi/bin", "$HOME/.cargo/bin")
 
 # A connect-time transport blip is the same transient fault a wait loop rides out, so it is
 # retried here too; a host-key failure is not transient and is never retried.
@@ -61,7 +59,7 @@ def wrap(
         only `cd`, `PATH` and modules, the footing an onboarding stands on while the host has
         no environment to activate yet.
     """
-    steps = [f"cd {shlex.quote(root)}", f"export PATH={':'.join(_USER_BINS)}:$PATH"]
+    steps = [f"cd {shlex.quote(root)}", f"export PATH={':'.join(USER_BINS)}:$PATH"]
     if plan.profile.modules:
         steps.append("module purge")
         steps += [
@@ -84,85 +82,54 @@ def wrap(
                 )
             steps.append(shlex.join(containerize(["bash", "-c", exported])))
         else:
-            steps.append(activation_stage(plan, root, optional=True))
+            steps.append(activation_stage(plan, root))
             steps.append(exported)
     return " && ".join(steps)
 
 
-def activation_stage(plan: ExecutionPlan, root: str, *, optional: bool = False) -> str:
-    """The shell stage that activates `plan`'s environment before a command runs.
+def activation_stage(plan: ExecutionPlan, root: str) -> str:
+    """The shell stage that activates `plan`'s environment before a wrapped command runs.
 
-    The one activation both a wrapped line and a rendered job script use, so an interactive run
-    and a queued job never disagree about which interpreter they got. It sources the
-    environment's own generated activation when there is one, falls back to that environment
-    prefix's `bin/`, and otherwise refuses, naming the one command that provisions it. Refusing
-    is the point: falling through to whatever interpreter the machine happens to ship is how a
-    command asking for `vserve` silently runs the system python, and a wrong interpreter costs
-    far more to discover than a command that will not start. Only the default environment may
-    also fall back to a script another tool wrote, since sourcing one named environment's
-    activation for another hands the command the wrong interpreter just as silently.
+    It sources the environment's own generated activation when there is one and falls back to
+    that environment prefix's `bin/`. The default environment runs on a bare PATH when neither
+    exists, since an interactive command may legitimately need nothing activated at all; a named
+    environment refuses instead, naming the one command that provisions it, because naming one
+    is the user stating which interpreter they want and falling through to whatever interpreter
+    the machine ships is how a command asking for `vserve` silently runs the system python.
 
-    `optional` is the one concession, and it is deliberately not the default. An interactive
-    command in the default environment may legitimately need nothing activated at all, so
-    `wrap` asks for it and the stage lets such a command through on a bare PATH. A named
-    environment is never optional however the caller asks, because naming one is the user
-    stating which interpreter they want, and a dispatched job is never optional either, since a
-    queued run that quietly used the host's system python costs a whole scheduler round trip to
-    find out.
-
-    REMOVE AT CHEFE ARCHIVE: the `.chefe/activate.sh` branch is transitional, for hosts chefe
-    provisioned, and chefe only ever wrote one for the default environment. Once every host has
-    been set up through `Board.install` and chefe is archived, that branch goes and the stage
-    keeps the generated activation and the prefix.
+    A dispatched job never comes through here: its runner enters the environment itself and
+    refuses the default one just the same, since a queued run that quietly used the host's
+    system python costs a whole scheduler round trip to find out.
 
     plan: the resolved execution context naming the host and the environment to activate.
     root: the workspace root on the machine the command runs on.
-    optional: let the command run on a bare PATH when nothing could be activated, honoured for
-        the default environment alone.
     """
-    prefix = plan.prefix(root)
-    default = plan.env == "default"
-    scripts = [activation(root, env=plan.env)]
-    if default:
-        scripts.append(f"{root}/.chefe/activate.sh")
-    branches = [(f"[ -f {shlex.quote(path)} ]", f"source {shlex.quote(path)}") for path in scripts]
-    prepend = f"export PATH={shlex.quote(prefix)}/bin:$PATH"
-    closing = prepend
-    if not (optional and default):
-        branches.append((f"[ -d {shlex.quote(prefix)}/bin ]", prepend))
-        closing = f"echo {shlex.quote(missing(plan, prefix))} >&2; exit 1"
-    chain = "; ".join(
-        f"{'if' if index == 0 else 'elif'} {test}; then {action}"
-        for index, (test, action) in enumerate(branches)
+    prefix = shlex.quote(plan.prefix(root))
+    script = shlex.quote(activation(root, env=plan.env))
+    prepend = f"export PATH={prefix}/bin:$PATH"
+    closing = (
+        prepend
+        if plan.env == "default"
+        else f"echo {shlex.quote(missing(plan, plan.prefix(root)))} >&2; exit 1"
     )
-    return f"{chain}; else {closing}; fi"
+    return (
+        f"if [ -f {script} ]; then source {script}; "
+        f"elif [ -d {prefix}/bin ]; then {prepend}; else {closing}; fi"
+    )
 
 
-def frozen_activation(prefix: str, env: str) -> str:
-    """Activate only a completed prefix bearing its expected identity.
+def absent(prefix: str, env: str) -> str:
+    """The refusal a job whose addressed prefix is missing or unfinished prints.
 
     prefix: the built environment's directory on the host.
     env: the environment inside it.
     """
-    inside = f"{prefix}/.pixi/envs/{env}"
-    script, stamp, libdir = (
-        shlex.quote(f"{prefix}/{ACTIVATION}"),
-        shlex.quote(f"{prefix}/{STAMP}"),
-        shlex.quote(f"{inside}/lib"),
-    )
-    digest = shlex.quote(PurePosixPath(prefix).name)
     tool = Project().name
-    absent = (
+    return (
         f"{tool} found no completed environment with the expected identity at {prefix}. "
         "It is addressed by the content of the "
         f"manifest and lock this job was dispatched with, so `{tool} provide {env}` rebuilds "
         "exactly it."
-    )
-    return (
-        f'if [ -f {stamp} ] && [ "$(< {stamp})" = {digest} ] && [ -f {script} ]; '
-        f"then source {script} || exit $?; "
-        f"else echo {shlex.quote(absent)} >&2; exit 1; fi; "
-        f"export LD_LIBRARY_PATH={libdir}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
     )
 
 
@@ -234,6 +201,6 @@ def _open(host: str, ssh: SshTransport) -> BoundedSshMachine:
     """
     ssh.warm(host)
     remote = ssh.machine(host)
-    for bindir in reversed(_USER_BINS):
+    for bindir in reversed(USER_BINS):
         remote.env.path.insert(0, remote.cwd / bindir.removeprefix("$HOME/"))
     return remote

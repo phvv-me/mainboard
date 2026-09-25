@@ -268,8 +268,8 @@ class Landing:
     def script(self, shipment: Shipment, *, root: str, listing: str) -> str:
         """Render the job script this rental runs and stage it for the mirror to carry.
 
-        The same bash script an ssh host runs, which is what makes a rented run's receipts, its
-        walltime cap and its `MAINBOARD_SOURCE` stamp identical to one measured on gold. It
+        The same job an ssh host runs, which is what makes a rented run's receipts, its walltime
+        cap and its `MAINBOARD_SOURCE` stamp identical to one measured on gold. It
         activates from the tree this dispatch is about to pin rather than from the mirror, so the
         path is arithmetic here and materialised on the machine a few lines later.
 
@@ -302,7 +302,7 @@ class Landing:
         A rented box has no queue to submit to, and must not: its own entrypoint owns the log,
         the exit marker and the meter, so the job starts there or the run has no receipt anyone
         can read afterwards. The line is the staging every other host gets, `cd`, PATH and
-        modules, around a script that does its own activation.
+        modules, around a job whose runner does its own activation.
 
         The script is the verified frozen wrapper inside the snapshot, named absolutely so
         launch does not depend on the mirror's mutable dispatch links.
@@ -311,7 +311,7 @@ class Landing:
         pinned: the snapshot the job runs from.
         script: the job script's absolute path on the machine.
         """
-        line = wrap(self.plan, pinned, command=f"bash {shlex.quote(script)}", activate=False)
+        line = wrap(self.plan, pinned, command=f"sh {shlex.quote(script)}", activate=False)
         retcode, _, err = (remote["bash"]["-c", handoff()] << f"{line}\n").run(retcode=None)
         if retcode:
             raise MissionError(f"could not start the job on the rental: {str(err).strip()[-400:]}")

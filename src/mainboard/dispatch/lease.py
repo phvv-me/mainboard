@@ -9,7 +9,7 @@ from pydantic import AwareDatetime
 
 from ..core.errors import MissionError
 from ..costs.catalog import Offer
-from .jobs.spec import walltime_seconds
+from ..runtime.job import walltime_seconds
 from .vocabulary import Resources
 
 

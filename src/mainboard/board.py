@@ -1,3 +1,4 @@
+import json
 import os
 import platform
 import shlex
@@ -36,7 +37,6 @@ from .dispatch.backends.base import (
 )
 from .dispatch.commandline import joined, vetted
 from .dispatch.dispatcher import Dispatcher, Handle, Verdict
-from .dispatch.jobs.spec import walltime_seconds
 from .dispatch.landing import Landing, renter
 from .dispatch.onboard import (
     HostSetup,
@@ -75,15 +75,17 @@ from .monitor import Monitor
 from .nodes import evidence_of
 from .probe.occupancy import Occupancy
 from .probe.snapshot import HostFacts
+from .runtime.activation import Runtime
+from .runtime.job import walltime_seconds
 from .scaffold import Scaffold
 from .tracking import (
     Sampler,
-    attesting_line,
+    attesting,
     credential,
     host_env,
     is_batched,
     mirrored,
-    sampling_line,
+    sampling,
     streamed,
 )
 from .verdicts import Verdicts
@@ -98,6 +100,7 @@ if TYPE_CHECKING:
     from .dispatch.shared import Watcher
     from .dispatch.vocabulary import JobState
     from .manifest.schema.root import Manifest
+    from .runtime.job import ToolCall
 
 # `route`'s answer for the schedulers reached over ssh, the family whose hosts run the work
 # themselves rather than renting an instance to run it on.
@@ -378,8 +381,8 @@ class Board:
         """
         Sampler(self.receipts(stream), stream=stream, job=job, interval=0.0).attest()
 
-    def attesting(self, tracked: tuple[str, str], *, root: str) -> str:
-        """The line this job's script runs to attest to its own machine, empty when none does.
+    def attesting(self, tracked: tuple[str, str], *, root: str) -> ToolCall | None:
+        """The call this job makes to attest to its own machine, None when none does.
 
         A sibling of `sampling`, gated on the same declaration, since both are the workspace's
         tracking lane reaching a host and neither is worth staging on a workspace that tracks
@@ -390,9 +393,9 @@ class Board:
         root: the workspace root on the host.
         """
         if not self.manifest.tracking.on:
-            return ""
+            return None
         stream, job = tracked
-        return attesting_line(root=root, stream=stream, job=job)
+        return attesting(root=root, stream=stream, job=job)
 
     def batch(self, spec: BatchSpec, *, selection: Selection | None = None) -> Batch:
         """The declared batch over this workspace, ready to prepare, price and dispatch.
@@ -1238,10 +1241,12 @@ class Board:
             parent=parent,
         )
 
-    def sampling(self, tracked: tuple[str, str], *, root: str, resources: Resources) -> str:
-        """The line this job's script runs so it samples itself, empty when nothing samples it.
+    def sampling(
+        self, tracked: tuple[str, str], *, root: str, resources: Resources
+    ) -> ToolCall | None:
+        """The call this job makes so it samples itself, None when nothing samples it.
 
-        Staging the credential is part of building the line rather than a step beside it,
+        Staging the credential is part of building the call rather than a step beside it,
         because the two are the same decision: a host is asked to ship its own series, so it is
         given the one variable that lets it, and a host that is asked for nothing is told
         nothing. A machine with no credential here still samples, into a queued offline run.
@@ -1252,10 +1257,10 @@ class Board:
             the job.
         """
         declared = self.manifest.tracking
-        if not declared.on or declared.interval <= 0:
-            return ""
+        if not declared.on:
+            return None
         stream, job = tracked
-        return sampling_line(
+        return sampling(
             root=root,
             stream=stream,
             job=job,
@@ -1289,8 +1294,10 @@ class Board:
         nobody asked for, and this tool has one deliberate door for that, `install --resolve`.
 
         Replacing a process drops the environment a spawned child would have inherited, so the
-        workspace's declared floors are handed over explicitly. Without that, a host that cannot
-        present the virtual package fails on `shell` alone while every other verb works.
+        workspace's declared floors are handed over explicitly, and so is what the runtime step
+        adds, the same step a local `run` and a dispatched job take. Without the floors, a host
+        that cannot present the virtual package fails on `shell` alone while every other verb
+        works.
 
         env: the environment name, the host profile's own when empty.
         replace: the process-replacing exec, injectable so a test can read what it was handed.
@@ -1306,10 +1313,11 @@ class Board:
             raise MissionError(missing(plan, plan.prefix(str(self.root))))
         binary = str(pixi.executable)
         argv = [binary, "shell", *pixi.scope(), "--frozen", "-e", plan.env]
-        replace(binary, argv, os.environ | pixi.overrides)
+        environ = os.environ | pixi.overrides
+        replace(binary, argv, environ | Runtime(pixi.env_prefix(plan.env)).changes(environ))
 
     def stage(self, root: str) -> None:
-        """Put the one credential this host's jobs need where the job script will read it.
+        """Put the one credential this host's jobs need where the job's runner will read it.
 
         A dispatched job ships its own live series, which needs the key on the machine running
         the job rather than on the one that dispatched it. Exactly one variable is written, into
@@ -1330,7 +1338,7 @@ class Board:
         if not secret or self.local:
             return
         with open_shell(self.plan(container="none"), root) as shell:
-            shell.write(host_env(root), f"{variable}={shlex.quote(secret)}\n")
+            shell.write(host_env(root), json.dumps({variable: secret}))
 
     def submit(
         self,

@@ -1,4 +1,4 @@
-"""The no-scheduler backend: run the job straight through `bash` on the host, no daemon involved.
+"""The no-scheduler backend: run the job script straight through `sh` on the host, no daemon.
 
 There is no queue and no persistent handle, so `submit` blocks until the job finishes and
 `state` can only report a vanished post-mortem. Use `Pueue` instead whenever a daemon is
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 class Local:
-    """Run jobs directly through `bash` on the host (no scheduler, no queue)."""
+    """Run job scripts directly through `sh` on the host (no scheduler, no queue)."""
 
     name = "local"
 
@@ -60,6 +60,6 @@ class Local:
     ) -> str:
         del resources
         arguments = " ".join(shlex.quote(argument) for argument in args)
-        command = f"bash {shlex.quote(script)} {arguments}".rstrip()
+        command = f"sh {shlex.quote(script)} {arguments}".rstrip()
         remote["bash"][["-lc", within(root, command)]]()
         return script

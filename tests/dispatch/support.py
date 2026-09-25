@@ -19,6 +19,7 @@ from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Container, HostProfile
+from mainboard.runtime.job import Job
 
 
 def _links() -> bool:
@@ -426,6 +427,11 @@ def plan(**overrides: FieldValue) -> ExecutionPlan:
     }
     fields.update(overrides)
     return ExecutionPlan.model_validate(fields)
+
+
+def recorded(script: str) -> Job:
+    """The job record a rendered job script hands the host's tool."""
+    return Job.handed(script)
 
 
 def cache() -> Cache:
