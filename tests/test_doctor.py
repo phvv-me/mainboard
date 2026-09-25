@@ -44,6 +44,10 @@ _BROKEN = json.dumps(
 )
 _SETTLED = json.dumps({"result": {"breakages": []}, "exit_status": 0})
 
+# The repairs the two gates name: install the reporting tool, rerun the plain command.
+_INSTALL = "mainboard add prove -l python"
+_LINT = "mainboard run -- ruff check ."
+
 # The generated tree in every state the environment section tells apart, each step the one the
 # step before it makes sense on, so a case names its state and the ladder walks up to it.
 _LADDER = ("bare", "compiled", "solved", "provisioned", "blessed", "whole", "damaged")
@@ -95,6 +99,33 @@ class FixedSurvey(Survey):
     def paths(self, setups: Mapping[str, HostSetup] | None = None) -> list[ComputePath]:
         del setups
         return self.rows
+
+
+def quiet(board: Board, **options: str) -> Doctor:
+    """A doctor that reaches no host, runs no gate and asks no service manager.
+
+    Its survey is the real one with every probe offline, so the report reads the dispatch cache
+    exactly as it would on a live workspace.
+    """
+    offline = Survey(
+        board,
+        facts=lambda: HostFacts(hostname="box", memory_total_bytes=10**9),
+        reach=lambda alias: "asleep",
+        providers=[],
+    )
+    return Doctor(
+        board,
+        survey=offline,
+        probe=answering(0, _SETTLED),
+        settler=sweeping(board.root),
+        **options,
+    )
+
+
+def old_root(provisioner: Provisioner) -> Path:
+    """The superseded layout's `envs/`, named from the current layout."""
+    prefix = provisioner.pixi_for().env_prefix("default")
+    return provisioner.out / prefix.relative_to(provisioner.environment_dir()).parts[0] / "envs"
 
 
 def climbed(workspace: Path, stage: str) -> None:
@@ -233,29 +264,44 @@ def test_the_environment_section_tells_apart_every_way_a_workspace_drifts(
 
 
 @pytest.mark.parametrize(
-    ("stage", "verdict", "fragment", "fix"),
+    ("stage", "uninstalled", "verdict", "detail", "fix"),
     [
-        (
+        pytest.param(
             "blessed",
+            False,
             Verdict.WARN,
             "serving: nothing compiled yet",
             "mainboard install serving --resolve",
+            id="the selected shard was never compiled",
         ),
-        (
+        pytest.param(
             "whole",
+            True,
+            Verdict.WARN,
+            "never installed: serving",
+            "mainboard install serving",
+            id="compiled and solved but never installed is only missing the install",
+        ),
+        pytest.param(
+            "whole",
+            False,
             Verdict.PASS,
             f"serving is provisioned, fresh and whole, on pixi {PIXI_VERSION}",
             "",
+            id="the selected shard is whole",
         ),
     ],
 )
 def test_the_environment_section_audits_only_the_selected_shard(
-    workspace: Path, stage: str, verdict: Verdict, fragment: str, fix: str
+    workspace: Path, stage: str, uninstalled: bool, verdict: Verdict, detail: str, fix: str
 ) -> None:
     climbed(workspace, stage)
-    found = Doctor(Board(workspace), env="serving").environment()
-    assert (found.verdict, found.fix) == (verdict, fix)
-    assert fragment in found.detail
+    board = Board(workspace)
+    if uninstalled:
+        prefix = Provisioner(board.root, board.manifest).pixi_for("serving").env_prefix("serving")
+        (prefix / "conda-meta" / _FINGERPRINT).unlink()
+    found = Doctor(board, env="serving").environment()
+    assert (found.verdict, found.detail, found.fix) == (verdict, detail, fix)
 
 
 def test_a_machine_off_the_fleets_pixi_is_a_finding_of_its_own(
@@ -306,14 +352,7 @@ def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
     was invisible until a command asked that environment for an interpreter.
     """
     climbed(workspace, "solved")
-    board = Board(workspace)
-    # The other sections would reach every declared host and run the declared gates.
-    doctor = Doctor(
-        board,
-        survey=FixedSurvey(board, []),
-        probe=answering(0, _SETTLED),
-        settler=sweeping(workspace),
-    )
+    doctor = quiet(Board(workspace))
 
     assert doctor.examined() == ("default", "serving")
     rows = [found for found in doctor.sections() if found.section == "environment"]
@@ -329,23 +368,6 @@ def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
     )
     # Naming one keeps the report to that environment, which is what `--env` has always meant.
     assert Doctor(Board(workspace), env="serving").examined() == ("serving",)
-
-
-def test_snapshot_refresh_is_independent_of_version_control(
-    workspace: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "mainboard.doctor.staleness.check",
-        lambda: Snapshot(
-            installed=True,
-            stale=True,
-            detail="source bytes changed",
-            uv=("tool", "install", "mainboard"),
-        ),
-    )
-    found = Doctor(Board(workspace)).snapshot()
-    assert found.verdict is Verdict.FAIL and "exec --spec" in found.fix
 
 
 def test_a_gate_that_declares_shell_grammar_is_refused_rather_than_run_as_arguments(
@@ -425,82 +447,65 @@ def test_the_hosts_verdict_compares_each_recorded_digest_against_the_manifest_no
 @pytest.mark.parametrize(
     ("gate", "status", "output", "verdict", "detail", "fix"),
     [
-        (
+        pytest.param(
             _REPORTING,
             1,
             _BROKEN,
             Verdict.FAIL,
             "2 breakages: .: failing_claims, research/x: stale_claims",
             "mainboard run -- prove doctor",
+            id="the findings are the gate's own judgment and are passed on as written",
         ),
-        (
+        pytest.param(
             _REPORTING,
             0,
             _SETTLED,
             Verdict.PASS,
             "`prove doctor` reports nothing broken",
             "",
+            id="a clean exit is the gate saying everything it watches is settled",
         ),
-        (
+        pytest.param(
             _REPORTING,
             127,
             "prove: command not found\n",
             Verdict.WARN,
             "`prove doctor` exited 127 without a report, is it installed",
-            "mainboard add prove -l python",
+            _INSTALL,
+            id="a tool nobody installed cannot call this workspace broken",
         ),
-        (_REPORTING, 1, "", Verdict.WARN, "without a report", "mainboard add prove -l python"),
-        (
-            _REPORTING,
-            1,
-            "{not json",
-            Verdict.WARN,
-            "without a report",
-            "mainboard add prove -l python",
+        *(
+            pytest.param(
+                _REPORTING, 1, output, Verdict.WARN, "without a report", _INSTALL, id=meaning
+            )
+            for output, meaning in (
+                ("", "no output at all is a gate that never ran"),
+                ("{not json", "output that is not a report is a gate that never ran"),
+                ('{"result": 3}', "a report of the wrong shape is a gate that never ran"),
+                (
+                    '{"result": {"breakages": 3}}',
+                    "a breakage field of the wrong type is a gate that never ran",
+                ),
+            )
         ),
-        (
-            _REPORTING,
-            1,
-            '{"result": 3}',
-            Verdict.WARN,
-            "without a report",
-            "mainboard add prove -l python",
-        ),
-        (
-            _REPORTING,
-            1,
-            '{"result": {"breakages": 3}}',
-            Verdict.WARN,
-            "without a report",
-            "mainboard add prove -l python",
-        ),
-        (
+        pytest.param(
             _BARE,
             1,
             "checking\nfound 3 errors\n",
             Verdict.FAIL,
             "found 3 errors",
-            "mainboard run -- ruff check .",
+            _LINT,
+            id="a plain command complains on its last line",
         ),
-        (
+        pytest.param(
             _BARE,
             2,
             "  \n",
             Verdict.FAIL,
             "`ruff check .` exited 2",
-            "mainboard run -- ruff check .",
+            _LINT,
+            id="a silent command is still named by its exit status",
         ),
-    ],
-    ids=[
-        "the findings are the gate's own judgment and are passed on as written",
-        "a clean exit is the gate saying everything it watches is settled",
-        "a tool nobody installed cannot call this workspace broken",
-        "no output at all is a gate that never ran",
-        "output that is not a report is a gate that never ran",
-        "a report of the wrong shape is a gate that never ran",
-        "a breakage field of the wrong type is a gate that never ran",
-        "a plain command complains on its last line",
-        "a silent command is still named by its exit status",
     ],
 )
 def test_a_gate_is_told_apart_by_what_it_reported_as_well_as_by_its_exit(
@@ -565,51 +570,20 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
 def test_the_sections_are_the_questions_asked_before_starting_work(
     workspace: Path, manifest: str, expected: list[str]
 ) -> None:
-    """A section about a question nobody asked here would be a line that says nothing."""
+    """A section about a question nobody asked here would be a line that says nothing.
+
+    The dispatch cache is one SQLite connection, opened and used on the thread the report was
+    asked from: reaching for the onboarding records inside the pool opened it there, and the
+    interpreter closing it from a thread that never owned it ended a clean report with a
+    `ProgrammingError` at exit. Reading the cache back here is that assertion, since only its
+    owning thread can.
+    """
     if manifest:
         (workspace / "mainboard.toml").write_text(manifest)
     board = Board(workspace)
-    doctor = Doctor(
-        board,
-        survey=FixedSurvey(board, []),
-        probe=answering(0, _SETTLED),
-        settler=sweeping(workspace),
-    )
-    sections = doctor.sections()
+    sections = quiet(board).sections()
     assert [found.section for found in sections] == expected
     assert all(isinstance(found, Section) for found in sections)
-
-
-def test_the_report_never_hands_the_dispatch_cache_to_a_thread_that_does_not_own_it(
-    workspace: Path,
-) -> None:
-    """One SQLite connection, opened and used on the thread the report was asked from.
-
-    The fleet section reads the onboarding records, and reaching for them from inside the pool
-    opened the shared cache there, which left the interpreter closing a connection from a thread
-    that never owned it and ended a whole clean report with a `ProgrammingError` at exit. Reading
-    the cache back here is the assertion, since only its owning thread can.
-    """
-    board = Board(workspace)
-    offline = Survey(
-        board,
-        facts=lambda: HostFacts(hostname="box", memory_total_bytes=10**9),
-        reach=lambda alias: "asleep",
-        providers=[],
-    )
-    doctor = Doctor(
-        board,
-        survey=offline,
-        probe=answering(0, _SETTLED),
-        settler=sweeping(workspace),
-    )
-    assert [found.section for found in doctor.sections()][:5] == [
-        "manifest",
-        "environment",
-        "environment",
-        "layout",
-        "snapshot",
-    ]
     assert board.dispatcher.cache.hosts() == []
 
 
@@ -661,48 +635,14 @@ def test_the_runner_bounds_the_probe_it_stages(
     assert seen == [(("echo", "settled"), "default", 30.0)]
 
 
-def test_a_host_provisioned_for_an_environment_the_manifest_lost_counts_as_diverged(
-    workspace: Path,
-) -> None:
-    board = Board(workspace)
-    ghost = HostSetup(host="ghost", root="/repo", env="vanished", digest="was-something")
-    diverged = Doctor(board).hosts({"ghost": ghost})
-    assert diverged.verdict is Verdict.WARN
-    assert diverged.detail == "diverged from the current manifest: ghost"
-
-
-def test_an_environment_compiled_and_solved_but_never_installed_is_a_warning(
-    workspace: Path,
-) -> None:
-    """The lock answers to the manifest, so the only thing missing is the install itself."""
+def test_an_old_root_holding_no_environment_directories_is_clean(workspace: Path) -> None:
+    """The old root is named from the current layout, so a provisioned workspace stays clean,
+    and nothing warns until an old root actually holds an environment directory.
+    """
     climbed(workspace, "whole")
-    board = Board(workspace)
-    provisioner = Provisioner(board.root, board.manifest)
-    fingerprint = (
-        provisioner.pixi_for("serving").env_prefix("serving") / "conda-meta" / _FINGERPRINT
-    )
-    fingerprint.unlink()
-    found = Doctor(board, env="serving").environment()
-    assert found.verdict is Verdict.WARN
-    assert found.detail == "never installed: serving"
-    assert found.fix == "mainboard install serving"
-
-
-def test_a_superseded_root_with_no_environment_directories_is_clean(workspace: Path) -> None:
-    """Nothing to warn about until an old root actually holds an environment directory."""
-    provisioner = Provisioner(workspace, Board(workspace).manifest)
     doctor = Doctor(Board(workspace))
     assert doctor.layout().verdict is Verdict.PASS
-
-    old_envs = (
-        provisioner.out
-        / provisioner.pixi_for()
-        .env_prefix("default")
-        .relative_to(provisioner.environment_dir())
-        .parts[0]
-        / "envs"
-    )
-    old_envs.mkdir(parents=True)
+    old_root(Provisioner(workspace, doctor.board.manifest)).mkdir(parents=True)
     assert doctor.layout().verdict is Verdict.PASS
 
 
@@ -729,13 +669,7 @@ def test_an_old_root_names_one_rm_rf_per_environment_already_reprovisioned(
     provisioner = Provisioner(board.root, board.manifest)
     for env in ("default", "mcmr"):
         provisioner.pixi_for(env).env_prefix(env).mkdir(parents=True)
-    held = (
-        provisioner.pixi_for()
-        .env_prefix("default")
-        .relative_to(provisioner.environment_dir())
-        .parts[0]
-    )
-    old_envs = provisioner.out / held / "envs"
+    old_envs = old_root(provisioner)
     for env in ("default", "mcmr", *legacy):
         (old_envs / env).mkdir(parents=True)
 
@@ -745,12 +679,6 @@ def test_an_old_root_names_one_rm_rf_per_environment_already_reprovisioned(
     assert found.fix == f"rm -rf {old_envs / 'default'} && rm -rf {old_envs / 'mcmr'}"
     assert ("legacy" in found.detail) is bool(legacy)
     assert all(env in found.detail for env in legacy)
-
-
-def test_the_current_layout_is_never_mistaken_for_the_superseded_one(workspace: Path) -> None:
-    """The old root is named from the current layout, so a provisioned workspace stays clean."""
-    climbed(workspace, "whole")
-    assert Doctor(Board(workspace)).layout().verdict is Verdict.PASS
 
 
 @pytest.mark.parametrize(

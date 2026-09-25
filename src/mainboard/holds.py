@@ -3,11 +3,10 @@
 #
 # A rental per job rebuilds the whole environment every time: of a 17.5 minute landing on
 # 2026-09-21 the upload was 1.3 minutes and the environment nearly all the rest, for a job of 2.7.
-# Holding one machine was being done by hand, an ssh block pasted into the config, a host
-# declared in the manifest and a watchdog left running to destroy it, and every one of those is
-# a step a tired session forgets. Here the rental is registered in the same run registry a
-# dispatched rental lives in, with its deadline as the lease, so the durable sweep releases it on
-# time whoever is watching, and `compute` releases whatever is past due before it lists.
+# Holding by hand (an ssh block, a manifest host, a watchdog to destroy it) is steps a tired
+# session forgets. Here the rental joins the run registry dispatched rentals live in, its
+# deadline as the lease, so the durable sweep releases it on time whoever is watching, and
+# `compute` releases whatever is past due before it lists.
 
 import re
 from datetime import UTC, datetime, timedelta
@@ -36,12 +35,10 @@ if TYPE_CHECKING:
     from .dispatch.shared import Watcher
     from .dispatch.vocabulary import Resources
 
-# A duration the way a person says one, `3h`, `90m` or `1h30m`.
 _DURATION = re.compile(r"^(?:(?P<hours>\d+)h)?(?:(?P<minutes>\d+)m)?$")
 
-# What a held machine runs once it is set up: nothing, until it is released. The rented
-# entrypoint gives up on a landing that never comes, and its exit would read as a finished job
-# the sweep settles and releases, so a hold hands it a command that simply never ends.
+# The rented entrypoint gives up on a landing that never comes, and its exit would read as a
+# finished job the sweep settles and releases, so a held machine runs this until released.
 _IDLE = "exec sleep infinity"
 
 # Every rented image this house lands on is a Linux container.
@@ -51,7 +48,6 @@ _PLATFORM = "linux-64"
 class Holds:
     """The machines this workspace is holding: rented, set up, listed and released.
 
-    board: the workspace the holds belong to.
     aliases: the ssh config the aliases are written into, the user's own by default.
     """
 
@@ -74,9 +70,8 @@ class Holds:
     ) -> Held:
         """Rent a machine through `provider`, set it up as host `alias`, and keep it until due.
 
-        The deadline counts from the moment the machine is ready, since the time a hold is for
-        is the time it can take jobs. Until then the rental's own lease bounds it, which the
-        spend cap already priced with the landing included.
+        The deadline counts from the moment the machine is ready, since a hold is for the time it
+        can take jobs; until then the rental's own lease, priced with the landing, bounds it.
 
         provider: the provider host to rent through, `vast` say.
         duration: how long to keep it once ready, `3h`, `90m` or `1h30m`.
@@ -93,7 +88,8 @@ class Holds:
         plan = rented.plan(env=env, container="none")
         backend = _rentable(plan)
         name = alias or _slug(f"{provider}-{gpu_name or plan.profile.defaults.gpu_name}")
-        self._refuse_taken(name)
+        if name in self.board.manifest.hosts:
+            raise MissionError(f"{name!r} already names a host; hold it under another --as")
         resources = rented.resources(
             walltime=_walltime(seconds), gpus=gpus, gpu_name=gpu_name, max_usd=max_usd, plan=plan
         )
@@ -107,10 +103,7 @@ class Holds:
             raise
 
     def release(self, alias: str) -> Held:
-        """End the held machine `alias`, settle its record, and forget its alias.
-
-        alias: the held machine's host name.
-        """
+        """End the held machine `alias`, settle its record, and forget its alias."""
         try:
             held = self.holdings.read()[alias]
         except KeyError:
@@ -123,10 +116,9 @@ class Holds:
     def expire(self) -> list[Held]:
         """Release every held machine past its deadline or already ended, and name them.
 
-        A machine the sweep already released at its lease, or one the provider took back, has a
-        settled record, and its alias and profile go with it here. A release the provider
-        refuses stays held and is warned about, so the next pass, or the sweep's own lease,
-        asks again rather than one refusal costing the rest.
+        A machine the sweep released at its lease, or the provider took back, has a settled
+        record; its alias and profile go here. A release the provider refuses stays held with a
+        warning, so the next pass or the sweep's lease asks again and one refusal costs no other.
         """
         now = datetime.now(UTC)
         released: list[Held] = []
@@ -149,19 +141,17 @@ class Holds:
         duration: str,
     ) -> Rental:
         """Register the hold in the run registry, then rent the machine it describes."""
-        spelling = f"hold {name} for {duration}"
-        shipment = Shipment.of_command(spelling, source=self.board.dispatcher.source(), imports=())
+        shipment = Shipment.of_command(
+            f"hold {name} for {duration}", source=self.board.dispatcher.source(), imports=()
+        )
         allocation = self.board.dispatcher.allocating(
             plan, shipment, resources, name=f"hold-{name}", evidence="not_started"
         )
-        rented = False
         try:
-            rental = backend.rent(plan, resources, allocation=allocation)
-            rented = True
-        finally:
-            if not rented:
-                allocation.interrupted()
-        return rental
+            return backend.rent(plan, resources, allocation=allocation)
+        except BaseException:
+            allocation.interrupted()
+            raise
 
     def _keep(
         self, name: str, rental: Rental, *, plan: ExecutionPlan, seconds: int, watch: Watcher
@@ -242,11 +232,6 @@ class Holds:
         for derived in ("manifest", "resolver"):
             self.board.shared.pop(derived, None)
 
-    def _refuse_taken(self, name: str) -> None:
-        """Refuse a name a declared host or another hold already answers to."""
-        if name in self.board.manifest.hosts:
-            raise MissionError(f"{name!r} already names a host; hold it under another --as")
-
     def _settled(self, held: Held) -> bool:
         """Whether `held`'s record says the rental already ended, or no record is left."""
         try:
@@ -257,10 +242,7 @@ class Holds:
 
 
 def duration_seconds(duration: str) -> int:
-    """`duration` in seconds, `3h`, `90m`, `1h30m` or a walltime `HH:MM:SS`.
-
-    duration: how long, as a person writes it.
-    """
+    """`duration` as a person writes it (`3h`, `90m`, `1h30m` or `HH:MM:SS`) in seconds."""
     spoken = _DURATION.match(duration.strip())
     if spoken and (spoken["hours"] or spoken["minutes"]):
         return int(spoken["hours"] or 0) * 3600 + int(spoken["minutes"] or 0) * 60
