@@ -1,17 +1,27 @@
 """Software-only controls for the unapplied shared-owner proposal."""
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
+
 from mainboard.profile import Activity, Profiler
+from mainboard.profile.providers.nvidia import tracer
 from mainboard.profile.providers.nvidia.tracer import CuptiCollector, RawKernel
 from mainboard.profile.result import DeviceEvidence
 from mainboard.profile.spans import activate, deactivate
 
+from .support import FakeActivityKind
+
 
 @pytest.fixture
 def owner(monkeypatch: pytest.MonkeyPatch) -> Iterator[Profiler]:
-    """Use only a raw in-memory collector, never CUDA runtime initialization."""
+    """Use only a raw in-memory collector, never CUDA runtime initialization.
+
+    A window reads the enabled kinds back through CUPTI's enum, so the module stands in for the
+    CUPTI a GPU-less host does not install.
+    """
+    monkeypatch.setattr(tracer, "cupti", SimpleNamespace(ActivityKind=FakeActivityKind))
     session = Profiler(features=Profiler.Feature.ACTIVITY, activities=Activity.DEFAULT)
     collector = CuptiCollector()
     collector.running = True

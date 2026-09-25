@@ -12,28 +12,16 @@ from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
+
 from mainboard.profile import Activity, DeviceEvidence, Profile, Profiler, TraceCollector, annotate
 from mainboard.profile.providers import nvidia_tracer as nv
 from mainboard.trials import Log
 
-from ..support import one_process_gpu
+from ..support import FakeActivityKind, one_process_gpu
 
 if TYPE_CHECKING:
     from mainboard.profile.protocols import RawActivity
     from mainboard.profile.providers.nvidia.protocols import CallbackData, Subscriber
-
-
-class FakeActivityKind:
-    CONCURRENT_KERNEL = 10
-    MEMCPY = 1
-    MEMSET = 4
-    SYNCHRONIZATION = 8
-    OVERHEAD = 16
-    MEMORY = 32
-    JIT = 64
-    RUNTIME = 128
-    DRIVER = 256
-    MEMORY_POOL = 512
 
 
 class FakeCallbackDomain:

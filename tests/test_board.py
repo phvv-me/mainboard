@@ -42,6 +42,7 @@ from .support import Lab
 
 if TYPE_CHECKING:
     from mainboard.dispatch.shipment import Shipment
+    from mainboard.dispatch.transport import SshTransport
 
 _GOLD = "gold"
 _MIYABI_G = "miyabi-g"
@@ -1063,10 +1064,14 @@ def test_a_bound_board_reads_facts_and_runs_commands_over_one_connection(
 ) -> None:
     """A remote fact read parses the last JSON line out of whatever the login shell said first."""
     payload = HostFacts(schema_version=1, hostname="fake-remote").model_dump_json()
-    monkeypatch.setattr(
-        "mainboard.dispatch.shells.connection",
-        lambda host, ssh=None: FakeConnection(f"module chatter\n{payload}\n"),
-    )
+
+    def connected(host: str, ssh: SshTransport | None = None) -> FakeConnection:
+        return FakeConnection(f"module chatter\n{payload}\n")
+
+    # The fact read opens its shell and the command opens its own, so both seams are replaced
+    # or the run would warm a real ssh connection to the host.
+    monkeypatch.setattr("mainboard.dispatch.shells.connection", connected)
+    monkeypatch.setattr("mainboard.board.connection", connected)
     monkeypatch.setattr("mainboard.board.foreground", lambda command: 7)
     bound = board.on(_MIYABI_G)
     assert bound.facts().hostname == "fake-remote"

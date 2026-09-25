@@ -16,6 +16,21 @@ from mainboard.profile import (
 )
 
 
+class FakeActivityKind:
+    """The `cupti.ActivityKind` members the collector enables, numbered like CUPTI's own."""
+
+    CONCURRENT_KERNEL = 10
+    MEMCPY = 1
+    MEMSET = 4
+    SYNCHRONIZATION = 8
+    OVERHEAD = 16
+    MEMORY = 32
+    JIT = 64
+    RUNTIME = 128
+    DRIVER = 256
+    MEMORY_POOL = 512
+
+
 class FakeUtilization:
     """A `DeviceUtilization`-shaped stand-in with fixed compute/memory percentages."""
 
