@@ -18,11 +18,13 @@
 #
 # `receipts_in` reads both shapes out of any captured output, the framed block and a plainly
 # printed line, so one harvest serves a queued job and a rented instance without asking which it
-# is holding.
+# is holding, and `printed` takes the frame back out for a reader who wants the job's own words.
 
 import base64
 import re
 import string
+
+from ..jobs.beacon import unbeaconed
 
 # The variable a run reads to learn where to write its receipts, and the file it names. A rented
 # machine keeps no workspace, so the path is under `/tmp` rather than derived from a root that
@@ -112,6 +114,24 @@ def unframed(log: str) -> str:
         if payload and len(payload) % 4 == 0 and set(payload) <= _BASE64_ALPHABET:
             return base64.b64decode(payload).decode(errors="replace")
     return ""
+
+
+def printed(log: str) -> str:
+    """`log` as the job printed it, every line of the receipts frame taken back out.
+
+    The frame is this wrapper's channel and not the job's output: a reader of the log wants what
+    the command said, and the receipts it carried are read through `verdict` and the receipts
+    files instead. Every frame line goes, a torn block's included, and so does every progress
+    marker the runner wrote for a waiter, which `wait` and `jobs` read instead.
+
+    log: the run's captured output, as its backend handed it over.
+    """
+    kept = [
+        line
+        for line in log.splitlines(keepends=True)
+        if line.strip() not in (_BEGIN, _END) and not line.lstrip().startswith(_CHUNK_MARKER)
+    ]
+    return unbeaconed("".join(kept))
 
 
 # What the trials plugin prints for a cell whose data a previous run already took, as the

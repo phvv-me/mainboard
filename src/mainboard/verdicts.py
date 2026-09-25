@@ -29,7 +29,9 @@ from .dispatch import vocabulary
 from .dispatch.schedulers import short_reason
 from .dispatch.shared import logger
 from .dispatch.vocabulary import JobState
+from .pulse import Pulses
 from .tracking import streamed
+from .vigil import STALL_SECONDS, Vigil
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -54,6 +56,9 @@ _RECEIPT = "trial_receipt"
 # The code a stream answers while any of its rows is still running or legitimately waiting,
 # named once because a waiter loops on exactly this answer.
 _IN_FLIGHT = 2
+# The code a wait answers when a job it blocked on went silent on an idle card, distinct from a
+# timeout so a script can tell a job still working from one that stopped doing anything.
+STALLED = 4
 # How long a cancel waits for the settlement claim another process holds before it refuses.
 SETTLEMENT_SECONDS = 120.0
 _EXITS = {
@@ -138,23 +143,28 @@ class StreamVerdict(FrozenModel):
     note: why there are no rows, empty whenever there are. An empty table is the one answer a
         reader cannot act on, because nothing about it says whether the run has not started,
         the evidence went somewhere else, or the harness wrote a shape this verb does not read.
+    stalled: why a wait stopped on a job that went silent on an idle card, empty otherwise.
     """
 
     stream: str
     trials: tuple[TrialVerdict, ...]
     note: str = ""
+    stalled: str = ""
 
     @property
     def code(self) -> int:
         """The one exit status a completion check branches on.
 
-        A failure anywhere outranks everything, then anything still in flight, then a trial
-        that vanished, and only a stream whose every row settled clean exits zero. An empty
-        stream is unknown rather than clean, since receipts that do not exist prove nothing.
+        A failure anywhere outranks everything, then a wait that found a job stalled, then
+        anything still in flight, then a trial that vanished, and only a stream whose every row
+        settled clean exits zero. An empty stream is unknown rather than clean, since receipts
+        that do not exist prove nothing.
         """
         codes = {trial.code for trial in self.trials}
         if 1 in codes:
             return 1
+        if self.stalled:
+            return STALLED
         if _IN_FLIGHT in codes:
             return _IN_FLIGHT
         if 3 in codes or not codes:
@@ -186,15 +196,49 @@ class Verdicts:
                 "sweep or a dispatch still landing; nothing was cancelled, ask again when it ends"
             ) from None
         try:
-            return self._cancel(handle, host=host)
+            return self._stop(handle, host=host)
         finally:
             claim.release()
 
-    def _cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
-        """Preserve available evidence, cancel, and advance the cursor only after release.
+    def conclude(self, handle: str, *, host: str = "", session: int) -> StreamVerdict:
+        """Settle a run whose pytest session ended while its process did not, on the session.
+
+        The outcome is already written, the process is only failing to exit, and until it does
+        it holds an allocation and reads `running`. So it is stopped the way a cancel stops it,
+        evidence first, and settled `ok` or `failed` on the session's own exit status rather than
+        `cancelled`, since nothing about the work was cut short.
+
+        handle: the lingering run.
+        host: the alias narrowing a handle recorded on several hosts.
+        session: the pytest session's exit status, as its beacon reported it.
+        """
+        claim = self.board.dispatcher.cache.settlement
+        try:
+            claim.acquire(timeout=SETTLEMENT_SECONDS)
+        except Timeout:
+            return self.handled(handle, host=host)
+        ended = vocabulary.OK if session == 0 else vocabulary.FAILED
+        try:
+            return self._stop(handle, host=host, ended=ended, exit_code=session)
+        finally:
+            claim.release()
+
+    def _stop(
+        self,
+        handle: str,
+        *,
+        host: str = "",
+        ended: str = vocabulary.CANCELLED,
+        exit_code: int | None = None,
+    ) -> StreamVerdict:
+        """Preserve available evidence, stop the run, and advance the cursor only after release.
 
         Explicit cancellation may discard incomplete work, but records that loss rather than
         calling the evidence complete. A held dispatch has no machine to contact.
+
+        ended: the verdict a run still in flight settles on, `cancelled` unless it is being
+            concluded on a session that already ended.
+        exit_code: the exit status that verdict carries, the recorded one when None.
         """
         record = self.record(handle, host=host)
         if record.verdict == vocabulary.SUBMITTING:
@@ -237,17 +281,17 @@ class Verdicts:
         verdict = (
             record.verdict
             if record.verdict is not None and record.verdict in vocabulary.TERMINAL
-            else vocabulary.CANCELLED
+            else ended
         )
-        state = JobState(handle=record.handle, state=vocabulary.CANCELLED, verdict=verdict)
-        stored = self.board.dispatcher.cache.resolve(
-            record, state.state, record.exit_code, verdict
-        )
+        code = record.exit_code if exit_code is None else exit_code
+        word = vocabulary.CANCELLED if ended == vocabulary.CANCELLED else vocabulary.FINISHED
+        state = JobState(handle=record.handle, state=word, exit_code=code, verdict=verdict)
+        stored = self.board.dispatcher.cache.resolve(record, state.state, code, verdict)
         run.kill()
         if monitor.release(run):
             if self.board.dispatcher.cache.run(handle, record.target).evidence == "copied":
                 monitor.evidence(record, receipts, status="verified")
-            monitor.track(record, state, detail=short_reason(vocabulary.CANCELLED, None))
+            monitor.track(record, state, detail=stopped(ended, code))
             self.board.dispatcher.cache.report(stored, verdict)
         return self.handled(handle, host=host)
 
@@ -462,6 +506,8 @@ class Verdicts:
         host: str = "",
         timeout: float = 0.0,
         interval: float = vocabulary.POLL_SECONDS,
+        stall: float = STALL_SECONDS,
+        say: Callable[[str], None] = logger.debug,
         poll: Callable[[float], None] = sleep,
     ) -> StreamVerdict:
         """Block until `handle` settles, sweeping the same durable path the monitor cron runs.
@@ -472,25 +518,58 @@ class Verdicts:
         normalized receipt outcome, not the original process exit status. A batch id waits for
         every job of the batch and answers with the batch's verdict.
 
+        Between passes a vigil looks at the jobs still running: it says each cell as it lands
+        and a heartbeat, settles a job whose pytest session ended while its process lingers, and
+        stops the wait with `STALLED` on a job silent past `stall` on an idle card.
+
         handle: the dispatched run to wait on, or a batch id as `batch run` printed it.
         host: the alias narrowing a handle recorded on several hosts.
         timeout: give up after this many wall seconds, 0 to wait as long as it takes; the
             answer then reports the run still in flight and exits 2.
         interval: seconds between sweeps.
+        stall: seconds of silence on an idle card that stop the wait, 0 never.
+        say: where the cells and the heartbeat go, the debug log by default.
         poll: the sleeper between sweeps, injectable for tests.
         """
         deadline = monotonic() + timeout if timeout else None
         monitor = self.board.monitor()
         stream = (directory(self.board, handle) / "events.ndjson").is_file()
+        vigil = Vigil(Pulses(self.board), stall=stall, say=say)
         # What already settled is answered off its receipts before any pass runs, since a pass
         # settles the whole workspace and a caller re-reading a finished batch owes it nothing.
         while (settled := self.__settled(handle, host=host, stream=stream)) is None:
             if deadline is not None and monotonic() >= deadline:
-                return self.of(handle) if stream else self.handled(handle, host=host)
+                return self.__standing(handle, host=host, stream=stream)
             monitor.once()
-            if self.__settled(handle, host=host, stream=stream) is None:
+            if self.__settled(handle, host=host, stream=stream) is not None:
+                continue
+            look = vigil.look(self.__running(handle, host=host, stream=stream))
+            for linger in look.lingering:
+                self.conclude(linger.handle, host=linger.target, session=linger.session)
+            if look.stalled:
+                answer = self.__standing(handle, host=host, stream=stream)
+                return answer.model_copy(update={"stalled": look.stalled})
+            if not look.lingering:
                 poll(interval)
         return settled
+
+    def __standing(self, handle: str, *, host: str, stream: bool) -> StreamVerdict:
+        """What `handle` reads as right now, settled or not."""
+        return self.of(handle) if stream else self.handled(handle, host=host)
+
+    def __running(self, handle: str, *, host: str, stream: bool) -> list[RunRecord]:
+        """The dispatched runs behind `handle` that are running now, as the last pass left them."""
+        cache = self.board.dispatcher.cache
+        behind = (
+            [
+                record
+                for record in cache.live()
+                if streamed(record.name or "", handle=record.handle)[0] == handle
+            ]
+            if stream
+            else [cache.run(handle, host or None)]
+        )
+        return [record for record in behind if record.verdict == vocabulary.RUNNING]
 
     def __settled(self, handle: str, *, host: str, stream: bool) -> StreamVerdict | None:
         """`handle`'s final answer, None while any of it is still in flight.
@@ -504,6 +583,13 @@ class Verdicts:
         if self.record(handle, host=host).reported in vocabulary.TERMINAL:
             return self.handled(handle, host=host)
         return None
+
+
+def stopped(ended: str, exit_code: int | None) -> str:
+    """Why a stopped run settled where it did, the detail its settled receipt carries."""
+    if ended == vocabulary.CANCELLED:
+        return short_reason(vocabulary.CANCELLED, None)
+    return f"pytest session ended with exit {exit_code}; the lingering process was stopped"
 
 
 def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:

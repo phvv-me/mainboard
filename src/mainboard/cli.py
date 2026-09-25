@@ -17,9 +17,11 @@ from .board import Board
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .delimiter import Delimiter
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .dispatch.dispatcher import Dispatcher
+from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .durable import schedule
@@ -31,8 +33,9 @@ from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
 from .probe.stress import rows as stress_rows
-from .render import install_traceback, mode_of, plain, progress, record, rows, totals
+from .render import diverted, install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
+from .vigil import STALL_SECONDS
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -68,17 +71,17 @@ def build(root: Path | None = None) -> App:
         """
         Help(app).show(" ".join(query))
 
-    # Everything after `--` is another program's argv and must reach it untouched. cyclopts
-    # honours the `--` delimiter for its own help flags but not for its version flag, so the two
-    # passthrough verbs give up `--version` entirely (the root app still answers it) rather than
-    # answering `run -- python --version` with this tool's version.
+    # A trailing-command verb hands its command on verbatim, from the first token that is not one
+    # of its own options, so `run pytest --noconftest` needs no `--` (see `delimiter.py`, which
+    # places it). cyclopts honours the delimiter for its own help flags but not for its version
+    # flag, so these verbs give up `--version` entirely (the root app still answers it) rather
+    # than answering `run python --version` with this tool's version.
     #
     # The command tokens are deliberately NOT `allow_leading_hyphen`. That annotation told
     # cyclopts to stop recognising options for this parameter, which meant an option this CLI
     # does not know was folded into the user's command instead of refused, and then failed on
-    # the remote host minutes later (four jobs lost this way, 2026-08-25). Without it cyclopts
-    # refuses `--walltim` by name at parse time, and everything after `--` still binds here as
-    # positional argv, flags and all, which is the behaviour the delimiter is for.
+    # the remote host minutes later (four jobs lost this way, 2026-08-25). The placement walks
+    # only declared options, so `--walltim` before the command is still refused by name.
     @app.command(version_flags=[])
     def run(
         *command: str,
@@ -93,8 +96,8 @@ def build(root: Path | None = None) -> App:
         remote diagnostic commands execute over SSH, on a cluster's login
         endpoint rather than in a batch allocation. The exit code is the command's own.
 
-        command: the command tokens, everything after `--`, its own flags included; a job's
-            arguments follow `--` the same way.
+        command: the command tokens, from the first token that is not an option of this verb,
+            passed on verbatim with its own flags; a job's arguments follow `--`.
         on: the host alias the command runs on, `local` for this machine.
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
@@ -135,8 +138,8 @@ def build(root: Path | None = None) -> App:
         host and zero for owned hardware. At a terminal the dispatch then asks once; in a
         script or under `--yes` it proceeds, and the line is printed either way.
 
-        command: the command tokens, or `path/to/file.py::name` and, after `--`, the arguments
-            the job's application takes.
+        command: the command tokens, from the first token that is not an option of this verb,
+            or `path/to/file.py::name` and, after `--`, the arguments its application takes.
         on: the host alias the job targets.
         gpu_name: the GPU type to rent, for a metered provider host.
         max_usd: the spend cap a provider host refuses to submit without.
@@ -349,29 +352,18 @@ def build(root: Path | None = None) -> App:
             payload.pop("snippet")
         record(payload, mode=mode, fields=_fields(fields), title="new")
 
-    @app.command(name="self-update")
-    def self_update() -> int:
-        """Reinstall the running snapshot from its own source tree, if the two have drifted apart.
-
-        The exact command the staleness nag already names, run for you rather than copied by
-        hand. A checkout running its own source has nothing to reinstall, and a snapshot that
-        already matches its source has nothing to do, so either says so and exits zero.
-        """
-        found = staleness.check()
-        if not found.stale:
-            print(f"{project.name}: {found.detail}")
-            return 0
-        return staleness.refresh(found)
-
     @app.command
     def doctor(env: str = "", *, json: bool = False, agent: bool = False, fields: str = "") -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
-        Four questions asked at once and bounded: does the manifest still say something
+        Five questions asked at once and bounded: does the manifest still say something
         coherent, is what is installed the environment it describes, what compute answers right
-        now, and does the mathematics still hold. A section reports the one command that
-        repairs it, and only a genuinely broken workspace fails, so a sleeping host or a
-        provider nobody has a key for is a word rather than a nonzero exit.
+        now, does the mathematics still hold, and is this workstation's git ready: git itself,
+        git-lfs and its filters, a credential helper for https remotes, and on Windows symlinks
+        and long paths. A safe local git setting is applied in place and reported; an install or
+        an administrator switch is named with its exact command. A section reports the one
+        command that repairs it, and only a genuinely broken workspace fails, so a sleeping host
+        or a provider nobody has a key for is a word rather than a nonzero exit.
 
         env: the environment to examine, the local profile's own when omitted.
         json: print canonical JSON instead of the default rich table.
@@ -447,7 +439,8 @@ def build(root: Path | None = None) -> App:
         interactive allocation first, so the terminal lands on a compute node rather than on the
         login node the request was made from.
 
-        command: a command to run instead of handing over the terminal, everything after `--`.
+        command: a command to run instead of handing over the terminal, from the first token
+            that is not an option of this verb.
         on: the host alias the session opens on.
         env: an environment name overriding the profile's choice.
         queue: the queue the allocation targets, the profile's declared choice when omitted.
@@ -1114,7 +1107,7 @@ def build(root: Path | None = None) -> App:
             if identity.startswith("local exit"):
                 continue
             with progress(f"waiting on {identity} ({host}, {name})"):
-                settled = board("local").verdicts().wait(identity, host=host)
+                settled = board("local").verdicts().wait(identity, host=host, say=_said)
             exit_code = exit_code or settled.code
         return exit_code
 
@@ -1317,6 +1310,7 @@ def build(root: Path | None = None) -> App:
         *,
         timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
+        stall: float = STALL_SECONDS,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -1324,20 +1318,29 @@ def build(root: Path | None = None) -> App:
         """Block until every job of a batch settles, print the batch's verdict, exit its code.
 
         The same durable sweep `wait` runs on one handle, over the whole batch: results are
-        pulled back and rentals released as each job lands, and the answer is read off the
-        batch's receipts, 0 when every job settled clean, 1 on any failure, 2 at the timeout
-        with work still in flight.
+        pulled back and rentals released as each job lands, cells and a heartbeat stream to
+        stderr, and the answer is read off the batch's receipts, 0 when every job settled
+        clean, 1 on any failure, 2 at the timeout with work still in flight, 4 when a job
+        stalled.
 
         batch_id: the batch to wait on, as `run` printed it.
         timeout: give up after this many seconds, exiting 2 with jobs still in flight, an hour
             unless said otherwise; 0 waits as long as it takes.
         interval: seconds between sweeps, the dispatch default when 0.
+        stall: seconds a running job may print nothing on an idle card before the wait stops
+            and exits 4; 0 never calls a job stalled.
         json: print the verdict as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
         return wait(
-            batch_id, timeout=timeout, interval=interval, json=json, agent=agent, fields=fields
+            batch_id,
+            timeout=timeout,
+            interval=interval,
+            stall=stall,
+            json=json,
+            agent=agent,
+            fields=fields,
         )
 
     @app.command
@@ -1422,6 +1425,7 @@ def build(root: Path | None = None) -> App:
         on: str = "",
         timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
+        stall: float = STALL_SECONDS,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -1433,17 +1437,26 @@ def build(root: Path | None = None) -> App:
         loses nothing. What prints at the end is read back off the on-disk receipts rather than
         remembered from the loop, which is what makes this the sanctioned completion check.
 
+        While it blocks, stderr carries each test cell's outcome as it lands and a heartbeat:
+        cells done, failures, how long since the output last grew, and the busiest card where
+        that is cheap to read. A job whose pytest session ended while its process lingers is
+        settled on the session's own outcome, and a running job silent past `--stall` on an idle
+        card ends the wait with exit 4 rather than holding it to the timeout.
+
         handle: the job to wait on, as `submit` printed it, or a batch id as `batch run`
             printed it, which waits for every job of the batch.
         on: the host alias narrowing a handle recorded on several hosts.
         timeout: give up after this many seconds, exiting 2 with the job still in flight, an
             hour unless said otherwise; 0 waits as long as it takes.
         interval: seconds between polls, the dispatch default when 0.
+        stall: seconds a running job may print nothing on an idle card before the wait stops
+            and exits 4; 0 never calls a job stalled.
         json: print the outcome as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
-        with progress(f"waiting on {handle}"):
+        print(f"waiting on {handle}", file=sys.stderr, flush=True)
+        with diverted():
             settled = (
                 board("local")
                 .verdicts()
@@ -1452,6 +1465,8 @@ def build(root: Path | None = None) -> App:
                     host=on,
                     timeout=timeout,
                     interval=interval or vocabulary.POLL_SECONDS,
+                    stall=stall,
+                    say=_said,
                 )
             )
         _settled(settled, json_mode=json, agent=agent, fields=fields)
@@ -1459,12 +1474,14 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def logs(handle: str, *, on: str = "") -> int:
-        """Print what a dispatched job actually printed, whether or not its host still exists.
+        """Print only what a dispatched job printed, whether or not its host still exists.
 
         Only the exit code used to survive a run: the output lived on the host or on a rented
         disk that dies with the rental, so a lost terminal lost everything the job said. The
         durable sweep now keeps each settled run's tail beside that run's receipts, and this
-        reads that copy first, falling back to the backend for a run still in flight.
+        reads that copy first, falling back to the backend for a run still in flight. The frame a
+        rented run carries its receipts home in is this tool's and not the job's, so it is left
+        out; `verdict` reads the receipts themselves.
 
         An empty log has two entirely different causes, so a run that printed nothing answers
         with where it stands instead: its verdict, the scheduler's own state word, how long it
@@ -1479,7 +1496,7 @@ def build(root: Path | None = None) -> App:
         on: the host alias narrowing a handle recorded on several hosts.
         """
         workspace = board("local")
-        captured = workspace.verdicts().captured(handle, host=on)
+        captured = printed(workspace.verdicts().captured(handle, host=on))
         if not captured.strip():
             return _unprinted(workspace, handle, host=on)
         # A job that coloured its output for a terminal it never had leaves escape codes in
@@ -1564,14 +1581,17 @@ def build(root: Path | None = None) -> App:
         A live job is never left out and never answered from memory. Each host is asked once
         about every run it still owes an answer on, one `qstat`, one `squeue`, one `pueue
         status`, so a wave of thirty five says which of them are running and which are queued
-        behind them, since when, and where the scheduler estimates a start. The limit bounds only
+        behind them, since when, and where the scheduler estimates a start. A running job also
+        shows its test cells landed out of its total, the seconds since its output last grew, and
+        the busiest card on its host where that is one cheap command away. The limit bounds only
         the settled tail, and a listing that had to leave anything out says so on stderr rather
         than stopping quietly at twenty rows.
 
         limit: how many settled runs to show behind the live ones, newest first.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over state/host/name/handle/since/starts/cause.
+        fields: a comma-separated projection over the row's columns, cells/quiet_s/gpu_pct
+            among them.
         """
         with progress("asking every host about its live jobs"):
             listed = Listing(board("local"), limit=limit).taken()
@@ -1725,7 +1745,19 @@ _GIT_CHECK_COLUMNS = ("repo", "check", "verdict", "detail")
 
 # The columns the job listing always carries, so a cache nobody has dispatched from still renders
 # its heading, and so a settled row's empty live columns line up under the live rows' own.
-_JOB_COLUMNS = ("state", "host", "name", "handle", "since", "starts", "submitted_at", "cause")
+_JOB_COLUMNS = (
+    "state",
+    "host",
+    "name",
+    "handle",
+    "cells",
+    "quiet_s",
+    "gpu_pct",
+    "since",
+    "starts",
+    "submitted_at",
+    "cause",
+)
 
 # The columns each batch table carries, named here so an empty batch still renders its heading and
 # so the totals row is summed over the same shape the rows are printed in.
@@ -1848,6 +1880,13 @@ def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: st
     )
     if settled.note:
         print(settled.note, file=sys.stderr)
+    if settled.stalled:
+        print(f"stalled: {settled.stalled}", file=sys.stderr)
+
+
+def _said(line: str) -> None:
+    """One line a wait says while it blocks, on stderr and at once."""
+    print(line, file=sys.stderr, flush=True)
 
 
 def _agreed() -> bool:
@@ -2023,13 +2062,14 @@ def _changes(report: MonitorReport) -> list[dict[str, str]]:
 def main() -> None:
     """Console entry point, `MissionError` printed without a traceback.
 
-    The staleness line prints first and to stderr, so an edited source tree names its own
-    reinstall on every invocation instead of silently answering from an old snapshot.
+    The snapshot is brought up to its source first, which re-executes this same command on the
+    new code when the source moved, and says so on stderr only. A trailing-command verb then gets
+    the `--` its command implies, so nothing typed after the command is ever read as this tool's.
     """
     install_traceback()
-    if line := staleness.check().warning:
-        print(line, file=sys.stderr)
+    staleness.current()
+    app = build()
     try:
-        build()(sys.argv[1:])
+        app(Delimiter(app).placed(sys.argv[1:]))
     except MissionError as error:
         _exit_on_mission_error(error)

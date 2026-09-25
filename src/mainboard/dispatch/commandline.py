@@ -51,7 +51,7 @@ def joined(tokens: Sequence[str]) -> str:
     the two apart, and it is the only thing that can, since nothing here knows which programs the
     far side has.
 
-    tokens: the argv the caller passed, everything after `--`.
+    tokens: the argv of the command the caller passed.
     """
     if len(tokens) == 1 and needs_shell(tokens[0]):
         return shlex.join(["bash", "-c", vetted(tokens[0])])

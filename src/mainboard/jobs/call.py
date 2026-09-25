@@ -38,7 +38,9 @@ from typing import TYPE_CHECKING
 
 from cyclopts import App
 
+from ..dispatch.evidence import RECEIPTS_VAR
 from ..dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
+from . import beacon
 from .pins import STAGING
 from .target import SEPARATOR, TEST_PREFIX, dotted, home_of
 
@@ -201,15 +203,33 @@ class Fresh:
         return cls(ids, args, timeout)
 
     def run(self, spelling: str) -> int:
-        """Run every id as its own process, answering the first nonzero exit code."""
+        """Run every id as its own process, answering the first nonzero exit code.
+
+        In a dispatched job the lane is one session to whoever reads its log: it declares every
+        cell up front and ends the session itself, and each child reports only its own cell. A
+        cell killed at its timeout never reports, so the lane reports it failed.
+        """
+        dispatched = RECEIPTS_VAR in os.environ
+        if dispatched:
+            beacon.say(beacon.CELLS, str(len(self.ids)))
+        code = self.cells(spelling, dispatched=dispatched)
+        if dispatched:
+            beacon.say(beacon.SESSION, str(code))
+        return code
+
+    def cells(self, spelling: str, *, dispatched: bool) -> int:
+        """Run the cells in order until one fails, answering its exit code."""
+        nested = {**os.environ, beacon.NESTED: "1"}
         for identity in self.ids:
             cell = f"{spelling}[{identity}]"
             print(f"mainboard: fresh process for {cell}", flush=True)
             command = [sys.executable, "-m", __spec__.name, cell, DELIMITER, *self.args]
             try:
-                completed = subprocess.run(command, check=False, timeout=self.timeout)
+                completed = subprocess.run(command, check=False, timeout=self.timeout, env=nested)
             except subprocess.TimeoutExpired:
                 print(f"mainboard: {cell} exceeded {self.timeout:g} s and was killed", flush=True)
+                if dispatched:
+                    beacon.say(beacon.CELL, f"failed {cell}")
                 return 124
             if completed.returncode:
                 return completed.returncode

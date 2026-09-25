@@ -11,6 +11,8 @@ from mainboard.dispatch.dispatcher import Dispatcher
 from mainboard.dispatch.schedulers import HostUnreachable
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState
+from mainboard.jobs.beacon import Progress
+from mainboard.pulse import Pulse, Pulses
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,6 +38,9 @@ _ROW = {
     "starts": "",
     "submitted_at": "2026-08-01T00:00:00",
     "cause": "",
+    "cells": "",
+    "quiet_s": None,
+    "gpu_pct": None,
 }
 
 
@@ -239,6 +244,51 @@ def test_a_live_wave_is_shown_whole_and_its_host_asked_once_for_all_of_it(
     assert trips == [["L2", "L1", "L0"]]
 
 
+def test_a_running_job_shows_its_cells_its_silence_and_its_busiest_card(
+    depot: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The columns agents wrote their own loops for, and only a running job is looked at.
+
+    A queued job has printed nothing its log could tell from a hang, so it is not read at all.
+    """
+    for handle in ("R1", "Q1"):
+        seed_run(handle, target=_CLUSTER, kind="pbs", verdict=None)
+    running = JobState(handle="", state="R", verdict="running", stage="running")
+    queued = JobState(handle="", state="Q", verdict="running", stage="queued")
+
+    def states(self: Dispatcher, handles: Sequence[Handle]) -> dict[str, JobState]:
+        answers = {"R1": running, "Q1": queued}
+        return {
+            handle.id: answers[handle.id].model_copy(update={"handle": handle.id})
+            for handle in handles
+        }
+
+    looked: list[list[str]] = []
+
+    def taken(self: Pulses, records: Sequence[RunRecord]) -> dict[RunRecord, Pulse]:
+        looked.append([record.handle for record in records])
+        progress = Progress(total=4, cells=(("a", "passed"), ("b", "failed")))
+        return {
+            records[0]: Pulse(
+                handle="R1", target=_CLUSTER, progress=progress, quiet_s=42, gpu_pct=97
+            )
+        }
+
+    monkeypatch.setattr(Dispatcher, "states", states)
+    monkeypatch.setattr(Pulses, "taken", taken)
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["jobs", "--json", "--fields", "handle,cells,quiet_s,gpu_pct"])
+    listed = {row["handle"]: row for row in json.loads(capsys.readouterr().out)}
+    assert looked == [["R1"]]
+    assert listed["R1"] == {
+        "handle": "R1",
+        "cells": "2/4 (1 failed)",
+        "quiet_s": 42,
+        "gpu_pct": 97,
+    }
+    assert listed["Q1"] == {"handle": "Q1", "cells": "", "quiet_s": None, "gpu_pct": None}
+
+
 def test_a_live_job_its_queue_has_finished_is_named_rather_than_spelled_with_a_letter(
     depot: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -290,7 +340,10 @@ def test_a_host_that_will_not_answer_costs_its_runs_their_live_state_and_nothing
     ("flags", "expected"),
     [
         ([], ("H1", "gold", "jobs")),
-        (["--agent"], ("state\thost\tname\thandle\tsince\tstarts\tsubmitted_at", "H1")),
+        (
+            ["--agent"],
+            ("state\thost\tname\thandle\tcells\tquiet_s\tgpu_pct\tsince\tstarts", "H1"),
+        ),
     ],
     ids=["the default rich table", "the compact table"],
 )
