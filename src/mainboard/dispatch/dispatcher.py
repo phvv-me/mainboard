@@ -1030,7 +1030,10 @@ class Dispatcher:
         retcode, _, err = remote["bash"][["-lc", body]].run(retcode=None)
         if retcode != 0:
             raise SystemExit(f"environment on {plan.host!r} is broken: {failure_reason(err)}")
-        runs = wrap(plan, root, command=f"{_TOOL} job --help >/dev/null", activate=False)
+        # An unknown verb's `--help` answers with the root help and succeeds, so the usage line
+        # the verb's own help opens with is what tells the two tools apart.
+        usage = shlex.quote(f"Usage: {_TOOL} job ")
+        runs = wrap(plan, root, command=f"{_TOOL} job --help | grep -q {usage}", activate=False)
         retcode, _, err = remote["bash"][["-lc", runs]].run(retcode=None)
         if retcode != 0:
             raise SystemExit(
