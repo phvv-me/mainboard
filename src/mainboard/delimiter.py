@@ -1,6 +1,6 @@
 # Where a verb's own options end and the command it hands on begins.
 #
-# `run`, `submit` and `interact` take another program's argv, and they used to need `--` in front
+# `run`, `submit` and `shell` take another program's argv, and they used to need `--` in front
 # of it: `mainboard run pytest --noconftest` read `--noconftest` as an option of this tool and
 # refused it, so every agent session learned to type the delimiter or failed once first. The rule
 # `uv run` and `docker run` follow is the one a reader already expects: this tool's options come
@@ -54,7 +54,7 @@ def _widths(verb: App) -> Mapping[str, int] | None:
     """Every option name `verb` declares and how many values it takes, None without a command.
 
     A verb takes a trailing command exactly when its function collects a variadic positional,
-    which is how `run`, `submit`, `interact` and `help` spell their tails. A negative flag takes
+    which is how `run`, `submit`, `shell` and `help` spell their tails. A negative flag takes
     no value whatever its positive spelling takes.
     """
     command = verb.default_command

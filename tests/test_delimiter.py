@@ -70,9 +70,9 @@ def test_the_command_starts_at_the_first_token_that_is_not_an_option_of_the_verb
             id="a-negative-flag-takes-no-value",
         ),
         pytest.param(
-            ["interact", "--on", "gold", "nvidia-smi", "-L"],
-            ["interact", "--on", "gold", "--", "nvidia-smi", "-L"],
-            id="interact",
+            ["shell", "--on", "gold", "nvidia-smi", "-L"],
+            ["shell", "--on", "gold", "--", "nvidia-smi", "-L"],
+            id="shell",
         ),
         pytest.param(["help", "batch", "run"], ["help", "--", "batch", "run"], id="help"),
         pytest.param(["check", "--json"], ["check", "--json"], id="a-verb-with-no-command"),
