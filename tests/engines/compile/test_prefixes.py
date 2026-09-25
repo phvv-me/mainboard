@@ -81,8 +81,10 @@ def test_an_environment_is_addressed_by_the_artifact_it_would_be_built_from(
     assert prefixes.path(digest_of(one)) == Path(
         prefix_path(str(prefixes.root), "default", digest_of(one))
     )
-    assert str(prefixes.path(digest_of(one))).endswith(
-        f".mainboard/prefixes/default/{digest_of(one)}"
+    assert (
+        prefixes.path(digest_of(one))
+        .as_posix()
+        .endswith(f".mainboard/prefixes/default/{digest_of(one)}")
     )
     # And nothing was built by asking where it would go.
     assert not prefixes.built(digest_of(one))
@@ -237,8 +239,8 @@ def test_relocated_second_stage_paths_and_generated_inputs_keep_one_identity(
         root = tmp_path / name
         root.mkdir()
         manifest = manifest_from(
-            f'{_WORKSPACE}\n[rust.deps]\nrg = {{path = "{root}/packages/tool"}}\n'
-            f'[env]\nPYTHONPATH = "{root}/src"\n'
+            f'{_WORKSPACE}\n[rust.deps]\nrg = {{path = "{root.as_posix()}/packages/tool"}}\n'
+            f'[env]\nPYTHONPATH = "{root.as_posix()}/src"\n'
         )
         provisioner = Provisioner(root, manifest)
         provisioner.recompiled()
@@ -474,3 +476,44 @@ def test_prune_on_a_host_that_has_never_built_anything_is_not_an_error(
 ) -> None:
     """It runs from the same sweep as the snapshot prune, against every mirrored host."""
     assert prefixes.prune(live=()) == []
+
+
+def test_a_prefix_a_peer_finished_while_this_build_waited_for_the_lock_is_taken_as_built(
+    fp: FakeProcess,
+    artifact: Callable[[str], Path],
+    prefixes: Prefixes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wave's jobs all find the prefix missing at once, and only the first may build it.
+
+    So the question is asked again under the lock, and a prefix another job finished in the
+    meantime is answered untouched, without a single pixi call from this one.
+    """
+    source = artifact("raced")
+    looked = prefixes.built
+
+    def peer_finishes_after_the_first_look(digest: str) -> bool:
+        finished = looked(digest)
+        target = prefixes.path(digest)
+        target.mkdir(parents=True, exist_ok=True)
+        for name in ("pixi.toml", "pixi.lock", "activate.sh"):
+            (target / name).write_text("built by a peer\n", encoding="utf-8")
+        (target / STAMP).write_text(f"{digest}\n", encoding="utf-8")
+        return finished
+
+    monkeypatch.setattr(prefixes, "built", peer_finishes_after_the_first_look)
+    built = prefixes.materialize(source)
+
+    assert built == prefixes.path(digest_of(source))
+    assert (built / "activate.sh").read_text(encoding="utf-8") == "built by a peer\n"
+    assert not fp.calls
+
+
+def test_a_pinned_tree_whose_environment_is_not_a_link_names_no_prefix(
+    prefixes: Prefixes, tmp_path: Path
+) -> None:
+    """Only a link says which addressed environment a tree activates; a directory says none."""
+    sources = tmp_path / "sources"
+    (sources / "abc" / ".mainboard" / "envs" / "default" / ".pixi").mkdir(parents=True)
+
+    assert prefixes.referenced(sources) == set()

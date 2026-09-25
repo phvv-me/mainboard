@@ -48,6 +48,11 @@ def test_the_decorator_keeps_its_declaration_on_the_target_and_changes_nothing_e
         ("app = App()\n", "app", Declaration()),
         ("app = wrap(App())\n", "app", Declaration()),
         ("x = 1\n", "main", Declaration()),
+        (
+            "class TestCases:\n    @job(needs=('d',))\n    def test_case(self):\n        pass\n",
+            "TestOther::test_case",
+            Declaration(),
+        ),
     ],
     ids=[
         "a decorated function",
@@ -59,6 +64,7 @@ def test_the_decorator_keeps_its_declaration_on_the_target_and_changes_nothing_e
         "a bare application",
         "an application wrapped by something else",
         "no such target",
+        "a method of a class the module does not define",
     ],
 )
 def test_a_declaration_is_read_off_the_syntax_without_importing_the_file(

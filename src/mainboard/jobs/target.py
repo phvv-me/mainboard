@@ -4,6 +4,7 @@
 
 import ast
 import shlex
+from itertools import takewhile
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -39,13 +40,9 @@ def home_of(file: Path, *, root: Path) -> Path:
     root: the highest directory the climb may reach.
     """
     file.relative_to(root)
-    home = file.parent
-    for parent in file.parents:
-        if parent == root or not parent.name.isidentifier():
-            break
-        if (parent / "__init__.py").is_file():
-            home = parent.parent
-    return home
+    climb = takewhile(lambda parent: parent != root and parent.name.isidentifier(), file.parents)
+    packages = [parent for parent in climb if (parent / "__init__.py").is_file()]
+    return packages[-1].parent if packages else file.parent
 
 
 def dotted(file: Path, *, home: Path) -> str:

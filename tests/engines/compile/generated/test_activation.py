@@ -77,16 +77,16 @@ def test_render_preserves_module_order_and_omits_empty_version_slash(tmp_path: P
     ],
 )
 def test_declared_modules_must_load_before_activation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup: str, expected: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, posix_bash: str, setup: str, expected: int
 ) -> None:
     monkeypatch.setattr(activation_module, "module_init_snippet", lambda: ":")
     path = ActivationScript(tmp_path / "activate.sh", hook="export READY=yes").write(
         {"cuda": "13.0"}
     )
-    command = f"PATH=''; {setup}; source {shlex.quote(str(path))} || exit $?"
+    command = f"PATH=''; {setup}; source {shlex.quote(path.as_posix())} || exit $?"
     command += '\n[ "$READY" = yes ]'
     result = subprocess.run(
-        ["bash", "--noprofile", "--norc", "-c", command],
+        [posix_bash, "--noprofile", "--norc", "-c", command],
         capture_output=True,
         text=True,
         timeout=5,

@@ -33,7 +33,7 @@
 import hashlib
 import json
 import shutil
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
@@ -115,7 +115,9 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
     """
     shard = environment_shard(source.name)
     state = SyncState.load(source)
-    root = PurePosixPath(state.compiled_at or _standing(source, shard))
+    # The machine's own flavor, since the compile recorded the root as this machine spells it and
+    # the text beside it spells the same root with forward slashes, which `normalized` matches.
+    root = PurePath(state.compiled_at or _standing(source, shard))
     payload = []
     for name in (MANIFEST, LOCK):
         text = normalized(_defining(source, name), root=root, generated_dir=shard)

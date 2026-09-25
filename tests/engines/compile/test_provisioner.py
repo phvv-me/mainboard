@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -169,6 +170,11 @@ def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
     synced: list[str] = []
     activated: list[str] = []
     monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
+    monkeypatch.setattr(
+        Pixi,
+        "capture",
+        lambda self, command, env="default", *, timeout=None: CommandResult(0, "", ""),
+    )
     monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
     monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
     monkeypatch.setattr(Pixi, "cache_windows_activation", lambda self, env: activated.append(env))
@@ -543,7 +549,7 @@ def test_the_generated_activation_is_bash_wherever_it_was_written(
     text = provisioner.activate().read_text(encoding="utf-8")
 
     [exported] = [line for line in text.splitlines() if str(linked) in line]
-    assert exported == f'export PATH={linked}:{extra}:"$PATH"'
+    assert exported == f'export PATH={shlex.quote(str(linked))}:{shlex.quote(str(extra))}:"$PATH"'
 
 
 def test_activate_gives_a_named_environment_its_own_script(
@@ -708,3 +714,49 @@ def test_a_task_row_added_between_dispatches_refreshes_source_but_reuses_the_pre
 
     assert "head-paper" in (shard / "pixi.toml").read_text()
     assert after == before
+
+
+def test_a_resolve_for_a_platform_this_machine_is_not_solves_the_lock_and_installs_nothing(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    fp: FakeProcess,
+    solver_version: str,
+) -> None:
+    """A lock solved for a card elsewhere ships with `setup`, which installs it where it runs.
+
+    The Windows card's environment is solved from the Linux workstation, and neither pixi nor
+    the second stage is asked to install a prefix this machine could never execute.
+    """
+    foreign = '[workspace]\nname = "w"\nplatforms = ["linux-ppc64le"]\n'
+    provisioner = Provisioner(tmp_path, manifest_from(foreign))
+    fp.register([fp.any()], stdout="lock solved\n")
+
+    provisioner.provision(resolve=True)
+
+    assert not provisioner.runs_here()
+    assert [call[1] for call in fp.calls if call[1] != "--version"] == ["lock"]
+    assert SyncState.load(provisioner.environment_dir()).solved_by == solver_version
+
+
+def test_a_local_run_hands_its_exports_to_pixi(
+    manifest_from: Callable[[str], Manifest],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict[str, str] | None] = []
+
+    def run(
+        pixi: Pixi,
+        command: Sequence[str],
+        env: str = "default",
+        *,
+        exports: dict[str, str] | None = None,
+    ) -> int:
+        seen.append(exports)
+        return 0
+
+    monkeypatch.setattr(Pixi, "run", run)
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+
+    assert provisioner.run(("python", "probe.py"), exports={"CELL": "a"}) == 0
+    assert seen == [{"CELL": "a"}]

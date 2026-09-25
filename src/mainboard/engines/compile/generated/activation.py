@@ -104,6 +104,9 @@ class ActivationScript:
         )
 
     def write(self, modules: Mapping[str, str]) -> Path:
-        """Write the `activate.sh` loading ``modules`` to :attr:`path` and return it."""
-        self.path.write_text(self.render(modules), encoding="utf-8")
+        """Write the `activate.sh` loading ``modules`` to :attr:`path` and return it.
+
+        Line feeds on every machine, since bash reads a Windows `\\r\\n` as part of each command.
+        """
+        self.path.write_text(self.render(modules), encoding="utf-8", newline="\n")
         return self.path

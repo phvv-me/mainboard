@@ -157,7 +157,14 @@ def test_frozen_registry_install_keeps_exact_version_and_native_lock(
 
 
 @pytest.mark.parametrize(
-    "declared", ["*", ">=14", {"version": "14.1.0"}, {"version": ">=14", "locked": True}]
+    "declared",
+    [
+        "*",
+        ">=14",
+        {"version": "14.1.0"},
+        {"version": ">=14", "locked": True},
+        {"version": "14.1", "locked": True},
+    ],
 )
 def test_frozen_install_refuses_unresolved_crates(declared: Json, bind: Bind) -> None:
     with pytest.raises(MissionError, match="frozen installation"):

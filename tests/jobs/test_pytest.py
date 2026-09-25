@@ -1,6 +1,6 @@
 # A pytest target runs through native pytest, and the closure carries the harness the walk
-# cannot see. Every proof here runs the runner as its own process over a committed workspace,
-# the guard armed from the staged listing, so what passes is what a dispatch would run.
+# cannot see. Every end-to-end proof here runs the runner as its own process over a committed
+# workspace, the guard armed from the staged listing, so what passes is what a dispatch would run.
 
 import os
 import subprocess
@@ -8,11 +8,15 @@ import sys
 from pathlib import Path
 
 import pytest
+from _pytest import assertion
 
 from mainboard import MissionError
 from mainboard.dispatch.provenance import SourceTree, listing
 from mainboard.dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
+from mainboard.jobs import call
 from mainboard.jobs.closure import Closure
+from mainboard.jobs.pins import STAGING
+from mainboard.jobs.pytest import Judged
 from mainboard.jobs.target import Target
 
 from ..support import Lab
@@ -329,3 +333,69 @@ def test_the_declaration_survives_a_class_node_id(pytest_lab: Lab) -> None:
     """`Class::test_method[1]` reaches the decorated method inside the class body."""
     closure = closure_of(pytest_lab, "tests/jobs/test_declared.py::TestCases::test_method[1]")
     assert closure.needs == ("data/other",)
+
+
+# The proofs above run the runner as its own process, which is what a dispatch runs and what no
+# coverage tracer in this process can see. The two below drive the same entry inside this
+# interpreter over a scratch workspace, `pytester` keeping its imports and paths from leaking.
+_JUDGED = """import importlib
+
+
+def test_shipped():
+    pass
+
+
+def test_reaches_a_stray():
+    importlib.import_module("probe.test_" + "stray")
+"""
+
+
+def test_the_judged_hook_refuses_an_unshipped_test_module_and_leaves_nothing_installed(
+    pytester: pytest.Pytester,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The shipped module runs through pytest's own loader, the stray one is refused by name.
+
+    And the installer pytest calls is its own again once the run answers, with no judged finder
+    left on `sys.meta_path` for whatever this process imports next.
+    """
+    pytester.makepyfile(
+        **{"probe/__init__": "", "probe/test_shipped": _JUDGED, "probe/test_stray": "STRAY = 1\n"}
+    )
+    listed = pytester.path / "closure.tsv"
+    listed.write_text("probe/__init__.py\nprobe/test_shipped.py\n", encoding="utf-8")
+    monkeypatch.setenv(CLOSURE_VAR, str(listed))
+    monkeypatch.setenv(FIRST_PARTY_VAR, "probe")
+    monkeypatch.delenv(DEFERRED_VAR, raising=False)
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    installer = assertion.install_importhook
+
+    code = call.main(["probe/test_shipped.py", "--", "-p", "no:cacheprovider"])
+
+    assert code == pytest.ExitCode.TESTS_FAILED
+    report = capsys.readouterr().out
+    assert "1 failed, 1 passed" in report
+    assert "probe.test_stray is first-party code outside this job's closure" in report
+    assert assertion.install_importhook is installer
+    assert not any(isinstance(finder, Judged) for finder in sys.meta_path)
+
+
+def test_a_test_target_without_a_listing_runs_under_pytests_hook_and_reads_staged_pins(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local run arms no guard, and a job that staged Hub pins reads exactly them."""
+    pytester.makepyfile(
+        test_local="import os\n\n\ndef test_reads_the_staged_pins():\n"
+        "    assert os.environ['HF_HUB_CACHE'].endswith('pins')\n"
+    )
+    (pytester.path / STAGING).mkdir(parents=True)
+    monkeypatch.delenv(CLOSURE_VAR, raising=False)
+    monkeypatch.delenv("HF_HUB_CACHE", raising=False)
+    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    before = list(sys.meta_path)
+
+    code = call.main(["test_local.py::test_reads_the_staged_pins", "--", "-p", "no:cacheprovider"])
+
+    assert code == pytest.ExitCode.OK
+    assert sys.meta_path == before

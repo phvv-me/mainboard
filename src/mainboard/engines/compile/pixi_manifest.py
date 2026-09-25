@@ -194,10 +194,9 @@ def _inside(token: str, *, generated_dir: PurePath) -> str | None:
     Pure arithmetic over the spelling, so the answer is the same on a machine where neither
     location exists. An empty answer is the workspace root itself.
     """
+    # pathlib already drops every `.` component from `parts`, so only `..` needs arithmetic.
     parts: list[str] = []
     for part in (*generated_dir.parts, *PurePosixPath(token).parts):
-        if part == ".":
-            continue
         if part != "..":
             parts.append(part)
         elif parts:

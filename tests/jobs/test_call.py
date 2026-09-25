@@ -1,6 +1,8 @@
 import runpy
+import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from cyclopts import App
@@ -12,6 +14,10 @@ from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
 
 from ..support import Lab
+
+if TYPE_CHECKING:
+    from pytest_subprocess import FakeProcess
+    from pytest_subprocess.fake_popen import FakePopen
 
 
 def sealed(
@@ -167,8 +173,15 @@ def test_a_deferred_distribution_is_admitted_regardless_of_what_the_closure_ship
         "research/camp/experiments/node/run.py",
         # `..helper.tools` stays imported so the node's ancestor packages keep shipping exactly
         # as they do for the plain job; only `ext._native` is new here.
-        "from ..helper.tools import tool\n\nimport ext._native\n\n\n"
-        "def main() -> int:\n    tool()\n    return ext._native.VALUE\n",
+        """from ..helper.tools import tool
+
+import ext._native
+
+
+def main() -> int:
+    tool()
+    return ext._native.VALUE
+""",
     )
     environment = lab.compiled(
         "camp-ext",
@@ -187,3 +200,37 @@ def test_a_deferred_distribution_is_admitted_regardless_of_what_the_closure_ship
     # `PYTHONPATH`; the guard's job is to let that resolution happen, not to answer it.
     monkeypatch.syspath_prepend(str(lab.root / "packages/ext/src"))
     assert call.main([f"{Lab.JOB}::main"]) == 42
+
+
+def _overrun(process: FakePopen) -> None:
+    """A child still running when its deadline passed, as `subprocess.run` reports one."""
+    raise subprocess.TimeoutExpired(process.args, 30)
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "code", "ran"),
+    [
+        pytest.param((0, 0, 0), 0, ["a", "b", "c"], id="every-cell-passes"),
+        pytest.param((0, 3, 0), 3, ["a", "b"], id="the-first-failure-stops-the-group"),
+        pytest.param((None, 0, 0), 124, ["a"], id="a-cell-past-its-timeout-is-killed"),
+    ],
+)
+def test_a_fresh_group_runs_every_cell_as_its_own_process_until_one_fails(
+    outcomes: tuple[int | None, ...], code: int, ran: list[str], fp: FakeProcess
+) -> None:
+    """A timed cell inherits nothing from the one before it, and a broken card stops the lane.
+
+    A cell that never answers is the one outcome with no exit code of its own, so the child
+    stands in for it by overrunning the deadline the runner handed `subprocess.run`.
+    """
+    for identity, returncode in zip("abc", outcomes, strict=True):
+        cell = [sys.executable, "-m", "mainboard.jobs.call", f"lane.py::test[{identity}]"]
+        if returncode is None:
+            fp.register([*cell, "--", "-q"], callback=_overrun)
+        else:
+            fp.register([*cell, "--", "-q"], returncode=returncode)
+
+    fresh = ["--fresh", "--timeout", "30", "a", "b", "c", "--", "-q"]
+
+    assert call.main(["lane.py::test", "--", *fresh]) == code
+    assert [list(command)[3] for command in fp.calls] == [f"lane.py::test[{cell}]" for cell in ran]

@@ -334,6 +334,27 @@ def test_typed_arguments_refuse_templates_the_fallback_cannot_bind(
 
 
 @pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        pytest.param("{{ missing }}", "refers to undeclared argument", id="unknown-name"),
+        pytest.param("{{ suite | upper }}", "uses a template expression", id="an-expression"),
+    ],
+)
+def test_a_task_environment_refuses_templates_the_fallback_cannot_bind(
+    value: str, message: str, tmp_path: Path
+) -> None:
+    """An environment value is held to the contract its command is, rather than passed raw."""
+    task = WindowsTask.parse(
+        "check",
+        {"cmd": "check", "args": ["suite"], "env": {"SUITE": value}},
+        manifest=tmp_path / "pixi.toml",
+    )
+
+    with pytest.raises(MissionError, match=message):
+        task.invocation(("unit",))
+
+
+@pytest.mark.parametrize(
     ("body", "message"),
     [
         pytest.param("[tasks]\ncheck = 1\n", "non-table 'definition'", id="definition"),

@@ -339,3 +339,65 @@ def test_the_extension_answer_comes_from_the_target_environment_not_this_interpr
     assert "packages/sub/src/sub/__init__.py" in closure.files
     assert not any(file.startswith(f"{_EXT}/") for file in closure.files)
     assert closure.deferred == ("ext",)
+
+
+def test_a_hub_pin_need_is_checked_when_the_closure_is_taken_and_kept_apart_from_paths(
+    lab: Lab,
+) -> None:
+    """A misspelled pin fails the dispatch on the workstation, not the job on the node."""
+    closure = closure_of(lab, needs=("hf://o/n@r/tokenizer.json",))
+    assert closure.needs == ("data/corpus",)
+    assert closure.pins == ("hf://o/n@r/tokenizer.json",)
+    with pytest.raises(MissionError, match="spelled"):
+        closure_of(lab, needs=("hf://o/n/tokenizer.json",))
+
+
+_PROBE = "research/camp/experiments/node/test_probe.py"
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "adopted"),
+    [
+        pytest.param(
+            "pyproject.toml", "[tool.pytest.ini_options]\naddopts = '-q'\n", True, id="pyproject"
+        ),
+        pytest.param(
+            "pyproject.toml", "[tool.ruff]\nline-length = 99\n", False, id="other-tools-only"
+        ),
+        pytest.param("pyproject.toml", "tool = 'pytest'\n", False, id="tool-not-a-table"),
+        pytest.param("pyproject.toml", "[tool.pytest\n", False, id="not-toml"),
+        pytest.param("tox.ini", "[pytest]\naddopts = -q\n", True, id="tox"),
+        pytest.param("setup.cfg", "[tool:pytest]\naddopts = -q\n", True, id="setup-cfg"),
+        pytest.param("setup.cfg", "[metadata]\nname = camp\n", False, id="setup-cfg-without"),
+    ],
+)
+def test_a_test_node_ships_the_pytest_config_pytest_itself_would_adopt(
+    name: str, text: str, adopted: bool, lab: Lab
+) -> None:
+    """A shared file is the node's config only when it carries pytest's own section.
+
+    Read statically, so a `pyproject.toml` that configures other tools, or that is not TOML at
+    all, is simply not a pytest config rather than an error.
+    """
+    lab.write(f"research/camp/{name}", text)
+    lab.write(_PROBE, "def test_probe():\n    pass\n")
+
+    closure = closure_of(lab, f"{_PROBE}::test_probe")
+
+    assert (f"research/camp/{name}" in closure.files) is adopted
+
+
+def test_an_annotated_plugins_list_joins_the_closure_and_a_non_string_entry_is_refused(
+    lab: Lab,
+) -> None:
+    conftest = "research/camp/experiments/node/conftest.py"
+    lab.write("research/camp/experiments/helper/plugin.py", "PLUGIN = 1\n")
+    lab.write(_PROBE, "def test_probe():\n    pass\n")
+    lab.write(conftest, "pytest_plugins: list[str] = ['experiments.helper.plugin']\n")
+
+    closure = closure_of(lab, f"{_PROBE}::test_probe")
+
+    assert "research/camp/experiments/helper/plugin.py" in closure.files
+    lab.write(conftest, "pytest_plugins = ['experiments.helper.plugin', 3]\n")
+    with pytest.raises(MissionError, match="name modules as strings"):
+        closure_of(lab, f"{_PROBE}::test_probe")

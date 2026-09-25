@@ -113,7 +113,7 @@ def test_a_dependency_that_leaves_the_root_is_compiled_at_a_location_inside_it(
     assert _VENDORED in compiled
     assert "packages/sample_lib" not in compiled
     anchor = anchored(compiled, root=root, generated_dir=environment_shard("default"))
-    assert f'path = "{root}/.mainboard/vendor/sample-lib"' in anchor
+    assert f'path = "{root.as_posix()}/.mainboard/vendor/sample-lib"' in anchor
     assert self_installed(compiled, generated_dir=environment_shard("default")) == [
         "",
         ".mainboard/vendor/sample-lib",

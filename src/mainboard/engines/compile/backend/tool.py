@@ -24,15 +24,18 @@ _SCRIPT_LAUNCHERS = {".cmd", ".bat"}
 def windows_launcher(name: str) -> BaseCommand:
     """The command that runs `name` on Windows: its `PATHEXT` spelling, under cmd.exe if a script.
 
-    name: the bare program name, `npm` say.
+    name: the program, `npm` say, or a spelling that already carries its extension or its
+        directory, `C:/Python/python.exe`, which is looked up as it stands.
     """
     extensions = local.env.get("PATHEXT", ".EXE;.CMD;.BAT").lower().split(";")
+    suffix = Path(name).suffix.lower()
+    spellings = [name] if suffix and suffix in extensions else [name + ext for ext in extensions]
     for directory in local.env.path:
-        for extension in extensions:
-            candidate = Path(str(directory)) / f"{name}{extension}"
+        for spelling in spellings:
+            candidate = Path(str(directory)) / spelling
             if not candidate.is_file():
                 continue
-            if extension in _SCRIPT_LAUNCHERS:
+            if candidate.suffix.lower() in _SCRIPT_LAUNCHERS:
                 return local["cmd.exe"]["/d", "/c", str(candidate)]
             return local[str(candidate)]
     raise MissionError(f"{name} is not on PATH")

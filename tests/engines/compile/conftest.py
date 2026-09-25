@@ -100,7 +100,12 @@ def stub_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[
     bindir = tmp_path_factory.mktemp("stubs")
 
     def install(name: str) -> str:
-        executable = bindir / (name.removesuffix(".exe") if os.name != "nt" else name)
+        # Windows runs a program only by a `PATHEXT` spelling, so a bare name stands there as
+        # its `.exe`, which is what both plumbum and a manager's launcher resolve it to.
+        if os.name == "nt":
+            executable = bindir / (name if Path(name).suffix else f"{name}.exe")
+        else:
+            executable = bindir / name.removesuffix(".exe")
         executable.write_text("#!/bin/sh\n")
         executable.chmod(0o755)
         # A Windows lookup finds `worker.exe` for `worker` through PATHEXT and a POSIX one

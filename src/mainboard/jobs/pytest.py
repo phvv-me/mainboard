@@ -2,6 +2,7 @@
 
 import sys
 from collections.abc import Sequence
+from contextlib import suppress
 from importlib.abc import MetaPathFinder
 from importlib.machinery import ModuleSpec
 from types import ModuleType
@@ -49,7 +50,7 @@ class Runner:
         finally:
             assertion.install_importhook = self.original
             for finder in self.installed:
-                if finder in sys.meta_path:
+                with suppress(ValueError):
                     sys.meta_path.remove(finder)
 
     def install(self, config: Config) -> AssertionRewritingHook:

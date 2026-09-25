@@ -1,3 +1,6 @@
+import runpy
+import sys
+
 import pytest
 
 from mainboard.core.errors import MissionError
@@ -80,3 +83,44 @@ def test_a_fresh_plan_reads_its_timeout_ids_and_pytest_arguments() -> None:
     assert Fresh.parsed(["-q"]) is None
     with pytest.raises(SystemExit, match="parametrize ids"):
         Fresh.parsed(["--fresh", "--", "-q"])
+    with pytest.raises(SystemExit, match="takes the seconds"):
+        Fresh.parsed(["--fresh", "--timeout"])
+
+
+# Running the imported module again as `__main__` is the point, and the entry reads `sys.argv`.
+@pytest.mark.filterwarnings("ignore:'mainboard.jobs.lanes' found in sys.modules:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:Cyclopts application invoked without tokens:UserWarning")
+def test_the_module_collects_a_lane_under_pytest_and_prints_one_cell_per_parametrization(
+    pytester: pytest.Pytester,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`python -m mainboard.jobs.lanes collect` runs in the workspace env, and prints the plan.
+
+    Only the lane named is collected, each cell with its parametrize values as text, and
+    nothing is run: collecting a lane of GPU cells must not start one of them.
+    """
+    pytester.makepyfile(
+        lane="""import pytest
+
+
+@pytest.mark.parametrize('model', ['gpt2', 'qwen3'])
+def test(model):
+    raise AssertionError('collected, never run')
+
+
+def test_other():
+    pass
+"""
+    )
+    monkeypatch.setattr(sys, "argv", ["lanes", "collect", "lane.py::test"])
+
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_module("mainboard.jobs.lanes", run_name="__main__", alter_sys=True)
+
+    assert exited.value.code == 0
+    cells = lanes.parsed(capfd.readouterr().out)
+    assert [(cell.nodeid, cell.key, cell.params) for cell in cells] == [
+        ("lane.py::test[gpt2]", "gpt2", {"model": "gpt2"}),
+        ("lane.py::test[qwen3]", "qwen3", {"model": "qwen3"}),
+    ]

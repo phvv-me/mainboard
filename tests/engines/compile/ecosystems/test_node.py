@@ -177,3 +177,10 @@ def test_empty_node_table_does_not_install_a_stray_manifest(bind: Bind, fp: Fake
     node.sync()
     assert node.frozen_inputs() == ()
     assert not fp.calls
+
+
+def test_a_manager_without_a_native_lock_is_refused_a_frozen_install(bind: Bind) -> None:
+    """Only a manager whose lock pins the whole tree can install the same one on a host."""
+    node = bind(Node, {"manager": "deno", "deps": {"vite": "*"}})
+    with pytest.raises(MissionError, match="manager='deno' has no supported frozen mode"):
+        node.frozen_inputs()

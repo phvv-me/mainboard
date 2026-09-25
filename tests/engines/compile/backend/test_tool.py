@@ -119,6 +119,29 @@ def test_on_windows_a_manager_runs_by_its_pathext_spelling_and_a_script_under_cm
         node = tool_module.windows_launcher("node")
         with pytest.raises(MissionError, match="yarn is not on PATH"):
             tool_module.windows_launcher("yarn")
+        # A spelling that already names its program, by extension or by path, is taken as is.
+        named = tool_module.windows_launcher("node.exe")
+        located = tool_module.windows_launcher(str(tmp_path / "npm.cmd"))
     assert npm.formulate()[-3:] == ["/d", "/c", str(tmp_path / "npm.cmd")]
     assert npm.formulate()[0].lower().endswith("cmd.exe")
     assert node.formulate() == [str(tmp_path / "node.exe")]
+    assert named.formulate() == [str(tmp_path / "node.exe")]
+    assert located.formulate() == npm.formulate()
+
+
+class _Node(Tool):
+    """A manager conda ships both as a POSIX script and as the program Windows runs."""
+
+    name = "node"
+
+
+def test_on_windows_a_tools_own_command_is_the_launcher_and_never_the_posix_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "node").write_text("#!/bin/sh\n")
+    (tmp_path / "node.exe").write_bytes(b"MZ")
+    (tmp_path / "node.exe").chmod(0o755)
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    with local.env(PATH=str(tmp_path), PATHEXT=".EXE;.CMD;.BAT"):
+        command = _Node().command
+    assert command.formulate() == [str(tmp_path / "node.exe")]

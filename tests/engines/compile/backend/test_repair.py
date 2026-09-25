@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard.engines.compile.backend import EnvironmentAudit
+from mainboard.engines.compile.backend.repair import recorded_extensions
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -297,3 +298,44 @@ def test_build_output_inside_a_source_tree_never_dates_a_rebuild(
     aged(source / "target" / "debug" / "generated.c", 3_000_000_000)
 
     assert audit.suspect() == ()
+
+
+@pytest.mark.parametrize(
+    ("distribution", "files", "asked", "found"),
+    [
+        pytest.param(
+            "single-demo",
+            ["single.py", "native/core.so", "README", "single_demo-1.0.dist-info/RECORD"],
+            "single",
+            ["native/core.so"],
+            id="a-top-level-module-is-an-import-root-of-its-own",
+        ),
+        pytest.param(
+            "Native",
+            ["impl/core.so", "../../../bin/native"],
+            "native",
+            ["impl/core.so"],
+            id="a-distribution-named-like-the-import-answers-when-no-root-claims-it",
+        ),
+        pytest.param("native", ["impl/core.so"], "absent", [], id="an-unclaimed-import"),
+    ],
+)
+def test_the_extensions_an_import_resolves_through_are_read_off_the_claiming_record(
+    distribution: str,
+    files: list[str],
+    asked: str,
+    found: list[str],
+    record: Record,
+    site_packages: Path,
+) -> None:
+    """With no `top_level.txt`, the RECORD's own paths say which imports a distribution owns.
+
+    Its metadata and anything climbing out of site-packages claim nothing, and the name of the
+    distribution itself is the last resort, the way `packages_distributions` settles it.
+    """
+    record(site_packages, distribution, files=files)
+    prefix = site_packages.parent.parent.parent
+
+    assert recorded_extensions(asked, prefix=prefix) == tuple(
+        site_packages / path for path in found
+    )
