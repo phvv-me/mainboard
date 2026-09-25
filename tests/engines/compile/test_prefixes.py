@@ -21,6 +21,16 @@ if TYPE_CHECKING:
 _WORKSPACE = '[workspace]\nname = "w"\n'
 
 
+def hooked(fp: FakeProcess, pixi: str, *, occurrences: int = 1) -> None:
+    """Answer pixi's shell hook, and on Windows the recorded activation a prefix keeps beside it."""
+    fp.register(
+        [pixi, "shell-hook", fp.any(min=2, max=2), "--frozen", "--json", fp.any()],
+        stdout='{"environment_variables": {}, "activation_scripts": []}',
+        occurrences=16,
+    )
+    fp.register([pixi, "shell-hook", fp.any()], stdout="export ONE=1\n", occurrences=occurrences)
+
+
 @pytest.fixture
 def artifact(tmp_path: Path, manifest_from: Callable[[str], Manifest]) -> Callable[[str], Path]:
     """A factory writing a compiled artifact whose lock pins `text`, returning its directory."""
@@ -276,7 +286,7 @@ def test_a_second_lock_builds_beside_the_first_and_never_into_it(
     one shared prefix, and died importing sqlite3 against a half-reconciled environment. Here
     the second lock is a second directory, and the first is untouched down to its bytes.
     """
-    fp.register([tool_paths["pixi"], "shell-hook", fp.any()], stdout="export ONE=1\n")
+    hooked(fp, tool_paths["pixi"])
     fp.register([fp.any()], stdout="environment ready\n", occurrences=8)
     first = prefixes.materialize(artifact("one"))
     before = {path.name: path.read_bytes() for path in first.iterdir() if path.is_file()}
@@ -312,7 +322,7 @@ def test_a_workspace_that_installs_itself_is_built_against_its_root_and_not_the_
     anchored where it lands, in the manifest, in the lock that records the same local source,
     and in the generated shell the activation sources by name and could not find at all.
     """
-    fp.register([tool_paths["pixi"], "shell-hook", fp.any()], stdout="export ONE=1\n")
+    hooked(fp, tool_paths["pixi"])
     fp.register([fp.any()], stdout="environment ready\n", occurrences=8)
     digest = digest_of(self_installing)
 
@@ -342,7 +352,7 @@ def test_one_artifact_is_one_environment_at_every_root_that_builds_it(
     copy each workspace builds for itself, which is also what lets a job activate an environment
     built from a pinned tree that no longer stands.
     """
-    fp.register([tool_paths["pixi"], "shell-hook", fp.any()], stdout="export ONE=1\n")
+    hooked(fp, tool_paths["pixi"])
     fp.register([fp.any()], stdout="environment ready\n", occurrences=16)
     here, there = (
         Prefixes(tmp_path / name, manifest_from(_WORKSPACE)) for name in ("here", "there")
@@ -362,7 +372,7 @@ def test_an_environment_already_built_is_answered_and_never_built_again(
     tool_paths: Mapping[str, str],
 ) -> None:
     """Which is what lets every job of a wave call this on the way in without a race."""
-    fp.register([tool_paths["pixi"], "shell-hook", fp.any()], stdout="export ONE=1\n")
+    hooked(fp, tool_paths["pixi"])
     fp.register([fp.any()], stdout="environment ready\n", occurrences=8)
     source = artifact("one")
     built = prefixes.materialize(source)
@@ -379,9 +389,7 @@ def test_module_stacks_build_separate_activations_without_rewriting_the_old_pref
     prefixes: Prefixes,
     tool_paths: Mapping[str, str],
 ) -> None:
-    fp.register(
-        [tool_paths["pixi"], "shell-hook", fp.any()], stdout="export ONE=1\n", occurrences=2
-    )
+    hooked(fp, tool_paths["pixi"], occurrences=2)
     fp.register([fp.any()], stdout="environment ready\n", occurrences=16)
     source = artifact("modules")
     first = prefixes.materialize(source, modules={"cuda": "12.8"})
