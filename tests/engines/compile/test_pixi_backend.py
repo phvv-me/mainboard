@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
     from plumbum.commands.base import BaseCommand
     from pytest_subprocess import FakeProcess
+    from pytest_subprocess.fake_popen import FakePopen
 
     from .support import Record
 
@@ -186,6 +187,35 @@ def test_install_repairs_a_wheel_damaged_underneath_pixi(
 
     assert len(fp.calls) == 2
     assert list(fp.calls[1]) == [tool_paths["pixi"], "reinstall", *scope, _DAMAGED]
+
+
+def test_install_reinstalls_a_conda_package_whose_linked_file_was_deleted_underneath(
+    fp: FakeProcess,
+    pixi: Pixi,
+    installed: Path,
+    tool_paths: Mapping[str, str],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prefix = pixi.env_prefix("default")
+    record = {"name": "dust", "files": ["bin/dust"]}
+    (prefix / "conda-meta" / "dust-1.2.6-0.json").write_text(json.dumps(record))
+    scope = ["--manifest-path", str(pixi.manifest), "--locked", "-e", "default"]
+
+    def relink(process: FakePopen) -> None:
+        del process
+        (prefix / "bin").mkdir()
+        (prefix / "bin" / "dust").write_text("")
+
+    fp.register([tool_paths["pixi"], "install", *scope], stdout="environment ready\n")
+    fp.register([tool_paths["pixi"], "reinstall", *scope, "dust"], callback=relink)
+
+    pixi.install("default")
+
+    assert installed.is_dir()
+    assert list(fp.calls[1]) == [tool_paths["pixi"], "reinstall", *scope, "dust"]
+    assert "reinstalling dust in 'default': files they installed are missing" in (
+        capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize(

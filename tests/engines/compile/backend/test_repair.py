@@ -1,3 +1,4 @@
+import json
 import os
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,29 @@ def audit(site_packages: Path) -> EnvironmentAudit:
 def aged(path: Path, moment: int) -> None:
     """Stamp `path` with a modification time in nanoseconds."""
     os.utime(path, ns=(moment, moment))
+
+
+def linked(prefix: Path, name: str, *files: str, present: bool = True) -> None:
+    """Record a conda package linking `files` into `prefix`, writing them when `present`."""
+    record = {"name": name, "version": "1.0", "files": list(files), "paths_data": {"paths": []}}
+    (prefix / "conda-meta").mkdir(exist_ok=True)
+    (prefix / "conda-meta" / f"{name}-1.0-0.json").write_text(json.dumps(record))
+    for file in files if present else ():
+        (prefix / file).parent.mkdir(parents=True, exist_ok=True)
+        (prefix / file).write_text("")
+
+
+def test_a_conda_package_missing_a_file_it_linked_is_damaged_and_an_intact_one_is_not(
+    audit: EnvironmentAudit,
+) -> None:
+    """dust ships a `.crates.toml` beside its binary, and cargo reading it deleted the binary."""
+    linked(audit.prefix, "dust", ".crates.toml", ".crates2.json", "bin/dust")
+    linked(audit.prefix, "ripgrep", "bin/rg")
+    linked(audit.prefix, "_openmp_mutex")
+    (audit.prefix / "bin" / "dust").unlink()
+
+    assert audit.damaged() == ("dust",)
+    assert audit.suspect() == ("dust",)
 
 
 def test_a_wheel_that_lost_every_import_root_is_damaged_and_named_in_a_stable_order(

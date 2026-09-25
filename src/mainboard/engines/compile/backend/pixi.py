@@ -1,6 +1,7 @@
 import json
 import os
 import platform
+import sys
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
@@ -403,10 +404,10 @@ class Pixi(Tool):
         )
 
     def repair(self, env: str) -> None:
-        """Reinstall whatever `env` holds that can no longer be trusted to import.
+        """Reinstall whatever `env` holds that is missing files or can no longer import.
 
         Only a finished install is audited, since a half-written prefix reads damaged everywhere.
-        A wheel still missing every import root after the reinstall raises.
+        A package still missing files after the reinstall raises.
         """
         if not self.ready(env):
             return
@@ -414,8 +415,12 @@ class Pixi(Tool):
         packages = audit.suspect()
         if not packages:
             return
+        sys.stderr.write(
+            f"{Project().name}: reinstalling {', '.join(packages)} in {env!r}: files they "
+            "installed are missing, or an editable's build is behind its sources\n"
+        )
         if self.environment_result("reinstall", "-e", env, *packages).returncode:
-            raise MissionError("`pixi reinstall` failed while repairing Python packages")
+            raise MissionError("`pixi reinstall` failed while repairing the environment")
         if remaining := audit.damaged():
             raise MissionError(f"{', '.join(remaining)} stayed incomplete after `pixi reinstall`")
 

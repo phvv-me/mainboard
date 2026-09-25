@@ -195,25 +195,54 @@ class InstalledPackage:
         return newest
 
 
+class CondaRecord(FrozenOpenModel):
+    """A conda package's `conda-meta` record: its name and every file it linked into the prefix."""
+
+    name: str
+    files: tuple[str, ...] = ()
+
+    def incomplete(self, prefix: Path) -> bool:
+        """Whether a file this package linked into `prefix` is gone.
+
+        Existence alone, which keeps a whole prefix to about a second; a dangling link it made
+        still counts as present.
+        """
+        return not all((prefix / name).exists(follow_symlinks=False) for name in self.files)
+
+
 class EnvironmentAudit:
-    """Names the PyPI packages an installed environment has to reinstall to be trustworthy.
+    """Names the packages an installed environment has to reinstall to be trustworthy.
 
     `pixi install` checks a package is recorded, not that it still works. Invisible to the lock:
-    a wheel whose files vanished underneath (a swapped CUDA provider, a half-deleted cache), and
-    an editable still carrying the extension of its first build. So the audit reads the prefix.
+    a wheel whose files vanished underneath (a swapped CUDA provider, a half-deleted cache), a
+    conda package's file something else deleted (cargo uninstalling the `dust` binary it read
+    off the package's own `.crates.toml`), and an editable still carrying the extension of its
+    first build. So the audit reads the prefix.
     """
 
     def __init__(self, prefix: Path) -> None:
         self.prefix = prefix
 
     @staticmethod
-    def names(packages: Iterable[InstalledPackage]) -> tuple[str, ...]:
+    def names(packages: Iterable[InstalledPackage | CondaRecord]) -> tuple[str, ...]:
         """The distinct names, ordered case-insensitively for a stable argv."""
         return tuple(sorted({package.name for package in packages}, key=str.casefold))
 
     def damaged(self) -> tuple[str, ...]:
-        """The installed wheels whose declared import roots have all disappeared."""
-        return self.names(package for package in self.installed() if package.damaged())
+        """The wheels with no import root left, and the conda packages missing a file."""
+        return self.names(
+            [
+                *(package for package in self.installed() if package.damaged()),
+                *self.incomplete(),
+            ]
+        )
+
+    def incomplete(self) -> Iterator[CondaRecord]:
+        """Every conda package in the prefix missing a file its `conda-meta` record lists."""
+        for path in (self.prefix / "conda-meta").glob("*.json"):
+            record = CondaRecord.model_validate_json(path.read_bytes())
+            if record.incomplete(self.prefix):
+                yield record
 
     def installed(self) -> Iterator[InstalledPackage]:
         """Every uv-installed distribution across the environment's site-packages trees."""
@@ -223,7 +252,14 @@ class EnvironmentAudit:
                     yield InstalledPackage(distribution, tree)
 
     def suspect(self) -> tuple[str, ...]:
-        """Every package to reinstall, the damaged wheels and the editables to rebuild."""
+        """Every package to reinstall: the damaged ones and the editables to rebuild."""
         return self.names(
-            package for package in self.installed() if package.damaged() or package.outdated()
+            [
+                *(
+                    package
+                    for package in self.installed()
+                    if package.damaged() or package.outdated()
+                ),
+                *self.incomplete(),
+            ]
         )
