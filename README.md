@@ -137,7 +137,7 @@ fleet-db4af53f
 $ mainboard batch run fleet.toml --only "sweep-*"    # the jobs that are ready, the rest recorded skipped
 fleet-db4af53f
 $ mainboard batch wait fleet-db4af53f             # block until every job settles, exit its verdict
-$ mainboard interact --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
+$ mainboard shell --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
 ```
 
 `prepare` measures compressed changes from the host's workspace mirror, plus
@@ -151,6 +151,46 @@ own directory, and each verb reads its cursor back out of those lines rather
 than out of memory. The topics and payloads are written down in one place,
 `batch/receipts.py`, so the file transport can become a broker without anything
 downstream noticing.
+
+## Holding a rented machine
+
+A rental per job rebuilds the environment every time. A held machine is rented,
+named, set up once, and then takes jobs in seconds until its deadline:
+
+```console
+$ mainboard hold vast --gpu-name "RTX 5090" --for 3h --max-usd 4   # rent, alias, onboard, park
+$ mainboard submit --on vast-rtx-5090 --walltime 00:20:00 -- path/to/test_x.py::test_y
+$ mainboard compute                                                  # every live rental, held or not
+$ mainboard release vast-rtx-5090                                    # stop billing now
+```
+
+The alias is a marked block at the top of `~/.ssh/config`, the host profile is the
+provider's own (its sync scope and variables) as an ssh host, and the deadline is
+the rental's lease in the run registry, so `monitor` releases it on time and
+`compute` releases anything past due before it lists. `--max-usd` caps the whole
+hold, landing included.
+
+## Papers
+
+A manuscript is declared once and checked on every build:
+
+```toml
+[papers.head]
+dir = "research/llm-head/papers/iclr-2027-llm-head/latex"
+main = "paper.tex"      # the default
+limit = 9               # the last page the main text may reach
+ends = "Conclusion"     # the section that must end by that page
+```
+
+```console
+$ mainboard paper head                        # build, then report and exit 1 on any problem
+$ mainboard paper head --show "Pareto front"  # and render the page carrying that phrase to PNG
+```
+
+The build is tectonic from the workspace environment. The report names every
+error, undefined reference and citation, multiply defined label and overfull box
+by `file:line`, the page count, the page each section starts on, and the last
+page SyncTeX places any line of `ends` on, unnumbered statements excluded.
 
 ## One file
 
@@ -559,7 +599,4 @@ provider or container configuration. The provider router, `board.on("auto")`,
 scoring hosts by fit,
 price, and time to result across private clusters and commercial GPU clouds,
 is under active development.
-
-`[engines.*]` and `serve` currently stage a declared command in a container on an
-owned host. They reuse `run`'s container command construction. Provider-hosted
-serving and automatic host selection remain under development.
+Automatic host selection remains under development.

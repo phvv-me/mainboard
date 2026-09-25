@@ -25,7 +25,7 @@ from cyclopts import App
 from patos import FrozenModel, FrozenOpenModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
 
 _SCHEMA_VERSION = 1
 # FP32 lanes per multiprocessor by compute capability major version; the datasheet peak the
@@ -278,31 +278,6 @@ def main(*, device: int = 0, n: int = 8192, repetitions: int = 5) -> None:
     """
     report = Stress(TorchKernels(device), n=n, repetitions=repetitions).measure()
     print(report.model_dump_json())
-
-
-def rows(report: StressReport) -> Sequence[dict[str, str | float | int]]:
-    """The report as one row per precision and link, for tables."""
-    listed: list[dict[str, str | float | int]] = [
-        {
-            "measure": rate.precision.upper(),
-            "n": rate.n,
-            "value": round(rate.tflops, 1) if rate.supported else 0.0,
-            "unit": "TOPS" if rate.precision == Precision.INT8 else "TFLOPS",
-            "note": rate.note if not rate.supported else "",
-        }
-        for rate in report.rates
-    ]
-    listed.extend(
-        {
-            "measure": link.path,
-            "n": link.megabytes,
-            "value": round(link.gb_s, 1),
-            "unit": "GB/s",
-            "note": "",
-        }
-        for link in report.links
-    )
-    return listed
 
 
 if __name__ == "__main__":

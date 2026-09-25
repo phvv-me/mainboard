@@ -26,13 +26,13 @@ from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .durable import schedule
 from .help import Help
+from .holds import Holds
 from .jobs import lanes as lanes_module
 from .lint import EditHook, GitHook, Inventory, Linter, Report
 from .listing import Listing
 from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
-from .probe.stress import rows as stress_rows
 from .render import diverted, install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
 from .vigil import STALL_SECONDS
@@ -45,6 +45,8 @@ if TYPE_CHECKING:
     from .deps import Change
     from .dispatch.state import MonitorReport
     from .git import Step
+    from .manifest.held import Held
+    from .manuscript import Report as PaperReport
     from .render.values import Node
     from .verdicts import StreamVerdict
 
@@ -381,74 +383,54 @@ def build(root: Path | None = None) -> App:
         return 1 if any(section.verdict is Verdict.FAIL for section in sections) else 0
 
     @app.command
-    def install(
-        env: str = "", *, on: str = "local", resolve: bool = False, profile: str = ""
-    ) -> None:
-        """Compile the manifest and install the environment, here or on a host.
+    def install(env: str = "", *, resolve: bool = False, profile: str = "") -> None:
+        """Compile the manifest and install the environment on this machine.
 
-        Targeting a host alias runs the whole onboarding there: mirror the workspace, install
-        the tool from that mirror, provision the environment, and probe what the host became.
+        Another machine is onboarded with `setup`, which ends by running this verb there.
 
-        env: the environment name, the target's declared profile choice when omitted.
-        on: the host alias to install on, `local` for this machine.
+        env: the environment name, this machine's declared profile choice when omitted.
         resolve: allow a fresh dependency solve when the lock is stale.
         profile: the declared host profile describing this machine, so the generated activation
-            carries that host's modules; used when a host installs its own environment.
+            carries that host's modules; what `setup` passes when a host installs its own.
         """
-        with progress(f"installing {env} on {on}") as stage:
-            board(on).install(env, resolve=resolve, profile=profile, watch=stage)
-
-    @app.command
-    def shell(env: str = "") -> NoReturn:
-        """Open an interactive shell with this workspace's environment already activated.
-
-        The daily way in, and the one verb that works from a terminal where nothing is
-        activated yet. This process becomes the shell, so quitting it returns to the terminal
-        that asked.
-
-        env: the environment name, the profile's declared choice when omitted.
-        """
-        board("local").shell(env)
-
-    @app.command
-    def serve(name: str, *, on: str = "local") -> int:
-        """Run a declared engine's serve command through its container, exiting with its code.
-
-        Renders the same staged line `run` builds for any command, sourced from
-        `[engines.<name>]` instead of the terminal: its command, inside the container it
-        declares. No image is built here, the container's own image must already exist.
-
-        name: the `[engines.<name>]` table to serve.
-        on: the host alias to serve on, `local` for this machine.
-        """
-        return board(on).serve(name)
+        with progress(f"installing {env or 'the environment'}") as stage:
+            board("local").install(env, resolve=resolve, profile=profile, watch=stage)
 
     @app.command(version_flags=[])
-    def interact(
+    def shell(
         *command: str,
-        on: str,
+        on: str = "local",
         env: str = "",
         queue: str = "",
         walltime: str = "",
         keep: bool = False,
     ) -> NoReturn:
-        """Open an interactive session on a host, inside its mirrored workspace.
+        """Open an interactive shell in this workspace's environment, here or on a host.
 
-        `shell` for a machine that is not this one. This process becomes the ssh, so quitting
-        the session returns to the terminal that asked. A queued host is asked for an
-        interactive allocation first, so the terminal lands on a compute node rather than on the
-        login node the request was made from.
+        The daily way in, and the one verb that works from a terminal where nothing is
+        activated yet. This process becomes the shell, so quitting it returns to the terminal
+        that asked. On a host the shell opens inside its mirrored workspace, and a queued host
+        is asked for an interactive allocation first, so the terminal lands on a compute node
+        rather than on the login node the request was made from.
 
-        command: a command to run instead of handing over the terminal, from the first token
-            that is not an option of this verb.
-        on: the host alias the session opens on.
-        env: an environment name overriding the profile's choice.
-        queue: the queue the allocation targets, the profile's declared choice when omitted.
-        walltime: the session's wall-clock limit, the profile's declared choice when omitted.
-        keep: hold the session in tmux on the far side so a dropped terminal leaves the
-            allocation up, and reattach to one already held.
+        command: on a host, a command to run instead of handing over the terminal, from the
+            first token that is not an option of this verb.
+        on: the host alias the shell opens on, `local` for this machine.
+        env: the environment name, the profile's declared choice when omitted.
+        queue: on a queued host, the queue the allocation targets, the profile's when omitted.
+        walltime: on a queued host, the session's wall-clock limit, the profile's when omitted.
+        keep: on a host, hold the session in tmux on the far side so a dropped terminal leaves
+            the allocation up, and reattach to one already held.
         """
-        board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
+        if on != "local":
+            board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
+        elif command or queue or walltime or keep:
+            raise MissionError(
+                "a command, a queue, a walltime and --keep belong to a host's shell; run a "
+                f"command here with `{project.name} run -- <command>`"
+            )
+        else:
+            board("local").shell(env)
 
     @app.command
     def setup(
@@ -517,23 +499,63 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
-    def hosts(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
-        """List the hosts already set up, newest first, from the dispatch state.
+    def hold(
+        provider: str,
+        *,
+        for_: Annotated[str, Parameter(name="--for")],
+        as_: Annotated[str, Parameter(name="--as")] = "",
+        gpu_name: str = "",
+        gpus: int = 0,
+        max_usd: float = 0.0,
+        env: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Rent a machine and keep it as an ssh host until a deadline, set up and ready for jobs.
 
+        A rental per job rebuilds the environment every time; a held machine is set up once and
+        then takes `submit --on <alias>` in seconds. The machine gets an alias in the ssh config,
+        onboards like `setup`, and is recorded with its deadline, which `monitor` and `compute`
+        both enforce by releasing it, so a forgotten hold stops billing on time.
+
+        provider: the provider host to rent through, `vast` say.
+        for_: how long to keep it once it is ready, `3h`, `90m` or `1h30m`.
+        as_: the alias to reach it by, `<provider>-<card>` when omitted.
+        gpu_name: the card to rent, in the provider's own spelling.
+        gpus: cards per machine, the provider profile's default when 0.
+        max_usd: the spend cap over the whole hold, landing included, the provider's default
+            when 0.
+        env: the environment to set up, the provider profile's own when omitted.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over host/root/env/installer/tool/onboarded_at.
+        fields: a comma-separated projection over the hold's fields.
         """
-        payloads = [
-            setup.model_dump(include=set(_HOSTS_COLUMNS))
-            for setup in board("local").dispatcher.cache.hosts()
-        ]
-        rows(
-            payloads,
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="hosts",
-        )
+        with progress(f"holding a {gpu_name or provider} machine") as stage:
+            held = Holds(board("local")).hold(
+                provider,
+                duration=for_,
+                alias=as_,
+                gpu_name=gpu_name,
+                gpus=gpus,
+                max_usd=max_usd,
+                env=env,
+                watch=stage,
+            )
+        _held(held, json_mode=json, agent=agent, fields=fields, title="hold")
+
+    @app.command
+    def release(alias: str, *, json: bool = False, agent: bool = False, fields: str = "") -> None:
+        """End a held machine now: stop its billing, settle its record and drop its alias.
+
+        alias: the held machine's alias, as `hold` printed it.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the hold's fields.
+        """
+        with progress(f"releasing {alias}"):
+            held = Holds(board("local")).release(alias)
+        _held(held, json_mode=json, agent=agent, fields=fields, title="release")
 
     @app.command
     def compute(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
@@ -553,11 +575,19 @@ def build(root: Path | None = None) -> App:
 
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
+        Held machines past their deadline are released first, and every machine a provider
+        says this account is renting is listed after that provider, named by its hold when this
+        workspace holds it.
+
         fields: comma-separated name/kind/access/detail/usd_hr/credit_usd/observed_at/cached_at.
         """
         mode = mode_of(json_mode=json, agent=agent)
+        workspace = board("local")
+        for released in Holds(workspace).expire():
+            gone = f"{released.provider} {released.handle}"
+            print(f"released {released.alias}, {gone}", file=sys.stderr)
         with progress("probing every compute path"):
-            paths = board("local").compute().paths()
+            paths = workspace.compute().paths()
         rows(
             [path.model_dump() for path in paths],
             mode=mode,
@@ -839,92 +869,74 @@ def build(root: Path | None = None) -> App:
         rows(listed, mode=mode_of(json_mode=False, agent=agent), fields=(), title="gpus")
 
     @app.command
-    def stress(
-        on: str = "local",
+    def check(
         *,
-        json: bool = False,
-        agent: bool = False,
-        n: int = 8192,
-        repetitions: int = 5,
-    ) -> None:
-        """Measure a card's achieved rates per precision and its copy bandwidths.
-
-        on: the host alias to measure, `local` for this machine.
-        json: print the report JSON instead of the table.
-        agent: print the compact tabular mode instead of the default rich table.
-        n: the square GEMM side timed at every precision (FP64 runs at half).
-        repetitions: timed calls per measurement, whose median is kept.
-        """
-        with progress(f"stressing {on}"):
-            report = board(on).stress(n=n, repetitions=repetitions)
-        if json:
-            print(report.model_dump_json())
-            return
-        record(
-            {
-                "device": report.device,
-                "capability": report.capability,
-                "sm_count": report.sm_count,
-                "datasheet_fp32_tflops": round(report.datasheet_fp32_tflops, 1),
-                "rows": tuple(stress_rows(report)),
-            },
-            mode=mode_of(json_mode=False, agent=agent),
-            fields=(),
-            title="stress",
-        )
-
-    @app.command
-    def plan(
-        host: str = "local",
-        *,
+        on: str = "",
         env: str = "",
         container: str = "",
         json: bool = False,
         agent: bool = False,
         fields: str = "",
     ) -> None:
-        """Show the resolved execution plan for a host.
+        """Validate the workspace manifest, showing what it declares or what a host resolves to.
 
-        host: the host alias, `local` for this machine.
-        env: an environment name overriding the profile's choice.
-        container: a container name overriding the profile's, `none` for bare.
+        on: a host alias, `local` for this machine, to show the execution plan it resolves to
+            instead of the manifest's declarations.
+        env: with `--on`, an environment name overriding the profile's choice.
+        container: with `--on`, a container name overriding the profile's, `none` for bare.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over the plan fields.
+        fields: a comma-separated projection over the declared or planned fields.
         """
         base = workspace_root()
         manifest = load(base / project.manifest)
-        resolved = Resolver(manifest).plan(host, env=env, container=container)
-        record(
-            resolved.model_dump(),
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="plan",
-        )
-
-    @app.command
-    def check(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
-        """Validate the workspace manifest, showing what it declares.
-
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over the declared fields.
-        """
-        base = workspace_root()
-        manifest = load(base / project.manifest)
+        mode = mode_of(json_mode=json, agent=agent)
+        if on:
+            resolved = Resolver(manifest).plan(on, env=env, container=container)
+            record(resolved.model_dump(), mode=mode, fields=_fields(fields), title="plan")
+            return
+        if env or container:
+            raise MissionError("--env and --container override a host's plan; pass --on too")
         payload: dict[str, Node] = {
             "workspace": manifest.workspace.name,
             "environments": tuple(sorted(manifest.envs)),
             "containers": tuple(sorted(manifest.containers)),
             "hosts": tuple(sorted(manifest.profiles())),
+            "papers": tuple(sorted(manifest.papers)),
             "tasks": tuple(sorted(manifest.tasks)),
         }
-        record(
-            payload,
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="check",
-        )
+        record(payload, mode=mode, fields=_fields(fields), title="check")
+
+    @app.command
+    def paper(
+        name: str,
+        *,
+        show: tuple[str, ...] = (),
+        dpi: int = 110,
+        json: bool = False,
+        agent: bool = False,
+    ) -> int:
+        """Build a declared manuscript and report everything wrong with it, exiting 1 on any.
+
+        Built with tectonic in the workspace environment, then read back: errors, undefined
+        references and citations, multiply defined labels and overfull boxes with the file and
+        line each comes from, the page count, the page every section starts on, and whether
+        the section `[papers.<name>] ends` names ends by page `limit`.
+
+        name: the `[papers.<name>]` manuscript.
+        show: a phrase from the manuscript, repeatable; the page it appears on is rendered to a
+            PNG beside the build and its path printed.
+        dpi: the resolution a shown page renders at.
+        json: print the whole report as canonical JSON instead of the default rich tables.
+        agent: print the compact tabular mode instead of the default rich tables.
+        """
+        manuscript = board("local").paper(name)
+        with progress(f"building {name}"):
+            report = manuscript.check()
+        _report(report, mode=mode_of(json_mode=json, agent=agent))
+        for phrase in show:
+            print(manuscript.show(phrase, dpi=dpi))
+        return 1 if report.problems else 0
 
     lint = App(name="lint")
     app.command(lint)
@@ -1343,7 +1355,7 @@ def build(root: Path | None = None) -> App:
             fields=fields,
         )
 
-    @app.command
+    @app.command(show=False)
     def provide(env: str = "", *, source: str = "", expect: str = "", json: bool = False) -> None:
         """Build the immutable environment a dispatched job activates, and print where it is.
 
@@ -1369,7 +1381,7 @@ def build(root: Path | None = None) -> App:
             return
         record({"prefix": str(built)}, mode="json", fields=(), title="prefix")
 
-    @app.command
+    @app.command(show=False)
     def attest(stream: str, *, job: str = "") -> None:
         """Record what this machine looks like right now into a stream's receipts, once.
 
@@ -1387,7 +1399,7 @@ def build(root: Path | None = None) -> App:
         """
         board("local").attest(stream, job=job or stream)
 
-    @app.command
+    @app.command(show=False)
     def sample(
         stream: str,
         *,
@@ -1725,7 +1737,6 @@ def build(root: Path | None = None) -> App:
 
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
-_HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
 
 # The columns each `git` table carries, so a tree with nothing to say still renders its heading.
 _GIT_STATUS_COLUMNS = (
@@ -1778,6 +1789,8 @@ _ESTIMATE_COLUMNS = (
     "p90_usd",
 )
 _DISPATCH_COLUMNS = ("job", "target", "state", "handle", "kind", "reason")
+_SECTION_COLUMNS = ("number", "title", "page", "within")
+_PROBLEM_COLUMNS = ("kind", "where", "detail")
 _STATUS_COLUMNS = ("job", "target", "handle", "state", "verdict", "detail")
 _VERDICT_COLUMNS = (
     "job",
@@ -1980,6 +1993,55 @@ def _stepped(
         title=title,
     )
     return 0 if all(step.outcome.settled for step in steps) else 1
+
+
+def _held(held: Held, *, json_mode: bool, agent: bool, fields: str, title: str) -> None:
+    """Print one held machine: its alias, where it came from, what it costs, when it ends."""
+    payload: dict[str, Node] = {
+        "alias": held.alias,
+        "provider": held.provider,
+        "handle": held.handle,
+        "gpu": held.gpu,
+        "usd_hr": held.usd_hr,
+        "deadline": held.deadline.isoformat(),
+        "root": held.profile.root,
+    }
+    mode = mode_of(json_mode=json_mode, agent=agent)
+    record(payload, mode=mode, fields=_fields(fields), title=title)
+
+
+def _report(report: PaperReport, *, mode: str | None) -> None:
+    """Print one manuscript check: the summary, where each section starts, and every problem.
+
+    The JSON mode prints the report whole, one document a script can read; the other modes
+    print three tables, the problem table naming its columns even when it is empty so a clean
+    build still says so.
+    """
+    if mode == "json":
+        record(report.model_dump(mode="json"), mode=mode, fields=(), title="paper")
+        return
+    summary: dict[str, Node] = {
+        "pdf": report.pdf,
+        "pages": report.pages,
+        "limit": report.limit,
+        "ends": report.ends,
+        "ends_on": report.ends_on,
+        "problems": len(report.problems),
+    }
+    record(summary, mode=mode, fields=(), title=f"paper: {report.paper}")
+    last = report.limit or report.pages
+    rows(
+        [{**section.model_dump(), "within": section.page <= last} for section in report.sections],
+        mode=mode,
+        fields=_SECTION_COLUMNS,
+        title="sections",
+    )
+    rows(
+        [problem.model_dump(mode="json") for problem in report.problems],
+        mode=mode,
+        fields=_PROBLEM_COLUMNS,
+        title="problems",
+    )
 
 
 def _fields(raw: str) -> tuple[str, ...]:

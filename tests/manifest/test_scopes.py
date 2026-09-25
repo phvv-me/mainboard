@@ -4,7 +4,6 @@ from hypothesis import strategies as st
 
 from mainboard import Manifest, MissionError
 from mainboard.manifest import (
-    Engine,
     Env,
     Header,
     HostProfile,
@@ -165,14 +164,6 @@ def test_the_environment_roster_answers_by_name_and_refuses_a_stranger() -> None
         ({"hosts": {"gold": HostProfile(container="ghost")}}, "names container 'ghost'"),
         ({"hosts": {"gold": HostProfile(env="ghost")}}, "names environment 'ghost'"),
         (
-            {"engines": {"vserve": Engine(command="true", container="ghost")}},
-            "names container 'ghost'",
-        ),
-        (
-            {"engines": {"vserve": Engine(command="true", env="ghost")}},
-            "names environment 'ghost'",
-        ),
-        (
             {
                 "lint": Lint(
                     tools={"ruff": LintTool(run="ruff check", files=("*.py",), env="ghost")}
@@ -183,8 +174,8 @@ def test_the_environment_roster_answers_by_name_and_refuses_a_stranger() -> None
     ],
 )
 def test_a_manifest_refuses_a_name_that_points_at_no_table(
-    tables: dict[str, dict[str, Env | HostProfile | Engine] | Lint], match: str
+    tables: dict[str, dict[str, Env | HostProfile] | Lint], match: str
 ) -> None:
-    """A host, engine or lint tool naming a missing container or environment fails at load."""
+    """A host or lint tool naming a missing container or environment fails at load."""
     with pytest.raises(ValueError, match=match):
         Manifest(workspace=Header(name="lab"), **tables)

@@ -74,7 +74,7 @@ def test_every_render_activates_the_plans_own_environment_or_refuses_to_start() 
         "found no default environment at /repo/.mainboard/envs/default/.pixi/envs/default on gold"
         in default
     )
-    assert "mainboard install default --on gold" in default
+    assert "mainboard setup gold --env default" in default
     assert "exit 1" in default
     serving = spec(plan=plan(env="serving")).render(pbs=False)
     assert "if [ -f /repo/.mainboard/activate-serving.sh ]" in serving

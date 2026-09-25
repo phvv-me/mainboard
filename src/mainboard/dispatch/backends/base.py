@@ -203,6 +203,36 @@ class Delivery(Capability):
         """Fetch `handle`'s output at `path` back to the local filesystem."""
 
 
+class Rented(FrozenModel):
+    """One machine a provider says this account is renting right now.
+
+    handle: the provider's own id for the rental, which ends it.
+    label: the label it was created under, `mainboard-<id>` for one this tool rented.
+    gpu: the cards it carries, as the provider names them.
+    status: the provider's own word for its state.
+    usd_hr: what it bills per hour, None when the listing carries no rate.
+    """
+
+    handle: str
+    label: str = ""
+    gpu: str = ""
+    status: str = ""
+    usd_hr: float | None = None
+
+
+class Inventory(Capability, abc.ABC):
+    """A provider that lists every machine the account is renting, however it was rented."""
+
+    @abc.abstractmethod
+    def rentals(self) -> list[Rented]:
+        """Every live rental on the account, as the provider reports it.
+
+        The provider's answer rather than this workspace's records, which is the only listing
+        that catches a machine rented from another checkout, by hand, or by a dispatch whose
+        record was lost, all of which bill the same.
+        """
+
+
 class LogSource(Capability):
     """A provider that keeps a run's captured output and will hand it back."""
 

@@ -421,3 +421,12 @@ def test_an_instance_that_publishes_no_ssh_endpoint_is_terminated_and_names_the_
         )
     assert backend.transport.urls[-1] == "https://www.hpc-ai.com/api/instance/terminate"
     assert naps.waited == [10.0] * 90
+
+
+def test_rentals_walk_every_listing_page_whoever_created_the_instance() -> None:
+    """Each listed instance is a rental, its label read from the name it was created under."""
+    named = {**listed("n1", "Running"), "instanceMetadata": {"instanceId": "n1", "name": "hold"}}
+    backend = authed_backend(listing(named, total=51), listing({}, total=51))
+    first, second = backend.rentals()
+    assert (first.handle, first.label, first.status) == ("n1", "hold", "Running")
+    assert (second.handle, second.label, second.status) == ("", "", "")

@@ -5,7 +5,7 @@ import time
 import pytest
 
 from mainboard.probe import GPU, NvidiaGPU
-from mainboard.probe.stress import Precision, Stress, StressReport, TorchKernels, rows
+from mainboard.probe.stress import Precision, Stress, StressReport, TorchKernels
 
 from .support import FakeNvidiaApis, FakeTorch
 
@@ -60,13 +60,9 @@ def test_report_carries_every_precision_and_link(monkeypatch) -> None:
     assert kernels.synchronized > 0
 
 
-def test_rows_and_round_trip() -> None:
+def test_the_report_round_trips_through_its_json() -> None:
     report = Stress(FakeKernels(), n=256, megabytes=8, warmups=0, repetitions=1).measure()
-    again = StressReport.model_validate_json(report.model_dump_json())
-    assert again == report
-    listed = rows(report)
-    assert [row["measure"] for row in listed][:2] == ["FP64", "FP32"]
-    assert [row["unit"] for row in listed][-3:] == ["GB/s"] * 3
+    assert StressReport.model_validate_json(report.model_dump_json()) == report
 
 
 @pytest.mark.parametrize(

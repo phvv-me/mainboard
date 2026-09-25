@@ -97,7 +97,7 @@ def test_the_refusal_names_the_command_that_provisions_the_environment_where_it_
         "found no vserve environment at /repo/.mainboard/envs/vserve/.pixi/envs/vserve on gold"
         in remote
     )
-    assert "mainboard install vserve --on gold" in remote
+    assert "mainboard setup gold --env vserve" in remote
     here = activation_stage(plan(host="local", env="vserve"), "/repo")
     assert "mainboard install vserve`" in here
     assert "--on" not in here

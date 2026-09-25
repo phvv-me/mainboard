@@ -1022,3 +1022,32 @@ def test_a_rental_takes_the_newest_base_image_its_driver_loads(driver: float, im
     each offer is matched to the newest base image it can start rather than filtered by one.
     """
     assert vast_module.base_image(offer(1, dph=0.5, cuda_max_good=driver)) == image
+
+
+def test_rentals_list_every_instance_on_the_account_as_vast_reports_it() -> None:
+    """The provider's own listing, whoever rented each machine, with its rate where it has one."""
+    backend = vast_backend(
+        {
+            "instances": [
+                {
+                    "id": 51,
+                    "label": "mainboard-abc",
+                    "num_gpus": 2,
+                    "gpu_name": "RTX 5090",
+                    "actual_status": "running",
+                    "dph_total": 0.81,
+                },
+                {"id": 52},
+            ]
+        }
+    )
+    first, second = backend.rentals()
+    assert (first.handle, first.label, first.gpu, first.status, first.usd_hr) == (
+        "51",
+        "mainboard-abc",
+        "2x RTX 5090",
+        "running",
+        0.81,
+    )
+    assert (second.gpu, second.usd_hr) == ("1x unknown card", None)
+    assert backend.transport.urls == [f"{_ROOT}/instances/?owner=me"]

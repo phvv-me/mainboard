@@ -1,22 +1,25 @@
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import model_validator
 
 from ...core.errors import MissionError
 from .admission import Admission
 from .container import Container
-from .engine import Engine
 from .environment import Env, Task
 from .figures.figure import FigureSpec
 from .gate import Gate
 from .git import GitPolicy
 from .host import HostProfile
 from .lint import Lint
+from .paper import Paper
 from .plot import PlotStyle
 from .scope import PlatformScope, Scope
 from .template import Template
 from .tracking import Tracking
 from .workspace import Header
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _DEFAULTS_KEY = "defaults"
 _RESERVED_ENVS = frozenset({"default", "dev"})
@@ -35,8 +38,7 @@ class Manifest(Scope):
     `[gates.*]` names the commands `doctor` asks for a verdict, `[templates.*]`
     names the project templates `new` renders, and `[tracking]` names where a
     batch's receipts are mirrored beyond this workspace's own files.
-    `[engines.*]` names a command `serve` stages through one of `[containers.*]`,
-    the manifest side of the containerize seam `run` already builds argv through.
+    `[papers.*]` names the manuscripts `paper` builds and checks against their page rule.
     `[plots.*]` names palette, theme, and output settings for result charts.
     `[admission.<card>]` says how idle a named card must be before a trial measures on it.
     `[git]` says whose repositories in the submodule tree `git` may write, and what never
@@ -57,25 +59,25 @@ class Manifest(Scope):
     # The tables no compile reads, the exact complement of what `PixiManifest.from_manifest`
     # and the second stage translate. `[gates]` is what `doctor` asks, `[templates]` is what
     # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
-    # `[hosts]` are how a job reaches a machine, `[engines]` is what `serve` stages through one
-    # of those containers, `[plots]` is how results are drawn, `[git]` is how the repository
-    # tree is committed and pushed, `[lint]` is what `lint` runs, and `[vars]` has already been
-    # folded into every string that quotes it by the time a manifest validates, so a var a
-    # compiled table really uses moves the digest through that table's own rendered value. None
-    # of them reaches a generated file, so editing one must not make every installed environment
-    # stale. The classification is proved table by table against the compiler's own output in
-    # `tests/engines/compile/test_compiler.py`, so a table added to the schema is refused until
-    # somebody decides which side of this line it sits on.
+    # `[hosts]` are how a job reaches a machine, `[papers]` is what `paper` builds, `[plots]` is
+    # how results are drawn, `[git]` is how the repository tree is committed and pushed, `[lint]`
+    # is what `lint` runs, and `[vars]` has already been folded into every string that quotes it
+    # by the time a manifest validates, so a var a compiled table really uses moves the digest
+    # through that table's own rendered value. None of them reaches a generated file, so editing
+    # one must not make every installed environment stale. The classification is proved table by
+    # table against the compiler's own output in `tests/engines/compile/test_compiler.py`, so a
+    # table added to the schema is refused until somebody decides which side of this line it
+    # sits on.
     uncompiled: ClassVar[frozenset[str]] = frozenset(
         {
             "admission",
             "containers",
-            "engines",
             "figures",
             "gates",
             "git",
             "hosts",
             "lint",
+            "papers",
             "plots",
             "templates",
             "tracking",
@@ -97,7 +99,7 @@ class Manifest(Scope):
     containers: dict[str, Container] = {}
     hosts: dict[str, HostProfile] = {}
     admission: dict[str, Admission] = {}
-    engines: dict[str, Engine] = {}
+    papers: dict[str, Paper] = {}
     plots: dict[str, PlotStyle] = {}
     figures: dict[str, FigureSpec] = {}
     git: GitPolicy = GitPolicy()
@@ -134,14 +136,12 @@ class Manifest(Scope):
 
     @model_validator(mode="after")
     def names_resolve(self) -> Manifest:
-        """Reserved env names stay free, and every host, engine or lint tool names a real table."""
+        """Reserved env names stay free, and every host or lint tool names a real table."""
         taken = _RESERVED_ENVS & self.envs.keys()
         if taken:
             raise ValueError(f"reserved environment names declared: {sorted(taken)}")
         for alias, profile in self.profiles().items():
             self._resolves(f"host {alias!r}", profile.container, profile.env)
-        for name, engine in self.engines.items():
-            self._resolves(f"engine {name!r}", engine.container, engine.env)
         for name, tool in self.lint.tools.items():
             self._resolves(f"lint tool {name!r}", "", tool.env)
         return self
@@ -158,6 +158,13 @@ class Manifest(Scope):
                 f"{subject} names environment {env!r}, declared environments are "
                 f"{sorted(self.envs)}"
             )
+
+    def holding(self, held: Mapping[str, HostProfile]) -> Manifest:
+        """This manifest with the machines the workspace is holding laid over `[hosts]`.
+
+        held: the held machines' ssh profiles by alias.
+        """
+        return self.model_copy(update={"hosts": {**self.hosts, **held}}) if held else self
 
     def profile(self, alias: str) -> HostProfile:
         """The resolved profile for `alias`, defaults-only when undeclared.

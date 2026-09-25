@@ -45,15 +45,6 @@ _TOOL = Project().name
 _SOURCE = f"packages/{_TOOL}"
 
 
-def stress_command(*, n: int, repetitions: int) -> str:
-    """The command a host's activated environment runs to measure its card and print the JSON.
-
-    The probe needs the environment's framework, so it runs as the environment's Python rather
-    than as the installed tool, whose own snapshot carries no accelerator stack.
-    """
-    return f"python -m {_TOOL}.probe.stress --n {n} --repetitions {repetitions}"
-
-
 def gpus_command() -> str:
     """The command a remote host runs to say who holds each of its cards, as JSON."""
     return f"{_TOOL} gpus --json"
