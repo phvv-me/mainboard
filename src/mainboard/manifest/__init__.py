@@ -1,12 +1,13 @@
 from .loading import load
 from .schema.container import Container, EnvMode, Guardrail
-from .schema.engine import Engine
 from .schema.environment import Env
 from .schema.figures.figure import FigureSpec
 from .schema.figures.layer import Layer
 from .schema.figures.panel import Panel
 from .schema.host import HostProfile, Sync
+from .schema.lint import Lint, LintTool
 from .schema.observe import Observe
+from .schema.paper import Paper
 from .schema.queue import Defaults, QueuePolicy
 from .schema.root import Manifest
 from .schema.scope import PlatformScope, Scope
@@ -18,7 +19,6 @@ from .schema.workspace import Header
 __all__ = [
     "Container",
     "Defaults",
-    "Engine",
     "Env",
     "EnvMode",
     "Guardrail",
@@ -27,8 +27,11 @@ __all__ = [
     "Panel",
     "Header",
     "HostProfile",
+    "Lint",
+    "LintTool",
     "Manifest",
     "Observe",
+    "Paper",
     "PlatformScope",
     "QueuePolicy",
     "Scope",
@@ -38,5 +41,4 @@ __all__ = [
     "Tracking",
     "TrackingMode",
     "load",
-    "Engine",
 ]

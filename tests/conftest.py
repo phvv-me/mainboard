@@ -20,7 +20,6 @@ from mainboard.dispatch.shared import db_file
 from mainboard.dispatch.state import Cache, DownHost, Failed, Finished, MonitorReport
 from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.monitor import Monitor
-from mainboard.probe.stress import Link, Precision, Rate, StressReport
 from mainboard.scaffold import Scaffold, Scaffolded
 from mainboard.verdicts import StreamVerdict, TrialVerdict, Verdicts
 
@@ -270,21 +269,6 @@ def settled() -> StreamVerdict:
     )
 
 
-def stressed() -> StressReport:
-    """One card's measured limits with a supported rate, a skipped one and a copy path."""
-    return StressReport(
-        device="GH200",
-        capability="9.0",
-        sm_count=132,
-        datasheet_fp32_tflops=66.93,
-        rates=(
-            Rate(precision=Precision.BF16, n=8192, seconds=0.0016, tflops=687.26),
-            Rate(precision=Precision.FP8, n=8192, supported=False, note="no FP8 kernels"),
-        ),
-        links=(Link(path="host_to_device", megabytes=256, gb_s=412.08),),
-    )
-
-
 def surveyed() -> list[ComputePath]:
     """One row of every shape a compute table can hold, so a render covers each cell."""
     return [
@@ -373,10 +357,8 @@ def relayed(monkeypatch: pytest.MonkeyPatch) -> list[Relayed]:
         (Board, "install", HostSetup(host="gold", root="/repo", installer="uv")),
         (Board, "attest", None),
         (Board, "shell", None),
-        (Board, "serve", 0),
         (Board, "interact", None),
         (Board, "facts", HostFacts(schema_version=1, hostname="box")),
-        (Board, "stress", stressed()),
         (Board, "provide", Path("/envs/lab-4f2a")),
         (Dispatcher, "fetch_path", 3),
         (Dependencies, "add", _MOVED),

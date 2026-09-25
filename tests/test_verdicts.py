@@ -2,6 +2,7 @@ import json
 from typing import TYPE_CHECKING
 
 import pytest
+from filelock import FileLock
 
 from mainboard import Board, Job, MissionError
 from mainboard.batch.receipts import Event, Receipts, Topic, publish
@@ -9,6 +10,7 @@ from mainboard.batch.runner import directory
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.monitor import Monitor
 from mainboard.verdicts import (
+    STALLED,
     StreamVerdict,
     TrialVerdict,
     Verdicts,
@@ -16,7 +18,9 @@ from mainboard.verdicts import (
     lined,
     qualified,
     receipted,
+    stopped,
 )
+from mainboard.vigil import Linger, Look, Vigil
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -532,6 +536,9 @@ def test_a_failed_row_says_what_it_said_on_the_way_out(board: Board) -> None:
         '  File "run.py", line 1, in <module>\n'
         "    import sqlite3\n"
         "ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found\n"
+        "mainboard-receipts-begin\n"
+        "mainboard-receipt:e30K\n"
+        "mainboard-receipts-end\n"
         "exit=1\n",
         encoding="utf-8",
     )
@@ -539,8 +546,8 @@ def test_a_failed_row_says_what_it_said_on_the_way_out(board: Board) -> None:
     [row] = board.verdicts().of("9").trials
 
     assert row.cause == ("ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found")
-    # The frames above it and the wrapper's own exit stamp are not the cause: one is where and
-    # the other is a column of its own.
+    # The frames above it, the receipts frame below it and the wrapper's own exit stamp are not
+    # the cause: one is where, one is the wrapper's channel and the last is a column of its own.
     assert "File" not in row.cause
     assert row.exit_code is None or "exit=" not in row.cause
 
@@ -955,3 +962,89 @@ def test_an_evidence_line_with_no_readable_trial_list_still_qualifies_its_own_ru
     )
     [row] = qualified((trial,), [correction])
     assert row.verdict == "unverified"
+
+
+def test_a_wait_stops_with_its_own_exit_status_on_a_job_silent_on_an_idle_card(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stalled job used to hold its waiter to the whole hour; now the wait says so and ends.
+
+    What the vigil looks at is the run still running after the pass, and the answer is the
+    run's own row with the stall beside it, exit 4 rather than the timeout's 2.
+    """
+    recorded(board, "8", name="stuck", verdict="running")
+    looked: list[list[str]] = []
+
+    def look(vigil: Vigil, records: list[RunRecord]) -> Look:
+        looked.append([record.handle for record in records])
+        return Look(stalled="8 on gold printed nothing for 1300s")
+
+    monkeypatch.setattr(Monitor, "once", lambda monitor: None)
+    monkeypatch.setattr(Vigil, "look", look)
+    settled = board.verdicts().wait("8", poll=lambda seconds: pytest.fail("a stall waited on"))
+    assert looked == [["8"]]
+    assert (settled.code, settled.stalled) == (STALLED, "8 on gold printed nothing for 1300s")
+    assert settled.trials[0].verdict == "running"
+
+
+@pytest.mark.parametrize(("session", "verdict", "code"), [(0, "ok", 0), (1, "failed", 1)])
+def test_a_job_whose_session_ended_while_its_process_lingers_settles_on_the_session(
+    board: Board, monkeypatch: pytest.MonkeyPatch, session: int, verdict: str, code: int
+) -> None:
+    """`1 known in 27s` and then half an hour of `running` (2026-09-19): the answer was written.
+
+    The lingering process is stopped the way a cancel stops it, evidence first, and the run
+    settles on what its session said rather than as cancelled.
+    """
+    recorded(board, "7", name="lingered", target="miyabi-g", verdict="running")
+    acted: list[str] = []
+    monkeypatch.setattr(Monitor, "once", lambda monitor: None)
+    monkeypatch.setattr(Job, "kill", lambda self: acted.append("killed"))
+    monkeypatch.setattr(Job, "release", lambda self: acted.append("released"))
+    monkeypatch.setattr(Job, "transcript", lambda self: "")
+    monkeypatch.setattr(
+        Vigil,
+        "look",
+        lambda vigil, records: Look(
+            lingering=(Linger(handle="7", target="miyabi-g", session=session),)
+        ),
+    )
+    settled = board.verdicts().wait("7", poll=lambda seconds: pytest.fail("a settle waited on"))
+    assert acted == ["killed", "released"]
+    assert (settled.trials[0].verdict, settled.trials[0].exit_code, settled.code) == (
+        verdict,
+        session,
+        code,
+    )
+    assert stopped(verdict, session).startswith(f"pytest session ended with exit {session}")
+
+
+def test_a_batch_wait_looks_only_at_its_own_running_jobs_and_a_held_claim_defers_a_settle(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conclusion under another process's settlement claim waits for the next look."""
+    stream = "wave-1"
+    bus = Receipts(directory(board, stream) / "events.ndjson")
+    publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "1", "target": "gold"})
+    recorded(board, "1", name=stream, verdict="running")
+    recorded(board, "2", name="another", verdict="running")
+    looked: list[list[str]] = []
+    looks = iter(
+        [
+            Look(lingering=(Linger(handle="1", target="gold", session=0),)),
+            Look(stalled="1 on gold printed nothing for 1300s"),
+        ]
+    )
+
+    def look(vigil: Vigil, records: list[RunRecord]) -> Look:
+        looked.append([record.handle for record in records])
+        return next(looks)
+
+    monkeypatch.setattr(Monitor, "once", lambda monitor: None)
+    monkeypatch.setattr(Vigil, "look", look)
+    monkeypatch.setattr("mainboard.verdicts.SETTLEMENT_SECONDS", 0.05)
+    monkeypatch.setattr(Job, "kill", lambda self: pytest.fail("killed under a held claim"))
+    with FileLock(board.dispatcher.cache.path.with_suffix(".settlement.lock")):
+        settled = board.verdicts().wait(stream, poll=lambda seconds: None)
+    assert looked == [["1"], ["1"]]
+    assert settled.code == STALLED

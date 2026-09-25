@@ -25,18 +25,19 @@ job.pull()
 The same surface as a CLI:
 
 ```console
-$ mainboard run --on gold -- nvidia-smi -L
+$ mainboard run --on gold nvidia-smi -L   # everything from the command on is its own
 GPU 0: NVIDIA GB10 (UUID: GPU-6a5c...)
 $ mainboard facts --on gold | head -4
 {
   "schema_version": 1,
   "hostname": "gold",
   "cpu_name": "10x Arm Cortex-A725 + 10x Arm Cortex-X925",
-$ mainboard submit --on miyabi-g --attempt 2 -- python -m experiments.run
+$ mainboard submit --on miyabi-g --attempt 2 python -m experiments.run
 2231259
 $ mainboard monitor --json          # one durable pass, what a cron runs
 {"running": 1, "finished": [], "failed": [], "unreachable_hosts": [], "changed": false}
-$ mainboard jobs                    # every live job as its own queue sees it right now
+$ mainboard jobs                    # every live job as its queue sees it, cells, silence, GPU%
+$ mainboard wait 2231259            # cells and a heartbeat on stderr; exit 4 on a stalled job
 $ mainboard compute --agent         # every path this workspace can run on
 name      kind      access       detail                 usd_hr  credit_usd
 local     local     here         1x RTX 4090, 135 GB RAM
@@ -136,7 +137,7 @@ fleet-db4af53f
 $ mainboard batch run fleet.toml --only "sweep-*"    # the jobs that are ready, the rest recorded skipped
 fleet-db4af53f
 $ mainboard batch wait fleet-db4af53f             # block until every job settles, exit its verdict
-$ mainboard interact --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
+$ mainboard shell --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
 ```
 
 `prepare` measures compressed changes from the host's workspace mirror, plus
@@ -150,6 +151,46 @@ own directory, and each verb reads its cursor back out of those lines rather
 than out of memory. The topics and payloads are written down in one place,
 `batch/receipts.py`, so the file transport can become a broker without anything
 downstream noticing.
+
+## Holding a rented machine
+
+A rental per job rebuilds the environment every time. A held machine is rented,
+named, set up once, and then takes jobs in seconds until its deadline:
+
+```console
+$ mainboard hold vast --gpu-name "RTX 5090" --for 3h --max-usd 4   # rent, alias, onboard, park
+$ mainboard submit --on vast-rtx-5090 --walltime 00:20:00 -- path/to/test_x.py::test_y
+$ mainboard compute                                                  # every live rental, held or not
+$ mainboard release vast-rtx-5090                                    # stop billing now
+```
+
+The alias is a marked block at the top of `~/.ssh/config`, the host profile is the
+provider's own (its sync scope and variables) as an ssh host, and the deadline is
+the rental's lease in the run registry, so `monitor` releases it on time and
+`compute` releases anything past due before it lists. `--max-usd` caps the whole
+hold, landing included.
+
+## Papers
+
+A manuscript is declared once and checked on every build:
+
+```toml
+[papers.head]
+dir = "research/llm-head/papers/iclr-2027-llm-head/latex"
+main = "paper.tex"      # the default
+limit = 9               # the last page the main text may reach
+ends = "Conclusion"     # the section that must end by that page
+```
+
+```console
+$ mainboard paper head                        # build, then report and exit 1 on any problem
+$ mainboard paper head --show "Pareto front"  # and render the page carrying that phrase to PNG
+```
+
+The build is tectonic from the workspace environment. The report names every
+error, undefined reference and citation, multiply defined label and overfull box
+by `file:line`, the page count, the page each section starts on, and the last
+page SyncTeX places any line of `ends` on, unnumbered statements excluded.
 
 ## One file
 
@@ -187,6 +228,54 @@ Profiles inherit `[hosts.defaults]`, values interpolate (`{{ env('LOCALDIR') }}`
 `{{ num_cpus() }}`), and queue policies are data the tool enforces at submit
 time with the error you wish the scheduler gave you.
 
+## One repository tree
+
+A workspace that is a git repository with submodules, nested ones included, is
+operated as one repository. Only the repositories whose remote owner is the
+root's own or one `[git]` names are ever written; pinned reference code from
+anybody else is read to verify the pointers that name it and otherwise left alone.
+
+```toml
+[git]
+owners = ["phvv-me", "ComputerVisionLaboratory"]
+ceiling-mb = 50                              # the default; LFS files are exempt
+never-commit = ["**/evidence/artifacts/**"]  # the default; git glob pathspecs
+```
+
+```console
+$ mainboard git status          # branch or detached, ahead/behind, dirty, published
+$ mainboard git pull            # fast-forward only, submodules follow their pointers
+$ mainboard git commit -m "…"   # submodules first, then the parents' pointers
+$ mainboard git push            # children first, pointers verified, protected main → branch
+$ mainboard git check           # everything a clone or the next push would trip on
+```
+
+## One lint pass
+
+```toml
+[lint]
+exclude = ["**/datasets/", "**/references/"]   # never read, never rewritten
+owners = ["packages/*", "research/*"]           # beside every dir holding pyproject.toml or .git
+
+[lint.tools.ruff-format]
+run = "ruff format --force-exclude {files}"
+files = ["*.py", "*.pyi"]
+writes = true                                  # fix phase, in declaration order
+
+[lint.tools.pyrefly]
+run = "pyrefly check"                          # no {files}: checks the whole owner
+files = ["*.py", "*.pyi", "pyproject.toml"]
+```
+
+`mainboard lint` repairs text (UTF-8, the newline `.gitattributes` names, no
+trailing blanks, one final newline), runs the writing tools in order, then every
+check at once, each inside the owner of the files it matched and under the
+workspace environment's PATH. With no path it reads what differs from HEAD;
+`mainboard lint .` reads everything. `mainboard lint install-hook` makes every
+commit run `mainboard lint commit` over the staged files, and `mainboard lint
+edit` is the Claude Code PostToolUse hook: it repairs the file an agent just
+wrote and hands whatever is left back as context.
+
 ## What it replaces
 
 - environment managers that cannot name a host
@@ -194,6 +283,7 @@ time with the error you wish the scheduler gave you.
 - container workflows that rebuild an image per dependency change
 - profilers that stop at one process on one machine
 - the prose wiki page about your cluster's queue limits
+- a pre-commit config, an editor hook and a CI job that each lint a different way
 
 Under the facade: pixi-powered multi-ecosystem environments (conda plus PyPI
 and friends) that provision inside off-the-shelf containers via bind-mounted
@@ -509,7 +599,4 @@ provider or container configuration. The provider router, `board.on("auto")`,
 scoring hosts by fit,
 price, and time to result across private clusters and commercial GPU clouds,
 is under active development.
-
-`[engines.*]` and `serve` currently stage a declared command in a container on an
-owned host. They reuse `run`'s container command construction. Provider-hosted
-serving and automatic host selection remain under development.
+Automatic host selection remains under development.

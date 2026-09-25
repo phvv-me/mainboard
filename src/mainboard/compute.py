@@ -1,5 +1,6 @@
 # The survey behind `mainboard compute`: every place this workspace can run work, in one list.
-# This machine, the hosts the manifest declares, and every registered provider backend, each
+# This machine, the hosts the manifest declares and the machines it is holding, every registered
+# provider backend, and every machine a provider says this account is renting right now, each
 # answered by one bounded probe. A host that will not answer and a provider with no key are row
 # states here, never failures, so the whole fleet still lists when part of it is down.
 
@@ -14,15 +15,18 @@ from patos import FrozenModel
 from pydantic import Field
 
 from .core.errors import MissionError
-from .dispatch.backends.base import Account, Credentials, ProviderBackend, route
+from .dispatch.backends.base import Account, Credentials, Inventory, ProviderBackend, route
 from .dispatch.transport import HostUnreachable, SshTransport
+from .manifest.held import Holdings
 from .probe.snapshot import HostFacts
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
     from .board import Board
+    from .dispatch.backends.base import Rented
     from .dispatch.onboard import HostSetup
+    from .manifest.held import Held
     from .manifest.schema.host import HostProfile
 
 # One bounded ssh round trip per host, under a policy tightened for a survey rather than for a
@@ -38,6 +42,9 @@ _PROBE_SSH = SshTransport(connect_timeout=10.0, server_alive_interval=2.0, serve
 # The `kind` a provider row carries. Providers have no scheduler, so naming the route keeps the
 # column meaning one thing (how this path is reached) instead of repeating the provider's name.
 _PROVIDER = "provider"
+
+# The `kind` a live rental carries: a machine a provider bills for, reached through its provider.
+_RENTAL = "rental"
 
 # What a live probe is allowed to fail with before it becomes a row state rather than an error.
 # `OSError` is every network fault urllib raises (an `HTTPError` 4xx included), `MissionError` is
@@ -55,6 +62,7 @@ class Access(StrEnum):
     UNREACHABLE = auto()
     KEYED = auto()
     UNKEYED = auto()
+    RENTED = auto()
 
 
 class ComputePath(FrozenModel):
@@ -224,18 +232,66 @@ class Survey:
         setups: the onboarding records by alias, read from the dispatch cache here when None.
         """
         recorded = self.onboarded() if setups is None else setups
+        held = Holdings(self.board.root).read()
         # Loading credentials mutates the process environment. Finish before SSH launches:
         # concurrent setenv and execve can fail with EFAULT before ssh itself starts.
         Credentials().load()
-        probes: list[Callable[[], ComputePath]] = [self.here]
-        probes.extend(
+        machines: list[Callable[[], ComputePath]] = [self.here]
+        machines.extend(
             partial(self.machine, alias, profile, recorded.get(alias))
             for alias, profile in sorted(self.board.manifest.profiles().items())
             if route(profile.kind) == "ssh-family"
         )
-        probes.extend(partial(self.provider, backend) for backend in self.providers)
+        probes: list[Callable[[], list[ComputePath]]] = [
+            *(partial(_alone, machine) for machine in machines),
+            *(partial(self.offered, backend, held) for backend in self.providers),
+        ]
         with ThreadPoolExecutor(max_workers=len(probes)) as pool:
-            return list(pool.map(lambda probe: probe(), probes))
+            return [path for listed in pool.map(lambda probe: probe(), probes) for path in listed]
+
+    def offered(self, backend: ProviderBackend, held: Mapping[str, Held]) -> list[ComputePath]:
+        """One provider's row, then a row for every machine it says the account is renting.
+
+        The rentals are asked for only of a provider whose key is here, since a provider nobody
+        configured has nothing to list and its own row already says why.
+
+        backend: the registered backend to ask.
+        held: the machines this workspace is holding, by alias, which name their rental rows.
+        """
+        standing = self.provider(backend)
+        if standing.access is not Access.KEYED or not isinstance(backend, Inventory):
+            return [standing]
+        try:
+            rented = backend.rentals()
+        except _PROBE_FAULTS as fault:
+            refused = ComputePath(
+                name=backend.name, kind=_RENTAL, access=Access.UNREACHABLE, detail=str(fault)
+            )
+            return [standing, refused]
+        holds = {hold.handle: hold for hold in held.values()}
+        return [standing, *(self.rental(backend, row, holds.get(row.handle)) for row in rented)]
+
+    @staticmethod
+    def rental(backend: ProviderBackend, rented: Rented, held: Held | None) -> ComputePath:
+        """One live rental, named by its hold when this workspace holds it.
+
+        backend: the provider that reported it.
+        rented: the rental as the provider reported it.
+        held: the hold it belongs to, None for a rental this workspace is not holding.
+        """
+        where = f"{backend.name} {rented.handle}, {rented.gpu or 'unknown card'}, {rented.status}"
+        owner = (
+            f"held until {held.deadline.isoformat()}; mainboard release {held.alias}"
+            if held is not None
+            else f"not held here, label {rented.label or 'none'}"
+        )
+        return ComputePath(
+            name=held.alias if held is not None else f"{backend.name}:{rented.handle}",
+            kind=_RENTAL,
+            access=Access.RENTED,
+            detail=f"{where}; {owner}",
+            usd_hr=rented.usd_hr,
+        )
 
     def provider(self, backend: ProviderBackend) -> ComputePath:
         """One provider backend: whether its credentials are here, and what it says they buy.
@@ -267,3 +323,8 @@ class Survey:
             usd_hr=standing.usd_hr,
             credit_usd=standing.credit_usd,
         )
+
+
+def _alone(probe: Callable[[], ComputePath]) -> list[ComputePath]:
+    """`probe`'s one row as a list, the shape a provider's several rows share."""
+    return [probe()]

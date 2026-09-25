@@ -44,13 +44,18 @@ _EDITS: dict[str, Json] = {
     "envs": {"serving": {"deps": {"vllm": "*"}}},
     "tasks": {"build": "make"},
     "gates": {"lint": "ruff check ."},
+    "git": {"owners": ["phvv-me"], "ceiling-mb": 10},
     "templates": {"lib": "templates/lib"},
     "tracking": {"project": "lab", "interval": 30},
     "containers": {"cuda": {"image": "docker://nvidia/cuda"}},
-    "engines": {"vserve": {"command": "true"}},
+    "papers": {"head": {"dir": "papers/head", "limit": 9, "ends": "Conclusion"}},
     "hosts": {"miyabi-g": {"kind": "pbs", "defaults": {"interact-queue": "interact-g"}}},
     "admission": {"NVIDIA GB10": {"holders": "record"}},
     "plots": {"paper": {"palette": "deep", "dpi": 600}},
+    "lint": {
+        "exclude": ["vendor/"],
+        "tools": {"ruff": {"run": "ruff check {files}", "files": ["*.py"]}},
+    },
     "figures": {
         "example": {
             "panels": {

@@ -17,23 +17,27 @@ from .board import Board
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .delimiter import Delimiter
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .dispatch.dispatcher import Dispatcher
+from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .durable import schedule
 from .help import Help
+from .holds import Holds
 from .jobs import lanes as lanes_module
+from .lint import EditHook, GitHook, Inventory, Linter, Report
 from .listing import Listing
 from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
-from .probe.stress import rows as stress_rows
-from .render import install_traceback, mode_of, plain, progress, record, rows, totals
+from .render import diverted, install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
 from .runtime.job import Job
 from .runtime.runner import Runner
+from .vigil import STALL_SECONDS
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -42,6 +46,9 @@ if TYPE_CHECKING:
     from .batch.watch import BatchStatus
     from .deps import Change
     from .dispatch.state import MonitorReport
+    from .git import Step
+    from .manifest.held import Held
+    from .manuscript import Report as PaperReport
     from .render.values import Node
     from .verdicts import StreamVerdict
 
@@ -68,17 +75,17 @@ def build(root: Path | None = None) -> App:
         """
         Help(app).show(" ".join(query))
 
-    # Everything after `--` is another program's argv and must reach it untouched. cyclopts
-    # honours the `--` delimiter for its own help flags but not for its version flag, so the two
-    # passthrough verbs give up `--version` entirely (the root app still answers it) rather than
-    # answering `run -- python --version` with this tool's version.
+    # A trailing-command verb hands its command on verbatim, from the first token that is not one
+    # of its own options, so `run pytest --noconftest` needs no `--` (see `delimiter.py`, which
+    # places it). cyclopts honours the delimiter for its own help flags but not for its version
+    # flag, so these verbs give up `--version` entirely (the root app still answers it) rather
+    # than answering `run python --version` with this tool's version.
     #
     # The command tokens are deliberately NOT `allow_leading_hyphen`. That annotation told
     # cyclopts to stop recognising options for this parameter, which meant an option this CLI
     # does not know was folded into the user's command instead of refused, and then failed on
-    # the remote host minutes later (four jobs lost this way, 2026-08-25). Without it cyclopts
-    # refuses `--walltim` by name at parse time, and everything after `--` still binds here as
-    # positional argv, flags and all, which is the behaviour the delimiter is for.
+    # the remote host minutes later (four jobs lost this way, 2026-08-25). The placement walks
+    # only declared options, so `--walltim` before the command is still refused by name.
     @app.command(version_flags=[])
     def run(
         *command: str,
@@ -93,8 +100,8 @@ def build(root: Path | None = None) -> App:
         remote diagnostic commands execute over SSH, on a cluster's login
         endpoint rather than in a batch allocation. The exit code is the command's own.
 
-        command: the command tokens, everything after `--`, its own flags included; a job's
-            arguments follow `--` the same way.
+        command: the command tokens, from the first token that is not an option of this verb,
+            passed on verbatim with its own flags; a job's arguments follow `--`.
         on: the host alias the command runs on, `local` for this machine.
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
@@ -135,8 +142,8 @@ def build(root: Path | None = None) -> App:
         host and zero for owned hardware. At a terminal the dispatch then asks once; in a
         script or under `--yes` it proceeds, and the line is printed either way.
 
-        command: the command tokens, or `path/to/file.py::name` and, after `--`, the arguments
-            the job's application takes.
+        command: the command tokens, from the first token that is not an option of this verb,
+            or `path/to/file.py::name` and, after `--`, the arguments its application takes.
         on: the host alias the job targets.
         gpu_name: the GPU type to rent, for a metered provider host.
         max_usd: the spend cap a provider host refuses to submit without.
@@ -349,29 +356,18 @@ def build(root: Path | None = None) -> App:
             payload.pop("snippet")
         record(payload, mode=mode, fields=_fields(fields), title="new")
 
-    @app.command(name="self-update")
-    def self_update() -> int:
-        """Reinstall the running snapshot from its own source tree, if the two have drifted apart.
-
-        The exact command the staleness nag already names, run for you rather than copied by
-        hand. A checkout running its own source has nothing to reinstall, and a snapshot that
-        already matches its source has nothing to do, so either says so and exits zero.
-        """
-        found = staleness.check()
-        if not found.stale:
-            print(f"{project.name}: {found.detail}")
-            return 0
-        return staleness.refresh(found)
-
     @app.command
     def doctor(env: str = "", *, json: bool = False, agent: bool = False, fields: str = "") -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
-        Four questions asked at once and bounded: does the manifest still say something
+        Five questions asked at once and bounded: does the manifest still say something
         coherent, is what is installed the environment it describes, what compute answers right
-        now, and does the mathematics still hold. A section reports the one command that
-        repairs it, and only a genuinely broken workspace fails, so a sleeping host or a
-        provider nobody has a key for is a word rather than a nonzero exit.
+        now, does the mathematics still hold, and is this workstation's git ready: git itself,
+        git-lfs and its filters, a credential helper for https remotes, and on Windows symlinks
+        and long paths. A safe local git setting is applied in place and reported; an install or
+        an administrator switch is named with its exact command. A section reports the one
+        command that repairs it, and only a genuinely broken workspace fails, so a sleeping host
+        or a provider nobody has a key for is a word rather than a nonzero exit.
 
         env: the environment to examine, the local profile's own when omitted.
         json: print canonical JSON instead of the default rich table.
@@ -389,73 +385,54 @@ def build(root: Path | None = None) -> App:
         return 1 if any(section.verdict is Verdict.FAIL for section in sections) else 0
 
     @app.command
-    def install(
-        env: str = "", *, on: str = "local", resolve: bool = False, profile: str = ""
-    ) -> None:
-        """Compile the manifest and install the environment, here or on a host.
+    def install(env: str = "", *, resolve: bool = False, profile: str = "") -> None:
+        """Compile the manifest and install the environment on this machine.
 
-        Targeting a host alias runs the whole onboarding there: mirror the workspace, install
-        the tool from that mirror, provision the environment, and probe what the host became.
+        Another machine is onboarded with `setup`, which ends by running this verb there.
 
-        env: the environment name, the target's declared profile choice when omitted.
-        on: the host alias to install on, `local` for this machine.
+        env: the environment name, this machine's declared profile choice when omitted.
         resolve: allow a fresh dependency solve when the lock is stale.
         profile: the declared host profile describing this machine, so the generated activation
-            carries that host's modules; used when a host installs its own environment.
+            carries that host's modules; what `setup` passes when a host installs its own.
         """
-        with progress(f"installing {env} on {on}") as stage:
-            board(on).install(env, resolve=resolve, profile=profile, watch=stage)
-
-    @app.command
-    def shell(env: str = "") -> NoReturn:
-        """Open an interactive shell with this workspace's environment already activated.
-
-        The daily way in, and the one verb that works from a terminal where nothing is
-        activated yet. This process becomes the shell, so quitting it returns to the terminal
-        that asked.
-
-        env: the environment name, the profile's declared choice when omitted.
-        """
-        board("local").shell(env)
-
-    @app.command
-    def serve(name: str, *, on: str = "local") -> int:
-        """Run a declared engine's serve command through its container, exiting with its code.
-
-        Renders the same staged line `run` builds for any command, sourced from
-        `[engines.<name>]` instead of the terminal: its command, inside the container it
-        declares. No image is built here, the container's own image must already exist.
-
-        name: the `[engines.<name>]` table to serve.
-        on: the host alias to serve on, `local` for this machine.
-        """
-        return board(on).serve(name)
+        with progress(f"installing {env or 'the environment'}") as stage:
+            board("local").install(env, resolve=resolve, profile=profile, watch=stage)
 
     @app.command(version_flags=[])
-    def interact(
+    def shell(
         *command: str,
-        on: str,
+        on: str = "local",
         env: str = "",
         queue: str = "",
         walltime: str = "",
         keep: bool = False,
     ) -> NoReturn:
-        """Open an interactive session on a host, inside its mirrored workspace.
+        """Open an interactive shell in this workspace's environment, here or on a host.
 
-        `shell` for a machine that is not this one. This process becomes the ssh, so quitting
-        the session returns to the terminal that asked. A queued host is asked for an
-        interactive allocation first, so the terminal lands on a compute node rather than on the
-        login node the request was made from.
+        The daily way in, and the one verb that works from a terminal where nothing is
+        activated yet. This process becomes the shell, so quitting it returns to the terminal
+        that asked. On a host the shell opens inside its mirrored workspace, and a queued host
+        is asked for an interactive allocation first, so the terminal lands on a compute node
+        rather than on the login node the request was made from.
 
-        command: a command to run instead of handing over the terminal, everything after `--`.
-        on: the host alias the session opens on.
-        env: an environment name overriding the profile's choice.
-        queue: the queue the allocation targets, the profile's declared choice when omitted.
-        walltime: the session's wall-clock limit, the profile's declared choice when omitted.
-        keep: hold the session in tmux on the far side so a dropped terminal leaves the
-            allocation up, and reattach to one already held.
+        command: on a host, a command to run instead of handing over the terminal, from the
+            first token that is not an option of this verb.
+        on: the host alias the shell opens on, `local` for this machine.
+        env: the environment name, the profile's declared choice when omitted.
+        queue: on a queued host, the queue the allocation targets, the profile's when omitted.
+        walltime: on a queued host, the session's wall-clock limit, the profile's when omitted.
+        keep: on a host, hold the session in tmux on the far side so a dropped terminal leaves
+            the allocation up, and reattach to one already held.
         """
-        board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
+        if on != "local":
+            board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
+        elif command or queue or walltime or keep:
+            raise MissionError(
+                "a command, a queue, a walltime and --keep belong to a host's shell; run a "
+                f"command here with `{project.name} run -- <command>`"
+            )
+        else:
+            board("local").shell(env)
 
     @app.command
     def setup(
@@ -524,23 +501,63 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
-    def hosts(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
-        """List the hosts already set up, newest first, from the dispatch state.
+    def hold(
+        provider: str,
+        *,
+        for_: Annotated[str, Parameter(name="--for")],
+        as_: Annotated[str, Parameter(name="--as")] = "",
+        gpu_name: str = "",
+        gpus: int = 0,
+        max_usd: float = 0.0,
+        env: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Rent a machine and keep it as an ssh host until a deadline, set up and ready for jobs.
 
+        A rental per job rebuilds the environment every time; a held machine is set up once and
+        then takes `submit --on <alias>` in seconds. The machine gets an alias in the ssh config,
+        onboards like `setup`, and is recorded with its deadline, which `monitor` and `compute`
+        both enforce by releasing it, so a forgotten hold stops billing on time.
+
+        provider: the provider host to rent through, `vast` say.
+        for_: how long to keep it once it is ready, `3h`, `90m` or `1h30m`.
+        as_: the alias to reach it by, `<provider>-<card>` when omitted.
+        gpu_name: the card to rent, in the provider's own spelling.
+        gpus: cards per machine, the provider profile's default when 0.
+        max_usd: the spend cap over the whole hold, landing included, the provider's default
+            when 0.
+        env: the environment to set up, the provider profile's own when omitted.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over host/root/env/installer/tool/onboarded_at.
+        fields: a comma-separated projection over the hold's fields.
         """
-        payloads = [
-            setup.model_dump(include=set(_HOSTS_COLUMNS))
-            for setup in board("local").dispatcher.cache.hosts()
-        ]
-        rows(
-            payloads,
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="hosts",
-        )
+        with progress(f"holding a {gpu_name or provider} machine") as stage:
+            held = Holds(board("local")).hold(
+                provider,
+                duration=for_,
+                alias=as_,
+                gpu_name=gpu_name,
+                gpus=gpus,
+                max_usd=max_usd,
+                env=env,
+                watch=stage,
+            )
+        _held(held, json_mode=json, agent=agent, fields=fields, title="hold")
+
+    @app.command
+    def release(alias: str, *, json: bool = False, agent: bool = False, fields: str = "") -> None:
+        """End a held machine now: stop its billing, settle its record and drop its alias.
+
+        alias: the held machine's alias, as `hold` printed it.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the hold's fields.
+        """
+        with progress(f"releasing {alias}"):
+            held = Holds(board("local")).release(alias)
+        _held(held, json_mode=json, agent=agent, fields=fields, title="release")
 
     @app.command
     def compute(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
@@ -560,11 +577,19 @@ def build(root: Path | None = None) -> App:
 
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
+        Held machines past their deadline are released first, and every machine a provider
+        says this account is renting is listed after that provider, named by its hold when this
+        workspace holds it.
+
         fields: comma-separated name/kind/access/detail/usd_hr/credit_usd/observed_at/cached_at.
         """
         mode = mode_of(json_mode=json, agent=agent)
+        workspace = board("local")
+        for released in Holds(workspace).expire():
+            gone = f"{released.provider} {released.handle}"
+            print(f"released {released.alias}, {gone}", file=sys.stderr)
         with progress("probing every compute path"):
-            paths = board("local").compute().paths()
+            paths = workspace.compute().paths()
         rows(
             [path.model_dump() for path in paths],
             mode=mode,
@@ -846,92 +871,135 @@ def build(root: Path | None = None) -> App:
         rows(listed, mode=mode_of(json_mode=False, agent=agent), fields=(), title="gpus")
 
     @app.command
-    def stress(
-        on: str = "local",
+    def check(
         *,
-        json: bool = False,
-        agent: bool = False,
-        n: int = 8192,
-        repetitions: int = 5,
-    ) -> None:
-        """Measure a card's achieved rates per precision and its copy bandwidths.
-
-        on: the host alias to measure, `local` for this machine.
-        json: print the report JSON instead of the table.
-        agent: print the compact tabular mode instead of the default rich table.
-        n: the square GEMM side timed at every precision (FP64 runs at half).
-        repetitions: timed calls per measurement, whose median is kept.
-        """
-        with progress(f"stressing {on}"):
-            report = board(on).stress(n=n, repetitions=repetitions)
-        if json:
-            print(report.model_dump_json())
-            return
-        record(
-            {
-                "device": report.device,
-                "capability": report.capability,
-                "sm_count": report.sm_count,
-                "datasheet_fp32_tflops": round(report.datasheet_fp32_tflops, 1),
-                "rows": tuple(stress_rows(report)),
-            },
-            mode=mode_of(json_mode=False, agent=agent),
-            fields=(),
-            title="stress",
-        )
-
-    @app.command
-    def plan(
-        host: str = "local",
-        *,
+        on: str = "",
         env: str = "",
         container: str = "",
         json: bool = False,
         agent: bool = False,
         fields: str = "",
     ) -> None:
-        """Show the resolved execution plan for a host.
+        """Validate the workspace manifest, showing what it declares or what a host resolves to.
 
-        host: the host alias, `local` for this machine.
-        env: an environment name overriding the profile's choice.
-        container: a container name overriding the profile's, `none` for bare.
+        on: a host alias, `local` for this machine, to show the execution plan it resolves to
+            instead of the manifest's declarations.
+        env: with `--on`, an environment name overriding the profile's choice.
+        container: with `--on`, a container name overriding the profile's, `none` for bare.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over the plan fields.
+        fields: a comma-separated projection over the declared or planned fields.
         """
         base = workspace_root()
         manifest = load(base / project.manifest)
-        resolved = Resolver(manifest).plan(host, env=env, container=container)
-        record(
-            resolved.model_dump(),
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="plan",
-        )
-
-    @app.command
-    def check(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
-        """Validate the workspace manifest, showing what it declares.
-
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over the declared fields.
-        """
-        base = workspace_root()
-        manifest = load(base / project.manifest)
+        mode = mode_of(json_mode=json, agent=agent)
+        if on:
+            resolved = Resolver(manifest).plan(on, env=env, container=container)
+            record(resolved.model_dump(), mode=mode, fields=_fields(fields), title="plan")
+            return
+        if env or container:
+            raise MissionError("--env and --container override a host's plan; pass --on too")
         payload: dict[str, Node] = {
             "workspace": manifest.workspace.name,
             "environments": tuple(sorted(manifest.envs)),
             "containers": tuple(sorted(manifest.containers)),
             "hosts": tuple(sorted(manifest.profiles())),
+            "papers": tuple(sorted(manifest.papers)),
             "tasks": tuple(sorted(manifest.tasks)),
         }
-        record(
-            payload,
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="check",
+        record(payload, mode=mode, fields=_fields(fields), title="check")
+
+    @app.command
+    def paper(
+        name: str,
+        *,
+        show: tuple[str, ...] = (),
+        dpi: int = 110,
+        json: bool = False,
+        agent: bool = False,
+    ) -> int:
+        """Build a declared manuscript and report everything wrong with it, exiting 1 on any.
+
+        Built with tectonic in the workspace environment, then read back: errors, undefined
+        references and citations, multiply defined labels and overfull boxes with the file and
+        line each comes from, the page count, the page every section starts on, and whether
+        the section `[papers.<name>] ends` names ends by page `limit`.
+
+        name: the `[papers.<name>]` manuscript.
+        show: a phrase from the manuscript, repeatable; the page it appears on is rendered to a
+            PNG beside the build and its path printed.
+        dpi: the resolution a shown page renders at.
+        json: print the whole report as canonical JSON instead of the default rich tables.
+        agent: print the compact tabular mode instead of the default rich tables.
+        """
+        manuscript = board("local").paper(name)
+        with progress(f"building {name}"):
+            report = manuscript.check()
+        _report(report, mode=mode_of(json_mode=json, agent=agent))
+        for phrase in show:
+            print(manuscript.show(phrase, dpi=dpi))
+        return 1 if report.problems else 0
+
+    lint = App(name="lint")
+    app.command(lint)
+
+    def linter(root: Path) -> Linter:
+        return Linter(root, load(root / project.manifest))
+
+    @lint.default
+    def lint_files(*paths: Path) -> int:
+        """Fix what can be fixed, then check, over the changed files or everything under PATHS.
+
+        With no path the pass reads every file that differs from HEAD or is new, deletions
+        included, so the everyday call costs what the edit did. A path widens it to every file
+        git tracks or would track at or beneath it, so `lint .` at the root reads the whole
+        workspace. The exit is nonzero when a file was rewritten or a check failed, which is
+        the answer a commit hook and a CI job both need.
+
+        paths: files or directories, relative to the working directory.
+        """
+        root = workspace_root()
+        inventory = Inventory(root)
+        files = (
+            inventory.under([path.resolve() for path in paths]) if paths else inventory.changed()
         )
+        return _linted(linter(root).lint(files), advice="")
+
+    @lint.command(name="commit")
+    def lint_commit() -> int:
+        """Lint the files the commit being made touches, the pre-commit hook's command.
+
+        The files are read as they stand in the work tree, so a file staged in part is checked
+        whole. A rewrite fails the commit, since what git is about to record is the unrewritten
+        copy in the index.
+        """
+        root = workspace_root()
+        report = linter(root).lint(Inventory(root).staged())
+        return _linted(report, advice="stage the rewritten files and commit again")
+
+    @lint.command(name="edit")
+    def lint_edit() -> None:
+        """Lint the file a Claude Code PostToolUse payload on stdin names.
+
+        Repairs land silently and whatever is left rides back to the agent as hook context.
+        The exit is always zero, so a finding informs the next edit rather than blocking this
+        one, and a file outside every workspace is left alone.
+        """
+        edited = EditHook.model_validate_json(sys.stdin.read()).edited
+        if edited is None:
+            return
+        try:
+            root = project.find_root(edited.parent)
+        except FileNotFoundError:
+            return
+        report = linter(root).lint([edited])
+        if report.failures:
+            print(EditHook.context(report.findings()))
+
+    @lint.command(name="install-hook")
+    def lint_install_hook() -> None:
+        """Make every `git commit` in this workspace run `lint commit` first."""
+        print(GitHook(workspace_root()).install())
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
@@ -1053,7 +1121,7 @@ def build(root: Path | None = None) -> App:
             if identity.startswith("local exit"):
                 continue
             with progress(f"waiting on {identity} ({host}, {name})"):
-                settled = board("local").verdicts().wait(identity, host=host)
+                settled = board("local").verdicts().wait(identity, host=host, say=_said)
             exit_code = exit_code or settled.code
         return exit_code
 
@@ -1256,6 +1324,7 @@ def build(root: Path | None = None) -> App:
         *,
         timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
+        stall: float = STALL_SECONDS,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -1263,23 +1332,32 @@ def build(root: Path | None = None) -> App:
         """Block until every job of a batch settles, print the batch's verdict, exit its code.
 
         The same durable sweep `wait` runs on one handle, over the whole batch: results are
-        pulled back and rentals released as each job lands, and the answer is read off the
-        batch's receipts, 0 when every job settled clean, 1 on any failure, 2 at the timeout
-        with work still in flight.
+        pulled back and rentals released as each job lands, cells and a heartbeat stream to
+        stderr, and the answer is read off the batch's receipts, 0 when every job settled
+        clean, 1 on any failure, 2 at the timeout with work still in flight, 4 when a job
+        stalled.
 
         batch_id: the batch to wait on, as `run` printed it.
         timeout: give up after this many seconds, exiting 2 with jobs still in flight, an hour
             unless said otherwise; 0 waits as long as it takes.
         interval: seconds between sweeps, the dispatch default when 0.
+        stall: seconds a running job may print nothing on an idle card before the wait stops
+            and exits 4; 0 never calls a job stalled.
         json: print the verdict as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
         return wait(
-            batch_id, timeout=timeout, interval=interval, json=json, agent=agent, fields=fields
+            batch_id,
+            timeout=timeout,
+            interval=interval,
+            stall=stall,
+            json=json,
+            agent=agent,
+            fields=fields,
         )
 
-    @app.command
+    @app.command(show=False)
     def provide(env: str = "", *, source: str = "", expect: str = "", json: bool = False) -> None:
         """Build the immutable environment a dispatched job activates, and print where it is.
 
@@ -1319,7 +1397,7 @@ def build(root: Path | None = None) -> App:
         """
         return Runner(Job.read(record)).run()
 
-    @app.command
+    @app.command(show=False)
     def attest(stream: str, *, job: str = "") -> None:
         """Record what this machine looks like right now into a stream's receipts, once.
 
@@ -1337,7 +1415,7 @@ def build(root: Path | None = None) -> App:
         """
         board("local").attest(stream, job=job or stream)
 
-    @app.command
+    @app.command(show=False)
     def sample(
         stream: str,
         *,
@@ -1375,6 +1453,7 @@ def build(root: Path | None = None) -> App:
         on: str = "",
         timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
+        stall: float = STALL_SECONDS,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -1386,17 +1465,26 @@ def build(root: Path | None = None) -> App:
         loses nothing. What prints at the end is read back off the on-disk receipts rather than
         remembered from the loop, which is what makes this the sanctioned completion check.
 
+        While it blocks, stderr carries each test cell's outcome as it lands and a heartbeat:
+        cells done, failures, how long since the output last grew, and the busiest card where
+        that is cheap to read. A job whose pytest session ended while its process lingers is
+        settled on the session's own outcome, and a running job silent past `--stall` on an idle
+        card ends the wait with exit 4 rather than holding it to the timeout.
+
         handle: the job to wait on, as `submit` printed it, or a batch id as `batch run`
             printed it, which waits for every job of the batch.
         on: the host alias narrowing a handle recorded on several hosts.
         timeout: give up after this many seconds, exiting 2 with the job still in flight, an
             hour unless said otherwise; 0 waits as long as it takes.
         interval: seconds between polls, the dispatch default when 0.
+        stall: seconds a running job may print nothing on an idle card before the wait stops
+            and exits 4; 0 never calls a job stalled.
         json: print the outcome as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
-        with progress(f"waiting on {handle}"):
+        print(f"waiting on {handle}", file=sys.stderr, flush=True)
+        with diverted():
             settled = (
                 board("local")
                 .verdicts()
@@ -1405,6 +1493,8 @@ def build(root: Path | None = None) -> App:
                     host=on,
                     timeout=timeout,
                     interval=interval or vocabulary.POLL_SECONDS,
+                    stall=stall,
+                    say=_said,
                 )
             )
         _settled(settled, json_mode=json, agent=agent, fields=fields)
@@ -1412,12 +1502,14 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def logs(handle: str, *, on: str = "") -> int:
-        """Print what a dispatched job actually printed, whether or not its host still exists.
+        """Print only what a dispatched job printed, whether or not its host still exists.
 
         Only the exit code used to survive a run: the output lived on the host or on a rented
         disk that dies with the rental, so a lost terminal lost everything the job said. The
         durable sweep now keeps each settled run's tail beside that run's receipts, and this
-        reads that copy first, falling back to the backend for a run still in flight.
+        reads that copy first, falling back to the backend for a run still in flight. The frame a
+        rented run carries its receipts home in is this tool's and not the job's, so it is left
+        out; `verdict` reads the receipts themselves.
 
         An empty log has two entirely different causes, so a run that printed nothing answers
         with where it stands instead: its verdict, the scheduler's own state word, how long it
@@ -1432,7 +1524,7 @@ def build(root: Path | None = None) -> App:
         on: the host alias narrowing a handle recorded on several hosts.
         """
         workspace = board("local")
-        captured = workspace.verdicts().captured(handle, host=on)
+        captured = printed(workspace.verdicts().captured(handle, host=on))
         if not captured.strip():
             return _unprinted(workspace, handle, host=on)
         # A job that coloured its output for a terminal it never had leaves escape codes in
@@ -1517,14 +1609,17 @@ def build(root: Path | None = None) -> App:
         A live job is never left out and never answered from memory. Each host is asked once
         about every run it still owes an answer on, one `qstat`, one `squeue`, one `pueue
         status`, so a wave of thirty five says which of them are running and which are queued
-        behind them, since when, and where the scheduler estimates a start. The limit bounds only
+        behind them, since when, and where the scheduler estimates a start. A running job also
+        shows its test cells landed out of its total, the seconds since its output last grew, and
+        the busiest card on its host where that is one cheap command away. The limit bounds only
         the settled tail, and a listing that had to leave anything out says so on stderr rather
         than stopping quietly at twenty rows.
 
         limit: how many settled runs to show behind the live ones, newest first.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over state/host/name/handle/since/starts/cause.
+        fields: a comma-separated projection over the row's columns, cells/quiet_s/gpu_pct
+            among them.
         """
         with progress("asking every host about its live jobs"):
             listed = Listing(board("local"), limit=limit).taken()
@@ -1537,16 +1632,159 @@ def build(root: Path | None = None) -> App:
         if listed.note:
             print(listed.note, file=sys.stderr)
 
+    git = App(
+        name="git",
+        help="Operate the workspace repository and its owned submodules as one tree.",
+    )
+    app.command(git)
+
+    @git.command(name="status")
+    def git_status(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
+        """Show every owned repository in the tree on one table, without touching the network.
+
+        Owned means the owner in the remote URL is the workspace root's own or one `[git]
+        owners` names; reference code pinned from anybody else is left out. Each row says the
+        branch (or `detached`), how far HEAD is ahead of and behind its upstream as last
+        fetched, how many paths are changed and untracked, and which remote branch already
+        holds HEAD, empty for a commit a parent pointer could not yet be cloned at.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the status columns.
+        """
+        with progress("reading the repository tree"):
+            states = board("local").git().status()
+        rows(
+            [state.model_dump() for state in states],
+            mode=mode_of(json_mode=json, agent=agent),
+            fields=_fields(fields) or _GIT_STATUS_COLUMNS,
+            title="git status",
+        )
+
+    @git.command(name="pull")
+    def git_pull(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+        """Fast-forward every owned repository and bring submodule checkouts along, root first.
+
+        Every owned remote is fetched at once, then the tree is walked from the root down.
+        Nothing is merged or rebased: a diverged branch is held and named, and a fast-forward
+        that would overwrite local changes is refused by git itself. A detached HEAD is put back
+        on its trunk where that moves no commit. A submodule follows its parent's new pointer
+        only when it sat on the old one, and one never checked out is cloned at the recorded
+        pointer. Exits 1 when any repository was held or failed.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over repo/outcome/detail.
+        """
+        with progress("pulling the repository tree"):
+            steps = board("local").git().pull()
+        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git pull")
+
+    @git.command(name="commit")
+    def git_commit(
+        *,
+        message: Annotated[str, Parameter(name=["--message", "-m"])],
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> int:
+        """Commit every dirty owned repository, submodules first, then the pointers to them.
+
+        Each commit lands on a branch: a detached HEAD is attached to its trunk when that is a
+        fast-forward of the branch, and held otherwise, as is a repository behind its upstream
+        and a parent whose submodule did not commit. Anything under a `[git] never-commit`
+        pattern and files over the size ceiling that Git LFS does not carry stay out of the
+        commit, unstaged; the row names the oversized ones and any never-commit path that was
+        staged by hand. Exits 1 when any repository was held or failed.
+
+        message: the commit message, the same for every repository committed.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over repo/outcome/detail.
+        """
+        with progress("committing the repository tree"):
+            steps = board("local").git().commit(message)
+        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git commit")
+
+    @git.command(name="push")
+    def git_push(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+        """Push every owned repository, submodules before the parents that point at them.
+
+        A parent is pushed only once every submodule pointer its HEAD records is held by a
+        branch of that submodule's remote. Git LFS objects are uploaded first. A remote that
+        protects the tracked branch gets the commit on a branch named `<tool>/<branch>` after
+        this tool instead, and the row asks for the pull request. HTTPS pushes to GitHub can
+        use the `gh` login as a credential. Exits 1 when any repository was held or failed.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over repo/outcome/detail.
+        """
+        with progress("pushing the repository tree"):
+            steps = board("local").git().push()
+        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git push")
+
+    @git.command(name="check")
+    def git_check(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+        """Verify the tree is safe to clone and push, and exit 1 when anything fails.
+
+        Fetches every owned repository and the foreign submodules they point at, then reports
+        each pointer no branch of its remote holds, each diverged branch, each file in HEAD over
+        the size ceiling and each LFS repository with no git-lfs here as `fail`, and a detached
+        HEAD, unpushed or missing commits, and a checkout off its recorded pointer as `warn`.
+        An empty table is a consistent tree.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over repo/check/verdict/detail.
+        """
+        with progress("checking the repository tree"):
+            findings = board("local").git().check()
+        rows(
+            [finding.model_dump() for finding in findings],
+            mode=mode_of(json_mode=json, agent=agent),
+            fields=_fields(fields) or _GIT_CHECK_COLUMNS,
+            title="git check",
+        )
+        return 1 if any(finding.verdict is Verdict.FAIL for finding in findings) else 0
+
     return app
 
 
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
-_HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
+
+# The columns each `git` table carries, so a tree with nothing to say still renders its heading.
+_GIT_STATUS_COLUMNS = (
+    "repo",
+    "owner",
+    "branch",
+    "head",
+    "upstream",
+    "ahead",
+    "behind",
+    "changed",
+    "untracked",
+    "published",
+)
+_GIT_STEP_COLUMNS = ("repo", "outcome", "detail")
+_GIT_CHECK_COLUMNS = ("repo", "check", "verdict", "detail")
 
 # The columns the job listing always carries, so a cache nobody has dispatched from still renders
 # its heading, and so a settled row's empty live columns line up under the live rows' own.
-_JOB_COLUMNS = ("state", "host", "name", "handle", "since", "starts", "submitted_at", "cause")
+_JOB_COLUMNS = (
+    "state",
+    "host",
+    "name",
+    "handle",
+    "cells",
+    "quiet_s",
+    "gpu_pct",
+    "since",
+    "starts",
+    "submitted_at",
+    "cause",
+)
 
 # The columns each batch table carries, named here so an empty batch still renders its heading and
 # so the totals row is summed over the same shape the rows are printed in.
@@ -1567,6 +1805,8 @@ _ESTIMATE_COLUMNS = (
     "p90_usd",
 )
 _DISPATCH_COLUMNS = ("job", "target", "state", "handle", "kind", "reason")
+_SECTION_COLUMNS = ("number", "title", "page", "within")
+_PROBLEM_COLUMNS = ("kind", "where", "detail")
 _STATUS_COLUMNS = ("job", "target", "handle", "state", "verdict", "detail")
 _VERDICT_COLUMNS = (
     "job",
@@ -1669,6 +1909,13 @@ def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: st
     )
     if settled.note:
         print(settled.note, file=sys.stderr)
+    if settled.stalled:
+        print(f"stalled: {settled.stalled}", file=sys.stderr)
+
+
+def _said(line: str) -> None:
+    """One line a wait says while it blocks, on stderr and at once."""
+    print(line, file=sys.stderr, flush=True)
 
 
 def _agreed() -> bool:
@@ -1679,6 +1926,19 @@ def _agreed() -> bool:
     """
     print("dispatch? [y/N] ", end="", file=sys.stderr, flush=True)
     return input().strip().lower() in {"y", "yes"}
+
+
+def _linted(report: Report, *, advice: str) -> int:
+    """Print a lint pass's findings and summary, exiting nonzero unless nothing needed doing.
+
+    advice: what to do once files were rewritten, empty when rerunning is advice enough.
+    """
+    if report.failures:
+        print(report.findings())
+    print(report.summary())
+    if report.rewritten and advice:
+        print(advice)
+    return 0 if report.clean else 1
 
 
 def _exit_on_mission_error(error: MissionError) -> NoReturn:
@@ -1735,6 +1995,68 @@ def _status(status: BatchStatus, *, mode: str | None, fields: Sequence[str]) -> 
         mode=mode,
         fields=fields,
         title=f"{status.batch}: {status.running} running",
+    )
+
+
+def _stepped(
+    steps: Sequence[Step], *, json_mode: bool, agent: bool, fields: str, title: str
+) -> int:
+    """Print one row per repository a tree verb walked, exiting 1 when any did not settle."""
+    rows(
+        [step.model_dump() for step in steps],
+        mode=mode_of(json_mode=json_mode, agent=agent),
+        fields=_fields(fields) or _GIT_STEP_COLUMNS,
+        title=title,
+    )
+    return 0 if all(step.outcome.settled for step in steps) else 1
+
+
+def _held(held: Held, *, json_mode: bool, agent: bool, fields: str, title: str) -> None:
+    """Print one held machine: its alias, where it came from, what it costs, when it ends."""
+    payload: dict[str, Node] = {
+        "alias": held.alias,
+        "provider": held.provider,
+        "handle": held.handle,
+        "gpu": held.gpu,
+        "usd_hr": held.usd_hr,
+        "deadline": held.deadline.isoformat(),
+        "root": held.profile.root,
+    }
+    mode = mode_of(json_mode=json_mode, agent=agent)
+    record(payload, mode=mode, fields=_fields(fields), title=title)
+
+
+def _report(report: PaperReport, *, mode: str | None) -> None:
+    """Print one manuscript check: the summary, where each section starts, and every problem.
+
+    The JSON mode prints the report whole, one document a script can read; the other modes
+    print three tables, the problem table naming its columns even when it is empty so a clean
+    build still says so.
+    """
+    if mode == "json":
+        record(report.model_dump(mode="json"), mode=mode, fields=(), title="paper")
+        return
+    summary: dict[str, Node] = {
+        "pdf": report.pdf,
+        "pages": report.pages,
+        "limit": report.limit,
+        "ends": report.ends,
+        "ends_on": report.ends_on,
+        "problems": len(report.problems),
+    }
+    record(summary, mode=mode, fields=(), title=f"paper: {report.paper}")
+    last = report.limit or report.pages
+    rows(
+        [{**section.model_dump(), "within": section.page <= last} for section in report.sections],
+        mode=mode,
+        fields=_SECTION_COLUMNS,
+        title="sections",
+    )
+    rows(
+        [problem.model_dump(mode="json") for problem in report.problems],
+        mode=mode,
+        fields=_PROBLEM_COLUMNS,
+        title="problems",
     )
 
 
@@ -1818,13 +2140,14 @@ def _changes(report: MonitorReport) -> list[dict[str, str]]:
 def main() -> None:
     """Console entry point, `MissionError` printed without a traceback.
 
-    The staleness line prints first and to stderr, so an edited source tree names its own
-    reinstall on every invocation instead of silently answering from an old snapshot.
+    The snapshot is brought up to its source first, which re-executes this same command on the
+    new code when the source moved, and says so on stderr only. A trailing-command verb then gets
+    the `--` its command implies, so nothing typed after the command is ever read as this tool's.
     """
     install_traceback()
-    if line := staleness.check().warning:
-        print(line, file=sys.stderr)
+    staleness.current()
+    app = build()
     try:
-        build()(sys.argv[1:])
+        app(Delimiter(app).placed(sys.argv[1:]))
     except MissionError as error:
         _exit_on_mission_error(error)

@@ -3,6 +3,7 @@ import os
 import platform
 import shlex
 import time
+from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 from threading import RLock
@@ -43,7 +44,6 @@ from .dispatch.onboard import (
     facts_command,
     gpus_command,
     read_facts,
-    stress_command,
 )
 from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
@@ -65,15 +65,16 @@ from .engines.compile.state import SyncState
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
 from .experiments.identity import run_id
+from .git import Tree
 from .jobs.call import Fresh
 from .jobs.closure import Closure
 from .jobs.target import Target
 from .manifest.loading import load
+from .manuscript import Manuscript
 from .monitor import Monitor
 from .nodes import evidence_of
 from .probe.occupancy import Occupancy
 from .probe.snapshot import HostFacts
-from .probe.stress import StressReport
 from .runtime.activation import Runtime
 from .runtime.job import walltime_seconds
 from .scaffold import Scaffold
@@ -104,6 +105,10 @@ if TYPE_CHECKING:
 # `route`'s answer for the schedulers reached over ssh, the family whose hosts run the work
 # themselves rather than renting an instance to run it on.
 _SSH_FAMILY = "ssh-family"
+
+# How long one manuscript build may take. A first build downloads the engine's bundle, so the
+# ceiling is minutes, and a TeX run looping on a bad macro still ends inside it.
+_PAPER_SECONDS = 900.0
 
 
 class Job:
@@ -443,6 +448,13 @@ class Board:
         """
         return Doctor(self, env=env)
 
+    def git(self) -> Tree:
+        """This workspace's repository tree: the root and every submodule under it, as one.
+
+        Host-independent like `deps`, since the repositories live in this workspace's checkout.
+        """
+        return Tree(self.root, self.manifest.git)
+
     def expectation(
         self,
         command: str,
@@ -524,26 +536,6 @@ class Board:
         if not line:
             raise MissionError(f"no occupancy in the probe output: {text.strip()[-240:]}")
         return Occupancy.model_validate_json(line)
-
-    def stress(self, *, n: int = 8192, repetitions: int = 5) -> StressReport:
-        """One device's measured rates and link bandwidths, local or through the host's tool.
-
-        A remote host answers with its own installed tool, like `facts`; a scheduler host has
-        no card on its login node and is refused with the job to submit instead.
-        """
-        if self.local:
-            probe = shlex.split(stress_command(n=n, repetitions=repetitions))
-            command = localhost[Project().name]["run", "--", *probe]
-            return StressReport.model_validate_json(_report_json(command()))
-        plan = self.plan(container="none")
-        if plan.profile.kind in {"pbs", "slurm"}:
-            raise MissionError(
-                f"{self.host} is a scheduler host with no card on its login node; submit "
-                f"packages/{Project().name}/src/{Project().name}/probe/stress.py::app instead"
-            )
-        with open_shell(plan, self.remote_root()) as shell:
-            text = shell.run(stress_command(n=n, repetitions=repetitions), activate=True)
-        return StressReport.model_validate_json(_report_json(text))
 
     @property
     def floor(self) -> str:
@@ -825,6 +817,25 @@ class Board:
             built = self.shared.get(key) or build()
             self.shared[key] = built
             return cast("Built", built)
+
+    def paper(self, name: str) -> Manuscript:
+        """The declared manuscript `name`, built and checked through this workspace's environment.
+
+        name: the `[papers.<name>]` key.
+        """
+        try:
+            declared = self.manifest.papers[name]
+        except KeyError:
+            raise MissionError(
+                f"no paper {name!r}; declared papers are {sorted(self.manifest.papers)}"
+            ) from None
+        provisioner = Provisioner(self.root, self.manifest)
+        return Manuscript(
+            name,
+            declared,
+            root=self.root,
+            run=partial(provisioner.capture, env=self.plan().env, timeout=_PAPER_SECONDS),
+        )
 
     def plan(self, *, env: str = "", container: str = "") -> ExecutionPlan:
         """The resolved execution plan for this board's host.
@@ -1159,7 +1170,7 @@ class Board:
         run locally here; remote jobs require submit for allocation and source transfer.
         A command naming a declared task
         is resolved by pixi inside the generated workspace instead of by the
-        shell, which is what makes `run test` and `run -- pytest -q` the same verb.
+        shell, which is what makes `run test` and `run pytest -q` the same verb.
 
         Local file targets use the same runner and closure format as submitted jobs.
         Collection and help remain local and do not allocate remote resources.
@@ -1261,24 +1272,6 @@ class Board:
         """The project generator, rendering the workspace's own templates through copier."""
         return Scaffold(self)
 
-    def serve(self, name: str) -> int:
-        """Run a declared engine's command through its container, returning its exit code.
-
-        The same staging `run` gives any command, over one this workspace already named:
-        `[engines.<name>]`'s command, inside the container it declares. No image is built here,
-        only the launcher `run` already knows how to build for any container, so the container's
-        own image must already exist.
-
-        name: the `[engines.<name>]` table to serve.
-        """
-        try:
-            engine = self.manifest.engines[name]
-        except KeyError:
-            raise MissionError(
-                f"no engine {name!r}; declared engines are {sorted(self.manifest.engines)}"
-            ) from None
-        return self.run(engine.command, env=engine.env, container=engine.container)
-
     def shell(
         self,
         env: str = "",
@@ -1312,7 +1305,7 @@ class Board:
         if not self.local:
             raise MissionError(
                 f"a shell runs on this machine only. Run "
-                f"`{self.project.name} interact --on {self.host}` for a session there."
+                f"`{self.project.name} shell --on {self.host}` for a session there."
             )
         plan = self.plan(env=env, container="none")
         pixi = Provisioner(self.root, self.manifest).pixi_for(plan.env)
@@ -1549,11 +1542,3 @@ class Board:
         batch_id: the batch to watch.
         """
         return Watch(self, batch_id, bus=self.receipts(batch_id))
-
-
-def _report_json(text: str) -> str:
-    """The report JSON at the end of a probe's captured output, whatever preceded it."""
-    start = text.rfind('{"schema_version"')
-    if start < 0:
-        raise MissionError(f"no stress report in the probe output: {text.strip()[-240:]}")
-    return text[start:]

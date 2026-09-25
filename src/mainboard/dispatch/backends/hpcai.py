@@ -17,7 +17,7 @@
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import suppress
 from time import sleep
 from typing import TYPE_CHECKING
@@ -34,9 +34,11 @@ from .base import (
     Account,
     Credentials,
     Delivery,
+    Inventory,
     LogSource,
     ProviderBackend,
     Rentable,
+    Rented,
     Standing,
     forgotten,
     http_transport,
@@ -131,7 +133,17 @@ def _mapped_port(rows: Sequence[Mapping]) -> int:
     return 0
 
 
-class HpcAiBackend(ProviderBackend, Account, Rentable):
+def _rented(item: Mapping) -> Rented:
+    """One listed instance row as the rental it is."""
+    metadata = item.get("instanceMetadata") or {}
+    return Rented(
+        handle=str(metadata.get("instanceId") or ""),
+        label=str(metadata.get("instanceName") or metadata.get("name") or ""),
+        status=str((item.get("instanceRuntimeInfo") or {}).get("status") or ""),
+    )
+
+
+class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
     """Run a command on an HPC-AI instance, its own REST API standing in for a scheduler.
 
     HPC-AI reports instance-level status only (`instanceRuntimeInfo.status`), never a process
@@ -226,9 +238,23 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
     def instance(self, handle: str) -> dict:
         """`handle`'s listed instance row, empty once HPC-AI no longer lists it.
 
+        The listing is walked page by page and stops at the first page carrying the id.
+        """
+        return next(
+            (
+                item
+                for item in self.instances()
+                if item.get("instanceMetadata", {}).get("instanceId") == handle
+            ),
+            {},
+        )
+
+    def instances(self) -> Iterator[dict]:
+        """Every instance on the account, one listing page at a time.
+
         `/instance/list` refuses a request that carries no pager (it answers 500), and it pages,
-        so the walk asks for one page at a time and stops at the first page carrying the id or
-        once it has run past the total the pager reports.
+        so the walk asks for one page at a time and stops once it has run past the total the
+        pager reports.
         """
         page = 1
         while True:
@@ -237,13 +263,15 @@ class HpcAiBackend(ProviderBackend, Account, Rentable):
                 path="/instance/list",
                 body={"pager": {"currentPage": page, "pageSize": _PAGE_SIZE}},
             )
-            for item in payload.get("instances") or []:
-                if item.get("instanceMetadata", {}).get("instanceId") == handle:
-                    return item
+            yield from payload.get("instances") or []
             total = int((payload.get("pager") or {}).get("totalEntries") or 0)
             if page * _PAGE_SIZE >= total:
-                return {}
+                return
             page += 1
+
+    def rentals(self) -> list[Rented]:
+        """Every instance on the account, as HPC-AI lists them, whoever created it."""
+        return [_rented(item) for item in self.instances()]
 
     def create(self, plan: ExecutionPlan, *, script: str, allocation: Allocation) -> str:
         """Create an instance whose initScript runs `script`, returning HPC-AI's instance id.

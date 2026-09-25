@@ -11,9 +11,15 @@ from mainboard import _refresh
 def test_the_worker_waits_for_its_parent_before_replacing_the_tool_and_records_the_result(
     tmp_path: Path,
 ) -> None:
-    """The lock holder goes first, uv second, and its diagnostic remains after both exit."""
+    """The lock holder goes first, uv second, and its diagnostic remains after both exit.
+
+    The marker that kept later commands from scheduling a second worker is gone once this one
+    is done, whatever the install came to.
+    """
     events: list[str] = []
     log = tmp_path / "self-update.log"
+    pending = tmp_path / "self-update.pending"
+    pending.write_text("314", encoding="utf-8")
 
     def wait(parent: int) -> None:
         events.append(f"wait:{parent}")
@@ -26,6 +32,7 @@ def test_the_worker_waits_for_its_parent_before_replacing_the_tool_and_records_t
     assert _refresh.after_parent(314, command, log, wait=wait, execute=execute) == 7
     assert events == ["wait:314", "run:uv tool install mainboard"]
     assert log.read_text(encoding="utf-8") == "attempt=1 exit=7\nout\nerr\n"
+    assert not pending.exists()
 
 
 def test_windows_tool_directory_locks_back_off_and_preserve_every_attempt(

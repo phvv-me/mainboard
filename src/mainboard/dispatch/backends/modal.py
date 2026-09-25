@@ -63,7 +63,7 @@ def _modal() -> ModuleType:
         raise MissionError(
             "the installed Mainboard tool needs its `modal` extra; reinstall Mainboard "
             "with that extra alongside the extras already in use, then authenticate "
-            "with `mainboard run -- modal token new`"
+            "with `mainboard run modal token new`"
         ) from None
 
 

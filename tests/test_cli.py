@@ -11,14 +11,13 @@ import pytest
 
 from mainboard import Board, ComputePath, MissionError, Project, Survey
 from mainboard.batch import JobEstimate
-from mainboard.cli import build, main
+from mainboard.cli import _said, build, main
 from mainboard.dispatch.shared import db_file
 from mainboard.dispatch.state import Cache, MonitorReport, RunRecord
 from mainboard.dispatch.vocabulary import JobState
 from mainboard.jobs.lanes import Cell
 from mainboard.monitor import Monitor
 from mainboard.probe.occupancy import CardOccupancy, Holder, Occupancy
-from mainboard.staleness import Snapshot
 from mainboard.verdicts import StreamVerdict, Verdicts
 
 if TYPE_CHECKING:
@@ -46,6 +45,10 @@ _RESOURCES = {
     "env": "",
     "container": "",
 }
+
+# What `wait` translates its flags into by default: the dispatch poll, the stall threshold, and
+# the stderr line printer the cells and the heartbeat go through.
+_WAITED = {"host": "", "timeout": 3600.0, "interval": 5.0, "stall": 1200.0, "say": _said}
 
 
 @pytest.mark.parametrize(
@@ -101,10 +104,6 @@ _RESOURCES = {
             ("install", "local", ("serving",), {"resolve": True, "profile": "gold"}),
         ),
         (
-            ["install", "--on", "gold"],
-            ("install", "gold", ("",), {"resolve": False, "profile": ""}),
-        ),
-        (
             ["setup", "gold", "--env", "serving"],
             ("install", "gold", ("serving",), {"resolve": False, "sync_only": False}),
         ),
@@ -117,9 +116,8 @@ _RESOURCES = {
             ("install", "gold", ("serving",), {"resolve": False, "sync_only": True}),
         ),
         (["shell", "--env", "serving"], ("shell", "local", ("serving",), {})),
-        (["serve", "vserve", "--on", "gold"], ("serve", "gold", ("vserve",), {})),
         (
-            ["interact", "--on", "gold", "--queue", "interact-g", "--", "pwd"],
+            ["shell", "--on", "gold", "--queue", "interact-g", "--", "pwd"],
             (
                 "interact",
                 "gold",
@@ -132,11 +130,11 @@ _RESOURCES = {
         (["facts", "gold"], ("facts", "gold", (), {})),
         (
             ["wait", "4242", "--timeout", "60"],
-            ("wait", "", ("4242",), {"host": "", "timeout": 60.0, "interval": 5.0}),
+            ("wait", "", ("4242",), {**_WAITED, "timeout": 60.0}),
         ),
         (
-            ["batch", "wait", "smoke-1", "--timeout", "60"],
-            ("wait", "", ("smoke-1",), {"host": "", "timeout": 60.0, "interval": 5.0}),
+            ["batch", "wait", "smoke-1", "--timeout", "60", "--stall", "0"],
+            ("wait", "", ("smoke-1",), {**_WAITED, "timeout": 60.0, "stall": 0.0}),
         ),
         (["verdict", "smoke-1"], ("of", "", ("smoke-1",), {"host": "", "run": ""})),
         (["cancel", "4242", "--on", "gold"], ("cancel", "", ("4242",), {"host": "gold"})),
@@ -145,10 +143,6 @@ _RESOURCES = {
         (
             ["attest", "smoke-1", "--job", "gold-1"],
             ("attest", "local", ("smoke-1",), {"job": "gold-1"}),
-        ),
-        (
-            ["stress", "gold", "--n", "1024", "--repetitions", "2"],
-            ("stress", "gold", (), {"n": 1024, "repetitions": 2}),
         ),
         (
             ["provide", "serving", "--source", "compiled", "--expect", "d41d"],
@@ -173,13 +167,11 @@ _RESOURCES = {
         "new",
         "doctor",
         "install here",
-        "install on a host",
         "setup",
         "setup sync-only",
         "sync",
         "shell",
-        "serve",
-        "interact",
+        "shell on a host",
         "compute",
         "monitor",
         "facts",
@@ -190,7 +182,6 @@ _RESOURCES = {
         "logs",
         "attest",
         "attest a named job",
-        "stress",
         "provide",
         "collect from the profile's root",
     ],
@@ -228,6 +219,24 @@ def test_a_verdict_with_no_rows_says_why_on_stderr_rather_than_printing_a_bare_h
     assert note in printed.err and note not in printed.out
 
 
+def test_a_wait_streams_its_lines_to_stderr_and_exits_4_on_a_stalled_job(
+    depot: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Cells and heartbeats go where a `--json` reader never looks, and a stall says why."""
+
+    def waited(self: Verdicts, handle: str, **options: Callable[[str], None]) -> StreamVerdict:
+        options["say"]("heartbeat: 1 running, 2/3 cells, 0 failed")
+        return StreamVerdict(stream=handle, trials=(), stalled="8 on gold printed nothing")
+
+    monkeypatch.setattr(Verdicts, "wait", waited)
+    with pytest.raises(SystemExit, match="4"):
+        build(depot)(["wait", "8", "--json"])
+    printed = capsys.readouterr()
+    assert json.loads(printed.out) == []
+    assert "heartbeat: 1 running, 2/3 cells" in printed.err
+    assert "stalled: 8 on gold printed nothing" in printed.err
+
+
 @pytest.mark.parametrize(
     ("captured", "code", "shown"),
     [
@@ -237,6 +246,18 @@ def test_a_verdict_with_no_rows_says_why_on_stderr_rather_than_printing_a_bare_h
         ),
         pytest.param(
             "\x1b[1mI\x1b[0m| epoch 2\n", 0, "I| epoch 2", id="a-coloured-log-read-off-a-terminal"
+        ),
+        pytest.param(
+            "epoch 2\nmainboard-receipts-begin\nmainboard-receipt:e30K\nmainboard-receipts-end\n",
+            0,
+            "epoch 2\n",
+            id="a-rental-whose-receipts-rode-home-in-its-log",
+        ),
+        pytest.param(
+            "mainboard-receipts-begin\nmainboard-receipt:e30K\nmainboard-receipts-end\n",
+            1,
+            "no output on file",
+            id="a-run-that-printed-nothing-but-its-receipts",
         ),
     ],
 )
@@ -255,6 +276,7 @@ def test_the_logs_verb_prints_what_a_job_printed_or_says_nothing_was_kept(
     printed = capsys.readouterr()
     assert shown in (printed.out + printed.err)
     assert "\x1b" not in printed.out
+    assert "mainboard-receipt" not in printed.out
 
 
 @pytest.mark.parametrize(
@@ -503,51 +525,64 @@ def test_the_submit_expectation_names_what_comes_home_before_anything_moves(
     assert "results NOT pulled back (no --fetch, no --node)" in silent
 
 
-def test_the_entry_point_says_the_staleness_line_before_anything_else(
-    depot: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """An edited source tree names its own reinstall on every invocation, to stderr."""
-    monkeypatch.setattr(
-        "mainboard.cli.staleness.check",
-        lambda: Snapshot(
-            installed=True, stale=True, detail="the source moved", fix=("reinstall", "it")
-        ),
-    )
-    monkeypatch.chdir(depot)
-    monkeypatch.setattr("sys.argv", ["mainboard", "check"])
-    with pytest.raises(SystemExit, match="0"):
-        main()
-    printed = capsys.readouterr()
-    assert "the source moved; run `mainboard self-update` to fix it" in printed.err
-
-
 @pytest.mark.parametrize(
-    ("stale", "detail", "code"),
-    [(False, "matches the source tree", 0), (True, "drifted", 3)],
-    ids=["fresh", "stale"],
+    ("argv", "code", "reached"),
+    [
+        pytest.param(
+            ["run", "pytest", "--noconftest", "-x"],
+            "0",
+            [("run", "local", (("pytest", "--noconftest", "-x"),), {"env": "", "container": ""})],
+            id="run-a-command-whose-flags-this-tool-never-had",
+        ),
+        pytest.param(
+            ["run", "--env", "serving", "python", "-", "--", "-q"],
+            "0",
+            [
+                (
+                    "run",
+                    "local",
+                    (("python", "-", "--", "-q"),),
+                    {"env": "serving", "container": ""},
+                )
+            ],
+            id="run-stdin-python-its-own-delimiter-kept",
+        ),
+        pytest.param(
+            ["submit", "--on", _MIYABI_G, "--yes", "python", "train.py", "--epochs", "3"],
+            "0",
+            [("submit", _MIYABI_G, ("python train.py --epochs 3",), {**_RESOURCES})],
+            id="submit-a-command-with-flags",
+        ),
+        pytest.param(
+            ["submit", "--on", _MIYABI_G, "--walltim", "01:00:00", "python", "x"],
+            "1",
+            [],
+            id="a-misspelled-option-before-the-command-is-refused",
+        ),
+    ],
 )
-def test_self_update_runs_the_fix_only_when_the_snapshot_is_stale(
+def test_the_entry_point_hands_everything_from_the_command_on_to_the_command(
     depot: Path,
+    relayed: Sequence[Relayed],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    stale: bool,
-    detail: str,
-    code: int,
+    argv: list[str],
+    code: str,
+    reached: list[Relayed],
 ) -> None:
-    """A fresh or checked-out snapshot has nothing to reinstall and says so instead."""
-    monkeypatch.setattr(
-        "mainboard.cli.staleness.check",
-        lambda: Snapshot(installed=True, stale=stale, detail=detail, fix=("do", "it")),
-    )
-    ran: list[Snapshot] = []
-    monkeypatch.setattr("mainboard.cli.staleness.refresh", lambda found: ran.append(found) or 3)
-    with pytest.raises(SystemExit, match=str(code)):
-        build(depot)(["self-update"])
-    assert bool(ran) is stale
-    if not stale:
-        assert f"mainboard: {detail}" in capsys.readouterr().out
+    """`run pytest --noconftest` is `uv run`'s grammar, and a typo in this tool's options is not.
+
+    The snapshot is brought current before any of it, and nothing about that reaches stdout.
+    """
+    refreshed: list[str] = []
+    monkeypatch.setattr("mainboard.cli.staleness.current", lambda: refreshed.append("current"))
+    monkeypatch.setattr("sys.argv", ["mainboard", *argv])
+    with pytest.raises(SystemExit, match=code):
+        main()
+    assert refreshed == ["current"]
+    assert relayed == reached
+    if code != "0":
+        assert "--walltim" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -559,11 +594,11 @@ def test_self_update_runs_the_fix_only_when_the_snapshot_is_stale(
     ],
     ids=["as json", "as the default rich table", "as the compact record"],
 )
-def test_the_plan_verb_prints_the_resolved_plan(
+def test_check_on_a_host_prints_the_plan_it_resolves_to(
     depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], fragments: tuple[str, ...]
 ) -> None:
     with pytest.raises(SystemExit, match="0"):
-        build(depot)(["plan", _MIYABI_G, *flags])
+        build(depot)(["check", "--on", _MIYABI_G, *flags])
     out = capsys.readouterr().out
     if not fragments:
         plan = json.loads(out)
@@ -576,7 +611,7 @@ def test_the_plan_verb_prints_the_resolved_plan(
 @pytest.mark.parametrize(
     ("flags", "fields"),
     [
-        ([], {"workspace", "environments", "containers", "hosts", "tasks"}),
+        ([], {"workspace", "environments", "containers", "hosts", "papers", "tasks"}),
         (["--fields", "workspace, , hosts"], {"workspace", "hosts"}),
     ],
     ids=["the whole declared surface", "a projection that trims and drops blank entries"],
@@ -589,6 +624,19 @@ def test_the_check_verb_lists_what_the_manifest_declares(
     surface = json.loads(capsys.readouterr().out)
     assert set(surface) == fields
     assert surface["workspace"] == "lab"
+
+
+def test_check_refuses_plan_overrides_without_a_host(depot: Path) -> None:
+    with pytest.raises(MissionError, match="pass --on too"):
+        build(depot)(["check", "--env", "serving"])
+
+
+def test_a_shell_here_refuses_what_only_a_hosts_shell_takes(
+    depot: Path, relayed: list[Relayed]
+) -> None:
+    with pytest.raises(MissionError, match="belong to a host's shell"):
+        build(depot)(["shell", "--keep"])
+    assert relayed == []
 
 
 def test_the_mode_flags_refuse_each_other_before_anything_is_probed(
@@ -763,7 +811,7 @@ def test_a_machine_readable_verb_leaves_stdout_to_its_document_alone(
     ("argv", "code", "fragment"),
     [
         (["mainboard", "check"], "0", "lab"),
-        (["mainboard", "plan", "gold", "--env", "ghost"], "1", "declared environments"),
+        (["mainboard", "check", "--on", "gold", "--env", "ghost"], "1", "declared environments"),
     ],
     ids=["a clean verb from a directory below the root", "a refusal printed without a traceback"],
 )
@@ -838,26 +886,6 @@ def test_provide_prints_the_bare_prefix_unless_json_was_asked_for(
         assert json.loads(out) == {"prefix": str(Path("/envs/lab-4f2a"))}
         return
     assert out == f"{shown}\n"
-
-
-@pytest.mark.parametrize("json_mode", [True, False], ids=["the report json", "the compact record"])
-def test_stress_prints_the_whole_report_or_one_row_per_precision_and_link(
-    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str], json_mode: bool
-) -> None:
-    """The JSON is what a remote read parses back, so it carries every field; the table rounds
-    and names why a precision was skipped rather than printing its zero bare."""
-    with pytest.raises(SystemExit, match="^0$"):
-        build(depot)(["stress", "--json" if json_mode else "--agent"])
-    out = capsys.readouterr().out
-    if json_mode:
-        report = json.loads(out)
-        assert (report["device"], report["datasheet_fp32_tflops"]) == ("GH200", 66.93)
-        assert [rate["precision"] for rate in report["rates"]] == ["bf16", "fp8"]
-        return
-    assert all(
-        fragment in out
-        for fragment in ("GH200", "66.9", "BF16", "687.3", "no FP8 kernels", "412.1")
-    )
 
 
 # One busy card on this machine, and the first line of why gold could not be read, which is all
@@ -1034,6 +1062,6 @@ def test_lanes_run_runs_local_groups_in_place_and_submits_each_group_to_every_ot
         ("run", "local", (line("b-1"),), {}),
         ("submit", "gold", (" ".join(line("a-1", "a-2")),), {"name": "lanes-gold-a", **submitted}),
         ("submit", "gold", (" ".join(line("b-1")),), {"name": "lanes-gold-b", **submitted}),
-        *([("wait", "", ("4242",), {"host": "gold"})] * (2 if wait else 0)),
+        *([("wait", "", ("4242",), {"host": "gold", "say": _said})] * (2 if wait else 0)),
     ]
     assert "local exit 0" in capsys.readouterr().out

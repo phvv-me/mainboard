@@ -1,12 +1,20 @@
 import json
 import os
+import sys
+from collections.abc import Callable
 from pathlib import Path
+from threading import Thread
 
 import pytest
+from filelock import FileLock
+from plumbum import CommandNotFound
+from plumbum.commands.processes import ProcessTimedOut
 
 from mainboard import staleness
 from mainboard.core.project import Project
-from mainboard.staleness import Snapshot, check, digest, tool_root
+from mainboard.engines.compile.backend.engine import PixiEngine
+from mainboard.engines.compile.backend.result import CommandResult
+from mainboard.staleness import Refresh, Snapshot, check, digest, tool_root
 
 _RECEIPT = '[tool]\nrequirements = [{ name = "mainboard", extras = ["wandb"], directory = %s }]\n'
 
@@ -61,7 +69,6 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
     tool = snapshot.parents[2]
     first = check(snapshot)
     assert first == Snapshot(installed=True, detail="snapshot matches the source tree")
-    assert first.warning == ""
     assert check(snapshot).stale is False
     source = tool.parent / "checkout"
     touched(source)
@@ -82,54 +89,131 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
         "mainboard",
         "--force",
     )
-    assert stale.detail in stale.warning
-    assert "mainboard self-update" in stale.warning
     receipt = tool / "uv-receipt.toml"
     stat = receipt.stat()
     os.utime(receipt, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
     assert check(snapshot).stale is False
 
 
-@pytest.mark.parametrize("code", [0, 1])
-def test_refresh_runs_uv_inside_pixi_and_answers_its_exit_code(
-    code: int, monkeypatch: pytest.MonkeyPatch
+def stale(snapshot: Path) -> Snapshot:
+    """The fixture's snapshot recorded, then edited past: what every refresh starts from."""
+    check(snapshot)
+    touched(snapshot.parents[2].parent / "checkout")
+    found = check(snapshot)
+    assert found.stale
+    return found
+
+
+@pytest.mark.parametrize(
+    ("installer", "updated"),
+    [
+        pytest.param(CommandResult(0, "Installed 1 executable\n", ""), True, id="installed"),
+        pytest.param(
+            CommandResult(2, "", "resolving\nerror: no wheel for cuda-bindings\n"),
+            False,
+            id="the-installer-refused",
+        ),
+        pytest.param(CommandResult(2, "", ""), False, id="the-installer-said-nothing"),
+        pytest.param(ProcessTimedOut("uv hung", []), False, id="the-installer-hung"),
+        pytest.param(CommandNotFound("pixi", []), False, id="no-pixi-anywhere"),
+    ],
+)
+def test_a_stale_snapshot_reinstalls_itself_quietly_and_reexecutes_the_same_command(
+    snapshot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    installer: CommandResult | Exception,
+    updated: bool,
 ) -> None:
-    """The refresh delegates its exact argv to Pixi, never to a host-level uv binary."""
-    calls: list[tuple[str, ...]] = []
+    """The nag is gone: the snapshot updates itself and answers on the new code.
+
+    Nothing reaches stdout on any path, since stdout belongs to the verb about to run, and a
+    reinstall that fails leaves the command answering from the snapshot it has, with the
+    installer's own last word on stderr rather than a silent loop.
+    """
+    found = stale(snapshot)
+    ran: list[tuple[str, ...]] = []
+    replaced: list[list[str]] = []
+
+    def install(
+        self: PixiEngine, action: Callable[..., CommandResult], *argv: str
+    ) -> CommandResult:
+        ran.append(argv)
+        if isinstance(installer, Exception):
+            raise installer
+        return installer
+
+    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Linux")
+    monkeypatch.setattr(PixiEngine, "within_cwd", install)
+    monkeypatch.setattr("mainboard.staleness.os.execv", lambda path, argv: replaced.append(argv))
+    monkeypatch.setattr("mainboard.staleness.sys.orig_argv", ["python", "mainboard", "jobs"])
+    monkeypatch.delenv(staleness.REFRESHED, raising=False)
+
+    Refresh(found).run()
+
+    printed = capfd.readouterr()
+    assert printed.out == ""
+    assert ran == [found.fix]
+    assert (replaced == [[sys.executable, "mainboard", "jobs"]]) is updated
+    assert (os.environ.get(staleness.REFRESHED) == "1") is updated
+    monkeypatch.delenv(staleness.REFRESHED, raising=False)
+    if updated:
+        assert f"updated from {found.source}" in printed.err
+        return
+    assert "could not update itself" in printed.err
+    assert printed.err.count("\n") == 1
+
+
+def test_a_second_process_waits_its_turn_and_only_reexecutes_on_the_install_it_waited_for(
+    snapshot: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nine jobs starting at once on a synced host reinstall once, and one never waits forever."""
+    found = stale(snapshot)
+    receipt = snapshot.parents[2] / "uv-receipt.toml"
+    stat = receipt.stat()
+    os.utime(receipt, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    replaced: list[list[str]] = []
     monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Linux")
     monkeypatch.setattr(
-        "mainboard.staleness.PixiEngine.exit_code",
-        lambda self, *args: calls.append(args) or code,
+        PixiEngine, "within_cwd", lambda *args: pytest.fail("the install already happened")
     )
-    fix = ("exec", "--spec", "uv=0.12.7", "uv", "tool", "install", "mainboard")
-    found = Snapshot(installed=True, stale=True, detail="drifted", fix=fix)
+    monkeypatch.setattr("mainboard.staleness.os.execv", lambda path, argv: replaced.append(argv))
 
-    assert staleness.refresh(found) == code
-    assert calls == [fix]
+    Refresh(found).run()
+    monkeypatch.delenv(staleness.REFRESHED, raising=False)
+    assert len(replaced) == 1
+
+    monkeypatch.setattr("mainboard.staleness._LOCK_SECONDS", 0.01)
+    with FileLock(snapshot.parents[2] / "self-update.lock", thread_local=False):
+        worker = Thread(target=Refresh(found).run)
+        worker.start()
+        worker.join()
+    assert len(replaced) == 1
+    assert "another update held its lock" in capsys.readouterr().err
 
 
-def test_windows_refresh_exits_before_pixi_replaces_the_running_snapshot(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_windows_hands_the_update_to_one_worker_that_outlives_the_launcher(
+    snapshot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A worker waits for the locked launcher before uv replaces its tool directory."""
+    """A running Windows interpreter cannot be replaced, so the update waits for it to exit.
+
+    The command at hand answers from the snapshot it started on, and every command run before
+    the worker has finished finds the pending marker and schedules nothing more, until the
+    marker is old enough that its worker can no longer be on its way.
+    """
+    found = stale(snapshot)
     calls: list[tuple[str, ...]] = []
     monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
     monkeypatch.setattr("mainboard.staleness.os.getpid", lambda: 314)
-    monkeypatch.setattr(
-        "mainboard.staleness.PixiEngine.defer",
-        lambda self, *args: calls.append(args),
-    )
-    source = Path("C:/source")
-    uv = ("uv", "tool", "install", "--from", f"{source}[wandb]", "mainboard")
-    found = Snapshot(
-        installed=True,
-        stale=True,
-        fix=("exec", "--spec", "uv=0.12.7", *uv),
-        uv=uv,
-        source=source,
-    )
+    monkeypatch.setattr("mainboard.staleness.PixiEngine.defer", lambda self, *a: calls.append(a))
+    assert found.source is not None
+    log = found.source / ".mainboard" / "self-update.log"
 
-    assert staleness.refresh(found) == 0
+    Refresh(found).run()
+    Refresh(found).run()
+
     assert calls == [
         (
             "exec",
@@ -144,35 +228,51 @@ def test_windows_refresh_exits_before_pixi_replaces_the_running_snapshot(
             "python",
             str(Path(staleness.__file__).with_name("_refresh.py")),
             "314",
-            str(source / ".mainboard" / "self-update.log"),
+            str(log),
             "--",
-            "uv",
-            "tool",
-            "install",
-            "--from",
-            f"{source}[wandb]",
-            "mainboard",
+            *found.uv,
         )
     ]
-    assert "after this Windows launcher exits" in capsys.readouterr().err
+    pending = log.with_suffix(".pending")
+    assert pending.read_text(encoding="utf-8") == "314"
+    assert capsys.readouterr().err.count("updates itself once this command exits") == 1
+    os.utime(pending, (0, 0))
+    Refresh(found).run()
+    assert len(calls) == 2
 
 
-def test_windows_refresh_falls_back_to_the_current_workspace_when_no_source_is_named(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("moved", "again", "refreshed", "said"),
+    [
+        pytest.param(False, False, False, "", id="a-fresh-snapshot-does-nothing"),
+        pytest.param(True, False, True, "", id="a-stale-snapshot-refreshes"),
+        pytest.param(True, True, False, "the update did not take", id="a-reexecution-never-loops"),
+    ],
+)
+def test_every_invocation_starts_on_its_sources_newest_code(
+    snapshot: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    moved: bool,
+    again: bool,
+    refreshed: bool,
+    said: str,
 ) -> None:
-    """A snapshot carrying no source still leaves its deferred worker a durable log."""
-    calls: list[tuple[str, ...]] = []
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Windows")
-    monkeypatch.setattr("mainboard.staleness.os.getpid", lambda: 314)
-    monkeypatch.setattr(
-        "mainboard.staleness.PixiEngine.defer",
-        lambda self, *args: calls.append(args),
-    )
-    uv = ("uv", "tool", "install", "mainboard")
+    """The entry check, and the one environment flag that keeps a failed update from looping."""
+    found = stale(snapshot) if moved else check(snapshot)
+    monkeypatch.setattr("mainboard.staleness.check", lambda: found)
+    ran: list[Snapshot] = []
+    monkeypatch.setattr(Refresh, "run", lambda self: ran.append(self.found))
+    if again:
+        monkeypatch.setenv(staleness.REFRESHED, "1")
 
-    assert staleness.refresh(Snapshot(installed=True, stale=True, fix=uv, uv=uv)) == 0
-    assert str(tmp_path / ".mainboard" / "self-update.log") in calls[0]
+    staleness.current()
+
+    assert bool(ran) is refreshed
+    assert staleness.REFRESHED not in os.environ
+    printed = capsys.readouterr()
+    assert printed.out == ""
+    assert said in printed.err
 
 
 def test_the_refresh_preserves_an_existing_durable_interpreter(snapshot: Path) -> None:
@@ -220,11 +320,6 @@ def test_the_refresh_does_not_retain_a_project_environment_interpreter(snapshot:
     fix = check(snapshot).fix
     assert "--python" not in fix
     assert str(interpreter) not in fix
-
-
-def test_refresh_does_nothing_for_a_snapshot_with_no_fix_to_run() -> None:
-    """A fresh or uninstalled snapshot has an empty `fix`, so there is nothing to run at all."""
-    assert staleness.refresh(Snapshot(installed=True)) == 0
 
 
 def test_a_checkout_running_its_own_source_has_nothing_to_be_stale_against(
@@ -321,8 +416,7 @@ def test_refresh_advice_needs_no_git(snapshot: Path, monkeypatch: pytest.MonkeyP
     touched(snapshot.parents[2].parent / "checkout")
     found = check(snapshot)
     assert found.stale
-    assert found.warning.endswith("run `mainboard self-update` to fix it")
-    assert "commit" not in found.warning
+    assert "git" not in " ".join(found.fix)
 
 
 def test_a_refresh_without_a_source_logs_beside_the_working_directory(
@@ -367,7 +461,7 @@ def test_a_reinstall_names_its_source_absolutely_and_the_worker_reads_it_off_the
         "mainboard.staleness.PixiEngine.defer", lambda self, *args: calls.append(args)
     )
 
-    assert staleness.refresh(found) == 0
+    Refresh(found).run()
 
     handed = calls[0]
     assert handed[handed.index("--") + 1 :] == found.uv

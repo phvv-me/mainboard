@@ -1,11 +1,14 @@
 import gc
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from mainboard import MissionError
+from mainboard.costs.catalog import Offer
 from mainboard.dispatch import HostSetup, now
+from mainboard.dispatch.lease import Lease
 from mainboard.dispatch.state import Cache
 
 from ..support import cache, run_record
@@ -183,3 +186,19 @@ def test_a_mirror_moves_the_watermark_a_later_transfer_measures_against() -> Non
     assert mirrored.mirrored_at == mirrored.synced_at
     store.mark_synced("ghost")
     assert [record.host for record in store.hosts()] == ["gold"]
+
+
+def test_a_lease_is_replaced_in_place_and_a_host_forgotten_by_alias() -> None:
+    """A hold moves its deadline once the machine is ready, and forgets the host it released."""
+    store = cache()
+    run = run_record("7")
+    store.record(run)
+    offer = Offer(provider="vast", gpu="RTX 5090", rate_usd_hr=0.6)
+    lease = Lease(offer=offer, release_by=datetime(2026, 9, 25, 18, tzinfo=UTC))
+    assert store.relet(run, lease).lease == lease
+    with pytest.raises(LookupError, match="no registered run '8'"):
+        store.relet(run_record("8"), lease)
+    store.save_host(HostSetup(host="box", root="/root/projects"))
+    store.drop_host("box")
+    store.drop_host("never-set-up")
+    assert store.hosts() == []

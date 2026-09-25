@@ -115,7 +115,7 @@ def test_every_job_enters_the_plans_own_environment_or_refuses_to_start() -> Non
         refusal=default.refusal,
     )
     assert "found no default environment at /repo/.mainboard/envs/default" in default.refusal
-    assert "mainboard install default --on gold" in default.refusal
+    assert "mainboard setup gold --env default" in default.refusal
     serving = spec(plan=plan(env="serving")).job(pbs=False).activation
     assert isinstance(serving, WorkspaceActivation)
     assert serving.script == "/repo/.mainboard/activate-serving.sh"

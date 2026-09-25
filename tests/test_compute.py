@@ -13,6 +13,7 @@ from mainboard.compute import Access, reachable, summary
 from mainboard.dispatch import HostSetup, HostUnreachable, SshTransport
 from mainboard.dispatch.backends import Credentials, ProviderBackend, VastBackend
 from mainboard.manifest import HostProfile
+from mainboard.manifest.held import Held
 from mainboard.probe import GpuFact
 
 from .dispatch.backends.support import BareBackend, not_found, vast_backend
@@ -274,3 +275,39 @@ def test_the_default_roster_is_every_registered_provider_backend(board: Board) -
     names = {backend.name for backend in Survey(board).providers}
     assert {"modal", "vast", "hpc-ai"} <= names
     assert names == set(ProviderBackend.names())
+
+
+def test_every_machine_a_keyed_provider_rents_is_listed_named_by_its_hold(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The provider's own listing, so a rental from another checkout or a lost record shows."""
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    instances = {
+        "instances": [
+            {"id": 7, "gpu_name": "RTX 5090", "actual_status": "running", "dph_total": 0.6},
+            {"id": 8, "label": "mainboard-lost", "actual_status": "running"},
+        ]
+    }
+    backend = vast_backend({"credit": 1.0}, {"offers": [_OFFER]}, instances)
+    deadline = datetime(2026, 9, 25, 18, tzinfo=UTC)
+    held = Held(alias="box", provider="vast", handle="7", deadline=deadline, profile=HostProfile())
+    rows = named(survey(board).offered(backend, {"box": held}))
+    assert list(rows) == ["vast", "box", "vast:8"]
+    assert (rows["box"].kind, rows["box"].access, rows["box"].usd_hr) == (
+        "rental",
+        Access.RENTED,
+        0.6,
+    )
+    assert "1x RTX 5090, running; held until 2026-09-25T18:00:00+00:00" in rows["box"].detail
+    assert rows["vast:8"].detail.endswith("not held here, label mainboard-lost")
+
+
+def test_a_provider_whose_listing_fails_says_so_beside_its_own_row(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VAST_API_KEY", "key-123")
+    backend = vast_backend({"credit": 1.0}, {"offers": [_OFFER]}, not_found())
+    standing, refused = survey(board).offered(backend, {})
+    assert standing.access is Access.KEYED
+    assert (refused.kind, refused.access) == ("rental", Access.UNREACHABLE)
+    assert "404" in refused.detail

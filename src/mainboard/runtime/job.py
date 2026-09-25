@@ -143,7 +143,7 @@ class Job(FrozenModel):
     variables: exported after activation, provenance first and the host profile's exports last.
     provide: builds the environment before it is entered, None when nothing has to.
     attestation: records the machine in the foreground right before the command, None for none.
-    sampler: watches the machine beside the command until the runner ends, None for none.
+    sampler: watches the machine beside the command until the command ends, None for none.
     """
 
     command: str

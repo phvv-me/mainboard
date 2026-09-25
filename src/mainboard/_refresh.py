@@ -42,6 +42,22 @@ def after_parent(
     wait(parent)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("", encoding="utf-8")
+    try:
+        return _installed(command, log, execute=execute, pause=pause)
+    finally:
+        # The marker the scheduling process left says an update is on its way; this one is done
+        # with it however it ended, so the next stale command may schedule another.
+        log.with_suffix(".pending").unlink(missing_ok=True)
+
+
+def _installed(
+    command: Sequence[str],
+    log: Path,
+    *,
+    execute: Callable[[Sequence[str]], subprocess.CompletedProcess[str]],
+    pause: Callable[[float], None],
+) -> int:
+    """Run the install, backing off while Windows still holds the tool directory locked."""
     for attempt, delay in enumerate(_WINDOWS_UV_RETRY_DELAYS, start=1):
         result = execute(command)
         _record(log, attempt, result)
@@ -83,7 +99,7 @@ def _wait(parent: int) -> None:
     at all, and a process this user may not wait on cannot be watched any longer than this.
 
     Only the first of those was caught. The other two escaped before the log was even created,
-    so a deferred update died in silence minutes after `self-update` had already exited 0, with
+    so a deferred update died in silence minutes after its launcher had already exited 0, with
     nothing on disk to say it had. Whatever the wait came to, uv is asked for the install and its
     own retry ladder answers a directory that is genuinely still locked.
     """
