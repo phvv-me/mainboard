@@ -81,6 +81,11 @@ def test_the_command_starts_at_the_first_token_that_is_not_an_option_of_the_verb
             id="a-nested-verb-with-a-command",
         ),
         pytest.param(["lint", "src", "--check"], ["lint", "src", "--check"], id="paths"),
+        pytest.param(
+            ["center", "members", "head", "--json"],
+            ["center", "members", "head", "--json"],
+            id="member-names",
+        ),
         pytest.param(["check", "--json"], ["check", "--json"], id="a-verb-with-no-command"),
         pytest.param(
             ["batch", "run", "spec.toml"], ["batch", "run", "spec.toml"], id="a-nested-verb"

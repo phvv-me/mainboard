@@ -245,6 +245,37 @@ the home in the host's own shell (`$HOME`, `%USERPROFILE%` on Windows) and place
 a leading `~` under it, so every consumer uses one absolute path; a host never set
 up is refused with the command that fixes it, and a rental's home is read on landing.
 
+## Members
+
+A monorepo is made of projects that each stand on their own. A member is one:
+a `pyproject.toml` anybody can `pip install`, naming its dependencies the
+normal way (a version or a git URL), and optionally its own `mainboard.toml`
+for what only it needs (tasks, papers, lint, system packages). Cloned alone,
+that manifest is the workspace. Inside the monorepo, the root composes it:
+
+```toml
+[workspace]
+name = "life"
+members = ["packages/*", "research/*", "!packages/retired"]   # dirs holding a manifest or pyproject
+```
+
+Every member joins the one default environment. Its requirements, `[env]`,
+named environments, tasks, papers and lint come along, the root layered on top.
+Each member with a `pyproject.toml` is installed editable from its directory and
+pinned there by a dependency override, so a sibling requiring it by version or
+git URL resolves to the local source, the way cargo's `[patch]` does, and no
+hand-written path dependency or override is left. Its tasks and papers answer to
+`<member>:<name>`, and bare when nobody else takes the name; paths in its
+manifest are its own and are rebased on the way in. How to solve and where to
+run stay the root's: a member's `[workspace]`, `[system]`, solve settings and
+hosts apply only when it stands alone. From inside a member, the workspace
+composing it is the root, the way cargo finds one.
+
+```console
+$ mainboard center members              # every member, as somebody who clones it alone sees it
+$ mainboard center members llm-head     # one: imports, paths, tasks, then a clone installed by uv
+```
+
 ## One repository tree
 
 A workspace that is a git repository with submodules, nested ones included, is

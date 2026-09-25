@@ -167,6 +167,6 @@ def test_the_center_group_holds_only_the_monorepo_verbs_and_lint_stays_general(
     app = build(depot)
     center = {name for name in app["center"] if not name.startswith("-")}
 
-    assert center == {"git", "paper", "verify", "migrate"}
+    assert center == {"git", "members", "paper", "verify", "migrate"}
     assert {"lint", "proc", "center"} <= set(app)
     assert not {"git", "paper"} & set(app)

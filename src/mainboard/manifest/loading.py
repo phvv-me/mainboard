@@ -1,11 +1,9 @@
-import tomllib
 from typing import TYPE_CHECKING
-
-from pydantic import ValidationError
 
 from ..core.errors import MissionError
 from .held import Holdings
-from .render.interpolate import Interpolator
+from .members import Composition
+from .parsing import rendered, validated
 from .schema.plot import PlotStyle
 from .schema.root import Manifest
 from .schema.workspace import Header
@@ -15,24 +13,22 @@ if TYPE_CHECKING:
 
 
 def load(path: Path) -> Manifest:
-    """Parse, interpolate, and validate the manifest at `path`, each error naming its spot.
+    """Parse, interpolate, compose and validate the manifest at `path`, errors naming their spot.
 
-    Held machines join `[hosts]` last, so a held alias resolves like a declared one. Without
-    `[workspace]` the workspace is named after its directory.
+    Members join first (see `manifest.members`), then held machines join `[hosts]`, so a held
+    alias resolves like a declared one.
     """
+    composed = composition(path).composed()
+    return composed.holding(Holdings(path.parent).profiles())
+
+
+def composition(path: Path) -> Composition:
+    """The manifest at `path` and the members it declares, before they are folded in."""
     try:
-        tree = tomllib.loads(path.read_text(encoding="utf-8"))
+        tree = rendered(path)
     except FileNotFoundError:
         raise MissionError(f"no manifest at {path}") from None
-    except tomllib.TOMLDecodeError as error:
-        raise MissionError(f"{path} is not valid TOML: {error}") from None
-    rendered = Interpolator(path.parent).rendered(tree)
-    rendered.setdefault("workspace", {"name": path.resolve().parent.name})
-    try:
-        manifest = Manifest.model_validate(rendered)
-    except ValidationError as error:
-        raise MissionError(f"{path} failed validation:\n{error}") from None
-    return manifest.holding(Holdings(path.parent).profiles())
+    return Composition(path.parent, validated(path, tree))
 
 
 def load_plot_config(root: Path, config: Path | None = None) -> Manifest:

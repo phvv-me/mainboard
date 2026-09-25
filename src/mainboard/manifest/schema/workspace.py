@@ -13,6 +13,8 @@ class Header(Model):
         entry, for setup a static table cannot express (a library path across installed wheels).
     data: the paths that are data, not source; a host still ships what its sync include names.
         Left out of the compile digest, since no environment reads it.
+    members: workspace-relative globs of the projects composed into this workspace (see
+        `manifest.members`), each `!pattern` leaving out what it matches.
     """
 
     name: str
@@ -22,3 +24,4 @@ class Header(Model):
     dotenv: bool = True
     scripts: list[str] = []
     data: list[str] = Field(default=list(DATA), exclude=True)
+    members: list[str] = []
