@@ -280,6 +280,12 @@ def packed(**files: bytes) -> bytes:
     return buffer.getvalue()
 
 
+def receiving(root: Path, **fields: object) -> dict[str, dict[str, object]]:
+    """A receive request into `root` that changes nothing but `fields`."""
+    empty = {"delete": [], "directories": [], "links": {}, "files": {}}
+    return {"receive": {"root": str(root), "state": "state", **empty, **fields}}
+
+
 def test_a_survey_makes_a_fresh_root_and_states_only_what_is_there(tmp_path: Path) -> None:
     """A rental holds no workspace yet, and a named path that is not a file is not described."""
     root = tmp_path / "fresh"
@@ -311,12 +317,8 @@ def test_a_file_that_vanishes_before_its_hash_is_not_described(
         raise FileNotFoundError(path)
 
     monkeypatch.setattr(Digests, "of", vanished)
-    request = {
-        "root": str(tmp_path),
-        "state": "state",
-        "scopes": [Scope(["src"]).spec()],
-        "named": ["src/gone.py"],
-    }
+    scopes = [Scope(["src"]).spec()]
+    request = {"root": str(tmp_path), "state": "state", "scopes": scopes, "named": ["src/gone.py"]}
     _, records, _ = ran({"survey": request})
     assert [record[0] for record in records[1:]] == ["src"]
 
@@ -326,16 +328,12 @@ def test_a_receive_prunes_deepest_first_and_keeps_a_directory_that_still_holds_s
 ) -> None:
     seed(tmp_path, "old/a.py", "held/ignored.log", "src/stale.py")
     code, records, said = ran(
-        {
-            "receive": {
-                "root": str(tmp_path),
-                "state": "state",
-                "delete": ["old", "old/a.py", "held", "src/stale.py", "never/there.py"],
-                "directories": ["empty/dir"],
-                "links": {},
-                "files": {"src/new.py": [5_000_000_000, True]},
-            }
-        },
+        receiving(
+            tmp_path,
+            delete=["old", "old/a.py", "held", "src/stale.py", "never/there.py"],
+            directories=["empty/dir"],
+            files={"src/new.py": [5_000_000_000, True]},
+        ),
         packed(**{"src/new.py": b"print()\r\n"}),
     )
     assert (code, said) == (0, "")
@@ -367,15 +365,7 @@ def test_a_receive_refuses_what_it_was_not_told_or_cannot_place(
 ) -> None:
     """A refusal is one line and status 3, and nothing half written is left beside its name."""
     seed(tmp_path, "blocked/inside.txt")
-    request = {
-        "root": str(tmp_path),
-        "state": "state",
-        "delete": [],
-        "directories": [],
-        "links": {},
-        "files": files,
-    }
-    code, records, said = ran({"receive": request}, packed(**stream))
+    code, records, said = ran(receiving(tmp_path, files=files), packed(**stream))
     assert (code, records) == (3, [])
     assert said.startswith("mainboard: ") and refusal in said
     assert sorted(path.name for path in tmp_path.iterdir()) == ["blocked", "state"]
@@ -384,31 +374,11 @@ def test_a_receive_refuses_what_it_was_not_told_or_cannot_place(
 
 def test_a_receive_that_meets_a_torn_stream_fails_loudly(tmp_path: Path) -> None:
     """A stream cut short is not a refusal the agent chose, so it escapes as itself."""
-    request = {
-        "root": str(tmp_path),
-        "state": "state",
-        "delete": [],
-        "directories": [],
-        "links": {},
-        "files": {"a": [0, False]},
-    }
     with pytest.raises((EOFError, tarfile.ReadError, gzip.BadGzipFile)):
-        ran({"receive": request}, packed(a=b"payload")[:20])
+        ran(receiving(tmp_path, files={"a": [0, False]}), packed(a=b"payload")[:20])
 
 
 @links_on_this_host
 def test_a_receive_makes_links_where_it_was_told(tmp_path: Path) -> None:
-    code, _, _ = ran(
-        {
-            "receive": {
-                "root": str(tmp_path),
-                "state": "state",
-                "delete": [],
-                "directories": [],
-                "links": {"deep/alias": "../target.txt"},
-                "files": {},
-            }
-        },
-        packed(),
-    )
+    code, _, _ = ran(receiving(tmp_path, links={"deep/alias": "../target.txt"}), packed())
     assert code == 0 and os.readlink(tmp_path / "deep/alias") == "../target.txt"

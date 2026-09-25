@@ -18,7 +18,6 @@ __all__ = [
     "Handle",
     "HostSetup",
     "HostUnreachable",
-    "Snapshots",
     "Shipment",
     "Snapshots",
     "Source",

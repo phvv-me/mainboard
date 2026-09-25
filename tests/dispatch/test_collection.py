@@ -15,18 +15,34 @@ from mainboard.dispatch.collection.pack import _immutable, _paths, pack
 from mainboard.dispatch.transport import SshTransport
 
 
+def zipped(archive: Path, entries: dict[str, bytes]) -> Path:
+    with ZipFile(archive, "w") as packed:
+        for name, data in entries.items():
+            packed.writestr(name, data)
+    return archive
+
+
+def packed(
+    monkeypatch: pytest.MonkeyPatch, root: Path, relative: str, known: dict[str, str] | None = None
+) -> dict[str, bytes]:
+    """Every entry `pack` streams for `relative` under `root`, by name."""
+    stream = BytesIO()
+    stdout = TextIOWrapper(stream, encoding="utf-8")  # held: collecting it would close `stream`
+    with monkeypatch.context() as changed:
+        changed.setattr("sys.stdout", stdout)
+        pack(str(root), relative=relative, known=known or {})
+    with ZipFile(stream) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
+
+
 def test_collection_retries_and_conflicts(tmp_path: Path) -> None:
     root = tmp_path / "local"
     root.mkdir()
-    archive = tmp_path / "transfer.zip"
-    with ZipFile(archive, "w") as packed:
-        packed.writestr("data/one", b"original")
+    archive = zipped(tmp_path / "transfer.zip", {"data/one": b"original"})
     collector = Collector(root)
     assert collector.merge(archive, path="data") == 1
     assert collector.merge(archive, path="data") == 0
-    with ZipFile(archive, "w") as packed:
-        packed.writestr("data/two", b"new")
-        packed.writestr("data/one", b"changed")
+    zipped(archive, {"data/two": b"new", "data/one": b"changed"})
     with pytest.raises(ValueError, match="conflicting"):
         collector.merge(archive, path="data")
     assert (root / "data/one").read_bytes() == b"original"
@@ -48,19 +64,12 @@ def test_incremental_collection_skips_equal_bytes_but_keeps_conflicts(
     event = b'{"offset":0,"payload":"progress"}\n'
     (events / "live.ndjson").write_bytes(event)
     collector = Collector(local)
-    known = collector._known(PurePosixPath("data"))
-    stream = BytesIO()
-    stdout = TextIOWrapper(stream, encoding="utf-8")
-    with monkeypatch.context() as changed:
-        changed.setattr("sys.stdout", stdout)
-        pack(str(remote), relative="data", known=known)
-    with ZipFile(stream) as archive:
-        assert "data/equal" not in archive.namelist()
-        assert archive.read("data/changed") == b"conflict"
-        assert archive.read("data/new") == b"new evidence"
-        assert any("collected-" in name for name in archive.namelist())
-    transfer = tmp_path / "transfer.zip"
-    transfer.write_bytes(stream.getvalue())
+    entries = packed(monkeypatch, remote, "data", collector._known(PurePosixPath("data")))
+    assert "data/equal" not in entries
+    assert entries["data/changed"] == b"conflict"
+    assert entries["data/new"] == b"new evidence"
+    assert any("collected-" in name for name in entries)
+    transfer = zipped(tmp_path / "transfer.zip", entries)
     with pytest.raises(ValueError, match="conflicting"):
         collector.merge(transfer, path="data")
     assert (local / "data/changed").read_bytes() == b"original"
@@ -102,9 +111,7 @@ def test_a_torn_digest_memory_is_rebuilt(tmp_path: Path) -> None:
     ["../escape", "C:/escape", "data/../escape", "elsewhere/file", "data/CON", "data/trailing."],
 )
 def test_collection_refuses_escaping_paths(tmp_path: Path, name: str) -> None:
-    archive = tmp_path / "transfer.zip"
-    with ZipFile(archive, "w") as packed:
-        packed.writestr(name, b"bad")
+    archive = zipped(tmp_path / "transfer.zip", {name: b"bad"})
     with pytest.raises(ValueError):
         Collector(tmp_path).merge(archive, path="data")
 
@@ -112,9 +119,7 @@ def test_collection_refuses_escaping_paths(tmp_path: Path, name: str) -> None:
 def test_collection_preserves_a_racing_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = tmp_path / "transfer.zip"
-    with ZipFile(archive, "w") as packed:
-        packed.writestr("data/one", b"incoming")
+    archive = zipped(tmp_path / "transfer.zip", {"data/one": b"incoming"})
     link = os.link
 
     def race(source: Path, target: Path) -> None:
@@ -134,27 +139,16 @@ def test_pack_snapshots_complete_events(tmp_path: Path, monkeypatch: pytest.Monk
     (events / "live.ndjson").write_bytes(complete + b'{"offset":')
     (events / "status.json").write_text('{"offset":999}')
     (events / "unfinished.tmp").write_bytes(b"temporary")
-    stream = BytesIO()
-    stdout = TextIOWrapper(stream, encoding="utf-8")
-    with monkeypatch.context() as changed:
-        changed.setattr("sys.stdout", stdout)
-        pack(str(tmp_path), relative="data")
-    with ZipFile(stream) as archive:
-        assert archive.namelist() == [
-            f"data/events/collected-{0:020d}-{len(complete):020d}.ndjson"
-        ]
-        assert archive.read(archive.namelist()[0]) == complete
+    name = f"data/events/collected-{0:020d}-{len(complete):020d}.ndjson"
+    assert packed(monkeypatch, tmp_path, "data") == {name: complete}
 
 
 def test_pack_refuses_linked_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     data = tmp_path / "data"
     data.mkdir()
     (data / "linked").symlink_to(tmp_path, target_is_directory=True)
-    stdout = TextIOWrapper(BytesIO(), encoding="utf-8")
-    with monkeypatch.context() as changed:
-        changed.setattr("sys.stdout", stdout)
-        with pytest.raises(ValueError, match="non-regular"):
-            pack(str(tmp_path), relative="data")
+    with pytest.raises(ValueError, match="non-regular"):
+        packed(monkeypatch, tmp_path, "data")
 
 
 def test_pack_excludes_unpublished_objects_before_stat(
@@ -173,11 +167,8 @@ def test_pack_excludes_unpublished_objects_before_stat(
 
 
 class LocalPython:
-    """The transport a pull rides, with the one ssh hop replaced by this interpreter.
-
-    Everything else is real: the pack script travels on stdin exactly as it would to a host,
-    runs in its own process, and streams its archive back through the bounded transport.
-    """
+    """The pull's transport with only the ssh hop replaced by this interpreter: the pack script
+    still travels on stdin, runs in its own process and streams back through the transport."""
 
     options = ("-o", "BatchMode=yes")
     deadline = 30.0
@@ -193,17 +184,6 @@ class LocalPython:
     ) -> str:
         self.commands.append(command)
         return SshTransport().run((sys.executable, "-"), host, operation=operation, **streams)
-
-
-def packed(monkeypatch: pytest.MonkeyPatch, root: Path, relative: str) -> list[str]:
-    """The entry names `pack` streams for `relative` under `root`."""
-    stream = BytesIO()
-    stdout = TextIOWrapper(stream, encoding="utf-8")
-    with monkeypatch.context() as changed:
-        changed.setattr("sys.stdout", stdout)
-        pack(str(root), relative=relative)
-    with ZipFile(stream) as archive:
-        return archive.namelist()
 
 
 def test_a_pull_runs_the_pack_script_on_the_host_and_publishes_only_what_is_new(
@@ -224,9 +204,9 @@ def test_a_pull_runs_the_pack_script_on_the_host_and_publishes_only_what_is_new(
 
 def test_collection_refuses_an_archive_naming_one_file_twice(tmp_path: Path) -> None:
     archive = tmp_path / "transfer.zip"
-    with pytest.warns(UserWarning, match="Duplicate name"), ZipFile(archive, "w") as packed:
-        packed.writestr("data/one", b"first")
-        packed.writestr("data/one", b"second")
+    with pytest.warns(UserWarning, match="Duplicate name"), ZipFile(archive, "w") as duplicated:
+        duplicated.writestr("data/one", b"first")
+        duplicated.writestr("data/one", b"second")
     with pytest.raises(ValueError, match="duplicate collection entry: data/one"):
         Collector(tmp_path).merge(archive, path="data")
 
@@ -238,9 +218,7 @@ def test_collection_never_publishes_through_a_local_link_out_of_the_workspace(
     root.mkdir()
     elsewhere.mkdir()
     (root / "data").symlink_to(elsewhere, target_is_directory=True)
-    archive = tmp_path / "transfer.zip"
-    with ZipFile(archive, "w") as packed:
-        packed.writestr("data/one", b"incoming")
+    archive = zipped(tmp_path / "transfer.zip", {"data/one": b"incoming"})
     with pytest.raises(ValueError, match="escapes workspace"):
         Collector(root).merge(archive, path="data")
     assert list(elsewhere.iterdir()) == []
@@ -253,7 +231,7 @@ def test_pack_ships_one_named_file_and_refuses_a_link_out_of_the_workspace(
     (root / "data").mkdir(parents=True)
     (root / "data/result.json").write_text("{}")
     (root / "outside").symlink_to(tmp_path, target_is_directory=True)
-    assert packed(monkeypatch, root, "data/result.json") == ["data/result.json"]
+    assert packed(monkeypatch, root, "data/result.json") == {"data/result.json": b"{}"}
     with pytest.raises(ValueError, match="escapes the remote workspace"):
         packed(monkeypatch, root, "outside")
 
@@ -275,14 +253,14 @@ def test_pack_snapshots_only_complete_contiguous_event_records(
     events.mkdir(parents=True)
     (events / "live.ndjson").write_bytes(records)
     if refusal is None:
-        assert packed(monkeypatch, tmp_path, "data") == []
+        assert packed(monkeypatch, tmp_path, "data") == {}
         return
     with pytest.raises(ValueError, match=refusal):
         packed(monkeypatch, tmp_path, "data")
 
 
 def test_pack_refuses_a_file_written_while_it_was_archived(tmp_path: Path) -> None:
-    """Only the archive is scripted, standing in for a writer racing the copy."""
+    """The scripted archive stands in for a writer racing the copy."""
     written = tmp_path / "data/result.bin"
     written.parent.mkdir()
     written.write_bytes(b"first")
@@ -299,7 +277,7 @@ def test_pack_refuses_a_file_written_while_it_was_archived(tmp_path: Path) -> No
 def test_pack_surfaces_a_directory_it_cannot_list_instead_of_skipping_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Silently walking past an unreadable directory would ship an incomplete result as whole."""
+    """Walking past it would ship an incomplete result as whole."""
     locked = tmp_path / "data/locked"
     locked.mkdir(parents=True)
     listing = os.scandir

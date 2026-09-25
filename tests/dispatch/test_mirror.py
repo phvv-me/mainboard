@@ -62,6 +62,20 @@ def pushed(
     )
 
 
+def _receive(root: Path) -> dict[str, dict[str, object]]:
+    """A receive request for `root` announcing nothing to delete, make, link or write."""
+    return {
+        "receive": {
+            "root": str(root),
+            "state": "s",
+            "delete": [],
+            "directories": [],
+            "links": {},
+            "files": {},
+        }
+    }
+
+
 def test_a_mirror_ships_the_scope_prunes_the_stale_and_keeps_what_the_rules_keep(
     tmp_path: Path,
 ) -> None:
@@ -73,14 +87,8 @@ def test_a_mirror_ships_the_scope_prunes_the_stale_and_keeps_what_the_rules_keep
     (work / "src/empty").mkdir()
     seed(host, "src/stale.py", "src/host-only.scratch", "src/results/e1.json", "src/.card.lock")
     seed(host, "src/out/live.json", "elsewhere/untouched.py", "src/gone/deeper/old.py")
-    first = pushed(
-        work,
-        host,
-        ["src"],
-        named=("outside/named.txt",),
-        hidden=("src/out",),
-        protect=("results/***",),
-    )
+    rules = {"named": ("outside/named.txt",), "hidden": ("src/out",), "protect": ("results/***",)}
+    first = pushed(work, host, ["src"], **rules)
     assert (first.files, first.sent) == (3, 3)
     assert set(first.deleted) == {
         "src/stale.py",
@@ -96,14 +104,7 @@ def test_a_mirror_ships_the_scope_prunes_the_stale_and_keeps_what_the_rules_keep
     assert not (host / "src/local.scratch").exists()
     assert not (host / "src/.card.lock.sender").exists()
     assert (host / "elsewhere/untouched.py").is_file()
-    again = pushed(
-        work,
-        host,
-        ["src"],
-        named=("outside/named.txt",),
-        hidden=("src/out",),
-        protect=("results/***",),
-    )
+    again = pushed(work, host, ["src"], **rules)
     assert (again.sent, again.deleted) == (0, ())
 
 
@@ -296,18 +297,8 @@ def test_a_payload_that_fails_wins_over_what_the_agent_then_says(tmp_path: Path)
         raise MissionError("payload broke")
 
     agent = Agent(InProcessLink(), python=sys.executable)
-    request = {
-        "receive": {
-            "root": str(tmp_path),
-            "state": "s",
-            "delete": [],
-            "directories": [],
-            "links": {},
-            "files": {},
-        }
-    }
     with pytest.raises(MissionError, match="payload broke"):
-        agent.ask(request, payload=failing)
+        agent.ask(_receive(tmp_path), payload=failing)
 
 
 def test_a_payload_the_agent_stopped_reading_ends_quietly_and_the_refusal_is_what_is_said(
@@ -325,18 +316,8 @@ def test_a_payload_the_agent_stopped_reading_ends_quietly_and_the_refusal_is_wha
             sink.write(b"\0" * (1 << 20))
 
     agent = Agent(InProcessLink(), python=sys.executable)
-    request = {
-        "receive": {
-            "root": str(tmp_path),
-            "state": "s",
-            "delete": [],
-            "directories": [],
-            "links": {},
-            "files": {},
-        }
-    }
     with pytest.raises(AgentRefused, match="unannounced entry"):
-        agent.ask(request, payload=flooding)
+        agent.ask(_receive(tmp_path), payload=flooding)
 
 
 def test_an_unreachable_host_and_a_missing_ssh_both_read_as_unreachable(

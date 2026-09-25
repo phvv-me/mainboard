@@ -1,14 +1,11 @@
-# `VastBackend` rents a Vast.ai machine for one command through their REST API. Auth is a console
-# API key sent as `Authorization: Bearer` on every call, and the transport is the same injected
-# callable the other pure-REST backend uses, so no test ever reaches the network.
+# `VastBackend` rents a Vast.ai machine for one command through their REST API, under a console
+# API key sent as `Authorization: Bearer` on every call.
 #
-# A rental comes in two shapes, and which one a dispatch gets is decided by the plan rather than
-# by a flag. A plan that names no container of its own rents a machine this workspace lands on:
-# `rent` creates it in the `ssh` runtype with the waiting entrypoint, and the ordinary mirror,
-# install, provision and pin path then puts the workspace, the tool and the environment on it
-# before the job starts. A plan that declares its own image keeps `submit`, which runs the raw
-# command as the container's entrypoint in `args` launch mode, because a prebuilt image is the one
-# case where the box already holds everything the command needs.
+# The plan decides the rental's shape, not a flag. A plan naming no container of its own gets
+# `rent`: the `ssh` runtype with the waiting entrypoint, then the ordinary mirror, install,
+# provision and pin path. A plan declaring its own image keeps `submit`, the raw command as the
+# container's entrypoint in `args` launch mode, since a prebuilt image is the one case where the
+# box already holds everything the command needs, and a one-shot container is cheaper and simpler.
 
 import json
 import os
@@ -53,83 +50,64 @@ if TYPE_CHECKING:
     from ..vocabulary import Resources
     from .base import Transport
 
-# The images an uncontainerized plan rents under: Vast's own base image at each CUDA minor the
-# house toolchain spans, oldest first. A rental takes the newest one its offer's driver can load,
-# so THE OFFER FILTER'S FLOOR IS THE OLDEST REFERENCE HERE and written nowhere else. One pinned
-# image failed both ways: at 13.3.1 with the floor left at 13.0 it rented hosts whose driver tops
-# out at 13.0, where the container never started and each rental was destroyed after the whole
-# address wait (RTX 5090 51865823 and RTX 5080 51869485 and 51891087, 2026-09-21), and with the
-# floor then raised to 13.3 it shut every L40S, A100 and H100 host out of the market, since those
-# run 13.0 to 13.2 drivers (2026-09-25). The workspace itself declares CUDA 13.0 (`[system]`).
+# The images an uncontainerized plan rents under, Vast's base image at each CUDA minor the house
+# toolchain spans, oldest first. A rental takes the newest its offer's driver loads, so THE OFFER
+# FILTER'S FLOOR IS THE OLDEST REFERENCE HERE and written nowhere else. One pinned image failed
+# both ways: 13.3.1 with the floor at 13.0 rented hosts whose driver tops out at 13.0, where the
+# container never started and each rental was destroyed after the whole address wait (RTX 5090
+# 51865823, RTX 5080 51869485 and 51891087, 2026-09-21); the floor raised to 13.3 then shut every
+# L40S, A100 and H100 host (13.0 to 13.2 drivers) out of the market (2026-09-25). The workspace
+# itself declares CUDA 13.0 (`[system]`).
 _BASE_IMAGES = (
     "vastai/base-image:cuda-13.0.3-auto",
     "vastai/base-image:cuda-13.1.2-auto",
     "vastai/base-image:cuda-13.2.1-auto",
     "vastai/base-image:cuda-13.3.1-auto",
 )
-# The two offer fields a rental has to clear, the highest CUDA version a machine's driver can
-# load and the card's own compute capability (`750` for `sm_75`). Vast publishes both on every
-# bundle row, which is what makes them filterable before renting rather than after.
+# Bundle-row fields every offer publishes, so the floors filter before renting: the highest CUDA
+# the driver loads, the compute capability (`750` for `sm_75`), and the measured download in Mbps.
 _CUDA_FIELD = "cuda_max_good"
-# The host's measured download rate, in Mbps, as the bundle row publishes it. A cold rental pulls
-# a multi-gigabyte image before its container exists, and a host below this floor spent the whole
-# address wait pulling and ended with no container at all (three rentals, 2026-09-12), while hosts
-# at a few Gbps were running inside two minutes.
+_CAPABILITY_FIELD = "compute_cap"
 _DOWNLOAD_FIELD = "inet_down"
-# How many offers one rental may try when the market takes each one between the search and
-# the create, which Vast answers with this token (RTX 5090 offer 26371154, 2026-09-12).
+# Offers one rental may try when the market takes each between search and create, which Vast
+# answers with this token (RTX 5090 offer 26371154, 2026-09-12).
 _PICK_ATTEMPTS = 3
 _NO_SUCH_ASK = "no_such_ask"
-_DOWNLOAD_FLOOR_MBPS = 500.0
-_CAPABILITY_FIELD = "compute_cap"
-# Local disk per rental, in GB. It is also what an offer search prices storage at, so one number
-# keeps the quoted rate and the rented machine honest about each other. Sized for what a landing
-# actually puts on the box rather than for the workspace alone: the mirror is a few hundred
-# megabytes, and the environment installed beside it is a whole CUDA stack plus the package cache
-# it was linked from, which is tens of gigabytes. Storage is cents a month per gigabyte, so the
-# headroom costs a rounding error per hour and a rental that runs out of disk costs the whole job.
+# Local disk per rental in GB, also what a search prices storage at, so quote and machine agree.
+# The mirror is a few hundred MB but the environment is a whole CUDA stack plus its package cache,
+# tens of GB; storage is cents per GB-month, while running out of disk costs the whole job.
 _DISK_GB = 64.0
-# How many offers one search asks for. The query already orders by price, so this only bounds the
-# reply size a `catalog` refresh has to carry.
+# Offers one search asks for; the query already orders by price, so this bounds the reply size.
 _SEARCH_LIMIT = 32
-# The marker the wrapper echoes after the command, carrying its real exit code into the log.
-# Vast reports container status only, never a process exit code, so this line is the only place
-# a verdict can learn how the command itself ended.
+# Echoed after the command with its exit code, the only place a verdict learns how the command
+# ended, since Vast reports container status only.
 _EXIT_SENTINEL = "mainboard-exit:"
-# Log lines one `request_logs` upload carries back.
 _LOG_TAIL_LINES = 2000
-# Vast answers `request_logs` before the log itself reaches storage, so the fetch is retried this
-# many times, this many seconds apart, before the url is handed to the caller instead.
+# `request_logs` answers before the log reaches storage, so the fetch is retried before the url is
+# handed to the caller instead.
 _LOG_ATTEMPTS = 20
 _LOG_POLL_SECONDS = 1.0
-# `actual_status` values that mean the container has not run the command yet, so no marker can
-# exist and asking for a log costs the upload poll for nothing.
+# Statuses whose container has not run the command yet, so no marker can exist.
 _PENDING_STATUSES = frozenset({"created", "loading"})
-# `actual_status` values that mean the container is still up. A status in neither this set nor
-# `_PENDING_STATUSES` (a new Vast state, or a row carrying none) reads as "unknown" once the log
-# has failed to say how the command ended, rather than crashing.
+# Statuses whose container is still up; any other (a new Vast state, or none) reads "unknown"
+# once the log has failed to say how the command ended.
 _LIVE_STATUSES = frozenset({"created", "loading", "running", "stopping"})
-# The card a price sample quotes. One card, always listed in volume, so the sample reads as a
-# real market rate rather than a quote for hardware nobody rents today.
+# One card always listed in volume, so a price sample reads as a real market rate.
 _SAMPLE_GPU = "RTX 4090"
-# The login every vast image hands out, and the `actual_status` a machine reaches before its ssh
-# daemon can answer at all.
 _SSH_USER = "root"
+# The status a machine reaches before its sshd can answer at all.
 _RUNNING = "running"
-# How long to wait for vast to pull the image, start the container and publish the proxy address
-# its ssh goes through. Fifteen minutes, because a cold CUDA base image is gigabytes and a machine
-# still pulling one is exactly the machine a landing must not knock at yet.
+# Fifteen minutes to pull the image, start the container and publish the proxy ssh address: a
+# cold CUDA base image is gigabytes, and a machine still pulling must not be knocked at yet.
 _ADDRESS_ATTEMPTS = 90
 _ADDRESS_SECONDS = 10.0
 
 
 def exit_sentinel(log: str) -> int | None:
-    """The exit status the onstart wrapper echoed into `log`, None when no marker is readable.
+    """The exit status the wrapper echoed into `log`, None when no marker is readable.
 
-    The last marker wins, since a container Vast restarted appends its own line below the first,
-    and a line that carries the marker without a number is skipped rather than read as a zero.
-
-    log: the container log tail as `logs` fetched it.
+    The last marker wins, since a container Vast restarted appends its own below the first, and a
+    marker without a number is skipped rather than read as a zero.
     """
     for line in reversed(log.splitlines()):
         _, marked, status = line.partition(_EXIT_SENTINEL)
@@ -140,12 +118,10 @@ def exit_sentinel(log: str) -> int | None:
 
 
 def cuda_max_good(offer: Mapping) -> float:
-    """The highest CUDA version `offer`'s driver can load, 0.0 when the row publishes none.
+    """The highest CUDA version `offer`'s driver loads, 0.0 when unpublished.
 
-    Silence never satisfies a floor, here or in `capability`: an offer whose driver version is
-    unknown is exactly the offer that hands back a contract id and no instance.
-
-    offer: one bundle row as the offer search returned it.
+    Silence never satisfies a floor, here or in `capability` and `download`: an unknown driver is
+    exactly the offer that hands back a contract id and no instance.
     """
     try:
         return float(offer[_CUDA_FIELD])
@@ -154,10 +130,7 @@ def cuda_max_good(offer: Mapping) -> float:
 
 
 def base_image(offer: Mapping) -> str:
-    """The newest base image `offer`'s driver can load, the oldest when it publishes no version.
-
-    offer: one bundle row as the offer search returned it, already past the CUDA floor.
-    """
+    """The newest base image `offer`'s driver loads, the oldest when it publishes no version."""
     loadable = [
         image for image in _BASE_IMAGES if (image_cuda(image) or 0) <= cuda_max_good(offer)
     ]
@@ -172,10 +145,7 @@ class OfferTaken(MissionError):
 
 
 def download(offer: Mapping) -> float:
-    """The host's download rate in Mbps, 0 for a row that publishes none.
-
-    offer: one bundle row as the offer search returned it.
-    """
+    """The host's download rate in Mbps, 0 when unpublished."""
     try:
         return float(offer.get(_DOWNLOAD_FIELD) or 0.0)
     except TypeError, ValueError:
@@ -183,10 +153,7 @@ def download(offer: Mapping) -> float:
 
 
 def capability(offer: Mapping) -> int:
-    """`offer`'s compute capability the way a provider spells it (`750` is `sm_75`), 0 for none.
-
-    offer: one bundle row as the offer search returned it.
-    """
+    """`offer`'s compute capability, `750` for `sm_75`, 0 when unpublished."""
     try:
         return int(offer[_CAPABILITY_FIELD])
     except KeyError, TypeError, ValueError:
@@ -194,10 +161,9 @@ def capability(offer: Mapping) -> int:
 
 
 def _describe(offer: Mapping, gpu_name: str) -> str:
-    """`offer` as one human phrase a refusal names it by, id first so it can be looked up.
+    """`offer` as the phrase a refusal names it by, id first so it can be looked up.
 
-    offer: the bundle row the refusal is about.
-    gpu_name: the card the caller asked for, standing in when the row names none.
+    gpu_name: the card asked for, standing in when the row names none.
     """
     where = str(offer.get("geolocation") or "").strip(" ,")
     card = offer.get("gpu_name") or gpu_name or "unknown card"
@@ -207,11 +173,8 @@ def _describe(offer: Mapping, gpu_name: str) -> str:
 def api_key() -> str:
     """The Vast key from `VAST_API_KEY` or `VASTAI_API_KEY`, refusing with a setup hint when unset.
 
-    Console API keys authenticate the whole v0 namespace through the `Authorization: Bearer`
-    header, which is what their own CLI sends, so no login flow or cookie exists here. Both
-    spellings are accepted because gpuhunt reads `VASTAI_API_KEY` while Vast's CLI documents
-    `VAST_API_KEY`. The workspace `.env` the refusal names is merged in first, so the hint below
-    is advice this same function then acts on rather than a chore left to whoever reads it.
+    A console key authenticates the whole v0 namespace as a Bearer header, as their CLI sends it.
+    gpuhunt reads `VASTAI_API_KEY` while Vast's CLI documents `VAST_API_KEY`, so both are read.
     """
     Credentials().load()
     key = os.environ.get("VAST_API_KEY", "") or os.environ.get("VASTAI_API_KEY", "")
@@ -226,25 +189,15 @@ def api_key() -> str:
 class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentable):
     """Rent a Vast.ai machine for one command, the container's own lifetime being the job's.
 
-    Vast rents whole containers rather than running jobs, so `submit` picks a rentable offer
-    matching the request and creates the instance in `args` launch mode with the command as its
-    entrypoint. Since Vast reports container status and never a process exit code, the wrapper
-    echoes an exit sentinel into the log, and `state` reads it back through `logs` once the
-    container is terminal, so a verdict describes the command rather than the container that
-    happened to stop cleanly around it.
+    Vast rents containers, not jobs, and reports container status, never a process exit code,
+    so the wrapper echoes an exit sentinel into the log and `state` reads it back. A finished
+    command does not end the rental: Vast holds an instance at its `intended_status`, restarting
+    the exited container so the command runs again and appends another sentinel (verified live
+    2026-08-19, thirteen restarts in five minutes). Only `cancel` stops the meter, so a caller
+    reaching a terminal verdict must still cancel, as the durable sweep does.
 
-    A finished command does not end the rental. Vast keeps an instance at its `intended_status`,
-    so it restarts the exited container and the command runs again, appending another sentinel
-    (verified live 2026-08-19, thirteen restarts in five minutes). That is why `state` asks the
-    log for a marker before it reads the container's status at all: a restarted container says
-    `running` about a command that already ended, and only the marker knows better. `cancel` is
-    then what actually stops the meter, so a caller that reaches a terminal verdict must still
-    cancel, which is exactly what the durable sweep does with one.
-
-    Stateless between calls: every method addresses an instance by the id `submit` returned.
-
-    It is the one backend that quotes a market, since renting is what it does, and the one that
-    cannot deliver an artifact, since the disk it wrote to is destroyed with the rental.
+    Stateless between calls: every method addresses an instance by its contract id. The disk a
+    rental wrote to is destroyed with it, hence `Delivery` in `lacks`.
     """
 
     name = "vast"
@@ -255,15 +208,16 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         "until that path lands",
     }
 
-    # What a host's driver must reach to load the oldest base image, never below the house
-    # floor. Derived, so the filter and the images cannot disagree again.
+    # Derived from the oldest base image, never below the house floor, so the filter and the
+    # images cannot disagree again.
     CUDA_FLOOR: ClassVar[float] = max(
         ProviderBackend.CUDA_FLOOR, min(image_cuda(image) or 0 for image in _BASE_IMAGES)
     )
 
-    # A host below this download rate spends the address wait pulling the image; see the module
-    # note beside `_DOWNLOAD_FLOOR_MBPS`.
-    DOWNLOAD_FLOOR_MBPS: ClassVar[float] = _DOWNLOAD_FLOOR_MBPS
+    # A cold rental pulls a multi-gigabyte image before its container exists: hosts below this
+    # spent the whole address wait pulling and ended with no container (three rentals,
+    # 2026-09-12), while hosts at a few Gbps were running inside two minutes.
+    DOWNLOAD_FLOOR_MBPS: ClassVar[float] = 500.0
 
     def __init__(
         self,
@@ -276,7 +230,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         """spot: whether to rent interruptible (bid) capacity instead of on-demand.
         disk_gb: local disk per rental, also the storage an offer search is priced at.
         transport: sends a prepared `Request`, returning its response, injectable for tests.
-        sleeper: waits between log-upload polls, injected so a test drives it without real time.
+        sleeper: waits between polls, injected so a test drives it without real time.
         """
         self.spot = spot
         self.disk_gb = disk_gb
@@ -285,14 +239,13 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
 
     @staticmethod
     def hourly_cap(resources: Resources, *, landing: int = 0) -> float:
-        """The hourly ceiling `resources` implies, 0 when the request leaves the job open-ended.
+        """The hourly ceiling `resources` implies, 0 for a walltime-less request.
 
-        A spend cap only bounds an hourly rental once the job also says how long it may run, so a
-        walltime-less request searches the whole market and leans on `max_usd` alone.
+        A spend cap bounds an hourly rental only once the job says how long it runs; without a
+        walltime the search takes the whole market and leans on `max_usd` alone.
 
-        landing: seconds the rental bills before its job starts, which on a machine this
-            workspace lands on is the mirror, the tool install and the environment; 0 for a
-            prebuilt container that runs the command the moment it boots.
+        landing: seconds billed before the job starts (mirror, tool install, environment), 0 for
+            a prebuilt container that runs the command the moment it boots.
         """
         seconds = walltime_seconds(resources.walltime) if resources.walltime else 0
         return resources.max_usd * 3600.0 / (seconds + landing) if seconds else 0.0
@@ -300,10 +253,8 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     def attach(self, handle: str, *, key: str) -> None:
         """Put this workspace's public key on the rental, so the landing can log in.
 
-        Vast copies an account key onto a new instance on its own, and this says it again for the
-        one key this machine actually holds the private half of, which is the only key a landing
-        can use. A refusal here is fatal on purpose rather than warned about: an instance nobody
-        can log into is a rental that will bill for a landing that can never happen.
+        Vast copies an account key onto a new instance itself; this adds the one key this
+        machine holds the private half of. A refusal is fatal: nobody could log into the rental.
         """
         try:
             self.request("POST", path=f"/instances/{handle}/ssh/", body={"ssh_key": key})
@@ -314,13 +265,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             ) from refused
 
     def cancel(self, handle: str) -> None:
-        """Destroy the rental, tolerating an instance Vast has already forgotten.
-
-        The call that actually stops the meter, since a finished command leaves the rental up.
-        It is asked more than once by design, by a sweep that settles the same run twice and by
-        anyone who already destroyed the instance in the console, so the 404 a gone instance
-        answers is this method's own destination rather than a fault to raise from.
-        """
+        """Destroy the rental, the call that stops the meter, tolerating a forgotten instance."""
         try:
             reply = self.request("DELETE", path=f"/instances/{handle}/")
         except HTTPError as error:
@@ -333,12 +278,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             )
 
     def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
-        """A live offer search as catalog rows, the authed refresh of the imported price feed.
-
-        gpu_name: the Vast GPU name to narrow to, empty for the whole market.
-        gpus: the GPU count per machine, 0 for any.
-        limit: how many offers to bring back, 0 for this backend's own page size.
-        """
+        """A live offer search as catalog rows, the authed refresh of the imported price feed."""
         return from_vast(
             self.search(gpu_name=gpu_name, gpus=gpus, limit=limit or _SEARCH_LIMIT),
             spot=self.spot,
@@ -347,13 +287,9 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     def endpoint(self, handle: str, *, key: str = "") -> Endpoint:
         """Where ssh reaches instance `handle`, waited for until vast publishes it and it runs.
 
-        A rental is created long before it is reachable: vast pulls the image, starts the
-        container, and only then publishes the proxy address and port its own ssh goes through.
-        So this reads the instance row until all three are true, and a machine that never gets
-        there is a refusal naming the id to look up rather than a landing knocking at an address
-        that does not exist yet.
+        Vast pulls the image and starts the container before publishing the proxy address and
+        port its ssh goes through; a machine that never gets there is refused by id.
 
-        handle: the contract id the rental was created under.
         key: the private key file the connection uses, empty to leave that to ssh's own config.
         """
         for _ in range(_ADDRESS_ATTEMPTS):
@@ -369,12 +305,10 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         )
 
     def exit_code(self, handle: str) -> int | None:
-        """`handle`'s real process exit status, read from the sentinel in its log tail.
+        """`handle`'s process exit status from the sentinel in its log tail.
 
-        A container status says only that the container stopped, never why, so the verdict comes
-        from the marker the onstart wrapper echoed after the command. None when the log cannot be
-        fetched or carries no marker, which keeps an unknown verdict honest instead of reading a
-        clean container stop as a clean run.
+        None when the log cannot be fetched or carries no marker, so a clean container stop is
+        never read as a clean run.
         """
         try:
             log = self.logs(handle)
@@ -383,11 +317,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         return exit_sentinel(log)
 
     def instance(self, handle: str) -> dict:
-        """`handle`'s instance row, empty once Vast has forgotten the instance.
-
-        A destroyed instance answers either a null row or a 404 depending on how long ago it went,
-        and a post-mortem reads both the same way, so both come back empty here.
-        """
+        """`handle`'s instance row, empty once Vast has forgotten it (a null row or a 404)."""
         try:
             payload = self.request("GET", path=f"/instances/{handle}/", query={"owner": "me"})
         except HTTPError as error:
@@ -412,19 +342,10 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     ) -> dict:
         """The offer to rent: the most reliable machine the budget and the CUDA floors allow.
 
-        Renting the lowest-priced listing is what put earlier rentals at the bottom of the
-        market, where the container is billed for and never starts, so price decides admission
-        here and nothing more. The search returns the cheapest page of what fits under the cap
-        the caller's own budget implies and above the house floors, and the pick is the highest
-        measured host reliability on that page, ties going to the cheaper machine, which lands
-        mid-market rather than at either end.
+        Renting the cheapest listing put earlier rentals at the bottom of the market, where the
+        container is billed for and never starts, so price only admits: the pick is the most
+        reliable machine on the cheapest page under the cap, landing mid-market.
 
-        An empty page is handed to `refuse` rather than reported as a bare absence, since the
-        three reasons a page can be empty read identically otherwise and the middle one, a card
-        whose every host runs too old a driver, is what cost five dispatches.
-
-        gpu_name: the Vast GPU name the job needs, empty for any.
-        gpus: the GPU count per machine.
         max_usd_hr: an hourly ceiling the offer must sit under, 0 for none.
         cuda: the driver version the image about to be rented needs, 0 for the base images'.
         """
@@ -447,14 +368,10 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     ) -> NoReturn:
         """Say why nothing was rentable, naming whichever floor turned the market away.
 
-        Reached only once the floored search came back empty, and it spends one more search,
-        the same one unfloored, to tell an empty market from a market this house has aged out
-        of. That round trip is paid on the refusal path alone. The driver question is asked
-        first because it is the earlier of the two failures, the instance that never starts.
+        An empty page reads the same for an empty market and one this house aged out of (the
+        latter cost five dispatches), so one more search, unfloored and paid on this path alone,
+        tells them apart. The driver is asked first, being the earlier failure.
 
-        gpu_name: the Vast GPU name the job asked for, empty for any.
-        gpus: the GPU count per machine.
-        max_usd_hr: the hourly ceiling the search ran under, 0 for none.
         floor: the driver floor the search ran under, 0 for this backend's own.
         """
         floor = max(self.CUDA_FLOOR, floor)
@@ -495,16 +412,10 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         )
 
     def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
-        """Rent a machine that answers ssh and hold its entrypoint until a dispatch lands on it.
+        """Rent a machine whose entrypoint seeds the key and waits for a landing.
 
-        The entrypoint waits rather than running the job, because the workspace, the tool and the
-        environment reach the box minutes after it boots and a command that starts before them
-        finds nothing to run (exit 127, three rentals, 2026-09-03). Those minutes are billed, so
-        they sit inside the ceiling the offer search filters on rather than outside anyone's
-        budget.
-
-        A rental that cannot be opened is ended here rather than left to the entrypoint's own
-        deadline, since this is the last place that still holds the handle.
+        The landing minutes are billed, so they sit inside the ceiling the search filters on. An
+        offer taken before the create is retried from the same page, never a fresh search.
         """
         self.admit(plan, resources)
         key = identity(plan.profile.vars.get("ssh-key", ""))
@@ -529,8 +440,6 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
                 )
                 break
             except OfferTaken:
-                # The market moved between the search and the create; the next best offer on
-                # the same page is asked for, and the reservation is reopened for it.
                 page = [row for row in page if row["id"] != offer["id"]]
                 logger.warning(
                     "vast offer %s was taken before the create; picking again", offer["id"]
@@ -557,18 +466,12 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     def opened(self, handle: str, *, key: Identity) -> Endpoint:
         """Answer once ssh really lets us onto `handle`, its key attached as soon as it is up.
 
-        The key goes on after the machine is running rather than at create time, because that is
-        when there is an instance to copy it into, and the knocking that follows is what absorbs
-        the seconds it takes to reach the container's own authorized keys.
+        The key goes on once there is a running instance to copy it into, and the knocking that
+        follows absorbs the seconds it takes to reach the container's authorized keys.
         """
         endpoint = self.endpoint(handle, key=key.private)
         self.attach(handle, key=key.public)
         return reachable(endpoint, sleeper=self.sleeper)
-
-    @staticmethod
-    def image(plan: ExecutionPlan, offer: Mapping) -> str:
-        """The image `plan` rents on `offer`: its container's, else the newest base it loads."""
-        return plan.container.image if plan.container is not None else base_image(offer)
 
     def floor(self, plan: ExecutionPlan) -> float:
         """The driver version `plan`'s rental needs: its own image's CUDA, else the base floor."""
@@ -587,19 +490,18 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     ) -> str:
         """Create the instance for `offer`, returning the contract id that starts the meter.
 
-        offer: the bundle row `pick` chose.
-        plan: the resolved execution context, whose own container image is rented when it
-            declares one and the newest base image `offer`'s driver loads otherwise.
-        launch: the launch-mode fields, either the `ssh` runtype's waiting onstart script for a
-            machine a dispatch lands on, or the `args` entrypoint for a prebuilt image.
+        plan: its own container image is rented when declared, else the newest base image
+            `offer`'s driver loads.
+        launch: the launch-mode fields, the `ssh` runtype's waiting onstart for a landing or the
+            `args` entrypoint for a prebuilt image.
         """
         body = {
             "client_id": "me",
-            "image": self.image(plan, offer),
+            "image": plan.container.image if plan.container is not None else base_image(offer),
             "disk": self.disk_gb,
             "label": allocation.label,
-            # Fail the rent outright rather than parking a stopped instance we would still owe
-            # storage on when the offer is taken between the search and the create.
+            # Fail the rent outright, rather than park a stopped instance we would still owe
+            # storage on, when the offer is taken between the search and the create.
             "cancel_unavail": True,
             **launch,
         }
@@ -608,8 +510,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         accepted = from_vast([dict(offer)], spot=self.spot)[0].model_copy(
             update={"source": f"probed:vast:offer:{offer['id']}"}
         )
-        lease = Lease.priced(accepted, resources, setup_s=setup_s)
-        allocation.begin(lease=lease)
+        allocation.begin(lease=Lease.priced(accepted, resources, setup_s=setup_s))
         try:
             payload = self.request("PUT", path=f"/asks/{offer['id']}/", body=body)
         except HTTPError as refused:
@@ -619,8 +520,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
                 detail = {}
             reason = detail.get("msg") or detail.get("message") or detail.get("error") or ""
             if 400 <= refused.code < 500:
-                # The provider validated the request and declined it, so nothing was created
-                # and the reservation can close on its own.
+                # Declined after validation, so nothing was created and the reservation closes.
                 allocation.refused()
             if _NO_SUCH_ASK in str(reason):
                 raise OfferTaken(offer["id"]) from refused
@@ -630,7 +530,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         return allocation.created(str(payload["new_contract"]))
 
     def rentals(self) -> list[Rented]:
-        """Every instance on the account, as vast lists them, whoever created it."""
+        """Every instance on the account, whoever created it."""
         listed = self.request("GET", path="/instances/", query={"owner": "me"})
         return [
             Rented(
@@ -646,23 +546,17 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     def request(
         self, method: str, *, path: str, body: dict | None = None, query: dict | None = None
     ) -> dict:
-        """An authenticated call to the v0 API under the console API key.
+        """An authenticated call below `https://console.vast.ai/api/v0`, their CLI's default root.
 
-        Every endpoint hangs off `https://console.vast.ai/api/v0`, the root their own CLI
-        defaults to, spelled inline so the https root is visible where the `Request` is built.
-
-        method: the HTTP verb Vast expects for this endpoint.
-        path: the endpoint path below the v0 root, trailing slash included.
+        path: the endpoint below the v0 root, trailing slash included.
         body: the JSON payload, an empty object when the endpoint takes none.
-        query: query-string parameters, when the endpoint reads any.
         """
         tail = f"{path}?{urlencode(query)}" if query else path
-        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key()}"}
         request = Request(
             f"https://console.vast.ai/api/v0{tail}",
             method=method,
             data=json.dumps(body or {}).encode(),
-            headers=headers,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key()}"},
         )
         return json.loads(self.transport(request).read())
 
@@ -678,26 +572,18 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
     ) -> list[dict]:
         """Rentable offers matching the filters, cheapest first under this backend's pricing mode.
 
-        Vast's offer query is a table of `{field: {operator: value}}` constraints posted as the
-        request body. The four constant filters are the ones their console applies to every
-        search, keeping unverified hosts, resold capacity and already-rented machines out. Vast
-        ranks by the on-demand total whichever mode is asked for, so a spot search is re-ranked
-        here by the bid floor it will actually pay.
-
-        Both CUDA floors ride on the wire rather than being applied to the reply, because the
-        query is paged and ordered by price: filtering afterwards would judge the market on the
-        cheapest thirty-two rows and refuse a card whose usable offers were simply further down.
-        Every caller gets them without asking, which is what makes the market this backend
-        quotes, prices and rents from one market rather than three.
+        The query is a table of `{field: {operator: value}}` constraints. The four constant
+        filters are the ones their console applies, keeping unverified hosts, resold capacity and
+        rented machines out. Vast ranks by on-demand total in either mode, so a spot search is
+        re-ranked by the bid floor it will pay. The floors ride on the wire, since the reply is
+        paged by price and filtering afterwards would judge the market on its cheapest 32 rows.
 
         gpu_name: the Vast GPU name (`RTX 4090`), underscores read as spaces, empty for any.
-        gpus: the GPU count per machine, 0 for any.
         max_usd_hr: an hourly total-price ceiling, 0 for none.
-        limit: how many offers to ask for.
-        floored: whether the house CUDA floors ride on the query. Only `refuse` drops them, to
-            ask the raw market what the floors turned away.
-        cuda: the CUDA version the image about to be rented names, which raises the driver
-            floor for this search when a plan brings an image newer than the base images.
+        floored: whether the house floors ride on the query; only `refuse` drops them, to ask the
+            raw market what the floors turned away.
+        cuda: the CUDA the image about to be rented names, raising the driver floor above the
+            base images'.
         """
         query: dict = {
             "verified": {"eq": True},
@@ -720,20 +606,18 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             query[_CAPABILITY_FIELD] = {"gte": self.CAPABILITY_FLOOR}
             query[_DOWNLOAD_FIELD] = {"gte": self.DOWNLOAD_FLOOR_MBPS}
         offers = self.request("POST", path="/bundles/", body=query).get("offers") or []
-        # The service has returned rows above its requested ceiling. The quoted rate,
-        # not successful submission of a filter, decides whether spending is authorized.
+        # The service has returned rows above the requested ceiling, and the quoted rate, not a
+        # filter the request carried, decides whether spending is authorized.
         if max_usd_hr:
             offers = [offer for offer in offers if self.rate(offer) <= max_usd_hr]
         return sorted(offers, key=self.rate)
 
     def standing(self) -> Standing:
-        """The account's credit and one live rate for the sample card, or the key that is missing.
+        """The account's credit and one live rate for the sample card, or the missing key.
 
-        Vast is the provider that answers both halves cheaply: `/users/current` carries the
-        spendable `credit` for the authed user (its sibling `balance` is the invoicing figure,
-        which sits at zero on a prepaid account), and one narrow offer search prices the market
-        as it stands. Neither call happens until a key is found, so an unconfigured Vast row
-        costs nothing but the environment lookup.
+        `/users/current` carries the spendable `credit` (its sibling `balance` is the invoicing
+        figure, zero on a prepaid account) and one narrow search prices the market. Neither call
+        happens without a key.
         """
         try:
             api_key()
@@ -746,8 +630,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             return Standing(
                 keyed=True, credit_usd=spendable, note=f"no 1x {_SAMPLE_GPU} offer right now"
             )
-        # A Vast machine whose city is unset still carries its country as `, US`, so the
-        # separator is trimmed along with the whitespace rather than printed as a stray comma.
+        # A machine whose city is unset carries its country as `, US`; trim the stray comma.
         where = str(cheapest.get("geolocation") or "").strip(" ,")
         return Standing(
             keyed=True,
@@ -757,20 +640,12 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         )
 
     def state(self, handle: str) -> JobState:
-        """`handle`'s verdict, taken from the command's own marker ahead of the container status.
+        """`handle`'s verdict, from the command's own marker ahead of the container status.
 
-        The marker decides and the container only says whether to keep waiting, because the two
-        disagree by design. Vast holds an instance at its intended status, so it restarts the
-        container the command exited from and runs the command again, which means a run that
-        finished cleanly reads `running` on nearly every poll after it ended. Believing that
-        status is how a sweep never reaches a terminal verdict, never cancels, and lets the meter
-        run on work that was already over (eight instances still billing after a campaign had
-        finished, $2.35 against $0.65 expected, 2026-08-26). So a log carrying the wrapper's
-        marker is a command that has already ended, whatever the container is doing now.
-
-        The marker therefore costs one log fetch per poll of a container that has been up, which
-        is the only signal a rented machine gives that its work is over, and is not asked of a
-        container that has not started one yet.
+        A restarted container reads `running` about a command that already ended, and believing
+        it is how a sweep never reaches a terminal verdict, never cancels, and bills on (eight
+        instances still billing after a campaign finished, $2.35 against $0.65 expected,
+        2026-08-26). So once a container has been up, one log fetch per poll asks for the marker.
         """
         instance = self.instance(handle)
         if not instance:
@@ -783,22 +658,13 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             unfinished = "running" if status in _LIVE_STATUSES else "unknown"
             return JobState(handle=handle, state=status, verdict=unfinished)
         return JobState(
-            handle=handle,
-            state=status,
-            exit_code=code,
-            verdict="ok" if code == 0 else "failed",
+            handle=handle, state=status, exit_code=code, verdict="ok" if code == 0 else "failed"
         )
 
     def submit(
         self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
     ) -> str:
-        """Run `command` as the container's own entrypoint, for a plan that brings its own image.
-
-        The raw-command shape, and the one case it is still right for: a prebuilt image already
-        holds everything its command needs, so there is nothing for a landing to install and a
-        one-shot container is both cheaper and simpler. Every other plan rents through `rent`,
-        because a bare image has no workspace, no tool and no environment to run anything with.
-        """
+        """Run `command` as the container's entrypoint, for a plan that brings its own image."""
         self.admit(plan, resources)
         offer = self.pick(
             gpu_name=resources.gpu_name,
@@ -806,15 +672,14 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             max_usd_hr=self.hourly_cap(resources),
             cuda=self.floor(plan),
         )
-        # Receipts are staged before the command and framed after it, in that order, because the
-        # log is the only thing that leaves a rental and vast cuts every line of it at 500
-        # characters. A trial that printed its receipt straight out would arrive here in half.
+        # Receipts are staged before the command and framed after it, because the log is all that
+        # leaves a rental and vast cuts every line at 500 characters.
         script = (
             f"{staging()}\n{command}\nstatus=$?\n{framing()}\n"
             f"echo {_EXIT_SENTINEL}$status\nexit $status\n"
         )
-        # `args` launch mode runs the image as it is, with `onstart` as the entrypoint and `args`
-        # as its argv, which is how the official CLI spells a one-shot container.
+        # `args` launch mode runs the image as is, `onstart` its entrypoint and `args` its argv,
+        # the official CLI's one-shot container.
         return self.rented(
             offer,
             plan=plan,
@@ -824,11 +689,10 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
         )
 
     def uploaded(self, url: str) -> str:
-        """The log body Vast uploaded at `url`, polled while the upload is still in flight.
+        """The log Vast uploaded at `url`, polled while the upload is in flight.
 
-        `request_logs` answers before the log reaches storage, so the first fetches come back 404
-        until it lands. The url is storage's own signed link rather than ours, so it is checked
-        for an https scheme and then fetched with no API key attached.
+        The first fetches 404 until the log lands. The url is storage's own signed link, so it
+        must be https and is fetched with no API key attached.
         """
         host = url.removeprefix("https://")
         if host == url:

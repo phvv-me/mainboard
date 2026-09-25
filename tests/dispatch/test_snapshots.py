@@ -25,27 +25,19 @@ from .support import InProcessLink, RecordingAgent, links_on_this_host
 
 
 def mirrored(*sources: str, ignore: tuple[str, ...] = (), deny: tuple[str, ...] = ()) -> Mirrored:
-    """The image a command that ships the mirror pins: the synced scope, filled back."""
     scope = Scope(sources, ignore=Rules({"": compiled(ignore)}), deny=Rules({"": compiled(deny)}))
     return Mirrored(scope=scope.spec())
 
 
 def local() -> Agent:
-    """The agent of a host that is this machine, answering in this process."""
     return Agent(InProcessLink())
 
 
 def test_a_snapshots_stamp_records_the_commit_and_digest_it_was_dispatched_from() -> None:
-    """A dispatched job's workspace is a mirror with no history, so this file is the history.
-
-    The key stays alone on the first line, which is what it has always been and what every stamp
-    already on every host holds; the provenance follows it as named lines.
-    """
     stamp = stamped("e975499", commit="e975499f" * 5, digest="9a" * 32)
 
     assert stamp.splitlines() == ["e975499", f"commit {'e975499f' * 5}", f"digest {'9a' * 32}"]
     assert stamp.endswith("\n")
-    # A workspace git answered nothing for writes the key and nothing it cannot stand behind.
     assert stamped("untracked", commit="", digest="") == "untracked\n"
 
 
@@ -62,12 +54,10 @@ def test_a_snapshots_stamp_records_the_commit_and_digest_it_was_dispatched_from(
 def test_only_a_workspace_relative_results_path_is_ever_spliced_into_the_shell(
     path: str, expected: str
 ) -> None:
-    """The results path is caller-typed and the snapshot shell removes what it links over."""
     assert writable(path) == expected
 
 
 def test_a_pin_asks_the_host_for_one_tree_named_by_its_key_and_answers_where_it_stands() -> None:
-    """Everything the host needs is resolved here, down to the paths and the stamp it writes."""
     agent = RecordingAgent()
     image = mirrored("research/compression", "mainboard.toml")
     pinned = Snapshots("/work/projects/").pin(
@@ -167,7 +157,6 @@ _SEALED = Sealed(listing=".mainboard/dispatch/jobs/closure-abc.tsv")
 def test_a_pin_refuses_a_path_that_could_replace_its_own_controls_before_reaching_the_host(
     fields: dict[str, str | Sealed], refusal: str
 ) -> None:
-    """Every one of these would have the snapshot shell link or remove over what it verifies."""
     agent = RecordingAgent()
     with pytest.raises(ValueError, match=refusal):
         Snapshots("/work/projects").pin(
@@ -176,33 +165,38 @@ def test_a_pin_refuses_a_path_that_could_replace_its_own_controls_before_reachin
     assert agent.requests == []
 
 
-def _mirror(root: Path) -> None:
-    """A host mirror as a sync leaves one: shipped source, a data dir, an env, host artifacts."""
-    (root / "research/compression/pkg").mkdir(parents=True)
-    (root / "research/compression/pkg/mod.py").write_text("v1\n", encoding="utf-8")
-    (root / "research/compression/pkg/spare.py").write_text("spare\n", encoding="utf-8")
-    (root / "research/compression/.gitignore").write_text("raw/\n", encoding="utf-8")
-    (root / "research/compression/raw").mkdir()
-    (root / "research/compression/raw/earlier.json").write_text("{}\n", encoding="utf-8")
-    (root / "research/data").mkdir()
-    (root / "research/data/corpus.txt").write_text("corpus\n", encoding="utf-8")
-    (root / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    (root / ".mainboard/envs/default/.pixi/envs/default").mkdir(parents=True)
-    (root / ".mainboard/envs/default/.pixi/envs/default/marker").write_text(
-        "env\n", encoding="utf-8"
-    )
-    (root / ".mainboard/envs/default/pixi.toml").write_text("[workspace]\n", encoding="utf-8")
-    (root / ".mainboard/dispatch/logs").mkdir(parents=True)
-    (root / ".mainboard/dispatch/jobs").mkdir(parents=True)
-    (root / ".mainboard/vendor/house/src/house").mkdir(parents=True)
-    (root / ".mainboard/vendor/house/src/house/__init__.py").write_text("", encoding="utf-8")
-    (root / ".mainboard/vendor/house/src/house/extra.py").write_text("", encoding="utf-8")
+# A host mirror as a sync leaves one: shipped source, a data dir, an env, host artifacts.
+_MIRROR = {
+    "research/compression/pkg/mod.py": "v1\n",
+    "research/compression/pkg/spare.py": "spare\n",
+    "research/compression/.gitignore": "raw/\n",
+    "research/compression/raw/earlier.json": "{}\n",
+    "research/data/corpus.txt": "corpus\n",
+    ".gitignore": "*.log\n",
+    ".mainboard/envs/default/.pixi/envs/default/marker": "env\n",
+    ".mainboard/envs/default/pixi.toml": "[workspace]\n",
+    ".mainboard/vendor/house/src/house/__init__.py": "",
+    ".mainboard/vendor/house/src/house/extra.py": "",
+}
+
+
+def _mirror(root: Path) -> Path:
+    for directory in (".mainboard/dispatch/logs", ".mainboard/dispatch/jobs"):
+        (root / directory).mkdir(parents=True)
+    for path, text in _MIRROR.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def root(tmp_path: Path) -> Path:
+    return _mirror(tmp_path / "projects")
 
 
 @pytest.fixture
 def sealed_mirror(tmp_path: Path) -> tuple[Snapshots, Sealed, str]:
-    root = tmp_path / "mirror with spaces"
-    _mirror(root)
+    root = _mirror(tmp_path / "mirror with spaces")
     payload = listed(
         [
             Row(path=path, blob=blob_of(root / path), status=status)
@@ -248,9 +242,8 @@ def test_wrong_mirror_bytes_never_publish_a_snapshot(
     corruption: str,
 ) -> None:
     trees, image, digest = sealed_mirror
-    root = Path(trees.root)
     path = (
-        root
+        Path(trees.root)
         / {
             "listing": image.listing,
             "clean": "research/compression/pkg/mod.py",
@@ -319,12 +312,8 @@ def test_wrappers_are_frozen_by_bytes_and_not_repaired_after_corruption(
 
 
 @links_on_this_host
-def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
-    tmp_path: Path,
-) -> None:
+def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(root: Path) -> None:
     """The fault itself, run for real: a mirror sync must not reach the code of a live job."""
-    root = tmp_path / "projects"
-    _mirror(root)
     pinned = Path(
         Snapshots(str(root)).pin(
             local(),
@@ -335,14 +324,12 @@ def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
     )
     frozen = pinned / "research/compression/pkg/mod.py"
     assert frozen.stat().st_ino == (root / "research/compression/pkg/mod.py").stat().st_ino
-    # The environment and the data directory are reached live, and the results path points back
-    # at the mirror, which is where the pull already looks.
+    # The environment, data and results are reached live in the mirror, where the pull looks.
     assert (pinned / ".mainboard/envs/default/.pixi").is_symlink()
     assert (pinned / ".mainboard/dispatch").is_symlink()
     marker = pinned / ".mainboard/envs/default/.pixi/envs/default/marker"
     assert marker.read_text(encoding="utf-8") == "env\n"
-    # The generated manifest is hardlinked rather than symlinked, so the job's own tooling
-    # recompiles it into this snapshot instead of over the mirror's copy.
+    # Hardlinked, not symlinked, so the job's tooling recompiles it into this snapshot.
     generated = pinned / ".mainboard/envs/default/pixi.toml"
     assert not generated.is_symlink()
     assert generated.stat().st_ino == (root / ".mainboard/envs/default/pixi.toml").stat().st_ino
@@ -359,17 +346,10 @@ def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
 
 @links_on_this_host
 def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_nothing_else(
-    tmp_path: Path,
+    root: Path,
 ) -> None:
-    """A job's tree reaches the mirror through what it declared and through nothing else.
-
-    The mirror keeps a spare module beside the shipped one, a data directory beside the code
-    and a vendored tree under the generated directory; the snapshot holds the listed files by
-    hardlink, links the one need and the results path back, hands the environment through and
-    leaves everything else unreachable, so an import the closure missed fails on the node.
-    """
-    root = tmp_path / "projects"
-    _mirror(root)
+    """Everything undeclared (a spare module, a vendored sibling) stays unreachable, so an import
+    the closure missed fails on the node."""
     listing = ".mainboard/dispatch/jobs/closure-abc.tsv"
     payload = listed(
         [
@@ -410,7 +390,6 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
         "research",
     ]
     assert (pinned / CLOSURE).read_bytes() == payload
-    # A need the mirror does not hold refuses the dispatch by name rather than dangling.
     with pytest.raises(SystemExit, match="the need research/absent is not on the mirror"):
         Snapshots(str(root)).pin(
             local(),
@@ -422,11 +401,8 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
 
 @links_on_this_host
 def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding_it(
-    tmp_path: Path,
+    root: Path,
 ) -> None:
-    """Thirty five jobs off one commit pay for one tree, and none of them waits for a rebuild."""
-    root = tmp_path / "projects"
-    _mirror(root)
     snapshots = Snapshots(str(root))
     image = mirrored("research/compression")
     pinned = Path(snapshots.pin(local(), key="abc1234", image=image))
@@ -436,16 +412,9 @@ def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding
 
 
 @links_on_this_host
-def test_two_batches_off_one_commit_each_get_their_own_results_link(tmp_path: Path) -> None:
-    """A snapshot is keyed on the source and a results path is not part of the source.
-
-    Two batches dispatched from one commit therefore share a tree while declaring different
-    results paths, and the second one used to get no link at all: its pull failed on a path that
-    did not exist while its receipts sat inside the snapshot (gh200-closure reusing
-    gh200-directed-tree's tree, 2026-09-05).
-    """
-    root = tmp_path / "projects"
-    _mirror(root)
+def test_two_batches_off_one_commit_each_get_their_own_results_link(root: Path) -> None:
+    """The second batch sharing a tree once got no link: its pull failed while its receipts sat in
+    the snapshot (gh200-closure reusing gh200-directed-tree's tree, 2026-09-05)."""
     (root / "research/compression/evidence").mkdir()
     snapshots = Snapshots(str(root))
     image = mirrored("research/compression")
@@ -456,15 +425,10 @@ def test_two_batches_off_one_commit_each_get_their_own_results_link(tmp_path: Pa
     second = Path(
         snapshots.pin(local(), key="abc1234", image=image, results="research/compression/evidence")
     )
-
     assert second == first
-    assert (
-        first.joinpath("research/compression/raw").resolve() == root / "research/compression/raw"
-    )
-    assert (
-        first.joinpath("research/compression/evidence").resolve()
-        == root / "research/compression/evidence"
-    )
+    for results in ("raw", "evidence"):
+        link = first / "research/compression" / results
+        assert link.resolve() == root / "research/compression" / results
     # Pinning again with the first path back does not double the link or lose the second.
     snapshots.pin(local(), key="abc1234", image=image, results="research/compression/raw")
     assert first.joinpath("research/compression/raw").is_symlink()
@@ -473,17 +437,10 @@ def test_two_batches_off_one_commit_each_get_their_own_results_link(tmp_path: Pa
 
 @links_on_this_host
 def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors(
-    tmp_path: Path,
+    root: Path,
 ) -> None:
-    """A generated manifest carries the root it was compiled for, so a pinned tree recompiles one.
-
-    Which means the write has to land here. The mirror's copy is what every other job on the
-    host activates through, and the tools that write these files replace them rather than edit
-    them, so a hardlink is exactly the right shape: the snapshot's entry moves to its own inode
-    and nobody else's job notices.
-    """
-    root = tmp_path / "projects"
-    _mirror(root)
+    """Every other job activates through the mirror's copy; the tools replace rather than edit
+    these files, so the hardlinked entry moves to its own inode and nobody else notices."""
     pinned = Path(
         Snapshots(str(root)).pin(local(), key="abc1234", image=mirrored("research/compression"))
     )
@@ -499,7 +456,6 @@ def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors
 def test_a_tree_changed_after_its_pin_refuses_every_later_reuse(
     sealed_mirror: tuple[Snapshots, Sealed, str],
 ) -> None:
-    """A source file swapped for a link, or reached through a linked parent, is not the source."""
     trees, image, digest = sealed_mirror
     frozen = Path(trees.pin(local(), key="tampered", image=image, digest=digest))
     module = frozen / "research/compression/pkg/mod.py"
@@ -537,10 +493,8 @@ def test_a_half_built_tree_waits_for_an_operator_rather_than_being_reused(
     ],
 )
 def test_a_listing_naming_a_path_outside_the_tree_or_its_controls_is_refused(
-    tmp_path: Path, row: str, refusal: str
+    root: Path, row: str, refusal: str
 ) -> None:
-    root = tmp_path / "projects"
-    _mirror(root)
     listing = ".mainboard/dispatch/jobs/closure-bad.tsv"
     payload = f"{row}\t{'0' * 64}\tclean\n".encode()
     (root / listing).write_bytes(payload)
@@ -593,15 +547,10 @@ def test_a_frozen_wrapper_reached_through_a_link_is_refused(
 
 @links_on_this_host
 def test_a_mirrored_tree_carries_links_names_its_prefix_and_leaves_a_linked_results_path_alone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A results path already reached through a link into the mirror is the mirror's own.
-
-    Clearing it there would clear the mirror's results, so the pin leaves it as it stands.
-    Where a file system shares no inode, the copy is a copy.
-    """
-    root = tmp_path / "projects"
-    _mirror(root)
+    """A results path reached through a link into the mirror is left alone, since clearing it
+    would clear the mirror's results. Where a file system shares no inode, the copy is a copy."""
     (root / "research/compression/pkg/alias.py").symlink_to("mod.py")
     (root / ".mainboard/envs/README").write_text("not an environment", encoding="utf-8")
     (root / "research/data/out").mkdir()

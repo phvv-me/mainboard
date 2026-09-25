@@ -1,31 +1,25 @@
-# The immutable copy of the synced source a dispatch pins its job to, so a later mirror sync
-# can never rewrite the code a job that is already queued or running imports.
+# The immutable copy of the synced source a dispatch pins its job to, so a later mirror sync can
+# never rewrite the code a queued or running job imports.
 #
-# The mirror stays the transfer's target, because an incremental transfer is what makes
-# dispatching cheap at all. What a job runs from is a snapshot of that mirror taken at submit
-# time and named for the source identity its own receipts carry, so two dispatches of one tree
-# share a snapshot and a dispatch of a different tree gets its own. A snapshot holds what its
-# image says and nothing else: the compiled environment, the dispatch state and the dispatch's
-# own results path are symlinks back to the mirror, so a job in a snapshot activates the
-# mirror's environment, writes its log where every later read already looks, and leaves its
-# results where the pull already goes.
+# The mirror stays the transfer's target, since incremental transfer is what makes dispatch cheap.
+# A job runs from a snapshot of it taken at submit time and named for the source identity its
+# receipts carry, so two dispatches of one tree share a snapshot. The compiled environment, the
+# dispatch state and the results path are symlinks back to the mirror, so a job activates the
+# mirror's environment, logs where every read looks, and leaves results where the pull goes.
 #
-# Two images exist. A command that ships the mirror pins the whole synced allowlist, and every
-# directory that copy created is filled with links back to whatever else the mirror holds there.
-# A job spelled by file pins its closure, the exact files it imports and nothing beside them: the
-# mirror is not reachable from that tree except through the environment, the data paths the job
-# declared it needs, and its results path.
+# Two images exist. A command that ships the mirror pins the whole synced allowlist, each directory
+# the copy created filled with links back to whatever else the mirror holds there. A job spelled by
+# file pins its closure alone: the mirror is reachable only through the environment, the data
+# paths the job declared, and its results path.
 #
-# The generated tree is the one place those two worlds meet, and it is the one place a symlink
-# is not enough. A workspace's generated manifest carries the root it was compiled for, and the
-# tool resolves that manifest through the directory it is standing in, so a snapshot whose
-# generated tree were a symlink would send every task back to the mirror it points at and pin
-# nothing. Its directories are therefore real here, its files hardlinked, and only the installed
-# artifacts under them symlinked, which pins the tree while leaving one environment for the host.
+# The generated tree is where a symlink is not enough: its manifest carries the root it was
+# compiled for and the tool resolves it through the directory it stands in, so a symlinked tree
+# would send every task back to the mirror and pin nothing. Its directories are real, its files
+# hardlinked, and only the installed artifacts under them symlinked, pinning the tree while
+# leaving one environment per host.
 #
-# The pin itself runs in the target's agent, the same standard-library program the mirror talks
-# to, under a kernel file lock of its own, so pinning needs neither a POSIX shell nor any tool
-# on the host beyond Python. Everything a caller typed is refused here, before the host is asked.
+# The pin runs in the target's standard-library agent under its own kernel file lock, so it needs
+# no POSIX shell or tool beyond Python. Everything a caller typed is refused here first.
 
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
@@ -43,22 +37,14 @@ if TYPE_CHECKING:
     from .agent import Agent
     from .agent.program import ImageSpec
 
-# Where a host keeps its pinned trees, under the dispatch state directory the mirror already
-# excludes from every transfer, so a sync can neither ship one nor prune one.
+# Under the state directory every transfer excludes, so a sync neither ships nor prunes one.
 SOURCES = f"{state_dir()}/sources"
 
 
 def stamped(key: str, *, commit: str, digest: str) -> str:
-    """What a finished snapshot's stamp holds: the tree's key, and the provenance of that tree.
-
-    The key stays the first line and stays alone on it, because it is what the tree is named for
-    and what every earlier stamp on every host already holds. The provenance follows as `name
-    value` lines, which is what a job reads to say which commit it is running and what the
-    shipped bytes hashed to, on a machine that has no history to derive either from.
-
-    key: the tree's identity, the source's key.
-    commit / digest: the dispatching tree's commit and content digest, either empty when the
-        workspace has no git to answer with.
+    """A finished snapshot's stamp: the key alone on the first line, as every existing stamp holds
+    it, then `commit`/`digest` as `name value` lines (each omitted when empty), which is how a job
+    on a machine without history says what it runs.
     """
     lines = [
         key,
@@ -68,16 +54,19 @@ def stamped(key: str, *, commit: str, digest: str) -> str:
 
 
 def writable(path: str) -> str:
-    """`path` as a workspace-relative results path, empty when it is not one.
+    """`path` as a workspace-relative results path, empty when absolute or climbing out.
 
-    A results path is the one caller-typed string a snapshot turns into a link pointing back at
-    the mirror, so an absolute path or one climbing out of the workspace is refused here rather
-    than handed to the pin that removes what stands there.
+    It is the one caller-typed string a snapshot turns into a link back at the mirror, so it is
+    refused here rather than handed to the pin that removes what stands there.
     """
     posix = PurePosixPath(path)
     if not path or posix.is_absolute() or ".." in posix.parts:
         return ""
     return posix.as_posix()
+
+
+def _hex_sha256(text: str) -> bool:
+    return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
 
 
 def _reserved(path: str) -> bool:
@@ -90,9 +79,8 @@ class Image(ABC, FrozenModel):
 
     @abstractmethod
     def request(self, digest: str, results: str) -> ImageSpec:
-        """This image as the pin's request describes it, refusing what the host must not see.
+        """This image as the pin's request, refusing what the host must not see.
 
-        digest: the dispatching tree's content digest.
         results: the dispatch's declared results path, empty for none.
         """
 
@@ -100,9 +88,8 @@ class Image(ABC, FrozenModel):
 class Mirrored(Image):
     """The whole synced scope, what a command that ships the mirror runs from.
 
-    scope: the roots the mirror shipped and the rules it shipped them by, so the snapshot holds
-        the shipped file set and not the artifacts the host wrote beside it. Every directory the
-        copy creates is then filled with links back to whatever else the mirror holds there.
+    scope: the roots and rules the mirror shipped by, so the snapshot holds the shipped file set
+        and not the artifacts the host wrote beside it.
     """
 
     scope: ScopeSpec
@@ -116,14 +103,13 @@ class Mirrored(Image):
 class Sealed(Image):
     """A job's closure and nothing beside it, what a job spelled by file runs from.
 
-    listing: the closure listing the mirror carries, workspace-relative, whose first column
-        names every shipped file. The snapshot freezes it as `CLOSURE`; the runner reads that
-        copy through `MAINBOARD_CLOSURE`, not a later mirror's listing.
-    needs: the workspace-relative data paths the job reads, each linked back to the mirror on
-        every dispatch. A need the mirror does not hold refuses the dispatch by name, since a
-        job that opens a dangling link fails after the queue rather than before it.
-    pins: staged Hub pins, each checked on the mirror and reached through the one staging
-        directory they share.
+    listing: the mirror's workspace-relative closure listing, first column naming every shipped
+        file. Frozen as `CLOSURE`, which the runner reads through `MAINBOARD_CLOSURE` rather than
+        a later mirror's listing.
+    needs: data paths the job reads, linked back to the mirror on every dispatch. A need the
+        mirror lacks refuses the dispatch by name, since a dangling link fails after the queue.
+    pins: staged Hub pins, checked on the mirror and reached through their shared staging
+        directory.
     """
 
     listing: str
@@ -132,7 +118,7 @@ class Sealed(Image):
 
     def request(self, digest: str, results: str) -> ImageSpec:
         """The listing and its live paths, refusing a digest or live path the pin cannot trust."""
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        if not _hex_sha256(digest):
             raise ValueError("a sealed snapshot requires its complete closure digest")
         live = [writable(path) for path in (*self.needs, *([results] if results else []))]
         if any(not path or _reserved(path) for path in live):
@@ -152,17 +138,13 @@ class Snapshots:
     """The pinned source trees on one host, under `{root}/{STATE_DIR}/sources/`.
 
     Source files share inodes with the mirror; directories and frozen metadata add storage.
-    Automatic deletion is unsafe: one workstation's job cache cannot establish ownership
-    across other dispatchers or the gap before a submitted job is recorded. Snapshots remain
-    until an operator verifies that no queued or running job uses them. Watch inode quotas.
+    Hardlinking also makes the pin correct: the mirror replaces a changed file by renaming a new
+    one over it, so only the mirror's entry moves to the new inode. Automatic deletion is unsafe,
+    since one workstation's job cache cannot establish ownership across other dispatchers or the
+    gap before a submitted job is recorded: snapshots remain until an operator verifies no queued
+    or running job uses them. Watch inode quotas.
 
-    Hardlinking is also what makes the pin correct rather than merely cheap. The mirror replaces
-    a changed file by writing a new one and renaming it over the old name, so the mirror's
-    directory entry moves to a new inode while the snapshot's entry keeps pointing at the one
-    the job is already reading.
-
-    root: the workspace root on the host, the mirror every snapshot is taken from and links
-        back to.
+    root: the host's workspace root, the mirror every snapshot is taken from and links back to.
     """
 
     def __init__(self, root: str) -> None:
@@ -170,15 +152,11 @@ class Snapshots:
 
     @property
     def base(self) -> str:
-        """The directory every pinned tree on this host lives in."""
         return f"{self.root}/{SOURCES}"
 
     def path(self, key: str) -> str:
-        """Where the tree `key` names is pinned, whether or not it has been materialised yet.
-
-        Pure path arithmetic on purpose: a dispatch has to render the job script that runs from
-        this directory before it opens the connection that creates it.
-        """
+        """Where `key` is pinned, materialised or not: pure arithmetic, because a dispatch renders
+        the job script that runs from it before opening the connection that creates it."""
         return f"{self.base}/{key}"
 
     @staticmethod
@@ -190,8 +168,7 @@ class Snapshots:
             not staged
             or writable(staged) != staged
             or name != f"job-{digest}.sh"
-            or len(digest) != 64
-            or any(char not in "0123456789abcdef" for char in digest)
+            or not _hex_sha256(digest)
         ):
             raise ValueError("a staged wrapper requires a canonical path and full SHA-256 name")
         return f"{WRAPPERS}/{name}"
@@ -211,30 +188,23 @@ class Snapshots:
     ) -> str:
         """Materialise the snapshot for `key` on the host and answer the path a job runs from.
 
-        A key already pinned is verified without rebuilding its tree. Its declared results path,
-        its needs and its wrapper are linked on every dispatch all the same, since those belong
-        to the dispatch rather than to the tree and two batches off one commit routinely declare
-        different ones.
+        A key already pinned is verified without rebuilding. Its results path, needs and wrapper
+        are linked on every dispatch all the same, since they belong to the dispatch and two
+        batches off one commit routinely declare different ones.
 
         agent: the host's agent, which builds the tree under the host's pin lock.
-        key: the tree's identity, the source's key.
-        image: what the snapshot copies out of the mirror and what it links back.
-        results: the dispatch's declared results path, linked back to the mirror so what the job
-            writes there is what a later pull brings home; empty for a dispatch that declared
-            none.
-        prefix: the immutable environment this tree activates, named by content. Written once,
-            when the tree is built, and never repointed: the environment belongs to the tree the
-            way its code does, so a wave queued against it keeps it however often the workspace
-            re-solves afterwards. Empty leaves the tree reaching the mirror's own environment,
-            which is what a workspace with no addressed prefixes still does.
-        environment: the environment `prefix` belongs to, which is the directory inside the
-            generated tree the link is written into.
+        results: linked back to the mirror so what the job writes there is what a later pull
+            brings home; empty for none.
+        prefix: the immutable, content-named environment this tree activates. Written once when
+            the tree is built and never repointed, so a queued wave keeps it however often the
+            workspace re-solves. Empty reaches the mirror's own environment, as a workspace with
+            no addressed prefixes does.
+        environment: the environment `prefix` belongs to, the generated-tree directory the link
+            is written into.
         script: staged generated wrapper to freeze and verify before submission; empty for a
             direct remote command whose file is not shipped.
-        commit / digest: the dispatching tree's own provenance, written into the stamp beside
-            the key so the tree on the host says which commit it is and what its content hashed
-            to. A mirror carries no history, so this file is the only place on that machine
-            where either can be read.
+        commit / digest: the tree's provenance for the stamp, the only place on a history-less
+            mirror either can be read.
         """
         if not key or key in (".", "..") or PurePosixPath(key).name != key:
             raise ValueError("a snapshot key must be one directory name")

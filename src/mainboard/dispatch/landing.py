@@ -1,18 +1,16 @@
 # Landing a dispatch on a machine rented for one job: the same thing `mainboard setup` does to a
 # declared host, done to a box that will exist for the next half hour.
 #
-# The order is not a matter of taste. A rented container has no workspace, no tool and no
-# environment, so the command has to be the last thing that happens: mirror the workspace onto it,
-# install the tool from that mirror, provision the environment from the lock this workspace
-# already solved, pin the tree the job runs from, and only then hand the waiting entrypoint the
-# line that runs it. Anything earlier is the failure this module exists to end, a `mainboard run`
-# that reached a bare image and answered `bash: mainboard: command not found` while the meter ran.
+# A rented container has no workspace, tool or environment, so the command comes last: mirror
+# the workspace, install the tool from it, provision the environment from the lock this
+# workspace already solved, pin the tree the job runs from, and only then hand the waiting
+# entrypoint the line that runs it. Anything earlier is the failure this module ends, a
+# `mainboard run` that reached a bare image and answered `bash: mainboard: command not found`
+# while the meter ran.
 #
-# What a rental does not get is a record. A declared host is onboarded once and remembered, and
-# this machine is gone by the next sweep, so nothing here saves a `HostSetup`, checks a queue
-# daemon it will never dispatch through, or probes hardware nobody will read back. The rental
-# answers for itself exactly as it did before, through its own backend: the log, the exit marker
-# and the cancel that stops the meter are untouched by any of this.
+# A rental gets no record: it is gone by the next sweep, so nothing here saves a `HostSetup`,
+# checks a queue daemon or probes hardware. Its own backend still owns the log, the exit marker
+# and the cancel that stops the meter.
 
 import shlex
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -48,10 +46,8 @@ if TYPE_CHECKING:
 class Renter(Protocol):
     """What a landing needs of a backend: hand a rental over, and end one.
 
-    A structural pair rather than a class, because its two halves are declared in different
-    places by design. Renting is the `Rentable` capability a provider opts into, ending a rental
-    is on every `ProviderBackend` there is, and a landing needs both without caring which class
-    either arrived from.
+    Structural, because renting is the `Rentable` capability a provider opts into while ending a
+    rental is on every `ProviderBackend`, and a landing needs both from whichever class.
     """
 
     def cancel(self, handle: str) -> None:
@@ -64,13 +60,8 @@ class Renter(Protocol):
 def renter(backend: ProviderBackend, plan: ExecutionPlan) -> Renter | None:
     """`backend` as the thing a landing drives, or None when this dispatch runs the raw command.
 
-    A backend that hands out ssh gets the workspace, the tool and the environment, since a bare
-    rental holds none of the three. A plan that declares its own container is the one exception:
-    a prebuilt image already carries everything its command needs, so there is nothing to install
-    and the one-shot container is both cheaper and simpler.
-
-    backend: the provider backend this dispatch resolved to.
-    plan: the resolved execution context, whose container decides the shape.
+    A plan declaring its own container runs raw: its prebuilt image already carries everything
+    the command needs, so the one-shot container is cheaper and simpler than a landing.
     """
     if plan.containerized or not isinstance(backend, Renter):
         return None
@@ -80,15 +71,12 @@ def renter(backend: ProviderBackend, plan: ExecutionPlan) -> Renter | None:
 class Landing:
     """One rented machine, brought up to a host this workspace can dispatch into.
 
-    dispatcher: the dispatch core whose mirror, job staging and workspace root the landing uses.
-    backend: the provider backend that rents the machine and later settles and cancels the run.
-    plan: the resolved execution context for the provider host, container-free by construction.
-    resources: the resource request the rental is opened under, spend cap and walltime included.
-    artifact: the compiled manifest, lock and state that ship with the mirror so the machine can
-        install frozen rather than solving for itself.
+    plan: the provider host's execution context, container-free by construction.
+    resources: what the rental is opened under, spend cap and walltime included.
+    artifact: the compiled manifest, lock and state shipped with the mirror so the machine
+        installs frozen rather than solving for itself.
     watch: announces each stage as it begins.
-    floor: the version this workspace declares for the tool, which is what a rental installs from
-        an index when the workspace vendors no source to install from.
+    floor: the tool version a rental installs from an index when the workspace vendors no source.
     """
 
     def __init__(
@@ -118,7 +106,6 @@ class Landing:
         The provider must persist its returned handle before waiting for SSH. A lost create
         response leaves its labeled intent visible and requires provider-side reconciliation.
 
-        shipment: what the job runs and ships, once the machine can run it.
         name: the label retained by a later monitor.
         node: the research node served by the dispatch.
         """
@@ -167,10 +154,8 @@ class Landing:
     def equip(self, rental: Rental, *, shipment: Shipment) -> None:
         """Mirror, install, provision, pin, launch: everything the machine needs, in that order.
 
-        rental: the machine the provider just handed over, its entrypoint waiting.
-        shipment: what the job runs and ships, its provenance read once minutes before the pin
-            uses it, since a dirty tree's key digests its own delta and a landing is long enough
-            for that delta to move under a second reading.
+        shipment: its provenance is read once, minutes before the pin uses it, since a dirty
+            tree's key digests its own delta, which could move under a second reading.
         """
         policy = SshTransport(endpoint=rental.endpoint)
         where = rental.endpoint.destination
@@ -222,16 +207,10 @@ class Landing:
     def transferable(self, remote: Machine) -> None:
         """Make sure the machine can receive a mirror at all, since its Python runs the far end.
 
-        A declared host has a Python because whoever set it up has one. A rented image almost
-        always ships one too, and one that does not fails the transfer on a box we already own
-        outright, so it is installed here through the package manager every provider base image
-        this house rents is built on. An image carrying neither refuses with what the machine
-        itself said, before the mirror rather than during it.
-
-        This runs on the bare connection rather than through the workspace shell every later step
-        uses, because the workspace does not exist yet: the mirror below is what creates it.
-
-        remote: the open connection to the machine.
+        A rented image almost always ships one; one that does not gets it through apt, which
+        every provider base image this house rents is built on, and an image with neither
+        refuses with what the machine said, before the mirror. It runs on the bare connection,
+        since the workspace a later step would `cd` into does not exist until the mirror.
         """
         probe = f"{self.plan.profile.python} -c pass"
         retcode, _, _ = remote["bash"][["-lc", probe]].run(retcode=None)
@@ -249,13 +228,9 @@ class Landing:
     def verify(self, remote: Machine, pinned: str) -> None:
         """Prove the pinned tree activates before the entrypoint is asked to run a job from it.
 
-        The last cheap moment there is. The machine is ours, the meter is on our side of the
-        handoff and nothing has been started yet, so a tree the job could not have activated
-        from ends the rental here instead of being paid for in full and answering with its own
+        The last cheap moment: nothing has started, so a tree the job could not activate from
+        ends the rental here instead of being paid for in full and answering with its own
         activation refusal (vast 49867368, exit 1, 2026-09-04).
-
-        remote: the open connection to the machine.
-        pinned: the snapshot the job will run from.
         """
         line = wrap(self.plan, pinned, command="true")
         retcode, _, err = remote["bash"][["-lc", line]].run(retcode=None)
@@ -268,12 +243,10 @@ class Landing:
     def script(self, shipment: Shipment, *, root: str, listing: str) -> str:
         """Render the job script this rental runs and stage it for the mirror to carry.
 
-        The same job an ssh host runs, which is what makes a rented run's receipts, its walltime
-        cap and its `MAINBOARD_SOURCE` stamp identical to one measured on gold. It
-        activates from the tree this dispatch is about to pin rather than from the mirror, so the
-        path is arithmetic here and materialised on the machine a few lines later.
+        The same job an ssh host runs, so a rented run's receipts, walltime cap and
+        `MAINBOARD_SOURCE` stamp match one measured on gold. It activates from the tree this
+        dispatch is about to pin, a path computed here and materialised on the machine later.
 
-        shipment: what the job runs and ships, whose source key the pin below uses.
         root: the workspace root on the machine.
         listing: the staged closure listing, workspace-relative, empty for a command.
         """
@@ -299,17 +272,12 @@ class Landing:
     def start(self, remote: Machine, *, pinned: str, script: str) -> None:
         """Hand the waiting entrypoint the line that runs the job from the tree that was pinned.
 
-        A rented box has no queue to submit to, and must not: its own entrypoint owns the log,
-        the exit marker and the meter, so the job starts there or the run has no receipt anyone
-        can read afterwards. The line is the staging every other host gets, `cd`, PATH and
-        modules, around a job whose runner does its own activation.
+        A rented box has no queue, and must not: its entrypoint owns the log, the exit marker and
+        the meter, so the job starts there or the run leaves no readable receipt. The line is
+        the staging every host gets (`cd`, PATH, modules) around a job that activates itself.
 
-        The script is the verified frozen wrapper inside the snapshot, named absolutely so
-        launch does not depend on the mirror's mutable dispatch links.
-
-        remote: the open connection to the machine.
-        pinned: the snapshot the job runs from.
-        script: the job script's absolute path on the machine.
+        script: the verified frozen wrapper inside the snapshot, named absolutely so launch does
+            not depend on the mirror's mutable dispatch links.
         """
         line = wrap(self.plan, pinned, command=f"sh {shlex.quote(script)}", activate=False)
         retcode, _, err = (remote["bash"]["-c", handoff()] << f"{line}\n").run(retcode=None)

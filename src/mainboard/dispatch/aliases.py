@@ -1,10 +1,9 @@
 # The ssh aliases a held rental is reached by, written into the user's own ssh config.
 #
-# A held machine has to answer to a name for the whole session, from this tool, from the
-# mirror's ssh and from a person typing `ssh <alias>`, and the one place all three look a name
-# up is the ssh config. Each alias is one marked block, put first in the file so a broad
-# `Host *` further down never overrides its address, and removed again by its markers when the
-# machine is released. Nothing outside a block is ever touched.
+# The ssh config is the one place this tool, the mirror's ssh and a person typing `ssh <alias>`
+# all look a name up. Each alias is one marked block, put first so a broad `Host *` further down
+# never overrides its address, and removed by its markers on release. Nothing outside a block is
+# ever touched.
 
 import os
 from pathlib import Path
@@ -15,10 +14,7 @@ if TYPE_CHECKING:
 
 
 class SshAliases:
-    """The marked alias blocks in one ssh config file.
-
-    path: the ssh config file, the user's own when None.
-    """
+    """The marked alias blocks in one ssh config file, the user's own when `path` is None."""
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or Path.home() / ".ssh" / "config"
@@ -26,8 +22,8 @@ class SshAliases:
     def add(self, alias: str, endpoint: Endpoint) -> None:
         """Point `alias` at `endpoint`, replacing any block this tool wrote for it before.
 
-        A rental's address is new and its host key will never be seen again, so the key is
-        accepted on sight and kept out of `known_hosts`, as the dispatch itself connects.
+        A rental's host key will never be seen again, so it is accepted on sight and kept out of
+        `known_hosts`, as the dispatch itself connects.
         """
         lines = [
             f"Host {alias}",
@@ -52,7 +48,7 @@ class SshAliases:
             self._write(self._without(alias))
 
     def _without(self, alias: str) -> str:
-        """The config's text with `alias`'s block dropped and the blank lines around it trimmed."""
+        """The config's text without `alias`'s block and the blank lines around it."""
         try:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -78,10 +74,8 @@ class SshAliases:
 
 
 def _opening(alias: str) -> str:
-    """The line that opens `alias`'s block."""
     return f"# >>> mainboard hold {alias} >>>"
 
 
 def _closing(alias: str) -> str:
-    """The line that closes `alias`'s block."""
     return f"# <<< mainboard hold {alias} <<<"

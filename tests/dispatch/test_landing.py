@@ -77,37 +77,28 @@ class PinningAgent(RecordingAgent):
         return super().ask(request, payload=payload)
 
 
-def dispatcher_for(workdir: Path) -> Dispatcher:
-    """A dispatcher whose mirror only records what it was asked to ship, and where."""
-    instance = Dispatcher(cache=Cache(workdir / "dispatch.sqlite"), sync=GitignoreFilter(workdir))
-    instance.mirrored: list[tuple[str, tuple[str, ...], str]] = []
-
-    def mirror(execution, root: str, **kwargs: object) -> list[str]:
-        policy = kwargs.get("ssh")
-        extra = kwargs.get("extra", ())
-        instance.mirrored.append(
-            (root, tuple(extra), policy.destination(execution.host) if policy else execution.host)
-        )
-        return ["src"]
-
-    instance.mirror = mirror
-    instance.reached: list[str] = []
-    return instance
-
-
 def landing(
     workdir: Path, host: RecordingMachine, monkeypatch: pytest.MonkeyPatch, **overrides: object
 ) -> tuple[Landing, FakeRenter, Dispatcher]:
-    """A `Landing` onto `host`, its ssh connection stubbed and its mirror recorded."""
+    """A `Landing` onto `host`, its ssh connection stubbed and its mirror and agent recorded."""
     monkeypatch.setattr(landing_module, "connection", lambda where, ssh=None: host)
     backend = FakeRenter(**overrides)
-    dispatcher = dispatcher_for(workdir)
+    dispatcher = Dispatcher(
+        cache=Cache(workdir / "dispatch.sqlite"), sync=GitignoreFilter(workdir)
+    )
+    dispatcher.mirrored: list[tuple[str, tuple[str, ...], str]] = []
+    dispatcher.reached: list[str] = []
     dispatcher.pins = PinningAgent(host)
+
+    def mirror(execution, root: str, *, ssh, extra=(), **kwargs: object) -> list[str]:
+        dispatcher.mirrored.append((root, tuple(extra), ssh.destination(execution.host)))
+        return ["src"]
 
     def agent(execution, ssh=None) -> PinningAgent:
         dispatcher.reached.append(ssh.destination(execution.host))
         return dispatcher.pins
 
+    dispatcher.mirror = mirror
     dispatcher.agent = agent
     return (
         Landing(dispatcher, backend, plan(**_RENTED), resources=_ASKED),
@@ -166,29 +157,36 @@ def test_a_machine_that_ships_no_python_is_given_one_before_the_mirror_is_attemp
     assert not equipped.ran("apt-get")
 
 
-def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would_run(
+def test_the_waiting_entrypoint_is_handed_the_staged_line_naming_the_tree_the_pin_created(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A rented box has no queue, and must not: its entrypoint owns the log and the meter.
 
-    What it is handed is the staging every other host gets around the ordinary job script, so a
-    rented run's receipts, its walltime cap and its source stamp are the ones gold produces.
+    It is handed the staging every other host gets around the ordinary job script, so a rented
+    run's receipts, walltime cap and source stamp are the ones gold produces. The script is named
+    by the absolute path the mirror carried it to: a launch naming anything the transfer did not
+    deliver is the `No such file or directory` a landed rental answered with once already.
 
-    The script is named by the absolute path the mirror carried it to, and the assertion below
-    is that those are the same path: a launch naming anything the transfer did not deliver is the
-    `No such file or directory` a landed rental answered with once already.
+    A dirty tree's snapshot key digests its own delta, and a landing takes tens of minutes, so
+    reading it twice can answer twice differently: a job rendered against one reading and pinned
+    under another activates from a directory nobody created (vast 49867368, 2026-09-04). The
+    tree is read once, so the launch, its script and the pin all name the same snapshot.
     """
     host = machine_with("/root/projects\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     landed.land(shipped(dispatcher, "python train.py"))
     (written,) = host.inputs
     (root, (script,), _) = dispatcher.mirrored[0]
-    assert written.startswith(f"cd {root}/{SOURCES}/")
+    assert written.startswith(f"cd {root}/{SOURCES}/sha256-")
     snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
     assert written.endswith(f"sh {snapshot}/.mainboard-jobs/{Path(script).name}\n")
     assert "export PATH=" in written
-    job = recorded((dispatcher.root / script).read_text(encoding="utf-8"))
+    text = (dispatcher.root / script).read_text(encoding="utf-8")
+    assert snapshot in text
+    job = recorded(text)
     assert (job.command, job.walltime, job.logs) == ("python train.py", "00:30:00", "")
+    [request] = dispatcher.pins.requests
+    assert Snapshots(request["pin"]["root"]).path(request["pin"]["key"]) == snapshot
 
 
 def test_a_rented_job_carries_the_complete_source_seal(
@@ -216,29 +214,6 @@ def test_rental_results_link_to_the_live_root_that_fetch_reads(
     landed.land(shipment)
     [request] = dispatcher.pins.requests
     assert request["pin"]["results"] == "research/project/datasets/node"
-
-
-def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A dirty tree's snapshot key digests its own delta, and a landing takes tens of minutes.
-
-    Reading that key twice across one landing can answer twice differently, and a job rendered
-    against the first answer while its tree is pinned under the second is a job standing in a
-    directory nobody created: it activates from a path that does not exist and says it found no
-    environment there (vast 49867368, 2026-09-04). The tree is read once, so the launch and the
-    script it runs name the same snapshot however much the workspace moves underneath.
-    """
-    host = machine_with("/root/projects\n")
-    landed, _, dispatcher = landing(workdir, host, monkeypatch)
-    landed.land(shipped(dispatcher, "python train.py"))
-    (written,) = host.inputs
-    (_, (script,), _) = dispatcher.mirrored[0]
-    snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
-    assert "/sources/sha256-" in snapshot
-    assert snapshot in (dispatcher.root / script).read_text(encoding="utf-8")
-    [request] = dispatcher.pins.requests
-    assert Snapshots(request["pin"]["root"]).path(request["pin"]["key"]) == snapshot
 
 
 def test_a_pinned_tree_the_job_could_not_activate_from_ends_the_rental(

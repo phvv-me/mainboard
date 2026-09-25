@@ -35,12 +35,12 @@ class Allocation(FrozenModel):
         return handle
 
     def refused(self) -> None:
-        """The provider answered the create with a refusal, so this request allocated nothing.
+        """The provider refused the create, so this request allocated nothing.
 
-        A 4xx on the create call is the provider validating the request and declining it before
-        any instance exists, which is the one outcome that lets a request past the API boundary
-        stand as prepared again, to be sent to another offer or closed by `interrupted`;
-        anything ambiguous stays `submitting` for a reconciliation by label.
+        A 4xx on create is the provider declining the request before any instance exists, the
+        one outcome that lets a request past the API boundary stand as prepared again, for
+        another offer or for `interrupted` to close; anything ambiguous stays `submitting` for a
+        reconciliation by label.
         """
         current = self.cache.creation(self.label, self.record.target)
         if current.verdict == vocabulary.SUBMITTING:
@@ -49,17 +49,13 @@ class Allocation(FrozenModel):
     def interrupted(self) -> None:
         """Only a request that never crossed the API boundary is known not to have created."""
         current = self.cache.creation(self.label, self.record.target)
-        if current.verdict in vocabulary.TERMINAL:
-            return
         if current.verdict == vocabulary.PREPARED:
             self.cache.leave_prepared(current, vocabulary.FAILED)
-            return
-        if current.verdict != vocabulary.SUBMITTING:
-            if current.evidence == "not_started":
-                self.cache.resolve(current, vocabulary.FAILED, None, vocabulary.FAILED)
-            return
-        logger.error(
-            "creation %s has no confirmed provider handle; reconcile this exact label before "
-            "retrying, because the request may have allocated a billable instance",
-            self.label,
-        )
+        elif current.verdict == vocabulary.SUBMITTING:
+            logger.error(
+                "creation %s has no confirmed provider handle; reconcile this exact label "
+                "before retrying, because the request may have allocated a billable instance",
+                self.label,
+            )
+        elif current.verdict not in vocabulary.TERMINAL and current.evidence == "not_started":
+            self.cache.resolve(current, vocabulary.FAILED, None, vocabulary.FAILED)

@@ -27,12 +27,9 @@ if TYPE_CHECKING:
 
 # Reads the framed source off standard input and runs it, leaving the rest of the stream to it.
 # No `$`, backquote or inner double quote, so every shell a target might log in to passes it on.
-BOOTSTRAP = ";".join(
-    (
-        "import sys",
-        "b=sys.stdin.buffer",
-        "exec(compile(b.read(int(b.readline())),'mainboard-agent','exec'))",
-    )
+BOOTSTRAP = (
+    "import sys;b=sys.stdin.buffer;"
+    "exec(compile(b.read(int(b.readline())),'mainboard-agent','exec'))"
 )
 
 # The agent's source exactly as it ships, read once.
@@ -126,7 +123,6 @@ class Agent:
 
     @property
     def host(self) -> str:
-        """The target's name, as failures report it."""
         return self.link.host
 
     def ask(
@@ -168,7 +164,6 @@ class Sink(io.BufferedIOBase):
         self.exchange = exchange
 
     def write(self, data: Buffer, /) -> int:
-        """Send `data` on to the agent."""
         sent = bytes(data)
         self.stream.write(sent)
         self.exchange.touch()
@@ -179,10 +174,7 @@ class _Exchange:
     """One request in flight: a writer feeding stdin, readers draining stdout and stderr."""
 
     def __init__(
-        self,
-        process: Process,
-        request: Request,
-        payload: Callable[[Sink], None] | None,
+        self, process: Process, request: Request, payload: Callable[[Sink], None] | None
     ) -> None:
         self.process = process
         self.request = request
@@ -203,7 +195,7 @@ class _Exchange:
 
     @property
     def said(self) -> str:
-        """What the agent wrote on stderr, the tail of it."""
+        """The tail of what the agent wrote on stderr."""
         return bytes(self.tail).decode("utf-8", errors="replace")
 
     def touch(self) -> None:
@@ -211,7 +203,6 @@ class _Exchange:
         self.moved = monotonic()
 
     def start(self) -> None:
-        """Start the writer and both readers."""
         for thread in self.threads:
             thread.start()
 
@@ -224,7 +215,6 @@ class _Exchange:
         return True
 
     def join(self) -> None:
-        """Wait for the writer and both readers to finish with their pipes."""
         for thread in self.threads:
             thread.join()
 
@@ -247,7 +237,7 @@ class _Exchange:
                 stdin.close()
 
     def __read(self) -> None:
-        """Collect the agent's JSON records as they arrive."""
+        """Collect the agent's JSON records."""
         stdout = self.process.stdout
         if stdout is None:
             return

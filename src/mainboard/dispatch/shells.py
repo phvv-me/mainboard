@@ -157,14 +157,12 @@ class Posix(Dialect):
     def stage(self, plan: ExecutionPlan, root: str, *, command: str, activate: bool) -> str:
         return wrap(plan, root, command=command, activate=activate)
 
+    # `-t` forces the pty the far side needs, and the staged line is quoted whole because ssh
+    # joins its argv back into one string for the remote login shell to parse.
     def session(self, host: str, line: str) -> list[str]:
-        # `-t` forces the pty the far side needs, and the staged line is quoted whole because
-        # ssh joins its argv back into one string for the remote login shell to parse.
         return ["ssh", "-t", host, f"bash -lc {shlex.quote(line)}"]
 
     def one_shot(self, ssh: SshTransport, host: str, line: str) -> tuple[str, ...]:
-        # ssh joins its argv back into one string for the remote login shell, so the line is
-        # quoted whole, exactly as `session` hands it over.
         return ("ssh", *ssh.options, ssh.destination(host), f"bash -lc {shlex.quote(line)}")
 
     def invocation(self, argv: Sequence[str]) -> str:
@@ -182,21 +180,10 @@ class Posix(Dialect):
     def chain(self, *commands: str) -> str:
         return " && ".join(commands)
 
-    @property
-    def noop(self) -> str:
-        return "true"
-
-    @property
-    def uv_bootstrap(self) -> tuple[str, str]:
-        return "command -v curl", _UV_INSTALLER
-
-    @property
-    def pip(self) -> tuple[str, str]:
-        return "python3 -m pip --version", "python3 -m pip install --user --break-system-packages"
-
-    @property
-    def pixi_installer(self) -> str:
-        return POSIX_INSTALLER
+    noop = "true"
+    uv_bootstrap = ("command -v curl", _UV_INSTALLER)
+    pip = ("python3 -m pip --version", "python3 -m pip install --user --break-system-packages")
+    pixi_installer = POSIX_INSTALLER
 
     def proof(self, plan: ExecutionPlan, root: str) -> str:
         return activation(root, env=plan.env)
@@ -269,24 +256,13 @@ class Windows(Dialect):
     def chain(self, *commands: str) -> str:
         return "; ".join(commands)
 
-    @property
-    def noop(self) -> str:
-        return "exit 0"
-
-    @property
-    def uv_bootstrap(self) -> tuple[str, str]:
-        # PowerShell fetches on its own, so this route needs nothing the host could lack.
-        return "exit 0", "irm https://astral.sh/uv/install.ps1 | iex"
-
-    @property
-    def pip(self) -> tuple[str, str]:
-        return "python -m pip --version", "python -m pip install --user --break-system-packages"
-
-    @property
-    def pixi_installer(self) -> str:
-        # The installer's own inner probes leave an exit code behind that says nothing about
-        # the install; the version read right after it is what vouches for the pixi it put down.
-        return f"{WINDOWS_INSTALLER}; $LASTEXITCODE = 0"
+    noop = "exit 0"
+    # PowerShell fetches on its own, so this route needs nothing the host could lack.
+    uv_bootstrap = ("exit 0", "irm https://astral.sh/uv/install.ps1 | iex")
+    pip = ("python -m pip --version", "python -m pip install --user --break-system-packages")
+    # The installer's own inner probes leave an exit code behind that says nothing about the
+    # install; the version read right after it is what vouches for the pixi it put down.
+    pixi_installer = f"{WINDOWS_INSTALLER}; $LASTEXITCODE = 0"
 
     def proof(self, plan: ExecutionPlan, root: str) -> str:
         return plan.prefix(root)
@@ -307,11 +283,8 @@ class HostShell(ABC):
     """A host's shell staged by an execution plan, the one way a remote command is run.
 
     Two footings: a bare command gets `cd`, the per-user install dirs on `PATH` and the host's
-    modules, all an unprovisioned machine can offer, while an activated one additionally enters
-    the environment, which is what proves the environment an install just built actually runs.
-
-    plan: the resolved execution context staging commands.
-    root: the workspace root on the host.
+    modules, all an unprovisioned machine can offer, while an activated one also enters the
+    environment, which is what proves the environment an install just built actually runs.
     """
 
     dialect: Dialect
@@ -336,11 +309,7 @@ class HostShell(ABC):
         return retcode == 0
 
     def run(self, command: str, *, activate: bool = False) -> str:
-        """`command`'s stdout on the host, raising a `MissionError` naming why it failed.
-
-        command: the command to run in the workspace.
-        activate: run it through the plan's activation rather than the bare staging.
-        """
+        """`command`'s stdout on the host, raising a `MissionError` naming why it failed."""
         retcode, out, err = self.execute(self.stage(command, activate=activate))
         if retcode:
             reason = failure_reason(err or out, retcode)
@@ -348,7 +317,7 @@ class HostShell(ABC):
         return out
 
     def stage(self, command: str, *, activate: bool) -> str:
-        """`command` staged for this host, the dialect's own line."""
+        """`command` staged for this host in its dialect."""
         return self.dialect.stage(self.plan, self.root, command=command, activate=activate)
 
     @property
@@ -380,12 +349,7 @@ class HostShell(ABC):
 
 
 class PosixShell(HostShell):
-    """A POSIX host reached through plumbum's persistent ssh session.
-
-    remote: the open connection commands ride.
-    plan: the resolved execution context staging them.
-    root: the workspace root on the host.
-    """
+    """A POSIX host reached through plumbum's persistent ssh session, `remote`."""
 
     dialect = Posix()
 
@@ -398,8 +362,7 @@ class PosixShell(HostShell):
             self.remote.close()
 
     def execute(self, line: str) -> tuple[int, str, str]:
-        retcode, out, err = self.remote["bash"][["-lc", line]].run(retcode=None)
-        return int(retcode), str(out), str(err)
+        return self.remote["bash"][["-lc", line]].run(retcode=None)
 
     def foreground(self, command: str, *, activate: bool = True) -> int:
         return foreground(self.remote["bash"]["-lc", self.stage(command, activate=activate)])
@@ -411,12 +374,7 @@ class PosixShell(HostShell):
 
 
 class WindowsShell(HostShell):
-    """A Windows host reached one PowerShell script at a time over the bounded transport.
-
-    plan: the resolved execution context staging commands.
-    root: the workspace root on the host.
-    ssh: the bounded SSH policy; the default policy when omitted.
-    """
+    """A Windows host reached one PowerShell script at a time over the bounded `ssh` transport."""
 
     dialect = Windows()
 
@@ -426,7 +384,6 @@ class WindowsShell(HostShell):
 
     def close(self) -> None:
         """Nothing to release: every script rode its own ssh process."""
-        return
 
     def argv(self, script: str) -> tuple[str, ...]:
         """The ssh argv running `script` through PowerShell on the host."""
@@ -452,9 +409,7 @@ class WindowsShell(HostShell):
 def open_shell(plan: ExecutionPlan, root: str, *, ssh: SshTransport | None = None) -> HostShell:
     """The shell `plan`'s host answers, connected: PowerShell one-shots or a login-bash session.
 
-    plan: the resolved execution context, its profile's platform deciding the family.
-    root: the workspace root on the host.
-    ssh: the bounded SSH policy; the default policy when omitted.
+    The profile's platform decides the family; `ssh` defaults to the default bounded policy.
     """
     if is_windows(plan.profile):
         return WindowsShell(plan, root, ssh=ssh)

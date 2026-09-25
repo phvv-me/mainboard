@@ -12,12 +12,15 @@ from ..costs.catalog import Offer
 from ..runtime.job import walltime_seconds
 from .vocabulary import Resources
 
+# Seconds before the budget runs out that release must begin, the time a deletion takes.
+_RESERVE_S = 120
+
 
 class Lease(FrozenModel):
     """One accepted quote, retained before creation, with an absolute release deadline.
 
-    The deadline reserves two minutes for deletion. It bounds quoted time charges,
-    not unpriced transfer fees or a provider outage. A live monitor is still required.
+    The deadline bounds quoted time charges, not unpriced transfer fees or a provider outage,
+    so a live monitor is still required.
     """
 
     offer: Offer
@@ -48,17 +51,14 @@ class Lease(FrozenModel):
             * 3600
             / Decimal(str(billing.rate_usd_hr))
         )
-        seconds = int((available / billing.granularity_s).to_integral_value(ROUND_FLOOR))
-        seconds *= billing.granularity_s
-        reserve = 120
+        quanta = int((available / billing.granularity_s).to_integral_value(ROUND_FLOOR))
+        seconds = quanta * billing.granularity_s
         requested = walltime_seconds(resources.walltime) if resources.walltime else 0
-        if seconds < billing.minimum_s or seconds <= setup_s + requested + reserve:
+        if seconds < billing.minimum_s or seconds <= setup_s + requested + _RESERVE_S:
             raise MissionError(
                 "rental quote exceeds budget after setup, walltime, and release reserve"
             )
-        lifetime = (
-            min(seconds - reserve, setup_s + requested + reserve)
-            if requested
-            else seconds - reserve
-        )
+        lifetime = seconds - _RESERVE_S
+        if requested:
+            lifetime = min(lifetime, setup_s + requested + _RESERVE_S)
         return cls(offer=offer, release_by=datetime.now(UTC) + timedelta(seconds=lifetime))

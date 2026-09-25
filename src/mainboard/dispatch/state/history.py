@@ -1,5 +1,5 @@
-# Command history for a dispatch CLI, in the shared state database. One `history`
-# row per subcommand invocation, disabled by `MAINBOARD_NO_HISTORY=1`.
+# Command history for a dispatch CLI in the shared state database: one `history` row per
+# subcommand invocation, disabled by `MAINBOARD_NO_HISTORY=1`.
 
 import os
 import time
@@ -22,14 +22,12 @@ type CommandArg = str | int | float | bool | None
 class HistoryEvent(FrozenModel):
     """One recorded dispatch subcommand invocation.
 
-    at: ISO-8601 timestamp of when the command finished.
+    at: ISO-8601 instant the command finished.
     command: the subcommand name (`ls`, `submit`, ...).
-    args: positional arguments the command was called with.
     target: the host alias the command acted on, when applicable.
     handle: the run handle produced or addressed, when applicable.
     outcome: `ok` if the command returned, `error` if it raised.
     detail: a short human note (e.g. the exception summary on error).
-    duration_ms: wall-clock time the command took, in milliseconds.
     """
 
     at: str
@@ -43,19 +41,13 @@ class HistoryEvent(FrozenModel):
 
 
 class History:
-    """The `history` table of the shared state database.
-
-    Owns event construction so a caller just calls `record`. Opt out with
-    `MAINBOARD_NO_HISTORY=1` (then `record` is a no-op).
-    """
+    """The `history` table of the shared state database, a no-op under `MAINBOARD_NO_HISTORY=1`."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or db_file()
-        self.enabled = os.environ.get("MAINBOARD_NO_HISTORY") != "1"
-        self.connection = connect(self.path) if self.enabled else None
+        disabled = os.environ.get("MAINBOARD_NO_HISTORY") == "1"
+        self.connection = None if disabled else connect(path or db_file())
         if self.connection is not None:
-            # Closing is the collector's job here for the same reason it is on the cache: a
-            # short-lived log has no caller left to remember it opened a database.
+            # The collector closes it, as on the cache: a short-lived log has no caller left.
             weakref.finalize(self, self.connection.close)
 
     def recent(self, limit: int = 20) -> list[HistoryEvent]:

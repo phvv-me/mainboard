@@ -1,10 +1,8 @@
-# What one dispatch runs and what it ships to run it, read once so every path derived from the
-# dispatch agrees about which tree it is.
-#
-# Two spellings arrive here. A command line is what a tool task or a hand-written line is, and it
-# ships the mirror's whole allowlist under the provenance of the repository owning its code. A
-# job spelled by file ships its closure, exactly the files it imports and the node it lives in,
-# under a provenance scoped to those files, and runs through one runner in the job's environment.
+# What one dispatch runs and ships, read once so every path derived from it agrees on the tree.
+# A command line (a tool task or hand-written line) ships the mirror's whole allowlist under the
+# provenance of the repository owning its code. A job spelled by file ships its closure, exactly
+# the files it imports and its node, under a provenance scoped to those files, and runs through
+# one runner in the job's environment.
 
 import hashlib
 import os
@@ -32,23 +30,20 @@ def runner() -> str:
 
 
 class Shipment(FrozenModel):
-    """What one dispatch runs, and what it ships to run it.
+    """What one dispatch runs, and what it ships to run it. Paths are workspace-relative.
 
     command: the line the job body runs on the host.
     spelling: what the run's records call it, the command itself or the job as spelled.
-    source: the dispatching tree's provenance, read once.
-    imports: the workspace-relative import roots the job's `PYTHONPATH` names inside the tree it
-        runs from, ahead of everything the environment adds.
-    listing: the closure listing, one `path blob status` row per shipped file, empty for a
-        command that ships the mirror.
-    needs: workspace-relative data paths the job reads, linked back to the mirror.
-    pins: the Hub pins the job declared, staged under the workspace in the cache layout and
-        shipped as needs, workspace-relative.
-    fetch: the results path the job declared, empty when it declared none.
-    first_party: the top-level names the workspace's own import roots define, which the runner
-        refuses to import from anywhere but the closure.
-    deferred: top-level names whose whole distribution the closure left to the environment,
-        which the runner's finder admits unchecked rather than refusing for want of a listing.
+    imports: the import roots the job's `PYTHONPATH` names inside the tree it runs from, ahead of
+        everything the environment adds.
+    listing: one `path blob status` row per shipped file, empty for a command.
+    needs: data paths the job reads, linked back to the mirror.
+    pins: the job's Hub pins, staged under the workspace in the cache layout and shipped as needs.
+    fetch: the results path the job declared.
+    first_party: top-level names the workspace's import roots define, which the runner imports
+        from the closure alone.
+    deferred: top-level names whose whole distribution the closure left to the environment, which
+        the runner's finder admits unchecked rather than refusing for want of a listing.
     """
 
     command: str
@@ -104,18 +99,12 @@ class Shipment(FrozenModel):
     def admit(self, root: Path) -> None:
         """Refuse an unregistered research shipment before remote work or allocation.
 
-        Ordinary commands and software targets keep their existing semantics. Legacy
-        project-specific seal checks still run in their own protocol; this checks the
-        captured adjacent node and the already sealed source bytes without importing it.
+        Ordinary commands and software targets pass. Legacy project-specific seal checks run in
+        their own protocol; this checks the captured adjacent node and the sealed source bytes
+        without importing the job.
         """
-        tokens = shlex.split(self.spelling)
-        if not tokens:
-            return
-        file, _, name = tokens[0].partition("::")
-        if not file.endswith(".py"):
-            return
-        target = Target(file=file, name=name)
-        if not target.registration:
+        file, _, name = next(iter(shlex.split(self.spelling)), "").partition("::")
+        if not file.endswith(".py") or not (target := Target(file=file, name=name)).registration:
             return
         if not self.sealed:
             raise MissionError("research submission requires a captured Mainboard source bundle")
@@ -148,11 +137,9 @@ class Shipment(FrozenModel):
     def locally(self, root: Path, *, closure: str = "") -> list[str]:
         """The POSIX argv for a local shell or container, with imports and provenance.
 
-        The same runner and the same variables a dispatched script gets, so a local run writes
-        receipts a dispatched one would, with the import roots resolved against this workspace
-        rather than a pinned tree.
+        The runner and variables a dispatched script gets, so a local run writes the receipts a
+        dispatched one would, with import roots resolved against `root` rather than a pinned tree.
 
-        root: the workspace root the import roots resolve against.
         closure: the staged listing, workspace-relative, empty for a command.
         """
         exported = self.local_exports(root, closure=closure)

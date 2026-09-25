@@ -24,16 +24,6 @@ pixi=/home/me/.pixi/bin/pixi
 uv=/home/me/.local/bin/uv
 platform=Linux aarch64
 """
-_BARE_PROBE = """root=~/projects
-kind=ssh
-gpu=
-mem=nonsense
-account=me
-queue=
-pixi=
-uv=
-platform=Darwin arm64
-"""
 
 
 @given(aliases=st.lists(WORDS, max_size=4), patterns=st.lists(WORDS, max_size=2))
@@ -42,7 +32,6 @@ platform=Darwin arm64
 def test_ssh_hosts_keeps_every_concrete_alias_in_file_order_and_drops_the_patterns(
     tmp_path: Path, aliases: list[str], patterns: Sequence[str]
 ) -> None:
-    """Only a real, connectable destination is a dispatch target, so `Host *` is never one."""
     lines = ["# a comment", "", "  HostName 1.2.3.4", "Host *"]
     lines += [f"Host {pattern}*" for pattern in patterns]
     lines += [f"Host\t{alias}" for alias in aliases]
@@ -84,7 +73,6 @@ def test_the_capabilities_probe_parses_the_key_value_lines_its_own_script_prints
 
 
 def test_a_host_with_no_bash_is_asked_the_same_questions_in_powershell() -> None:
-    """A Windows box's login shell is cmd.exe, so the bash probe is not even a command there."""
     windows = "root=C:/Users/me/projects\nkind=ssh\ngpu=NVIDIA GeForce RTX 5080, 16303\n"
     windows += "mem=67108864\naccount=\nqueue=\npixi=\nuv=C:\\Users\\me\\.local\\bin\\uv.exe\n"
     windows += "platform=Windows AMD64\n"
@@ -105,7 +93,8 @@ def test_a_host_with_no_bash_is_asked_the_same_questions_in_powershell() -> None
 
 
 def test_a_machine_with_no_gpu_engines_or_readable_memory_leaves_those_facts_unset() -> None:
-    facts = Facts.parsed("gold", _BARE_PROBE)
+    bare = "root=~/projects\nkind=ssh\ngpu=\nmem=nonsense\naccount=me\nqueue=\npixi=\nuv=\n"
+    facts = Facts.parsed("gold", f"{bare}platform=Darwin arm64\n")
     assert (facts.gpu_name, facts.gpu_mem_mb, facts.sysmem_gb) == (None, None, None)
     assert (facts.pixi, facts.uv, facts.platform) == ("", "", "Darwin arm64")
     assert facts.pixi_platform == "osx-arm64"
@@ -128,7 +117,6 @@ def test_usable_memory_is_the_gpu_when_there_is_one_and_the_system_otherwise(
 
 
 def test_resolve_fills_only_the_gaps_the_manifest_left_open() -> None:
-    """The manifest is the declared truth, so a probed fact never overrides an explicit value."""
     facts = Facts(
         name="gold", root="/work/x/projects", kind="pbs", account="labgrp", platform="Linux x86_64"
     )

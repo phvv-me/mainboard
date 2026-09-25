@@ -1,12 +1,7 @@
 """The no-scheduler backend: run the job script straight through `sh` on the host, no daemon.
 
-There is no queue and no persistent handle, so `submit` blocks until the job finishes and
-`state` can only report a vanished post-mortem. Use `Pueue` instead whenever a daemon is
-available, this is the bare fallback.
-
-Like every backend that runs out of a mirror it runs the script from the tree the dispatch
-pinned, since the staged script path is workspace-relative and the login shell's home is not the
-workspace.
+With no queue and no persistent handle, `submit` blocks until the job finishes and `state` can
+only report a vanished post-mortem. The bare fallback: use `Pueue` wherever a daemon runs.
 """
 
 import shlex
@@ -28,7 +23,6 @@ class Local:
     name = "local"
 
     def cancel(self, remote: Machine, root: str, *, handle: str) -> None:
-        del remote, root
         logger.info("local backend has no queue; cannot cancel %s", handle)
 
     def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
@@ -38,15 +32,10 @@ class Local:
         return read_log(remote, root, handle=handle)
 
     def state(self, remote: Machine, root: str, *, handle: str) -> JobState:
-        del remote, root
-        return JobState(handle=handle, state=None, exit_code=None, verdict="vanished")
+        return JobState(handle=handle, verdict="vanished")
 
     def states(self, remote: Machine, root: str, handles: Sequence[str]) -> dict[str, JobState]:
-        """Every requested handle, vanished, since a queue that keeps nothing remembers nothing.
-
-        Answered here rather than left absent so a caller batching a whole host's handles never
-        falls back to a per-handle probe that would reach the same conclusion one job at a time.
-        """
+        """Every handle, vanished: answered rather than left absent, so no per-handle re-probe."""
         return {handle: self.state(remote, root, handle=handle) for handle in handles}
 
     def submit(
@@ -58,8 +47,5 @@ class Local:
         args: Sequence[str],
         resources: Resources,
     ) -> str:
-        del resources
-        arguments = " ".join(shlex.quote(argument) for argument in args)
-        command = f"sh {shlex.quote(script)} {arguments}".rstrip()
-        remote["bash"][["-lc", within(root, command)]]()
+        remote["bash"][["-lc", within(root, shlex.join(["sh", script, *args]))]]()
         return script

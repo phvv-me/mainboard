@@ -20,18 +20,13 @@ if TYPE_CHECKING:
 # on a fresh host before any env is even activated.
 USER_BINS = ("$HOME/.local/bin", "$HOME/.pixi/bin", "$HOME/.cargo/bin")
 
-# A connect-time transport blip is the same transient fault a wait loop rides out, so it is
-# retried here too; a host-key failure is not transient and is never retried.
+# A connect-time transport blip is the transient fault a wait loop rides out, so it is retried.
 _CONNECT_ATTEMPTS = 4
 _CONNECT_BACKOFF = 2.0
 
 
 def activation(root: str, *, env: str = "default") -> str:
-    """The activation script a provisioned workspace under `root` carries for `env`.
-
-    root: the workspace root on the machine the command runs on.
-    env: the environment the script activates.
-    """
+    """The activation script a provisioned workspace under `root` carries for `env`."""
     return f"{root}/{Project().activation(env)}"
 
 
@@ -45,64 +40,48 @@ def wrap(
 ) -> str:
     """The activated shell line for `command`, staged as `cd`, `PATH`, modules, then env/container.
 
-    The env stage runs `command` straight after activating the plan's environment (refusing when
-    that environment was never provisioned), unless the plan is containerized, in which case
-    `containerize` wraps `command` in the container runtime's own argv instead.
+    The env stage activates the plan's environment (refusing when it was never provisioned), or,
+    for a containerized plan, has `containerize` wrap `command` in the runtime's own argv.
 
-    plan: the resolved execution context (profile, env, container).
-    root: the workspace root on the host commands run from.
-    command: the bare command to run once activated.
-    containerize: builds the container runtime argv around an inner `["bash", "-c", command]`
-        argv; required when `plan.containerized`, so the integrator (not this module) owns how a
-        base image is actually invoked.
-    activate: stage the environment (or the container) before running `command`. False keeps
-        only `cd`, `PATH` and modules, the footing an onboarding stands on while the host has
-        no environment to activate yet.
+    containerize: builds the container runtime argv around an inner `["bash", "-c", command]`;
+        required when `plan.containerized`, so the integrator owns how a base image is invoked.
+    activate: False keeps only `cd`, `PATH` and modules, the footing an onboarding stands on
+        while the host has no environment to activate yet.
     """
     steps = [f"cd {shlex.quote(root)}", f"export PATH={':'.join(USER_BINS)}:$PATH"]
     if plan.profile.modules:
-        steps.append("module purge")
         steps += [
-            f"module load {shlex.quote(spec)}" for spec in module_specs(plan.profile.modules)
+            "module purge",
+            *(f"module load {shlex.quote(spec)}" for spec in module_specs(plan.profile.modules)),
         ]
     if not activate:
-        steps.append(command)
-    else:
-        # Host overrides follow activation, just as they do in a submitted job.
-        # In particular, a workspace GPU mask must not replace a host's reserved card.
-        exported = " && ".join(
-            [f"export {key}={shlex.quote(value)}" for key, value in plan.exports.items()]
-            + [command]
+        return " && ".join([*steps, command])
+    # Host overrides follow activation, just as in a submitted job, so a workspace GPU mask
+    # never replaces a host's reserved card.
+    exported = " && ".join(
+        [f"export {key}={shlex.quote(value)}" for key, value in plan.exports.items()] + [command]
+    )
+    if not plan.containerized:
+        return " && ".join([*steps, activation_stage(plan, root), exported])
+    if containerize is None:
+        raise LookupError(
+            f"plan for host {plan.host!r} is containerized but no container argv builder was given"
         )
-        if plan.containerized:
-            if containerize is None:
-                raise LookupError(
-                    f"plan for host {plan.host!r} is containerized but no container argv "
-                    "builder was given"
-                )
-            steps.append(shlex.join(containerize(["bash", "-c", exported])))
-        else:
-            steps.append(activation_stage(plan, root))
-            steps.append(exported)
-    return " && ".join(steps)
+    return " && ".join([*steps, shlex.join(containerize(["bash", "-c", exported]))])
 
 
 def activation_stage(plan: ExecutionPlan, root: str) -> str:
     """The shell stage that activates `plan`'s environment before a wrapped command runs.
 
-    It sources the environment's own generated activation when there is one and falls back to
-    that environment prefix's `bin/`. The default environment runs on a bare PATH when neither
-    exists, since an interactive command may legitimately need nothing activated at all; a named
-    environment refuses instead, naming the one command that provisions it, because naming one
-    is the user stating which interpreter they want and falling through to whatever interpreter
-    the machine ships is how a command asking for `vserve` silently runs the system python.
+    It sources the environment's generated activation, else puts its prefix's `bin/` on PATH.
+    With neither, the default environment runs on a bare PATH, since an interactive command may
+    need nothing activated; a named one refuses, naming the command that provisions it, because
+    naming it states which interpreter the user wants, and falling through is how a command asking
+    for `vserve` silently runs the system python.
 
     A dispatched job never comes through here: its runner enters the environment itself and
-    refuses the default one just the same, since a queued run that quietly used the host's
-    system python costs a whole scheduler round trip to find out.
-
-    plan: the resolved execution context naming the host and the environment to activate.
-    root: the workspace root on the machine the command runs on.
+    refuses the default one just the same, since a queued run on the host's system python costs a
+    whole scheduler round trip to find out.
     """
     prefix = shlex.quote(plan.prefix(root))
     script = shlex.quote(activation(root, env=plan.env))
@@ -119,86 +98,54 @@ def activation_stage(plan: ExecutionPlan, root: str) -> str:
 
 
 def absent(prefix: str, env: str) -> str:
-    """The refusal a job whose addressed prefix is missing or unfinished prints.
-
-    prefix: the built environment's directory on the host.
-    env: the environment inside it.
-    """
+    """The refusal a job whose addressed prefix is missing or unfinished prints."""
     tool = Project().name
     return (
-        f"{tool} found no completed environment with the expected identity at {prefix}. "
-        "It is addressed by the content of the "
-        f"manifest and lock this job was dispatched with, so `{tool} provide {env}` rebuilds "
-        "exactly it."
+        f"{tool} found no completed environment with the expected identity at {prefix}. It is "
+        "addressed by the content of the manifest and lock this job was dispatched with, so "
+        f"`{tool} provide {env}` rebuilds exactly it."
     )
 
 
 def missing(plan: ExecutionPlan, prefix: str) -> str:
-    """The refusal a machine with nothing to activate prints, naming the command that fixes it.
-
-    plan: the execution context whose environment could not be found.
-    prefix: the environment prefix that turned out not to exist.
-    """
+    """The refusal a machine with nothing to activate at `prefix` prints, naming the fix."""
     tool = Project().name
-    if plan.host == "local":
-        return (
-            f"{tool} found no {plan.env} environment at {prefix}. "
-            f"Run `{tool} install {plan.env}` to provision it."
-        )
-    return (
-        f"{tool} found no {plan.env} environment at {prefix} on {plan.host}. "
-        f"Run `{tool} setup {plan.host} --env {plan.env}` to provision it."
+    where, fix = (
+        (prefix, f"install {plan.env}")
+        if plan.host == "local"
+        else (f"{prefix} on {plan.host}", f"setup {plan.host} --env {plan.env}")
     )
-
-
-def argv(
-    plan: ExecutionPlan,
-    root: str,
-    *,
-    command: str,
-    login: bool = True,
-    containerize: Callable[[list[str]], list[str]] | None = None,
-) -> list[str]:
-    """`wrap` under a `bash` login (`-lc`) or plain (`-c`) shell, ready for plumbum/subprocess."""
-    flag = "-lc" if login else "-c"
-    return ["bash", flag, wrap(plan, root, command=command, containerize=containerize)]
+    return (
+        f"{tool} found no {plan.env} environment at {where}. Run `{tool} {fix}` to provision it."
+    )
 
 
 def connection(host: str, ssh: SshTransport | None = None) -> BoundedSshMachine:
     """Open an ssh connection to `host` with the per-user install dirs on PATH.
 
-    First warms the host's ssh `ControlMaster` (from `~/.ssh/config`) with a throwaway one-shot
-    `ssh`: if the persistent master has expired, that slow relogin happens on a robust one-shot
-    channel, so plumbum's persistent session then rides a live master instead of dying mid-
-    handshake during the reconnect. We do not set `ControlMaster`/`ControlPath` ourselves, the
-    user's config owns the multiplexing; overriding it would open a second, unauthenticated
-    master.
+    A throwaway one-shot `ssh` first warms the host's `ControlMaster` from `~/.ssh/config`, so an
+    expired master relogs on a robust channel and plumbum's persistent session rides a live one
+    instead of dying mid-handshake. We never set `ControlMaster`/`ControlPath`: the user's config
+    owns multiplexing, and overriding it would open a second, unauthenticated master.
 
-    That same warm-up doubles as a host-key check: a failed verification (the host or its
-    ProxyJump rotated its key, or the entry is missing) raises a clear, actionable error here
-    instead of an opaque plumbum traceback. A transport-level warm-up failure (a refused session
-    under MaxSessions, a dropped link) is retried a few times before giving up, the same
-    transient-fault footing a wait loop already stands on.
+    The warm-up doubles as a host-key check: a failed verification (a rotated key on the host or
+    its ProxyJump, a missing entry) raises a clear `ConnectionError` instead of an opaque plumbum
+    traceback, never retried. A transport fault (a session refused under MaxSessions, a dropped
+    link) raises `HostUnreachable` and is retried a few times.
 
-    host: the ssh alias to connect to.
     ssh: the bounded SSH policy; the default policy when omitted.
     """
-    policy = ssh or SshTransport()
     retrying = tenacity_retry(
         retry=retry_if_exception_type(HostUnreachable),
         stop=stop_after_attempt(_CONNECT_ATTEMPTS),
         wait=wait_fixed(_CONNECT_BACKOFF),
         reraise=True,
     )
-    return retrying(_open)(host, policy)
+    return retrying(_open)(host, ssh or SshTransport())
 
 
 def _open(host: str, ssh: SshTransport) -> BoundedSshMachine:
-    """One attempt to open the connection: warm the master, key-check, then build the session.
-
-    Raises `HostUnreachable` on a transient transport fault (so the caller retries) and
-    `ConnectionError` on a host-key failure (which no retry can fix).
-    """
+    """One attempt: warm the master, key-check, then build the session."""
     ssh.warm(host)
     remote = ssh.machine(host)
     for bindir in reversed(USER_BINS):

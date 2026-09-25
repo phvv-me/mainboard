@@ -1,18 +1,14 @@
-# The contract a provider backend implements, plus `route`, the typed replacement for an
-# `if kind == ...` chain deciding whether a host stays on the existing ssh-family `Scheduler`
-# path or resolves to a `ProviderBackend` registered by kind.
+# The provider backend contract, plus `route`, which decides by kind whether a host stays on the
+# ssh-family `Scheduler` path or resolves to a registered `ProviderBackend`.
 #
-# The contract is split the way the providers themselves are split. `ProviderBackend` carries
-# only the job lifecycle all of them truly have, launch a command, poll it, cancel it, and every
-# other verb is a `Capability` a backend opts into by inheriting it. A caller therefore asks
-# `isinstance(backend, LogSource)` before asking for a log, instead of calling and discovering
-# mid-sweep that this provider never had one.
+# `ProviderBackend` carries only the lifecycle every provider has (launch, poll, cancel); every
+# other verb is a `Capability` a backend opts into by inheriting it, so a caller asks
+# `isinstance(backend, LogSource)` before asking for a log instead of discovering mid-sweep that
+# the provider never had one.
 #
-# Nothing here pins a source tree, and that is not an omission. A provider rents a machine per
-# job and ships that job its own tree, which no later dispatch can reach, so the immutability the
-# ssh family buys with a per-dispatch snapshot of its mirror a provider already has by
-# construction. The snapshot machinery is therefore the mirror's, not the dispatch's, and lives
-# beside the mirror in `dispatch.snapshots`.
+# Nothing here pins a source tree on purpose: a provider rents a machine per job and ships it its
+# own tree no later dispatch can reach, so it already has the immutability the ssh family buys
+# with a per-dispatch snapshot of its mirror (`dispatch.snapshots`).
 
 import abc
 import os
@@ -49,42 +45,28 @@ if TYPE_CHECKING:
 
     type Transport = Callable[[Request], HttpResponse]
 
-# Kinds the existing `Scheduler` path already dispatches; every other kind resolves a
-# `ProviderBackend` registered under that same name.
-# auto stays ssh-family, matching Scheduler.pick treating an unprobed kind as ssh.
+# Kinds the `Scheduler` path dispatches; `auto` stays here, as `Scheduler.pick` treats an
+# unprobed kind as ssh.
 _SSH_FAMILY_KINDS = frozenset({"auto", "local", "pbs", "slurm", "ssh"})
-
-# Every provider call is bounded, so a provider that stops answering costs one slow row rather
-# than a wedged command. Generous enough for a cold offer search, short enough that a survey of
-# the whole fleet still finishes while someone is looking at it.
+# A provider that stops answering costs one slow row rather than a wedged command: enough for a
+# cold offer search, short enough that a fleet survey finishes while someone watches.
 _TIMEOUT_S = 10.0
-
-# Where a workspace keeps the provider credentials every refusal here tells someone to set.
 _ENV_FILE = ".env"
-
-# A CUDA version as an image reference spells it, which is `nvidia/cuda:13.3.1-devel-ubuntu24.04`,
-# `vastai/base-image:cuda-13.3.1-auto` and `pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime` alike.
-# The major and minor are all that is read, since a patch level never decides whether an image
-# loads on a driver.
+# A CUDA version as `nvidia/cuda:13.3.1-devel-ubuntu24.04`, `vastai/base-image:cuda-13.3.1-auto`
+# and `pytorch/pytorch:2.13.0-cuda13.0-cudnn9-runtime` spell it. Only major and minor are read,
+# since a patch level never decides whether an image loads on a driver.
 _IMAGE_CUDA = re.compile(r"cuda[:_-]?(\d+)\.(\d+)", re.IGNORECASE)
 
 
 class Credentials(Singleton):
-    """The workspace `.env`, merged into this process's environment once, on first use.
+    """The workspace `.env`, merged into this process's environment once per process.
 
-    Every refusal a backend raises names a variable to set in the workspace `.env`, and nothing
-    else in the tool ever read that file, so a survey called a provider unkeyed on a machine
-    whose keys were sitting at the workspace root. This is the seam every backend crosses before
-    it looks a key up, so honoring the promise here honors it for all of them at once.
-
-    What the environment already holds always wins, so an exported key keeps its value and a
-    stale line in the file can never shadow a deliberate one. The file is read as data and never
-    as shell, meaning a line is `NAME=value`, blanks and `#` comments are skipped, one matching
-    pair of surrounding quotes comes off, and nothing is expanded, substituted or executed. No
-    value is ever logged or returned, only the names that were defined.
-
-    One shared instance, since merging a file into the environment is a thing that happens once
-    per process however many backends ask for it.
+    Every backend refusal names a variable to set there, and while nothing read the file a survey
+    called a provider unkeyed whose keys sat at the workspace root; every backend crosses this
+    seam before looking a key up. The environment always wins, so a stale line never shadows an
+    exported key. The file is data, never shell: `NAME=value` lines, blanks and `#` comments
+    skipped, one matching pair of surrounding quotes off, nothing expanded or executed. Only the
+    names defined are returned, never a value, and nothing is logged.
     """
 
     def __init__(self) -> None:
@@ -92,24 +74,13 @@ class Credentials(Singleton):
         self.loaded = False
         self.lock = Lock()
 
-    @staticmethod
-    def unquoted(value: str) -> str:
-        """`value` with one matching pair of surrounding quotes off, the way a `.env` writes it."""
-        paired = len(value) > 1 and value[0] == value[-1] and value[0] in "\"'"
-        return value[1:-1] if paired else value
-
     def load(self) -> tuple[str, ...]:
         """Define what the workspace `.env` declares and this environment lacks, by name.
 
-        Empty on every call after the first, on a machine standing outside a workspace, and in a
-        workspace that keeps no `.env`, which are three ways of saying this call added nothing. A
-        workspace is found the way every other verb finds one, by walking up from the current
-        directory to the manifest.
-
-        The whole merge is one critical section rather than a flag flipped up front, because a
-        compute survey probes every provider at once. Marking the file read before it has been
-        read would let the second provider find nothing while the first is still merging, which
-        is a keyed account reported as unkeyed for no reason but timing (seen live 2026-08-19).
+        Empty after the first call, outside a workspace (found by walking up to the manifest) and
+        in one without a `.env`. The whole merge is one critical section rather than a flag
+        flipped up front: a compute survey probes every provider at once, and a second provider
+        finding nothing mid-merge reported a keyed account unkeyed (seen live 2026-08-19).
         """
         with self.lock:
             if self.loaded:
@@ -118,7 +89,7 @@ class Credentials(Singleton):
             return self.merged()
 
     def merged(self) -> tuple[str, ...]:
-        """Read the workspace `.env` and define what it declares, returning only the names."""
+        """Read the workspace `.env` and define what it declares, returning the names."""
         try:
             text = (self.project.find_root(Path.cwd()) / _ENV_FILE).read_text(encoding="utf-8")
         except OSError:
@@ -126,30 +97,24 @@ class Credentials(Singleton):
         defined: list[str] = []
         for line in text.splitlines():
             entry = line.strip().removeprefix("export ").strip()
-            if not entry or entry.startswith("#"):
-                continue
             name, assigned, value = entry.partition("=")
             name = name.strip()
-            if not name or not assigned or name in os.environ:
+            if entry.startswith("#") or not name or not assigned or name in os.environ:
                 continue
-            os.environ[name] = self.unquoted(value.strip())
+            value = value.strip()
+            quoted = len(value) > 1 and value[0] == value[-1] and value[0] in "\"'"
+            os.environ[name] = value[1:-1] if quoted else value
             defined.append(name)
         return tuple(defined)
 
 
 class Standing(FrozenModel):
-    """What a provider cheaply says about itself: whether we may use it, and at what price.
+    """What a provider cheaply says about itself, the only thing a compute survey asks it.
 
-    The account-side answer to the job-side lifecycle, and the only thing a compute survey asks
-    a provider for. It never carries a credential, only whether one was found.
-
-    keyed: whether this provider's credentials are present on this machine.
-    credit_usd: the balance the provider reports, None when it exposes none, which is the
-        honest answer for a provider that publishes spend and never a remaining balance.
-    usd_hr: the cheapest live rate a sample search found, None when no price is a cheap
-        question here.
-    note: the one human line the row carries, the variable to set when there is no key, or why
-        there is no credit figure. Never a secret.
+    keyed: whether this provider's credentials are present here; never the credential itself.
+    credit_usd: the balance the provider reports, None when it publishes spend but no balance.
+    usd_hr: the cheapest live rate a sample search found, None when no price is a cheap question.
+    note: the row's one human line, the variable to set or why there is no credit. Never a secret.
     """
 
     keyed: bool = False
@@ -160,24 +125,16 @@ class Standing(FrozenModel):
     @field_validator("credit_usd", "usd_hr")
     @classmethod
     def rounded(cls, value: float | None) -> float | None:
-        """Money at the precision money has, so a row reads as a rate and not a float artifact.
-
-        Four places rather than two, since an hourly GPU rate is quoted in fractions of a cent
-        and rounding one to cents would make two real offers look identically priced.
-        """
+        """Money to four places, since hourly GPU rates differ by fractions of a cent."""
         return None if value is None else round(value, 4)
 
 
 class Capability:
     """One optional half of the backend contract, opted into by inheriting it.
 
-    A backend that can do the thing implements the contract and is found by `isinstance`. A
-    backend that cannot simply does not inherit it, and names it in `ProviderBackend.lacks`
-    with the line a refusal should carry, so the gap is a typed absence a caller can see before
-    it calls rather than a `MissionError` raised from inside a verb that was never real.
-
-    The root itself declares nothing. It exists so `lacks` can be keyed by a contract rather
-    than by a bare name, which is what keeps a declared gap and the class it names in step.
+    A backend lacking one names it in `ProviderBackend.lacks` with the refusal line, so the gap
+    is a typed absence seen before calling. The root declares nothing; it keys `lacks` by
+    contract rather than by a bare name, keeping a declared gap and its class in step.
     """
 
 
@@ -188,10 +145,9 @@ class Account(Capability, abc.ABC):
     def standing(self) -> Standing:
         """Whether this provider is usable from here, priced and credited where that is cheap.
 
-        The one question a compute survey asks a provider, so a new backend joins that listing by
-        implementing this rather than by being named there. It reads credentials without ever
-        revealing them, and only reaches the network once it has found some, which is what keeps
-        an unconfigured provider free to list.
+        A new backend joins the compute survey by implementing this. It never reveals a
+        credential and reaches the network only once it found one, so an unconfigured provider
+        is free to list.
         """
 
 
@@ -206,10 +162,9 @@ class Delivery(Capability):
 class Rented(FrozenModel):
     """One machine a provider says this account is renting right now.
 
-    handle: the provider's own id for the rental, which ends it.
+    handle: the provider's id for the rental, which ends it.
     label: the label it was created under, `mainboard-<id>` for one this tool rented.
     gpu: the cards it carries, as the provider names them.
-    status: the provider's own word for its state.
     usd_hr: what it bills per hour, None when the listing carries no rate.
     """
 
@@ -227,9 +182,8 @@ class Inventory(Capability, abc.ABC):
     def rentals(self) -> list[Rented]:
         """Every live rental on the account, as the provider reports it.
 
-        The provider's answer rather than this workspace's records, which is the only listing
-        that catches a machine rented from another checkout, by hand, or by a dispatch whose
-        record was lost, all of which bill the same.
+        Only the provider's listing catches a machine rented from another checkout, by hand, or
+        by a dispatch whose record was lost, all of which bill the same.
         """
 
 
@@ -248,22 +202,18 @@ class Market(Capability):
     def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
         """Live offers as catalog rows, the authed refresh of an imported price feed.
 
-        gpu_name: the provider's GPU name to narrow to, empty for the whole market.
+        gpu_name: the provider's GPU name, empty for the whole market.
         gpus: the GPU count per machine, 0 for any.
         limit: how many offers to bring back, 0 for the backend's own page size.
         """
 
 
 class Rentable(Capability, abc.ABC):
-    """A provider whose rental answers ssh, so a dispatch lands on it the way it lands on a host.
+    """A provider whose rental answers ssh, so a dispatch lands on it as on a host.
 
-    The capability that turns a metered container into a place this workspace can actually run.
-    A bare rental has no workspace, no tool and no environment, which is how a dispatched
-    `mainboard run` died with `bash: mainboard: command not found` and billed for the boot anyway
-    (vast 49861190, exit 127, three times over on 2026-09-03). A backend that implements this
-    hands back a machine reachable over ssh with its entrypoint waiting, and the ordinary
-    mirror-install-provision-pin path does the rest; one that does not keeps running the raw
-    command as its container's entrypoint.
+    It hands back a machine with its entrypoint waiting, and the ordinary mirror, install,
+    provision and pin path does the rest (`dispatch.rentals` says why a bare rental cannot run a
+    command). A backend without it runs the raw command as its container's entrypoint.
     """
 
     @abc.abstractmethod
@@ -274,63 +224,46 @@ class Rentable(Capability, abc.ABC):
     def rent(self, plan: ExecutionPlan, resources: Resources, *, allocation: Allocation) -> Rental:
         """Rent a machine for one job and return it once ssh answers on it.
 
-        The job is not started here. The rented entrypoint is waiting for the launch script a
-        landing writes once the workspace can run at all, so a caller that never lands must
-        cancel the handle it was given or the rental bills until the entrypoint gives up.
+        The job is not started: the entrypoint waits for the landing's launch script, so a caller
+        that never lands must cancel the handle or the rental bills until the entrypoint gives up.
+        A rental that cannot be opened is ended before this raises, as nothing else holds it yet.
         """
 
 
 class ProviderBackend(Registry, abc.ABC):
     """Registry root for non-ssh provider backends, one concrete class per `HostProfile.kind`.
 
-    Unlike `Scheduler`, no method takes a `remote`/`root`: a provider backend owns its own
-    transport (an HTTP session, an SDK client) end to end instead of running commands over an
-    ssh connection into a synced workspace.
-
-    What lives here is the lifecycle every provider truly has, launch a command, poll it, cancel
-    it. Logs, artifact delivery, account standing and market pricing are `Capability` contracts a
-    backend inherits only when it can honor them, so nothing carries a method it would only ever
-    refuse. A new backend joins by subclassing this, implementing three methods, and adding
-    whichever capabilities it actually has; `route` is the lookup that finds it, so no caller
-    hand-rolls an `if kind == "modal": ... elif kind == "vast": ...` chain.
+    Unlike `Scheduler`, no method takes a `remote`/`root`: a backend owns its transport (an HTTP
+    session, an SDK client) end to end. A new backend subclasses this, implements the three
+    lifecycle methods, inherits whichever capabilities it can honor, and `route` finds it.
     """
 
     # What this backend cannot do, and the line to print instead, keyed by the contract it does
     # not inherit. `{handle}` and `{path}` are filled in where the refusal is raised.
     lacks: ClassVar[Mapping[type[Capability], str]] = {}
 
-    # The CUDA version this house builds, measures and rents on. It is a floor rather than a
-    # pin: a machine that reaches 13.3 runs a 13.0 image, and one that tops out at 12.6 runs
-    # neither. It belongs to the rental contract because a rented machine is the one place
-    # nothing else can enforce it. On owned hardware a wrong toolchain is a broken command
-    # someone reads in a log, while a provider hands back a contract id, destroys the instance
-    # because the image its driver cannot load never came up, and bills for the boot. Five vast
-    # dispatches went that way on 2026-08-27 with no diagnosis, against Tesla T4 offers whose
-    # driver reported `cuda_max_good = 12.6` under a 12.9 image, which is why the mismatch is a
-    # refusal naming both versions rather than a skip.
+    # The CUDA version this house builds, measures and rents on, a floor rather than a pin (a
+    # 13.3 driver runs a 13.0 image, a 12.6 one neither). A rented machine is the one place
+    # nothing else enforces it: the provider destroys an instance whose image its driver cannot
+    # load and bills for the boot. Five vast dispatches went that way on 2026-08-27 on Tesla T4
+    # offers reporting `cuda_max_good = 12.6` under a 12.9 image, so a mismatch is a refusal
+    # naming both versions rather than a skip.
     CUDA_FLOOR: ClassVar[float] = 13.0
 
-    # The oldest compute capability that CUDA still builds for, as a provider spells it (`750`
-    # is `sm_75`, Turing). Read off `nvcc --list-gpu-arch` from the house's own CUDA 13.3
-    # toolchain, which offers compute_75 and up while CUDA 12.9 also offered compute_50 through
-    # compute_72. It is a separate floor because the two fail differently and a machine can pass
-    # one and fail the other. A driver too old cannot load the image at all, so the instance dies
-    # at boot. An architecture too old loads the image fine and then has no cubin for its own
-    # card, so the rental boots, bills, and dies at the first kernel launch with "no kernel image
-    # is available for execution on the device". A live vast search on 2026-08-27 found Volta and
-    # Pascal machines reporting `cuda_max_good` of 13.0, which is exactly that second trap.
+    # The oldest compute capability CUDA still builds for, as a provider spells it (`750` is
+    # `sm_75`, Turing), read off `nvcc --list-gpu-arch` of the house CUDA 13.3 toolchain (12.9
+    # also offered compute_50 through compute_72). A separate floor because it fails differently:
+    # a driver too old kills the instance at boot, while an architecture too old boots, bills and
+    # dies at the first kernel launch with "no kernel image is available for execution on the
+    # device". A live vast search on 2026-08-27 found Volta and Pascal machines reporting
+    # `cuda_max_good` of 13.0, exactly that trap.
     CAPABILITY_FLOOR: ClassVar[int] = 750
 
     def admit(self, plan: ExecutionPlan, resources: Resources) -> None:
         """Every refusal a metered dispatch owes before it reaches a provider's API at all.
 
-        The one gate every `submit` opens with, so a house-wide rule about what may be rented is
-        an edit here rather than a fourth copy of the same check in the next backend. Both
-        refusals are free to raise and both otherwise cost a whole rental, because a provider
-        bills from the boot and never learns that the command could not run.
-
-        plan: the resolved execution context, whose container image is the toolchain being rented.
-        resources: the resource request this submit is about to dispatch under.
+        Every `submit` and `rent` opens with it, so a house rule on what may be rented is one
+        edit. Each refusal is free here and otherwise costs a whole rental, billed from the boot.
         """
         if not resources.max_usd:
             raise MissionError("provider dispatch needs an explicit max-usd budget")
@@ -346,18 +279,17 @@ class ProviderBackend(Registry, abc.ABC):
 
     @abc.abstractmethod
     def cancel(self, handle: str) -> None:
-        """Cancel `handle` on the provider."""
+        """End `handle` on the provider, tolerating one it already forgot.
+
+        The durable sweep cancels every run it settles and may settle one twice (a pass killed
+        before advancing its cursor), and someone may have ended the rental by hand, so a gone
+        rental is the state asked for rather than a fault.
+        """
 
     def refusal(self, capability: type[Capability], **facts: str) -> str:
-        """Why this backend cannot answer `capability`, and what to do about it instead.
+        """Why this backend cannot answer `capability`: its own `lacks` advice, else a plain line.
 
-        The line a discovery site raises once `isinstance` has said no. A backend that declared
-        the gap in `lacks` supplies its own advice, since only it knows where its output really
-        lives, and `facts` fills the `{handle}` and `{path}` the advice names. One that declared
-        nothing gets a plain statement of the gap rather than a traceback.
-
-        capability: the contract this backend does not implement.
-        facts: the run's details the advice may name, `handle` and `path`.
+        facts: the `handle` and `path` the advice names.
         """
         advice = self.lacks.get(capability)
         if advice is None:
@@ -376,53 +308,39 @@ class ProviderBackend(Registry, abc.ABC):
 
 
 def forgotten(error: HTTPError) -> dict:
-    """An empty row for the 404 a gone instance answers, re-raising every other refusal.
-
-    Cancel and post-mortem reads are asked about instances a provider may already have
-    forgotten, so the 404 is their destination rather than a fault.
-    """
+    """An empty row for the 404 a gone instance answers, re-raising every other refusal."""
     if error.status != 404:
         raise error
     return {}
 
 
 def http_transport(request: Request) -> HttpResponse:
-    """Send `request` over urllib and return its response, the default every REST backend takes.
+    """Send `request` over urllib, the default transport of every REST backend.
 
-    The one audited url open in the package. Each backend builds its own `Request` from a
-    constant https root of its own, and a test swaps this callable out wholesale, so no unvetted
-    scheme ever reaches urllib through here. The deadline is the package's own rather than
-    urllib's (which has none), so no caller can be left waiting on a provider forever.
+    The one audited url open in the package: each backend builds its `Request` from a constant
+    https root and tests swap this callable out, so no unvetted scheme reaches urllib. The
+    deadline is ours, since urllib has none.
     """
     return urlopen(request, timeout=_TIMEOUT_S)  # ruff:ignore[suspicious-url-open-usage]  reason=the package's single audited seam, every caller builds its Request from a constant https root and tests inject a double since=2026-08-18
 
 
 def image_cuda(image: str) -> float | None:
-    """The CUDA version `image`'s reference names, None when the reference names none.
+    """The CUDA version `image`'s reference names, None when it names none.
 
-    Read from the text of the reference because that is all anyone has before the rental: the
-    only way to learn an image's real toolchain is to pull it, and by then the machine is billing.
-    An image that says nothing therefore passes, since refusing every untagged reference would
-    turn a CPU job and an NGC calendar tag into refusals while proving nothing about either. The
-    floor is enforced on what can be proven wrong, and named where it can.
-
-    image: a container reference, `nvidia/cuda:13.3.1-devel-ubuntu24.04` or the like.
+    The text is all anyone has before the rental; pulling the image means paying for it. An
+    image that names nothing passes, since refusing a CPU job or an NGC calendar tag would prove
+    nothing: the floor refuses only what it can prove wrong.
     """
     found = _IMAGE_CUDA.search(image)
     return float(f"{found[1]}.{found[2]}") if found else None
 
 
 def route(kind: str) -> Literal["ssh-family"] | type[ProviderBackend]:
-    """Whether `kind` runs the ssh-family `Scheduler` path or a `ProviderBackend` class.
+    """Whether `kind` runs the ssh-family `Scheduler` path or a registered `ProviderBackend`.
 
-    `ssh`, `pbs`, `slurm` and `local` stay on the existing scheduler dispatch. Any other kind
-    resolves a `ProviderBackend` registered under it, raising a `MissionError` naming the known
-    provider kinds when none matches.
-
-    The kind rather than the profile it came from, since a dispatched run is rebuilt from what
-    the dispatch cache recorded at submit time and there is no profile left to pass by then.
-
-    kind: the scheduler or provider kind selecting the path.
+    Takes the kind rather than a profile, since a dispatched run is rebuilt from the kind the
+    dispatch cache recorded and no profile is left by then. An unknown kind is refused naming
+    the known ones.
     """
     if kind in _SSH_FAMILY_KINDS:
         return "ssh-family"

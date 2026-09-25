@@ -25,11 +25,9 @@ _ROOT_FINDER = (
     'w=$(ls -d /work/*/"$USER"/projects 2>/dev/null | head -1); echo "${w:-$HOME/projects}"'
 )
 
-# Stock-tools capability probe: prints workspace root, scheduler, GPU, memory, group, queue,
-# platform and the engines onboarding would otherwise have to install, as `key=value` lines,
-# run in a login shell so the HPC scheduler is on PATH. A per-user engine is looked for in its
-# install directory as well as on PATH, since a non-interactive login shell often never reads
-# the `.bashrc` line its installer appended.
+# Stock-tools capability probe printing `key=value` lines, run in a login shell so the HPC
+# scheduler is on PATH. A per-user engine is also looked for in its install directory, since a
+# non-interactive login shell often never reads the `.bashrc` line its installer appended.
 _CAPABILITIES = "\n".join(
     (
         f"root=$({_ROOT_FINDER})",
@@ -39,8 +37,8 @@ _CAPABILITIES = "\n".join(
         " --format=csv,noheader,nounits 2>/dev/null | head -1)",
         r"mem=$(sed -n 's/^MemTotal:[[:space:]]*\([0-9]*\).*/\1/p' /proc/meminfo 2>/dev/null)",
         "queue=$(qstat -Q 2>/dev/null | awk 'NR>2 && tolower($1) ~ /interact/ {print $1; exit}')",
-        # Some qstat wrappers reject -Q, so fall back to its --rsc tree and take the top-level
-        # interactive router, the queue `qsub -I` accepts.
+        # Some qstat wrappers reject -Q: take the top-level interactive router from --rsc, the
+        # queue `qsub -I` accepts.
         '[ -z "$queue" ] && queue=$(qstat --rsc 2>/dev/null'
         " | awk '/^interact/ && tolower($1) !~ /mig/ {print $1; exit}')",
         'pixi=$(command -v pixi || ls "$HOME"/.pixi/bin/pixi 2>/dev/null)',
@@ -52,8 +50,7 @@ _CAPABILITIES = "\n".join(
     )
 )
 
-# The same lines from a Windows host, whose ssh login shell is cmd.exe and which answers this
-# PowerShell script once the POSIX one above turns out not to be a command there at all.
+# The same lines from a Windows host, whose cmd.exe login shell cannot run the POSIX one.
 _WINDOWS_CAPABILITIES = "\n".join(
     (
         "$gpu = nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits"
@@ -78,9 +75,8 @@ _WINDOWS_CAPABILITIES = "\n".join(
     )
 )
 
-# The two shells a probe is tried under, in order: a login bash, then PowerShell. The bash script
-# travels as one line, so the cmd.exe that cannot run it fails on one command rather than trying
-# every line of it as a command of its own.
+# Tried in order. The bash script travels as one line, so cmd.exe fails on one command rather
+# than trying each line as its own.
 _PROBES = (
     ("bash", "-lc", shlex.quote(_CAPABILITIES.replace("\n", "; "))),
     (*POWERSHELL, encoded(_WINDOWS_CAPABILITIES)),
@@ -90,17 +86,14 @@ _PROBES = (
 class Facts(FrozenModel):
     """One host's bootstrap-probed capabilities, before any manifest override.
 
-    name: the ssh alias probed.
-    root: the workspace root the host resolved (an HPC `/work` area, else `~/projects`).
+    root: an HPC `/work` area, else `~/projects`.
     kind: the scheduler the login node's PATH exposes (`slurm` / `pbs` / `ssh`).
     account: the user's primary group, PBS `group_list`'s natural default.
     queue: the host's interactive queue, when one was discovered.
-    gpu_name: the login node's GPU name, when it has one.
-    gpu_mem_mb: that GPU's memory in MiB, when reported.
+    gpu_name / gpu_mem_mb: the login node's GPU and its MiB, when reported.
     sysmem_gb: system memory in GiB.
-    platform: the host's `uname -sm` string, the kernel and machine architecture.
-    pixi: the pixi binary already on the host, empty when onboarding has to install one.
-    uv: the uv binary already on the host, empty when onboarding has to install one.
+    platform: the host's `uname -sm` string.
+    pixi / uv: the binary already on the host, empty when onboarding has to install one.
     """
 
     name: str
@@ -117,11 +110,7 @@ class Facts(FrozenModel):
 
     @classmethod
     def parsed(cls, name: str, text: str) -> Self:
-        """The facts inside a probe's `key=value` lines.
-
-        name: the ssh alias that answered.
-        text: what the probe printed.
-        """
+        """The facts inside a probe's `key=value` lines."""
         fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
         gpu, _, vram = fields["gpu"].partition(",")
         sysmem_kb = fields["mem"]
@@ -150,9 +139,7 @@ class Facts(FrozenModel):
         """Usable memory in GB: GPU VRAM if present, else system memory."""
         if self.gpu_mem_mb is not None:
             return self.gpu_mem_mb / 1024
-        if self.sysmem_gb is not None:
-            return float(self.sysmem_gb)
-        return None
+        return None if self.sysmem_gb is None else float(self.sysmem_gb)
 
     def fits(self, needs_gb: float) -> bool:
         """Whether this host's usable memory satisfies `needs_gb`."""
@@ -160,12 +147,10 @@ class Facts(FrozenModel):
 
 
 def ssh_hosts(config_path: Path = _SSH_CONFIG) -> list[str]:
-    """Concrete `Host` aliases from `~/.ssh/config`, in file order.
+    """Concrete `Host` aliases from `~/.ssh/config`, in file order, deduplicated.
 
-    Splits each line on any whitespace (ssh accepts tabs as well as spaces after `Host`), splits
-    multi-alias `Host a b` lines, and drops any pattern token (one containing `*` or `?`, e.g.
-    `Host *` or `dl*`), so the result is the list of real, connectable destinations. Non-`Host`
-    directives (`Include`, `HostName`, ...) are skipped.
+    Splits on any whitespace (ssh accepts tabs after `Host`) and across multi-alias lines, and
+    drops pattern tokens containing `*` or `?`, leaving only connectable destinations.
     """
     if not config_path.exists():
         return []
@@ -185,14 +170,10 @@ def find_root(remote: Machine) -> str:
 
 
 def probe_capabilities(host: str, *, ssh: SshTransport | None = None) -> Facts:
-    """Probe `host` over ssh without syncing or installing, as `Facts`.
+    """Probe `host` over ssh with stock tools only, before a byte is shipped.
 
-    Runs the stock-tool `_CAPABILITIES` script in a login shell and parses its `key=value`
-    lines, so it needs nothing on the host, available before a single byte is shipped. A host
-    that has no `bash` to run it, a Windows box whose login shell is cmd.exe, is asked the same
-    questions in PowerShell instead.
+    A host with no `bash` (Windows, whose login shell is cmd.exe) is asked in PowerShell instead.
 
-    host: the ssh alias to probe.
     ssh: the bounded SSH policy; the default policy when omitted.
     """
     policy = ssh or SshTransport()
@@ -208,13 +189,9 @@ def probe_capabilities(host: str, *, ssh: SshTransport | None = None) -> Facts:
 
 
 def resolve(profile: HostProfile, facts: Facts) -> HostProfile:
-    """`profile` with any field it left at its `auto`/unset default filled from `facts`.
-
-    The manifest is the declared source of truth; a probed fact only ever fills a gap the
-    manifest left open (`kind: "auto"`, an empty `root`, an empty `account`, an empty
-    `platform`), so an explicit manifest value always wins and the manifest schema (not this
-    function) owns validation.
-    """
+    """`profile` with the gaps it left open (`kind: "auto"`, empty `root`, `account`,
+    `platform`) filled from `facts`; an explicit manifest value always wins, and the manifest
+    schema owns validation."""
     updates: dict[str, str] = {}
     if profile.kind == "auto":
         updates["kind"] = facts.kind
@@ -228,11 +205,7 @@ def resolve(profile: HostProfile, facts: Facts) -> HostProfile:
 
 
 def smallest_fit(candidates: Sequence[Facts], needs_gb: float) -> Facts:
-    """Smallest-VRAM candidate that still satisfies `needs_gb` (keeps big iron free).
-
-    candidates: probed hosts to route among.
-    needs_gb: requested memory in GB.
-    """
+    """Smallest-VRAM candidate that still satisfies `needs_gb` (keeps big iron free)."""
     fitting = sorted((c for c in candidates if c.fits(needs_gb)), key=lambda c: c.vram_gb or 0.0)
     if not fitting:
         have = ", ".join(f"{c.name}={c.vram_gb}" for c in candidates)

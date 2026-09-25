@@ -203,11 +203,11 @@ class RecordingCommand:
 class RecordingMachine:
     """A fake plumbum machine, and the connection a `wrapping.connection()` double hands back.
 
-    Three knobs answer every shape the dispatch subsystem asks for. `outputs` is the queue a
-    probe reads, one entry per call with the last entry answering every call after it, so a
-    snapshot a backend re-reads inside one operation stays the same. `rules` answer ahead of the
-    queue whenever their marker appears in the argv, which is how a host shell says yes to
-    `command -v uv` and no to `command -v curl`. `faults` raise instead of answering.
+    outputs: stdout replayed one per call, the last answering every later call, so a snapshot a
+        backend re-reads inside one operation stays the same.
+    rules: `(marker, retcode, output)` answers ahead of the queue whenever the marker is in the
+        argv, how a host shell says yes to `command -v uv` and no to `command -v curl`.
+    faults: `(marker, error)` pairs raised instead of answering.
     """
 
     def __init__(
@@ -268,7 +268,6 @@ class RecordingMachine:
 
     def close(self) -> None:
         """Nothing to release."""
-        return
 
 
 class RecordingTransport:
@@ -321,15 +320,10 @@ class RecordingTransport:
 def machine_with(
     *outputs: str, rules: Sequence[Rule] = (), faults: Sequence[Fault] = ()
 ) -> RecordingMachine:
-    """A recording machine queued with these stdout strings, one per command call.
+    """A recording machine for the `Machine` union, answering as `RecordingMachine` documents.
 
-    The double stands in for the `Machine` union everywhere dispatch runs a command. Nothing
-    type checks this suite (pyrefly reads `src/**` alone), so it is handed over as itself rather
-    than cast, which keeps its call log readable at every assertion.
-
-    outputs: stdout replayed in order, the last entry answering every later call.
-    rules: `(marker, retcode, output)` answers matched against the argv ahead of the queue.
-    faults: `(marker, error)` pairs raised instead of answering.
+    Nothing type checks this suite (pyrefly reads `src/**` alone), so it is handed over as itself
+    rather than cast, which keeps its call log readable at every assertion.
     """
     return RecordingMachine(outputs, rules=rules, faults=faults)
 
@@ -420,13 +414,14 @@ class RecordingScheduler:
 
 def plan(**overrides: FieldValue) -> ExecutionPlan:
     """An `ExecutionPlan` for gold's default environment, overridden field by field."""
-    fields: dict[str, FieldValue] = {
-        "host": "gold",
-        "profile": HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}),
-        "env": "default",
-    }
-    fields.update(overrides)
-    return ExecutionPlan.model_validate(fields)
+    return ExecutionPlan.model_validate(
+        {
+            "host": "gold",
+            "profile": HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}),
+            "env": "default",
+            **overrides,
+        }
+    )
 
 
 def recorded(script: str) -> Job:
@@ -437,9 +432,8 @@ def recorded(script: str) -> Job:
 def cache() -> Cache:
     """A dispatch state cache in a private in-memory database.
 
-    Every table the file-backed store creates is created here too, so a test reads and writes
-    exactly what production does without paying the WAL journal's fsync once per test, which is
-    what made this slice the slowest in the suite.
+    It creates every table the file-backed store does, without the WAL journal's fsync per test
+    that once made this slice the slowest in the suite.
     """
     return Cache(Path(":memory:"))
 

@@ -1,26 +1,18 @@
-# How a run's trial receipts get off the machine that produced them, whichever kind of machine
-# that was.
+# How a run's trial receipts (one JSON line each, under the `trial_receipt` key) get off the
+# machine that produced them.
 #
-# A receipt is one JSON line under the `trial_receipt` key, printed by whatever drove the trial.
-# On an ssh host that is enough, because the job script's captured log is a file this workspace
-# reads back whole. On a rented instance it is not: a provider hands back a log rather than a
-# file, and vast truncates every log line at 500 characters (measured live 2026-08-25), which cuts
-# a receipt in half and loses the trial even though the command succeeded and the rental was paid
-# for in full. A paid run that produces no evidence is the worst outcome the tool can reach, worse
-# than one that fails loudly, because nothing about it says the evidence is missing.
+# On an ssh host the job script's captured log is a file read back whole. A rented instance hands
+# back a log instead, and vast truncates every log line at 500 characters (measured live
+# 2026-08-25), which cuts a receipt in half: the command succeeded, the rental was paid in full,
+# and the trial is silently lost, a worse outcome than a loud failure.
 #
-# So a run writes its receipts to a file, and whatever started it frames that file back through the
-# one channel a rental is guaranteed to have. Where the tool is installed that is the job runner,
-# in Python (`framed`); a prebuilt container that carries no tool gets the same frame from a shell
-# pipeline instead (`staging` and `framing`). The frame is base64 in
-# fixed-width chunks, each on its own marked line: base64 because a receipt's own quoting has to
-# survive a shell and a log viewer intact, and fixed-width because a chunk is only safe if it is
-# narrower than the cut. A block is bounded by its own begin and end lines, and the last complete
-# block wins, since vast restarts an exited container and each restart appends another one.
-#
-# `receipts_in` reads both shapes out of any captured output, the framed block and a plainly
-# printed line, so one harvest serves a queued job and a rented instance without asking which it
-# is holding, and `printed` takes the frame back out for a reader who wants the job's own words.
+# So a run writes its receipts to a file and whatever started it frames that file back through the
+# output: the job runner in Python (`framed`) where the tool is installed, a shell pipeline
+# (`staging`, `framing`) in a prebuilt container that carries no tool. The frame is base64, so a
+# receipt's quoting survives a shell and a log viewer, in fixed-width marked chunk lines narrower
+# than the cut, between a begin and an end line. `receipts_in` reads both the framed block and a
+# plainly printed line, so one harvest serves a queued job and a rented instance alike, and
+# `printed` takes the frame back out for a reader who wants the job's own words.
 
 import base64
 import re
@@ -28,37 +20,31 @@ import string
 
 from ..jobs.beacon import unbeaconed
 
-# The variable a run reads to learn where to write its receipts, and the file it names. A rented
-# machine keeps no workspace, so the path is under `/tmp` rather than derived from a root that
-# does not exist there. The shell's own pid is in the name because a cluster node runs several
-# jobs at once out of one `/tmp`, and two of them sharing a receipts file would hand each other's
+# A rented machine keeps no workspace, hence `/tmp`. The shell's pid is in the name because a
+# cluster node runs several jobs out of one `/tmp`, and a shared file would hand each other's
 # trials to whichever settled first.
 RECEIPTS_VAR = "MAINBOARD_RECEIPTS"
 RECEIPTS_FILE = "/tmp/mainboard-receipts.$$.ndjson"
 
-# The key a printed trial receipt carries its payload under, spelled here rather than imported so
-# harvesting a receipt never drags the lab machinery in. The same reason `verdicts` spells it.
+# Spelled here rather than imported so harvesting never drags the lab machinery in (as `verdicts`).
 _RECEIPT = "trial_receipt"
 
-# The frame: one begin line, one end line, and a marker every chunk line carries. Chunks are
-# narrower than the tightest provider line limit anyone has measured, with room to spare for the
-# marker itself.
+# Chunks stay narrower than the tightest provider line limit measured, with room for the marker.
 _BEGIN = "mainboard-receipts-begin"
 _END = "mainboard-receipts-end"
 _CHUNK_MARKER = "mainboard-receipt:"
 _CHUNK_WIDTH = 240
 
-# What a whole, untorn frame decodes from. Checking the payload against the alphabet and the
-# quantum is what lets a torn upload be skipped without asking an exception whether it was well
-# formed, so a bad frame costs its own block and never the receipts printed beside it.
+# Checking a payload's alphabet and quantum skips a torn upload without asking an exception, so a
+# bad frame costs its own block and never the receipts printed beside it.
 _BASE64_ALPHABET = frozenset(string.ascii_letters + string.digits + "+/=")
 
 
 def staging() -> str:
-    """The shell that points a run at its receipts file and starts that file empty.
+    """The shell that points a run at its receipts file and starts it empty.
 
-    Emptying matters on a provider that restarts an exited container, since the second run would
-    otherwise frame the first run's receipts back alongside its own.
+    Emptying matters on a provider that restarts an exited container, which would otherwise frame
+    the first run's receipts again alongside the second's.
     """
     return f"export {RECEIPTS_VAR}={RECEIPTS_FILE}; : > ${RECEIPTS_VAR}"
 
@@ -66,24 +52,16 @@ def staging() -> str:
 def framing() -> str:
     """The shell that emits the receipts file back through the run's captured output.
 
-    One pipeline of tools any Linux image already carries, since this runs on a rented machine
-    that this workspace never provisioned and cannot install anything on. A run that wrote no
-    receipts emits no block at all, so an ordinary command's log is left exactly as it was.
+    Uses only tools any Linux image carries, since a rented machine was never provisioned. A run
+    that wrote no receipts emits no block, leaving an ordinary log untouched.
 
-    The bare `echo` inside the braces is load-bearing. `tr` leaves the stream with no trailing
-    newline, so `fold` ends its last chunk unterminated and the closing marker lands glued to the
-    end of it, which makes the block unreadable and silently loses every receipt in it. Feeding
-    the newline in before the fold is what keeps the last chunk a line of its own.
-
-    So is the `|| true`. A caller running this under `set -euo pipefail` is not exempted inside
-    an `if` body, so an image missing one of these six tools would take the whole script down
-    here, before the line that reports the command's own exit code. Evidence
-    is worth a great deal and never worth changing the outcome it is evidence of, so the pipeline
-    absorbs its own failure and the block simply does not arrive.
-
-    The guard sits on the pipeline rather than around the whole statement on purpose: a caller
-    redirecting this into a log file redirects the `if`, and a trailing `|| true` outside it
-    would capture that redirect instead.
+    The bare `echo` in the braces is load-bearing: `tr` leaves no trailing newline, so `fold` would
+    end its last chunk unterminated, glue the end marker onto it and silently lose the block.
+    The `|| true` too: `set -euo pipefail` still applies inside an `if` body, so an image missing
+    one tool would kill the script before it reports the command's exit code; evidence must never
+    change the outcome it is evidence of. It guards the pipeline rather than the statement because
+    a caller redirecting this into a log redirects the `if`, and an outer `|| true` would capture
+    that redirect instead.
     """
     file = f'"${RECEIPTS_VAR}"'
     return (
@@ -94,11 +72,7 @@ def framing() -> str:
 
 
 def framed(receipts: bytes) -> str:
-    """`receipts` framed exactly as `framing` frames a file, for a runner that holds the bytes.
-
-    receipts: the receipts file's contents, never empty, since a run that wrote nothing frames
-        nothing.
-    """
+    """`receipts` (never empty) framed exactly as `framing` frames a file."""
     payload = base64.b64encode(receipts).decode("ascii")
     chunks = [payload[at : at + _CHUNK_WIDTH] for at in range(0, len(payload), _CHUNK_WIDTH)]
     return "\n".join([_BEGIN, *(f"{_CHUNK_MARKER}{chunk}" for chunk in chunks), _END]) + "\n"
@@ -107,12 +81,8 @@ def framed(receipts: bytes) -> str:
 def unframed(log: str) -> str:
     """The receipts text `log`'s last whole frame carries, empty when it holds none.
 
-    The last block rather than the first, since a provider that restarts an exited container
-    appends one block per run and the newest is the one this handle's verdict is about. A block
-    cut off mid-upload is skipped for the next one down, so a torn log costs its own frame and
-    nothing else.
-
-    log: the run's captured output, as its backend handed it over.
+    The last, since a restarted container appends one block per run and the newest is the one the
+    verdict is about; a block torn mid-upload is skipped for the next one down.
     """
     lines = [line.strip() for line in log.splitlines()]
     for start in reversed([at for at, line in enumerate(lines) if line == _BEGIN]):
@@ -130,14 +100,10 @@ def unframed(log: str) -> str:
 
 
 def printed(log: str) -> str:
-    """`log` as the job printed it, every line of the receipts frame taken back out.
+    """`log` as the job printed it, without any frame line (torn blocks included) or beacon.
 
-    The frame is this wrapper's channel and not the job's output: a reader of the log wants what
-    the command said, and the receipts it carried are read through `verdict` and the receipts
-    files instead. Every frame line goes, a torn block's included, and so does every progress
-    marker the runner wrote for a waiter, which `wait` and `jobs` read instead.
-
-    log: the run's captured output, as its backend handed it over.
+    The frame is this wrapper's channel, read through `verdict` and the receipts files; progress
+    beacons are read by `wait` and `jobs`.
     """
     kept = [
         line
@@ -147,10 +113,9 @@ def printed(log: str) -> str:
     return unbeaconed("".join(kept))
 
 
-# What the trials plugin prints for a cell whose data a previous run already took, as the
-# coverage heading every session opens with and as the skip reason `-rs` prints, and the pytest
-# summary such a session ends with. A job made only of those cells has nothing to deliver and is
-# still a settled job.
+# What the trials plugin prints for a cell a previous run already took (the coverage heading and
+# the `-rs` skip reason), and the summary such a session ends with. A job made only of those cells
+# has nothing to deliver and is still settled.
 _COVERED = re.compile(
     r"^\s*complete \S+ on .*\d+/\d+ from \S+|complete, run \S+ took it", re.MULTILINE
 )
@@ -159,24 +124,15 @@ _ACQUIRED = re.compile(r"\b\d+ (passed|known|failed|error)", re.MULTILINE)
 
 
 def covered_in(log: str) -> bool:
-    """Whether `log` is a trials session whose every cell was already complete and skipped.
-
-    log: the run's captured output, as its backend handed it over.
-    """
+    """Whether `log` is a trials session whose every cell was already complete and skipped."""
     skipped = _COVERED.search(log) is not None and _ONLY_SKIPS.search(log) is not None
     return skipped and _ACQUIRED.search(log) is None
 
 
 def receipts_in(log: str) -> tuple[str, ...]:
-    """Every trial receipt `log` carries, framed or printed plainly, in first-seen order.
+    """Every trial receipt `log` carries, framed or printed, deduplicated in first-seen order.
 
-    One harvest for both worlds. A queued job prints its receipts straight into a log file this
-    workspace reads back whole, and a rented instance frames them through that same output because
-    it has nowhere else to put them, so a caller settling a run never has to know which of the two
-    it is holding. Duplicates collapse, since a harness that both writes and prints a receipt has
-    still only run the one trial.
-
-    log: the run's captured output, as its backend handed it over.
+    A harness that both writes and prints a receipt still ran one trial.
     """
     lines = [*unframed(log).splitlines(), *log.splitlines()]
     found = [line.strip() for line in lines if _RECEIPT in line and line.strip()]

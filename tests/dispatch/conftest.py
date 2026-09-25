@@ -14,7 +14,6 @@ def workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def fixture_keys_are_unlocked(monkeypatch: pytest.MonkeyPatch) -> None:
     """`support.keypair` writes placeholder text, not a key `ssh-keygen` could read.
 
-    Whether a real key needs a passphrase is the machine's business and has its own test, which
-    sets this again; every other test here is about what happens once a rental has a usable key.
+    Whether a real key needs a passphrase has its own test, which sets this again.
     """
     monkeypatch.setattr("mainboard.dispatch.rentals.unlocked", lambda private: True)

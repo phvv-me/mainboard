@@ -1,7 +1,6 @@
-# Render a scheduler job script from a single command, so users stop hand-writing one shell
-# script per experiment. `JobSpec` is the value object. What the script does is a `runtime.Job`
-# record the host's own tool carries out; the script itself is only the handover, since a
-# scheduler still wants a file it can run and PBS reads its directives from that file's header.
+# Render a scheduler job script from a single command. What it does is a `runtime.Job` record the
+# host's own tool carries out; the script is only the handover, since a scheduler still wants a
+# file to run and PBS reads its directives from that file's header.
 
 import shlex
 
@@ -25,55 +24,45 @@ from ..wrapping import USER_BINS, absent, activation, missing
 class JobSpec(FrozenModel):
     """One job: a command plus the knobs its rendered script needs.
 
-    Walltime semantics differ by backend, deliberately. A PBS queue always enforces a walltime,
-    so `render(pbs=True)` requires one, resolved by the caller from the host's queue defaults
-    (never invented here). A schedulerless host (pueue/bash/slurm) enforces a cap only when the
-    caller explicitly chose one: an invisible default that kills correct work is worse than a
-    hung job a monitor can see and cancel. When a cap is set, the runner stamps `mainboard:
-    killed at walltime HH:MM:SS` into the log so a triage view decodes the stop.
+    Walltime differs by backend, deliberately. A PBS queue always enforces one, so a PBS render
+    requires it, resolved by the caller from the host's queue defaults (never invented here). A
+    schedulerless host (pueue/bash/slurm) is capped only when the caller chose a cap, since an
+    invisible default that kills correct work is worse than a hung job a monitor can cancel; a
+    set cap makes the runner log `mainboard: killed at walltime HH:MM:SS` for triage.
 
-    cmd: the command to run (e.g. `python -m experiments.x.run --model X`).
-    plan: the resolved execution context, which names the host and the environment the job
-        enters. Carrying the plan rather than a prefix and an environment name separately is
-        what makes it impossible to render a job whose prefix and environment disagree.
-    root: the tree on the host the job runs from, which is the snapshot of the mirror this
-        dispatch pinned. Its `.mainboard/` is a symlink back to the mirror, so activating
-        through it hands the job the mirror's environment while its code stays frozen.
-    queue/select/gpus/account/mem_gb: PBS header values (ignored when rendering a plain script).
-    walltime: `HH:MM:SS` cap; empty means the bare `#PBS` requirement is unmet (a PBS render
-        raises) or, on a schedulerless host, that the job runs uncapped.
-    pythonpath: explicit `PYTHONPATH` the job runs under, empty for an isolated default. A
-        dispatch fills it with the pinned tree's own import roots, so a package this workspace
-        installs editable is imported from the snapshot the job was frozen at rather than from
-        the mirror the shared prefix's editable install points at.
-    isolate_pythonpath: drop whatever `PYTHONPATH` the submitting shell exported, so a job's
-        imports come only from its own environment; False keeps the inherited value for a
-        caller that deliberately relies on it. An explicit `pythonpath` replaces the inherited
-        value outright and is therefore isolated the same way.
+    plan: names the host and the environment the job enters, carried whole so a job's prefix
+        and environment can never disagree.
+    root: the snapshot of the mirror this dispatch pinned, the job's tree on the host. Its
+        `.mainboard/` links back to the mirror, handing the job the mirror's environment while
+        its code stays frozen.
+    queue/select/gpus/account/mem_gb: PBS header values, ignored by a plain script.
+    walltime: `HH:MM:SS` cap, empty for uncapped (a PBS render raises).
+    pythonpath: explicit `PYTHONPATH`, empty for an isolated default. A dispatch fills it with
+        the pinned tree's import roots, so an editable workspace package is imported from the
+        snapshot rather than the mirror the shared prefix's editable install points at.
+    isolate_pythonpath: drop the submitting shell's `PYTHONPATH` so imports come only from the
+        job's environment; False keeps it for a caller relying on it. An explicit `pythonpath`
+        replaces it outright, isolated the same way.
     container: the argv that runs `cmd` inside a container runtime, empty for a bare command.
-    prefix: the built environment this job activates, addressed by the content of the manifest
-        and lock it was dispatched with. Set, the job enters exactly that directory and asks
-        nothing to reconcile it; empty, it enters the workspace's own environment, which is what
-        an interactive run and a hand-written script still want.
-    provide: builds that environment before the job enters it, when the host does not have it
-        yet. None for a job whose environment is an image.
-    sampler: watches the host beside the command, None for a host that watches nothing.
-    attestation: records what the machine looked like immediately before the command, None for
-        none. Ordered before the sampler because a reading taken after the command is under way
-        describes the command rather than the conditions.
+    prefix: the built environment to activate, addressed by the manifest and lock content it
+        was dispatched with, entered as is with nothing asked to reconcile it; empty enters the
+        workspace's own environment, as an interactive run and a hand-written script want.
+    provide: builds that environment when the host lacks it, None for an image environment.
+    sampler: watches the host beside the command, None for none.
+    attestation: records the machine immediately before the command, None for none; it runs
+        before the sampler, since a reading taken once the command runs describes the command.
     source: the captured SHA-256 content identity, exported as `MAINBOARD_SOURCE`.
     commit: historical metadata only; new dispatches leave this empty.
-    digest: that tree's content digest, exported as `MAINBOARD_SOURCE_DIGEST`. A preflight on a
-        mirror verifies this digest against the listing and the actual source bytes.
-    closure: where the job finds its closure listing, exported as `MAINBOARD_CLOSURE`, so a
-        receipt can list what it ran on and the runner can refuse an import outside it. Empty
-        for a command that ships the mirror.
-    first_party: the top-level names the workspace's own import roots define, colon-joined,
-        exported as `MAINBOARD_FIRST_PARTY` beside the closure for the runner's finder.
-    deferred: top-level names whose whole distribution the closure left to the environment,
-        colon-joined, exported as `MAINBOARD_DEFERRED` so the runner's finder admits them.
-    exports: the host profile's `[hosts.<name>.exports]`, set after everything else so every
-        job on that host runs in the world its profile declares.
+    digest: the tree's content digest, exported as `MAINBOARD_SOURCE_DIGEST`, which a preflight
+        on a mirror verifies against the listing and the actual source bytes.
+    closure: the closure listing, exported as `MAINBOARD_CLOSURE` so a receipt lists what it ran
+        on and the runner refuses an import outside it; empty when the command ships the mirror.
+    first_party: the workspace import roots' top-level names, colon-joined, exported as
+        `MAINBOARD_FIRST_PARTY` for the runner's finder.
+    deferred: colon-joined top-level names whose whole distribution the closure left to the
+        environment, exported as `MAINBOARD_DEFERRED` so the runner's finder admits them.
+    exports: the host profile's `[hosts.<name>.exports]`, set last so every job on that host
+        runs in the world its profile declares.
     """
 
     cmd: str
@@ -101,23 +90,17 @@ class JobSpec(FrozenModel):
     exports: dict[str, str] = {}
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
-        """The job script text: the `#PBS` header when `pbs`, then the handover to the tool.
+        """The POSIX `sh` script: the `#PBS` header when `pbs`, then `exec` of the host's tool.
 
-        The script is POSIX `sh` and does one thing, `exec` the host's own tool on the job
-        record, which travels inline so a scheduler that feeds the script to its shell on stdin
-        runs it as surely as one that passes its path. The per-user install directories lead
-        `PATH` first, since a batch shell is not a login shell and may not have them.
-
-        Under PBS the runner appends the merged output to `{STATE_DIR}/logs/<bare jobid>.log`
-        and the final status to `{STATE_DIR}/logs/<bare jobid>.exit`, so a job the server later
-        purges can still be autopsied; the header's `-j oe` merges the two streams PBS spools.
-
-        `ngpus` joins the `select=` chunk only when `gpus` > 0 and `gpu_in_select`; some GPU
-        queues hand the GPU out with the queue and reject an explicit `ngpus`, so such a host
-        passes `gpu_in_select=False`. `mem=NNgb` joins the same chunk when `mem_gb` is set.
+        The job record travels inline, so a scheduler feeding the script on stdin runs it as
+        surely as one passing its path, and the per-user install directories lead `PATH`, since
+        a batch shell is not a login shell. Under PBS the runner appends the merged output to
+        `{STATE_DIR}/logs/<bare jobid>.log` and the status to `.exit` beside it, so a job the
+        server later purges can still be autopsied; `-j oe` merges the streams PBS spools.
 
         pbs: render the PBS header and hand PBS the output and walltime.
-        gpu_in_select: whether a GPU request belongs in the `select=` chunk.
+        gpu_in_select: put `ngpus` in the `select=` chunk (with `mem=NNgb` when `mem_gb` is set);
+            some GPU queues hand out the GPU with the queue and reject an explicit `ngpus`.
         """
         if pbs and not self.walltime:
             raise ValueError(
@@ -135,10 +118,7 @@ class JobSpec(FrozenModel):
         return "\n".join(lines) + "\n"
 
     def job(self, *, pbs: bool) -> Job:
-        """The record the host's tool runs, the walltime and the output left to PBS under it.
-
-        pbs: the job runs under PBS, which enforces the walltime and spools the output itself.
-        """
+        """The record the host's tool runs; under `pbs`, PBS owns the walltime and the output."""
         return Job(
             command=self.cmd,
             root=self.root,
