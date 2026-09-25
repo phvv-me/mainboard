@@ -75,6 +75,12 @@ def test_the_command_starts_at_the_first_token_that_is_not_an_option_of_the_verb
             id="shell",
         ),
         pytest.param(["help", "batch", "run"], ["help", "--", "batch", "run"], id="help"),
+        pytest.param(
+            ["proc", "timeout", "5", "pytest", "-x"],
+            ["proc", "timeout", "--", "5", "pytest", "-x"],
+            id="a-nested-verb-with-a-command",
+        ),
+        pytest.param(["lint", "src", "--check"], ["lint", "src", "--check"], id="paths"),
         pytest.param(["check", "--json"], ["check", "--json"], id="a-verb-with-no-command"),
         pytest.param(
             ["batch", "run", "spec.toml"], ["batch", "run", "spec.toml"], id="a-nested-verb"
@@ -87,3 +93,19 @@ def test_only_a_trailing_command_verb_gets_a_delimiter_and_only_before_its_comma
     tmp_path: Path, argv: list[str], placed: list[str]
 ) -> None:
     assert Delimiter(build(tmp_path)).placed(argv) == placed
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["lint", "src", "--check", "docs"],
+        ["lint", "--check", "src", "docs"],
+        ["lint", "src", "docs", "--check"],
+    ],
+)
+def test_options_follow_the_paths_of_a_verb_that_hands_on_no_command(
+    tmp_path: Path, argv: list[str]
+) -> None:
+    app = build(tmp_path)
+    _, bound, _ = app.parse_args(Delimiter(app).placed(argv))
+    assert bound.args == (Path("src"), Path("docs")) and bound.kwargs == {"check": True}

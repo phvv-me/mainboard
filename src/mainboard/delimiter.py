@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 # What ends this tool's options by hand, and what the placement inserts.
 DELIMITER = "--"
 
+# The variadic positionals read verbatim, another program's argv or a help query. Any other, such
+# as `lint`'s paths, is an ordinary positional the parser lets options follow.
+TAILS = frozenset({"command", "query"})
+
 
 class Delimiter:
     """Places the `--` a trailing-command verb implies, so its command never has to spell one."""
@@ -48,15 +52,17 @@ class Delimiter:
 def _widths(verb: App) -> Mapping[str, int] | None:
     """Every option name `verb` declares and how many values it takes, None without a command.
 
-    A verb takes a trailing command exactly when its function collects a variadic positional,
-    which is how `run`, `submit`, `shell` and `help` spell their tails. A negative flag takes
-    no value whatever its positive spelling takes.
+    A verb takes a trailing command exactly when its function collects a variadic positional
+    named in `TAILS`, which is how `run`, `submit`, `shell`, `proc timeout` and `help` spell
+    their tails. A negative flag takes no value whatever its positive spelling takes.
     """
     command = verb.default_command
     if command is None:
         return None
-    kinds = [parameter.kind for parameter in signature(command).parameters.values()]
-    if Parameter.VAR_POSITIONAL not in kinds:
+    if not any(
+        parameter.kind is Parameter.VAR_POSITIONAL and parameter.name in TAILS
+        for parameter in signature(command).parameters.values()
+    ):
         return None
     widths = dict.fromkeys((*verb.help_flags, *verb.version_flags), 0)
     for argument in verb.assemble_argument_collection():

@@ -657,7 +657,10 @@ their actual bytes with SHA-256, preserves a content-addressed source ZIP under
 `.mainboard/source-archives/`, and verifies the listing and bytes before acquisition.
 An edit after capture requires a new bundle, not a commit. Discovery follows the
 same per-repository file set as mirroring, reading `.gitignore` files directly when
-no Git answers; secrets and output protections remain.
+no Git answers; secrets and output protections remain. A local trial's bundle also
+leaves out what `[hosts.defaults.sync].exclude` keeps off every host, so datasets are
+pinned through `needs` or `resources`, never archived as source. An interrupted archive
+leaves one `<digest>.zip.partial` its retry replaces, swept after a day.
 Historical Git metadata and inadmissible receipts are retained as historical data,
 not relabeled by this policy change. The pilot
 experiments no longer maintain a second source-file list or a hash of another seal.

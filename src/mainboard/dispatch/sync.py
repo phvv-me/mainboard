@@ -81,6 +81,14 @@ def patterns(declared: Sequence[str], *, paths: Sequence[str] = ()) -> Rules:
     return Rules({"": compiled(lines)}, paths)
 
 
+def denied(excluded: Sequence[str] = (), *, paths: Sequence[str] = ()) -> Rules:
+    """What a mirror never ships: the denylist, the host's `excluded` patterns, the card leases.
+
+    paths: literal workspace-relative paths denied with everything beneath them.
+    """
+    return patterns([*ALWAYS_EXCLUDE, *excluded, *CARD_LEASES], paths=paths)
+
+
 class Listing(FrozenModel):
     """What version control says a tree holds.
 
@@ -178,10 +186,12 @@ class GitignoreFilter:
             return Scope(roots, ignore=self.rules, deny=deny)
         return Scope(roots, ignore=self.rules, deny=deny, keep=listing.kept, listed=listing.files)
 
-    def files(self, directory: str) -> list[str]:
-        """The source files under `directory` a mirror ships, a link counted when it leads to a
-        file."""
-        scope = self.scope([directory], deny=patterns(ALWAYS_EXCLUDE))
+    def files(self, roots: Sequence[str], *, excluded: Sequence[str] = ()) -> list[str]:
+        """The source files under `roots` a mirror ships, a link counted when it leads to a file.
+
+        excluded: the host's own sync excludes, joining the denylist.
+        """
+        scope = self.scope(roots, deny=denied(excluded))
         return sorted(
             entry.path
             for entry in walk(str(self.root), scope)

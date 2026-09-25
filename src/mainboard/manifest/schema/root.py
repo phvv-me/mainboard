@@ -134,18 +134,19 @@ class Manifest(Scope):
         """This manifest with the held machines' ssh profiles laid over `[hosts]`."""
         return self.model_copy(update={"hosts": {**self.hosts, **held}}) if held else self
 
+    @property
+    def defaults(self) -> HostProfile:
+        """`[hosts.defaults]`, what every host inherits and an undeclared one is."""
+        return self.hosts.get(_DEFAULTS_KEY, HostProfile())
+
     def profile(self, alias: str) -> HostProfile:
         """The resolved profile for `alias` (ssh alias or `local`), defaults if undeclared."""
-        profiles = self.profiles()
-        if alias in profiles:
-            return profiles[alias]
-        return HostProfile().inheriting(self.hosts.get(_DEFAULTS_KEY, HostProfile()))
+        return self.profiles().get(alias) or HostProfile().inheriting(self.defaults)
 
     def profiles(self) -> dict[str, HostProfile]:
         """Every concrete host profile with `[hosts.defaults]` already inherited."""
-        base = self.hosts.get(_DEFAULTS_KEY, HostProfile())
         return {
-            alias: profile.inheriting(base)
+            alias: profile.inheriting(self.defaults)
             for alias, profile in self.hosts.items()
             if alias != _DEFAULTS_KEY
         }

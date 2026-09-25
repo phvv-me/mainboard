@@ -1,3 +1,7 @@
+import os
+import shutil
+import subprocess
+import time
 from hashlib import sha256
 from pathlib import Path
 from zipfile import ZipFile
@@ -107,6 +111,46 @@ def test_archives_preserve_original_bytes_and_reject_corruption(lab: Lab) -> Non
         stored.writestr(".mainboard-source-listing.tsv", "wrong")
     with pytest.raises(MissionError, match="archive verification"):
         tree.archive(manifest)
+
+
+@pytest.mark.parametrize(
+    "tracked",
+    [
+        False,
+        pytest.param(True, marks=pytest.mark.skipif(not shutil.which("git"), reason="no git")),
+    ],
+)
+def test_sources_leave_out_the_data_no_host_is_sent(tmp_path: Path, tracked: bool) -> None:
+    """A dataset, even one git tracks, is pinned by the trial that reads it, never archived."""
+    lab = Lab(tmp_path)
+    lab.write("mainboard.toml", '[hosts.defaults.sync]\nexclude = ["/datasets/"]\n')
+    lab.write("experiments/law/test_law.py", "pass")
+    lab.write("datasets/experiments/law/rows.parquet", "rows")
+    lab.write("experiments/law/.card.lock", "")
+    if tracked:
+        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+    assert SourceTree(tmp_path).sources() == ["experiments/law/test_law.py", "mainboard.toml"]
+
+
+def test_a_killed_archival_leaves_one_partial_its_retry_replaces(lab: Lab) -> None:
+    """The partial is named by its digest, and what a day has passed over is swept."""
+    tree = SourceTree(lab.root)
+    first, rows = sealed(lab)
+    folder = lab.root / ".mainboard" / "source-archives"
+    partial = folder / f"{first.digest}.zip.partial"
+    lab.write(str(partial.relative_to(lab.root)), "killed mid-write")
+    stale = [folder / "source-old" / "source.zip", folder / "other.zip.partial"]
+    fresh = folder / "writing.zip.partial"
+    for leftover in [*stale, fresh]:
+        lab.write(str(leftover.relative_to(lab.root)), "left behind")
+    day_ago = time.time() - 2 * 86_400
+    for leftover in [stale[0].parent, stale[1]]:
+        os.utime(leftover, (day_ago, day_ago))
+    archive = tree.archive(listing(rows))
+    with ZipFile(archive) as stored:
+        assert stored.read(Lab.JOB) == (lab.root / Lab.JOB).read_bytes()
+    assert sorted(path.name for path in folder.iterdir()) == [archive.name, fresh.name]
 
 
 def test_source_change_before_archiving_is_rejected(lab: Lab) -> None:
