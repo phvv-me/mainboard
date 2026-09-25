@@ -102,9 +102,7 @@ def _required_var(profile: HostProfile, key: str) -> str:
     try:
         return profile.vars[key]
     except KeyError:
-        raise MissionError(
-            f"host {profile.root!r} needs [hosts.<name>.vars] {key!r} set for the hpc-ai backend"
-        ) from None
+        raise MissionError(f"the hpc-ai backend needs [hosts.<name>.vars] {key!r} set") from None
 
 
 def _mapped_port(rows: Sequence[Mapping]) -> int:

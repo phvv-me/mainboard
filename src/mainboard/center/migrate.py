@@ -11,7 +11,7 @@
 
 import subprocess
 from importlib.metadata import PackageNotFoundError, distribution
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -49,6 +49,10 @@ _BLOCKING = frozenset({"platform", "lock"})
 # center installed it: the destination gets the same tool, plotting included.
 _EXTRAS = {"plot": "seaborn", "wandb": "wandb"}
 
+# Where the workspace goes on the destination unless told otherwise: the center, unlike a dispatch
+# target, holds the human checkout, and the destination expands the `~` in its own spelling.
+_CHECKOUT = "~/projects"
+
 # A readiness report as `center verify --json` prints it.
 _SECTIONS = TypeAdapter(list[Section])
 
@@ -85,7 +89,7 @@ class Migration:
 
     board: this center's workspace.
     destination: the ssh alias of the machine becoming the center.
-    root: where the workspace goes there, the probe's own guess (`~/projects`) when empty.
+    root: where the workspace goes there, `~/projects` when empty.
     transport: the ssh policy every call rides.
     watch: announces each step as it begins.
     home: this machine's home directory, whose agent state and ssh keys are carried.
@@ -119,7 +123,7 @@ class Migration:
         self.watch(f"probing {self.destination}")
         facts = self.reach()
         carrier = Carrier(self.destination, facts.uv, self.transport)
-        where = carrier.call("where", {"root": self.root or facts.root}, Destination)
+        where = carrier.call("where", {"root": self.root or _CHECKOUT}, Destination)
         system = carrier.call("census", {"root": where.root}, System)
         place = where.model_copy(update={"system": system.system})
         findings = Fitness(self.board.root, self.board.manifest).judge(
@@ -182,8 +186,7 @@ class Migration:
         if facts.uv:
             return facts
         self.watch(f"putting uv on {self.destination}")
-        home = str(PurePosixPath(facts.root).parent)
-        with open_shell(self.plan(facts, home), home, ssh=self.transport) as shell:
+        with open_shell(self.plan(facts, facts.home), facts.home, ssh=self.transport) as shell:
             shell.run(shell.dialect.uv_bootstrap[1])
         facts = probe_capabilities(self.destination, ssh=self.transport)
         if not facts.uv:

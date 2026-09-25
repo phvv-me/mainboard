@@ -22,6 +22,7 @@ from ..core.errors import MissionError
 from ..core.host import current_platform
 from ..core.project import Project
 from ..dispatch.shells import dialect_for, plain_errors
+from ..dispatch.targets import rooted
 from ..dispatch.transport import HostUnreachable, SshTransport
 from ..lint.process import MISSING, TIMED_OUT, Invocation
 from .definition import Family, family_of
@@ -190,6 +191,7 @@ class RemoteLeg(Leg):
             )
         super().__init__(plan.host, family_of(plan.profile.platform))
         self.plan = plan
+        self.mirror = rooted(plan.profile, host=plan.host)
         self.package = package
         self.ship = ship
         self.ssh = ssh or SshTransport()
@@ -197,7 +199,7 @@ class RemoteLeg(Leg):
     @property
     def root(self) -> str:
         """Where the leg's copy of the workspace lives on the host, beside the host's mirror."""
-        return f"{self.plan.profile.root}/{Project().out_dir}/ci"
+        return f"{self.mirror}/{Project().out_dir}/ci"
 
     def run(self, steps: Sequence[Step]) -> Iterator[Result]:
         """The package shipped, then its steps, every one `not run` when it never arrived."""

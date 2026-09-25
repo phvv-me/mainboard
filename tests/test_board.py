@@ -456,7 +456,9 @@ def test_attest_publishes_one_reading_of_this_machine_into_the_streams_receipts(
 
 def test_remote_root_comes_from_the_profile_or_refuses(board: Board) -> None:
     assert board.on(_MIYABI_G).remote_root() == _REMOTE_ROOT
-    with pytest.raises(MissionError, match=r"set \[hosts.gold\] root"):
+    with pytest.raises(
+        MissionError, match=r"no probed home to place ~/.mainboard-jobs.*setup gold"
+    ):
         board.on(_GOLD).remote_root()
 
 
@@ -735,11 +737,11 @@ def onboarded(monkeypatch: pytest.MonkeyPatch) -> dict[str, str | bool | tuple[s
     seen: dict[str, str | bool | tuple[str, ...]] = {}
 
     class FakeOnboarding:
-        def __init__(self, dispatcher, plan, *, root, artifact, resolve, watch, digest, floor):
+        def __init__(self, dispatcher, plan, *, artifact, resolve, watch, digest, floor):
             self.host = plan.host
             seen.update(
                 host=plan.host,
-                root=root,
+                root=plan.profile.root,
                 env=plan.env,
                 artifact=tuple(artifact),
                 resolve=resolve,
@@ -765,12 +767,15 @@ def onboarded(monkeypatch: pytest.MonkeyPatch) -> dict[str, str | bool | tuple[s
             id="a named environment on a rooted host",
         ),
         pytest.param(
-            _GOLD, {}, ("serving", "", False), id="the environment the profile itself names"
+            _GOLD,
+            {},
+            ("serving", "~/.mainboard-jobs", False),
+            id="the environment the profile itself names",
         ),
         pytest.param(
             _GOLD,
             {"sync_only": True},
-            ("serving", "", True),
+            ("serving", "~/.mainboard-jobs", True),
             id="a sync of a host already onboarded",
         ),
     ],
@@ -1433,7 +1438,8 @@ def test_a_creation_with_no_provider_handle_is_not_rebuilt_as_a_job(
 def test_a_host_set_up_once_is_planned_and_run_as_its_probe_found_it(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gold declares neither a root nor a platform, so the onboarding's probe fills both.
+    """gold declares neither a root nor a platform, so the onboarding's probe places the one
+    under the home it found and fills the other.
 
     A Windows host found that way is then driven through PowerShell rather than a login bash.
     """
@@ -1441,7 +1447,7 @@ def test_a_host_set_up_once_is_planned_and_run_as_its_probe_found_it(
         HostSetup(
             host=_GOLD,
             root="C:/Users/lab/projects",
-            capabilities=Facts(name=_GOLD, root="C:/Users/lab/projects", platform="Windows AMD64"),
+            capabilities=Facts(name=_GOLD, home="C:/Users/lab", platform="Windows AMD64"),
         )
     )
     launched: list[list[str]] = []
@@ -1451,7 +1457,7 @@ def test_a_host_set_up_once_is_planned_and_run_as_its_probe_found_it(
     )
     bound = board.on(_GOLD)
     assert bound.plan().profile.platform == "win-64"
-    assert bound.remote_root() == "C:/Users/lab/projects"
+    assert bound.remote_root() == "C:/Users/lab/.mainboard-jobs"
     assert bound.run(("true",), container="none") == 4
     [argv] = launched
     assert argv[0] == "ssh"

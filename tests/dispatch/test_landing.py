@@ -117,12 +117,12 @@ def test_a_rental_gets_the_workspace_the_tool_and_the_environment_before_the_job
     mirror goes to the rented machine rather than to the alias, since `vast` is a profile name
     and never an address.
     """
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     assert landed.land(shipped(dispatcher, "python train.py")).id == "4242"
     assert backend.asked == [("vast", "00:30:00")]
     root, extra, where = dispatcher.mirrored[0]
-    assert (root, where) == ("/root/projects", "root@ssh5.vast.ai")
+    assert (root, where) == ("/root/.mainboard-jobs", "root@ssh5.vast.ai")
     assert dispatcher.reached == ["root@ssh5.vast.ai"]
     assert extra[0].startswith(f"{state_dir()}/jobs/job-")
     ordered = [
@@ -146,12 +146,12 @@ def test_a_machine_that_ships_no_python_is_given_one_before_the_mirror_is_attemp
     Both lines run on the bare connection, since the workspace they would otherwise `cd` into is
     what the mirror underneath them is about to create.
     """
-    host = machine_with("/root/projects\n", rules=[("python3 -c pass", 1, "")])
+    host = machine_with("/root\n", rules=[("python3 -c pass", 1, "")])
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     landed.land(shipped(dispatcher, "python train.py"))
     assert "python3 -c pass" in host.lines
     assert host.ran("apt-get install -y -qq python3")
-    equipped = machine_with("/root/projects\n")
+    equipped = machine_with("/root\n")
     landed, _, dispatcher = landing(workdir, equipped, monkeypatch)
     landed.land(shipped(dispatcher, "python train.py"))
     assert not equipped.ran("apt-get")
@@ -172,7 +172,7 @@ def test_the_waiting_entrypoint_is_handed_the_staged_line_naming_the_tree_the_pi
     under another activates from a directory nobody created (vast 49867368, 2026-09-04). The
     tree is read once, so the launch, its script and the pin all name the same snapshot.
     """
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     landed.land(shipped(dispatcher, "python train.py"))
     (written,) = host.inputs
@@ -192,11 +192,11 @@ def test_the_waiting_entrypoint_is_handed_the_staged_line_naming_the_tree_the_pi
 def test_a_rented_job_carries_the_complete_source_seal(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     source = Source(identity="abc1234", key="abc1234-5678", commit="a" * 40, digest="b" * 64)
     shipment = Shipment.of_command("python train.py", source=source, imports=())
-    script = landed.script(shipment, root="/root/projects", listing="")
+    script = landed.script(shipment, root="/root/.mainboard-jobs", listing="")
     job = recorded((dispatcher.root / script).read_text(encoding="utf-8"))
     assert job.variables["MAINBOARD_SOURCE_COMMIT"] == source.commit
     assert job.variables["MAINBOARD_SOURCE_DIGEST"] == source.digest
@@ -206,7 +206,7 @@ def test_rental_results_link_to_the_live_root_that_fetch_reads(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The sealed snapshot must not strand results on a disk that release destroys."""
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     shipment = shipped(dispatcher, "python train.py").model_copy(
         update={"fetch": "research/project/datasets/node"}
@@ -224,9 +224,7 @@ def test_a_pinned_tree_the_job_could_not_activate_from_ends_the_rental(
     A tree the job cannot activate from is caught here rather than paid for in full and answered
     with the job's own activation refusal.
     """
-    host = machine_with(
-        "/root/projects\n", rules=[("fi && true", 1, "found no default environment")]
-    )
+    host = machine_with("/root\n", rules=[("fi && true", 1, "found no default environment")])
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     with pytest.raises(MissionError, match="pinned tree on the rental cannot run a command"):
         landed.land(shipped(dispatcher, "python train.py"))
@@ -238,7 +236,7 @@ def test_a_landing_that_fails_anywhere_ends_the_rental_it_was_holding(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The failed rental remains tracked independently of this process's cleanup attempt."""
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     dispatcher.pins.answer = AgentRefused("no space left on device")
     with pytest.raises(SystemExit, match="could not pin the source tree"):
@@ -255,7 +253,7 @@ def test_a_machine_that_cannot_be_given_python_is_ended_before_any_mirror(
 ) -> None:
     """Without Python nothing can reach the box, so the rental is released rather than billed."""
     host = machine_with(
-        "/root/projects\n",
+        "/root\n",
         rules=[("python3 -c pass", 1, ""), ("apt-get", 100, "E: Unable to locate package")],
     )
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
@@ -269,7 +267,7 @@ def test_a_rental_the_registry_never_recorded_is_still_ended_when_its_landing_fa
     workdir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """With no row to settle, ending the rental is all that stands between it and a bill."""
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     dispatcher.pins.answer = AgentRefused("disk full")
     monkeypatch.setattr(
@@ -290,7 +288,7 @@ def test_a_launch_the_entrypoint_refused_names_why_and_keeps_the_rental_tracked(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The line may have reached the box before the refusal, so the monitor settles it."""
-    host = machine_with("/root/projects\n", rules=[(handoff(), 1, "disk quota exceeded")])
+    host = machine_with("/root\n", rules=[(handoff(), 1, "disk quota exceeded")])
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     with pytest.raises(MissionError, match="could not start the job on the rental: disk quota"):
         landed.land(shipped(dispatcher, "python train.py"))
@@ -301,7 +299,7 @@ def test_a_launch_the_entrypoint_refused_names_why_and_keeps_the_rental_tracked(
 def test_a_rental_is_durably_registered_before_provisioning(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     shipment = shipped(dispatcher, "python train.py").model_copy(update={"fetch": "out/run"})
 
@@ -322,7 +320,7 @@ def test_a_rental_is_durably_registered_before_provisioning(
 def test_a_lost_launch_reply_retains_the_rental_and_pending_evidence(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
 
     def interrupted(remote: RecordingMachine, *, pinned: str, script: str) -> None:
@@ -340,7 +338,7 @@ def test_a_lost_launch_reply_retains_the_rental_and_pending_evidence(
 def test_a_cancelled_provisioning_job_cannot_start_after_cancellation(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
 
     def cancelled(remote: RecordingMachine, pinned: str) -> None:
@@ -359,7 +357,7 @@ def test_a_cancelled_provisioning_job_cannot_start_after_cancellation(
 def test_failed_setup_cleanup_keeps_its_handle_for_a_later_monitor(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
     dispatcher.pins.answer = AgentRefused("disk full")
 
@@ -378,7 +376,7 @@ def test_a_market_that_never_rented_anything_leaves_nothing_to_cancel(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A refusal before the create holds no handle, so there is no rental to end."""
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, backend, dispatcher = landing(
         workdir, host, monkeypatch, fault=MissionError("no rentable")
     )
@@ -391,7 +389,7 @@ def test_a_declared_root_is_honoured_and_a_bare_machine_is_asked_where_to_put_th
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A profile that names a root pins the location; one that does not lets the box answer."""
-    host = machine_with("/root/projects\n")
+    host = machine_with("/root\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     landed.plan = plan(host="vast", profile=HostProfile(kind="vast", root="/workspace"))
     landed.land(shipped(dispatcher, "python train.py"))

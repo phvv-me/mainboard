@@ -1,6 +1,7 @@
 from typing import Self
 
 from ...core.base import Declared
+from ...core.project import Project
 from .observe import Observe
 from .queue import Defaults, QueuePolicy
 
@@ -27,6 +28,8 @@ class Sync(Declared):
 class HostProfile(Declared):
     """One remote (or local) machine's execution profile, inheriting `[hosts.defaults]` per field.
 
+    root: where the workspace lives there, the tool's `~/.<name>-jobs` folder by default; a
+        leading `~` is the host's own home as its setup probed it (`%USERPROFILE%` on Windows).
     platform: the pixi platform (`win-64`), probed at setup when empty; it decides whether the
         host is reached through a login `bash` or PowerShell.
     python: the bootstrap interpreter in the remote ssh login shell, quoted as that shell needs;
@@ -37,7 +40,7 @@ class HostProfile(Declared):
     """
 
     kind: str = "auto"
-    root: str = ""
+    root: str = Project().jobs_root
     platform: str = ""
     python: str = "python3"
     account: str = ""

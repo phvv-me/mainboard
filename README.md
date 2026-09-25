@@ -217,11 +217,11 @@ image = "nvcr.io/nvidia/pytorch:25.06-py3"   # fixed off-the-shelf image, never 
                                              # your env lives on a bound host path inside it
 
 [hosts.gold]
-kind = "ssh"
-root = "/home/pedro/projects"
+kind = "ssh"                    # root defaults to ~/.mainboard-jobs
 
 [hosts.miyabi-g]
 kind = "pbs"
+root = "/work/xg25g007/x10537/projects"   # a cluster's shared storage, not its home
 container = "ngc"
 account = "xg25g007"
 modules = { singularity = "4.2.1" }
@@ -238,6 +238,12 @@ mem-gb = "min(100, attempt * 50)"   # retries escalate instead of dying twice
 Profiles inherit `[hosts.defaults]`, values interpolate (`{{ env('LOCALDIR') }}`,
 `{{ num_cpus() }}`), and queue policies are data the tool enforces at submit
 time with the error you wish the scheduler gave you.
+
+A target never holds a human checkout: Mainboard keeps everything there in one
+folder, `~/.mainboard-jobs` unless the profile names another `root`. `setup` reads
+the home in the host's own shell (`$HOME`, `%USERPROFILE%` on Windows) and places
+a leading `~` under it, so every consumer uses one absolute path; a host never set
+up is refused with the command that fixes it, and a rental's home is read on landing.
 
 ## One repository tree
 

@@ -19,6 +19,7 @@ from mainboard.dispatch.onboard import (
 from mainboard.dispatch.shells import PosixShell
 from mainboard.dispatch.state import Cache
 from mainboard.engines.compile.backend import PIXI_VERSION
+from mainboard.manifest import HostProfile
 
 from .support import RecordingMachine, Rule, cache, machine_with, plan, run_record
 
@@ -32,7 +33,7 @@ type Setting = str | Sequence[str] | bool | Callable[[str], None]
 _FACTS_JSON = '{"schema_version": 1, "hostname": "gold-1", "cpu_logical_cores": 72}'
 
 # What the stock capability probe prints back, the shape `probe_capabilities` parses.
-_CAPABILITIES = """root=/home/me/projects
+_CAPABILITIES = """home=/home/me
 kind=ssh
 gpu=NVIDIA GH200, 97871
 mem=536870912
@@ -78,9 +79,14 @@ class FakeDispatcher:
 
 
 def onboarding(
-    host: RecordingMachine, monkeypatch: pytest.MonkeyPatch, **overrides: Setting
+    host: RecordingMachine,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    root: str = "/repo",
+    **overrides: Setting,
 ) -> tuple[Onboarding, FakeDispatcher]:
-    """An `Onboarding` over `host`, with its probe, connection and dispatcher stubbed out."""
+    """An `Onboarding` over `host` into the profile's `root`, with its probe, connection and
+    dispatcher stubbed out."""
     monkeypatch.setattr(
         onboard_module,
         "probe_capabilities",
@@ -92,8 +98,8 @@ def onboarding(
         lambda execution, root, ssh=None: PosixShell(host, execution, root),
     )
     dispatcher = FakeDispatcher(cache())
-    fields: dict[str, Setting] = {"root": "/repo", **overrides}
-    return Onboarding(dispatcher, plan(), **fields), dispatcher
+    profile = HostProfile(kind="ssh", root=root, sync={"include": ["src"]})
+    return Onboarding(dispatcher, plan(profile=profile), **overrides), dispatcher
 
 
 def test_the_remote_shell_stages_a_bare_command_and_activates_only_when_asked() -> None:
@@ -360,15 +366,15 @@ def test_onboarding_ships_the_compiled_artifact_unless_told_to_solve_on_the_host
     assert [stage.split()[0] for stage in watched] == _STAGES
 
 
-def test_onboarding_discovers_a_root_the_profile_never_declared(
+def test_onboarding_places_the_default_root_under_the_home_the_probe_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The probe already answered where the workspace goes, so nothing asks the host twice."""
+    """The probe already answered where home is, so nothing asks the host twice."""
     host = machine_with(rules=_HEALTHY)
-    setup, dispatcher = onboarding(host, monkeypatch, root="")
-    assert setup.run().root == "/home/me/projects"
-    assert dispatcher.mirrored == [("gold", "/home/me/projects")]
-    assert not host.ran("ls -d /work")
+    setup, dispatcher = onboarding(host, monkeypatch, root=HostProfile().root)
+    assert setup.run().root == "/home/me/.mainboard-jobs"
+    assert dispatcher.mirrored == [("gold", "/home/me/.mainboard-jobs")]
+    assert not host.ran('printf %s "$HOME"')
 
 
 def test_onboarding_refuses_a_provisioning_that_left_no_activation_behind(
@@ -395,8 +401,8 @@ def test_sync_only_stamps_the_digest_it_was_given_and_keeps_the_old_one_when_giv
 @pytest.mark.parametrize(
     ("given", "used"),
     [
-        pytest.param("", "/recorded", id="the-recorded-root"),
-        pytest.param("/repo", "/repo", id="a-given-root-over-the-recorded-one"),
+        pytest.param("~/jobs", "/home/me/jobs", id="a-tilde-root-under-the-recorded-home"),
+        pytest.param("/repo", "/repo", id="a-declared-root-over-the-recorded-one"),
     ],
 )
 def test_sync_only_re_mirrors_and_re_provisions_without_bootstrap_or_hardware_probe(
@@ -432,11 +438,14 @@ def test_sync_only_re_mirrors_and_re_provisions_without_bootstrap_or_hardware_pr
     )
 
 
-def test_sync_only_refuses_a_host_that_was_never_onboarded(
+def test_sync_only_refuses_a_host_that_was_never_onboarded_or_whose_home_was_never_probed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    setup, _ = onboarding(machine_with(), monkeypatch)
+    setup, dispatcher = onboarding(machine_with(), monkeypatch, root=HostProfile().root)
     with pytest.raises(LookupError, match="'gold' has never been set up"):
+        setup.run(sync_only=True)
+    dispatcher.cache.save_host(HostSetup(host="gold", root="/recorded"))
+    with pytest.raises(MissionError, match="no probed home to place ~/.mainboard-jobs"):
         setup.run(sync_only=True)
 
 

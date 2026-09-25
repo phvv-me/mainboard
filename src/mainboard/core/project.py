@@ -25,6 +25,12 @@ class Project(FrozenModel):
         return f".{self.name}"
 
     @property
+    def jobs_root(self) -> str:
+        """Where a dispatch target keeps the tool's code and state unless its profile says
+        otherwise: one dedicated folder under the login home, never a human checkout."""
+        return f"~/.{self.name}-jobs"
+
+    @property
     def plugin_group(self) -> str:
         """The entry-point group third-party providers advertise under."""
         return f"{self.name}.providers"
