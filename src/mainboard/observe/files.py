@@ -7,6 +7,9 @@ import polars as pl
 
 from .frames import Frame, parse_tail
 
+_PART_BYTES = 512 * 1024
+_CHUNK_BYTES = 64 * 1024
+
 
 class FrameFile:
     """Preserve wire offsets and incomplete tails when compacting a finished stream."""
@@ -34,15 +37,17 @@ class FrameFile:
     def archive(self) -> Path:
         """Create bounded Zstandard Parquet parts and verify their exact byte round trip."""
         raw = self.read_bytes()
+        size = max(len(raw), 1)
         target = self.path.with_name(self.path.name + ".parquet")
         target.mkdir()
-        for part, start in enumerate(range(0, max(len(raw), 1), 524288)):
+        for part, start in enumerate(range(0, size, _PART_BYTES)):
             chunks = [
-                raw[offset : offset + 65536]
-                for offset in range(start, min(start + 524288, max(len(raw), 1)), 65536)
+                raw[offset : offset + _CHUNK_BYTES]
+                for offset in range(start, min(start + _PART_BYTES, size), _CHUNK_BYTES)
             ]
+            first = start // _CHUNK_BYTES
             pl.DataFrame(
-                {"ordinal": range(start // 65536, start // 65536 + len(chunks)), "wire": chunks},
+                {"ordinal": range(first, first + len(chunks)), "wire": chunks},
                 schema={"ordinal": pl.UInt32, "wire": pl.Binary},
             ).write_parquet(
                 target / f"part-{part:05d}.parquet", compression="zstd", compression_level=19

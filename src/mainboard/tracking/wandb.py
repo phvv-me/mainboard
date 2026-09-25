@@ -12,15 +12,12 @@
 #   job.settled     the summary's verdict and detail, then the run is closed with its exit code
 #   batch.closed    the stream's context again, since a batch-wide line belongs to no run
 #
-# THE IDENTITY. One run per job, and its wandb id is our own content-addressed digest over
-# (stream, job), so the process that dispatches a job and the sweep that settles it hours later
-# from another machine resume the same run instead of minting two. That is also why no step is
-# ever passed to `log`: the service's own cursor continues a resumed run where it stands.
+# THE IDENTITY. One run per job, its wandb id our content-addressed digest over (stream, job), so
+# the dispatching process and the sweep settling it hours later on another machine resume one run.
 #
-# WHAT NEVER HAPPENS HERE. No key is read, printed or logged (`Credentials` merges the workspace
-# `.env` and this module only asks whether the variable is now set), and nothing raises out of
-# `publish`, because `Mirrored` treats this whole module as best effort and a batch must never
-# die because a dashboard did.
+# WHAT NEVER HAPPENS HERE. No key is read, printed or logged (only the variable's presence is
+# checked), and nothing raises out of `publish`: `Mirrored` treats this module as best effort, and
+# a batch must never die because a dashboard did.
 
 import os
 from importlib import import_module
@@ -45,22 +42,19 @@ if TYPE_CHECKING:
     from ..batch.receipts import Event
     from ..manifest.schema.tracking import Tracking
 
-# The variable the service itself reads, and the only thing this module ever checks about it.
 _KEY = "WANDB_API_KEY"
 
-# The variable that keeps the service off stdout. `Settings(silent=True)` quiets an opened run,
-# but the lines before it (`wandb: [wandb.login()] Loaded credentials ...`) are printed while the
-# package is finding its credentials, and they landed in front of a `--json` document where every
-# consumer had to skip them. The service reads this at import, so it is set before the import.
+# Keeps the service off stdout. `Settings(silent=True)` quiets an opened run, but the lines printed
+# while the package finds its credentials (`wandb: [wandb.login()] Loaded credentials ...`) landed
+# in front of `--json` documents. The service reads it at import, so it is set before the import.
 _SILENCE = "WANDB_SILENT"
 
-# What a topic's fields also belong on, the run's summary, so a finished run reads as a row
-# rather than as a series somebody has to scrub to the end of.
+# Topics whose fields also go on the run's summary, so a finished run reads as a row rather than
+# a series somebody has to scrub to the end of.
 _SUMMARIZED = frozenset({Topic.COST, Topic.ESTIMATED})
 
-# The topics that end a run, and the exit code each one closes it with when the receipt carries
-# none of its own. A refusal never ran at all, which is a failure of the dispatch rather than of
-# the command, and both read as a non-zero close.
+# The topics that end a run, and the exit code each closes it with when the receipt carries none.
+# A refusal is a failure of the dispatch rather than of the command, still a non-zero close.
 _CLOSING: dict[Topic, int] = {Topic.SETTLED: 1, Topic.REFUSED: 1}
 
 
@@ -93,15 +87,9 @@ class Tracked(Protocol):
 class WandbSink(Tracker):
     """One Weights and Biases run per job, resumed by our own content-addressed id.
 
-    Every job of a stream shares that stream as its group, so a batch reads as one row of runs
-    and a study reads as one row of trials. What a run carries is exactly what the receipts said,
-    with the envelope's identity as config, each topic's scalars as history, and the terminal
-    line closing the run with the exit code the verdict implies.
-
-    The mode is resolved rather than obeyed: an `online` workspace with no key on this machine
-    queues offline instead of blocking on a login prompt no dispatched job could ever answer, and
-    says which directory `wandb sync` should drain. That is what makes a compute node with no
-    egress work without configuring anything there.
+    Every job of a stream shares the stream as its group, so a batch reads as one row of runs and
+    a study as one row of trials. A run carries exactly what the receipts said: the envelope's
+    identity as config, each topic's scalars as history, and the terminal line closing it.
     """
 
     name = "wandb"
@@ -110,18 +98,17 @@ class WandbSink(Tracker):
     def __init__(
         self, stream: str, *, declared: Tracking, directory: Path, workspace: str = ""
     ) -> None:
-        """The stream this sink mirrors, with its runs and context still empty."""
         super().__init__(stream, declared=declared, directory=directory, workspace=workspace)
         self.runs: dict[str, Tracked] = {}
         self.context: dict[str, JsonValue] = {}
 
     @property
     def mode(self) -> str:
-        """`online` only where a key actually is, since a keyless online run cannot open at all.
+        """`online` only where a key is (the workspace `.env` merged first), else offline.
 
-        The workspace `.env` is merged first, which is where the key lives on the machine that
-        dispatches, and a node that never got one falls through to a queued offline run rather
-        than to a failure. Only the variable's presence is read, never its value.
+        A keyless online run would block on a login prompt no dispatched job can answer, so it
+        queues offline and says which directory `wandb sync` drains; a compute node with no
+        egress works without configuring anything there.
         """
         if self.declared.mode is TrackingMode.OFFLINE:
             return TrackingMode.OFFLINE
@@ -143,10 +130,9 @@ class WandbSink(Tracker):
 
     @staticmethod
     def flattened(event: Event) -> dict[str, JsonValue]:
-        """`event`'s scalar payload, keyed by its topic, the shape a history row is written in.
+        """`event`'s scalar payload keyed by its topic, a history row.
 
-        A list-valued field (the paths a transfer names) is left to the receipts file, which is
-        canonical and holds it whole. Only what can be a series becomes one.
+        A list-valued field (the paths a transfer names) stays whole in the canonical receipts.
         """
         prefix = event.topic.split(".")[-1]
         return {
@@ -156,18 +142,16 @@ class WandbSink(Tracker):
         }
 
     def close(self, job: str, *, exit_code: int) -> None:
-        """End `job`'s run at `exit_code` and forget it, so a later line opens a fresh resume.
+        """End `job`'s run and forget it, so a later line opens a fresh resume.
 
-        Only ever reached with a run this sink just logged to, since `publish` opens the run
-        before it reads the topic, so there is nothing here to guard against.
+        `publish` opens the run before reading the topic, so the run is always here.
         """
         self.runs.pop(job).finish(exit_code=exit_code)
 
     def publish(self, event: Event) -> None:
         """Tell this stream's runs what one receipt said, opening or closing a run as it says to.
 
-        A batch-wide line names no job, so it is context every run this sink later opens carries
-        rather than a row in any one of them.
+        A batch-wide line names no job, so it becomes context every later run carries.
         """
         if not event.job:
             self.context.update(dict(event.data))
@@ -186,10 +170,8 @@ class WandbSink(Tracker):
     def run(self, job: str) -> Tracked:
         """`job`'s run, resumed by its content-addressed id or opened here for the first time.
 
-        The id is ours rather than the service's, which is the whole reason a dispatch here and a
-        sweep on another machine tomorrow write to one run. No step is ever passed to `log`: the
-        service advances its own cursor and continues a resumed run from where it stands, while
-        the `step` it reports at init reads zero for a resumed run and every explicit position
+        No step is ever passed to `log`: the service continues a resumed run from its own cursor,
+        while the `step` it reports at init reads zero for a resumed run and every position
         seeded from it was refused as "less than the current step".
         """
         if job in self.runs:
@@ -207,8 +189,7 @@ class WandbSink(Tracker):
             config={"stream": self.stream, "job": job, "run_id": identity, **self.context},
             resume="allow",
             reinit="create_new",
-            # The receipts beside this run are the record, so the service's own banner has
-            # nothing to add to a command's output and only buries the table it printed.
+            # The receipts are the record; the service's banner only buries a command's table.
             settings=service.Settings(silent=True),
         )
         self.runs[job] = opened
@@ -226,15 +207,10 @@ def exit_code(event: Event) -> int:
 
 
 def module() -> ModuleType:
-    """The imported `wandb` module, refusing with the one command that installs it.
+    """The imported, silenced `wandb` module, refusing with the one command that installs it.
 
-    The import is here rather than at the top of the file because tracking is on by default and
-    this package must stay installable without the service, so a workspace that never wanted the
-    lane pays nothing for it and a workspace that did is told exactly what to run.
-
-    The service is silenced on the way in, before its own import reads the variable. The receipts
-    beside a run are this workspace's record of it, so nothing the package says on stdout is
-    worth the `--json` document it would be printed in front of.
+    Imported here because tracking is on by default and mainboard must stay installable without
+    the service: a workspace that never wanted the lane pays nothing.
     """
     os.environ[_SILENCE] = "true"
     try:

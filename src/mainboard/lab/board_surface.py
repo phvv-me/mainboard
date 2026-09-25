@@ -20,20 +20,15 @@ if TYPE_CHECKING:
     from .lane import Lane
 
 # The whole published contract between a trial and anything reading its output: one JSON line
-# under this key, printed by whatever drives the trial. The key names the shape rather than the
-# harness that stamped it, so any experiment framework earns the same reading by printing the
-# same line, and a reader parses it instead of importing this package. That is what lets a
-# proof-bookkeeping tool turn a claim's run into evidence carrying the trial's
-# content-addressed identity and its evaluated gates without knowing what ran it.
+# under this key, printed by whatever drives the trial (nothing here prints it). The key names
+# the shape, not the harness, so any framework printing the same line reads the same, and a
+# reader (a proof-bookkeeping tool turning a claim's run into evidence naming its trial and
+# gates) parses it instead of importing this package.
 RECEIPT = "trial_receipt"
 
 
 class Declarations(TypedDict, total=False):
-    """The `Experiment` class attributes `experiment()` may set from its keyword declarations.
-
-    Exactly the class attributes a hand-written `Experiment` subclass would set: `lanes`,
-    `gates`, `models`, `trials`, `seed`.
-    """
+    """The `Experiment` class attributes `experiment()` sets, as a hand-written subclass would."""
 
     lanes: tuple[Lane, ...]
     gates: tuple[Gate, ...]
@@ -46,10 +41,8 @@ class Declarations(TypedDict, total=False):
 class TrialOutcome:
     """Shared identity every trial result carries, whatever its outcome.
 
-    run_id: this trial's dedup identity.
     gate_evidence: evaluated gate verdicts, ending at the first unmet precondition.
-    node: the ledger slug this trial serves; empty stays a valid receipt and the field is
-        simply absent from the printed line.
+    node: the ledger slug this trial serves, absent from the printed line when empty.
     """
 
     verdict: ClassVar[GateStatus]
@@ -59,14 +52,10 @@ class TrialOutcome:
     node: str = field(default="", kw_only=True)
 
     def receipt(self) -> str:
-        """This trial as its one `RECEIPT` JSON line, for whatever drives the trial to print.
+        """This trial as its one `RECEIPT` JSON line.
 
-        Identity, the outcome word, the harness that stamped it, the evaluated gates, the
-        ledger node when one was declared, and then whatever else the outcome kind carries as
-        its own fields. A new kind declares a `verdict` and its fields, and its receipt follows
-        without a renderer here ever being edited. `producer` is provenance for a reader
-        keeping it, never a thing a reader has to branch on, since the point of the line is
-        that every producer's reads the same.
+        A new outcome kind declares a `verdict` and its fields, and its receipt follows without
+        editing a renderer. `producer` is provenance, never something a reader branches on.
         """
         shared = {"run_id", "gate_evidence", "node"}
         payload: dict[str, JsonValue] = {
@@ -85,10 +74,7 @@ class TrialOutcome:
 
 @dataclass(frozen=True, slots=True)
 class TrialResult(TrialOutcome):
-    """A trial that cleared every gate and ran to completion.
-
-    metrics: the named metrics `measure` returned.
-    """
+    """A trial that cleared every gate and ran to completion, with what `measure` returned."""
 
     verdict: ClassVar[GateStatus] = GateStatus.PASSED
 
@@ -97,10 +83,7 @@ class TrialResult(TrialOutcome):
 
 @dataclass(frozen=True, slots=True)
 class BlockedTrial(TrialOutcome):
-    """A trial withheld by a gate that legitimately isn't ready yet, never a failure.
-
-    reason: the blocking gate's own reason.
-    """
+    """A trial withheld by a gate that legitimately isn't ready yet, never a failure."""
 
     verdict: ClassVar[GateStatus] = GateStatus.BLOCKED
 
@@ -109,14 +92,17 @@ class BlockedTrial(TrialOutcome):
 
 @dataclass(frozen=True, slots=True)
 class FailedTrial(TrialOutcome):
-    """A trial whose gate check itself broke.
-
-    reason: the failing gate's own reason.
-    """
+    """A trial whose gate check itself broke."""
 
     verdict: ClassVar[GateStatus] = GateStatus.FAILED
 
     reason: str
+
+
+_STOPPED: dict[GateStatus, type[BlockedTrial | FailedTrial]] = {
+    GateStatus.BLOCKED: BlockedTrial,
+    GateStatus.FAILED: FailedTrial,
+}
 
 
 def experiment(
@@ -124,14 +110,9 @@ def experiment(
 ) -> Callable[[Callable[..., dict[str, float]]], type[Experiment]]:
     """Turn a plain measuring function into a registered `Experiment` subclass.
 
-    The decorated function's first parameter is `run`; every other, keyword-only parameter
-    becomes a pydantic config field on the generated class, its `Annotated` domain carried
-    through unchanged for `space_of` to read later. The function itself becomes the generated
-    class's `measure`, called with `run` and every config field as keywords, plus `lane` when
-    the function declares that parameter itself.
-
-    declarations: `lanes`, `gates`, `models`, `trials`, `seed`, exactly the class attributes a
-        hand-written `Experiment` subclass would set.
+    The function's first parameter is `run`; every other keyword-only parameter becomes a pydantic
+    config field, its `Annotated` domain kept for `space_of`. The function becomes `measure`,
+    called with `run` and every config field as keywords, plus `lane` when it declares one.
     """
 
     def decorate(fn: Callable[..., dict[str, float]]) -> type[Experiment]:
@@ -174,17 +155,11 @@ def runnable(
     *,
     lane: Lane | None = None,
 ) -> TrialResult | BlockedTrial | FailedTrial:
-    """Check ordered preconditions, then set up and measure only when all gates pass.
+    """Check `experiment_cls.gates` in order, then set up and measure only when all pass.
 
-    Stop at the first blocked or failed gate: later checks can require resources that
-    earlier gates admit. Retain only evaluated verdicts, including the stopping gate.
-    A blocked precondition remains distinct from a failed check.
-
-    experiment_cls: the registered `Experiment` subclass whose declared `gates` this trial
-        must clear.
-    model: the model id this trial runs against.
-    config: the validated experiment instance `setup`/`measure` run with.
-    lane: the counterbalanced condition this trial measures, when the experiment declares any.
+    Stop at the first blocked or failed gate, since later checks can need resources earlier gates
+    admit, and keep only the evaluated verdicts. A blocked precondition stays distinct from a
+    failed check.
     """
     trial_id = config.run_id(model=model, lane=lane)
     run = Run(
@@ -194,15 +169,8 @@ def runnable(
     for gate in experiment_cls.gates:
         verdict = gate.check(run)
         evidence.append(verdict)
-        if verdict.status == GateStatus.BLOCKED:
-            return BlockedTrial(
-                run_id=trial_id, gate_evidence=tuple(evidence), reason=verdict.reason
-            )
-        if verdict.status == GateStatus.FAILED:
-            return FailedTrial(
-                run_id=trial_id, gate_evidence=tuple(evidence), reason=verdict.reason
-            )
-
+        if stopped := _STOPPED.get(verdict.status):
+            return stopped(run_id=trial_id, gate_evidence=tuple(evidence), reason=verdict.reason)
     config.setup(run)
     metrics = config.measure(run, lane)
     return TrialResult(run_id=trial_id, metrics=metrics, gate_evidence=tuple(evidence))

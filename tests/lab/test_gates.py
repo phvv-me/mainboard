@@ -15,32 +15,26 @@ from mainboard.lab.gates import (
 
 
 def is_met() -> bool:
-    """A probe reporting its precondition already holds."""
     return True
 
 
 def is_unmet() -> bool:
-    """A probe cleanly reporting its precondition does not hold yet."""
     return False
 
 
 def broken() -> NoReturn:
-    """A probe whose own check breaks rather than answering."""
     raise RuntimeError("boom")
 
 
 def idle_gate(answer: Callable[[], bool]) -> Gate:
-    """An idle gate whose wait defers to `answer`."""
     return Idle(seconds=2.5, wait=lambda **_: answer())
 
 
 def parity_gate(answer: Callable[[], bool]) -> Gate:
-    """A parity gate whose comparison probe defers to `answer`."""
     return Parity(oracle="reference", probe=lambda oracle, context: answer())
 
 
 def offline_gate(answer: Callable[[], bool]) -> Gate:
-    """An offline gate whose declaration probe is `answer` itself."""
     return Offline(probe=answer)
 
 

@@ -1,16 +1,11 @@
 # THE BATCH EVENT CONTRACT, and the one place it is written down.
 #
-# Everything a batch learns is published here as one line, and every later verb reads its own
-# cursor back out of these lines rather than out of memory. That is deliberate: the store behind
-# this module is a file today and a broker tomorrow, and the swap has to be a transport swap
-# alone, so nothing downstream may depend on the lines being local, ordered by inode, or written
-# by the same process that reads them.
+# Everything a batch learns is published as one line, and every later verb reads its cursor back
+# out of these lines rather than memory. The store is a file today and a broker tomorrow, so
+# nothing downstream may depend on the lines being local, inode-ordered, or written by the reader.
 #
-# THE ENVELOPE. Every line is one `Event`: `at` (ISO-8601), `batch` (the stream it belongs to and
-# the key a broker partitions on), `topic` (the routing key), `job` (the job inside the batch,
-# empty for a batch-wide line) and `data` (that topic's own payload). Envelope fields never carry
-# payload and payload never carries routing, so a subscriber filters on the envelope without
-# parsing what it is filtering.
+# THE ENVELOPE. Every line is one `Event`. Envelope fields never carry payload and payload never
+# carries routing, so a subscriber filters on the envelope without parsing what it filters.
 #
 # THE TOPICS, and what each one's `data` holds:
 #   batch.opened    {"name", "jobs": [job names], "root"}         once, by the first verb to write
@@ -38,14 +33,11 @@
 #                   status is pending, copied, verified, not_started, or unverified
 #   batch.closed    {"jobs", "ok", "failed", "skipped"}           every job settled, once
 #
-# THE RULES that make the transport swappable. Every line is derived from durable state (the
-# dispatch cache and the lines already published), so a pass that dies republishes nothing and a
-# pass that never ran loses nothing, it just publishes later. Every line is idempotent in
-# meaning: a topic that must happen once is written once because the log itself is the cursor,
-# which is exactly what a broker's at-least-once delivery needs from its producers. And ordering
-# is per job rather than global, so a partitioned topic reads the same as this file does. What a
-# job spends is published before the job settles, so the terminal line is genuinely the last one
-# a subscriber sees about that job and a sink may close its own record on reading it.
+# THE RULES that make the transport swappable. Every line derives from durable state (the dispatch
+# cache and lines already published), so a dying pass republishes nothing and a pass that never
+# ran just publishes later. Every line is idempotent in meaning (the log is the cursor), as a
+# broker's at-least-once delivery needs. Ordering is per job, not global. What a job spends is
+# published before it settles, so the terminal line is the last one and a sink may close on it.
 
 import json
 import logging
@@ -86,9 +78,8 @@ class Topic(StrEnum):
     CLOSED = "batch.closed"
 
 
-# The three answers a target can give about one offered job. They are named together because no
-# reader wants them apart: a row's question is what the last word about this job was, not what
-# was submitted and separately what was refused, and `latest` over the three is that question.
+# The three answers a target gives about one offered job, read together since a row asks only
+# for the last word (`latest` over the three).
 OFFERED = (Topic.SUBMITTED, Topic.REFUSED, Topic.HELD)
 
 
@@ -96,10 +87,9 @@ class Event(FrozenModel):
     """One published line: where it belongs, what it says, and what it says it about.
 
     at: ISO-8601 publish time.
-    batch: the batch id, the stream this line belongs to.
-    topic: the routing key, from `Topic`.
+    batch: the batch id, the stream this line belongs to and the key a broker partitions on.
     job: the job name inside the batch, empty for a batch-wide line.
-    data: the topic's own payload, exactly as this module's contract documents it.
+    data: the topic's own payload, as the table above documents it.
     """
 
     at: str
@@ -120,19 +110,16 @@ class Bus(Protocol):
 
 
 class Receipts:
-    """The file transport: one NDJSON line per event under the batch's own directory.
+    """The file transport: the batch's `events.ndjson`, created with its directory on publish.
 
-    Append-only and read whole, since a batch is tens of jobs and a few lines each. A line that
-    is not readable JSON is skipped rather than fatal, so a log truncated by a crash still
-    replays everything written before the tear.
+    Append-only and read whole (a batch is tens of jobs). An unreadable line is skipped rather
+    than fatal, so a log torn by a crash still replays everything before the tear.
     """
 
     def __init__(self, path: Path) -> None:
-        """path: the batch's `events.ndjson`, created with its directory on first publish."""
         self.path = path
 
     def publish(self, event: Event) -> None:
-        """Append one event line durably."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with FileLock(self.path.with_suffix(".lock")), self.path.open("a+b") as opened:
             if opened.tell():
@@ -144,7 +131,6 @@ class Receipts:
             os.fsync(opened.fileno())
 
     def replay(self) -> list[Event]:
-        """Every recorded event, oldest first, empty when nothing has been published yet."""
         if not self.path.is_file():
             return []
         lines = self.path.read_text(encoding="utf-8").splitlines()
@@ -160,30 +146,20 @@ class Receipts:
 
 
 class Mirrored:
-    """One canonical transport with best-effort copies beside it, the shape a reporting sink joins.
+    """One canonical transport with best-effort mirrors beside it, how a reporting sink joins.
 
-    The canonical bus is the record and every mirror is a courtesy, which is the whole contract
-    here. The canonical publish happens first and a mirror that raises is logged and dropped
-    after it, so an expired token, a rate limit or a node with no route out costs one copy of one
-    line and never the line itself. `replay` reads the canonical bus alone for the same reason: a
-    cursor a resumed pass reads has to come from the transport guaranteed to hold every line, and
-    a sink is somewhere events go rather than somewhere they come from.
-
-    A mirror is caught broadly on purpose. It is a whole vendor SDK behind one call, so the set
-    of ways it can fail is not ours to enumerate, and the one outcome this class exists to
-    prevent is a batch dying because a dashboard did.
+    The canonical publish happens first and a mirror that raises is logged and dropped, so an
+    expired token or a node with no route out costs one copy, never the line. `replay` reads the
+    canonical bus alone, the only one guaranteed to hold every line. A mirror is caught broadly
+    on purpose: it is a whole vendor SDK behind one call, and a batch must never die because a
+    dashboard did.
     """
 
     def __init__(self, canonical: Bus, *mirrors: Bus) -> None:
-        """canonical: the transport that must receive every event.
-
-        mirrors: the copies, each published to after the canonical one and never instead of it.
-        """
         self.canonical = canonical
         self.mirrors = mirrors
 
     def publish(self, event: Event) -> None:
-        """Record `event` durably, then offer it to each mirror."""
         self.canonical.publish(event)
         for mirror in self.mirrors:
             try:
@@ -198,18 +174,13 @@ class Mirrored:
                 )
 
     def replay(self) -> list[Event]:
-        """Every event, from the canonical transport, which is the only one that holds them all."""
         return self.canonical.replay()
 
 
 def publish(
     bus: Bus, batch: str, topic: Topic, *, job: str = "", data: Mapping[str, JsonValue]
 ) -> Event:
-    """Stamp `data` as one event of `topic` and hand it to `bus`, returning what was published.
-
-    The one place an event is built, so every line carries the same envelope however far from
-    here the payload was assembled.
-    """
+    """Stamp `data` as one event of `topic` and hand it to `bus` (events are built only here)."""
     event = Event(at=now(), batch=batch, topic=topic, job=job, data=dict(data))
     bus.publish(event)
     return event
@@ -221,19 +192,11 @@ def payload(record: FrozenModel) -> dict[str, JsonValue]:
 
 
 def latest(events: Iterable[Event], *topics: Topic) -> dict[str, Event]:
-    """The most recent event of `topics` per job, the cursor a resumed pass reads.
+    """The most recent event of any of `topics` per job, the cursor a resumed pass reads.
 
-    Recent by the envelope's own `at` rather than by where the line happened to land, because
-    the transport this contract is written for is a broker: a partition delivers at least once
-    and promises order per job at best, so a reader that simply took the last line it saw would
-    let a redelivered older line overwrite the newer one it already had. An ISO-8601 stamp sorts
-    as the instant it names, and a tie keeps the later arrival, which is what a file transport
-    appending twice inside one clock tick means.
-
-    Several topics read as one cursor, which is how a reader asks the question it actually has.
-    `job.submitted`, `job.refused` and `job.held` are three answers to a single offer, so what a
-    row wants is the newest of the three rather than the newest of each and a rule for ranking
-    them afterwards; asked here, the rule is the clock and there is only one copy of it.
+    Recent by the envelope's `at`, not arrival: a broker redelivers at least once and orders per
+    job at best, so taking the last line seen would let an older redelivery win. A tie keeps the
+    later arrival (a file appending twice in one clock tick).
     """
     wanted = frozenset(topics)
     newest: dict[str, Event] = {}

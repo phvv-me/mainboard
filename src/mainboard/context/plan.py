@@ -5,13 +5,10 @@ from ..manifest.schema.host import HostProfile
 
 
 class ExecutionPlan(FrozenModel):
-    """The resolved answer to where and how one command runs.
+    """The resolved answer to where and how one command runs (`container` None when bare).
 
-    The object the three predecessor tools each held a third of: which host
-    alias, which resolved profile, which environment, which container base
-    (None when bare), and the variables in force. Engines materialize it into
-    argv, dispatch ships it, probe validates it against reality. `stable_id`
-    from the base is the cache key for anything derived from a plan.
+    Engines materialize it into argv, dispatch ships it, probe validates it against reality, and
+    the base's `stable_id` keys any cache derived from a plan.
     """
 
     host: str
@@ -23,16 +20,12 @@ class ExecutionPlan(FrozenModel):
 
     @property
     def containerized(self) -> bool:
-        """Whether the command runs inside a container base image."""
         return self.container is not None
 
     def prefix(self, root: str) -> str:
-        """The environment prefix path under `root`, always a bound host path.
+        """The environment prefix under the executing machine's workspace `root`.
 
-        The prefix lives outside any image, on the workspace's generated
-        directory locally and on the synced root remotely, which is what lets
-        a fixed off-the-shelf image serve every dependency change.
-
-        root: the workspace root path on the executing machine.
+        Always a bound host path outside any image, which lets a fixed off-the-shelf image serve
+        every dependency change.
         """
         return f"{root}/.mainboard/envs/{self.env}/.pixi/envs/{self.env}"

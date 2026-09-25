@@ -1,11 +1,10 @@
-# `mainboard center paper`: build a declared manuscript and say everything a reviewer would catch
-# before a deadline, in one pass that exits nonzero on any of it. Errors, unresolved references
-# and citations, labels defined twice, overfull boxes, the page count, where each section
-# starts, and whether the section that closes the main text ends inside the venue's limit.
+# `mainboard center paper`: build a declared manuscript and say, in one pass that exits nonzero on
+# any of it, everything a reviewer would catch: errors, unresolved references and citations,
+# labels defined twice, overfull boxes, the page count, where each section starts, and whether
+# the section closing the main text ends inside the venue's limit.
 #
-# The engine is tectonic and the page tools are poppler's, both run through the workspace
-# environment the way any task is, so the build a check reads is the one the manuscript's own
-# lock pins rather than whichever TeX a machine happens to carry.
+# tectonic and poppler run through the workspace environment like any task, so the build is the
+# one the manuscript's lock pins rather than whichever TeX a machine carries.
 
 import re
 from pathlib import Path
@@ -32,14 +31,10 @@ _HYPHENATED = re.compile(r"-[ \t]*\n")
 class Report(FrozenModel):
     """One build of one manuscript, and everything wrong with it.
 
-    paper: the declared manuscript's name.
-    pdf: where the build wrote the PDF.
-    pages: how many pages it has, 0 when the build produced none.
-    limit: the declared page limit, 0 when the manuscript declares none.
+    pages: 0 when the build produced none.
+    limit: the declared page limit, 0 when none is declared.
     ends: the section that must end within the limit, empty when none is checked.
-    ends_on: the last page that section reaches, 0 when it was not measured.
-    sections: every top-level section with the page it starts on.
-    problems: everything the build and the check found wrong.
+    ends_on: the last page that section reaches, 0 when not measured.
     """
 
     paper: str
@@ -56,9 +51,8 @@ class Manuscript:
     """One declared manuscript: built on demand, checked against its rule, shown by the page.
 
     name: the `[papers.<name>]` key.
-    paper: the declaration, its directory, root file and page rule.
     root: the workspace root the declared directory is relative to.
-    run: runs one argv inside the workspace environment and returns what it printed.
+    run: runs one argv inside the workspace environment.
     """
 
     def __init__(self, name: str, paper: Paper, *, root: Path, run: Runner) -> None:
@@ -72,15 +66,13 @@ class Manuscript:
 
     @property
     def pdf(self) -> Path:
-        """Where the build writes the PDF."""
         return self.build / f"{self.stem}.pdf"
 
     def check(self) -> Report:
         """Build the manuscript, then read the log, the page layout and the rule into a report.
 
-        A build that failed is reported by its errors alone. Its layout files are the previous
-        build's, and the warnings of a run that stopped halfway are a first pass's, every
-        citation unresolved because the bibliography never ran.
+        A failed build is reported by its errors alone: its layout files are the previous build's,
+        and a halfway run's warnings are a first pass's, every citation unresolved.
         """
         built = self._compile()
         problems = TexLog(self._read(".log"), directory=self.directory).problems()
@@ -102,11 +94,8 @@ class Manuscript:
     def show(self, text: str, *, dpi: int) -> Path:
         """Render the first page whose text contains `text` to a PNG and return its path.
 
-        Matching ignores whitespace, case and a word hyphenated across a line break, since that
-        is how a phrase copied out of the source differs from the same phrase on the page.
-
-        text: a phrase from the page to find.
-        dpi: the rendering resolution.
+        Matching ignores whitespace, case and a word hyphenated across a line break, which is how
+        a phrase copied out of the source differs from the same phrase on the page.
         """
         extracted = self.run(["pdftotext", "-layout", str(self.pdf), "-"])
         if not extracted.succeeded:
@@ -132,7 +121,6 @@ class Manuscript:
         return stem.with_suffix(".png")
 
     def _compile(self) -> CommandResult:
-        """Run tectonic over the root file, keeping the log, the `.aux` and the SyncTeX map."""
         self.build.mkdir(parents=True, exist_ok=True)
         return self.run(
             ["tectonic", "--keep-logs", "--keep-intermediates", "--synctex"]
@@ -143,9 +131,10 @@ class Manuscript:
     def _errors(problems: Sequence[Problem], built: CommandResult) -> tuple[Problem, ...]:
         """The errors a failed build reports: the log's own, else the engine's last words."""
         logged = tuple(problem for problem in problems if problem.kind is Kind.ERROR)
-        said = built.stderr.splitlines()
         return logged or tuple(
-            Problem(kind=Kind.ERROR, detail=line) for line in said if line.startswith("error:")
+            Problem(kind=Kind.ERROR, detail=line)
+            for line in built.stderr.splitlines()
+            if line.startswith("error:")
         )
 
     def _limited(self, pages: int) -> tuple[int, list[Problem]]:
@@ -164,8 +153,9 @@ class Manuscript:
         if not ends_on:
             return 0, [_over(f"SyncTeX placed no line of {ends!r} on any page")]
         if ends_on > limit:
-            past = f"{ends!r} ends on page {ends_on}, past the {limit}-page limit"
-            return ends_on, [_over(past)]
+            return ends_on, [
+                _over(f"{ends!r} ends on page {ends_on}, past the {limit}-page limit")
+            ]
         return ends_on, []
 
     def _read(self, suffix: str) -> str:
@@ -179,7 +169,6 @@ class Manuscript:
 
 
 def _over(detail: str) -> Problem:
-    """A page-rule problem saying `detail`."""
     return Problem(kind=Kind.LIMIT, detail=detail)
 
 

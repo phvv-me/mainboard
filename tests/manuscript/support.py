@@ -1,11 +1,9 @@
 import gzip
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from mainboard.engines.compile.backend.result import CommandResult
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
 
 # How wide TeX writes a log line before it breaks it.
 WRAP = 79
@@ -85,43 +83,24 @@ def wrapped(line: str) -> list[str]:
     return chunks + ([""] if line and len(line) % WRAP == 0 else [])
 
 
+@dataclass
 class Engine:
     """The three tools a manuscript check runs, answering from what a test configured.
 
-    tectonic writes the configured log, `.aux` and SyncTeX map into its `--outdir` and exits as
-    told; pdftotext answers `pages` joined by form feeds; pdftoppm answers as told.
-
-    log: the log a build writes, None to write none at all.
-    aux: the `.aux` a build writes.
-    synctex: the decompressed SyncTeX map a build writes.
-    failed: whether the build exits nonzero.
-    stderr: what the build prints to stderr.
-    pages: each page's text, for pdftotext.
-    readable: whether pdftotext succeeds.
-    renders: whether pdftoppm succeeds.
+    tectonic writes `log` (none when None), `aux` and the decompressed `synctex` map into its
+    `--outdir` and exits as `failed` says; pdftotext answers `pages` joined by form feeds unless
+    not `readable`; pdftoppm succeeds when it `renders`.
     """
 
-    def __init__(
-        self,
-        *,
-        log: str | None = "",
-        aux: str = AUX,
-        synctex: str = "",
-        failed: bool = False,
-        stderr: str = "",
-        pages: Sequence[str] = (),
-        readable: bool = True,
-        renders: bool = True,
-    ) -> None:
-        self.log = log
-        self.aux = aux
-        self.synctex = synctex
-        self.failed = failed
-        self.stderr = stderr
-        self.pages = pages
-        self.readable = readable
-        self.renders = renders
-        self.calls: list[list[str]] = []
+    log: str | None = ""
+    aux: str = AUX
+    synctex: str = ""
+    failed: bool = False
+    stderr: str = ""
+    pages: Sequence[str] = ()
+    readable: bool = True
+    renders: bool = True
+    calls: list[list[str]] = field(default_factory=list)
 
     def __call__(self, argv: Sequence[str]) -> CommandResult:
         self.calls.append(list(argv))

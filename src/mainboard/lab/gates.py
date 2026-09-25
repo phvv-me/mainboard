@@ -26,11 +26,10 @@ class GateStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class GateVerdict:
-    """One gate's check outcome.
+    """One gate's check outcome, `reason` empty when passed.
 
-    status: `passed` clears the gate, `blocked` legitimately withholds the trial without
-        counting as a failure, `failed` means the check itself broke.
-    reason: a short explanation, empty when passed.
+    status: `blocked` legitimately withholds the trial without counting as a failure, `failed`
+        means the check itself broke.
     """
 
     status: GateStatus
@@ -40,31 +39,18 @@ class GateVerdict:
 class Gate(Registry, abc.ABC):
     """Shared contract for a trial precondition: idle GPU, parity, offline mode, or data receipt.
 
-    A new precondition kind is a new `Gate` subclass registered here, never a branch inside
-    `runnable`. Every field an implementation needs to reach a real check (a wait function, a
-    comparison probe) is an injected callable with a hardware-free default, so every gate is
-    exercised by a test without touching a GPU, the network, or a cache.
+    A new precondition kind is a new registered subclass, never a branch inside `runnable`. Each
+    real check (a wait function, a comparison probe) is an injected callable with a hardware-free
+    default, so tests never touch a GPU, the network or a cache.
     """
 
     @abc.abstractmethod
     def check(self, context: Run) -> GateVerdict:
-        """Evaluate this gate's precondition right now.
-
-        context: the trial's `Run`, in case the check needs the model id or config.
-        """
+        """Evaluate this gate's precondition right now."""
 
     def evaluate(self, probe: Callable[[], bool], *, blocked: str) -> GateVerdict:
-        """Run `probe` and translate its outcome into the shared three-way verdict.
-
-        Every concrete gate reaches its own check (a wait function, a comparison probe, a
-        staging lookup) through this one translation, so idle, parity, offline, and data
-        checks all agree on the same rule: a clean `True` passes, a clean `False` blocks with
-        `blocked`'s reason (an unmet precondition, never a failure), and a raised exception
-        fails with the exception's own message, since that is the check itself breaking.
-
-        probe: the concrete gate's own check, taking no arguments.
-        blocked: the reason recorded when `probe` cleanly returns False.
-        """
+        """The one rule every gate's `probe` is read by: `True` passes, `False` blocks with the
+        `blocked` reason (unmet, never a failure), and a raise fails with its message."""
         try:
             passed = probe()
         except Exception as error:
@@ -89,7 +75,6 @@ class Idle(Gate):
     """Blocks a trial until the GPU has been idle, never counting a busy GPU as a failure.
 
     seconds: how long to wait for an idle window before blocking.
-    wait: the idle probe to consult, `mainboard.wait_for_idle` by default.
     """
 
     seconds: float
@@ -106,8 +91,7 @@ class Idle(Gate):
 class Parity(Gate):
     """Blocks a trial until its behavior matches a named reference implementation.
 
-    oracle: the reference implementation this trial must match.
-    probe: reports whether parity holds, permissive (`default_parity_probe`) by default.
+    probe: reports whether parity with `oracle` holds, permissive by default.
     """
 
     oracle: str
@@ -122,10 +106,7 @@ class Parity(Gate):
 
 @dataclass(frozen=True, slots=True)
 class Offline(Gate):
-    """Blocks a trial unless the process declares itself offline.
-
-    probe: reports whether offline mode is active, `default_offline_probe` by default.
-    """
+    """Blocks a trial unless the process declares itself offline."""
 
     probe: Callable[[], bool] = is_offline_declared
 
@@ -138,9 +119,7 @@ class Receipt(Gate):
     """Blocks a trial until its declared dataset need is confirmed staged.
 
     dataset: the staging key (an `HfDataset`/`HfModel`/`RepoFile` `.key`) this trial needs.
-    needs: the staging declarations checked against `staged`, empty (nothing to verify) by
-        default.
-    staged: the keys already known present, empty (nothing staged) by default.
+    needs: the staging declarations checked against the keys `staged` reports present.
     """
 
     dataset: str

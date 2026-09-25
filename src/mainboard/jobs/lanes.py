@@ -1,10 +1,8 @@
 """One lane on many hosts: collect its cells, group them, dispatch a job per group and host.
 
-The pattern every multi-card campaign repeated by hand: a loop of cells on the workstation,
-a loop of submissions per tokenizer on each queued host, then monitor and collect. Here the
-lane's own parametrization is the plan, a group is one job that runs its cells as fresh
-processes through the runner's `--fresh` mode, and the receipts come home through the same
-sweep `wait` and `monitor` already run.
+What every multi-card campaign repeated by hand. The lane's parametrization is the plan, a group
+is one job running its cells as fresh processes (the runner's `--fresh`), and receipts come home
+through the sweep `wait` and `monitor` already run.
 """
 
 from __future__ import annotations
@@ -25,10 +23,9 @@ if TYPE_CHECKING:
 
 
 class Cell(FrozenModel):
-    """One collected cell of a lane.
+    """One collected cell of a lane, `file.py::test[key]`.
 
-    nodeid: the full pytest node id, `file.py::test[id]`.
-    key: the parametrize id between the brackets, empty for an unparametrized lane.
+    key: the parametrize id, empty for an unparametrized lane.
     params: the parametrize values as text, by name.
     """
 
@@ -38,10 +35,9 @@ class Cell(FrozenModel):
 
 
 class Group(FrozenModel):
-    """The cells one dispatched job runs, named after what they share.
+    """The cells (parametrize ids in collection order) one dispatched job runs.
 
-    name: the group's label, the shared parametrize value or the ordinal slice.
-    ids: the parametrize ids, in collection order.
+    name: the shared parametrize value or the ordinal slice.
     """
 
     name: str
@@ -49,12 +45,8 @@ class Group(FrozenModel):
 
 
 def grouped(cells: Sequence[Cell], *, by: str = "", per_job: int = 0) -> tuple[Group, ...]:
-    """The cells as job groups: one per value of `by`, else slices of `per_job`, else one.
-
-    cells: the collected cells.
-    by: a parametrize name whose value names each group.
-    per_job: how many cells one job takes when no name groups them, 0 for all in one.
-    """
+    """The cells as job groups: one per value of parametrize name `by`, else slices of
+    `per_job`, else (`per_job` 0) all in one."""
     if by:
         named: dict[str, list[str]] = {}
         for cell in cells:
@@ -106,10 +98,7 @@ app = App(name="lanes", help="Collect a lane's cells as JSON lines, inside the w
 
 @app.command
 def collect(target: str) -> int:
-    """Collect `target` under pytest and print one `CELL` line per cell.
-
-    target: the lane as spelled, `path/to/file.py::test`.
-    """
+    """Collect `target` (`path/to/file.py::test`) under pytest, one `CELL` line per cell."""
     import pytest as runner
 
     return int(

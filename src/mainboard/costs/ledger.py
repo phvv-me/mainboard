@@ -10,9 +10,8 @@ if TYPE_CHECKING:
 class Observation(FrozenModel):
     """One dispatched job's measured platform behavior, the fitting datum.
 
-    Timestamps are epoch seconds so arithmetic never parses; `billed_usd`
-    stays zero until a provider API reports the real charge, at which point
-    fits can calibrate against truth instead of inference.
+    Timestamps are epoch seconds; `billed_usd` stays zero until a provider API reports the real
+    charge, letting fits calibrate against truth instead of inference.
     """
 
     provider: str
@@ -39,31 +38,28 @@ class Observation(FrozenModel):
 
 
 class Ledger:
-    """Append-only NDJSON observations under the workspace's generated dir.
+    """Append-only NDJSON observations, one line per dispatched job in `root/costs.ndjson`.
 
-    The lake pattern at telemetry scale, one line per dispatched job, read
-    whole at fit time since a year of dispatches stays small.
+    Read whole at fit time, since a year of dispatches stays small.
     """
 
     def __init__(self, root: Path) -> None:
-        """root: the directory holding `costs.ndjson`."""
         self.path = root / "costs.ndjson"
 
     def observations(self, *, provider: str = "", gpu: str = "") -> list[Observation]:
-        """Every recorded observation, optionally filtered by provider and gpu."""
+        """Every recorded observation, an empty filter matching all."""
         try:
             lines = self.path.read_text(encoding="utf-8").splitlines()
         except FileNotFoundError:
             return []
-        rows = [Observation.model_validate_json(line) for line in lines if line.strip()]
-        if provider:
-            rows = [row for row in rows if row.provider == provider]
-        if gpu:
-            rows = [row for row in rows if row.gpu == gpu]
-        return rows
+        rows = (Observation.model_validate_json(line) for line in lines if line.strip())
+        return [
+            row
+            for row in rows
+            if (not provider or row.provider == provider) and (not gpu or row.gpu == gpu)
+        ]
 
     def record(self, observation: Observation) -> None:
-        """Append one observation durably."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(observation.model_dump_json() + "\n")
@@ -81,12 +77,7 @@ class SetupFit(FrozenModel):
 
     @classmethod
     def from_ledger(cls, ledger: Ledger, *, provider: str, gpu: str = "") -> SetupFit | None:
-        """Fit the setup distribution from recorded observations, None below 3 samples.
-
-        ledger: the observations store.
-        provider: the provider kind being fitted.
-        gpu: narrow to one gpu name when given.
-        """
+        """Fit the setup distribution of `provider` (and `gpu` if given), None below 3 samples."""
         setups = [
             row.setup_s
             for row in ledger.observations(provider=provider, gpu=gpu)

@@ -1,11 +1,9 @@
 # The live view over a dispatched batch: every job on every target in one table, kept current by
 # the same durable sweep a cron already runs.
 #
-# Nothing here polls a scheduler itself. Each pass runs `Monitor.once`, which is what pulls a
-# finished job's results back and cancels a rental whose command has ended, and then reports this
-# batch's own jobs out of the state that sweep just settled. That is the whole point of driving
-# the sweep rather than reimplementing it: a batch nobody is watching still settles, and a batch
-# somebody is watching settles the same way.
+# Nothing here polls a scheduler itself. Each pass runs `Monitor.once` (pulling results back,
+# cancelling ended rentals) and reports this batch's jobs out of what it settled, so a watched
+# batch settles exactly as an unwatched one does.
 
 from datetime import UTC, datetime
 from time import sleep
@@ -31,21 +29,17 @@ if TYPE_CHECKING:
 # Where the workspace keeps the observations a later estimate fits its setup times from.
 _COSTS = "costs"
 
-# What a job reads as before any sweep has resolved it, and what a handle the run registry has
-# forgotten reads as, so a row always says something.
+# What a handle the run registry has forgotten reads as, so a row always says something.
 _UNKNOWN = "unknown"
 
-# The verdicts a closing count must not read as a failure: a clean end, and a job the run was
-# told to leave out, which never ran and therefore never failed.
+# The verdicts a closing count must not read as a failure; a skipped job never ran.
 _UNFAILED = frozenset({vocabulary.OK, vocabulary.SKIPPED})
 
 
 class JobStatus(FrozenModel):
     """One batch job as the last sweep left it.
 
-    job: the job's name inside the batch.
-    target: the alias it runs on.
-    handle: its scheduler or provider handle, empty when the target refused it.
+    handle: empty when the target refused it.
     state: the scheduler's own word for it, empty when nothing has reported one.
     verdict: the normalized outcome, `running` while it is still in flight.
     detail: where the results landed, why it failed, or why it was never dispatched.
@@ -60,12 +54,8 @@ class JobStatus(FrozenModel):
 
 
 class BatchStatus(FrozenModel):
-    """One pass over a batch: every job's row and what the batch adds up to.
-
-    batch: the batch id.
-    jobs: one row per job the batch dispatched, was refused for, or was told to leave out.
-    running: how many are still in flight.
-    """
+    """One pass over a batch: a row per job dispatched, refused or left out, and how many of
+    them are still `running`."""
 
     batch: str
     jobs: tuple[JobStatus, ...]
@@ -73,25 +63,17 @@ class BatchStatus(FrozenModel):
 
     @property
     def settled(self) -> bool:
-        """Whether every job has reached a terminal verdict, so watching can stop."""
         return self.running == 0
 
 
 class Watch:
     """A dispatched batch's live view, one pass at a time.
 
-    Built from the batch id alone, since everything it needs is durable: the receipts say which
-    handles belong to this batch and the dispatch cache says what became of them. A process that
-    never dispatched the batch can therefore watch it, which is the same property that lets a
-    cron settle it.
+    Built from the batch id alone, since the receipts name its handles and the dispatch cache
+    says what became of them, so any process can watch it, as a cron settles it.
     """
 
     def __init__(self, board: Board, batch_id: str, *, bus: Bus | None = None) -> None:
-        """board: the workspace whose dispatch cache and sweep the pass reads.
-
-        batch_id: the batch to watch.
-        bus: where receipts go, the batch's own NDJSON file when None.
-        """
         self.board = board
         self.id = batch_id
         self.dir = directory(board, batch_id)
@@ -101,23 +83,15 @@ class Watch:
     @staticmethod
     def detail(handle: str, swept: MonitorReport) -> str:
         """What this pass's sweep said about `handle`, its results path or why it failed."""
-        for finished in swept.finished:
-            if finished.handle == handle:
-                return finished.pulled_path or ""
-        for failed in swept.failed:
-            if failed.handle == handle:
-                return failed.reason
-        return ""
+        said = [
+            finished.pulled_path or "" for finished in swept.finished if finished.handle == handle
+        ]
+        said += [failed.reason for failed in swept.failed if failed.handle == handle]
+        return next(iter(said), "")
 
     def close(self, status: BatchStatus, *, settled: bool) -> None:
-        """Announce the batch's end on the pass that settles its last job, and only then.
-
-        Tying the announcement to a settlement this pass made is what keeps a quiet pass quiet
-        and still lets a re-dispatched batch close a second time.
-
-        status: this pass's rows.
-        settled: whether this pass settled anything at all.
-        """
+        """Announce the batch's end only on a pass that `settled` something and left none running,
+        keeping a quiet pass quiet while a re-dispatched batch can close again."""
         if not status.settled or not settled:
             return
         publish(
@@ -126,17 +100,14 @@ class Watch:
             Topic.CLOSED,
             data={
                 "jobs": len(status.jobs),
-                "ok": sum(1 for job in status.jobs if job.verdict == vocabulary.OK),
-                "failed": sum(1 for job in status.jobs if job.verdict not in _UNFAILED),
-                "skipped": sum(1 for job in status.jobs if job.verdict == vocabulary.SKIPPED),
+                "ok": sum(job.verdict == vocabulary.OK for job in status.jobs),
+                "failed": sum(job.verdict not in _UNFAILED for job in status.jobs),
+                "skipped": sum(job.verdict == vocabulary.SKIPPED for job in status.jobs),
             },
         )
 
     def follow(self, interval: float) -> Iterator[BatchStatus]:
-        """Repeat `once` every `interval` seconds until every job has settled.
-
-        interval: seconds between passes.
-        """
+        """Repeat `once` every `interval` seconds until every job has settled."""
         while True:
             status = self.once()
             yield status
@@ -147,19 +118,12 @@ class Watch:
     def observe(self, row: JobStatus, events: Sequence[Event]) -> None:
         """Record what `row` spent, as a receipt always and as a fitted observation when honest.
 
-        The timeline comes from this batch's own lines, which is the only place it exists: the
-        run registry keeps a submit time and a verdict, never the moment a queue actually started
-        the command. Every line is matched on the handle, since a batch dispatched again shares
-        its stream with the runs before it and a dispatch from this run against a start from the
-        last one is not a duration at all. A run no pass ever caught running is published all the
-        same and kept out of the ledger, since a setup time inferred from a job that was already
-        over would teach every later estimate to expect a wait that never happened.
-
-        What this run was quoted at is published beside what it actually came to, because an
-        estimate nobody ever checks against an outcome is a guess that never improves. The quote
-        is read back off this batch's own `job.estimated` line, so a batch nobody priced reports
-        a zero delta rather than inventing a comparison, and the figure lands on the observation
-        as well, so a later fit stands on money as well as on seconds.
+        The timeline exists only in this batch's lines (the registry never records when a queue
+        started the command), matched on the handle since a re-dispatched batch shares its stream
+        with earlier runs. A run no pass caught running stays out of the ledger, since its
+        inferred setup would teach estimates a wait that never happened. The quote off this
+        batch's `job.estimated` line is published beside the actual cost (a zero delta when
+        unpriced), so the cost model learns from its misses.
         """
         mine = [
             event
@@ -172,7 +136,7 @@ class Watch:
             for event in mine
             if event.topic is Topic.STATE and event.data.get("verdict") == vocabulary.RUNNING
         ]
-        kind = str(submitted[0].data["kind"]) if submitted else ""
+        key = platform(alias=row.target, kind=str(submitted[0].data["kind"]) if submitted else "")
         ended = _epoch(now())
         opened = _epoch(submitted[0].at) if submitted else ended
         running = _epoch(started[0].at) if started else 0.0
@@ -185,7 +149,7 @@ class Watch:
             Topic.COST,
             job=row.job,
             data={
-                "platform": platform(alias=row.target, kind=kind),
+                "platform": key,
                 "setup_s": (running - opened) if running else 0.0,
                 "run_s": (ended - running) if running else 0.0,
                 "observed": bool(running),
@@ -197,7 +161,7 @@ class Watch:
         if running:
             self.ledger.record(
                 Observation(
-                    provider=platform(alias=row.target, kind=kind),
+                    provider=key,
                     t_submit=opened,
                     t_running=running,
                     t_ended=ended,
@@ -208,13 +172,8 @@ class Watch:
     def once(self) -> BatchStatus:
         """Settle whatever ended, then report every job of this batch as it now stands.
 
-        The sweep runs first and over the whole workspace rather than over this batch, since a
-        rental this batch does not own still bills while this one watches, and settling it costs
-        one probe that was going to happen anyway.
-
-        Each row is built from the newest of the three answers its target has given, which is
-        the same cursor and the same rule the settled read folds on, asked here through one
-        `latest` call rather than through three that then need ranking against each other.
+        The sweep covers the whole workspace, since another batch's rental still bills while this
+        one watches. Each row comes from the newest of its target's three answers (`OFFERED`).
         """
         swept = self.board.monitor().once()
         events = self.bus.replay()
@@ -225,7 +184,7 @@ class Watch:
         status = BatchStatus(
             batch=self.id,
             jobs=(*rows, *self.unselected(events, dispatched={row.job for row in rows})),
-            running=sum(1 for row in rows if row.verdict not in vocabulary.TERMINAL),
+            running=sum(row.verdict not in vocabulary.TERMINAL for row in rows),
         )
         self.close(status, settled=any(landed))
         return status
@@ -233,13 +192,9 @@ class Watch:
     def record(self, row: JobStatus, events: Sequence[Event]) -> bool:
         """Publish whatever changed about `row` since the last pass, and say if it settled here.
 
-        The cursor is the run rather than the job, since a batch re-dispatched under the same
-        declaration is the same batch with new handles, and a job that settled last week must
-        not silence the run of it that is finishing now.
-
-        What the run spent is published before it settles, so `job.settled` really is the last
-        line a subscriber sees about this job. That is what lets a sink close its own record of
-        the run on the terminal line without losing the cost that follows it.
+        The cursor is the run (handle), not the job, so last week's settlement never silences a
+        re-dispatch finishing now. The cost is published before `job.settled`, keeping the
+        terminal line last.
         """
         seen = latest(events, Topic.STATE).get(row.job)
         reported = (seen.data.get("handle"), seen.data.get("verdict")) if seen else ()
@@ -268,16 +223,9 @@ class Watch:
         return True
 
     def answered(self, job: str, answer: Event, swept: MonitorReport) -> JobStatus:
-        """One job's row from the newest answer its target gave about it.
+        """One job's row from the newest of its `OFFERED` answers.
 
-        Taken, turned away and held on a quota are three answers to one offer, so the last of
-        them is the one the row says. Ranking them by topic instead left a job a target took and
-        then refused rendering as still flying, which is a table saying a batch is working on
-        something nothing is working on.
-
-        job: the job's name inside the batch.
-        answer: its newest `job.submitted`, `job.refused` or `job.held` line.
-        swept: this pass's sweep, which is where a dispatched row's detail comes from.
+        Ranking the answers by topic instead rendered a job taken and then refused as still flying.
         """
         target = str(answer.data["target"])
         if answer.topic is Topic.REFUSED:
@@ -287,9 +235,7 @@ class Watch:
                 verdict=vocabulary.VANISHED,
                 detail=str(answer.data["reason"]),
             )
-        # A job whose target had no room is still coming: the sweep above asks for it again on
-        # every pass, and until one gets through the row says so rather than leaving a gap in
-        # the plan. It counts as in flight, so a batch holding one never reads as settled.
+        # A held job is still coming (the sweep asks again every pass), so it counts as in flight.
         if answer.topic is Topic.HELD:
             return JobStatus(
                 job=job,
@@ -325,15 +271,10 @@ class Watch:
 
     @staticmethod
     def unselected(events: Sequence[Event], *, dispatched: set[str]) -> list[JobStatus]:
-        """Every job a run left out, as a row that is already over.
+        """Every job a run left out and no later wave dispatched, as a row already over.
 
-        The rows are shown rather than dropped, because a plan worked through in waves is read
-        against the plan: a reader has to see that four of the thirteen were not asked for, not
-        wonder where they went. They take no part in what the batch settles, since a job that was
-        never dispatched has nothing to pull back, nothing to release and nothing to bill.
-
-        events: this batch's receipts.
-        dispatched: the jobs that already have a row, which a later wave's dispatch wins back.
+        Shown so a wave is read against the plan, but settling nothing: an undispatched job has
+        nothing to pull back, release or bill.
         """
         return [
             JobStatus(
@@ -348,23 +289,17 @@ class Watch:
 
 
 def _epoch(stamp: str) -> float:
-    """An ISO-8601 instant as epoch seconds, the footing an observation is recorded on.
+    """An ISO-8601 instant as epoch seconds, a naive one read as UTC as the billing cycle does.
 
-    A stamp carrying no offset is read as UTC rather than as this machine's local clock, the same
-    pinning the billing cycle already does. Every line this workspace writes is aware, so the
-    naive case is a receipts file some other tool appended to, or an older one; reading it locally
-    would shift a setup time by the machine's whole UTC offset and teach every later estimate a
-    wait that never happened. Nine hours of imaginary provisioning is worse than none.
+    Only a foreign or older receipts file is naive; reading it as local time would add the UTC
+    offset (nine hours here) of imaginary provisioning to every later estimate.
     """
     read = datetime.fromisoformat(stamp)
     return (read if read.tzinfo else read.replace(tzinfo=UTC)).timestamp()
 
 
 def _money(event: Event | None, field: str) -> float:
-    """A dollar figure off an event payload, zero when no line ever carried one.
-
-    A payload is free-form JSON, so a batch nobody priced and a batch whose estimate wrote
-    something unreadable both answer zero rather than raising in the middle of a settle.
-    """
+    """A dollar figure off a free-form event payload, zero when absent or unreadable rather than
+    raising mid-settle."""
     amount = event.data.get(field) if event is not None else None
     return float(amount) if isinstance(amount, int | float) else 0.0

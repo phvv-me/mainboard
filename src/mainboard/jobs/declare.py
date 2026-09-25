@@ -38,15 +38,11 @@ class Declaration(FrozenModel):
 def job[Declared](
     *, needs: Sequence[str] = (), resources: Sequence[str] = (), fetch: str = ""
 ) -> Callable[[Declared], Declared]:
-    """Declare what a job needs beyond its imports, leaving the target itself untouched.
+    """Declare what a job needs beyond its imports (see `Declaration`), target untouched.
 
-    A no-op at runtime that keeps the declaration on the target for whoever holds it. What a
-    dispatch reads is the decorator's literal keywords in the file's syntax, so all must stay
-    literal: a path computed at import time is a path the dispatch cannot see.
-
-    needs: workspace-relative data paths the job reads on the host, linked in.
-    resources: workspace-relative files or directories read by path beside the code, pinned in.
-    fetch: the results path to pull home when the job settles.
+    A runtime no-op keeping the declaration on the target. A dispatch reads the decorator's
+    keywords off the file's syntax, so they must stay literal: a path computed at import time is
+    one the dispatch cannot see.
     """
     declared = Declaration(needs=tuple(needs), resources=tuple(resources), fetch=fetch)
 
@@ -59,14 +55,10 @@ def job[Declared](
 
 
 def declared(module: ast.Module, name: str) -> Declaration:
-    """The declaration on the target `name` of a parsed module, read without importing it.
+    """The declaration on target `name` (with its class path for a pytest node id), unimported.
 
-    A decorated function or method carries it on its decorator; an application carries it on
-    the call that wrapped it, `app = job(needs=...)(App(...))`. A target that declares nothing
-    gets the empty declaration.
-
-    module: the parsed job file.
-    name: the target inside it, including its class path for a pytest node id.
+    A function or method carries it on its decorator, an application on the call wrapping it
+    (`app = job(needs=...)(App(...))`); a target declaring nothing gets the empty declaration.
     """
     parts = name.split("::")
     body = module.body
@@ -105,7 +97,6 @@ def _decoration(node: ast.stmt, name: str) -> ast.Call | None:
 
 
 def _job_decorator(function: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.Call | None:
-    """The `job(...)` call in `function`'s decorator list, None when none is there."""
     return next(
         (
             decorator

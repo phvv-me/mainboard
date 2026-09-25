@@ -1,30 +1,23 @@
 # The runner a job's script calls: `python -m mainboard.jobs.call <file>::<name> -- args`.
 #
-# One process, in the job's own environment, standing in the tree the dispatch pinned. The file
-# is imported by the name its package chain gives it, so the relative imports inside it resolve,
-# and the target is run as what it is: an application gets the arguments, a function gets none.
+# One process, in the job's environment, standing in the pinned tree. The file is imported by the
+# name its package chain gives it, so its relative imports resolve; an application gets the
+# arguments, a function none.
 #
-# THE CLOSURE IS A BOUNDARY, NOT A HINT. The environment's editable installs point at the mirror,
-# and a snapshot that ships only what the job imports leaves every other first-party module one
-# `sys.path` entry away in mutable source. So before the job file is imported, a finder is armed
-# that answers every first-party import by the closure listing: a module whose file the listing
-# does not name is refused by name, never read from wherever else it happens to be. A local run
-# arms the same finder over the same listing, so a walk that missed a module fails on the
-# workstation and not on the node.
+# THE CLOSURE IS A BOUNDARY, NOT A HINT. Editable installs point at the mirror, so every
+# first-party module the snapshot did not ship is one `sys.path` entry away in mutable source.
+# Before the job file is imported, a finder answers every first-party import by the closure
+# listing, refusing by name a module whose file it does not name. A local run arms the same
+# finder, so a walk that missed a module fails on the workstation, not the node.
 #
-# A DEFERRED NAME IS THE ONE EXCEPTION. A package whose compiled extension the closure found
-# living outside the tree ships none of it, on purpose, and its whole distribution is left for
-# the environment's own install to answer; asking `shipped` about it would refuse every import
-# of it by name, which is not a walk that missed a module but a closure that never carried one.
-# So the guard steps aside for these names instead, the same way it already does for anything
-# that is not first-party at all.
+# A DEFERRED NAME IS THE ONE EXCEPTION: a package whose compiled extension lives outside the tree
+# ships none of itself on purpose, its distribution left to the environment's install, so the
+# guard steps aside for it as for anything not first-party.
 #
-# A TEST FILE IS PYTEST'S TO RUN. A `test_` target is handed to `pytest.main` as the node id it
-# spells, fixtures and parametrization and exit status all native, with the guard already armed
-# so pytest's imports of the shipped modules answer from this tree. pytest's rewrite hook sits
-# ahead of the guard on `meta_path` and finds modules on its own walk. The native adapter
-# wraps that hook at installation, before config/environment plugins or initial conftests
-# import. Its spec is checked before execution, with assertion rewriting left intact.
+# A TEST FILE IS PYTEST'S TO RUN, handed to `pytest.main` as the node id it spells, with the guard
+# already armed. pytest's rewrite hook sits ahead of the guard and walks on its own, so the native
+# adapter wraps it at installation (before plugins and conftests import) and judges its spec
+# before execution, assertion rewriting intact.
 
 import importlib
 import os
@@ -55,10 +48,8 @@ class Guard(MetaPathFinder):
     """The finder that keeps a first-party import inside the closure.
 
     names: the top-level names the workspace's own import roots define.
-    shipped: the files the closure holds, relative to `root`.
-    root: the tree the job stands in, the pinned snapshot or the workspace.
-    deferred: top-level names admitted regardless of `shipped`, whose whole distribution the
-        closure left to the environment rather than shipping half of it.
+    shipped: the files the closure holds, relative to `root`, the pinned snapshot or workspace.
+    deferred: top-level names admitted regardless of `shipped`, left to the environment.
     """
 
     def __init__(
@@ -95,8 +86,7 @@ class Guard(MetaPathFinder):
     ) -> ModuleSpec | None:
         """The spec of a first-party module the closure ships, a refusal for one it does not."""
         del target
-        top = fullname.partition(".")[0]
-        if top not in self.names or top in self.deferred:
+        if not self.guards(fullname):
             return None
         spec = PathFinder.find_spec(fullname, path)
         if spec is not None and self.holds(spec):
@@ -106,6 +96,10 @@ class Guard(MetaPathFinder):
             "job file, or declare the file it lives in as a resource, so the dispatch ships it",
             name=fullname,
         )
+
+    def guards(self, fullname: str) -> bool:
+        top = fullname.partition(".")[0]
+        return top in self.names and top not in self.deferred
 
     def holds(self, spec: ModuleSpec) -> bool:
         """Whether the closure ships the file `spec` was found at; a portion with none passes."""
@@ -117,14 +111,8 @@ class Guard(MetaPathFinder):
             return False
 
     def judged(self, fullname: str, spec: ModuleSpec) -> ModuleSpec:
-        """`spec` when the closure lets `fullname` import it, a refusal when it does not.
-
-        The rewrite hook's answer is judged here before it can execute, since the hook found
-        the module on its own walk and would otherwise import first-party code from wherever
-        the environment points.
-        """
-        top = fullname.partition(".")[0]
-        if top in self.names and top not in self.deferred and not self.holds(spec):
+        """The rewrite hook's `spec` when the closure lets `fullname` import it, else a refusal."""
+        if self.guards(fullname) and not self.holds(spec):
             raise ModuleNotFoundError(
                 f"{fullname} is first-party code outside this job's closure; import it from the "
                 "job file, or declare its file as a resource, so the dispatch ships it",
@@ -134,10 +122,7 @@ class Guard(MetaPathFinder):
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run one target and answer its exit code.
-
-    argv: the tokens after the runner's own name, this process's when None.
-    """
+    """Run one target, from the tokens after the runner's name (this process's when None)."""
     tokens = list(sys.argv[1:] if argv is None else argv)
     if not tokens or tokens[0] == DELIMITER:
         raise SystemExit(f"usage: python -m {__spec__.name} <file>{SEPARATOR}<name> [-- args]")
@@ -151,12 +136,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     guard = Guard.armed(Path.cwd())
     pins = Path.cwd() / STAGING
     if pins.is_dir():
-        # A job that declared Hub pins reads exactly them, from the tree, whatever the host
-        # caches elsewhere.
+        # A job that declared Hub pins reads exactly them, whatever the host caches elsewhere.
         os.environ["HF_HUB_CACHE"] = str(pins)
     if Path(file).stem.startswith(TEST_PREFIX):
-        # The one environment-dependent import: an env that declares no pytest still runs every
-        # other target, and a test target in one fails here naming what is missing.
+        # The one environment-dependent import: an env without pytest still runs other targets.
         runner = importlib.import_module(".pytest", package=__package__)
         return runner.Runner(guard).run([spelling if name else file, *args])
     return called(getattr(loaded(Path(file)), name), name, args)
@@ -166,13 +149,9 @@ class Fresh:
     """Several cells of one lane, each run as its own fresh process by this same runner.
 
     `file.py::test --fresh id1 id2 -- <pytest args>`: a timed acquisition wants nothing of the
-    cell before it, no warm allocator, no cached tokenizer, no fragmented card, so every id
-    becomes `python -m mainboard.jobs.call file.py::test[id] -- <pytest args>` in turn, under a
-    hard timeout, and the first cell that fails stops the group.
-
-    ids: the parametrize ids to run, in order.
-    args: the pytest arguments every cell gets.
-    timeout: seconds one cell may take before it is killed.
+    previous cell (warm allocator, cached tokenizer, fragmented card), so each id runs as
+    `python -m mainboard.jobs.call file.py::test[id] -- <pytest args>` in turn under a hard
+    `timeout` (seconds), and the first failing cell stops the group.
     """
 
     FLAG = "--fresh"
@@ -195,7 +174,7 @@ class Fresh:
                 raise SystemExit(f"{cls.TIMEOUT} takes the seconds one cell may run")
             timeout = float(rest[1])
             rest = rest[2:]
-        ids, _, args = _partitioned(rest)
+        ids, args = _partitioned(rest)
         if not ids:
             raise SystemExit(
                 f"{cls.FLAG} takes the parametrize ids to run, then -- and pytest args"
@@ -205,9 +184,9 @@ class Fresh:
     def run(self, spelling: str) -> int:
         """Run every id as its own process, answering the first nonzero exit code.
 
-        In a dispatched job the lane is one session to whoever reads its log: it declares every
-        cell up front and ends the session itself, and each child reports only its own cell. A
-        cell killed at its timeout never reports, so the lane reports it failed.
+        In a dispatched job the lane is one session to a log reader: it declares every cell and
+        ends the session itself, each child reports only its cell, and the lane reports a cell
+        killed at its timeout as failed.
         """
         dispatched = RECEIPTS_VAR in os.environ
         if dispatched:
@@ -218,7 +197,6 @@ class Fresh:
         return code
 
     def cells(self, spelling: str, *, dispatched: bool) -> int:
-        """Run the cells in order until one fails, answering its exit code."""
         nested = {**os.environ, beacon.NESTED: "1"}
         for identity in self.ids:
             cell = f"{spelling}[{identity}]"
@@ -236,12 +214,12 @@ class Fresh:
         return 0
 
 
-def _partitioned(tokens: Sequence[str]) -> tuple[list[str], bool, list[str]]:
-    """The tokens before the delimiter, whether one was present, and the tokens after it."""
+def _partitioned(tokens: Sequence[str]) -> tuple[list[str], list[str]]:
+    """The tokens before the delimiter and after it."""
     if DELIMITER in tokens:
         cut = list(tokens).index(DELIMITER)
-        return list(tokens[:cut]), True, list(tokens[cut + 1 :])
-    return list(tokens), False, []
+        return list(tokens[:cut]), list(tokens[cut + 1 :])
+    return list(tokens), []
 
 
 def loaded(file: Path) -> ModuleType:

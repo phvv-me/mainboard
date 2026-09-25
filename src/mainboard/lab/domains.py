@@ -11,10 +11,7 @@ type Domain = Choices | IntRange | FloatRange | Fixed
 
 @dataclass(frozen=True, slots=True)
 class Choices:
-    """A domain of discrete named values, declared as `Annotated` metadata.
-
-    values: the allowed values, in declaration order.
-    """
+    """A domain of discrete named values in declaration order, declared as `Annotated` metadata."""
 
     values: tuple[Scalar, ...]
 
@@ -24,11 +21,7 @@ class Choices:
 
 @dataclass(frozen=True, slots=True)
 class IntRange:
-    """A domain of integers between two bounds, declared as `Annotated` metadata.
-
-    lo: the smallest allowed value, inclusive.
-    hi: the largest allowed value, inclusive.
-    """
+    """A domain of integers between two inclusive bounds, declared as `Annotated` metadata."""
 
     lo: int
     hi: int
@@ -36,11 +29,7 @@ class IntRange:
 
 @dataclass(frozen=True, slots=True)
 class FloatRange:
-    """A domain of floats between two bounds, declared as `Annotated` metadata.
-
-    lo: the smallest allowed value, inclusive.
-    hi: the largest allowed value, inclusive.
-    """
+    """A domain of floats between two inclusive bounds, declared as `Annotated` metadata."""
 
     lo: float
     hi: float
@@ -48,31 +37,21 @@ class FloatRange:
 
 @dataclass(frozen=True, slots=True)
 class Fixed:
-    """A domain pinned to one value, declared as `Annotated` metadata.
-
-    value: the only value the field may hold.
-    """
+    """A domain pinned to one value, declared as `Annotated` metadata."""
 
     value: Scalar
 
 
 def space_of(cls_or_fn: type | Callable[..., object]) -> dict[str, Domain]:
-    """The declared config domain for every `Annotated` field or parameter on `cls_or_fn`.
+    """The domain marker of every `Annotated` field (of a class) or parameter (of a function).
 
-    Reads `cls_or_fn`'s own resolved annotations (`annotationlib.get_annotations` in `VALUE`
-    format, the PEP 649 resolver Python 3.14 evaluates deferred annotations through) and keeps
-    the ones carrying exactly one `Choices`/`IntRange`/`FloatRange`/`Fixed` marker. Deliberately
-    reads only `cls_or_fn`'s own annotations rather than its whole MRO, since a generated
-    `Experiment` subclass's config fields never live on a base class its `space_of` caller has
-    no reason to resolve. Works uniformly on a pydantic model class (its fields) or a plain
-    function (its parameters), since both expose their annotations the same way.
-
-    cls_or_fn: a class or callable whose own hints may carry domain metadata.
+    Reads only `cls_or_fn`'s own annotations through PEP 649's `annotationlib`, not its MRO,
+    since a generated `Experiment`'s config fields never live on a base class.
     """
     hints = annotationlib.get_annotations(cls_or_fn, format=annotationlib.Format.VALUE)
-    space: dict[str, Domain] = {}
-    for name, hint in hints.items():
-        for item in getattr(hint, "__metadata__", ()):
-            if isinstance(item, Choices | IntRange | FloatRange | Fixed):
-                space[name] = item
-    return space
+    return {
+        name: item
+        for name, hint in hints.items()
+        for item in getattr(hint, "__metadata__", ())
+        if isinstance(item, Choices | IntRange | FloatRange | Fixed)
+    }

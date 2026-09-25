@@ -14,9 +14,8 @@ if TYPE_CHECKING:
 class Lane(FlexModel):
     """One counterbalanced condition an experiment measures each model or trial under.
 
-    name: the lane's identity, the label a trial's run id hashes and a report facets by.
-    Extra keyword arguments become the lane's own arbitrary-typed fields (a warmup flag, a
-    prompt variant, a fixture object), exactly as declared at the call site.
+    name: the label a trial's run id hashes and a report facets by. Extra keyword arguments
+        become the lane's own arbitrary-typed fields (a warmup flag, a prompt variant, a fixture).
     """
 
     model_config = ConfigDict(extra="allow")
@@ -25,26 +24,15 @@ class Lane(FlexModel):
 
 
 def orders(lanes: Sequence[Lane], block: int) -> tuple[Lane, ...]:
-    """One counterbalanced ordering of `lanes` for trial block `block`.
-
-    Declaring `lanes` on an experiment hands counterbalancing entirely to this function: every
-    block cycles through all `len(lanes)!` permutations before repeating, so lane order is
-    balanced across a study's trials instead of always running in declaration order.
-
-    lanes: the lanes to order, in their declared sequence.
-    block: the 0-based trial index selecting which permutation to run.
-    """
+    """The permutation of `lanes` for 0-based trial `block`, cycling all `len(lanes)!` before
+    repeating so lane order is balanced across a study rather than fixed in declaration order."""
     permutations = tuple(itertools.permutations(lanes))
     return permutations[block % len(permutations)]
 
 
 def validates(blocks: int, lanes: Sequence[Lane]) -> None:
-    """Refuse a block count that would not complete whole counterbalancing cycles.
-
-    blocks: the planned number of trial blocks.
-    lanes: the lanes each block orders through `orders`; `blocks` must be a multiple of
-        `len(lanes)!` so no lane ordering runs more often than another across the study.
-    """
+    """Refuse a block count that is not a multiple of `len(lanes)!`, which would run some lane
+    ordering more often than another."""
     cycle = math.factorial(len(lanes))
     if blocks % cycle != 0:
         raise MissionError(

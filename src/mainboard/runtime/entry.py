@@ -1,11 +1,10 @@
 # How a job enters its environment on the machine it landed on.
 #
-# The activation itself is written when the environment is built: on POSIX the `activate.sh` that
-# pixi's shell hook and the module stack make up, on Windows the activation pixi recorded as JSON.
-# Entering is reading that back into a plain mapping the command is then started with. POSIX has
-# to ask a shell once, since that is the only thing that can run a shell hook, and Windows reads
-# the record directly. Which activation counts, when a prefix is refused and what a machine with
-# nothing to enter says are decided by the job's activation record, the same way for both.
+# The activation is written when the environment is built (POSIX: the `activate.sh` of pixi's
+# shell hook and the module stack; Windows: the activation pixi recorded as JSON), and entering
+# reads it back into the mapping the command starts with. POSIX asks a shell once, the only thing
+# that can run a shell hook. Which activation counts and when a prefix is refused are decided by
+# the job's activation record, the same way for both.
 
 import json
 import os
@@ -22,8 +21,7 @@ from ..engines.compile.backend.pixi import Pixi
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-# What a shell adds to its own environment that describes the shell rather than the activation,
-# and would otherwise be handed to a command started somewhere else.
+# What a shell adds to its environment describing the shell rather than the activation.
 _SHELL_OWN = frozenset({"_", "PWD", "OLDPWD", "SHLVL"})
 
 # The interpreter line a sourcing shell ends with, writing the environment it activated to the
@@ -36,10 +34,9 @@ _DUMP = (
 
 
 class Refusal(Exception):
-    """An environment that could not be entered, with the status the job ends on.
+    """An environment that could not be entered, with the exit status the job ends on.
 
     message: what the job says about it, empty when the activation already said it.
-    status: the exit status the job reports.
     """
 
     def __init__(self, message: str, status: int = 1) -> None:
@@ -105,10 +102,7 @@ class Sourcing(Entering):
 
 
 class Recorded(Entering):
-    """Windows: the activation pixi recorded when the environment was built, applied directly.
-
-    Nothing on Windows can source a shell hook, so the record is the activation.
-    """
+    """Windows: nothing can source a shell hook, so pixi's recorded activation is applied."""
 
     def ready(self, shard: Path, script: Path) -> bool:
         return Pixi(shard).windows_activation_cache.is_file()

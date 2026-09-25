@@ -5,14 +5,10 @@ from ..manifest.schema.host import HostProfile
 def admit(profile: HostProfile, *, queue: str, walltime: str, mem_gb: int) -> None:
     """Refuse a submission the queue's declared policy would reject.
 
-    The scheduler's own rejection arrives minutes later with a cryptic
-    message; this one arrives before the ssh round-trip, naming the ceiling.
-    A queue the profile does not declare admits everything.
+    The scheduler's own rejection arrives minutes later and cryptic; this one arrives before the
+    ssh round-trip, naming the ceiling. An undeclared queue admits everything.
 
-    profile: the resolved host profile.
-    queue: the queue being targeted.
     walltime: the requested HH:MM:SS wall-clock limit.
-    mem_gb: the requested memory in gigabytes.
     """
     policy = profile.policy(queue)
     if not policy.submittable:

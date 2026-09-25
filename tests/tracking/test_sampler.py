@@ -1,5 +1,6 @@
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import pytest
 
@@ -13,51 +14,41 @@ _STREAM = "smoke-1"
 _JOB = "trial-a"
 
 
+@dataclass
 class FakeMemory:
-    """A memory reading, which is one number a sample asks for."""
-
-    def __init__(self, used_gb: float) -> None:
-        self.used_gb = used_gb
+    used_gb: float
 
 
+@dataclass
 class FakeCap:
-    """The enforced ceiling a host's jobs really run under."""
-
-    def __init__(self, limit_gb: float, capped: bool = True) -> None:
-        self.limit_gb = limit_gb
-        self.capped = capped
+    limit_gb: float
+    capped: bool = True
 
 
+@dataclass
 class FakeBusyness:
-    """One unit's utilization percentages."""
-
-    def __init__(self, gpu_pct: int, memory_pct: int) -> None:
-        self.gpu_pct = gpu_pct
-        self.memory_pct = memory_pct
+    gpu_pct: int
+    memory_pct: int
 
 
 class FakeGPU:
-    """One accelerator as a sample reads it."""
-
     def __init__(self, used_gb: float, gpu_pct: int, memory_pct: int) -> None:
         self.memory = FakeMemory(used_gb)
         self.utilization = FakeBusyness(gpu_pct, memory_pct)
 
 
 class FakeHost:
-    """The host as a sample reads it, with the cap that makes these readings worth shipping."""
-
     def __init__(self, used_gb: float, limit_gb: float, capped: bool = True) -> None:
         self.memory = FakeMemory(used_gb)
         self.cgroup_memory = FakeCap(limit_gb, capped)
 
 
+@dataclass
 class FakeMachine:
     """A stand-in machine, so a reading is asserted rather than whatever this laptop is doing."""
 
-    def __init__(self, host: FakeHost, gpus: Sequence[FakeGPU] = ()) -> None:
-        self.host = host
-        self.gpus = list(gpus)
+    host: FakeHost
+    gpus: Sequence[FakeGPU] = ()
 
 
 def sampler(bus: Recorder, machine: FakeMachine, **options: float | int) -> Sampler:
@@ -72,21 +63,28 @@ def sampler(bus: Recorder, machine: FakeMachine, **options: float | int) -> Samp
     )
 
 
-def test_a_reading_carries_the_cap_a_hosted_dashboard_never_had() -> None:
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        pytest.param(
+            FakeMachine(FakeHost(50.0, 100.0), [FakeGPU(4.0, 90, 40), FakeGPU(2.0, 10, 70)]),
+            (6.0, 90, 70, 50.0, 100.0, True, 0.5),
+            id="the-cap-a-hosted-dashboard-never-had",
+        ),
+        pytest.param(
+            FakeMachine(FakeHost(3.0, 0.0, capped=False)),
+            (0, 0, 0, 3.0, 0.0, False, 0.0),
+            id="a-bare-host-answers-zeros-rather-than-raising",
+        ),
+    ],
+)
+def test_a_reading_carries_used_memory_against_the_enforced_cap(
+    machine: FakeMachine, expected: tuple[float | bool, ...]
+) -> None:
     """Used memory against the enforced ceiling is the series that predicts an OOM kill."""
-    machine = FakeMachine(
-        FakeHost(used_gb=50.0, limit_gb=100.0),
-        [FakeGPU(4.0, 90, 40), FakeGPU(2.0, 10, 70)],
-    )
-    assert sampler(Recorder(), machine).reading() == {
-        "gpu_used_gb": 6.0,
-        "gpu_pct": 90,
-        "gpu_memory_pct": 70,
-        "host_used_gb": 50.0,
-        "host_cap_gb": 100.0,
-        "host_capped": True,
-        "host_frac": 0.5,
-    }
+    keys = ("gpu_used_gb", "gpu_pct", "gpu_memory_pct", "host_used_gb", "host_cap_gb")
+    keys += ("host_capped", "host_frac")
+    assert sampler(Recorder(), machine).reading() == dict(zip(keys, expected, strict=True))
 
 
 @pytest.mark.parametrize(
@@ -119,14 +117,6 @@ def test_the_attestation_is_this_tools_own_verb_carrying_the_staged_credential()
     assert attesting(root="/repo", stream=_STREAM, job=_JOB) == ToolCall(
         args=("attest", _STREAM, "--job", _JOB), credentials=host_env("/repo")
     )
-
-
-def test_a_machine_with_no_accelerator_and_no_cap_still_reads_as_something() -> None:
-    """Every probe behind this is best effort, so a bare host answers zeros rather than raising."""
-    bare = FakeMachine(FakeHost(used_gb=3.0, limit_gb=0.0, capped=False))
-    reading = sampler(Recorder(), bare).reading()
-    assert (reading["gpu_used_gb"], reading["gpu_pct"], reading["host_frac"]) == (0, 0, 0.0)
-    assert reading["host_capped"] is False
 
 
 def test_entering_samples_at_once_so_a_job_that_dies_early_still_left_a_series() -> None:

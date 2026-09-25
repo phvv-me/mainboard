@@ -74,12 +74,11 @@ def test_a_path_outside_the_manuscript_is_shown_whole(tmp_path: Path) -> None:
     assert problem.where == "/elsewhere/deep.tex:3"
 
 
-def test_a_log_that_ends_on_a_full_width_line_keeps_it(tmp_path: Path) -> None:
+def test_a_log_that_ends_on_a_full_width_line_keeps_it_and_an_early_error_names_no_place(
+    tmp_path: Path,
+) -> None:
     assert _unwrapped("x" * WRAP) == ["x" * WRAP]
     assert TexLog("", directory=tmp_path).problems() == []
-
-
-def test_an_error_before_any_file_opens_names_no_place(tmp_path: Path) -> None:
     assert TexLog("! Oops.", directory=tmp_path).problems() == [
         Problem(kind=Kind.ERROR, where="", detail="Oops.")
     ]

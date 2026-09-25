@@ -8,11 +8,8 @@ _PACKAGE = __name__.split(".")[0]
 class Project(FrozenModel):
     """Every name the tool answers to, derived from the installed package name.
 
-    Renaming the tool is renaming the module directory: the manifest filename,
-    generated directory, and entry-point group all follow `__name__`, so no
-    code names the tool literally. The only literal spellings left are the
-    distribution metadata in pyproject.toml (name and console script), which a
-    rename edits alongside the directory.
+    Renaming the tool is renaming the module directory: everything follows `__name__`, and only
+    pyproject.toml (distribution name and console script) spells the name literally.
     """
 
     name: str = _PACKAGE
@@ -33,23 +30,17 @@ class Project(FrozenModel):
         return f"{self.name}.providers"
 
     def activation(self, env: str = "default") -> str:
-        """The generated activation script for `env`, relative to the workspace root.
+        """The activation script for `env`, relative to the workspace root.
 
-        One script per environment, because a workspace installs several and a single file
-        would activate whichever environment was provisioned last no matter which one the
-        caller asked for. The default environment keeps the bare `activate.sh`, the name a
-        host onboarded earlier already carries and a hand-written job script already sources.
-
-        env: the environment the script activates.
+        One per environment, since a shared file would activate whichever was provisioned last.
+        The default keeps the bare `activate.sh` that onboarded hosts and hand-written job
+        scripts already source.
         """
         suffix = "" if env == "default" else f"-{env}"
         return f"{self.out_dir}/activate{suffix}.sh"
 
     def find_root(self, start: Path) -> Path:
-        """Walk up from `start` to the nearest directory holding the manifest.
-
-        start: the directory the search begins in, usually the cwd.
-        """
+        """Walk up from `start` to the nearest directory holding the manifest."""
         for directory in (start, *start.parents):
             if (directory / self.manifest).is_file():
                 return directory
@@ -58,12 +49,10 @@ class Project(FrozenModel):
         )
 
     def workspace(self, start: Path | None = None) -> Path:
-        """The workspace `start` belongs to, or `start` itself under no workspace at all.
+        """The workspace `start` (default the cwd) belongs to, or `start` itself outside any.
 
-        Generated state belongs to the workspace, not to whichever directory a command was
-        typed in, and a scratch tree under no manifest keeps its own rather than raising.
-
-        start: the directory the search begins in, the current one when None.
+        Generated state belongs to the workspace, not the directory a command was typed in, and
+        a scratch tree under no manifest keeps its own rather than raising.
         """
         here = start or Path.cwd()
         try:

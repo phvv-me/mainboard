@@ -16,13 +16,9 @@ _OPERATORS: dict[type[ast.operator], Callable[[float, float], float]] = {
 def evaluate(expression: str, *, attempt: int) -> int:
     """A submit-time resource expression as an integer, retry-aware.
 
-    The language is deliberately tiny: integer literals, `attempt` (the
-    1-based retry number), `+ - * / //`, and `min`/`max` calls, so
-    `min(100, attempt * 50)` escalates a memory request across retries while
-    nothing else can execute. Anything outside the language refuses loudly.
-
-    expression: the manifest string, a bare integer also accepted.
-    attempt: the 1-based try number this submission is.
+    The language is deliberately tiny: integer literals, `attempt` (the 1-based try number),
+    `+ - * / //` and `min`/`max`, so `min(100, attempt * 50)` escalates a memory request across
+    retries while nothing else can execute. Anything outside it refuses loudly.
     """
     try:
         tree = ast.parse(expression, mode="eval")

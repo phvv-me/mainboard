@@ -1,7 +1,6 @@
-# One batch declared as data: a small TOML file, or the same jobs typed as repeated flags. The
-# declaration is the only input the three verbs share, so it carries everything they each need,
-# what to run and where for `run`, what data must ship for `prepare`, and how long the command is
-# expected to take for `estimate`.
+# One batch declared as data: a small TOML file, or the same jobs typed as repeated flags. It is
+# the only input the verbs share, so it carries what to run and where (`run`), what data must ship
+# (`prepare`) and how long the command should take (`estimate`).
 
 import hashlib
 import tomllib
@@ -18,8 +17,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
 
-# How a job typed at the command line names its target, `--job gold:python -m foo`. The first
-# colon splits, since a host alias never carries one and a command routinely does.
+# `--job gold:python -m foo`: the first colon splits, since a host alias never carries one.
 _INLINE = ":"
 
 
@@ -42,17 +40,13 @@ class Submission(TypedDict, total=False):
 class BatchJob(FrozenModel):
     """One job of a batch: what runs, where, and what it needs that the target lacks.
 
-    name: the job's label inside the batch, the key every table row and receipt line carries.
-    target: the declared host alias (or provider alias) the job is dispatched to.
-    command: the shell command the job runs.
-    data: workspace paths this job needs on the target beyond the mirror, a dataset the manifest
-        never syncs, so a transfer set counts them whether or not they changed.
-    runtime_s: the command's expected wall seconds, which is what an estimate prices. Zero
-        prices the setup alone, which is what a job whose runtime nobody has guessed costs
-        before it starts.
+    name: the key every table row and receipt line carries.
+    target: the host (or provider) alias the job is dispatched to.
+    data: workspace paths needed on the target beyond the mirror (a dataset the manifest never
+        syncs), so a transfer set counts them whether or not they changed.
+    runtime_s: the command's expected wall seconds an estimate prices; zero prices setup alone.
     fetch: a results path pulled back when the job finishes.
-    node: the ledger slug this job serves, carried into its record and receipts; absent stays
-        a valid job.
+    node: the ledger slug this job serves, carried into its record and receipts, or empty.
     """
 
     name: str = ""
@@ -73,7 +67,7 @@ class BatchJob(FrozenModel):
     node: str = ""
 
     def submission(self) -> Submission:
-        """This job's `Board.submit` keywords, the resource decisions it actually declares."""
+        """This job's `Board.submit` keywords."""
         return Submission(
             queue=self.queue,
             walltime=self.walltime,
@@ -90,15 +84,11 @@ class BatchJob(FrozenModel):
 
 
 class Selection(FrozenModel):
-    """Which of a plan's jobs a verb acts on, named or globbed over the plan's own job names.
+    """Which of a plan's jobs a verb acts on, by name or `fnmatch` glob, empty for all.
 
-    A plan is written once and worked through in waves: nine corpora are ready and four are not,
-    and a batch that is all or nothing makes the nine wait for the four. What the operator picks
-    is what a verb was asked to do rather than part of what the batch is, so it lives here beside
-    the declaration instead of inside it, and the plan keeps its identity and its receipts stream
-    across every wave of it.
-
-    patterns: the job names or `fnmatch` globs typed at the verb, empty for the whole plan.
+    A plan is worked through in waves (nine corpora ready, four not), and the pick is what a verb
+    was asked rather than what the batch is, so it lives beside the declaration and the plan keeps
+    its identity and receipts stream across every wave.
     """
 
     patterns: tuple[str, ...] = ()
@@ -111,8 +101,8 @@ class Selection(FrozenModel):
     def chosen(self, jobs: Sequence[BatchJob]) -> tuple[BatchJob, ...]:
         """The declared jobs this selection names, in the plan's own order.
 
-        A pattern that names nothing at all is refused with what the plan does declare, since a
-        mistyped name is a wave that quietly goes out short and is noticed hours later.
+        A pattern naming nothing is refused with what the plan declares, since a mistyped name is
+        a wave quietly going out short.
         """
         if not self.patterns:
             return tuple(jobs)
@@ -129,7 +119,6 @@ class Selection(FrozenModel):
         return tuple(job for job in jobs if self.holds(job.name))
 
     def holds(self, name: str) -> bool:
-        """Whether `name` is one of the jobs this selection names."""
         return not self.patterns or any(fnmatchcase(name, pattern) for pattern in self.patterns)
 
 
@@ -148,32 +137,25 @@ def _tables(value: Json, *, at: str) -> list[dict[str, Json]]:
 
 
 class BatchSpec(FrozenModel):
-    """A whole batch declared as data: a name and the jobs it fans across the fleet.
-
-    name: the batch's human label, which its id is built from.
-    jobs: the declared jobs, in the order they are prepared, priced and dispatched.
-    """
+    """A whole batch declared as data: a name and the jobs, in the order they are prepared,
+    priced and dispatched."""
 
     name: str
     jobs: tuple[BatchJob, ...]
 
     @property
     def batch_id(self) -> str:
-        """This batch's identity: its name and a digest over every job it declares.
+        """This batch's name and a digest over every job it declares.
 
-        Content-addressed so the same declaration always addresses the same receipts, which is
-        what lets `prepare`, `estimate` and `run` write one stream and `watch` find it later by
-        id alone. Changing what a job runs is a different batch and says so.
+        Content-addressed so `prepare`, `estimate` and `run` write one stream `watch` later finds
+        by id alone; changing what a job runs is a different batch.
         """
         digest = hashlib.blake2s(self.model_dump_json().encode(), digest_size=4).hexdigest()
         return f"{self.name}-{digest}"
 
     @classmethod
     def inline(cls, name: str, declared: Sequence[str]) -> BatchSpec:
-        """The batch `name` from `target:command` arguments, the file-free way to declare one.
-
-        declared: one `target:command` per job, split at the first colon.
-        """
+        """The batch `name` from one `target:command` argument per job, the file-free way."""
         split = [job.partition(_INLINE) for job in declared]
         if bare := [job for job, separator, _ in split if not separator]:
             raise MissionError(f"jobs are written target:command, not {bare[0]!r}")
@@ -183,20 +165,12 @@ class BatchSpec(FrozenModel):
 
     @classmethod
     def load(cls, path: Path, overrides: Mapping[str, str] | None = None) -> BatchSpec:
-        """The batch declared in the TOML file at `path`.
+        """The batch declared in the TOML file at `path`, named by its stem without a `name`.
 
-        A `[defaults]` table fills in every field a job leaves out, so a batch whose jobs share
-        a walltime or an expected runtime says so once. The file's stem names the batch when its
-        `name` key is absent.
-
-        A `[vars]` table declares the knobs a spec is written over, and every string in the
-        file may render them the way `mainboard.toml` does, `{{ vars.repetition }}`. A value
-        typed at the command line replaces the declared one, so one spec serves every
-        repetition of a campaign instead of a copy per run, and a name the file never declared
-        is refused rather than rendered blank.
-
-        path: the spec file.
-        overrides: `[vars]` values replacing the declared ones, by name.
+        `[defaults]` fills every field a job leaves out. `[vars]` declares knobs every string may
+        render as `mainboard.toml` does (`{{ vars.repetition }}`); `overrides` typed at the
+        command line replace them, so one spec serves every repetition, and an undeclared name is
+        refused rather than rendered blank.
         """
         try:
             document = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -218,11 +192,7 @@ class BatchSpec(FrozenModel):
 
     @classmethod
     def of(cls, name: str, jobs: Sequence[dict[str, object]]) -> BatchSpec:
-        """The batch `name` over already-parsed job tables, each validated where it is written.
-
-        A job that named no label takes its target and position, so a spec stays as short as the
-        decisions it actually makes while every row still has something to be called.
-        """
+        """The batch `name` over parsed job tables, unnamed jobs named by target and position."""
         try:
             built = [BatchJob.model_validate(job) for job in jobs]
         except ValidationError as error:

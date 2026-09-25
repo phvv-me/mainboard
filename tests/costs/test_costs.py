@@ -51,11 +51,7 @@ def test_billing_never_undercharges_wall_time_and_prices_an_hour_at_the_hourly_r
     rate: float,
 ) -> None:
     model = BillingModel(
-        provider="p",
-        rate_usd_hr=rate,
-        granularity_s=granularity,
-        minimum_s=minimum,
-        fees_usd=fees,
+        provider="p", rate_usd_hr=rate, granularity_s=granularity, minimum_s=minimum, fees_usd=fees
     )
     billed = model.billed_seconds(setup_s=setup, run_s=run, drain_s=drain)
     assert billed >= setup + run + drain - 1e-9
@@ -194,32 +190,22 @@ def test_a_catalog_round_trips_through_ndjson_and_reads_an_absent_file_as_no_off
 
 
 def test_an_imported_row_and_a_probed_one_land_under_the_single_name_a_query_asks_for() -> None:
-    """Both provider spellings land under the one name a query asks for.
-
-    gpuhunt spells Vast `vastai` while the live probe and the host kind spell it `vast`, and
-    a catalog query narrows by exactly one name, so both feeds are reconciled at this seam.
-    """
+    """gpuhunt's `vastai` and the live probe's `vast` land under the one name a query uses."""
     imported = from_gpuhunt(
         [
             SimpleNamespace(
-                provider="vastai",
+                provider=provider,
                 gpu_name="H100",
-                gpu_count=4,
-                price=7.6,
-                spot=True,
-                location="US",
-            ),
-            SimpleNamespace(
-                provider="runpod",
-                gpu_name="H100",
-                gpu_count=8,
-                price=23.92,
-                spot=False,
-                location=None,
-            ),
-            SimpleNamespace(
-                provider="vastai", gpu_name="X", gpu_count=1, price=None, spot=False, location=""
-            ),
+                gpu_count=count,
+                price=price,
+                spot=spot,
+                location=location,
+            )
+            for provider, count, price, spot, location in [
+                ("vastai", 4, 7.6, True, "US"),
+                ("runpod", 8, 23.92, False, None),
+                ("vastai", 1, None, False, ""),
+            ]
         ]
     )
     assert (catalog_provider("vastai"), catalog_provider("runpod")) == ("vast", "runpod")
@@ -240,16 +226,10 @@ def test_an_imported_row_and_a_probed_one_land_under_the_single_name_a_query_ask
     assert (on_demand.provider, on_demand.source) == ("vast", "probed:vast")
     assert (on_demand.rate_usd_hr, on_demand.available, on_demand.region) == (1.8, True, "")
     [interruptible] = from_vast([{**bundle, "geolocation": "JP"}], spot=True)
-    assert (interruptible.rate_usd_hr, interruptible.spot, interruptible.region) == (
-        0.4,
-        True,
-        "JP",
-    )
+    assert (interruptible.rate_usd_hr, interruptible.spot) == (0.4, True)
+    assert interruptible.region == "JP"
     [unprobed] = from_vast([{"gpu_name": "H100", "num_gpus": 1, "dph_total": 1.8}])
     assert unprobed.available is None
 
-    catalog = Catalog((*imported, on_demand, interruptible))
-    assert {offer.source for offer in catalog.offers(provider="vast")} == {
-        "imported:gpuhunt",
-        "probed:vast",
-    }
+    vast = Catalog((*imported, on_demand, interruptible)).offers(provider="vast")
+    assert {offer.source for offer in vast} == {"imported:gpuhunt", "probed:vast"}

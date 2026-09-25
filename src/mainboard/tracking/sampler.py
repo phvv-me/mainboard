@@ -1,14 +1,10 @@
 # The live lane: this machine's own readings, published into a job's receipts while it runs.
 #
-# What makes these readings worth shipping is the one number a hosted dashboard never had. A
-# service watching a job sees how much memory the process used; it does not see the ceiling the
-# scheduler wrote onto the job's cgroup, which is the number an OOM kill actually fires against.
-# `mainboard` probes that ceiling, so every sample carries used memory, the enforced cap, and the
-# fraction between them, which is the series that says whether a job is about to die.
-#
-# The samples go to the same bus every other receipt goes to, so they land in the job's own
-# NDJSON first and reach whatever the workspace declared second. That is what lets this run
-# unchanged on a laptop, on gold, and on a compute node with no route out.
+# A hosted dashboard sees the memory a process used, never the cgroup ceiling the scheduler set,
+# which is what an OOM kill fires against. Every sample carries used memory, that cap and the
+# fraction between them, the series that says whether a job is about to die. Samples land in the
+# job's own NDJSON first and the declared sink second, so this runs unchanged on a laptop, on
+# gold and on a compute node with no route out.
 
 from threading import Event as Flag
 from threading import Thread
@@ -34,13 +30,13 @@ if TYPE_CHECKING:
 # the process may leave without it.
 _JOIN_S = 5.0
 
-# The file a host keeps the one tracking credential in, written by whoever dispatches and read
-# by the job itself. Its own file rather than the workspace `.env`, so staging it can never
-# overwrite what that host already declares, and one known path to audit, rotate or delete.
+# The file a host keeps the tracking credential in, written by the dispatcher and read by the job.
+# Not the workspace `.env`, so staging never overwrites what the host declares, and one known
+# path to audit, rotate or delete.
 _HOST_ENV = "tracking.json"
 
-# Compute utilization above which an accelerator counts as already working, the same threshold
-# `probe.gating.gpu_busy` judges a machine by, so one workspace has one idea of busy.
+# Compute utilization above which an accelerator counts as working, `probe.gating.gpu_busy`'s
+# threshold, so one workspace has one idea of busy.
 _BUSY_PCT = 10
 
 
@@ -104,12 +100,10 @@ class Sampled(Protocol):
 class Sampler:
     """This machine, read into a job's receipts on a fixed interval, from its own thread.
 
-    Entering starts the thread and takes the first reading at once, so even a job that dies in
-    its first minute leaves a series. Leaving stops it. An interval of zero samples nothing at
-    all, which is how a workspace turns the lane off without the caller branching on it.
-
-    The thread is a daemon and every stop is bounded, because this is code that runs beside
-    somebody's training loop and must never be the reason a job will not exit.
+    Entering takes the first reading at once, so even a job dying in its first minute leaves a
+    series. An interval of zero samples nothing, turning the lane off without the caller
+    branching. The thread is a daemon and every stop is bounded, since this runs beside somebody's
+    training loop and must never be why a job will not exit.
     """
 
     def __init__(
@@ -125,13 +119,10 @@ class Sampler:
     ) -> None:
         """bus: where samples are published, the job's own receipts.
 
-        stream: the receipts stream the samples belong to.
-        job: the job inside that stream these readings describe.
         interval: seconds between readings, 0 to sample nothing.
         seconds: a hard stop, 0 to sample until the caller stops it.
-        parent: a process to outlive rather than outlast, 0 for none. A sampler started beside a
-            dispatched command watches that command's shell, so it ends when the job does
-            instead of surviving it as an orphan.
+        parent: a pid whose exit ends sampling, 0 for none; beside a dispatched command it is the
+            command's shell, so the sampler never outlives the job as an orphan.
         machine: what is read, this machine when None.
         """
         self.bus = bus
@@ -168,14 +159,11 @@ class Sampler:
     def attest(self) -> Event:
         """Publish one reading as this job's `job.attested` receipt, saying if the node was idle.
 
-        The attestation rather than the series, taken once and in the foreground before the work
-        starts. Two jobs on one host run concurrently, so a benchmark can be measuring while
-        another job holds the GPU, and the contended artifact otherwise looks exactly as
-        authoritative as a clean one (a 1.29x speedup claimed this way vanished when it was
-        re-run on a verified-idle host, 2026-08-22). Attesting rather than serializing is the
-        honest half of that: nothing is forbidden, and a measurement campaign gets to decide for
-        itself what a busy machine does to its numbers. The whole reading rides along with the
-        verdict, so a reader can judge the conditions instead of trusting one word for them.
+        Taken once, in the foreground, before the work starts. Jobs on one host run concurrently,
+        so a contended benchmark otherwise looks as authoritative as a clean one (a 1.29x speedup
+        vanished when re-run on a verified-idle host, 2026-08-22). Attesting rather than
+        serializing forbids nothing and lets a campaign decide what a busy machine means, and the
+        whole reading rides along so a reader judges the conditions, not one word.
         """
         busiest = max((gpu.utilization.gpu_pct for gpu in self.machine.gpus), default=0)
         return publish(
@@ -187,7 +175,6 @@ class Sampler:
         )
 
     def loop(self) -> None:
-        """Sample now, then every interval, until stopped, expired, or orphaned."""
         self.sample()
         while not self.stopped.wait(self.interval) and not self.expired:
             self.sample()
@@ -208,43 +195,33 @@ class Sampler:
         }
 
     def sample(self) -> Event:
-        """Publish one reading as this job's next `job.sample` receipt."""
         return publish(self.bus, self.stream, Topic.SAMPLE, job=self.job, data=self.reading())
 
     def start(self) -> None:
-        """Begin sampling, unless the declared interval asked for no samples at all."""
         self.opened = monotonic()
         if self.interval > 0:
             self.thread.start()
 
     def stop(self) -> None:
-        """Stop sampling and wait a bounded moment for the thread to notice."""
         self.stopped.set()
         if self.thread.is_alive():
             self.thread.join(timeout=_JOIN_S)
 
 
 def host_env(root: str) -> str:
-    """Where a host keeps the tracking credential a dispatched job reads, as a JSON object.
-
-    root: the workspace root on that host.
-    """
+    """Where a host under workspace `root` keeps the tracking credential, as a JSON object."""
     return f"{root}/{Project().out_dir}/{_HOST_ENV}"
 
 
 def attesting(*, root: str, stream: str, job: str) -> ToolCall:
-    """The call a dispatched job makes so it attests to its own machine before it works.
+    """The call a dispatched job makes to attest to its own machine before it works.
 
-    The foreground twin of `sampling`, and foreground is the whole point: a reading taken beside
-    the command describes the command, while a reading taken before it describes the conditions
-    the command was handed. It carries the staged credential the same way, its output is
-    discarded because an attestation belongs in the receipts rather than in the log, and a
-    failure to attest never stops the job, since a missing attestation is a row that says
-    nothing and a refused dispatch is a run that never happened.
+    The foreground twin of `sampling`: a reading taken before the command describes the
+    conditions it was handed, not the command. Its output is discarded (it belongs in the
+    receipts, not the log), and a failure never stops the job, since a missing attestation is a
+    row saying nothing while a refused dispatch is a run that never happened.
 
     root: the workspace root on the host, where the staged credential lives.
-    stream: the receipts stream the attestation belongs to.
-    job: the job inside that stream.
     """
     return ToolCall(args=("attest", stream, "--job", job), credentials=host_env(root))
 
@@ -252,22 +229,15 @@ def attesting(*, root: str, stream: str, job: str) -> ToolCall:
 def sampling(
     *, root: str, stream: str, job: str, interval: float, seconds: float = 0.0
 ) -> ToolCall | None:
-    """The call a dispatched job makes so it samples itself, None when it should not.
+    """The call a dispatched job makes to sample itself, None for an `interval` of 0.
 
-    This is the seam that carries the live lane onto a machine that is not this one. The job's
-    runner starts the tool the host already has, in the environment the job already entered, and
-    the sampler publishes into that host's own receipts and onward to whatever the workspace
-    declared. Nothing about it is configured on the host.
-
-    Three things keep it from outliving its job. The runner hands it its own pid to follow and
-    stops it when the command ends; it carries the same wall budget the job was given; and its
-    output goes nowhere, since a sampler must never write into the log the job's output owns.
+    The seam carrying the live lane onto another machine: the job's runner starts the host's own
+    tool in the job's environment, publishing into that host's receipts and onward, with nothing
+    configured on the host. It never outlives its job: the runner hands it its pid to follow and
+    stops it when the command ends, it carries the job's wall budget (`seconds`, 0 for none), and
+    its output goes nowhere rather than into the job's log.
 
     root: the workspace root on the host, where the staged credential lives.
-    stream: the receipts stream the samples belong to.
-    job: the job inside that stream.
-    interval: seconds between readings, 0 for a job that samples nothing.
-    seconds: the job's own wall budget as a hard stop, 0 for none.
     """
     if interval <= 0:
         return None

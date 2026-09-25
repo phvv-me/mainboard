@@ -24,10 +24,8 @@ class Args(NamedTuple):
     """Parsed `agentmain` invocation: either a follow read or a wrap-and-run.
 
     root: the spool root every job directory lives under.
-    job: the job identity this invocation observes.
-    follow: replay-and-tail an existing spool instead of wrapping a child.
-    from_offset: the checkpoint a follow replay starts at.
-    child: the wrapped command and its arguments, everything after a literal `--`.
+    follow: replay-and-tail an existing spool from `from_offset` instead of wrapping a child.
+    child: the wrapped argv, everything after a literal `--`.
     """
 
     root: str
@@ -60,8 +58,6 @@ def parse_args(argv: Sequence[str]) -> Args:
 
 
 def main(argv: Sequence[str]) -> int:
-    """`agentmain`'s entry point: replay-and-follow, or wrap-and-run, per the parsed flags."""
-
     args = parse_args(argv)
     with Spool(Path(args.root), args.job) as spool:
         if args.follow:
@@ -82,11 +78,8 @@ def wrap(
 ) -> int:
     """Run `argv` as the wrapped child, spooling its output, periodic rss samples, and exit code.
 
-    spool: where every frame and heartbeat for this job lands.
-    argv: the child command to run and observe.
     sample_interval: minimum real seconds between rss samples, checked between output lines.
-    now: overridden in a test for a deterministic clock.
-    rss: overridden in a test to avoid depending on a real child process's memory.
+    now, rss: the clock and memory reader, overridden by a test to stay deterministic.
     """
     process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=argv is the job wrapper's own command, not untrusted input since=2026-08-17
         list(argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True

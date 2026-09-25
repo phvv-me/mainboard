@@ -24,10 +24,7 @@ _JOB = "trial-a"
 def opened(tmp_path: Path, declared: Tracking | None = None, *, workspace: str = "") -> WandbSink:
     """A sink over one stream, at whatever the caller declared."""
     return WandbSink(
-        _STREAM,
-        declared=declared or Tracking(),
-        directory=tmp_path,
-        workspace=workspace,
+        _STREAM, declared=declared or Tracking(), directory=tmp_path, workspace=workspace
     )
 
 
@@ -67,14 +64,14 @@ def test_a_provider_nothing_registered_is_refused_with_the_roster(tmp_path: Path
 
 
 @pytest.mark.parametrize(
-    ("name", "handle", "expected"),
+    ("name", "expected", "batched"),
     [
-        ("batch:smoke-1/gold-1", "7", ("smoke-1", "gold-1")),
-        ("batch:smoke-1", "7", ("smoke-1", "smoke-1")),
-        ("study:abc/trial-3", "7", ("abc", "trial-3")),
-        ("study:abc", "7", ("abc", "abc")),
-        ("nightly", "7", ("nightly", "nightly")),
-        ("", "7", ("run-7", "7")),
+        ("batch:smoke-1/gold-1", ("smoke-1", "gold-1"), True),
+        ("batch:smoke-1", ("smoke-1", "smoke-1"), True),
+        ("study:abc/trial-3", ("abc", "trial-3"), False),
+        ("study:abc", ("abc", "abc"), False),
+        ("nightly", ("nightly", "nightly"), False),
+        ("", ("run-7", "7"), False),
     ],
     ids=[
         "a batch job",
@@ -86,17 +83,12 @@ def test_a_provider_nothing_registered_is_refused_with_the_roster(tmp_path: Path
     ],
 )
 def test_every_dispatch_label_routes_to_the_stream_and_job_it_names(
-    name: str, handle: str, expected: tuple[str, str]
+    name: str, expected: tuple[str, str], batched: bool
 ) -> None:
-    """One router, so a plain submit and a study trial reach the run a batch job reaches."""
-    assert streamed(name, handle=handle) == expected
-
-
-def test_only_a_batch_publishes_for_a_batch_job_though_the_job_still_samples_itself() -> None:
-    """Its own flow writes every receipt about it, so a second publisher would double each row."""
-    assert is_batched("batch:smoke-1/gold-1") is True
-    assert is_batched("study:abc/trial-3") is False
-    assert is_batched("nightly") is False
+    """One router, so a plain submit and a study trial reach the run a batch job reaches, and
+    only a batch's own flow publishes for a batch job."""
+    assert streamed(name, handle="7") == expected
+    assert is_batched(name) is batched
 
 
 def test_a_sink_is_where_events_go_and_never_where_they_come_from(tmp_path: Path) -> None:
@@ -221,12 +213,7 @@ def test_a_closing_receipt_ends_the_run_at_what_it_actually_says(
 def test_the_service_is_silenced_before_it_is_ever_imported(
     service: FakeWandb, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The package greets stdout while it finds its credentials, in front of a `--json` document.
-
-    It reads the variable at import, so the silence has to be in the environment before the
-    import happens, and a workspace that asked for a louder one does not get to spend the
-    document on it.
-    """
+    """It reads the variable at import, and a workspace asking for a louder one is overruled."""
     monkeypatch.setenv("WANDB_SILENT", "false")
     assert module() is service
     assert os.environ["WANDB_SILENT"] == "true"

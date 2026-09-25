@@ -1,23 +1,19 @@
 # What a dispatched test job says about its own progress, in lines a waiter reads off its log.
 #
-# Agents waiting on a job wrote their own polling loops, 56 of them in seven sessions: tail the
-# log, count pytest's dots, guess from `nvidia-smi` whether anything was still happening. The
-# dots say nothing a reader can count, since `-q` prints no names and a fresh-process lane is a
-# new pytest session per cell. So the runner reports through its own channel instead: how many
-# cells the job holds, each cell's outcome as it lands, and the moment the pytest session ended,
-# which is what lets a job whose process lingers past its tests be settled on what they said.
+# Agents waiting on a job wrote their own polling loops (56 in seven sessions) counting pytest's
+# dots, which `-q` and a fresh-process lane's per-cell sessions make uncountable. So the runner
+# reports the job's cell count, each cell's outcome as it lands, and the session's end, which
+# lets a job whose process lingers past its tests be settled on what they said.
 #
-# Three marker lines, written by the runner's pytest plugin (`jobs/pytest.py`) and by a
-# fresh-process lane, only in a dispatched job, where the log is read by a machine; a run at this
-# workstation's own terminal keeps pytest's output as it always was:
+# Three marker lines, written by the pytest plugin (`jobs/pytest.py`) and a fresh-process lane,
+# only in a dispatched job; a run at this workstation's terminal keeps pytest's output as is:
 #
 #     mainboard-cells: 12
 #     mainboard-cell: passed test_lane.py::test_cell[gpt2]
 #     mainboard-session: 0
 #
-# A marker may land in the middle of pytest's progress dots, so it is read wherever it starts on
-# a line and runs to the line's end, and `unbeaconed` removes exactly that span, which gives the
-# reader of `logs` pytest's own output back byte for byte.
+# A marker may land mid-line among pytest's dots, so it runs from wherever it starts to the line's
+# end, and `unbeaconed` removes exactly that span, giving `logs` pytest's output byte for byte.
 
 import os
 import re
@@ -29,8 +25,8 @@ CELLS = "mainboard-cells:"
 CELL = "mainboard-cell:"
 SESSION = "mainboard-session:"
 
-# Set in the environment of each process a fresh-process lane runs a cell in. The lane declares
-# the total and ends the session itself, so a child reports its one cell and nothing else.
+# Set for each process a fresh-process lane runs a cell in: the lane declares the total and ends
+# the session itself, so a child reports its one cell and nothing else.
 NESTED = "MAINBOARD_FRESH_CELL"
 
 # Every marker span in a log, from the marker to the end of its line.
@@ -41,20 +37,16 @@ _WORST = ("failed", "skipped", "passed")
 
 
 def say(marker: str, value: str) -> None:
-    """Write one marker line straight to the job's output descriptor.
-
-    The descriptor rather than `sys.stdout`: pytest swaps `sys.stdout` for its capture while a
-    test runs, and a marker must reach the log whatever pytest is capturing at that moment.
-    """
+    """Write one marker line to the job's output descriptor, which pytest's capture never swaps."""
     os.write(1, f"{marker} {value}\n".encode())
 
 
 class Progress(FrozenModel):
     """What a job's markers say so far.
 
-    total: the cells the job declared, None before it declared any.
-    cells: each reported cell's settled outcome, in the order the cells first landed.
-    session: the pytest session's exit status once it ended, None while it runs.
+    total: None before the job declared any.
+    cells: each reported cell's settled (worst) outcome, in the order the cells first landed.
+    session: the pytest session's exit status, None while it runs.
     """
 
     total: int | None = None
@@ -63,10 +55,7 @@ class Progress(FrozenModel):
 
     @classmethod
     def read(cls, log: str) -> Progress:
-        """The progress `log`'s markers add up to; empty for a log that carries none.
-
-        log: the job's captured output so far.
-        """
+        """The progress the markers in a job's output add up to."""
         total: int | None = None
         session: int | None = None
         outcomes: dict[str, str] = {}
@@ -84,12 +73,10 @@ class Progress(FrozenModel):
 
     @property
     def done(self) -> int:
-        """How many cells have landed."""
         return len(self.cells)
 
     @property
     def failed(self) -> int:
-        """How many landed cells failed."""
         return sum(outcome == "failed" for _, outcome in self.cells)
 
     @property
@@ -101,10 +88,7 @@ class Progress(FrozenModel):
 
 
 def unbeaconed(log: str) -> str:
-    """`log` with every marker span removed, pytest's own output left exactly as it printed.
-
-    log: the job's captured output.
-    """
+    """`log` with every marker span removed, pytest's own output left exactly as it printed."""
     return _SPAN.sub("", log)
 
 

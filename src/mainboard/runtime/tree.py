@@ -1,10 +1,9 @@
 # A command and everything it started, ended together.
 #
-# Signalling only the process a job spawned leaves its workers running: a dataloader, a compile
-# worker pool or a serving engine outlives the `bash -c` that started it and keeps the card. The
-# tree is read from the process table rather than from a process group, which is what makes the
-# same code end a job on Linux, macOS and Windows, and the command stays in the runner's own
-# group so a scheduler that signals the whole group (PBS, pueue) still reaches all of it directly.
+# Signalling only the process a job spawned leaves its workers (a dataloader, a compile pool, a
+# serving engine) running and holding the card. The tree is read from the process table rather
+# than a process group, so the same code ends a job on Linux, macOS and Windows, and the command
+# stays in the runner's group so a scheduler signalling the group (PBS, pueue) still reaches it.
 
 import subprocess
 from contextlib import suppress
@@ -15,7 +14,6 @@ import psutil
 class ProcessTree:
     """One started command and its descendants, stopped as a unit.
 
-    process: the command this tree is rooted at.
     grace: seconds a terminated tree is given before it is killed outright.
     """
 
@@ -24,12 +22,10 @@ class ProcessTree:
         self.grace = grace
 
     def wait(self, timeout: float | None = None) -> int | None:
-        """The command's exit status once it ends, None when `timeout` seconds pass first.
+        """The command's exit status, None when `timeout` seconds (None for no limit) pass first.
 
-        A command ended by a signal reports `128 + N`, the status a shell would have reported for
-        it, so a job's exit code reads the same whether a shell or this runner started it.
-
-        timeout: seconds to wait, None to wait for as long as it runs.
+        A signal N reports `128 + N`, as a shell would, so an exit code reads the same whether a
+        shell or this runner started the command.
         """
         try:
             returned = self.process.wait(timeout)
@@ -44,7 +40,6 @@ class ProcessTree:
                 member.terminate()
 
     def kill(self) -> None:
-        """End the whole tree outright."""
         for member in self._members():
             with suppress(psutil.NoSuchProcess):
                 member.kill()
@@ -52,8 +47,7 @@ class ProcessTree:
     def stop(self) -> bool:
         """Terminate the tree, kill it when it outlives the grace, and say whether it had to be.
 
-        The two-step end `timeout --kill-after` gave a job: a command that honours SIGTERM gets
-        the chance to flush and exit, and one that does not is killed once the grace runs out.
+        The two-step end `timeout --kill-after` gave a job: SIGTERM first, a chance to flush.
         """
         self.terminate()
         if self.wait(self.grace) is not None:
@@ -63,12 +57,8 @@ class ProcessTree:
         return True
 
     def _members(self) -> list[psutil.Process]:
-        """The command and every living descendant, read before any of them is signalled.
-
-        Read first because ending a parent reparents its children, after which they can no
-        longer be found under it. A member that ends while the list is being signalled is skipped
-        by the caller, and a command already gone leaves nothing to signal.
-        """
+        """The command and every living descendant, read before any is signalled, since ending a
+        parent reparents its children out of reach."""
         try:
             root = psutil.Process(self.process.pid)
             return [*root.children(recursive=True), root]
