@@ -1,8 +1,8 @@
 # One host's command shell: how a line is staged and run there, and how the few probes onboarding
 # and the board need are spelled. A POSIX host answers `bash -lc` over plumbum's persistent
-# session. A Windows host has no bash, no `/bin/sh` for plumbum to open a session with and no
-# rsync, so it answers PowerShell one-shots over the bounded transport instead, each script
-# base64-encoded the way `-EncodedCommand` takes it so nothing is ever quoted for cmd.exe.
+# session. A Windows host has no bash and no `/bin/sh` for plumbum to open a session with, so it
+# answers PowerShell one-shots over the bounded transport instead, each script base64-encoded
+# the way `-EncodedCommand` takes it so nothing is ever quoted for cmd.exe.
 
 import base64
 import html

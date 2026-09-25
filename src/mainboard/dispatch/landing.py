@@ -183,7 +183,7 @@ class Landing:
             script = self.script(shipment, root=root, listing=listing)
             self.transferable(remote)
             self.watch(f"mirroring the workspace to {where}:{root}")
-            shipped = self.dispatcher.rsync_up(
+            shipped = self.dispatcher.mirror(
                 self.plan,
                 root,
                 ssh=policy,
@@ -200,7 +200,7 @@ class Landing:
             bootstrap.environment()
             self.watch(f"pinning the source tree on {rental.handle}")
             pinned = Snapshots(root).pin(
-                remote,
+                self.dispatcher.agent(self.plan, ssh=policy),
                 key=shipment.source.key,
                 image=self.dispatcher.image(self.plan, shipment, listing=listing, shipped=shipped),
                 results=shipment.fetch,
@@ -220,28 +220,29 @@ class Landing:
                 self.start(remote, pinned=pinned, script=f"{pinned}/{Snapshots.script(script)}")
 
     def transferable(self, remote: Machine) -> None:
-        """Make sure the machine can receive a mirror at all, since rsync runs on both ends.
+        """Make sure the machine can receive a mirror at all, since its Python runs the far end.
 
-        A declared host has rsync because whoever set it up installed one. A rented image often
-        ships none, and a missing far-side rsync fails the transfer with `rsync: command not
-        found` on a box we already own outright, so it is installed here through the package
-        manager every provider base image this house rents is built on. An image carrying neither
-        refuses with what the machine itself said, before the mirror rather than during it.
+        A declared host has a Python because whoever set it up has one. A rented image almost
+        always ships one too, and one that does not fails the transfer on a box we already own
+        outright, so it is installed here through the package manager every provider base image
+        this house rents is built on. An image carrying neither refuses with what the machine
+        itself said, before the mirror rather than during it.
 
         This runs on the bare connection rather than through the workspace shell every later step
         uses, because the workspace does not exist yet: the mirror below is what creates it.
 
         remote: the open connection to the machine.
         """
-        retcode, _, _ = remote["bash"][["-lc", "command -v rsync"]].run(retcode=None)
+        probe = f"{self.plan.profile.python} -c pass"
+        retcode, _, _ = remote["bash"][["-lc", probe]].run(retcode=None)
         if retcode == 0:
             return
-        self.watch("installing rsync on the rental")
-        install = "apt-get update -qq && apt-get install -y -qq rsync"
+        self.watch("installing python on the rental")
+        install = "apt-get update -qq && apt-get install -y -qq python3"
         retcode, _, err = remote["bash"][["-lc", install]].run(retcode=None)
         if retcode:
             raise MissionError(
-                f"the rented machine has no rsync and could not install one: "
+                f"the rented machine has no python and could not install one: "
                 f"{str(err).strip()[-400:]}"
             )
 

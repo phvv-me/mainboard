@@ -1,33 +1,38 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
-from plumbum import local
 
+from mainboard.dispatch import HostUnreachable
+from mainboard.dispatch.agent import Agent, AgentRefused, Rules, Scope
 from mainboard.dispatch.provenance import Row, Status, blob_of
 from mainboard.dispatch.provenance import listing as listed
 from mainboard.dispatch.snapshots import (
     CLOSURE,
     STAMP,
     WRAPPERS,
-    HostUnreachable,
     Mirrored,
     Sealed,
     Snapshots,
-    containers,
     stamped,
     writable,
 )
+from mainboard.dispatch.sync import compiled
 
-from .support import machine_with, pins_on_this_host
+from .support import InProcessLink, RecordingAgent, links_on_this_host
 
 
-def mirrored(
-    *sources: str, filters: tuple[str, ...] = (), exclude: tuple[str, ...] = ()
-) -> Mirrored:
-    """The image a command that ships the mirror pins: the synced allowlist, filled back."""
-    return Mirrored(sources=sources, filters=filters, exclude=exclude)
+def mirrored(*sources: str, ignore: tuple[str, ...] = (), deny: tuple[str, ...] = ()) -> Mirrored:
+    """The image a command that ships the mirror pins: the synced scope, filled back."""
+    scope = Scope(sources, ignore=Rules({"": compiled(ignore)}), deny=Rules({"": compiled(deny)}))
+    return Mirrored(scope=scope.spec())
+
+
+def local() -> Agent:
+    """The agent of a host that is this machine, answering in this process."""
+    return Agent(InProcessLink())
 
 
 def test_a_snapshots_stamp_records_the_commit_and_digest_it_was_dispatched_from() -> None:
@@ -42,35 +47,6 @@ def test_a_snapshots_stamp_records_the_commit_and_digest_it_was_dispatched_from(
     assert stamp.endswith("\n")
     # A workspace git answered nothing for writes the key and nothing it cannot stand behind.
     assert stamped("untracked", commit="", digest="") == "untracked\n"
-
-
-def test_a_pin_writes_that_provenance_into_the_tree_it_freezes() -> None:
-    """One write, inside the stamp guard, so the tree says what it is for as long as it stands."""
-    remote = machine_with()
-
-    Snapshots("/work/projects").pin(
-        remote, key="abc1234", image=mirrored("a"), commit="c0ffee", digest="d1"
-    )
-
-    [program] = remote.lines
-    stamp = "printf '%s' 'abc1234\ncommit c0ffee\ndigest d1\n'"
-    assert f'{stamp} > "$mb_snap/{STAMP}"\nmv -T' in program
-    assert f'{stamp} | cmp -s - "$mb_snap/{STAMP}"' in program
-
-
-@pytest.mark.parametrize(
-    ("sources", "expected"),
-    [
-        (["scripts", "mainboard.toml"], ["."]),
-        (["research/compression", "research/bale"], [".", "research"]),
-        (["a/b/c"], [".", "a", "a/b"]),
-    ],
-)
-def test_every_directory_a_mirrored_snapshot_creates_is_one_it_has_to_fill_from_the_mirror(
-    sources: list[str], expected: list[str]
-) -> None:
-    """A directory the copy invented holds none of the data dirs the mirror keeps beside it."""
-    assert containers(sources) == expected
 
 
 @pytest.mark.parametrize(
@@ -90,111 +66,68 @@ def test_only_a_workspace_relative_results_path_is_ever_spliced_into_the_shell(
     assert writable(path) == expected
 
 
-def test_pinning_the_mirror_copies_the_shipped_set_by_hardlink_and_links_the_rest_back() -> None:
-    """A command's bargain: code frozen, environment and data reached live through the mirror."""
-    remote = machine_with()
-    pinned = Snapshots("/work/projects").pin(
-        remote,
+def test_a_pin_asks_the_host_for_one_tree_named_by_its_key_and_answers_where_it_stands() -> None:
+    """Everything the host needs is resolved here, down to the paths and the stamp it writes."""
+    agent = RecordingAgent()
+    image = mirrored("research/compression", "mainboard.toml")
+    pinned = Snapshots("/work/projects/").pin(
+        agent,
         key="abc1234",
-        image=mirrored(
-            "research/compression", "mainboard.toml", filters=(":- .gitignore",), exclude=(".git",)
-        ),
-        results="research/compression/raw",
+        image=image,
+        results="./research/compression/raw",
+        commit="c0ffee",
+        digest="d1",
     )
     assert pinned == "/work/projects/.mainboard/dispatch/sources/abc1234"
-    [program] = remote.lines
-    assert "mb_root=/work/projects" in program
-    assert f"mb_final={pinned}" in program
-    assert "mb_snap=$(mktemp -d " in program
-    assert "--link-dest=/work/projects/" in program
-    assert "rsync -aR" in program
-    assert 'research/compression mainboard.toml "$mb_snap"/' in program
-    # The generated tree is rebuilt as this snapshot's own so a job recompiling its manifest
-    # writes here rather than over the description every other job on the host activates through.
-    assert 'mkdir -p "$mb_snap"/.mainboard/envs' in program
-    assert 'if [ -d "$e" ]; then ln -s "$e" "$mb_snap/$d/$n"; else ln "$e"' in program
-    # Every container directory the copy created is then filled from the mirror, which is what
-    # puts the data directories and the ancestor ignore files back within the job's reach.
-    assert "for d in . research; do" in program
-    assert 'ln -s "$e" "$mb_snap/$d/$n"' in program
-    # The declared results path is a symlink back to the mirror, so what the job writes there is
-    # what the pull already goes looking for, and it is linked after the stamp closes rather
-    # than inside it, since the path belongs to this dispatch and the tree does not.
-    assert (
-        'ln -sfn "$mb_root"/research/compression/raw "$mb_snap"/research/compression/raw'
-    ) in program
-    stamped_line = f"printf '%s' 'abc1234\n' > \"$mb_snap/{STAMP}\""
-    assert stamped_line in program
-    assert program.index("ln -sfn") < program.index(stamped_line) < program.rindex("ln -sfn")
+    [request] = agent.requests
+    asked = request["pin"]
+    assert asked["root"] == "/work/projects"
+    assert asked["base"] == "/work/projects/.mainboard/dispatch/sources"
+    assert asked["stamp"] == "abc1234\ncommit c0ffee\ndigest d1\n"
+    assert asked["results"] == "research/compression/raw"
+    assert asked["image"] == {"kind": "mirrored", "scope": image.scope}
+    assert (asked["script"], asked["wrapper"], asked["prefix"]) == ("", "", "")
 
 
-def test_pinning_a_closure_copies_exactly_the_listed_files_and_links_only_the_needs() -> None:
-    """The bargain a job gets: nothing of the mirror is reachable but what the job declared."""
-    remote = machine_with()
-    listing = ".mainboard/dispatch/jobs/closure-abc.tsv"
+def test_a_sealed_pin_sends_its_needs_normalised_and_every_live_path_it_links() -> None:
+    agent = RecordingAgent()
+    staged = f".mainboard/dispatch/jobs/job-{'c' * 64}.sh"
     Snapshots("/work/projects").pin(
-        remote,
+        agent,
         key="abc1234-9f9f9f9f",
-        image=Sealed(listing=listing, needs=("data/corpus", "data/models/x")),
-        results="research/camp/experiments/node/evidence",
+        image=Sealed(listing="jobs/closure.tsv", needs=("./data/corpus",), pins=("p/x",)),
+        results="research/node/evidence",
         digest="ab" * 32,
+        script=staged,
     )
-    [program] = remote.lines
-    assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --filter' in program
-    assert "--files-from=-" in program
-    assert "hide .card.lock" in program and "protect .card.lock" in program
-    assert '--link-dest=/work/projects/ ./ "$mb_snap"/' in program
-    assert '|| [ "$?" = 24 ]' not in program
-    # Only host-local lease rules apply; ordinary ignores cannot alter the exact listing.
-    assert program.count("--filter") == 4 and "--exclude" not in program
-    assert "for d in" not in program
-    # Each need is checked on the mirror and linked in after the stamp, on every dispatch.
-    stamp = program.index('mv -T -- "$mb_snap" "$mb_final"')
-    for need in ("data/corpus", "data/models/x"):
-        check = f'if [ ! -e "$mb_root"/{need} ]; then echo'
-        assert program.index(check) < stamp < program.rindex(check)
-        assert f"the need {need} is not on the mirror" in program
-        assert f'ln -sfn "$mb_root"/{need} "$mb_snap"/{need}' in program
-    assert 'mkdir -p "$mb_snap"/data/models' in program
-    assert "false; fi" in program and "exit" not in program
-    assert program.rindex("ln -sfn") > program.index("ln -sfn")
+    asked = agent.requests[0]["pin"]
+    assert asked["image"] == {
+        "kind": "sealed",
+        "listing": "jobs/closure.tsv",
+        "digest": "ab" * 32,
+        "needs": ["data/corpus"],
+        "pins": ["p/x"],
+        "staging": ".mainboard/pins",
+        "live": ["data/corpus", "research/node/evidence"],
+    }
+    assert (asked["script"], asked["wrapper"]) == (staged, f"{WRAPPERS}/job-{'c' * 64}.sh")
 
 
-def test_a_sealed_snapshot_links_its_staged_pins_beside_its_needs() -> None:
-    """A Hub pin staged under the workspace is a need: checked on the mirror and linked in."""
-    remote = machine_with()
-    listing = ".mainboard/dispatch/jobs/closure-abc.tsv"
-    Snapshots("/work/projects").pin(
-        remote,
-        key="abc1234-9f9f9f9f",
-        image=Sealed(
-            listing=listing,
-            needs=("data/corpus",),
-            pins=(".mainboard/pins/models--o--n/snapshots/r/tokenizer.json",),
-        ),
-        results="research/camp/experiments/node/evidence",
-        digest="ab" * 32,
-    )
-    [program] = remote.lines
-    assert 'ln -sfn "$mb_root"/data/corpus "$mb_snap"/data/corpus' in program
-    pin = ".mainboard/pins/models--o--n/snapshots/r/tokenizer.json"
-    assert f"mainboard: the need {pin} is not on the mirror" in program
-    assert 'ln -sfn "$mb_root"/.mainboard/pins "$mb_snap"/.mainboard/pins' in program
-    assert f'ln -sfn "$mb_root"/{pin}' not in program
-
-
-def test_pinning_a_tree_the_host_could_not_build_refuses_instead_of_dispatching_into_it() -> None:
-    """A job started in a half-built tree imports whatever happened to be copied first."""
-    remote = machine_with(rules=[("rsync", 23, "rsync: link_stat failed")])
-    with pytest.raises(SystemExit, match="could not pin the source tree"):
-        Snapshots("/work/projects").pin(remote, key="abc1234", image=mirrored("src"))
-
-
-def test_a_host_that_dropped_while_pinning_reads_as_unreachable_not_as_a_broken_tree() -> None:
-    """A transport blip is a fact about the host, and the dispatch retries rather than refuses."""
-    remote = machine_with(rules=[("rsync", 255, "ssh: connect to host gold port 22: timed out")])
-    with pytest.raises(HostUnreachable):
-        Snapshots("/work/projects").pin(remote, key="abc1234", image=mirrored("src"))
+@pytest.mark.parametrize(
+    ("answer", "raised", "match"),
+    [
+        (AgentRefused("missing source: src"), SystemExit, "could not pin the source tree"),
+        (HostUnreachable("ssh: connect to host gold port 22: timed out"), HostUnreachable, "22"),
+    ],
+)
+def test_a_host_that_refused_or_dropped_while_pinning_is_told_apart(
+    answer: BaseException, raised: type[BaseException], match: str
+) -> None:
+    """A tree the host could not build refuses the dispatch; a dropped host is retried."""
+    with pytest.raises(raised, match=match):
+        Snapshots("/work/projects").pin(
+            RecordingAgent(answer), key="abc1234", image=mirrored("src")
+        )
 
 
 _SEALED = Sealed(listing=".mainboard/dispatch/jobs/closure-abc.tsv")
@@ -235,12 +168,12 @@ def test_a_pin_refuses_a_path_that_could_replace_its_own_controls_before_reachin
     fields: dict[str, str | Sealed], refusal: str
 ) -> None:
     """Every one of these would have the snapshot shell link or remove over what it verifies."""
-    remote = machine_with()
+    agent = RecordingAgent()
     with pytest.raises(ValueError, match=refusal):
         Snapshots("/work/projects").pin(
-            remote, **{"key": "abc1234", "image": mirrored("src"), **fields}
+            agent, **{"key": "abc1234", "image": mirrored("src"), **fields}
         )
-    assert remote.calls == []
+    assert agent.requests == []
 
 
 def _mirror(root: Path) -> None:
@@ -284,14 +217,14 @@ def sealed_mirror(tmp_path: Path) -> tuple[Snapshots, Sealed, str]:
     return Snapshots(str(root)), Sealed(listing=listing), sha256(payload).hexdigest()
 
 
-@pins_on_this_host
+@links_on_this_host
 def test_parallel_pins_freeze_the_listing_and_survive_mirror_replacement(
     sealed_mirror: tuple[Snapshots, Sealed, str],
 ) -> None:
     trees, image, digest = sealed_mirror
     with ThreadPoolExecutor(max_workers=2) as workers:
         futures = [
-            workers.submit(trees.pin, local, key="same", image=image, digest=digest)
+            workers.submit(trees.pin, local(), key="same", image=image, digest=digest)
             for _ in range(2)
         ]
         paths = [future.result() for future in futures]
@@ -304,7 +237,7 @@ def test_parallel_pins_freeze_the_listing_and_survive_mirror_replacement(
     replacement.write_text("v2\n")
     replacement.replace(root / "research/compression/pkg/mod.py")
     (root / image.listing).write_text("later listing\n")
-    assert trees.pin(local, key="same", image=image, digest=digest) == str(frozen)
+    assert trees.pin(local(), key="same", image=image, digest=digest) == str(frozen)
     assert (frozen / "research/compression/pkg/mod.py").read_text() == "v1\n"
     assert not list(Path(trees.base).glob(".pending.*"))
 
@@ -330,12 +263,12 @@ def test_wrong_mirror_bytes_never_publish_a_snapshot(
     else:
         path.write_text("changed\n")
     with pytest.raises(SystemExit, match="could not pin"):
-        trees.pin(local, key="wrong", image=image, digest=digest)
+        trees.pin(local(), key="wrong", image=image, digest=digest)
     assert not Path(trees.path("wrong")).exists()
     assert not list(Path(trees.base).glob(".pending.*"))
 
 
-@pins_on_this_host
+@links_on_this_host
 @pytest.mark.parametrize("reuse", [False, True])
 @pytest.mark.parametrize("field", ["needs", "results"])
 def test_live_paths_cannot_replace_a_verified_source_directory(
@@ -345,46 +278,46 @@ def test_live_paths_cannot_replace_a_verified_source_directory(
 ) -> None:
     trees, image, digest = sealed_mirror
     if reuse:
-        trees.pin(local, key="overlap", image=image, digest=digest)
+        trees.pin(local(), key="overlap", image=image, digest=digest)
     kwargs = {"results": "./research/compression/pkg"} if field == "results" else {}
     if field == "needs":
         image = image.model_copy(update={"needs": ("./research/compression/pkg",)})
     with pytest.raises(SystemExit, match="live path overlaps source"):
-        trees.pin(local, key="overlap", image=image, digest=digest, **kwargs)
+        trees.pin(local(), key="overlap", image=image, digest=digest, **kwargs)
     assert (Path(trees.root) / "research/compression/pkg/mod.py").read_text() == "v1\n"
     assert Path(trees.path("overlap")).exists() is reuse
 
 
-@pins_on_this_host
+@links_on_this_host
 def test_wrappers_are_frozen_by_bytes_and_not_repaired_after_corruption(
     sealed_mirror: tuple[Snapshots, Sealed, str],
 ) -> None:
     trees, image, digest = sealed_mirror
     root = Path(trees.root)
-    frozen = Path(trees.pin(local, key="wrappers", image=image, digest=digest))
+    frozen = Path(trees.pin(local(), key="wrappers", image=image, digest=digest))
     payloads = (b"#!/bin/sh\r\n# non-UTF8: \xff\r\n", b"#!/bin/sh\n# second\n")
     for payload in payloads:
         staged = f".mainboard/dispatch/jobs/job-{sha256(payload).hexdigest()}.sh"
         (root / staged).write_bytes(payload)
         (root / staged).chmod(0o640)
-        trees.pin(local, key="wrappers", image=image, digest=digest, script=staged)
+        trees.pin(local(), key="wrappers", image=image, digest=digest, script=staged)
         wrapper = frozen / Snapshots.script(staged)
         assert wrapper.read_bytes() == payload and wrapper.stat().st_mode & 0o777 == 0o640
         assert not wrapper.is_symlink() and not (frozen / WRAPPERS).is_symlink()
         (root / staged).write_text("changed mirror wrapper\n")
-        trees.pin(local, key="wrappers", image=image, digest=digest, script=staged)
+        trees.pin(local(), key="wrappers", image=image, digest=digest, script=staged)
         assert wrapper.read_bytes() == payload
     assert len(list((frozen / WRAPPERS).glob("job-*.sh"))) == 2
     with pytest.raises(SystemExit, match="wrapper digest mismatch"):
-        trees.pin(local, key="bad-wrapper", image=image, digest=digest, script=staged)
+        trees.pin(local(), key="bad-wrapper", image=image, digest=digest, script=staged)
     assert not Path(trees.path("bad-wrapper")).exists()
     wrapper.write_text("corrupt frozen wrapper\n")
     with pytest.raises(SystemExit, match="wrapper digest mismatch"):
-        trees.pin(local, key="wrappers", image=image, digest=digest, script=staged)
+        trees.pin(local(), key="wrappers", image=image, digest=digest, script=staged)
     assert wrapper.read_text() == "corrupt frozen wrapper\n"
 
 
-@pins_on_this_host
+@links_on_this_host
 def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
     tmp_path: Path,
 ) -> None:
@@ -393,13 +326,9 @@ def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
     _mirror(root)
     pinned = Path(
         Snapshots(str(root)).pin(
-            local,
+            local(),
             key="abc1234",
-            image=mirrored(
-                "research/compression",
-                filters=("merge,- .gitignore", ":- .gitignore"),
-                exclude=(".mainboard/",),
-            ),
+            image=mirrored("research/compression", ignore=("raw/",), deny=(".mainboard/",)),
             results="research/compression/raw",
         )
     )
@@ -419,17 +348,15 @@ def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
     assert (pinned / "research/data").is_symlink()
     assert (pinned / "research/compression/raw").resolve() == root / "research/compression/raw"
 
-    later = tmp_path / "later"
-    (later / "compression/pkg").mkdir(parents=True)
-    (later / "compression/pkg/mod.py").write_text("v2\n", encoding="utf-8")
-    # `-c` because the two files are seconds and bytes alike, which rsync's quick check reads
-    # as unchanged; a real edit differs in one or the other.
-    local["rsync"][["-ac", f"{later}/", f"{root}/research/"]]()
+    # The mirror writes a changed file beside its name and renames it over the old one.
+    later = root / "research/compression/pkg/.mod.py.pending"
+    later.write_text("v2\n", encoding="utf-8")
+    later.replace(root / "research/compression/pkg/mod.py")
     assert (root / "research/compression/pkg/mod.py").read_text(encoding="utf-8") == "v2\n"
     assert frozen.read_text(encoding="utf-8") == "v1\n"
 
 
-@pins_on_this_host
+@links_on_this_host
 def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_nothing_else(
     tmp_path: Path,
 ) -> None:
@@ -456,7 +383,7 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
     digest = sha256(payload).hexdigest()
     pinned = Path(
         Snapshots(str(root)).pin(
-            local,
+            local(),
             key="abc1234-9f9f9f9f",
             image=Sealed(listing=listing, needs=("research/data",)),
             results="research/compression/raw",
@@ -485,14 +412,14 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
     # A need the mirror does not hold refuses the dispatch by name rather than dangling.
     with pytest.raises(SystemExit, match="the need research/absent is not on the mirror"):
         Snapshots(str(root)).pin(
-            local,
+            local(),
             key="abc1234-9f9f9f9f",
             image=Sealed(listing=listing, needs=("research/absent",)),
             digest=digest,
         )
 
 
-@pins_on_this_host
+@links_on_this_host
 def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding_it(
     tmp_path: Path,
 ) -> None:
@@ -501,13 +428,13 @@ def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding
     _mirror(root)
     snapshots = Snapshots(str(root))
     image = mirrored("research/compression")
-    pinned = Path(snapshots.pin(local, key="abc1234", image=image))
+    pinned = Path(snapshots.pin(local(), key="abc1234", image=image))
     (pinned / "research/compression/pkg/mod.py").unlink()
-    assert snapshots.pin(local, key="abc1234", image=image) == str(pinned)
+    assert snapshots.pin(local(), key="abc1234", image=image) == str(pinned)
     assert not (pinned / "research/compression/pkg/mod.py").exists()
 
 
-@pins_on_this_host
+@links_on_this_host
 def test_two_batches_off_one_commit_each_get_their_own_results_link(tmp_path: Path) -> None:
     """A snapshot is keyed on the source and a results path is not part of the source.
 
@@ -523,10 +450,10 @@ def test_two_batches_off_one_commit_each_get_their_own_results_link(tmp_path: Pa
     image = mirrored("research/compression")
 
     first = Path(
-        snapshots.pin(local, key="abc1234", image=image, results="research/compression/raw")
+        snapshots.pin(local(), key="abc1234", image=image, results="research/compression/raw")
     )
     second = Path(
-        snapshots.pin(local, key="abc1234", image=image, results="research/compression/evidence")
+        snapshots.pin(local(), key="abc1234", image=image, results="research/compression/evidence")
     )
 
     assert second == first
@@ -538,12 +465,12 @@ def test_two_batches_off_one_commit_each_get_their_own_results_link(tmp_path: Pa
         == root / "research/compression/evidence"
     )
     # Pinning again with the first path back does not double the link or lose the second.
-    snapshots.pin(local, key="abc1234", image=image, results="research/compression/raw")
+    snapshots.pin(local(), key="abc1234", image=image, results="research/compression/raw")
     assert first.joinpath("research/compression/raw").is_symlink()
     assert first.joinpath("research/compression/evidence").is_symlink()
 
 
-@pins_on_this_host
+@links_on_this_host
 def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors(
     tmp_path: Path,
 ) -> None:
@@ -557,7 +484,7 @@ def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors
     root = tmp_path / "projects"
     _mirror(root)
     pinned = Path(
-        Snapshots(str(root)).pin(local, key="abc1234", image=mirrored("research/compression"))
+        Snapshots(str(root)).pin(local(), key="abc1234", image=mirrored("research/compression"))
     )
     generated = pinned / ".mainboard/envs/default/pixi.toml"
     mirrored_manifest = root / ".mainboard/envs/default/pixi.toml"
@@ -567,20 +494,147 @@ def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors
     assert generated.read_text(encoding="utf-8") != mirrored_manifest.read_text(encoding="utf-8")
 
 
-def test_the_program_never_exits_since_a_login_shells_exit_runs_its_logout_file() -> None:
-    """`exit` in a login shell runs `.bash_logout`, and a `clear_console` there fails without a
-    terminal; under `set -e` that becomes the status of a pin that had nothing to do."""
-    program = Snapshots("/mirror")._Snapshots__program(
-        "/mirror/.mainboard/dispatch/sources/k",
-        image=mirrored("a"),
-        results="",
-        prefix="",
-        environment="default",
-        stamp="k\n",
+@links_on_this_host
+def test_a_tree_changed_after_its_pin_refuses_every_later_reuse(
+    sealed_mirror: tuple[Snapshots, Sealed, str],
+) -> None:
+    """A source file swapped for a link, or reached through a linked parent, is not the source."""
+    trees, image, digest = sealed_mirror
+    frozen = Path(trees.pin(local(), key="tampered", image=image, digest=digest))
+    module = frozen / "research/compression/pkg/mod.py"
+    module.unlink()
+    module.symlink_to(Path(trees.root) / "research/compression/pkg/mod.py")
+    with pytest.raises(SystemExit, match="missing or linked source"):
+        trees.pin(local(), key="tampered", image=image, digest=digest)
+    module.unlink()
+    package = frozen / "research/compression/pkg"
+    package.rename(frozen / "research/compression/elsewhere")
+    (frozen / "research/compression/elsewhere/mod.py").write_text("v1\n", encoding="utf-8")
+    package.symlink_to(frozen / "research/compression/elsewhere", target_is_directory=True)
+    with pytest.raises(SystemExit, match="linked source parent"):
+        trees.pin(local(), key="tampered", image=image, digest=digest)
+    with pytest.raises(SystemExit, match="snapshot stamp mismatch"):
+        trees.pin(local(), key="tampered", image=image, digest=digest, commit="c0ffee")
+
+
+@links_on_this_host
+def test_a_half_built_tree_waits_for_an_operator_rather_than_being_reused(
+    sealed_mirror: tuple[Snapshots, Sealed, str],
+) -> None:
+    trees, image, digest = sealed_mirror
+    Path(trees.path("half")).mkdir(parents=True)
+    with pytest.raises(SystemExit, match="incomplete snapshot requires inspection"):
+        trees.pin(local(), key="half", image=image, digest=digest)
+
+
+@pytest.mark.parametrize(
+    ("row", "refusal"),
+    [
+        ("../outside.py", "invalid closure path"),
+        (".mainboard-jobs/job.sh", "reserved closure path"),
+        (CLOSURE, "reserved closure path"),
+    ],
+)
+def test_a_listing_naming_a_path_outside_the_tree_or_its_controls_is_refused(
+    tmp_path: Path, row: str, refusal: str
+) -> None:
+    root = tmp_path / "projects"
+    _mirror(root)
+    listing = ".mainboard/dispatch/jobs/closure-bad.tsv"
+    payload = f"{row}\t{'0' * 64}\tclean\n".encode()
+    (root / listing).write_bytes(payload)
+    with pytest.raises(SystemExit, match=refusal):
+        Snapshots(str(root)).pin(
+            local(), key="bad", image=Sealed(listing=listing), digest=sha256(payload).hexdigest()
+        )
+
+
+@links_on_this_host
+def test_staged_pins_reach_the_tree_through_their_shared_directory_or_refuse_by_name(
+    sealed_mirror: tuple[Snapshots, Sealed, str],
+) -> None:
+    trees, image, digest = sealed_mirror
+    frozen = Path(trees.pin(local(), key="pins", image=image, digest=digest))
+    pin = ".mainboard/pins/models--o--n/snapshots/r/tokenizer.json"
+    staged = Path(trees.root) / pin
+    staged.parent.mkdir(parents=True)
+    staged.write_text("{}", encoding="utf-8")
+    pinned = image.model_copy(update={"pins": (pin,)})
+    trees.pin(local(), key="pins", image=pinned, digest=digest)
+    assert (frozen / ".mainboard/pins").is_symlink()
+    assert (frozen / pin).read_text(encoding="utf-8") == "{}"
+    trees.pin(local(), key="pins", image=pinned, digest=digest)
+    absent = image.model_copy(update={"pins": (".mainboard/pins/absent.json",)})
+    with pytest.raises(SystemExit, match="the need .mainboard/pins/absent.json is not on"):
+        trees.pin(local(), key="pins", image=absent, digest=digest)
+
+
+@links_on_this_host
+def test_a_frozen_wrapper_reached_through_a_link_is_refused(
+    sealed_mirror: tuple[Snapshots, Sealed, str],
+) -> None:
+    trees, image, digest = sealed_mirror
+    root = Path(trees.root)
+    payload = b"#!/bin/sh\n"
+    staged = f".mainboard/dispatch/jobs/job-{sha256(payload).hexdigest()}.sh"
+    (root / staged).write_bytes(payload)
+    frozen = Path(trees.pin(local(), key="wrap", image=image, digest=digest, script=staged))
+    wrapper = frozen / Snapshots.script(staged)
+    wrapper.unlink()
+    wrapper.symlink_to(root / staged)
+    with pytest.raises(SystemExit, match="missing or linked wrapper"):
+        trees.pin(local(), key="wrap", image=image, digest=digest, script=staged)
+    (frozen / WRAPPERS).rename(frozen / "moved")
+    (frozen / WRAPPERS).symlink_to(frozen / "moved", target_is_directory=True)
+    with pytest.raises(SystemExit, match="linked wrapper directory"):
+        trees.pin(local(), key="wrap", image=image, digest=digest, script=staged)
+
+
+@links_on_this_host
+def test_a_mirrored_tree_carries_links_names_its_prefix_and_leaves_a_linked_results_path_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A results path already reached through a link into the mirror is the mirror's own.
+
+    Clearing it there would clear the mirror's results, so the pin leaves it as it stands.
+    Where a file system shares no inode, the copy is a copy.
+    """
+    root = tmp_path / "projects"
+    _mirror(root)
+    (root / "research/compression/pkg/alias.py").symlink_to("mod.py")
+    (root / ".mainboard/envs/README").write_text("not an environment", encoding="utf-8")
+    (root / "research/data/out").mkdir()
+    (root / "research/data/out/kept.json").write_text("{}", encoding="utf-8")
+
+    def unshared(*args: str, **kwargs: bool) -> None:
+        raise OSError("this file system shares no inodes")
+
+    monkeypatch.setattr(os, "link", unshared)
+    prefix = "/prefixes/default/abcd"
+    pinned = Path(
+        Snapshots(str(root)).pin(
+            local(),
+            key="abc1234",
+            image=mirrored("research/compression"),
+            results="research/data/out",
+            prefix=prefix,
+        )
     )
-    assert "exit" not in program
-    assert program.startswith("set -euo pipefail\n")
-    assert 'if [ ! -f "/mirror/.mainboard/dispatch/sources/k/' in program.replace(
-        '"$mb_snap/', '"/mirror/.mainboard/dispatch/sources/k/'
-    )
-    assert program.endswith("\nfi")
+    assert os.readlink(pinned / "research/compression/pkg/alias.py") == "mod.py"
+    assert os.readlink(pinned / ".mainboard/envs/default/.pixi") == f"{prefix}/.pixi"
+    assert (root / "research/data/out/kept.json").is_file()
+    assert (pinned / "research/data").is_symlink()
+    copied = pinned / "research/compression/pkg/mod.py"
+    assert copied.stat().st_ino != (root / "research/compression/pkg/mod.py").stat().st_ino
+
+
+def test_a_mirror_without_its_source_or_generated_tree_pins_what_it_has_or_refuses(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "bare"
+    (root / "src").mkdir(parents=True)
+    (root / "src/run.py").write_text("print()\n", encoding="utf-8")
+    pinned = Path(Snapshots(str(root)).pin(local(), key="bare", image=mirrored("src")))
+    assert (pinned / "src/run.py").is_file()
+    with pytest.raises(SystemExit, match="missing source: gone"):
+        Snapshots(str(root)).pin(local(), key="gone", image=mirrored("gone"))

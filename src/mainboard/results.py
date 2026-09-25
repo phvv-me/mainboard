@@ -180,7 +180,7 @@ class Results:
             self._jobs(connection)
 
     def _trials(self, connection: duckdb.DuckDBPyConnection, roots: list[Path]) -> None:
-        # Explicit file inventory per query is the snapshot. Temporary rsync/Parquet files
+        # Explicit file inventory per query is the snapshot. Temporary transfer/Parquet files
         # never match; a later query sees newly published immutable fragments automatically.
         connection.execute(
             "CREATE TABLE _receipt_schema(project VARCHAR, run VARCHAR, trial VARCHAR, "

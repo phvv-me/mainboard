@@ -8,7 +8,6 @@ from collections.abc import (
     Sequence,  # ruff:ignore[typing-only-standard-library-import]  reason=await_many is inspect.signature()'d in tests, so its Sequence[Handle] annotation must resolve at runtime since=2026-08-17
 )
 from contextlib import suppress
-from math import ceil
 from pathlib import Path, PurePosixPath
 from time import sleep
 from typing import TYPE_CHECKING
@@ -16,7 +15,6 @@ from uuid import uuid4
 from zipfile import BadZipFile
 
 from patos import FrozenModel
-from plumbum.commands.processes import ProcessExecutionError
 
 from ..context.admission import admit
 from ..core.errors import MissionError
@@ -25,19 +23,18 @@ from ..engines.compile.generated import GeneratedFiles
 from ..engines.compile.vendor import vendor_root
 from ..manifest.loading import load
 from . import vocabulary
+from .agent import Agent, Scope, SshLink
 from .allocation import Allocation
 from .collection.collector import Collector
 from .jobs import JobSpec
+from .mirror import Mirror
 from .provenance import Source, SourceTree
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, Watcher, announce, db_file, logger, now, state_path, workspace
-from .shells import is_windows
 from .shipment import Shipment
 from .snapshots import CLOSURE, Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
-from .sync import GitignoreFilter, SyncLock, rsync
-from .sync import Rsync as RsyncFlags
-from .tarball import Tarball
+from .sync import ALWAYS_EXCLUDE, CARD_LEASES, GitignoreFilter, SyncLock, patterns
 from .transport import SshTransport
 from .vocabulary import JobState, Request, Resources
 from .wrapping import connection, wrap
@@ -53,19 +50,9 @@ _TOOL = Project().name
 
 # What never belongs in a vendored path dependency's copy on a host: the caches and the
 # environments a package accumulates beside its sources, none of which a build reads and one
-# of which is gigabytes. Its own list because the mirror's denylist excludes the whole
-# generated tree the vendored copy lives in.
+# of which is gigabytes. Its own list because the vendored tree is its own scope, walked through
+# its links and without the workspace's ignore files.
 _VENDOR_EXCLUDE = ("__pycache__/", "*.pyc", ".git", ".pixi/", ".venv/")
-
-# The rsync glob metacharacters a literal output path escapes, so a real filename holding one
-# protects exactly itself rather than every path the pattern would match.
-_GLOB_ESCAPES: dict[str, str | int | None] = {
-    "\\": "\\\\",
-    "*": "\\*",
-    "?": "\\?",
-    "[": "\\[",
-    "]": "\\]",
-}
 
 
 def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") -> str:
@@ -352,11 +339,7 @@ class Dispatcher:
         """
         if listing:
             return Sealed(listing=listing, needs=shipment.needs, pins=shipment.pins)
-        return Mirrored(
-            sources=tuple(shipped),
-            filters=tuple(self.sync.filters),
-            exclude=(*self.sync.excludes, *plan.profile.sync.exclude),
-        )
+        return Mirrored(scope=self.scope(plan, shipped).spec())
 
     def probe(self, handle: Handle) -> JobState | None:
         """One non-blocking scheduler probe of `handle`, the read a status view wants.
@@ -371,7 +354,33 @@ class Dispatcher:
             logger.warning("%s unreachable, retrying: %s", handle.id, down)
             return None
 
-    def rsync_up(
+    def agent(self, plan: ExecutionPlan, *, ssh: SshTransport | None = None) -> Agent:
+        """The standard-library agent on `plan.host`, what every mirror and pin talks to.
+
+        ssh: the policy a rental's endpoint rides; a declared host's alias answers for itself.
+        """
+        policy = ssh or SshTransport()
+        return Agent(
+            SshLink(plan.host, policy), python=plan.profile.python, patience=policy.deadline
+        )
+
+    def scope(
+        self, plan: ExecutionPlan, roots: Sequence[str], *, hidden: Sequence[str] = ()
+    ) -> Scope:
+        """The workspace tree a mirror ships from `roots`, pruned by every rule a host obeys.
+
+        Each repository's own file list decides it, then the permanent denylist, the host's own
+        excludes and the card leases prune it, and `hidden` names literal paths that only ever
+        travel down.
+
+        plan: the resolved execution context, whose profile names what the host excludes.
+        roots: the include paths the tree starts from.
+        hidden: declared output paths, never uploaded.
+        """
+        excluded = [*ALWAYS_EXCLUDE, *plan.profile.sync.exclude, *CARD_LEASES]
+        return self.sync.scope(roots, deny=patterns(excluded, paths=hidden))
+
+    def mirror(
         self,
         plan: ExecutionPlan,
         root: str,
@@ -383,20 +392,27 @@ class Dispatcher:
     ) -> list[str]:
         """Mirror the workspace to `plan.host`; git-ignored files and the denylist skipped.
 
-        The workspace and nested `.gitignore` files are the primary send and delete boundary.
-        Declared output paths from this submission and prior jobs in this workspace are always
-        download-only, regardless of their names or local existence. An explicit resource
-        underneath an output path is refused before transfer; bind a separate immutable input
-        instead. Ordinary `needs` remain mutable mirror links, not immutable input snapshots.
-        `plan.profile.sync.protect` additionally protects unregistered remote artifacts.
-        `required` names groups of paths that must ship together despite being
+        The workspace and nested `.gitignore` files are the primary send and delete boundary,
+        and pruning reaches only the include paths: a file the host holds anywhere else is
+        never touched. Declared output paths from this submission and prior jobs in this
+        workspace are always download-only, regardless of their names or local existence. An
+        explicit resource underneath an output path is refused before transfer; bind a separate
+        immutable input instead. Ordinary `needs` remain mutable mirror links, not immutable
+        input snapshots. `plan.profile.sync.protect` additionally protects unregistered remote
+        artifacts. `required` names groups of paths that must ship together despite being
         outside the allowlist or git-ignored (a compiled manifest with its lock and the state
         naming what that lock was solved from, say): each group is required to exist locally as
-        a whole, and is punched through the denylist with its own include filter. `extra` ships
-        paths outside the sync allowlist that must still reach the host (typically the staged
-        job script), and is punched through the same way, since a group's remainder filter
-        covers everything under its directory that is not named. Fails fast when no include
+        a whole, and ships by name whatever the rules say. `extra` ships paths outside the sync
+        allowlist that must still reach the host (typically the staged job script) the same
+        way. A path shipped by name that vanishes before the stream reaches it fails the whole
+        mirror, so a submission never continues on a partial sync. Fails fast when no include
         paths are declared or a required group is incomplete.
+
+        The vendored path dependencies ship as their own scope, each link replaced by what it
+        refers to (see `engines.compile.vendor`): on the machine that has the source that tree
+        is links into it, which a host could never follow, so it receives the ordinary tree of
+        real files its own compile then leaves alone, and a distribution the manifest stopped
+        declaring is pruned without reaching anything beside it.
 
         `ssh` decides where the transfer actually lands. A declared host is its own alias and the
         user's ssh config answers for it; a machine rented for one job has no alias at all, so a
@@ -429,124 +445,22 @@ class Dispatcher:
                 f"required path group(s) {incomplete} are incomplete; build them before "
                 "dispatching"
             )
-        named = [*(path for group in required for path in group), *extra]
+        named = list(dict.fromkeys((*(path for group in required for path in group), *extra)))
         self.sync.validate_sources((*named, *scope.include))
-        directories = dict.fromkeys(Path(path).parts[0] for group in required for path in group)
-        include_filters = [
-            *(f"/{directory}/" for directory in directories),
-            # Every path shipped by name, `extra` included. A required group's remainder filter
-            # shadows the whole directory it protects, so the staged job script under the
-            # generated tree is dropped by the very rule that lets the compiled lock through
-            # unless it is named here as well. That is what left a landed rental running `bash
-            # .mainboard/dispatch/jobs/job-<digest>.sh` against a file the mirror never carried
-            # (vast 49865738, exit 127, 2026-09-04). The directories between a named path and its
-            # root need no rule, since rsync exempts the ones `--relative` implies.
-            *(f"/{path}" for path in named),
-        ]
-        remainder_filters = [f"/{directory}/***" for directory in directories]
-        gitignore_files = self.sync.control_files(include)
-        required_paths = list(dict.fromkeys(path for group in required for path in group))
         with SyncLock(policy.endpoint or plan.host, self.sync.root):
             outputs = self._protected_outputs(fetch, sources=named)
-            if is_windows(plan.profile):
-                # No rsync on the far side: the same file set, listed here and streamed by tar.
-                Tarball(self.root, policy).mirror(
-                    plan,
-                    root,
-                    paths=[*include, *gitignore_files, *required_paths, *extra],
-                    include=include_filters,
-                    exclude=[*remainder_filters, *self.sync.excludes, *scope.exclude],
-                    hide=outputs,
-                    filters=self.sync.filters,
-                    vendored=vendor_root() if self.local(vendor_root()).is_dir() else "",
-                )
-                self.cache.mark_synced(plan.host)
-                return include
-            try:
-                rsync(
-                    [*include, *gitignore_files, *required_paths, *extra],
-                    f"{policy.destination(plan.host)}:{root}/",
-                    # Not `ARCHIVE`: `-a` bundles `-p` (`--perms`) and `-g`/`-o`, which stamp every
-                    # directory this transfer creates with the workstation's own mode and group
-                    # instead of letting the host assign them. A directory made under a setgid
-                    # parent inherits that parent's group and its own setgid bit for free, but
-                    # `-p` overwrites the new directory with the workstation's mode right after,
-                    # which carries no setgid bit, so the inheritance is undone the instant it
-                    # happens; every directory rsync or this tool then makes underneath, setgid
-                    # parent or not, inherits nothing back. That is why `.mainboard/envs/<env>`
-                    # (punched through the denylist by `required` above, the first implied
-                    # directory under the mirror root this transfer creates) and everything the
-                    # generated tree builds under it landed on the invoking user's personal group
-                    # rather than the shared project group, exhausting its inode quota with one
-                    # 8 GB prefix (Miyabi, 2026-09-05). `-r`/`-l`/`-t` carry recursion, symlinks
-                    # and mtimes (so the size+mtime quick check still skips unchanged files); the
-                    # host's own umask and the setgid bit already on its directories decide what
-                    # a newly landed one becomes.
-                    RsyncFlags.RECURSIVE
-                    | RsyncFlags.LINKS
-                    | RsyncFlags.TIMES
-                    | RsyncFlags.COMPRESS
-                    | RsyncFlags.RELATIVE
-                    | RsyncFlags.VERBOSE
-                    | RsyncFlags.DELETE
-                    | RsyncFlags.DELETE_AFTER,
-                    include=include_filters,
-                    filters=self.sync.filters,
-                    exclude=[*remainder_filters, *self.sync.excludes, *scope.exclude],
-                    protect=[*outputs, *scope.protect],
-                    hide=outputs,
-                    rsh=policy.rsync_shell,
-                    timeout=ceil(policy.deadline),
-                    host=plan.host,
-                    allow_vanished=not gitignore_files and not required_paths and not extra,
-                    cwd=self.root,
-                )
-            except ProcessExecutionError as error:
-                Dispatcher._raise_required_sync_failure(
-                    error, plan.host, required_paths, extra=extra
-                )
-            self.__vendored(plan, root, policy=policy)
+            scopes = [self.scope(plan, include, hidden=outputs)]
+            if self.local(vendor_root()).is_dir():
+                vendored = Scope([vendor_root()], deny=patterns(_VENDOR_EXCLUDE), follow=True)
+                scopes.append(vendored)
+            Mirror(self.root, self.agent(plan, ssh=policy)).push(
+                root,
+                scopes=scopes,
+                named=named,
+                protected=patterns([*CARD_LEASES, *scope.protect], paths=outputs),
+            )
         self.cache.mark_synced(plan.host)
         return include
-
-    def __vendored(self, plan: ExecutionPlan, root: str, *, policy: SshTransport) -> None:
-        """Ship the vendored path dependencies, each link replaced by what it refers to.
-
-        A path dependency that leaves the workspace root is compiled at
-        `.mainboard/vendor/<distribution>`, so the manifest and the lock name one location that
-        is the same distance from the root on every machine (see `engines.compile.vendor`). On
-        the machine that has the source, that location is a real directory of links into it,
-        which is what keeps the editable install editable. A link is the one thing a mirror must
-        not carry: landed as a link on a host it points at a tree no transfer ever put there,
-        and the host installs an environment out of a directory that is not there.
-
-        `--copy-links` sends the referent instead, so a host receives the ordinary tree of real
-        files its own compile then leaves alone. Its own transfer because that switch is a
-        whole-run switch and the workspace's other symlinks are the workspace's business, and
-        `--delete` inside this one directory retires a distribution the manifest stopped
-        declaring without reaching anything beside it.
-        """
-        tree = vendor_root()
-        if not self.local(tree).is_dir():
-            return
-        rsync(
-            [tree],
-            f"{policy.destination(plan.host)}:{root}/",
-            RsyncFlags.RECURSIVE
-            | RsyncFlags.COPY_LINKS
-            | RsyncFlags.TIMES
-            | RsyncFlags.COMPRESS
-            | RsyncFlags.RELATIVE
-            | RsyncFlags.VERBOSE
-            | RsyncFlags.DELETE
-            | RsyncFlags.DELETE_AFTER,
-            exclude=_VENDOR_EXCLUDE,
-            rsh=policy.rsync_shell,
-            timeout=ceil(policy.deadline),
-            host=plan.host,
-            allow_vanished=False,
-            cwd=self.root,
-        )
 
     def run(
         self,
@@ -767,7 +681,7 @@ class Dispatcher:
         dispatched.admit(self.root)
         prepared, staged = self._prepare_script(script)
         with SyncLock(plan.host, self.sync.root), connection(plan.host) as remote:
-            shipped = self.rsync_up(
+            shipped = self.mirror(
                 plan,
                 root,
                 required=required,
@@ -776,7 +690,7 @@ class Dispatcher:
             )
             self._verify(remote, plan, root, verify=verify, containerize=containerize)
             pinned = Snapshots(root).pin(
-                remote,
+                self.agent(plan),
                 key=dispatched.source.key,
                 image=self.image(plan, dispatched, listing=listing, shipped=shipped),
                 results=fetch or "",
@@ -891,23 +805,6 @@ class Dispatcher:
             "cannot be shipped to the host"
         ) from error
 
-    @staticmethod
-    def _raise_required_sync_failure(
-        error: ProcessExecutionError,
-        host: str,
-        required_paths: Sequence[str],
-        *,
-        extra: Sequence[str],
-    ) -> None:
-        """Re-raise `error` verbatim when nothing required was in flight, else wrap it."""
-        if not required_paths and not extra:
-            raise error
-        paths = ", ".join((*required_paths, *extra))
-        raise RuntimeError(
-            f"failed to ship required sync path(s) {paths} to {host}; "
-            "submission aborted before scheduler dispatch"
-        ) from error
-
     def _prepare_script(self, script: str) -> tuple[str, tuple[str, ...]]:
         """Stage a concrete local script and return its host-safe path plus its sync source.
 
@@ -926,12 +823,12 @@ class Dispatcher:
     def _protected_outputs(self, fetch: str, *, sources: Sequence[str] = ()) -> list[str]:
         """Download-only literal output paths, excluding conflicts with explicitly shipped input.
 
-        The existing workspace cache spans host aliases and retains completed evidence.
-        Glob metacharacters in a real filename must not widen the protected subtree.
+        The existing workspace cache spans host aliases and retains completed evidence. Each
+        path is literal, so glob characters in a real filename never widen what it protects.
         """
         paths = {run.fetch_path for run in self.cache.recent(limit=None) if run.fetch_path}
         paths.update([fetch] if fetch else [])
-        escaped = []
+        outputs = []
         for path in sorted(paths):
             relative = writable(path)
             if not relative or relative == ".":
@@ -947,8 +844,8 @@ class Dispatcher:
                     f"explicit input overlaps declared output {relative!r}; "
                     "bind the selected data under a separate immutable input path"
                 )
-            escaped.append(relative.translate(str.maketrans(_GLOB_ESCAPES)))
-        return [pattern for path in escaped for pattern in (f"/{path}", f"/{path}/***")]
+            outputs.append(relative)
+        return outputs
 
     def _stage(self, name: str, content: bytes) -> str:
         """Atomically stage exact bytes and answer their workspace-relative path."""

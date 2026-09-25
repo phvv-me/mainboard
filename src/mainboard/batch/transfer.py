@@ -11,16 +11,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import pathspec
 from patos import FrozenModel
 
-from ..dispatch import sync
-from ..dispatch.sync import GitignoreFilter
+from ..dispatch.agent import walk
+from ..dispatch.agent.program import FILE
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Sequence
 
     from ..board import Board
+    from ..context.plan import ExecutionPlan
     from .spec import BatchJob
 
 # How much file is read at a time while measuring. Large enough that a big tree is bound by the
@@ -42,9 +42,9 @@ class TransferSet(FrozenModel):
         data, so a surprising size can be traced back to what was counted.
     files: how many files are in flight.
     raw_bytes: their size on disk.
-    wire_bytes: their size compressed, which is what the mirror actually sends, since every
-        transfer this tool makes is compressed. Measured over a few parallel zstd streams, the
-        shape rsync ships in rather than one long-lived context over the whole set.
+    wire_bytes: their size compressed, since every transfer this tool makes is compressed.
+        Measured over a few parallel zstd streams, an estimate of the mirror's own stream that
+        costs a fraction of the time one long-lived context over the whole set would.
     since: the mirror watermark the delta was measured against, empty when the target has no
         recorded mirror and everything in scope is therefore in flight.
     """
@@ -61,9 +61,9 @@ class TransferSet(FrozenModel):
 class Transfer:
     """Measures what each job must still put on its target, one job at a time.
 
-    Every path is read through the same board the dispatch itself uses, so the scope measured
-    here is the scope that would actually ship: the host profile's include list, the workspace's
-    own ignore rules, and the generated directories the mirror never carries.
+    Every path is walked through the very scope the dispatch mirrors, so what is measured here
+    is what would actually ship: the host profile's include list, the workspace's own ignore
+    rules, the host's excludes and the generated directories the mirror never carries.
     """
 
     def __init__(self, board: Board, *, level: int = 3) -> None:
@@ -73,28 +73,11 @@ class Transfer:
         """
         self.board = board
         self.level = level
-        self.ignore = GitignoreFilter(board.root)
-        self.nested: dict[Path, pathspec.GitIgnoreSpec] = {}
 
     @property
     def root(self) -> Path:
         """The workspace root, the board's own."""
         return self.board.root
-
-    @staticmethod
-    def denylist(excluded: Sequence[str]) -> pathspec.GitIgnoreSpec:
-        """What the mirror refuses to carry: its permanent denylist and this host's own excludes.
-
-        The two pattern languages agree on wildcards and disagree on one thing that matters here.
-        A pattern carrying a slash is anchored to the root for git and matches at any depth for
-        rsync, so `data/raw` excludes every `data/raw` in the tree when rsync reads it. Anchoring
-        it with `**/` restores rsync's own reading, which is the one the mirror will apply.
-
-        excluded: the host profile's declared exclude patterns.
-        """
-        patterns = [Transfer._anywhere(pattern) for pattern in (*sync.ALWAYS_EXCLUDE, *excluded)]
-        # pyrefly: ignore  reason=pathspec from_lines stub over-narrows to AnyStr since=2026-08-16
-        return pathspec.GitIgnoreSpec.from_lines(patterns)
 
     def compressed(self, files: Sequence[Path]) -> tuple[int, int]:
         """The raw and compressed size of `files` read through one zstd stream."""
@@ -107,43 +90,6 @@ class Transfer:
                     wire += len(compressor.compress(chunk))
         return raw, wire + len(compressor.flush())
 
-    def descend(self, directory: Path, denied: pathspec.GitIgnoreSpec) -> Iterator[Path]:
-        """Every mirrorable file under `directory`, an excluded subtree never entered at all.
-
-        Pruning rather than filtering, because the trees the mirror refuses are exactly the big
-        ones, a Rust `target/` or a virtual environment, and walking one only to drop every file
-        it holds is the difference between a measurement that takes a second and one that takes
-        a minute.
-        """
-        for entry in sorted(directory.iterdir()):
-            relative = entry.relative_to(self.root)
-            folder = entry.is_dir()
-            if denied.match_file(f"{relative}/" if folder else str(relative)):
-                continue
-            if self.ignored(relative, folder=folder):
-                continue
-            if folder and not entry.is_symlink():
-                yield from self.descend(entry, denied)
-            elif entry.is_file():
-                yield entry
-
-    def ignored(self, relative: Path, *, folder: bool) -> bool:
-        """Whether git ignores `relative`, under the workspace's rules and every nested one.
-
-        The mirror hands rsync a per-directory merge rule, so a `.gitignore` deep in the tree
-        prunes its own subtree exactly as it does for git, and a package that excludes its own
-        build output is honoured without the workspace root having to know about it. Reading
-        only the root file here would count that build output as in flight.
-
-        relative: the path being judged, relative to the workspace root.
-        folder: whether it is a directory, which is what a `build/` rule matches on.
-        """
-        return self.ignore.ignored(relative) or any(
-            self.pruned(parent, relative=relative, folder=folder)
-            for parent in relative.parents
-            if parent != Path()
-        )
-
     def measure(self, files: Sequence[Path]) -> tuple[int, int]:
         """The raw and compressed size of `files`, over a small pool of parallel zstd streams.
 
@@ -152,8 +98,8 @@ class Transfer:
         free-threaded one: 2.76x at eight threads over 600 MB of this workspace's own files,
         against 1.57x at two and 2.66x at sixteen.
 
-        Each shard is its own stream, which is also the shape the mirror sends, since rsync
-        compresses what it ships rather than handing the whole set to one long-lived context.
+        Each shard is its own stream, so the measurement parallelizes where the mirror's one
+        stream would not, and stays an estimate of it rather than a replay.
         """
         shards = [shard for index in range(_STREAMS) if (shard := files[index::_STREAMS])]
         if not shards:
@@ -166,39 +112,6 @@ class Transfer:
         """Whether `path` changed after the `since` watermark, true when there is no watermark."""
         return not since or path.stat().st_mtime > datetime.fromisoformat(since).timestamp()
 
-    def pruned(self, parent: Path, *, relative: Path, folder: bool) -> bool:
-        """Whether `parent`'s own `.gitignore` prunes `relative`, false when it declares none.
-
-        Almost no directory in a real tree declares one, and an empty rule set still charges for
-        the path arithmetic and the match before answering no. Every file asks every ancestor, so
-        that empty work is most of the walk, and stepping over it is worth 1.3x on this
-        workspace's tree with a byte-identical file set.
-
-        parent: an ancestor directory of `relative`, relative to the workspace root.
-        relative: the path being judged, relative to the workspace root.
-        folder: whether it is a directory, which is what a `build/` rule matches on.
-        """
-        rules = self.rules(parent)
-        if not rules.patterns:
-            return False
-        inside = relative.relative_to(parent)
-        return rules.match_file(f"{inside}/" if folder else str(inside))
-
-    def rules(self, directory: Path) -> pathspec.GitIgnoreSpec:
-        """The `.gitignore` rules `directory` declares, empty when it declares none.
-
-        Cached per directory, since a deep walk asks the same handful of directories about every
-        file beneath them.
-        """
-        if directory not in self.nested:
-            gitignore = self.root / directory / ".gitignore"
-            lines = (
-                gitignore.read_text(encoding="utf-8").splitlines() if gitignore.is_file() else []
-            )
-            # pyrefly: ignore  reason=pathspec from_lines stub over-narrows to AnyStr since=2026-08-16
-            self.nested[directory] = pathspec.GitIgnoreSpec.from_lines(lines)
-        return self.nested[directory]
-
     def set_for(self, job: BatchJob) -> TransferSet:
         """What `job` ships to its target, measured now.
 
@@ -209,10 +122,10 @@ class Transfer:
         if self.board.on(job.target).local:
             return TransferSet(job=job.name, target=job.target)
         since = self.watermark(job.target)
-        scope = self.board.on(job.target).plan().profile.sync
-        denied = self.denylist(scope.exclude)
-        changed = [path for path in self.walk(scope.include, denied) if self.newer(path, since)]
-        named = list(self.walk(job.data, denied))
+        plan = self.board.on(job.target).plan()
+        scope = plan.profile.sync
+        changed = [path for path in self.walk(plan, scope.include) if self.newer(path, since)]
+        named = self.walk(plan, job.data)
         files = list(dict.fromkeys([*changed, *named]))
         raw, wire = self.measure(files)
         return TransferSet(
@@ -225,27 +138,20 @@ class Transfer:
             since=since,
         )
 
-    def walk(self, paths: Sequence[str], denied: pathspec.GitIgnoreSpec) -> Iterator[Path]:
-        """Every mirrorable file under each of `paths`, in a stable order.
+    def walk(self, plan: ExecutionPlan, paths: Sequence[str]) -> list[Path]:
+        """Every file the mirror would carry under each of `paths`, in a stable order.
 
         A declared path that does not exist here is skipped the way the mirror skips it, since a
-        stale include line is a warning at dispatch rather than a refusal.
+        stale include line is a warning at dispatch rather than a refusal, and a link is never
+        followed into a second copy of the tree.
 
+        plan: the target's resolved execution context, whose profile names its excludes.
         paths: the declared roots, each a file or a directory under the workspace.
-        denied: the profile's own exclude patterns and the mirror's permanent denylist.
         """
-        for declared in paths:
-            start = self.root / declared
-            if start.is_file():
-                yield start
-            elif start.is_dir():
-                yield from self.descend(start, denied)
-
-    @staticmethod
-    def _anywhere(pattern: str) -> str:
-        """`pattern` as rsync reads it: anchored only when it was written with a leading slash."""
-        unanchored = "/" in pattern.rstrip("/") and not pattern.startswith("/")
-        return f"**/{pattern}" if unanchored else pattern
+        scope = self.board.dispatcher.scope(plan, paths)
+        return [
+            self.root / entry.path for entry in walk(str(self.root), scope) if entry.kind == FILE
+        ]
 
     def watermark(self, alias: str) -> str:
         """When `alias` last had the workspace mirrored onto it, empty when nothing recorded one.

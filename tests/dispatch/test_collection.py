@@ -8,8 +8,9 @@ from zipfile import ZipFile
 
 import pytest
 
+from mainboard.dispatch.agent import Digests
 from mainboard.dispatch.collection import pack as pack_module
-from mainboard.dispatch.collection.collector import Collector, KnownDigests
+from mainboard.dispatch.collection.collector import Collector
 from mainboard.dispatch.collection.pack import _immutable, _paths, pack
 from mainboard.dispatch.transport import SshTransport
 
@@ -93,7 +94,7 @@ def test_a_published_file_is_hashed_once_until_its_stamp_moves(
 def test_a_torn_digest_memory_is_rebuilt(tmp_path: Path) -> None:
     memory = tmp_path / "digests.json"
     memory.write_text("{", encoding="utf-8")
-    assert KnownDigests(memory).held == {}
+    assert Digests(str(memory)).held == {}
 
 
 @pytest.mark.parametrize(

@@ -1,8 +1,6 @@
 import base64
 import shlex
-import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -21,7 +19,6 @@ from mainboard.dispatch.shells import (
     plain_errors,
     quoted,
 )
-from mainboard.dispatch.tarball import Tarball
 from mainboard.engines.compile.backend import PIXI_VERSION, WINDOWS_INSTALLER
 from mainboard.manifest import HostProfile
 
@@ -266,53 +263,3 @@ def test_a_windows_host_that_left_no_prefix_behind_is_refused_by_name() -> None:
     shell = WindowsShell(windows_plan(), _ROOT, ssh=transport)
     with pytest.raises(MissionError, match="has no C:/Users/me/mainboard-managed/.mainboard/envs"):
         Bootstrap(shell).environment()
-
-
-def test_the_tarball_lists_what_rsync_would_send_and_ships_only_what_the_host_lacks(
-    tmp_path: Path,
-) -> None:
-    if shutil.which("rsync") is None:
-        pytest.skip("the optional rsync executable is not installed")
-    workspace = tmp_path / "ws"
-    (workspace / "src").mkdir(parents=True)
-    (workspace / "src" / "keep.py").write_text("print(1)\n")
-    (workspace / "src" / "scratch.pyc").write_bytes(b"\x00")
-    (workspace / "src" / "__pycache__").mkdir()
-    (workspace / "src" / "__pycache__" / "x.pyc").write_bytes(b"\x00")
-    (workspace / ".gitignore").write_text("*.pyc\n")
-    tarball = Tarball(workspace, RecordingTransport())
-    from mainboard.dispatch.sync import Rsync
-
-    files = tarball.listing(
-        ["src"],
-        flags=Rsync.RECURSIVE | Rsync.LINKS | Rsync.RELATIVE,
-        filters=["merge,- .gitignore", ":- .gitignore"],
-        exclude=["__pycache__/"],
-    )
-    assert files == ["src/keep.py"]
-    stat = (workspace / "src" / "keep.py").stat()
-    same = {"src/keep.py": (stat.st_size, int(stat.st_mtime))}
-    assert tarball.pending(files, same) == []
-    assert tarball.pending(files, {"src/keep.py": (stat.st_size, 0)}) == ["src/keep.py"]
-    assert tarball.pending(files, {}) == ["src/keep.py"]
-    assert tarball.pending([*files, "src/gone.py"], same) == []
-
-
-def test_the_remote_listing_reads_every_top_directory_deep_and_the_generated_ones_flat() -> None:
-    transport = RecordingTransport(
-        rules=[
-            (
-                "Get-ChildItem",
-                0,
-                "src/a.py\t3\t1700000000\nnoise\n.mainboard/envs/default/pixi.lock\t9\t5\n",
-            )
-        ]
-    )
-    shell = WindowsShell(windows_plan(), _ROOT, ssh=transport)
-    held = Tarball(Path("."), transport).held(
-        shell, ["src/a.py", "packages/tool/x.py", ".mainboard/envs/default/pixi.lock"]
-    )
-    script = transport.scripts[-1]
-    assert "foreach ($top in @('packages', 'src'))" in script
-    assert "foreach ($flat in @('.mainboard/envs/default'))" in script
-    assert held == {"src/a.py": (3, 1700000000), ".mainboard/envs/default/pixi.lock": (9, 5)}
