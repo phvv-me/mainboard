@@ -16,18 +16,9 @@ def test_creating_a_study_derives_a_stable_identity_and_a_slug_from_its_experime
     twin = Study.create("joint-search", config_space={"bits": [1, 2]}, source_digest="abc123")
     assert twin.study_id == derived.study_id
     declared = Study.create(
-        "e",
-        config_space={},
-        source_digest="s",
-        name="my-run",
-        hosts=("gold", "miyabi-g"),
-        models=("m1",),
+        "e", config_space={}, source_digest="s", name="my-run", hosts=("gold",), models=("m1",)
     )
-    assert (declared.name, declared.hosts, declared.models) == (
-        "my-run",
-        ("gold", "miyabi-g"),
-        ("m1",),
-    )
+    assert (declared.name, declared.hosts, declared.models) == ("my-run", ("gold",), ("m1",))
 
 
 def test_a_study_ledger_lives_under_the_generated_studies_dir_and_reopens_by_path(
@@ -62,7 +53,6 @@ def test_a_ledger_folds_each_handles_latest_event_into_its_status_and_progress(
 
 
 def test_a_ledger_ignores_a_blank_line_left_in_its_append_only_file(tmp_path: Path) -> None:
-    """A stray newline in the NDJSON must not read back as an empty event."""
     ledger = StudyLedger(tmp_path, "sid")
     ledger.submitted("H1", host="gold")
     with ledger.path.open("a", encoding="utf-8") as opened:

@@ -1,5 +1,7 @@
 # Per-kernel launch efficiency: waves, tail quantisation and achieved bandwidth.
 
+import math
+import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -14,40 +16,33 @@ if TYPE_CHECKING:
     from .trace import KernelTrace
 
 _NS_PER_MS = 1_000_000
+_LENGTH = re.compile(r"[0-9]+")
 
 
 def grid_blocks(shape: str) -> int:
-    """Return the total extent encoded in a CUPTI launch shape.
+    """The total extent of a launch shape, 0 when it has no digits.
 
-    CUPTI writes shapes as ``110x1x1``. Parenthesised and comma-separated spellings are
-    accepted too so a backend that formats differently does not silently report zero.
+    CUPTI writes `110x1x1`; parenthesised and comma-separated spellings are accepted too, so a
+    backend that formats differently does not silently report zero.
     """
     cleaned = shape.replace("(", " ").replace(")", " ").replace(",", " ").replace("x", " ")
     digits = [int(part) for part in cleaned.split() if part.isdigit()]
-    total = 1
-    for value in digits:
-        total *= value
-    return total if digits else 0
+    return math.prod(digits) if digits else 0
 
 
 def readable(name: str) -> str:
-    """Return a kernel name with the Itanium mangling and JIT suffix trimmed off.
+    """A kernel name with the Itanium mangling and JIT suffix trimmed to its first three parts.
 
-    numba appends a long content hash to every symbol, so the tail of a mangled name is
-    noise and the informative part is the namespace and function near the front.
+    numba appends a long content hash to every symbol, so the informative part is near the front.
     """
     if not name.startswith("_ZN"):
         return name
-    body = name[3:]
     parts: list[str] = []
-    index = 0
-    while index < len(body) and body[index].isdigit():
-        width = 0
-        while index < len(body) and body[index].isdigit():
-            width = width * 10 + int(body[index])
-            index += 1
-        parts.append(body[index : index + width])
-        index += width
+    index = 3
+    # Each part is spelled `<length><identifier>`, so `5numba` is `numba`.
+    while index < len(name) and (length := _LENGTH.match(name, index)):
+        index = length.end() + int(length[0])
+        parts.append(name[length.end() : index])
     return ".".join(parts[:3]) if parts else name
 
 
@@ -73,11 +68,10 @@ class KernelEfficiency(FrozenModel):
     def aggregate(
         cls, kernels: Sequence[KernelTrace], sm_count: int, *, blocks_per_sm: int = 1
     ) -> list[KernelEfficiency]:
-        """Rank kernels by total device time, annotating each with its launch shape.
+        """Rank kernels that ran by total device time, each with its launch shape.
 
-        blocks_per_sm: resident blocks each multiprocessor can hold. Left at one this
-            reports the coarsest wave count, which is the one that matters for a grid far
-            smaller than the machine.
+        blocks_per_sm: resident blocks per multiprocessor. One gives the coarsest wave count,
+            the one that matters for a grid far smaller than the machine.
         """
         slots = max(sm_count * blocks_per_sm, 1)
         groups: defaultdict[str, list[KernelTrace]] = defaultdict(list)
@@ -91,18 +85,16 @@ class KernelEfficiency(FrozenModel):
             waves = blocks / slots
             whole = int(waves)
             partial = waves - whole
-            tail = 0.0 if partial == 0 else (1 - partial) / (whole + 1) * 100
-            threads = grid_blocks(traces[0].block)
             rows.append(
                 cls(
                     name=name,
                     calls=len(traces),
                     total_ms=sum(t.end_ns - t.start_ns for t in traces) / _NS_PER_MS,
                     blocks=blocks,
-                    block_threads=threads,
+                    block_threads=grid_blocks(traces[0].block),
                     registers=traces[0].registers,
                     waves=waves,
-                    tail_waste_pct=tail,
+                    tail_waste_pct=0.0 if partial == 0 else (1 - partial) / (whole + 1) * 100,
                 )
             )
         return sorted(rows, key=lambda r: r.total_ms, reverse=True)
@@ -121,7 +113,6 @@ class EfficiencyReport(FrozenModel):
     bytes_moved: int = 0
 
     def __rich__(self) -> RenderableType:
-        """Render the per-kernel launch shapes and the bandwidth summary."""
         title = f"launch efficiency ({self.sm_count} SMs"
         if self.bytes_moved:
             title += (
@@ -154,21 +145,19 @@ class EfficiencyReport(FrozenModel):
 
     @property
     def achieved_gbs(self) -> float:
-        """Return payload bytes divided by total device time."""
+        """Payload bytes over total device time."""
         if not self.total_ms or not self.bytes_moved:
             return 0.0
         return self.bytes_moved / (self.total_ms / 1000) / 1e9
 
     @property
     def bandwidth_utilisation_pct(self) -> float:
-        """Return achieved bandwidth as a share of the device peak."""
         if not self.peak_bandwidth_gbs:
             return 0.0
         return 100.0 * self.achieved_gbs / self.peak_bandwidth_gbs
 
     @property
     def total_ms(self) -> float:
-        """Return total device time across every kernel."""
         return sum(row.total_ms for row in self.rows)
 
     @classmethod
@@ -182,7 +171,6 @@ class EfficiencyReport(FrozenModel):
         blocks_per_sm: int = 1,
         top: int = 12,
     ) -> EfficiencyReport:
-        """Build the report from observed kernels and the device's own limits."""
         rows = KernelEfficiency.aggregate(kernels, sm_count, blocks_per_sm=blocks_per_sm)
         return cls(
             rows=tuple(rows[:top]),

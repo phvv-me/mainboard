@@ -1,11 +1,6 @@
-# A study is the identity missing above a trial: `run_id` names one config, `Study` names the
-# whole sweep a fleet of trials belongs to. `StudyLedger` is its append-only event log, one JSON
-# line per event, the durable record `Fleet` writes to and a report reads back.
-#
-# The join key with dispatch: every job a study submits carries `name="study:<study_id>"` on its
-# `RunRecord` (dispatch's own free-text label field). Dispatch never parses that string and knows
-# nothing about studies; a caller that wants a study's runs out of the dispatch `Cache` filters
-# `RunRecord.name` for the `study:` prefix itself. This module never imports or modifies dispatch.
+# A study is the identity above a trial: `run_id` names one config, `Study` the whole sweep.
+# `StudyLedger` is its append-only JSON-lines event log, the durable record `Fleet` writes and a
+# report reads back. Dispatch knows nothing about studies and this module never imports it.
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -21,19 +16,16 @@ if TYPE_CHECKING:
 
 
 def _now() -> str:
-    """The current instant as an ISO-8601 string, the timestamp format every event shares."""
+    """The current UTC instant in ISO-8601, the timestamp format every event shares."""
     return datetime.now(UTC).isoformat()
 
 
 class Study(FrozenModel):
     """One experiment study: the identity a fleet of trials share.
 
-    study_id: the content-hash identity over (experiment, config space, source digest).
-    name: a human slug for logs, filenames, and `Fleet`'s dispatch label.
-    experiment: the registered experiment name this study runs.
+    study_id: the content hash over (experiment, config space, source digest).
+    name: a human slug for logs and filenames.
     hosts: the host aliases the study fans its trials across.
-    models: the model ids the study sweeps.
-    created_at: ISO-8601 creation time.
     source_digest: the content digest of the captured source bundle.
     """
 
@@ -77,12 +69,8 @@ class Study(FrozenModel):
 class StudyEvent(FrozenModel):
     """One append-only line in a study's ledger.
 
-    at: ISO-8601 event time.
-    kind: `created`, `submitted`, or `verdict`.
-    handle: the dispatch handle id, for a `submitted` or `verdict` event.
-    host: the host alias the job runs on, for a `submitted` event.
-    state: the resolved verdict word (`ok` / `failed` / `vanished` / ...), for a `verdict` event.
-    name: the owning study's human label, for a `created` event.
+    kind: `created` (carries `name`), `submitted` (`handle`, `host`) or `verdict` (`handle` and
+        its resolved `state`: `ok`, `failed`, `vanished`, ...).
     """
 
     at: str
@@ -96,10 +84,9 @@ class StudyEvent(FrozenModel):
 class Progress(FrozenModel):
     """A study's trial counts, folded from a `handle -> state` mapping.
 
-    submitted: total handles the study has ever dispatched.
-    running: handles dispatched but not yet resolved to a terminal verdict.
-    ok: handles that finished cleanly.
-    failed: handles that ended any other terminal way (failed, vanished, unknown, timeout).
+    submitted: every handle ever dispatched.
+    running: handles not yet resolved to a terminal verdict.
+    failed: handles that ended any terminal way but `ok` (failed, vanished, unknown, timeout).
     """
 
     submitted: int = 0
@@ -109,28 +96,19 @@ class Progress(FrozenModel):
 
     @classmethod
     def fold(cls, states: Mapping[str, str]) -> Progress:
-        """Bucket each handle's state into submitted/running/ok/failed counts.
-
-        `ok` and `submitted` (dispatched, not yet resolved) are the two recognized states;
-        anything else terminal (`failed`, `vanished`, `unknown`, ...) counts as `failed`, and
-        `running` is whatever is left once both are subtracted.
-
-        states: each handle's current state word, however it was resolved.
-        """
-        okay = sum(1 for state in states.values() if state == "ok")
-        failed = sum(1 for state in states.values() if state not in {"ok", "submitted"})
+        """Count `ok`, `submitted` as running, and every other state word as failed."""
+        okay = sum(state == "ok" for state in states.values())
+        failed = sum(state not in {"ok", "submitted"} for state in states.values())
         return cls(
             submitted=len(states), running=len(states) - okay - failed, ok=okay, failed=failed
         )
 
 
 class StudyLedger:
-    """A study's append-only event log, one JSON line per event.
+    """A study's append-only event log at `<root>/.mainboard/studies/<study_id>.jsonl`.
 
-    Persists at `<root>/.mainboard/studies/<study_id>.jsonl`. Every event a caller records here
-    is also, independently, whatever dispatch itself recorded for the same handle in its own
-    `Cache`; the ledger exists so a study's shape (how many trials, which are still running)
-    reads back without touching dispatch at all.
+    It mirrors what dispatch records per handle in its own `Cache`, so a study's shape reads
+    back without touching dispatch.
     """
 
     def __init__(self, root: Path, study_id: str) -> None:
@@ -138,11 +116,7 @@ class StudyLedger:
 
     @classmethod
     def at(cls, path: Path) -> StudyLedger:
-        """A ledger bound directly to an already-resolved `.jsonl` path.
-
-        The reporting layer's `overview` walks a studies directory by file, one `<study_id>`
-        per glob match, so it never has the board root `__init__` derives that path from.
-        """
+        """A ledger bound to an already-resolved `.jsonl` path, for a caller without the root."""
         ledger = cls.__new__(cls)
         ledger.path = path
         return ledger
@@ -154,26 +128,21 @@ class StudyLedger:
             opened.write(event.model_dump_json() + "\n")
 
     def created(self, study: Study) -> None:
-        """Record `study`'s own creation, its human label carried for a later report to read."""
+        """Record `study`'s creation, carrying its human label for a later report."""
         self.append(StudyEvent(at=_now(), kind="created", name=study.name))
 
     def events(self) -> list[StudyEvent]:
-        """Every recorded event, oldest first, or `[]` when nothing has been appended yet."""
+        """Every recorded event, oldest first."""
         if not self.path.is_file():
             return []
         lines = self.path.read_text(encoding="utf-8").splitlines()
         return [StudyEvent.model_validate_json(line) for line in lines if line]
 
     def progress(self) -> Progress:
-        """Submitted/running/ok/failed counts, folded from `statuses`."""
         return Progress.fold(self.statuses())
 
     def statuses(self) -> dict[str, str]:
-        """Each dispatched handle's current state, folded from its most recent event.
-
-        A handle with no `verdict` event yet reads `submitted`; one that has resolved reads its
-        verdict word instead. A `created` event carries no handle and folds into neither.
-        """
+        """Each dispatched handle's state: `submitted` until a `verdict` event resolves it."""
         current: dict[str, str] = {}
         for event in self.events():
             if event.handle is None:

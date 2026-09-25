@@ -22,49 +22,56 @@ from .support import Item
 
 @pytest.fixture
 def trial(session: Session, tmp_path: Path):
-    """One evidence line in the `alpha` claim, which every lane below settles through."""
     return session.trial(Item("alpha/test_law.py::test_hunts", tmp_path / "alpha" / "test_law.py"))
 
 
 @pytest.fixture
 def doubled(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both drivers stood in for, at the import call `driver` makes and nowhere wider.
-
-    NOT `sys.modules`, and the reason is this suite itself: hypothesis is what most of these tests
-    are written in, its pytest plugin imports the real module during every call phase, and a fake
-    installed under that name takes the plugin down with it. Patching the one import call keeps
-    the refusal path, the caching and the error handling of `driver` exactly as shipped.
-    """
+    """Both drivers stood in for at `driver`'s import call, not in `sys.modules`: hypothesis's
+    own pytest plugin imports the real module every call phase and a fake would take it down."""
     stood = {"hypothesis": support_adaptive.hypothesis(), "optuna": support_adaptive.optuna()}
     monkeypatch.setattr(adaptive, "import_module", stood.__getitem__)
 
 
 def rows(session: Session) -> list[dict]:
-    """This run's receipt rows for the `alpha` claim, in the order they were written."""
     return session.declared.universe.dataset("alpha").rows(session.run)
 
 
 def owed() -> Owed:
-    """The declared cell a candidate below owes its confirmation to."""
     return Owed(lane="alpha/test_law.py::test_confirms", cell={"shape": "w96"})
+
+
+def hunt(trial, **options) -> Hunt:
+    """A hunt settling `refuted` or `undecided` and owing `owed()`."""
+    return Hunt(trial, refuted="refuted", survived="undecided", owed=owed(), **options)
+
+
+def study(trial, proposer: Optuna, **options) -> Study:
+    """A study of the served law's worst miss, settling like `hunt`."""
+    return Study(
+        trial,
+        proposer,
+        question="where does the served law miss worst",
+        refuted="refuted",
+        survived="undecided",
+        owed=owed(),
+        **options,
+    )
 
 
 def test_a_missing_driver_refuses_by_naming_the_package_and_the_extra_that_ships_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bare ModuleNotFoundError three frames down does not tell a reader what to install."""
     monkeypatch.setitem(sys.modules, "optuna", None)
     with pytest.raises(Absent, match=r"pip install mainboard\[search\]"):
         driver("search")
 
 
 def test_a_present_driver_comes_back_as_the_module_itself(doubled: None) -> None:
-    """The import path under test is the real one, and only what comes back through it is fake."""
     assert driver("adversarial").HealthCheck == ("too_slow",)
 
 
 def test_an_owed_confirmation_states_the_cell_it_names_and_says_so_when_it_names_none() -> None:
-    """A candidate carries the debt in words, because the receipt is what a reader reaches for."""
     assert "alpha/test_law.py::test_confirms[shape=w96] on fresh seeds" in owed().stated
     bare = Owed(lane="alpha/test_law.py::test_confirms", seeds="two fresh")
     assert bare.stated.endswith("test_confirms on two fresh seeds")
@@ -74,17 +81,10 @@ def test_a_law_that_holds_settles_the_survival_word_with_the_draw_count_and_no_w
     trial, session: Session, doubled: None
 ) -> None:
     """Surviving a search is a statement about the search, so it is never a validation word."""
-    hunt = Hunt(
-        trial,
-        law="the phase is independent of the delta",
-        draws=12,
-        seed=3,
-        refuted="refuted",
-        survived="undecided",
-        owed=owed(),
-        node="alpha",
+    hunted = hunt(
+        trial, law="the phase is independent of the delta", draws=12, seed=3, node="alpha"
     )
-    assert hunt.against(lambda size: None, size=[1, 2, 4, 8]) is None
+    assert hunted.against(lambda size: None, size=[1, 2, 4, 8]) is None
 
     row = rows(session)[0]
     assert row["verdict"] == "undecided" and row["outcome"] == "passed"
@@ -105,16 +105,8 @@ def test_a_law_that_breaks_settles_refuted_with_the_shrunk_witness_and_the_cell_
         if size >= 8:
             raise Breach(f"the law fails at size {size}", size=size, margin=0.5)
 
-    hunt = Hunt(
-        trial,
-        law="the phase is independent of the delta",
-        draws=8,
-        seed=2,
-        refuted="refuted",
-        survived="undecided",
-        owed=owed(),
-    )
-    witness = hunt.against(law, size=[1, 2, 4, 8, 16])
+    hunted = hunt(trial, law="the phase is independent of the delta", draws=8, seed=2)
+    witness = hunted.against(law, size=[1, 2, 4, 8, 16])
 
     assert isinstance(witness, Breach) and witness.witness == {"size": 8, "margin": 0.5}
     row = rows(session)[0]
@@ -132,15 +124,9 @@ def test_a_hunt_replays_from_its_own_receipt_because_the_seed_is_what_walked_it(
 
     def walked() -> list[int]:
         drawn: list[int] = []
-        Hunt(
-            trial,
-            law="the order is the seed's",
-            draws=5,
-            seed=7,
-            refuted="refuted",
-            survived="undecided",
-            owed=owed(),
-        ).against(lambda size: drawn.append(size), size=[1, 2, 4])
+        hunt(trial, law="the order is the seed's", draws=5, seed=7).against(
+            lambda size: drawn.append(size), size=[1, 2, 4]
+        )
         return drawn
 
     assert walked() == walked()
@@ -152,18 +138,9 @@ def test_a_study_writes_one_row_per_iteration_and_settles_on_its_worst_point(
 ) -> None:
     """The sampler keeps no record, so every ask-tell iteration is a receipt row of its own."""
     proposer = Optuna({"tokens": [192, 288], "depth": [1024, 3072]}, seed=11)
-    study = Study(
-        trial,
-        proposer,
-        question="where does the served law miss worst",
-        budget=4,
-        seed=11,
-        refuted="refuted",
-        survived="undecided",
-        owed=owed(),
-        policy="default",
+    study(trial, proposer, budget=4, seed=11, policy="default").run(
+        lambda tokens, depth: Miss(loss=tokens / depth, reading={"tokens": tokens})
     )
-    study.run(lambda tokens, depth: Miss(loss=tokens / depth, reading={"tokens": tokens}))
 
     written = rows(session)
     assert len(written) == 5
@@ -186,22 +163,10 @@ def test_a_study_writes_one_row_per_iteration_and_settles_on_its_worst_point(
 def test_a_told_point_is_let_go_because_a_driver_trial_holds_the_frame_that_made_it(
     trial, session: Session, doubled: None
 ) -> None:
-    """One told trial left on a proposer held a whole claim's checkpoint through teardown.
-
-    An optuna trial keeps the suggesting frame reachable, that frame is a pytest test, and its
-    fixtures are a loaded model, so a residency check refused the run over a point nobody needed.
-    """
+    """An optuna trial keeps the suggesting pytest frame, and so its loaded-model fixtures,
+    reachable; one left told made a residency check refuse the run."""
     proposer = Optuna({"tokens": [192, 288]}, seed=4)
-    Study(
-        trial,
-        proposer,
-        question="where does the served law miss worst",
-        budget=2,
-        seed=4,
-        refuted="refuted",
-        survived="undecided",
-        owed=owed(),
-    ).run(lambda tokens: Miss(loss=float(tokens)))
+    study(trial, proposer, budget=2, seed=4).run(lambda tokens: Miss(loss=float(tokens)))
 
     assert proposer.pending is None
     assert len(proposer.study.told) == 2
@@ -211,17 +176,9 @@ def test_a_worst_point_outside_the_band_settles_refuted_and_names_what_confirms_
     trial, session: Session, doubled: None
 ) -> None:
     """A sampler walks toward the corner it is rewarded for, so its worst point is a proposal."""
-    study = Study(
-        trial,
-        Optuna({"tokens": [192, 288]}, seed=1),
-        question="where does the served law miss worst",
-        budget=3,
-        seed=1,
-        refuted="refuted",
-        survived="undecided",
-        owed=owed(),
+    point, miss = study(trial, Optuna({"tokens": [192, 288]}, seed=1), budget=3, seed=1).run(
+        lambda tokens: Miss(loss=tokens, outside=tokens > 200)
     )
-    point, miss = study.run(lambda tokens: Miss(loss=tokens, outside=tokens > 200))
 
     assert point == {"tokens": 288} and miss.outside
     settled = rows(session)[-1]
@@ -235,16 +192,9 @@ def test_a_study_settles_the_last_word_it_reached_and_not_the_first_row_it_narra
     trial, session: Session, doubled: None
 ) -> None:
     """A search narrates as it goes, so a terminal prints the word the study ended on."""
-    Study(
-        trial,
-        Optuna({"tokens": [192, 288]}, seed=0),
-        question="where does the served law miss worst",
-        budget=2,
-        seed=0,
-        refuted="refuted",
-        survived="undecided",
-        owed=owed(),
-    ).run(lambda tokens: Miss(loss=tokens, outside=tokens > 200))
+    study(trial, Optuna({"tokens": [192, 288]}, seed=0), budget=2, seed=0).run(
+        lambda tokens: Miss(loss=tokens, outside=tokens > 200)
+    )
 
     assert [word for _, word in trial.item.user_properties] == [
         "undecided",

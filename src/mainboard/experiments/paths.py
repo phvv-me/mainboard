@@ -54,8 +54,7 @@ class ExperimentPaths(FrozenModel):
 
     def device_table(self, tag: str, name: str = "results") -> Path:
         """The table for one device, under its own tag so hosts never overwrite each other."""
-        logical = self.table(name)
-        path = logical.parent / tag / logical.name
+        path = self.raw_dir / tag / self.table(name).name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 

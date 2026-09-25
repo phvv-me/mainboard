@@ -1,8 +1,7 @@
 """Admit a card to an acquisition under the standard the workspace declares for it.
 
-The policy lives in the manifest's `[admission.<card name>]` table rather than in a node's
-code or a host's exports, so a display-attached desktop or a shared box is declared once, and
-every acquisition on that card reads the same threshold and the same answer to other holders.
+The policy lives in the manifest's `[admission.<card name>]` table, so a display-attached desktop
+or a shared box is declared once and every acquisition on that card reads the same answer.
 """
 
 import os
@@ -25,9 +24,7 @@ if TYPE_CHECKING:
 class Admitted(FrozenModel):
     """What the card looked like when the acquisition was admitted, kept beside its rows.
 
-    card: the card's name.
     threshold_pct: the utilization the card had to stay below.
-    utilization_pct: what it read at admission.
     memory_pct: its memory-controller utilization at admission.
     holders: the other compute processes on it, empty on an exclusive card.
     """
@@ -42,7 +39,6 @@ class Admitted(FrozenModel):
 def policy(card: str, root: Path | None = None) -> Admission:
     """The admission standard the workspace declares for `card`, the default when it names none.
 
-    card: the card's name as the probe reports it.
     root: the workspace root; found from the working directory when omitted, which inside a
         dispatched job is the pinned tree the manifest shipped with.
     """
@@ -59,13 +55,10 @@ def admit(
 ) -> Admitted:
     """Wait for `device` to meet its declared standard, then say what it looked like.
 
-    Refuses with the standard named when the card stays busy past `timeout`, and with the
-    holders named when other compute processes hold a card whose policy refuses them.
+    Refuses naming the standard when the card stays busy past `timeout` seconds, and naming the
+    holders when other compute processes hold a card whose policy refuses them.
 
-    device: the probed card.
-    timeout: how long to wait for it to read idle.
-    root: the workspace root the policy is read from, found from the working directory when
-        omitted.
+    root: the workspace root the policy is read from, as in `policy`.
     idle: the idle wait, injectable by a test.
     """
     standard = policy(device.label, root)

@@ -1,44 +1,23 @@
-# THE STORE AT REST, AND THE ONLY PLACE THAT KNOWS ITS LAYOUT.
+# The store at rest, and the only place that knows its layout.
 #
 # A dataset is a directory of `run=<id>` partitions, each holding one immutable parquet fragment
-# per trial. Hive partitioning is OFF and the run rides as a column, so one fragment read on its
-# own still names the run that produced it rather than depending on the directory it was found in.
+# per trial. Hive partitioning is off and the run rides as a column, so a fragment read alone still
+# names its run. Fragments of two runs need not share a schema: a host holding a run from before a
+# provenance field existed once stopped a whole store collecting, so reads are DIAGONAL, the union
+# of the columns with nulls where a run predates one.
 #
-# THE FRAGMENTS OF TWO RUNS NEED NOT SHARE A SCHEMA and one plain scan over all of them refuses
-# when they do not. A dataset is written across time, so the day a receipt gains a field every
-# older run becomes unreadable beside every newer one, which is how a cross-architecture campaign
-# found this: one host held a run from before a provenance field existed and the whole store
-# stopped collecting. Reading DIAGONALLY is the same choice compaction already makes one layer
-# down, and it answers with the union of the columns and a null where a run predates one.
+# A missing axis column is the same fact as an empty one (a re-run of a model-less universe once
+# came back `matched 2 current trials, want 1`), normalised here once rather than in each reader.
+# A broken probe must not flatten into a host with no device, so every axis carries its probe
+# outcome in its own column and both filter. Axes are configuration: the reference hand-built per
+# card and per model and asked the card question only on a host with a card, letting a cardless
+# machine read another's rows. Here every declared axis filters, including at the empty coordinate.
 #
-# AND A MISSING COLUMN IS THE SAME FACT AS AN EMPTY ONE, normalised here so no reader has to
-# know that. A lane naming no model writes `model = ""`, while a run taken before that field
-# existed carries a null for it, and both mean the same thing. Leaving the two apart splits one
-# cell of the current view in two, which is how a re-run of a model-less universe came back with
-# `matched 2 current trials, want 1`. The rule is stated once, here, rather than in each reader,
-# which is where it was already stated once correctly and once not at all. What that rule must NOT
-# do is flatten a broken probe into a host with no device, which is why every axis carries its
-# probe outcome in a column of its own and both are normalised and both filter.
-#
-# COVERAGE AXES ARE CONFIGURATION AND NOTHING IS SPECIAL-CASED. The reference this generalizes
-# hand-built two cases, per card and per model, and asked the card question only when the host had
-# a card, which silently let a machine with no device read another machine's rows as its own.
-# Here a consumer declares the axes it scopes coverage by, every declared axis is normalised and
-# every declared axis filters, including at the empty coordinate. A consumer that does not want
-# per-card coverage does not declare `card`, which is the whole of the knob.
-#
-# EVIDENCE IS THE ADMISSIBLE SUBSET AND THE STORE IS EVERYTHING. `passing` and `status` are the
-# two questions a CLAIM is answered from, so both read only rows whose producing tree can be
-# identified. `scan`, `rows` and `as_jsonl` are the store itself and read every row there is,
-# because a person opening a ledger wants what was written and not what counted. A row from before
-# admissibility was recorded reads `unrecorded`, which is neither admissible nor a lie about it.
-#
-# AND RECENCY IS A COORDINATE A RUN WRITES DOWN, NEVER A NAME IT IS SORTED BY. Run names open with
-# a second-resolution timestamp and end in random hex, so ordering on the name orders two runs
-# inside one second by their random tail, which is how `newest` and the one-row-per-cell view both
-# came to pick a winner nothing had decided. A run now persists `opened_at_ns` and every recency
-# question reads that. Two runs that answer with the same instant are not orderable at all, and
-# this REFUSES rather than picking one, because an arbitrary winner is exactly the defect.
+# Evidence is the admissible subset; the store is everything. `passing` and `status` answer claims
+# and read only rows whose producing tree is identified; `scan`, `rows` and `as_jsonl` read every
+# row, because a person opening a ledger wants what was written. Recency is the coordinate a run
+# writes down (`opened_at_ns`), never its name, whose random hex tail used to pick `newest` inside
+# one second; two runs claiming the same instant are refused rather than picked between.
 
 import json
 from datetime import UTC, datetime
@@ -60,31 +39,25 @@ if TYPE_CHECKING:
 
     from pydantic import JsonValue
 
-# The two columns every receipt carries whatever else it holds, and the pair a coverage read and
-# a current view both group on.
+# The two columns every receipt carries, which a coverage read and a current view both group on.
 _LANE, _KEY = "lane", "key"
 
-# The creation coordinate a session persists and every recency question is answered from, and the
-# typed eligibility field that decides whether a row is evidence or scratch work.
+# The creation coordinate every recency question reads, and the field deciding evidence or scratch.
 OPENED, ADMISSIBILITY = "opened_at_ns", "admissibility"
 
-# How a run name spells the second it opened at, which is all a run written before the creation
-# coordinate existed ever knew about its own age. Sixteen characters wide, `20260829T094024Z`.
+# How a run name spells the second it opened, `20260829T094024Z`, all a run written before the
+# creation coordinate knew about its own age.
 STAMP, DATED = "%Y%m%dT%H%M%SZ", 16
 
-# The column a recency-ordered read carries while it is being taken, dropped before it is handed
-# back. A rank rather than the coordinate itself, so one comparison covers a run that recorded a
-# coordinate and a run that only ever had a name.
+# A recency rank a read carries while ordering and drops before returning, so one comparison
+# covers runs that recorded a coordinate and runs that only have a name.
 _ORDER = "_recency"
 
-# Where a retired generation lands beside a store, and the one human-readable file inside a store.
-# The ledger is named here rather than in each consumer because `retire` has to move it and
-# `as_jsonl` has to rewrite it, and a retirement that spelled it differently from a mint is how a
-# live store came to hold a ledger describing runs it no longer counts.
+# Where a retired generation lands beside a store, and the store's one human-readable file, named
+# once so `retire` moves exactly the ledger `as_jsonl` mints.
 RETIRED, GENERATION, LEDGER = "retired", "generation", "latest.jsonl"
 
-# Where a run that did not cover every lane this store has ever known is still written out
-# readably, since `full` refuses to let such a run become `LEDGER` itself.
+# Where a run that did not cover every lane is still written readably, as it may not be `LEDGER`.
 PARTIAL = "partial-{}.jsonl"
 
 
@@ -92,7 +65,6 @@ class Ambiguous(RuntimeError):
     """Two runs claim the same creation instant, so `newest` is not a question with one answer."""
 
     def __init__(self, root: Path, tied: Sequence[str]) -> None:
-        """root: the store holding them. tied: the runs nothing can order against each other."""
         self.tied = tuple(tied)
         super().__init__(
             f"{root} cannot say which of {', '.join(self.tied)} is newer: they opened at the same "
@@ -102,16 +74,13 @@ class Ambiguous(RuntimeError):
 
 
 def opened_at(run: str, recorded: int | None) -> tuple[int, int, str]:
-    """When one run opened, and how much that answer is worth, as something sortable.
+    """When one run opened, as something sortable.
 
-    A run that recorded its own creation coordinate answers in NANOSECONDS and is ordered by it. A
-    run written before that coordinate existed answers with the second its NAME encodes, which is
-    exactly as much as such a run ever knew, and is why two of them inside one second are not
-    orderable at all. A run whose name encodes no instant is UNDATED: name order is the only
-    statement such a store makes, so it is ordered by name, sorts before anything dated, and can
-    never tie.
+    A recorded coordinate answers in nanoseconds. A run from before it answers with the second its
+    name encodes, all it ever knew, so two such runs in one second tie. A name encoding no instant
+    is UNDATED: ordered by name, before anything dated, and never tying.
 
-    run: the run's identity. recorded: its persisted coordinate, None where it kept none.
+    recorded: the run's persisted coordinate, None where it kept none.
     """
     if recorded is not None:
         return (1, recorded, "")
@@ -127,12 +96,9 @@ class Dataset:
 
     root: the directory holding the `run=<id>` partitions.
     axes: the coordinates coverage is scoped by, each a receipt column.
-    nested: the columns stored as JSON text, `NESTED` unless a consumer stores other shapes.
-    node: which node of a universe this is the store of, carried onto every answer so a status
-        line and a partition both name their claim without a caller rejoining them.
-    samples: how many passing receipts one cell owes before it is complete. One is right for a
-        claim that is either true or false on this machine and wrong for a program measuring
-        variance, where a cell owes several readings and a re-run must add to them.
+    nested: the columns stored as JSON text.
+    node: the universe node this stores, carried onto every answer.
+    samples: how many passing receipts one cell owes before it is complete.
     """
 
     def __init__(
@@ -152,12 +118,10 @@ class Dataset:
 
     @property
     def admissible(self) -> tuple[pl.Expr, ...]:
-        """What a row must be for a claim to lean on it: it passed, and its tree is identifiable.
+        """What a row must be for a claim to lean on it: passed, with an identifiable tree.
 
-        The two halves are one filter because they fail the same way. A row whose lane broke and a
-        row whose tree nobody can name both look like a reading and are both worth nothing to a
-        claim, and a query that remembered only the first is the query every review of this
-        program had to correct by hand.
+        One filter, because a broken lane and an unidentifiable tree fail a claim the same way, and
+        a query remembering only the first was the one every review had to correct.
         """
         return (
             pl.col("outcome") == Outcome.PASSED,
@@ -171,11 +135,7 @@ class Dataset:
 
     @property
     def newest(self) -> str:
-        """The most recent run, empty for a store that has never been written to.
-
-        Refuses rather than choosing where the two most recent runs opened at the same instant,
-        because a store that cannot say which of two runs came last must not answer as if it can.
-        """
+        """The most recent run, empty for an unwritten store; refuses on a tie (see `opened`)."""
         found = self.runs
         return found[-1] if found else ""
 
@@ -183,9 +143,7 @@ class Dataset:
     def opened(self) -> dict[str, tuple[int, int, str]]:
         """Every run beside the coordinate that orders it, refusing where two of them tie.
 
-        Asked over the WHOLE store rather than over one question's rows, so `newest`, the current
-        view and a coverage read all order runs the same way and a store is either orderable or
-        it is not.
+        Asked over the whole store, so every reader orders runs the same way.
         """
         frame = self.scan()
         if not frame.collect_schema().names():
@@ -210,28 +168,20 @@ class Dataset:
 
     @property
     def runs(self) -> tuple[str, ...]:
-        """Every run this store holds, oldest first, ordered by when each said it opened."""
+        """Every run this store holds, oldest first."""
         found = self.opened
         return tuple(sorted(found, key=lambda run: found[run]))
 
     @property
     def stored(self) -> frozenset[str]:
-        """Every run this store holds, as a set, which is membership and never an order.
-
-        Separate from `runs` because a retirement asks whether a run is HERE, and a store whose
-        runs cannot be ordered is exactly the store a retirement is being run on.
-        """
+        """Every run this store holds, as membership only, so it answers even when `runs` ties."""
         frame = self.scan()
         if not frame.collect_schema().names():
             return frozenset()
         return frozenset(str(run) for run in frame.select("run").unique().collect()["run"])
 
     def ranked(self, frame: pl.DataFrame, order: Sequence[str]) -> pl.DataFrame:
-        """`frame` carrying each row's index in `order`, so a sort reads time and not a name.
-
-        The order is passed in rather than read here, because a caller that also has to NAME the
-        run it selected would otherwise ask the store for the same ordering twice.
-        """
+        """`frame` with each row's run index in `order`, so a sort reads time and not a name."""
         ranks = {run: index for index, run in enumerate(order)}
         return frame.with_columns(
             pl.col("run").replace_strict(ranks, return_dtype=pl.Int64).alias(_ORDER)
@@ -241,51 +191,29 @@ class Dataset:
     def holding(
         cls, path: Path, *, axes: Sequence[str] = (), nested: Sequence[str] = NESTED
     ) -> Dataset | None:
-        """The dataset `path` names, or None when it names none.
-
-        Both spellings answer, the partition root itself and an evidence directory with the
-        partitions one level down, since a person pointing a verb at their evidence should not
-        have to remember which of the two the store happens to sit in.
-
-        path: a directory that may hold `run=<id>` partitions, directly or under `receipts/`.
-        axes: the coordinates the store is read with. nested: its JSON text columns.
-        """
+        """The dataset at `path` itself or at `receipts/` below it, None when neither holds one."""
         for candidate in (path, path / "receipts"):
             if next(candidate.glob("run=*/part-*.parquet"), None) is not None:
                 return cls(candidate, axes=axes, nested=nested)
         return None
 
     def as_jsonl(self, target: Path, run: str = "") -> int:
-        """Stream one run out as the `trial_receipt` JSON lines a dispatch boundary reads.
-
-        target: the file to write. run: which run to frame, the newest when empty. Returns the
-        row count, zero for a store that has never been written to.
-        """
+        """Write one run, the newest when empty, as `trial_receipt` lines; returns the rows."""
         lines = [wire(row) for row in self.rows(run)]
         target.write_text("".join(lines), encoding="utf-8")
         return len(lines)
 
     def full(self, run: str) -> bool:
-        """Whether `run` alone shows every lane this store has ever recorded, elsewhere included.
+        """Whether `run` alone shows every lane this store has ever recorded.
 
-        A PARTIAL RUN IS STILL EVIDENCE AND MUST NEVER BECOME THE LEDGER OF RECORD. `latest.jsonl`
-        is minted from one run's own rows, and a run that only recollected some of a claim's lanes
-        (a re-run of one file, a `-k` selection) is a run whose rows would otherwise silently drop
-        every lane it did not touch from the one file a person reads, exactly the defect
-        `Session.close` had before this existed: reminting unconditionally after every run.
-
-        run: the run to check, against every lane the whole store has ever seen.
+        Only such a run may become `latest.jsonl`: a partial run (one file, a `-k` selection) is
+        still evidence, but reminting from it would drop every lane it did not touch from the one
+        file a person reads.
         """
         return self.lanes(run) >= self.lanes()
 
     def lanes(self, run: str = "") -> frozenset[str]:
-        """Every lane recorded in `run`, or every lane this store has ever recorded when empty.
-
-        The whole-store answer is what a run is measured against in `full`, so a run reproducing
-        every lane the store has ever known can safely become the readable ledger.
-
-        run: which run to scope to, every run when empty.
-        """
+        """Every lane recorded in `run`, or in the whole store when empty."""
         frame = self.scan()
         if not frame.collect_schema().names():
             return frozenset()
@@ -294,23 +222,14 @@ class Dataset:
         return frozenset(str(lane) for lane in frame.select(_LANE).unique().collect()[_LANE])
 
     def retire(self, generation: str, runs: Sequence[str]) -> Path:
-        """Move `runs` out of the current view into a named generation, the ledger with them.
+        """Move `runs` into `retired/generation=<name>/` beside this store, the ledger with them.
 
-        generation: what the retired runs are called, becoming `retired/generation=<name>/`
-            beside this store. runs: which run identities leave the current view.
-
-        Returns the directory the generation landed in. A run that is not in this store is named
-        rather than skipped, since retiring a run that was never here is a typo and not a no-op.
-
-        THE LEDGER MOVES AND IS THEN REWRITTEN, WHICH IS THE WHOLE REASON THIS IS A METHOD.
-        `latest.jsonl` is the one file in a receipts directory a person can read, and a retirement
-        that moved the parquet fragments and left it behind hands that person the exact generation
-        the store no longer counts. Three universes of the reproducibility workspace were caught
-        with it on 2026-08-29 in one commit (`recovery_cost` 7a, `contiguous_reduction` 4c,
-        `corrected_law_transfer` 5b) and a fourth on the same day (`accuracy_selection` 6d), all
-        four by hand-rolled retirements that moved directories. So the ledger travels into the
-        generation that owns it and is reminted from whatever run is newest afterwards, or removed
-        when the retirement emptied the store.
+        Returns the generation directory. A run not in this store is refused by name, since
+        retiring a run that was never here is a typo. The ledger travels into the generation and
+        is reminted from whatever is newest afterwards, or removed when the store is emptied:
+        hand-rolled retirements that moved only the fragments left `latest.jsonl` describing the
+        retired generation in four universes on 2026-08-29 (`recovery_cost` 7a,
+        `contiguous_reduction` 4c, `corrected_law_transfer` 5b, `accuracy_selection` 6d).
         """
         held = self.stored
         missing = [run for run in runs if run not in held]
@@ -326,9 +245,8 @@ class Dataset:
             ledger.replace(target / LEDGER)
         for run in runs:
             (self.root / f"run={run}").replace(target / f"run={run}")
-        if not self.stored:
-            return target
-        self.as_jsonl(ledger)
+        if self.stored:
+            self.as_jsonl(ledger)
         return target
 
     def decoded(self, row: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
@@ -341,17 +259,9 @@ class Dataset:
     def passing(self, *, every: bool = False) -> pl.DataFrame:
         """The store's admissible passing rows, one per cell by default and all of them when asked.
 
-        The default is the coverage rule spent as a SELECTION rather than as a question, which is
-        what a table renders from: one row per cell, taken from the run that most recently
-        produced it, so a re-run supersedes without anyone choosing a run by hand. A program whose
-        cells owe several samples asks for all of them instead, since averaging over the newest
-        reading of each cell is averaging over one number.
-
-        MOST RECENTLY IS READ OFF THE CREATION COORDINATE AND NOT OFF THE RUN NAME, and a row a
-        moving tree produced is not in here at all, because both of those decide which reading a
-        figure prints and neither is a question a run name can answer.
-
-        every: keep every passing receipt rather than the newest of each cell.
+        The default is what a table renders from: each cell's row from the run that most recently
+        produced it, by creation coordinate, so a re-run supersedes without anyone choosing a run.
+        A program whose cells owe several samples asks for `every` instead.
         """
         frame = self.scan()
         if not frame.collect_schema().names():
@@ -365,10 +275,7 @@ class Dataset:
         ).drop(_ORDER)
 
     def rows(self, run: str = "") -> list[dict[str, JsonValue]]:
-        """One run's receipts as plain records, their JSON columns decoded.
-
-        run: which run to read, the newest the store holds when empty.
-        """
+        """One run's receipts, the newest run when empty, as plain records with JSON decoded."""
         frame = self.scan()
         if not frame.collect_schema().names():
             return []
@@ -396,6 +303,11 @@ class Dataset:
             references = receipt.get("artifacts")
             if not isinstance(references, dict):
                 continue
+            metadata = {
+                key: value
+                for key, value in receipt.items()
+                if key not in {"measured", "artifacts"}
+            }
             for label, value in references.items():
                 if not isinstance(value, dict) or value.get("schema_name") != schema_name:
                     continue
@@ -405,16 +317,14 @@ class Dataset:
                 table = pl.read_parquet(BytesIO(reference.read(root)))
                 if "_trial" in table.columns:
                     raise ValueError("table payload uses the reserved _trial provenance column")
-                metadata = {
-                    key: value
-                    for key, value in receipt.items()
-                    if key not in {"measured", "artifacts"}
+                provenance = {
+                    **metadata,
+                    "artifact_name": label,
+                    "artifact_sha256": reference.sha256,
                 }
-                metadata["artifact_name"] = label
-                metadata["artifact_sha256"] = reference.sha256
                 tables.append(
                     table.with_columns(
-                        pl.lit(json.dumps(metadata, sort_keys=True)).alias("_trial")
+                        pl.lit(json.dumps(provenance, sort_keys=True)).alias("_trial")
                     )
                 )
         return pl.concat(tables, how="diagonal_relaxed") if tables else pl.DataFrame()
@@ -422,12 +332,10 @@ class Dataset:
     def scan(self) -> pl.LazyFrame:
         """Every receipt this store has ever held, across every run, or an empty frame.
 
-        The eligibility field and the creation coordinate are normalised beside the axes, for the
-        same reason and with one difference. An axis a run predates reads empty, which is the same
-        fact as a lane naming no subject. Eligibility a run predates reads `unrecorded`, which is
-        NOT the same fact as admissible and must never be filled in as one. And a coordinate a run
-        predates stays NULL rather than becoming zero, because a run that never said when it
-        opened has not claimed to be the oldest.
+        An axis a run predates reads empty, the same fact as a lane naming no subject.
+        Admissibility a run predates reads `unrecorded`, never admissible. A creation coordinate a
+        run predates stays null, since a run that never said when it opened has not claimed to be
+        the oldest.
         """
         parts = self.parts
         if not parts:
@@ -453,17 +361,14 @@ class Dataset:
         )
 
     def status(self, lane: str, expected: Collection[str], cell: Cell) -> LaneStatus:
-        """One lane's completeness at one cell, compared to the grid and the samples it owes.
+        """One lane's completeness at one cell, against its grid and the samples each key owes.
 
-        expected: the keys the lane's own grid would run, which the lane declares by being
-            collected rather than by retyping them anywhere.
-        cell: the coordinate this question is asked at. A reading is a fact about the silicon and
-            the subject that produced it, so a receipt taken elsewhere does not answer for here
-            and every declared axis filters, its probe outcome included.
+        expected: the keys the lane's own grid would run, declared by being collected.
+        cell: the coordinate asked at; every declared axis filters, its probe outcome included,
+            since a receipt taken on other silicon or subject does not answer for here.
 
-        A row from a tree nobody can identify never counts toward a lane, so a session run on a
-        dirty tree measures, prints and writes, and the next clean session still finds the lane
-        owed. That is what makes scratch work free: it costs the claim nothing either way.
+        Rows from an unidentified tree never count, so a dirty session measures and writes and the
+        next clean one still finds the lane owed: scratch work costs the claim nothing.
         """
         frame = self.scan()
         names = self.runs
@@ -495,9 +400,5 @@ class Dataset:
         )
 
     def writer(self, run: str, common: Mapping[str, JsonValue]) -> TrialReceipts:
-        """This run's own writer, its partition named after it and the run stamped on every row.
-
-        run: the run's identity, which NAMES ITS OWN DIRECTORY of fragments.
-        common: the fields every receipt of this run carries beyond the run itself.
-        """
+        """This run's writer, into the partition named after it, with the run on every row."""
         return TrialReceipts(self.root / f"run={run}", {"run": run, **common}, nested=self.nested)

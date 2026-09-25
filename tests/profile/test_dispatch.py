@@ -20,5 +20,4 @@ _DEFAULT = ("cpu", 8)
 def test_arch_config_selects_this_gpus_entry_or_the_usable_default(
     gpu: FakeGPU | None, expected: tuple[str, int]
 ) -> None:
-    """A known arch picks its own config, and anything else still yields a usable one."""
     assert arch_config(_TABLE, default=_DEFAULT, gpu=gpu) == expected

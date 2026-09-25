@@ -1,5 +1,4 @@
 import json
-from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -7,7 +6,6 @@ import pytest
 from mainboard import Board
 from mainboard.trials import (
     ADMISSIBILITY,
-    OPENED,
     Ambiguous,
     Dataset,
     Declaration,
@@ -19,29 +17,10 @@ from mainboard.trials.dataset import Cell
 from mainboard.trials.ledger import RECEIPTS_VAR
 from mainboard.verdicts import TrialVerdict
 
-from .support import cell
-
-
-def taken(
-    store: Dataset, run: str, *rows: Mapping[str, object], opened: int | None = None
-) -> None:
-    """Write `rows` into `store` as one run's fragments, filling in what every receipt carries.
-
-    Admissible unless a row says otherwise, since that is what a session on a committed tree
-    writes and the exclusion is the exception being tested rather than the default under test.
-
-    opened: the creation coordinate this run persists, none when the run is only named.
-    """
-    common: dict[str, object] = {"node": store.node, ADMISSIBILITY: "admissible"}
-    if opened is not None:
-        common[OPENED] = opened
-    writer = store.writer(run, common)
-    for row in rows:
-        writer.write({"outcome": "passed", "measured": {}, "params": {}, **row})
+from .support import cell, taken
 
 
 def test_a_wire_line_is_the_printed_contract_a_dispatch_boundary_reads() -> None:
-    """One JSON object under one key, newline included, which is the whole of the contract."""
     line = wire({"run_id": "one", "outcome": "passed"})
     assert line.endswith("\n")
     assert json.loads(line) == {"trial_receipt": {"run_id": "one", "outcome": "passed"}}
@@ -50,11 +29,8 @@ def test_a_wire_line_is_the_printed_contract_a_dispatch_boundary_reads() -> None
 def test_a_ledger_appends_its_receipts_and_frames_them_where_a_dispatch_staged_a_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The jsonl sink and the csv beside it, the split an evidence folder wants.
-
-    The framing file is how a rented instance hands evidence back at all, since it keeps no
-    workspace and returns a log rather than a directory.
-    """
+    """The framing file is how a rented instance, which returns a log not a directory, hands
+    evidence back."""
     framed = tmp_path / "framed.ndjson"
     monkeypatch.setenv(RECEIPTS_VAR, str(framed))
     ledger = Ledger(tmp_path / "raw", {"node": "alpha"})
@@ -84,12 +60,8 @@ def test_a_ledger_appends_its_receipts_and_frames_them_where_a_dispatch_staged_a
 def test_a_run_that_dies_keeps_every_trial_it_took_and_a_run_that_ends_pays_for_one_footer(
     store: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One fragment per trial during a run, folded into one file once nothing can be lost.
-
-    A one-row parquet file pays a whole footer and schema, so the fragments buy crash safety
-    while the run is alive and cost many times the space after it. A second writer opened on the
-    same partition counts what is there rather than overwriting the first writer's trials.
-    """
+    """Fragments buy crash safety while a run is alive and cost a footer each after it; a
+    second writer on one partition counts what is there rather than overwriting it."""
     framed = tmp_path / "framed.ndjson"
     monkeypatch.setenv(RECEIPTS_VAR, str(framed))
     writer = store.writer("run-1", {"node": "alpha"})
@@ -112,11 +84,7 @@ def test_a_run_that_dies_keeps_every_trial_it_took_and_a_run_that_ends_pays_for_
 def test_a_store_reads_runs_written_before_a_column_existed_beside_runs_written_after(
     store: Dataset,
 ) -> None:
-    """Two runs need not share a schema, and a missing axis is the same fact as an empty one.
-
-    A campaign found this the hard way: one host held a run from before a provenance field
-    existed and the whole store stopped collecting, because a plain scan refuses a union.
-    """
+    """A missing axis is an empty one: a plain scan refusing the union once stopped a store."""
     taken(store, "run-1", {"lane": "l", "key": "a"})
     taken(store, "run-2", {"lane": "l", "key": "a", "model": "qwen", "model_probed": "found"})
     assert store.runs == ("run-1", "run-2")
@@ -131,7 +99,6 @@ def test_a_store_reads_runs_written_before_a_column_existed_beside_runs_written_
 
 
 def test_an_empty_store_answers_with_nothing_rather_than_raising(store: Dataset) -> None:
-    """Every reader tolerates a claim that has never written a receipt, since most have not."""
     assert not store.parts and store.runs == () and store.newest == ""
     assert store.rows() == [] and store.rows("run-1") == []
     assert not store.passing().columns
@@ -146,7 +113,6 @@ def test_an_empty_store_answers_with_nothing_rather_than_raising(store: Dataset)
 def test_full_asks_whether_one_run_alone_reproduces_every_lane_the_store_has_ever_known(
     store: Dataset,
 ) -> None:
-    """The ledger guard's own question: would reminting from just this run drop a lane?"""
     taken(store, "run-1", {"lane": "a", "key": "x"}, {"lane": "b", "key": "x"})
     assert store.lanes() == frozenset({"a", "b"})
     assert store.lanes("run-1") == frozenset({"a", "b"})
@@ -165,7 +131,6 @@ def test_full_asks_whether_one_run_alone_reproduces_every_lane_the_store_has_eve
 def test_a_store_is_found_from_its_partitions_or_from_the_evidence_directory_above_them(
     store: Dataset, tmp_path: Path
 ) -> None:
-    """A person pointing a verb at their evidence should not have to know the layout."""
     taken(store, "run-1", {"lane": "l", "key": "a"})
     assert Dataset.holding(store.root) is not None
     found = Dataset.holding(store.root.parent, axes=("card",))
@@ -176,11 +141,6 @@ def test_a_store_is_found_from_its_partitions_or_from_the_evidence_directory_abo
 def test_the_current_view_takes_the_newest_reading_of_each_cell_unless_every_sample_is_wanted(
     store: Dataset,
 ) -> None:
-    """One row per cell is what a representative table draws, and averaging that is averaging one.
-
-    A program whose cells owe several readings asks for all of them instead, which is the same
-    store answering a different question rather than a second store.
-    """
     where = cell(card="GPU-1", model="qwen").filters
     taken(store, "run-1", {"lane": "l", "key": "a", "measured": {"n": 1}, **where})
     taken(store, "run-2", {"lane": "l", "key": "a", "measured": {"n": 2}, **where})
@@ -195,14 +155,8 @@ def test_the_current_view_takes_the_newest_reading_of_each_cell_unless_every_sam
 def test_two_runs_inside_one_second_are_ordered_by_the_coordinate_and_not_by_the_suffix(
     store: Dataset,
 ) -> None:
-    """Does recency follow what a run wrote down, or the random hex its name ends in?
-
-    A run name opens with a second-resolution timestamp and ends in random hex, so ordering on
-    the name orders two runs inside one second by their tail. Here the SECOND run to open sorts
-    LEXICALLY FIRST, which is the case the old rule got backwards, and every recency question,
-    the newest run, the one-row-per-cell view and the run a coverage read cites, has to follow
-    the coordinate instead.
-    """
+    """Every recency question follows the coordinate, not the random hex a name ends in; here
+    the second run to open sorts lexically first."""
     where = cell(card="GPU-1", model="qwen").filters
     second = "20260829T094024Z-aaaaaaaa"
     first = "20260829T094024Z-ffffffff"
@@ -219,13 +173,7 @@ def test_two_runs_inside_one_second_are_ordered_by_the_coordinate_and_not_by_the
 def test_a_store_that_cannot_order_two_runs_refuses_newest_rather_than_picking_one(
     store: Dataset,
 ) -> None:
-    """Is an unresolvable tie an answer or a refusal?
-
-    Two runs that opened at the same instant are not orderable, and a `newest` that picked one
-    anyway would be picking by whatever the sort fell back on, which is the defect this whole
-    coordinate exists to remove. An explicitly named run still reads, because the store holds
-    both and the ambiguity is only about which one is current.
-    """
+    """A tie is refused, not broken by whatever the sort falls back on; a named run still reads."""
     taken(store, "20260829T094024Z-aaaaaaaa", {"lane": "l", "key": "a"}, opened=7)
     taken(store, "20260829T094024Z-ffffffff", {"lane": "l", "key": "b"}, opened=7)
     with pytest.raises(Ambiguous, match="opened at the same instant"):
@@ -242,13 +190,8 @@ def test_a_store_that_cannot_order_two_runs_refuses_newest_rather_than_picking_o
 def test_a_run_written_before_the_coordinate_existed_is_dated_by_its_own_name(
     store: Dataset,
 ) -> None:
-    """Can a store hold a generation from before recency was written down and still be read?
-
-    Such a run knew its own second and never knew more, so that is what it answers with, and two
-    of them one second apart order exactly as they always did. A run whose name encodes no
-    instant at all is UNDATED: name order is the only statement it makes, it sorts before
-    anything dated, and it can never tie with anything.
-    """
+    """Such a run answers with the second its name encodes; one with no instant in its name
+    sorts before anything dated and never ties."""
     taken(store, "20260829T094024Z-old00000", {"lane": "l", "key": "a"})
     taken(store, "20260829T094025Z-old11111", {"lane": "l", "key": "b"})
     assert store.newest == "20260829T094025Z-old11111"
@@ -261,13 +204,8 @@ def test_a_run_written_before_the_coordinate_existed_is_dated_by_its_own_name(
 def test_a_row_whose_tree_nobody_can_identify_is_visible_and_never_counts(
     store: Dataset,
 ) -> None:
-    """Does scratch work stay readable while it stops being evidence?
-
-    A run on a moving tree measures, prints and writes; what it must not do is satisfy a claim,
-    because two dirty trees at one commit are one string and nothing tells them apart. A row from
-    before this field existed reads `unrecorded`, which proves nothing either and so counts as
-    nothing, rather than being quietly filled in as admissible.
-    """
+    """Two dirty trees at one commit are indistinguishable, so a dirty row never satisfies a
+    claim; a row from before the field reads `unrecorded` and counts as nothing too."""
     where = cell(card="GPU-1", model="qwen")
     store.writer("run-dirty", {"node": store.node, ADMISSIBILITY: "dirty"}).write(
         {"lane": "l", "key": "a", "outcome": "passed", "measured": {}, **where.filters}
@@ -287,11 +225,7 @@ def test_a_row_whose_tree_nobody_can_identify_is_visible_and_never_counts(
 def test_coverage_is_asked_at_the_cell_and_a_second_card_never_satisfies_the_first(
     store: Dataset,
 ) -> None:
-    """A key is a parametrize id and names no machine, which is what would publish rows twice.
-
-    Two identical cards answer the same NAME, so the identity is the device uuid and a lane
-    satisfied on one reads missing on the other.
-    """
+    """Two identical cards answer the same name, so the identity is the device uuid."""
     here, there = cell(card="GPU-1", model="qwen"), cell(card="GPU-2", model="qwen")
     taken(store, "run-1", {"lane": "l", "key": "a", **here.filters})
     taken(store, "run-1", {"lane": "l", "key": "b", "outcome": "failed", **here.filters})
@@ -305,11 +239,7 @@ def test_coverage_is_asked_at_the_cell_and_a_second_card_never_satisfies_the_fir
 
 
 def test_a_cell_that_owes_several_samples_accumulates_across_runs(tmp_path: Path) -> None:
-    """One passing receipt completes a claim and does not complete a variance measurement.
-
-    The target is declared per universe, the count is read across runs, and a partial cell is
-    collected again so its new fragments join the ones already there rather than replacing them.
-    """
+    """The target is declared per universe and the count is read across runs."""
     universe = Universe(root=tmp_path, axes=("card",), samples=3)
     store = universe.dataset("")
     where = cell(card="GPU-1")
@@ -327,7 +257,6 @@ def test_a_cell_that_owes_several_samples_accumulates_across_runs(tmp_path: Path
 def test_one_run_streams_out_as_the_json_lines_the_dispatch_boundary_already_reads(
     store: Dataset,
 ) -> None:
-    """The adapter between the store at rest and the printed contract, one run at a time."""
     taken(store, "run-1", {"lane": "l", "key": "a", "measured": {"n": 1}})
     taken(store, "run-2", {"lane": "l", "key": "a", "measured": {"n": 2}})
     target = store.root / "out.ndjson"
@@ -341,13 +270,8 @@ def test_one_run_streams_out_as_the_json_lines_the_dispatch_boundary_already_rea
 def test_a_retirement_takes_the_readable_ledger_with_it_and_remints_what_is_left(
     store: Dataset,
 ) -> None:
-    """Does the one file in a store a person can read still describe the runs the store counts?
-
-    A retirement that moved parquet fragments and left `latest.jsonl` behind hands that reader the
-    exact generation the store stopped counting, which four universes were caught with on
-    2026-08-29, so the ledger travels into the generation that owns it and is reminted from what
-    survives.
-    """
+    """A `latest.jsonl` left behind described the retired generation (four universes on
+    2026-08-29), so the ledger travels with it and is reminted from what survives."""
     taken(store, "run-1", {"lane": "l", "key": "a", "measured": {"n": 1}})
     taken(store, "run-2", {"lane": "l", "key": "a", "measured": {"n": 2}})
     ledger = store.root / "latest.jsonl"
@@ -365,11 +289,6 @@ def test_a_retirement_takes_the_readable_ledger_with_it_and_remints_what_is_left
 def test_retiring_a_run_a_store_never_held_names_it_rather_than_doing_nothing(
     store: Dataset,
 ) -> None:
-    """Is a retirement of a run that is not here a typo the caller is told about?
-
-    Silently succeeding would let a mistyped identity read as a completed retirement while the
-    generation it was meant to remove stays in the current view.
-    """
     taken(store, "run-1", {"lane": "l", "key": "a"})
     with pytest.raises(ValueError, match="holds no run run-9"):
         store.retire("nothing", ("run-9",))
@@ -379,7 +298,6 @@ def test_retiring_a_run_a_store_never_held_names_it_rather_than_doing_nothing(
 def test_retiring_every_run_leaves_no_ledger_behind_to_describe_an_empty_store(
     store: Dataset,
 ) -> None:
-    """Does emptying a store remove its ledger rather than leave one naming retired rows?"""
     taken(store, "run-1", {"lane": "l", "key": "a"})
     ledger = store.root / "latest.jsonl"
     store.as_jsonl(ledger)
@@ -389,11 +307,6 @@ def test_retiring_every_run_leaves_no_ledger_behind_to_describe_an_empty_store(
 
 
 def test_a_store_that_never_kept_a_ledger_retires_without_inventing_one(store: Dataset) -> None:
-    """Does a retirement work on a store whose receipts nobody ever streamed out?
-
-    The ledger is a convenience a workspace opts into, so a store without one retires its runs
-    and the survivors gain one rather than the retirement raising on a missing file.
-    """
     taken(store, "run-1", {"lane": "l", "key": "a"})
     taken(store, "run-2", {"lane": "l", "key": "a"})
     generation = store.retire("first", ("run-1",))
@@ -404,7 +317,6 @@ def test_a_store_that_never_kept_a_ledger_retires_without_inventing_one(store: D
 def test_a_universe_finds_a_claim_off_the_file_tree_and_answers_flat_as_one_store(
     tmp_path: Path, declared: Declaration
 ) -> None:
-    """The folder a lane sits in IS the claim it serves, so nothing is retyped anywhere."""
     universe = declared.universe
     assert universe.node_of(tmp_path / "alpha" / "test_law.py") == "alpha"
     assert universe.node_of(tmp_path / "test_flat.py") == ""
@@ -432,7 +344,6 @@ def test_a_universe_finds_a_claim_off_the_file_tree_and_answers_flat_as_one_stor
 def test_a_universe_stores_evidence_where_declared_or_beside_an_experiments_tree(
     tmp_path: Path, root: str, datasets: str | None, storage: str
 ) -> None:
-    """Receipts of an `experiments` tree live in its `datasets` sibling unless a mount is named."""
     universe = Universe(
         root=tmp_path / root, datasets=tmp_path / datasets if datasets is not None else None
     )
@@ -443,12 +354,7 @@ def test_a_universe_stores_evidence_where_declared_or_beside_an_experiments_tree
 def test_a_receipts_store_is_scored_one_run_at_a_time_rather_than_as_one_flat_stream(
     board: Board, tmp_path: Path
 ) -> None:
-    """The verb catching up with the storage the harness already writes.
-
-    A store holds every run a harness ever took, so reading them as one stream lets a lane that
-    broke in one campaign condemn a clean re-run months later, with no flag able to dig it out.
-    The newest run answers by default, `run` names an older one, and the heading says which.
-    """
+    """As one stream, a lane broken in one campaign would condemn a clean re-run months later."""
     store = Dataset(tmp_path / "evidence" / "receipts")
     store.writer("run-1", {"node": "alpha", "producer": "mainboard.trials"}).write(
         {"run_id": "one", "outcome": "failed", "verdict": "", "reason": "broke"}

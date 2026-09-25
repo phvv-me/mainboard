@@ -28,7 +28,7 @@ _ROWS = st.lists(
 
 
 def _jobs(count: int) -> list[dict[str, str]]:
-    """A realistic jobs payload, the shape the `jobs` CLI verb renders."""
+    """A realistic payload in the shape the `jobs` verb renders."""
     return [
         {
             "handle": str(10000 + i),
@@ -65,22 +65,17 @@ def test_decoding_an_encoding_returns_the_rows_that_went_in(rows: list[dict[str,
 def test_an_encoding_is_a_header_line_then_one_tab_separated_line_per_row(
     rows: Sequence[Row], fields: Sequence[str] | None, expected: str
 ) -> None:
-    """Columns are written once, a missing or absent value is an empty cell, order is the ask."""
     assert tabular.encode(rows, fields=fields) == expected
 
 
 def test_a_header_only_encoding_decodes_to_no_rows() -> None:
-    """Naming columns for an empty result set still says what the columns were."""
     assert tabular.decode(tabular.encode([], fields=["a", "b"])) == []
 
 
 def test_tabular_is_smaller_than_canonical_json_on_a_realistic_jobs_payload() -> None:
-    """Correctness-gated, not perf-gated: measures byte length, no timing assertion."""
     payload = _jobs(50)
-    canonical = json.dumps(payload, indent=2)
     compact = tabular.encode(payload)
-
-    assert len(compact.encode()) < len(canonical.encode()) * 0.5
+    assert len(compact.encode()) < len(json.dumps(payload, indent=2).encode()) * 0.5
     assert tabular.decode(compact) == [
         {key: str(value) for key, value in row.items()} for row in payload
     ]

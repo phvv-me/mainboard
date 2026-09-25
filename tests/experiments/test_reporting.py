@@ -16,11 +16,6 @@ if TYPE_CHECKING:
 
 
 def test_study_runs_keeps_the_bare_and_slash_suffixed_labels_newest_first(cache: Cache) -> None:
-    """Both study label spellings select the same study.
-
-    `study:<id>` and `study:<id>/<trial>` name it equally, and a run labelled for another
-    study or for nothing at all is not this study's.
-    """
     cache.record(make_run("study:sid", handle="H1", submitted_at="2024-01-01T00:00:00"))
     cache.record(make_run("study:other", handle="H2", submitted_at="2024-01-02T00:00:00"))
     cache.record(make_run("", handle="H3", submitted_at="2024-01-03T00:00:00"))

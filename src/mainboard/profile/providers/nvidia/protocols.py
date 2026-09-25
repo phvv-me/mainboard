@@ -1,7 +1,7 @@
-# Structural contracts for the untyped CUPTI, NVTX, and CUDA runtime bindings.
+# Structural contracts for the untyped CUPTI, NVTX, and CUDA runtime and driver bindings.
 
 from collections.abc import Callable
-from typing import Protocol
+from typing import Protocol, SupportsInt
 
 from ...protocols import RawActivity
 
@@ -34,42 +34,28 @@ class CallbackData(Protocol):
 
 
 class Cupti(Protocol):
-    """The `cupti.cupti` functions and enums the Activity + Callback collectors use.
-
-    `cupti-python` ships no stubs; this pins the asynchronous Activity API surface
-    (register, enable/disable, flush) and the synchronous Callback API surface
-    (subscribe, enable_domain) that the tracer drives. `subscribe` returns an opaque
-    subscriber token, threaded back into `enable_domain`/`unsubscribe` and never inspected.
-    """
+    """The `cupti.cupti` surface the tracer drives: the asynchronous Activity API and the
+    synchronous Callback API."""
 
     ActivityKind: ActivityKind
     CallbackDomain: CallbackDomain
     ApiCallbackSite: ApiCallbackSite
 
     def activity_disable(self, kind: int) -> None: ...
-
     def activity_enable(self, kind: int) -> None: ...
-
     def activity_flush_all(self, flag: int) -> None: ...
-
     def activity_get_num_dropped_records(
         self, context: int, stream_id: int, dropped: int
     ) -> None: ...
-
     def activity_register_callbacks(
         self,
         on_requested: Callable[[], tuple[int, int]],
         on_completed: Callable[[list[RawActivity]], None],
     ) -> None: ...
-
     def enable_domain(self, enable: int, subscriber: Subscriber, domain: int) -> None: ...
-
     def get_callback_name(self, domain: int, cbid: int) -> str: ...
-
     def get_context_id(self, context: int) -> int: ...
-
     def get_device_id(self, context: int) -> int: ...
-
     def get_timestamp(self) -> int: ...
     def subscribe(
         self, callback: Callable[[None, int, int, CallbackData], None], userdata: None
@@ -85,11 +71,8 @@ class Nvtx(Protocol):
     """The `nvtx` annotation surface the tracer emits."""
 
     def end_range(self, range_id: tuple[int, int]) -> None: ...
-
     def mark(self, message: str) -> None: ...
-
     def pop_range(self) -> None: ...
-
     def push_range(self, message: str) -> None: ...
     def start_range(self, message: str) -> tuple[int, int]: ...
 
@@ -98,5 +81,10 @@ class CudaRuntime(Protocol):
     """Current CUDA-visible ordinal and the current-context completion barrier."""
 
     def cudaDeviceSynchronize(self) -> tuple[int]: ...
-
     def cudaGetDevice(self) -> tuple[int, int]: ...
+
+
+class CudaDriver(Protocol):
+    """The CUDA driver's report of the context bound to the calling host thread."""
+
+    def cuCtxGetCurrent(self) -> tuple[int, SupportsInt]: ...

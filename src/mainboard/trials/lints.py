@@ -1,46 +1,22 @@
-# THE THREE LINTS A STORE OWES ITS OWN CLAIMS, EACH ONE EARNED BY A RULING RATHER THAN INVENTED.
+# Three lints a store owes its own claims, each earned by a referee's ruling.
 #
-# A receipt says what a lane measured. It does not say whether the lane COULD have measured
-# anything else, and that second question is the one every hostile review of this program has kept
-# answering by hand. Three shapes came back often enough to be machinery:
+# A receipt says what a lane measured, not whether it COULD have measured anything else:
 #
-# AN IDENTITY IS NOT A RESULT. A quotient, product or decomposition whose terms all come off one
-# population reproduces because the arithmetic cancels, and the receipt of it is a constant to the
-# last bit. `store_crossing`'s referee ruled a three-factor residue FATAL for it on 2026-08-28,
-# `crossing_cascade`'s ruled the successor's repeat FATAL again on 2026-08-29, and the workspace
-# rule that followed says a lane like that demonstrates its own failure path or settles `known`.
-# The detectable shape is the one that rule names: a payload key within one ulp of an exact
-# constant on every row of every run.
+# - An identity is not a result. Terms drawn from one population cancel, and the receipt is a
+#   constant to the last bit (`store_crossing` FATAL 2026-08-28, `crossing_cascade` FATAL
+#   2026-08-29; such a lane demonstrates its own failure path or settles `known`). Detected as a
+#   payload key within one ulp of 0.0 or 1.0 on every row of every run.
+# - An unfailable gate: a registered band that is the observed range of the rows it scores
+#   (`accuracy_selection`'s `[0.99955, 1.00349]` is the min and max of its thirty rows). Detected
+#   as a band constant across a lane whose endpoints are the extremes of a quantity it measured.
+# - A registered kill owes coverage: `carried_block_width` W1's kill lane runs only `M > 1` shapes
+#   while its sibling saw the pre-registration die at the four `M = 1` shapes. Detected as a lane
+#   whose kill never fired beside a sibling that refuted at keys outside the first lane's grid.
 #
-# AN UNFAILABLE GATE IS AN ASSERTION NO RECEIPT CAN FAIL. The sharpest instance is a registered
-# interval that is the observed range of the very rows it scores: `accuracy_selection`'s
-# `[0.99955, 1.00349]` is the min and max of its thirty scored rows, two of which sit on the edges
-# and define them, so the lane's own `Refutes if:` cannot fire on any input. That is detectable
-# without knowing one consumer word: a band held constant across a lane whose endpoints ARE the
-# extremes of a quantity that lane measured.
-#
-# A REGISTERED KILL OWES COVERAGE. A refutation clause naming a case the collected grid never
-# contains is a claim that cannot die where it is false. `carried_block_width`'s W1 states its own
-# kill on the carried width, its lane runs five shapes that are all `M > 1`, and the four `M = 1`
-# shapes where the sibling lane recorded the pre-registration dying are the four the kill lane does
-# not visit. Detectable across one node: a lane whose kill has never fired anywhere in the store,
-# beside a sibling lane of the same node that settled a refutation at keys the first lane's own
-# grid does not contain.
-#
-# THESE READ RECEIPTS AND NEVER SOURCE. A lint that parsed a lane's assertions would be a second,
-# worse type checker and would go stale the moment a helper moved. What a store holds is what was
-# actually measured across every run a claim has ever taken, which is a stronger witness than the
-# text of a condition: a gate that never discriminated on any row of any generation did not
-# discriminate, whatever it says.
-#
-# AND NOTHING HERE FAILS A SESSION. The exit code is about the apparatus, so a finding is printed
-# and the run still exits zero. A lint is a reading a person acts on, not a gate a run trips over.
-#
-# THESE READ EVERY PASSING ROW AND NOT ONLY THE ADMISSIBLE ONES, which is the opposite of what a
-# coverage question does and is right for the same reason. A claim may not lean on a row whose
-# tree nobody can identify, but the question here is whether a gate has EVER discriminated on any
-# input, and a scratch run's rows are inputs. Dropping them would let a lane hide an unfailable
-# band by having produced it on a dirty tree.
+# These read receipts, never source: what a store holds across every run is a stronger witness
+# than the text of a condition. They read every passing row, admissible or not, since the question
+# is whether a gate EVER discriminated and a dirty tree must not hide an unfailable band. A finding
+# is printed and never fails a session; the exit code is about the apparatus.
 
 import math
 from typing import TYPE_CHECKING
@@ -57,23 +33,20 @@ if TYPE_CHECKING:
     from .dataset import Dataset
     from .vocabulary import Vocabulary
 
-# How many rows a lane needs before a constant among them means anything. One row is a constant by
-# arithmetic and says nothing about whether a second could have differed.
+# How many rows a lane needs before a constant among them means anything.
 ENOUGH = 2
 
-# The constants an identity lands on. A residue is `0.0` and a reproduced ratio is `1.0`, and
-# those are what a cancelling product prints. EVERY OTHER CONSTANT IS SOMEBODY'S DESIGN: a
-# registered band is constant on purpose, so is a declared draw count, a precision and a
-# tolerance, and a lint reporting those would fire on almost every honest lane and teach a reader
-# to skip the section.
+# The constants an identity lands on: a residue and a reproduced ratio. Every other constant is
+# somebody's design (a band, a draw count, a tolerance), and reporting those would fire on almost
+# every honest lane.
 RESIDUES = (0.0, 1.0)
 
 
 class Finding(FrozenModel):
-    """One lint's complaint about one lane, in the shape a terminal line and a test both read.
+    """One lint's complaint about one lane.
 
-    lint: which of the three fired. node: the claim. lane: the pytest node id up to the bracket.
-    detail: what was found, naming the payload key and the value so a reader can go look.
+    lane: the pytest node id up to the bracket.
+    detail: what was found, naming the payload key and the value.
     """
 
     lint: str
@@ -82,29 +55,29 @@ class Finding(FrozenModel):
     detail: str
 
     def line(self) -> str:
-        """One terminal line, the lane first because that is what a reader goes and opens."""
+        """One terminal line, the lane first because that is what a reader opens."""
         return f"  {self.lane} [{self.lint}] {self.detail}"
+
+
+def _payload(row: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    measured = row.get("measured")
+    return measured if isinstance(measured, dict) else {}
 
 
 def numbers(rows: Sequence[Mapping[str, JsonValue]], key: str) -> list[float]:
     """Every finite float one payload key holds across `rows`, skipping the rows that lack it."""
-    found = []
-    for row in rows:
-        value = row.get("measured", {})
-        held = value.get(key) if isinstance(value, dict) else None
-        if isinstance(held, bool) or not isinstance(held, int | float):
-            continue
-        if math.isfinite(held):
-            found.append(float(held))
-    return found
+    held = [_payload(row).get(key) for row in rows]
+    return [
+        float(value)
+        for value in held
+        if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    ]
 
 
 def pinned(values: Sequence[float]) -> float | None:
     """The one constant every value sits within an ulp of, or None where they differ.
 
-    An ulp rather than equality because a quantity that cancels algebraically still arrives
-    through floating point, so the residue of a telescoping product is `1.0` give or take the last
-    bit rather than exactly `1.0`, and a lint that demanded exactness would miss every real one.
+    An ulp rather than equality, since an algebraic cancellation still arrives rounded.
     """
     if len(values) < ENOUGH:
         return None
@@ -115,12 +88,7 @@ def pinned(values: Sequence[float]) -> float | None:
 
 def keys_of(rows: Sequence[Mapping[str, JsonValue]]) -> list[str]:
     """Every payload key any of `rows` carries, in first-seen order so a report is stable."""
-    seen: dict[str, None] = {}
-    for row in rows:
-        measured = row.get("measured", {})
-        if isinstance(measured, dict):
-            seen.update(dict.fromkeys(measured))
-    return list(seen)
+    return list(dict.fromkeys(key for row in rows for key in _payload(row)))
 
 
 def lanes_of(rows: Sequence[Mapping[str, JsonValue]]) -> dict[str, list[Mapping[str, JsonValue]]]:
@@ -132,13 +100,7 @@ def lanes_of(rows: Sequence[Mapping[str, JsonValue]]) -> dict[str, list[Mapping[
 
 
 def identities(node: str, lane: str, rows: Sequence[Mapping[str, JsonValue]]) -> Iterator[Finding]:
-    """Payload keys pinned to one exact constant on every row, which is the identity shape.
-
-    A key that never moved across a whole lane is a quantity the lane did not measure, and at
-    `0.0` or `1.0` it is a residue or a reproduced ratio whose terms cancel. Any other constant is
-    a registration, a declared budget or a tolerance, which are constant because somebody decided
-    they should be.
-    """
+    """Payload keys pinned to a residue constant on every row, the identity shape."""
     for key in keys_of(rows):
         constant = pinned(numbers(rows, key))
         if constant is None or constant not in RESIDUES:
@@ -156,11 +118,7 @@ def identities(node: str, lane: str, rows: Sequence[Mapping[str, JsonValue]]) ->
 
 
 def unfailable(node: str, lane: str, rows: Sequence[Mapping[str, JsonValue]]) -> Iterator[Finding]:
-    """Bands whose endpoints are the extremes of a quantity the same lane measured.
-
-    An interval read off the rows it scores is a report and not a test, and its refutation
-    condition cannot fire on any input the lane can produce.
-    """
+    """Bands whose endpoints are the extremes of a quantity the same lane measured."""
     scored = {key: numbers(rows, key) for key in keys_of(rows)}
     bands = {
         key: constant
@@ -189,11 +147,7 @@ def unfailable(node: str, lane: str, rows: Sequence[Mapping[str, JsonValue]]) ->
 def uncovered(
     node: str, rows: Sequence[Mapping[str, JsonValue]], refuting: frozenset[str]
 ) -> Iterator[Finding]:
-    """Lanes whose kill never fired, beside a sibling that died at keys they never run.
-
-    The refutation lives at a coordinate the lane carrying the kill does not visit, which is the
-    shape that lets a claim survive precisely where it is false.
-    """
+    """Lanes whose kill never fired, beside a sibling that died at keys they never run."""
     grouped = lanes_of(rows)
     words = {lane: {str(row.get("verdict", "")) for row in held} for lane, held in grouped.items()}
     # An absent parametrization key does not identify a missing grid coordinate.
@@ -203,9 +157,7 @@ def uncovered(
     }
     died = {lane: grid for lane, grid in grids.items() if words[lane] & refuting}
     for lane, grid in grids.items():
-        # A LANE THAT DECLARES NO GRID CANNOT HAVE AIMED ONE AWAY FROM ANYTHING. One key, or the
-        # empty key a lane without a parametrize carries, means the lane is one cell and its
-        # coverage question is whether that cell exists rather than which cells it left out.
+        # A lane of one cell cannot have aimed its grid away from anything.
         if words[lane] & refuting or len(grid) < ENOUGH:
             continue
         missed = sorted(
@@ -228,8 +180,7 @@ def uncovered(
 def findings(store: Dataset, vocabulary: Vocabulary) -> tuple[Finding, ...]:
     """Every lint one claim's whole store answers, across every run it has ever held.
 
-    store: the receipts of one claim. vocabulary: the words this workspace settles on, read for
-    which of them refute, since a workspace names its own and this tool knows none of them.
+    vocabulary: read for which words refute, since a workspace names its own.
     """
     rows = [
         row

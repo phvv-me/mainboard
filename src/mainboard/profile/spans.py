@@ -75,11 +75,10 @@ class Span:
         self.token = 0
 
     def __call__[**P, R](self, func: Callable[P, R]) -> Callable[P, R]:
-        """Decorate `func` with this span name without adding collection policy.
+        """Decorate `func` with this span name, adding no collection policy.
 
-        Generator and async generator functions get consumption-spanning
-        wrappers, since timing only the generator object's creation is the
-        silent zero-length-span bug CPython fixed for its own decorators.
+        A generator's span covers its consumption: timing only its creation is the silent
+        zero-length-span bug CPython fixed for its own decorators.
         """
         if inspect.iscoroutinefunction(func):
             return cast(
@@ -116,7 +115,6 @@ class Span:
     def _decorate_async[**P, R](
         func: Callable[P, Awaitable[R]], label: str
     ) -> Callable[P, Coroutine[object, object, R]]:
-        """Wrap a coroutine with one active-session branch on every awaited call."""
 
         @functools.wraps(func)
         async def inner(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -136,12 +134,7 @@ class Span:
     def _decorate_async_generator[**P, Y](
         func: Callable[P, AsyncIterator[Y]], label: str
     ) -> Callable[P, AsyncIterator[Y]]:
-        """Wrap an async generator so the span covers consumption, not creation.
-
-        Delegation is a plain async-for, so value-sending and throw forwarding
-        through the async protocol are not preserved, the same fidelity
-        CPython's own decorator fix settled on.
-        """
+        """Plain async-for delegation, not forwarding `asend`/`athrow`, as CPython's fix does."""
 
         @functools.wraps(func)
         async def inner(*args: P.args, **kwargs: P.kwargs) -> AsyncIterator[Y]:
@@ -164,12 +157,7 @@ class Span:
     def _decorate_generator[**P, Y](
         func: Callable[P, Iterator[Y]], label: str
     ) -> Callable[P, Iterator[Y]]:
-        """Wrap a generator function so the span covers consumption, not creation.
-
-        The session branch runs at first iteration, so a dormant span still costs
-        one module-global read, and `yield from` keeps send, throw, and close
-        delegation intact.
-        """
+        """Branch on the session at first iteration; `yield from` keeps send/throw/close intact."""
 
         @functools.wraps(func)
         def inner(*args: P.args, **kwargs: P.kwargs) -> Iterator[Y]:
@@ -188,7 +176,6 @@ class Span:
 
     @staticmethod
     def _decorate_sync[**P, R](func: Callable[P, R], label: str) -> Callable[P, R]:
-        """Wrap a function with one active-session branch on every call."""
 
         @functools.wraps(func)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -220,10 +207,9 @@ def span(name: str) -> Span: ...
 
 
 def span[**P, R](name: str | Callable[P, R]) -> Span | Callable[P, R]:
-    """Mark a named block or function for an active `Profiler`.
+    """Mark a named block or function for an active `Profiler`, carrying no collection policy.
 
-    The annotation contains no collection policy. Without an active profiler it
-    performs no clock, memory, marker, device, or context-variable work.
+    Without an active profiler it does no clock, memory, marker, device or context-variable work.
     """
     if isinstance(name, str):
         return Span(name)

@@ -5,7 +5,7 @@ import threading
 from collections import defaultdict, deque
 from contextlib import ExitStack, suppress
 from ctypes import addressof, c_size_t
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib import import_module
 from itertools import islice
 from typing import TYPE_CHECKING, ClassVar, cast
@@ -17,6 +17,7 @@ from ...trace import (
     KernelTrace,
     MemcpyTrace,
     TraceCollector,
+    memcpy_kind,
 )
 from ...tracer import Marker, Tracer, Vendor
 
@@ -24,8 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from ...protocols import RawActivity
-    from .driver import CudaDriver
-    from .protocols import CallbackData, CudaRuntime, Cupti, Nvtx, Subscriber
+    from .protocols import CallbackData, CudaDriver, CudaRuntime, Cupti, Nvtx, Subscriber
 
 # The accelerator bindings ship no stubs, so each handle is `import_module`'s untyped
 # `ModuleType`, cast to its `protocols.py` Protocol.
@@ -44,19 +44,6 @@ _CONCURRENT_KERNEL = 10  # int(cupti.ActivityKind.CONCURRENT_KERNEL) — literal
 _MEMCPY = 1  # int(cupti.ActivityKind.MEMCPY)
 _BUFFER_SIZE = 8 * 1024 * 1024
 _MAX_RECORDS = 262_144
-_MEMCPY_NAME = {
-    0: "unknown",
-    1: "HtoD",
-    2: "DtoH",
-    3: "HtoA",
-    4: "AtoH",
-    5: "AtoA",
-    6: "AtoD",
-    7: "DtoA",
-    8: "DtoD",
-    9: "HtoH",
-    10: "PtoP",
-}
 
 # Each Activity flag -> its CUPTI ActivityKind enum-member name.
 _CUPTI_KIND = {
@@ -76,6 +63,7 @@ _active: list[CuptiCollector] = []
 _registered = False
 _label: dict[int, str] = {}  # activity-kind int -> friendly label (built as kinds enable)
 _domain: dict[int, int] = {}  # kind int -> CallbackDomain, for cbid -> function-name lookup
+_supported_kinds: Activity | None = None
 
 
 def _sync() -> None:
@@ -138,7 +126,7 @@ def _on_buffer_completed(activities: Sequence[RawActivity]) -> None:
                 elif kind == _MEMCPY:
                     target.append(
                         RawMemcpy(
-                            copy_kind=int(act.copy_kind),
+                            kind=memcpy_kind(int(act.copy_kind)),
                             start_ns=act.start,
                             end_ns=act.end,
                             bytes_moved=getattr(act, "bytes", 0),
@@ -165,9 +153,6 @@ def _on_buffer_completed(activities: Sequence[RawActivity]) -> None:
             target.callback_failed |= not complete
 
 
-_supported_kinds: Activity | None = None
-
-
 def _disable(kinds: Sequence[int]) -> None:
     """Disable exactly the native activity kinds enabled for one capture."""
     api = _cupti()
@@ -180,7 +165,7 @@ def _disable(kinds: Sequence[int]) -> None:
 
 @dataclass(frozen=True, slots=True)
 class RawKernel:
-    """Fields copied from one kernel activity before CUPTI releases its buffer."""
+    """`KernelTrace`'s fields, copied cheaply before CUPTI releases its buffer."""
 
     name: str
     start_ns: int
@@ -198,9 +183,9 @@ class RawKernel:
 
 @dataclass(frozen=True, slots=True)
 class RawMemcpy:
-    """Fields copied from one memory transfer before CUPTI releases its buffer."""
+    """`MemcpyTrace`'s fields, copied cheaply before CUPTI releases its buffer."""
 
-    copy_kind: int
+    kind: str
     start_ns: int
     end_ns: int
     bytes_moved: int
@@ -343,43 +328,15 @@ class CuptiCollector(TraceCollector):
                 raise RuntimeError("activity collector tainted by callback conversion failure")
 
     def kernels(self, *, since: int | None = None, until: int | None = None) -> list[KernelTrace]:
-        records = (
-            record for record in self._records(since, until) if isinstance(record, RawKernel)
-        )
+        records = self._records(since, until)
         return [
-            KernelTrace(
-                name=record.name,
-                start_ns=record.start_ns,
-                end_ns=record.end_ns,
-                grid=record.grid,
-                block=record.block,
-                static_shared_mem=record.static_shared_mem,
-                dynamic_shared_mem=record.dynamic_shared_mem,
-                registers=record.registers,
-                correlation_id=record.correlation_id,
-                device_id=record.device_id,
-                context_id=record.context_id,
-                stream_id=record.stream_id,
-            )
-            for record in records
+            KernelTrace(**asdict(record)) for record in records if isinstance(record, RawKernel)
         ]
 
     def memcpys(self, *, since: int | None = None, until: int | None = None) -> list[MemcpyTrace]:
-        records = (
-            record for record in self._records(since, until) if isinstance(record, RawMemcpy)
-        )
+        records = self._records(since, until)
         return [
-            MemcpyTrace(
-                kind=_MEMCPY_NAME.get(record.copy_kind, f"kind_{record.copy_kind}"),
-                start_ns=record.start_ns,
-                end_ns=record.end_ns,
-                bytes_moved=record.bytes_moved,
-                correlation_id=record.correlation_id,
-                device_id=record.device_id,
-                context_id=record.context_id,
-                stream_id=record.stream_id,
-            )
-            for record in records
+            MemcpyTrace(**asdict(record)) for record in records if isinstance(record, RawMemcpy)
         ]
 
     def reset(self) -> None:
@@ -503,8 +460,6 @@ class CuptiCollector(TraceCollector):
         with ExitStack() as rest:
             rest.callback(self._mark_stopped)
             _disable(self.enabled_kinds)
-
-    # force buffered records to the completion callback
 
 
 _CB_DOMAIN_NAME = {"runtime": "RUNTIME_API", "driver": "DRIVER_API", "nvtx": "NVTX"}

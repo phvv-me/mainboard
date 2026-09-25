@@ -1,5 +1,3 @@
-# One-call staged profiling: benchmark a set of named steps, optionally trace them.
-
 from collections.abc import Callable, Mapping
 
 from patos import FrozenModel
@@ -13,11 +11,10 @@ from .trace import Activity
 
 
 class StageProfile(FrozenModel):
-    """Result of :func:`profile_stages`: wall-clock per stage and an optional deep trace.
+    """Result of `profile_stages`: wall-clock per stage and an optional deep trace.
 
-    samples: one :class:`BenchSample` per stage, in the order the cases were given.
-    profile: the CUPTI :class:`Profile` from the single trace pass, or ``None`` when
-        tracing was off. A requested trace must have an available collector.
+    samples: one per stage, in the order the cases were given.
+    profile: the single trace pass, None when tracing was off.
     """
 
     samples: tuple[BenchSample, ...] = ()
@@ -29,11 +26,10 @@ class StageProfile(FrozenModel):
         return f"{self.timing_text()}\n\n{self.profile.report()}\n\n{self.profile.trace_report()}"
 
     def show(self) -> None:
-        """Print the per-stage timing table, and the deep report when traced."""
         print(str(self))
 
     def timing_text(self) -> str:
-        """The plain-text per-stage mean/min table (no deep trace)."""
+        """The plain-text per-stage mean/min table, without the deep trace."""
         if not self.samples:
             return "No stages profiled."
         header = f"{'stage':<24}{'mean':>13}{'min':>16}"
@@ -53,16 +49,13 @@ def profile_stages[T, S](
     iters: int = 5,
     warmup: int = 1,
 ) -> StageProfile:
-    """Benchmark each named stage, then optionally collect a separate device trace.
+    """Benchmark each named zero-arg stage, then optionally trace them in one separate pass.
 
-    cases: ordered map of stage name to a zero-arg callable (bind args with a lambda).
-    gpu: the device to trace on, or ``None`` for the profiler's host discovery.
-    sync: device barrier called after each run so async GPU work is timed (e.g.
-        ``torch.cuda.synchronize``); also drains each region in the trace pass.
-    trace: open one activity pass after the untraced timing pass: ``True`` for all
-        kinds, or an :class:`Activity` flag for exactly those. Missing devices or
-        unavailable collectors raise rather than silently returning no trace.
-    iters/warmup: timed and untimed runs per stage for the wall-clock pass.
+    gpu: the device to trace on, None for the profiler's host discovery.
+    sync: device barrier after each run (e.g. `torch.cuda.synchronize`), so async GPU work is
+        timed; in the trace pass it drains each stage before its span closes.
+    trace: True for every activity kind the device offers, or exactly the given `Activity`
+        kinds. A missing device or collector raises rather than returning no trace.
     """
     samples = tuple(
         benchmark(fn, label=name, iters=iters, warmup=warmup, sync=sync)
@@ -78,12 +71,10 @@ def _trace_stages[T, S](
     sync: Callable[[], S] | None,
     gpu: DeviceProbe | None,
 ) -> Profile:
-    """Run one CUPTI pass, each stage bracketed by a `span` and a device ``sync``."""
-    kinds = trace if isinstance(trace, Activity) else Activity.ALL
     with Profiler(
         gpus=(gpu,) if gpu is not None else (),
         features=Profiler.Feature.SPANS | Profiler.Feature.MARKERS | Profiler.Feature.ACTIVITY,
-        activities=kinds,
+        activities=trace if isinstance(trace, Activity) else Activity.ALL,
     ) as profiler:
         for name, fn in cases.items():
             with span(name):

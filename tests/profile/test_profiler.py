@@ -19,19 +19,17 @@ from mainboard.profile import (
 
 from .support import FakeGPU, FakeSnapshot, clock_tracer, one_process_gpu
 
-# `mainboard.profile` shadows the `benchmark` submodule with its re-exported function as an
-# attribute lookup; `import_module` reads `sys.modules` by dotted name, unaffected.
+# `mainboard.profile.benchmark` as an attribute is the re-exported function, not the module.
 benchmark_module = importlib.import_module("mainboard.profile.benchmark")
 
 
 def test_profiler_signature_resolves_runtime_annotations() -> None:
-    """Public constructor annotations remain available to runtime introspection."""
     signature = inspect.signature(Profiler)
     assert signature.parameters["auto"].annotation == Sequence[str]
 
 
 def test_collection_features_preserve_supported_wire_values() -> None:
-    """Recorded feature bits keep their meaning; the unused collector is not accepted."""
+    """Recorded feature bits keep their meaning; the retired bit 1 is refused."""
     assert {feature.name: feature.value for feature in Feature} == {
         "SPANS": 2,
         "DEVICE": 4,
@@ -46,11 +44,6 @@ def test_collection_features_preserve_supported_wire_values() -> None:
 def test_a_session_records_spans_windows_and_every_aggregate_read_off_them(
     one_gpu: FakeGPU,
 ) -> None:
-    """One bracketed span becomes a summary, a device window, and every derived report.
-
-    `stats`, `bottlenecks`, `trace_report` and `report` are all views of the same frozen
-    result, so a session exposes them without a second collection pass.
-    """
     with (
         Profiler(
             gpus=(one_gpu,),
@@ -72,7 +65,6 @@ def test_a_session_records_spans_windows_and_every_aggregate_read_off_them(
 
 
 def test_profiler_exit_without_open_frame_is_safe(one_gpu: FakeGPU) -> None:
-    """Closing a region that was never opened is ignored rather than erroring."""
     profiler = Profiler(gpus=(one_gpu,))
     with profiler:
         profiler.exit(999, wall_ns=1)
@@ -80,12 +72,8 @@ def test_profiler_exit_without_open_frame_is_safe(one_gpu: FakeGPU) -> None:
 
 
 def test_short_region_still_records_memory_via_boundary_snapshot(one_gpu: FakeGPU) -> None:
-    """A region too fast for the async sampler keeps a boundary snapshot, not a zero peak.
-
-    With a 1-second sampling interval the poller never ticks inside the region, so without
-    the synchronous boundary read the memory footprint would be lost, which is the failure
-    mode when profiling a fast kernel against a per-call sync barrier.
-    """
+    """A region too fast for the async sampler (a kernel behind a per-call sync) keeps a
+    boundary snapshot, not a zero peak."""
     with Profiler(gpus=(one_gpu,), sample_interval_ms=1000) as profiler:
         token = profiler.enter("kernel")
         profiler.exit(token, wall_ns=1)
@@ -97,7 +85,6 @@ def test_short_region_still_records_memory_via_boundary_snapshot(one_gpu: FakeGP
 def test_detected_but_unused_gpu_is_absent(
     one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A GPU with no process match on it never surfaces in the result."""
     monkeypatch.setattr(one_gpu, "reading", FakeSnapshot())
     with Profiler(gpus=(one_gpu,), sample_interval_ms=1) as profiler, span("cpu"):
         pass
@@ -109,11 +96,6 @@ def test_detected_but_unused_gpu_is_absent(
 def test_the_sampler_skips_a_failed_read_and_attributes_the_rest(
     one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One sensor read that raises is logged and skipped, and the poll after it still lands.
-
-    The samples reach the open span, so the device and its memory footprint come back on
-    the summary rather than being lost with the failed read.
-    """
     calls = 0
     original = one_gpu.snapshot
 
@@ -141,7 +123,6 @@ def test_the_sampler_skips_a_failed_read_and_attributes_the_rest(
 def test_the_sampler_reads_nothing_without_an_open_span_or_a_device(
     one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A poll with no span open records nothing, and no device means nothing to read."""
     profiler = Profiler(features=Profiler.Feature.DEVICE, sample_interval_ms=1)
     profiler.gpu = one_gpu
     waits = iter((False, True))
@@ -154,11 +135,6 @@ def test_the_sampler_reads_nothing_without_an_open_span_or_a_device(
 def test_markers_are_emitted_only_when_selected(
     one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A span pushes and pops a native range only under MARKERS, and never becomes a summary.
-
-    A marker-only session annotates the native timeline without collecting span timings, so
-    the result stays empty while the pushes and pops still pair up.
-    """
     pushes: list[str] = []
     pops: list[bool] = []
     tracer = Tracer()
@@ -182,7 +158,6 @@ def test_markers_are_emitted_only_when_selected(
 
 
 def test_auto_uses_local_monitoring_and_disables_on_exit() -> None:
-    """Auto-annotating a module instruments its own functions and releases them on exit."""
     with Profiler(
         features=Profiler.Feature.SPANS,
         auto=("mainboard.profile.benchmark",),
@@ -193,7 +168,6 @@ def test_auto_uses_local_monitoring_and_disables_on_exit() -> None:
 
 
 def test_activity_window_buffer_is_bounded(one_gpu: FakeGPU) -> None:
-    """The device-window buffer is bounded like the span buffer, counting what it drops."""
     with Profiler(
         gpus=(one_gpu,),
         features=Profiler.Feature.SPANS | Profiler.Feature.ACTIVITY,
@@ -208,10 +182,7 @@ def test_activity_window_buffer_is_bounded(one_gpu: FakeGPU) -> None:
 
 
 def test_the_session_takes_its_device_from_the_collection_policy() -> None:
-    """A policy is handed over whole, and it alone decides whether a GPU is selected at all.
-
-    With neither DEVICE nor ACTIVITY requested no GPU is ever touched.
-    """
+    """With neither DEVICE nor ACTIVITY requested no GPU is ever touched."""
     gpu = one_process_gpu()
     built = Profiler.under(Collection(features=Feature.SPANS), gpus=(gpu,))
     assert built.collection.features is Feature.SPANS
@@ -226,7 +197,6 @@ def test_the_session_takes_its_device_from_the_collection_policy() -> None:
 
 
 def test_an_invalid_device_index_never_profiles_a_different_card() -> None:
-    """A misspelled device must not produce evidence labeled with another card."""
     profiler = Profiler(gpus=(one_process_gpu(),), features=Feature.DEVICE, device_index=5)
     with pytest.raises(ValueError, match="device_index 5.*1 visible devices"), profiler:
         pytest.fail("work ran with an invalid device selection")
@@ -245,7 +215,6 @@ def test_an_invalid_device_index_never_profiles_a_different_card() -> None:
     ],
 )
 def test_invalid_collection_bounds_fail_before_starting(settings: dict[str, int]) -> None:
-    """Device indices and buffer/sampler bounds cannot silently disable collection."""
     with pytest.raises(ValueError):
         Collection.model_validate(settings)
 
@@ -253,11 +222,8 @@ def test_invalid_collection_bounds_fail_before_starting(settings: dict[str, int]
 def test_a_session_handed_no_device_profiles_the_hosts_own(
     one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A bare `Profiler()` collects device evidence, because the probe already knows the cards.
-
-    This is the whole default. Before, a session nobody handed a probe to attached to no
-    device and collected nothing, which reads exactly like a run that did no GPU work.
-    """
+    """A bare `Profiler()` collects device evidence; attaching to nothing would read exactly
+    like a run that did no GPU work."""
     monkeypatch.setattr(GPU, "all", staticmethod(lambda: (one_gpu,)))
     with Profiler(sample_interval_ms=1000) as profiler, span("work"):
         pass
@@ -271,7 +237,6 @@ def test_a_session_handed_no_device_profiles_the_hosts_own(
 def test_a_named_device_is_never_second_guessed_by_discovery(
     one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Naming a device settles it, so discovery never runs and never overrides the choice."""
 
     def unreachable() -> NoReturn:
         raise AssertionError("host discovery ran even though the caller named a device")
@@ -282,11 +247,7 @@ def test_a_named_device_is_never_second_guessed_by_discovery(
 
 
 def test_activity_asked_for_by_name_with_no_visible_device_is_refused() -> None:
-    """A deep GPU trace where there is no GPU refuses, rather than tracing nothing.
-
-    An empty activity pass cannot be told apart from a run that did no GPU work, so the
-    session names the situation and the command that shows what the host really has.
-    """
+    """An empty activity pass cannot be told apart from a run that did no GPU work."""
     features = Profiler.Feature.SPANS | Profiler.Feature.ACTIVITY
     with pytest.raises(RuntimeError, match="no device is visible"), Profiler(features=features):
         pass  # pragma: no cover  reason=__enter__ refuses before the body runs since=2026-08-27
@@ -302,12 +263,8 @@ def test_activity_asked_for_by_name_with_no_visible_device_is_refused() -> None:
 def test_a_deviceless_session_says_which_kind_of_silence_it_is(
     features: Feature, evidence: DeviceEvidence, said: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A GPU-less host still profiles its Python, and the result admits the GPU half is empty.
-
-    Under `DEFAULT` the caller asked for everything worth having, so no card is not an error,
-    it is a result that has to say which half of it is missing. A spans-only session was
-    never promised device evidence, so its silence needs no note.
-    """
+    """Under `DEFAULT` no card is not an error but a result that says its GPU half is missing;
+    a spans-only session was never promised device evidence."""
     monkeypatch.setattr(annotate, "_tracer", clock_tracer())
     with Profiler(features=features) as profiler, span("work"):
         pass

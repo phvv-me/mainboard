@@ -11,15 +11,10 @@ if TYPE_CHECKING:
     from mainboard.profile.protocols import Json
 
 
-def _dict(value: Json) -> dict[str, Json]:
-    """Narrow one `Json` value to a dict, for asserting into a nested render() result."""
-    assert isinstance(value, dict)
-    return value
-
-
 def _body(manifest: MergeManifest) -> dict[str, Json]:
-    """The `perfetto_manifest` body of a rendered document."""
-    return _dict(manifest.render()["perfetto_manifest"])
+    body = manifest.render()["perfetto_manifest"]
+    assert isinstance(body, dict)
+    return body
 
 
 @pytest.mark.parametrize(
@@ -104,11 +99,7 @@ def test_the_manifest_renders_the_version_one_shape(
 
 
 def test_a_chrome_json_source_must_name_what_it_synchronizes_against() -> None:
-    """Chrome trace events carry no clock metadata, so a `.json` source cannot self-align.
-
-    Failing fast here beats merging onto an arbitrary, unstated reference clock, and the
-    same source is accepted the moment it says which trace it aligns to.
-    """
+    """Chrome trace events carry no clock metadata, so a `.json` source cannot self-align."""
     alone = MergeManifest(sources=(TraceSource(path="/traces/trace.json", machine_name="a"),))
     with pytest.raises(MissionError, match="cannot self-align"):
         alone.render()
@@ -130,7 +121,6 @@ def test_a_chrome_json_source_must_name_what_it_synchronizes_against() -> None:
 
 
 def test_write_dumps_json_to_path(tmp_path: Path) -> None:
-    """`write` puts the rendered document on disk as JSON."""
     path = tmp_path / "manifest.json"
     manifest = MergeManifest(
         sources=(TraceSource(path="/traces/a.perfetto-trace", machine_name="a"),)

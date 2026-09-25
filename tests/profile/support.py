@@ -1,5 +1,6 @@
 import os
 from collections.abc import Sequence
+from dataclasses import KW_ONLY, dataclass, field
 
 from rich.console import Console, RenderableType
 
@@ -47,95 +48,69 @@ class RecordingSession:
         self.walls.append(wall_ns)
 
 
+@dataclass(kw_only=True)
 class FakeUtilization:
-    """A `DeviceUtilization`-shaped stand-in with fixed compute/memory percentages."""
+    """A `DeviceUtilization`-shaped stand-in."""
 
-    def __init__(self, *, gpu_pct: int = 0, memory_pct: int = 0) -> None:
-        self.gpu_pct = gpu_pct
-        self.memory_pct = memory_pct
+    gpu_pct: int = 0
+    memory_pct: int = 0
 
 
+@dataclass
 class FakeEnergy:
-    """A `DeviceEnergy`-shaped stand-in with a fixed power draw."""
+    """A `DeviceEnergy`-shaped stand-in."""
 
-    def __init__(self, power_w: float = 0.0) -> None:
-        self.power_w = power_w
+    power_w: float = 0.0
 
 
+@dataclass
 class FakeThermal:
-    """A `DeviceThermal`-shaped stand-in with fixed temperature and throttle state."""
+    """A `DeviceThermal`-shaped stand-in."""
 
-    def __init__(
-        self,
-        temperature_c: int = 0,
-        *,
-        is_throttling: bool = False,
-        throttle_names: tuple[str, ...] = (),
-    ) -> None:
-        self.temperature_c = temperature_c
-        self.is_throttling = is_throttling
-        self.throttle_names = list(throttle_names)
+    temperature_c: int = 0
+    _: KW_ONLY
+    is_throttling: bool = False
+    throttle_names: Sequence[str] = ()
 
 
+@dataclass(kw_only=True)
 class FakeMemory:
-    """A `DeviceMemory`-shaped stand-in with fixed capacity and pressure."""
+    """A `DeviceMemory`-shaped stand-in."""
 
-    def __init__(self, *, total_gb: float = 0.0, percent_used: float = 0.0) -> None:
-        self.total_gb = total_gb
-        self.percent_used = percent_used
+    total_gb: float = 0.0
+    percent_used: float = 0.0
 
 
+@dataclass(kw_only=True)
 class FakeProcess:
     """A `DeviceProcess`-shaped stand-in: one process's device memory footprint."""
 
-    def __init__(self, *, pid: int, used_bytes: int) -> None:
-        self.pid = pid
-        self.used_bytes = used_bytes
+    pid: int
+    used_bytes: int
 
 
+@dataclass
 class FakeSnapshot:
     """A `DeviceSnapshot`-shaped stand-in: one point-in-time device reading."""
 
-    def __init__(
-        self,
-        unit_name: str = "probe",
-        processes: Sequence[FakeProcess] = (),
-        utilization: FakeUtilization | None = None,
-        energy: FakeEnergy | None = None,
-        thermal: FakeThermal | None = None,
-    ) -> None:
-        self.unit_name = unit_name
-        self.processes = processes
-        self.utilization = utilization or FakeUtilization()
-        self.energy = energy or FakeEnergy()
-        self.thermal = thermal or FakeThermal()
+    unit_name: str = "probe"
+    processes: Sequence[FakeProcess] = ()
+    utilization: FakeUtilization = field(default_factory=FakeUtilization)
+    energy: FakeEnergy = field(default_factory=FakeEnergy)
+    thermal: FakeThermal = field(default_factory=FakeThermal)
 
 
+@dataclass(kw_only=True)
 class FakeGPU:
-    """A `DeviceProbe`-shaped stand-in: a whole fake device, live and snapshottable.
+    """A `DeviceProbe`-shaped stand-in: a whole fake device, live and snapshottable."""
 
-    snapshot_error, when set, makes every `snapshot()` call raise it once (test hook for
-    the sampler's failed-read path).
-    """
-
-    def __init__(
-        self,
-        *,
-        vendor: str = "unknown",
-        label: str = "probe",
-        arch_key: str = "unknown",
-        peak_bandwidth_gbs: float = 0.0,
-        utilization: FakeUtilization | None = None,
-        memory: FakeMemory | None = None,
-        reading: FakeSnapshot | None = None,
-    ) -> None:
-        self.vendor = vendor
-        self.label = label
-        self.arch_key = arch_key
-        self.peak_bandwidth_gbs = peak_bandwidth_gbs
-        self.utilization = utilization or FakeUtilization()
-        self.memory = memory or FakeMemory()
-        self.reading = reading or FakeSnapshot()
+    vendor: str = "unknown"
+    label: str = "probe"
+    arch_key: str = "unknown"
+    peak_bandwidth_gbs: float = 0.0
+    utilization: FakeUtilization = field(default_factory=FakeUtilization)
+    memory: FakeMemory = field(default_factory=FakeMemory)
+    reading: FakeSnapshot = field(default_factory=FakeSnapshot)
 
     def snapshot(self, name: str = "") -> FakeSnapshot:
         del name
@@ -143,15 +118,9 @@ class FakeGPU:
 
 
 def one_process_gpu() -> FakeGPU:
-    """A GPU whose snapshot carries the current process at a fixed memory footprint.
-
-    Mirrors the profiler-sampling fixture the old package called `one_gpu`: 40 bytes
-    used by this process, 25% compute / 10% memory-controller utilization.
-    """
+    """A GPU whose snapshot shows this process at 40 bytes, 25% compute, 10% memory utilization."""
     return FakeGPU(
-        label="probe",
         reading=FakeSnapshot(
-            unit_name="probe",
             processes=(FakeProcess(pid=os.getpid(), used_bytes=40),),
             utilization=FakeUtilization(gpu_pct=25, memory_pct=10),
         ),
@@ -159,11 +128,9 @@ def one_process_gpu() -> FakeGPU:
 
 
 def clock_tracer() -> Tracer:
-    """A no-op tracer with a monotonic device clock and KERNEL/MEMCPY deep support.
+    """A no-op tracer with a ticking device clock and KERNEL/MEMCPY support.
 
-    Stands in for any real backend in the sampling/annotation tests: `timestamp`
-    ticks a counter for region windows, and `open` hands back the no-op base
-    collector so a deep trace records windows without a GPU.
+    `open` hands back the no-op base collector, so a deep trace records windows without a GPU.
     """
 
     class ClockTracer(Tracer):
@@ -195,11 +162,7 @@ def kernel(
     static_shared_mem: int = 0,
     dynamic_shared_mem: int = 0,
 ) -> KernelTrace:
-    """A `KernelTrace` named `name` lasting `ns` nanoseconds from `start_ns`.
-
-    Every launch-shape field is spelled out so callers name only the axis they vary and
-    the call stays type-checked, which a `**shape` passthrough cannot be.
-    """
+    """A `KernelTrace` lasting `ns` nanoseconds from `start_ns`; shape fields stay typed."""
     return KernelTrace(
         name=name,
         start_ns=start_ns,
@@ -213,11 +176,8 @@ def kernel(
 
 
 def traced_profile() -> Profile:
-    """A profile with two regions and kernels/memcpys binned across their device windows.
-
-    The one fixture every deep-report reader shares: `gemm` straddles both regions, `relu`
-    sits inside the first, and there is exactly one copy and one generic activity.
-    """
+    """Two regions: `gemm` straddles both, `relu` sits in the first, plus one copy and one
+    generic activity."""
     return Profile(
         device="dev",
         summaries=(
@@ -241,7 +201,6 @@ def traced_profile() -> Profile:
 
 
 def render(renderable: RenderableType) -> str:
-    """Render a rich renderable to plain text, for content assertions."""
     console = Console(no_color=True, width=120, record=True)
     console.print(renderable)
     return console.export_text()

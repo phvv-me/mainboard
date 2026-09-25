@@ -4,24 +4,16 @@ from mainboard.profile import Activity, CallbackSession, TraceCollector, Tracer,
 
 
 class SupportingTracer(Tracer):
-    """A tracer reporting a fixed KERNEL|MEMCPY support set, to exercise `resolve`."""
-
     def supported(self) -> Activity:
         return Activity.KERNEL | Activity.MEMCPY
 
 
 class FullTracer(Tracer):
-    """A tracer that supports every activity kind, so `ALL` needs no adaptation."""
-
     def supported(self) -> Activity:
         return Activity.ALL
 
 
 def test_tracer_base_is_an_unavailable_noop() -> None:
-    """The base tracer annotates nothing, supports nothing, and is never available.
-
-    Opening kinds a subclass has already resolved hands back the no-op base collector.
-    """
     tracer = Tracer()
     assert Tracer.is_available() is False
     tracer.push("x")
@@ -48,12 +40,10 @@ def test_tracer_base_is_an_unavailable_noop() -> None:
 def test_tracer_resolve_adapts_all_and_passes_explicit_kinds_through(
     tracer: Tracer, kinds: Activity, expected: Activity
 ) -> None:
-    """`ALL` means whatever the device offers, and a supported explicit request is kept."""
     assert tracer.resolve(kinds) == expected
 
 
 def test_tracer_resolve_fails_fast_on_explicit_unsupported_kind() -> None:
-    """An explicit unsupported kind is an error, not a silent omission."""
     with pytest.raises(ValueError, match="not supported"):
         SupportingTracer().resolve(Activity.MEMORY)
 
@@ -68,13 +58,8 @@ def test_a_backend_without_activity_support_never_returns_a_noop_trace(kinds: Ac
 def test_tracer_detect_prefers_a_matching_vendor_then_anything_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Detection prefers a backend for a vendor on this host, and falls back to the no-op base.
-
-    An annotation library remains useful even when its vendor is not in `present`, so an
-    available backend is still chosen over annotating nothing. Both stand-ins are declared
-    inside the test because a `Tracer` subclass registers itself for the life of the
-    process, and one that claims to be available would then be detected by every other test.
-    """
+    """An available backend beats annotating nothing even for an absent vendor. The stand-ins
+    are local because a `Tracer` subclass registers itself for the life of the process."""
 
     class MatchingTracer(Tracer):
         vendor = Vendor.NVIDIA

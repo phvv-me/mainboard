@@ -7,8 +7,7 @@ from hypothesis import strategies as st
 from mainboard.profile import BenchSample, benchmark, compare
 
 
-# Every example times a real loop, so the budget is trimmed from the shared default to keep
-# the suite's sub-second inner loop.
+# Every example times a real loop, so the example budget stays small.
 @settings(max_examples=10)
 @given(
     iters=st.integers(min_value=1, max_value=6),
@@ -18,11 +17,8 @@ from mainboard.profile import BenchSample, benchmark, compare
 def test_benchmark_keeps_every_run_and_derives_its_aggregates(
     iters: int, warmup: int, barrier: bool
 ) -> None:
-    """One call yields the per-iteration rows, and mean/min/runs are read off those rows.
-
-    The sync barrier, when given, fires once after the warmup and once after every timed
-    run, so async device work lands inside the sample rather than after it.
-    """
+    """The sync barrier fires after the warmup and after every timed run, so async device work
+    lands inside the sample."""
     calls: list[int] = []
     synced: list[int] = []
     sample = benchmark(
@@ -42,7 +38,6 @@ def test_benchmark_keeps_every_run_and_derives_its_aggregates(
 
 
 def test_compare_tabulates_fastest_first(capsys: pytest.CaptureFixture[str]) -> None:
-    """`compare` benchmarks each case and prints them fastest-mean first."""
     samples = compare({"a": lambda: None, "b": lambda: None}, iters=2, warmup=0)
     assert {s.label for s in samples} == {"a", "b"}
     assert capsys.readouterr().out

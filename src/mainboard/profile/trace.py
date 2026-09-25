@@ -1,6 +1,7 @@
 # Native activity records, span attribution, and bottleneck ranking.
 
-from collections import defaultdict
+import math
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from enum import Flag, auto
 from types import TracebackType
@@ -11,13 +12,10 @@ from .protocols import KernelActivity, MemcpyActivity
 
 
 class Activity(Flag):
-    """The CUPTI activity kinds to trace, combined with ``|``.
+    """The activity kinds to trace, combined with `|`, each mapped to a vendor's native kind.
 
-    Vendor backends map each member to their native activity kind. ``KERNEL`` and
-    ``MEMCPY`` become typed :class:`KernelTrace` / :class:`MemcpyTrace`; the rest become
-    generic :class:`ActivityRecord`s. ``DEFAULT`` (kernels + memcpy) is the minimal,
-    low-impact set; ``ALL`` is every kind (runtime/driver are high-volume — opt in). The
-    ``label`` is the lowercase name used in records and on the Perfetto timeline.
+    KERNEL and MEMCPY become typed `KernelTrace`/`MemcpyTrace`, the rest `ActivityRecord`.
+    DEFAULT is the minimal, low-impact set; ALL adds the high-volume runtime/driver kinds.
     """
 
     KERNEL = auto()
@@ -37,38 +35,28 @@ class Activity(Flag):
 
     @property
     def label(self) -> str:
+        """The lowercase name used in records and on the Perfetto timeline."""
         return self.name.lower() if self.name else "activity"
 
 
-_MEMCPY_KIND = {
-    0: "unknown",
-    1: "HtoD",
-    2: "DtoH",
-    3: "HtoA",
-    4: "AtoH",
-    5: "AtoA",
-    6: "AtoD",
-    7: "DtoA",
-    8: "DtoD",
-    9: "HtoH",
-    10: "PtoP",
-}
-
-
+_MEMCPY_KIND = dict(
+    enumerate(
+        ("unknown", "HtoD", "DtoH", "HtoA", "AtoH", "AtoA", "AtoD", "DtoA", "DtoD", "HtoH", "PtoP")
+    )
+)
 _MAX_THREADS_PER_BLOCK = 1024  # the hardware cap, the occupancy-proxy denominator
 
 
+def memcpy_kind(code: int) -> str:
+    """A CUPTI copy-kind code's direction, `kind_<code>` outside the known table."""
+    return _MEMCPY_KIND.get(code, f"kind_{code}")
+
+
 class KernelTrace(FrozenModel):
-    """One GPU kernel execution, with its device-clock start/end in nanoseconds.
+    """One GPU kernel execution in device-clock nanoseconds, with its CUPTI launch shape.
 
-    The launch shape (``grid``/``block``, shared memory split into static/dynamic,
-    registers per thread) comes straight from the CUPTI activity record so a bottleneck
-    report can reason about occupancy without re-launching the kernel.
-
-    ``correlation_id`` is CUPTI's link back to the runtime call that launched this kernel,
-    which arrives as its own activity with a host-clock window. Keeping it here is what lets
-    a kernel be attributed to the callsite that launched it rather than only to the region it
-    happened to fall inside, and it is the join a host-side sampler needs.
+    correlation_id: the runtime call that launched it, a separate host-clock activity; the
+        join that attributes a kernel to its callsite rather than only to its region.
     """
 
     name: str = ""
@@ -94,25 +82,21 @@ class KernelTrace(FrozenModel):
 
     @property
     def occupancy_pct(self) -> float:
-        """Launch-shape occupancy proxy: threads-per-block over the hardware max (1024).
+        """Threads per block over the hardware max, the static upper bound on occupancy.
 
-        The base CUPTI activity record carries the launch config but not achieved
-        occupancy, so this is the static upper bound the block size alone implies.
+        The CUPTI activity record carries the launch config but not achieved occupancy.
         """
         return 100.0 * self.threads_per_block / _MAX_THREADS_PER_BLOCK
 
     @property
     def shared_mem(self) -> int:
-        """Total per-block shared memory (static + dynamic) in bytes."""
+        """Per-block static plus dynamic shared memory in bytes."""
         return self.static_shared_mem + self.dynamic_shared_mem
 
     @property
     def threads_per_block(self) -> int:
-        """Threads in one block — the product of the block dimensions."""
-        product = 1
-        for dim in self.block.split("x"):
-            product *= int(dim) if dim.isdigit() else 1
-        return product
+        """The product of the block dimensions, a non-numeric one counting as 1."""
+        return math.prod(int(dim) if dim.isdigit() else 1 for dim in self.block.split("x"))
 
     @classmethod
     def from_activity(cls, act: KernelActivity) -> KernelTrace:
@@ -134,10 +118,9 @@ class KernelTrace(FrozenModel):
 
 
 class MemcpyTrace(FrozenModel):
-    """One memory copy, with device-clock start/end, direction, and bytes moved.
+    """One memory copy in device-clock nanoseconds, with its direction and bytes moved.
 
-    ``correlation_id`` links back to the runtime call that issued the copy, as it does on a
-    kernel.
+    correlation_id: the runtime call that issued the copy, as on a kernel.
     """
 
     kind: str = "unknown"
@@ -161,7 +144,7 @@ class MemcpyTrace(FrozenModel):
     def from_activity(cls, act: MemcpyActivity) -> MemcpyTrace:
         """Build from a CUPTI MEMCPY activity (snake_case attributes)."""
         return cls(
-            kind=_MEMCPY_KIND.get(int(act.copy_kind), f"kind_{act.copy_kind}"),
+            kind=memcpy_kind(int(act.copy_kind)),
             start_ns=act.start,
             end_ns=act.end,
             bytes_moved=getattr(act, "bytes", 0),
@@ -173,10 +156,10 @@ class MemcpyTrace(FrozenModel):
 
 
 class ActivityRecord(FrozenModel):
-    """A generic timed CUPTI activity — the kinds beyond kernel/memcpy.
+    """A timed activity of a kind beyond kernel/memcpy.
 
-    kind: the activity-kind label (``memset``/``runtime``/``driver``/``sync``/...).
-    name: the resolved name (API function for runtime/driver, else the kind label).
+    kind: the `Activity.label` (`memset`, `runtime`, `driver`, `sync`, ...).
+    name: the API function for runtime/driver, else the kind label.
     """
 
     kind: str = ""
@@ -200,10 +183,10 @@ class RegionWindow(FrozenModel):
 
 
 class TraceCollector:
-    """No-op deep-trace collector; a vendor backend overrides to gather records.
+    """No-op deep-trace collector; a vendor backend overrides it to gather records.
 
-    Context manager: enter starts collection, exit drains it. The records carry
-    device-clock timestamps so the profiler bins them into regions afterwards.
+    Enter starts collection and exit drains it; the profiler bins the device-clock records into
+    regions afterwards.
     """
 
     def __enter__(self) -> TraceCollector:
@@ -224,7 +207,7 @@ class TraceCollector:
     def checkpoint(self, activities: Activity) -> tuple[int, int]:
         """Drain one context; return its delivered-record and lifetime-loss counters.
 
-        Requested kinds must actually be enabled. Unsupported collectors refuse.
+        The requested kinds must actually be enabled; a collector without windows refuses.
         """
         raise RuntimeError("synchronized activity windows are unavailable on this backend")
 
@@ -238,7 +221,7 @@ class TraceCollector:
         return 0
 
     def flush(self) -> None:
-        """Deliver buffered records to this collector (no clear) so reads see them."""
+        """Deliver buffered records, without clearing, so reads see them."""
 
     def kernels(self, *, since: int | None = None, until: int | None = None) -> list[KernelTrace]:
         return []
@@ -247,7 +230,7 @@ class TraceCollector:
         return []
 
     def reset(self) -> None:
-        """Drain and discard collected records, to start a fresh measurement window."""
+        """Drain and discard collected records, starting a fresh measurement window."""
 
     def stop(self) -> None:
         """Drain and stop collection (a single device sync happens here)."""
@@ -256,9 +239,8 @@ class TraceCollector:
 class CallbackSession:
     """No-op CUPTI Callback subscription; vendor backends count API calls by name.
 
-    The Callback API intercepts CUDA runtime/driver calls *synchronously* (unlike the
-    asynchronous Activity stream), so it answers "which API functions were called, and
-    how often" without buffering. Use as a context manager; read :meth:`counts` after.
+    The Callback API intercepts runtime/driver calls synchronously, unlike the asynchronous
+    Activity stream, so it counts calls without buffering. Read `counts` after the context.
     """
 
     def __enter__(self) -> CallbackSession:
@@ -273,7 +255,7 @@ class CallbackSession:
         self.stop()
 
     def counts(self) -> dict[str, int]:
-        """API function name -> number of calls observed."""
+        """Calls observed per API function name."""
         return {}
 
     def stop(self) -> None:
@@ -281,21 +263,13 @@ class CallbackSession:
 
 
 def busy_ns(spans: Iterable[tuple[int, int]]) -> int:
-    """How long the device was BUSY over `spans`, the union of their half-open intervals.
+    """How long the device was busy: the union of the half-open `(start_ns, end_ns)` spans.
 
-    spans: `(start_ns, end_ns)` pairs in one clock, in any order.
-
-    SUMMING DURATIONS IS NOT DEVICE TIME AND THE DIFFERENCE BITES AT LOW LAUNCH COUNTS. Anything
-    that runs concurrently, two streams, a copy under a kernel, or one span nested inside another
-    because a profiler reports the launching call beside the kernel it launched, is counted once
-    per record by a sum and once by the clock. `experiments/recovery_cost` in the reproducibility
-    workspace read a device share of 1.908 and 1.860 of its own wall from a sum like that, and its
-    2026-08-29 referee reproduced the factor at TEN launches, which is where the diagnosis
-    "an accounting artefact at several thousand launches" came from and why it was wrong: the
-    factor is structural, not statistical, so it does not wash out at any count.
-
-    A share against wall must divide this, never a sum. A sum answers a different question, how
-    much WORK the device did, and both are reported so neither has to stand in for the other.
+    A share against wall must divide this, never a summed duration. A sum counts concurrent or
+    nested work (two streams, a copy under a kernel, a launching call beside its kernel) once
+    per record, which answers how much WORK was done. The factor is structural, not
+    statistical: reproducibility's `recovery_cost` read device shares of 1.908 and 1.860 of its
+    own wall from a sum, and its 2026-08-29 referee reproduced that at ten launches.
     """
     ordered = sorted((start, end) for start, end in spans if end > start)
     busy, reach = 0, None
@@ -332,9 +306,9 @@ class HotRegion(FrozenModel):
 class BottleneckReport(FrozenModel):
     """Where GPU time goes: compute-vs-copy split, hot regions and hot kernels.
 
-    `total_kernel_ns` and `total_memcpy_ns` are summed WORK time, one entry per traced record.
-    `device_busy_ns` is the CLOCK time the device was doing either, the union of both sets of
-    intervals, and it is the only one of the three a share against wall may divide.
+    total_kernel_ns/total_memcpy_ns: summed WORK time, one entry per traced record.
+    device_busy_ns: CLOCK time busy with either (see `busy_ns`), the only one of the three a
+        share against wall may divide.
     """
 
     total_kernel_ns: int
@@ -358,6 +332,9 @@ class BottleneckReport(FrozenModel):
         total_kernel = sum(k.duration_ns for k in kernels)
         total_memcpy = sum(m.duration_ns for m in memcpys)
         denom = total_kernel + total_memcpy or 1
+        share = total_kernel or 1
+        walls = {w.name: w.wall_ns for w in windows}
+        by_region = ((cls._region_of(k.start_ns, windows), k.duration_ns) for k in kernels)
         return cls(
             total_kernel_ns=total_kernel,
             total_memcpy_ns=total_memcpy,
@@ -370,42 +347,34 @@ class BottleneckReport(FrozenModel):
             ),
             compute_pct=100.0 * total_kernel / denom,
             memcpy_pct=100.0 * total_memcpy / denom,
-            hot_regions=cls._hot_regions(windows, kernels, total=total_kernel or 1, top=top),
-            hot_kernels=cls._hot_kernels(kernels, total=total_kernel or 1, top=top),
-        )
-
-    @staticmethod
-    def _hot_kernels(
-        kernels: Sequence[KernelTrace],
-        *,
-        total: int,
-        top: int,
-    ) -> tuple[HotKernel, ...]:
-        counts: defaultdict[str, int] = defaultdict(int)
-        nanos: defaultdict[str, int] = defaultdict(int)
-        for kernel in kernels:
-            counts[kernel.name] += 1
-            nanos[kernel.name] += kernel.duration_ns
-        ranked = sorted(nanos.items(), key=lambda kv: kv[1], reverse=True)[:top]
-        return tuple(
-            HotKernel(
-                name=name,
-                calls=counts[name],
-                total_ns=ns,
-                avg_ns=ns / counts[name],
-                share_pct=100.0 * ns / total,
-            )
-            for name, ns in ranked
+            hot_regions=tuple(
+                HotRegion(
+                    name=name,
+                    kernel_count=calls,
+                    kernel_ns=ns,
+                    wall_ns=walls.get(name, 0),
+                    share_pct=100.0 * ns / share,
+                )
+                for name, calls, ns in _hottest(by_region, top)
+            ),
+            hot_kernels=tuple(
+                HotKernel(
+                    name=name,
+                    calls=calls,
+                    total_ns=ns,
+                    avg_ns=ns / calls,
+                    share_pct=100.0 * ns / share,
+                )
+                for name, calls, ns in _hottest(((k.name, k.duration_ns) for k in kernels), top)
+            ),
         )
 
     @staticmethod
     def _region_of(start_ns: int, windows: Sequence[RegionWindow]) -> str:
-        """The innermost region containing ``start_ns`` — the narrowest matching window.
+        """The narrowest window holding `start_ns`, since nested regions share the outer's.
 
-        Nested regions share the outer's window, so attribute a kernel to the tightest
-        enclosing region (smallest span), not the last one appended. Kernels in no window
-        (e.g. work awaited by a ``synchronize`` outside any ``region``) are labeled
-        ``(outside regions)`` so unattributed GPU time stays visible, not silently blank.
+        A kernel in no window (e.g. work awaited by a `synchronize` outside any region) is
+        labeled `(outside regions)`, so unattributed GPU time stays visible.
         """
         best, best_span = "(outside regions)", None
         for window in windows:
@@ -416,30 +385,12 @@ class BottleneckReport(FrozenModel):
                 best, best_span = window.name, span
         return best
 
-    @classmethod
-    def _hot_regions(
-        cls,
-        windows: Sequence[RegionWindow],
-        kernels: Sequence[KernelTrace],
-        *,
-        total: int,
-        top: int,
-    ) -> tuple[HotRegion, ...]:
-        counts: defaultdict[str, int] = defaultdict(int)
-        nanos: defaultdict[str, int] = defaultdict(int)
-        for kernel in kernels:
-            name = cls._region_of(kernel.start_ns, windows)
-            counts[name] += 1
-            nanos[name] += kernel.duration_ns
-        walls = {w.name: w.wall_ns for w in windows}
-        ranked = sorted(nanos.items(), key=lambda kv: kv[1], reverse=True)[:top]
-        return tuple(
-            HotRegion(
-                name=name,
-                kernel_count=counts[name],
-                kernel_ns=ns,
-                wall_ns=walls.get(name, 0),
-                share_pct=100.0 * ns / total,
-            )
-            for name, ns in ranked
-        )
+
+def _hottest(timed: Iterable[tuple[str, int]], top: int) -> list[tuple[str, int, int]]:
+    """`(name, calls, total_ns)` per name, the `top` largest totals first."""
+    calls: Counter[str] = Counter()
+    nanos: Counter[str] = Counter()
+    for name, ns in timed:
+        calls[name] += 1
+        nanos[name] += ns
+    return [(name, calls[name], ns) for name, ns in nanos.most_common(top)]

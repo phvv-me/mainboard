@@ -1,6 +1,6 @@
 """Software-only controls for the unapplied shared-owner proposal."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from types import SimpleNamespace
 
 import pytest
@@ -17,11 +17,8 @@ from .support import FakeActivityKind, FakeGPU, RecordingSession
 
 @pytest.fixture
 def owner(monkeypatch: pytest.MonkeyPatch) -> Iterator[Profiler]:
-    """Use only a raw in-memory collector, never CUDA runtime initialization.
-
-    A window reads the enabled kinds back through CUPTI's enum, so the module stands in for the
-    CUPTI a GPU-less host does not install.
-    """
+    """A raw in-memory collector, never CUDA; a window reads enabled kinds through CUPTI's enum,
+    so a stand-in module replaces the CUPTI a GPU-less host lacks."""
     monkeypatch.setattr(tracer, "cupti", SimpleNamespace(ActivityKind=FakeActivityKind))
     session = Profiler(features=Profiler.Feature.ACTIVITY, activities=Activity.DEFAULT)
     collector = CuptiCollector()
@@ -38,6 +35,12 @@ def owner(monkeypatch: pytest.MonkeyPatch) -> Iterator[Profiler]:
         deactivate(session)
         session.active = False
         collector.running = False
+
+
+@pytest.fixture
+def collector(owner: Profiler) -> CuptiCollector:
+    assert isinstance(owner.collector, CuptiCollector)
+    return owner.collector
 
 
 def append(owner: Profiler, name: str, *, context: int | None = 2, stream: int | None = 7) -> None:
@@ -101,11 +104,10 @@ def test_unknown_or_foreign_context_refuses(owner: Profiler, context: int | None
         Profiler.capture(lambda: append(owner, "foreign", context=context))
 
 
-def test_native_loss_refuses_even_without_delivered_records(owner: Profiler) -> None:
-    collector = owner.collector
-
+def test_native_loss_refuses_even_without_delivered_records(
+    owner: Profiler, collector: CuptiCollector
+) -> None:
     def lose() -> None:
-        assert isinstance(collector, CuptiCollector)
         collector.lost_records += 5
         collector.native_dropped_records += 5
 
@@ -114,9 +116,7 @@ def test_native_loss_refuses_even_without_delivered_records(owner: Profiler) -> 
     assert owner.result().dropped_activities == 5
 
 
-def test_overwrite_refuses(owner: Profiler) -> None:
-    collector = owner.collector
-    assert isinstance(collector, CuptiCollector)
+def test_overwrite_refuses(owner: Profiler, collector: CuptiCollector) -> None:
     collector.records = collector.records.__class__(maxlen=1)
 
     def overwrite() -> None:
@@ -152,25 +152,26 @@ def test_device_mismatch_refuses_before_work(owner: Profiler) -> None:
         Profiler.capture(lambda: pytest.fail("must not execute"), device_index=1)
 
 
-def test_host_only_owner_is_not_silently_upgraded(owner: Profiler) -> None:
-    owner.collection = owner.collection.model_copy(update={"features": Profiler.Feature.SPANS})
-    with pytest.raises(RuntimeError, match="did not request"):
-        Profiler.capture(lambda: pytest.fail("must not execute"))
-
-
-def test_disabled_activity_kind_refuses(owner: Profiler) -> None:
-    owner.collection = owner.collection.model_copy(update={"activities": Activity.KERNEL})
-    with pytest.raises(RuntimeError, match="did not enable"):
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        pytest.param({"features": Profiler.Feature.SPANS}, "did not request", id="host-only"),
+        pytest.param({"activities": Activity.KERNEL}, "did not enable", id="disabled-kind"),
+    ],
+)
+def test_an_owner_that_did_not_collect_a_kind_is_not_silently_upgraded(
+    owner: Profiler, update: dict[str, Activity | Profiler.Feature], message: str
+) -> None:
+    owner.collection = owner.collection.model_copy(update=update)
+    with pytest.raises(RuntimeError, match=message):
         Profiler.capture(lambda: pytest.fail("must not execute"))
 
 
 @pytest.mark.parametrize("declared", [Activity.DEFAULT, Activity.ALL])
 def test_actual_enabled_kinds_override_declared_policy(
-    owner: Profiler, declared: Activity
+    owner: Profiler, collector: CuptiCollector, declared: Activity
 ) -> None:
     owner.collection = owner.collection.model_copy(update={"activities": declared})
-    collector = owner.collector
-    assert isinstance(collector, CuptiCollector)
     collector.enabled_kinds = (10,)
     with pytest.raises(RuntimeError, match="not actually enabled"):
         Profiler.capture(lambda: pytest.fail("must not execute"), activities=Activity.MEMCPY)
@@ -190,20 +191,20 @@ def test_unknown_stream_refuses(owner: Profiler) -> None:
         Profiler.capture(lambda: append(owner, "unknown-stream", stream=None))
 
 
-def test_foreign_thread_refuses_before_synchronization(owner: Profiler) -> None:
-    collector = owner.collector
-    assert isinstance(collector, CuptiCollector)
-    collector.owner_thread = -1
-    with pytest.raises(RuntimeError, match="issuing thread or CUDA context"):
-        CuptiCollector.flush(collector)
-
-
-def test_changed_context_refuses_before_synchronization(
-    owner: Profiler, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("owner_thread", -1, id="foreign-thread"),
+        pytest.param("_scope", lambda: (1, 55, 99), id="changed-context"),
+    ],
+)
+def test_a_foreign_thread_or_context_refuses_before_synchronization(
+    collector: CuptiCollector,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: int | Callable[[], tuple[int, int, int]],
 ) -> None:
-    collector = owner.collector
-    assert isinstance(collector, CuptiCollector)
-    monkeypatch.setattr(collector, "_scope", lambda: (1, 55, 99))
+    monkeypatch.setattr(collector, field, value)
     with pytest.raises(RuntimeError, match="issuing thread or CUDA context"):
         CuptiCollector.flush(collector)
 
@@ -236,10 +237,8 @@ def test_without_an_owner_a_window_opens_its_own_session_and_closes_it(
     assert active() is None
 
 
-def test_a_collector_on_another_device_refuses_before_work(owner: Profiler) -> None:
+def test_a_collector_on_another_device_refuses_before_work(collector: CuptiCollector) -> None:
     """The collector's current device, not the declared policy, decides whose work is seen."""
-    collector = owner.collector
-    assert isinstance(collector, CuptiCollector)
     collector.scope = (1, 1, 2)
     with pytest.raises(RuntimeError, match="differs from the actual current CUDA device"):
         Profiler.capture(lambda: pytest.fail("must not execute"))
@@ -251,10 +250,10 @@ def test_a_copy_only_window_leaves_out_the_kernels_it_saw(owner: Profiler) -> No
     assert view.device_evidence is DeviceEvidence.ABSENT
 
 
-def test_api_records_in_a_window_carry_no_context_and_are_not_refused(owner: Profiler) -> None:
+def test_api_records_in_a_window_carry_no_context_and_are_not_refused(
+    owner: Profiler, collector: CuptiCollector
+) -> None:
     """A runtime API record has no device or stream, so the scope check passes over it."""
-    collector = owner.collector
-    assert isinstance(collector, CuptiCollector)
 
     def launch() -> None:
         collector.append(

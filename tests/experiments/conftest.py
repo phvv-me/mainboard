@@ -16,15 +16,11 @@ def cache() -> Cache:
 
 @pytest.fixture
 def board(tmp_path: Path) -> FakeBoard:
-    """A board rooted at the test's own tmp path, its dispatch registry held in memory."""
+    """A board rooted at the test's tmp path, its dispatch registry in memory."""
     return FakeBoard(tmp_path)
 
 
 @pytest.fixture(scope="session")
 def study() -> Study:
-    """One study identity every fleet and report test dispatches its trials under.
-
-    Session-scoped because a `Study` is frozen and every test that uses it writes its ledger
-    under its own tmp path, so nothing is shared but the identity itself.
-    """
+    """One frozen study identity; each test writes its ledger under its own tmp path."""
     return Study.create("joint-search", config_space={"bits": [1, 2]}, source_digest="abc123")

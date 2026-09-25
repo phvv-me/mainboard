@@ -17,16 +17,12 @@ if TYPE_CHECKING:
 
 
 class DeviceEvidence(StrEnum):
-    """What a session has to say about device evidence, so silence is never ambiguous.
+    """Whether device evidence was sought and found.
 
-    A profile that collected nothing from a GPU and a profile that was never asked to look
-    at one render identically, which is how a session that quietly attached to no device at
-    all reads as a run that simply did no GPU work. Saying which of the two happened is the
-    difference between a result and an empty file.
+    A session that attached to no device must never read as a run that did no GPU work.
 
-    UNSOUGHT: neither device telemetry nor GPU activity was requested, so none is expected.
-    ABSENT: it was requested and none came back, because no device was visible to this
-        session or because the profiled code never touched the one that was.
+    UNSOUGHT: neither device telemetry nor GPU activity was requested.
+    ABSENT: requested, but no device was visible or the profiled code never touched it.
     COLLECTED: at least one device reading, kernel, copy or activity was observed.
     """
 
@@ -83,9 +79,9 @@ class ProfileDiff(FrozenModel):
 class Profile(FrozenModel):
     """One immutable result containing only evidence that was observed.
 
-    Span timings, process GPU telemetry, and native activities are independently
-    optional. A detected but unused GPU never creates output, so `device_evidence`
-    carries whether the silence was expected, which no absent section can say.
+    Span timings, process GPU telemetry and native activities are independently optional, and
+    a detected but unused GPU creates no output, so `device_evidence` says whether silence
+    was expected.
     """
 
     host: str = ""
@@ -126,9 +122,8 @@ class Profile(FrozenModel):
     ) -> EfficiencyReport:
         """Per-kernel launch shape, wave quantisation and achieved bandwidth.
 
-        A duration ranking says which kernel is slow and the timeline says whether the
-        device was idle. Neither exposes a grid that leaves most block slots empty in its
-        final wave, which reads as busy while draining a handful of blocks.
+        Exposes a grid whose final wave leaves most block slots empty, which a duration
+        ranking or the timeline reads as busy.
         """
         return EfficiencyReport.build(
             self.kernels,
@@ -144,7 +139,6 @@ class Profile(FrozenModel):
         write_trace(self, path)
 
     def show(self) -> None:
-        """Print the report, every populated evidence section, to standard output."""
         print(self.report())
 
     def report(self) -> str:
@@ -182,8 +176,7 @@ class Profile(FrozenModel):
     def timeline(self, top_gaps: int = 10) -> DeviceTimeline:
         """Busy/idle accounting over observed activity, with the longest idle windows.
 
-        A kernel ranking says which kernel costs most; this says whether the device was
-        working at all. A pipeline that reads kernel-bound is often idle between launches.
+        A pipeline that reads kernel-bound is often idle between launches.
         """
         return DeviceTimeline.from_traces(self.kernels, self.memcpys, top_gaps=top_gaps)
 
@@ -193,7 +186,7 @@ class Profile(FrozenModel):
 
     @staticmethod
     def _region_text(stats: list[RegionStat]) -> str:
-        """Plain-text per-name table, the CLI-free fallback for `Profile.report`."""
+        """Plain-text per-name table for `report`."""
         if not stats:
             return "No regions recorded."
         rows = [f"{'region':<30}{'calls':>6}{'total ms':>10}{'avg ms':>9}{'peak MB':>10}"]

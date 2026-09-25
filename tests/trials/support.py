@@ -5,8 +5,11 @@ from types import SimpleNamespace
 from pydantic import JsonValue
 
 from mainboard.trials import (
+    ADMISSIBILITY,
+    OPENED,
     Admissibility,
     Cell,
+    Dataset,
     Declaration,
     Flag,
     Stance,
@@ -16,8 +19,7 @@ from mainboard.trials import (
 )
 from mainboard.trials.provenance import Source, card_of
 
-# The provenance a hermetic run stamps, standing in for a probe of real silicon so a receipt
-# written under test carries the same shape on any machine that runs the suite.
+# The provenance a hermetic run stamps in place of a probe of real silicon.
 PROBED = {
     "host": "bench",
     "card": "GPU-1111",
@@ -37,14 +39,10 @@ PROBED = {
 
 
 class Taken:
-    """A preflight that answers with fixed digests, so no test touches silicon or a repository.
+    """A preflight answering with fixed digests. It replaces the whole probe, not the stamp
+    alone, because admissibility is asked per lane after collection starts.
 
-    Patched in at the one seam a session reads its provenance through, which is the whole probe
-    rather than the stamp alone, because admissibility is asked per lane after collection starts.
-
-    stamped: the provenance every receipt of the run carries, the fixed probe when omitted.
-    admissibility: what this tree is worth, admissible unless a test is about the other answer.
-    source: the captured source bundle, none when omitted, which a research log refuses.
+    source: the captured source bundle; none by default, which a research log refuses.
     """
 
     def __init__(
@@ -86,7 +84,6 @@ class Item:
         self.callspec = SimpleNamespace(params=params) if params is not None else None
 
     def get_closest_marker(self, name: str) -> None:
-        """A stand-in lane carries no markers, so every axis reads off its params or the run."""
         return None
 
 
@@ -129,7 +126,6 @@ def declaration(
     flags: tuple[Flag, ...] = (),
     repo: Path | None = None,
 ) -> Declaration:
-    """A workspace declaration over `root`, with the axes and words the suite reads back."""
     return Declaration(
         universe=Universe(root=root, axes=axes, probed=("polars",)),
         words=Vocabulary(
@@ -147,3 +143,18 @@ def declaration(
 def cell(**values: str) -> Cell:
     """A cell whose every axis was found, which is what a probed run writes."""
     return Cell(values=values, probing=dict.fromkeys(values, "found"))
+
+
+def taken(
+    store: Dataset, run: str, *rows: Mapping[str, JsonValue], opened: int | None = None
+) -> None:
+    """Write `rows` into `store` as one admissible run's passing fragments.
+
+    opened: the creation coordinate this run persists, none when the run is only named.
+    """
+    common: dict[str, JsonValue] = {"node": store.node, ADMISSIBILITY: "admissible"}
+    if opened is not None:
+        common[OPENED] = opened
+    writer = store.writer(run, common)
+    for row in rows:
+        writer.write({"outcome": "passed", "measured": {}, "params": {}, **row})

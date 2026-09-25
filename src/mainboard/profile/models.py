@@ -1,5 +1,3 @@
-# Aggregated profiling results: one row per region from its sampled snapshots.
-
 from collections import defaultdict
 from collections.abc import Sequence
 
@@ -7,18 +5,10 @@ from patos import FrozenModel
 
 
 class ProcessReading(FrozenModel):
-    """One process-scoped device telemetry sample, attributed to a profiled span.
+    """One device telemetry sample attributed to a profiled span.
 
-    Built from a `DeviceSnapshot` narrowed to the profiled process's own memory; the
-    other fields (utilization/power/temperature) stay whole-device signals, since a
-    per-process split for those is not something a device sensor reports.
-
-    unit_name: human-readable device name at the moment of the reading.
-    memory_used_bytes: device memory used by the profiled process alone.
-    gpu_util_pct: device compute utilization percent.
-    memory_util_pct: device memory-controller utilization percent.
-    power_w: instantaneous power draw in watts.
-    temperature_c: die temperature in degrees Celsius.
+    memory_used_bytes: the profiled process's own device memory. The other fields stay
+        whole-device signals, since no device sensor splits them per process.
     """
 
     unit_name: str = ""
@@ -30,10 +20,10 @@ class ProcessReading(FrozenModel):
 
 
 class RegionSummary(FrozenModel):
-    """Wall time and aggregated device telemetry for one profiled region.
+    """Wall time and aggregated device telemetry for one occurrence of a profiled region.
 
-    samples: number of snapshots taken during the region. peak/avg memory are over
-    those snapshots; util/power/temp are sampled means (max for temperature).
+    samples: snapshots taken during the region; the memory, util and power fields are their
+        peak or mean, temperature their max.
     """
 
     name: str
@@ -50,7 +40,6 @@ class RegionSummary(FrozenModel):
     def from_snaps(
         cls, name: str, wall_ms: float, snaps: Sequence[ProcessReading]
     ) -> RegionSummary:
-        """Aggregate the snapshots sampled during a region into one summary."""
         if not snaps:
             return cls(name=name, wall_ms=wall_ms)
         memory = [s.memory_used_bytes for s in snaps]
@@ -68,11 +57,7 @@ class RegionSummary(FrozenModel):
 
 
 class RegionStat(FrozenModel):
-    """One region name's aggregate across all its occurrences (calls collapsed).
-
-    The readable unit for a profile: a region called many times becomes one row with
-    its call count, total and mean wall time, and peak memory — not one row per call.
-    """
+    """One region name's aggregate over all its calls: the readable row of a profile."""
 
     name: str
     calls: int

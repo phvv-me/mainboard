@@ -1,10 +1,6 @@
-# EVERYTHING A CONSUMER STATES, IN ONE OBJECT, SO ITS CONFTEST IS A DECLARATION AND NOT A PROGRAM.
-#
-# The reference this generalizes carried the settle words, the marker table, the coverage rule,
-# the provenance probe and the arithmetic pin in one hand-written conftest per project, and every
-# project that copied it copied the defects too. Here a project states four things, where its
-# trials live, what words it settles on, which process-global flags its lanes are allowed to move,
-# and which working tree stamps the commit, and the plugin is the rest.
+# Everything a consumer states, in one object, so its conftest is a declaration and not a program:
+# where its trials live, which words it settles on, which process-global flags its lanes may move,
+# and which working tree stamps the commit. The plugin is the rest.
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -18,12 +14,10 @@ from .flags import Flag
 from .universe import Universe
 from .vocabulary import Vocabulary
 
-# What a trial can be marked with out of the box, and the two things a marker here does. The first
-# three decide whether a trial RUNS AT ALL, and `paid` is the only one wired to an option since it
-# is the only one whose cost is money rather than time. The last two decide nothing and NAME THE
-# LANE KIND, because an adaptive lane's result is a candidate rather than coverage and a reader
-# tallying what a suite establishes has to be able to select those out: `-m "not adversarial and
-# not search"` is the whole of a run that claims only what a declared grid measured.
+# The default marker table. `gpu`, `slow` and `paid` decide whether a trial runs; only `paid` is
+# wired to an option, since its cost is money. `adversarial` and `search` name an adaptive lane
+# kind, whose result is a candidate rather than coverage: `-m "not adversarial and not search"`
+# is a run that claims only what a declared grid measured.
 MARKERS = {
     "gpu": "needs a real card, skipped where there is none",
     "slow": "runs for minutes rather than seconds",
@@ -38,13 +32,11 @@ class Declaration(FrozenModel):
     """One workspace's trials, stated once and read by every hook the plugin implements.
 
     universe: where the trials live and what scopes their coverage.
-    words: the settle words this workspace uses, whose names are its own and whose meaning is
-        nobody else's business.
+    words: the settle words this workspace uses, whose meaning is its own.
     flags: the process-global values a lane may move, recorded on every receipt and refused at
         the end of a run if any is left off its baseline.
     repo: the local source root to capture, the universe root when unset. A dispatched
         closure names its own workspace root independently of this nested project.
-    markers: the marker table registered for this session.
     resident: reads the bytes a claim's holdings currently occupy, so leaving a claim can be
         checked rather than assumed. Unset skips the check and the holdings still drop on time.
     """

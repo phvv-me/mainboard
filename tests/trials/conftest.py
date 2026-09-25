@@ -14,41 +14,31 @@ from .support import Taken, declaration
 
 @pytest.fixture
 def declared(tmp_path: Path) -> Declaration:
-    """A universe rooted in a scratch directory, with two axes and three settle words."""
     (tmp_path / "alpha").mkdir()
     return declaration(tmp_path)
 
 
 @pytest.fixture
 def store(declared: Declaration) -> Dataset:
-    """The `alpha` claim's receipt store, which every storage test writes through."""
     return declared.universe.dataset("alpha")
 
 
 @pytest.fixture
 def probed(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Every session opened in this test stamps the same fixed provenance.
-
-    Patched at the one seam a session reads it through, so nothing under test touches real
-    silicon, a real repository or the clock of the machine running the suite.
-    """
+    """Every session opened in this test stamps the same fixed provenance."""
     monkeypatch.setattr(session_module, "Preflight", Taken)
     yield
 
 
 @pytest.fixture
 def session(declared: Declaration, probed: None) -> Session:
-    """One run of the declared universe, its provenance fixed."""
     return Session(declared)
 
 
 @pytest.fixture
 def research(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A research `experiments` tree whose `alpha` registration a dispatch captured.
-
-    The working directory is the workspace root, because a registration is named relative to it,
-    and every session opened in the test reads its source bundle from the fixed probe.
-    """
+    """A research `experiments` tree whose `alpha` registration a dispatch captured, run from
+    the workspace root since a registration is named relative to it."""
     root = tmp_path / "experiments"
     node = root / "alpha/node.md"
     node.parent.mkdir(parents=True)

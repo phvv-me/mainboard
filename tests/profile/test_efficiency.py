@@ -1,4 +1,4 @@
-# Grid-shape parsing, wave math, and the rendered launch-efficiency report.
+# Pinned `@example`s carry the branches, so each random budget only adds breadth.
 
 import math
 from collections.abc import Sequence
@@ -27,18 +27,12 @@ _ONE_ROW = (
 )
 
 
-# The pinned examples below carry the branches, so the random budget only needs to add breadth
-# and is trimmed from the shared default.
 @settings(max_examples=10)
 @given(dims=st.lists(st.integers(min_value=1, max_value=999), min_size=1, max_size=3))
 @example(dims=[110, 1, 1])  # the CUPTI spelling
 def test_grid_blocks_multiplies_out_every_extent_it_can_read(dims: list[int]) -> None:
-    """A launch shape is the product of its dimensions, however the backend spells it.
-
-    Parenthesised and comma-separated spellings are accepted too, so a backend that
-    formats differently does not silently report zero, and a shape with no digits at all
-    reads as zero rather than as the empty product.
-    """
+    """Every backend spelling reads as the product; a shape with no digits reads as zero, not
+    as the empty product."""
     total = math.prod(dims)
     assert grid_blocks("x".join(str(dim) for dim in dims)) == total
     assert grid_blocks(f"({', '.join(str(dim) for dim in dims)})") == total
@@ -46,24 +40,16 @@ def test_grid_blocks_multiplies_out_every_extent_it_can_read(dims: list[int]) ->
     assert grid_blocks("garbage") == 0
 
 
-# The pinned examples below carry the branches, so the random budget only needs to add breadth
-# and is trimmed from the shared default.
 @settings(max_examples=10)
 @given(name=WORDS)
 def test_readable_trims_mangled_names_and_passes_plain_ones_through(name: str) -> None:
-    """A plain symbol survives untouched, and an Itanium-mangled one keeps its first three parts.
-
-    numba appends a long content hash to every symbol, so the tail of a mangled name is
-    noise, while a name that mangles into nothing at all is returned as it came.
-    """
+    """An Itanium-mangled name keeps its first three parts, since numba appends a content hash."""
     assert readable(name) == name
     # Itanium mangling writes each part as `<length><identifier>`, so `5numba` is `numba`.
     assert readable("_ZN5numba5tests3jitE") == "numba.tests.jit"
     assert readable("_ZN") == "_ZN"
 
 
-# The pinned examples below carry the branches, so the random budget only needs to add breadth
-# and is trimmed from the shared default.
 @settings(max_examples=15)
 @given(
     launches=st.lists(
@@ -81,12 +67,7 @@ def test_readable_trims_mangled_names_and_passes_plain_ones_through(name: str) -
 def test_kernels_rank_by_total_time_and_carry_their_wave_quantisation(
     launches: Sequence[tuple[str, int, int]], sm_count: int
 ) -> None:
-    """Rows rank slowest first, and each one's waves and tail follow from its grid.
-
-    A whole number of waves leaves no tail at all, and a fractional one wastes a share of
-    the run strictly under a full wave. Kernels with no measured duration are dropped
-    rather than ranked, so a launch that never ran cannot lead the table.
-    """
+    """A whole number of waves leaves no tail, and a launch that never ran is not ranked."""
     kernels = [
         kernel(name, ns, grid=f"{blocks}x1x1", block="256x1x1") for name, ns, blocks in launches
     ]
@@ -104,7 +85,6 @@ def test_kernels_rank_by_total_time_and_carry_their_wave_quantisation(
 
 
 def test_the_report_keeps_only_the_hottest_rows() -> None:
-    """`build` ranks by total device time and truncates to `top`."""
     kernels = [kernel(name, ns, grid="1x1x1") for name, ns in (("a", 100), ("b", 300), ("c", 200))]
     report = EfficiencyReport.build(kernels, sm_count=1, top=2)
     assert [row.name for row in report.rows] == ["b", "c"]

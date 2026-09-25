@@ -15,8 +15,18 @@ import seaborn as sns
 from ..manifest.schema.plot import PlotStyle
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
+
+# Each chart kind's own settings: lines keep SQL order, and a bar group holds one checked value,
+# so its sum is the identity; nothing is estimated.
+_KINDS: dict[str, tuple[Callable[..., Axes], dict[str, str | int | bool | None]]] = {
+    "scatter": (sns.scatterplot, {}),
+    "line": (sns.lineplot, {"estimator": None, "errorbar": None, "sort": False}),
+    "bar": (sns.barplot, {"estimator": "sum", "errorbar": None, "saturation": 1}),
+}
 
 
 class Plot:
@@ -43,11 +53,12 @@ class Plot:
         """
         dpi = self.style.dpi if dpi is None else dpi
         paths = self._outputs(paths, dpi)
-        data = self.frame.select(list(dict.fromkeys([x, y, *([hue] if hue else [])])))
+        hues = [hue] if hue else []
+        data = self.frame.select(list(dict.fromkeys([x, y, *hues])))
         self._data(data)
         if not data[y].dtype.is_numeric():
             raise ValueError("plot y column must be numeric")
-        if kind == "bar" and data.n_unique([x, *([hue] if hue else [])]) != data.height:
+        if kind == "bar" and data.n_unique([x, *hues]) != data.height:
             raise ValueError("bar groups repeat; aggregate each x/hue group in SQL first")
         with mplstyle.context([self.style.theme, self.style.rc]), ExitStack() as cleanup:
             mpl.rcParams["savefig.dpi"] = dpi
@@ -72,18 +83,15 @@ class Plot:
         ):
             raise ValueError("plot columns must contain finite values")
 
+    def _named(self, levels: Iterable[str]) -> None:
+        """A named color is an identity, so a level the style leaves unnamed is refused."""
+        if absent := set(levels) - self.style.colors.keys():
+            raise ValueError(f"style has no explicit colors for {sorted(absent)}")
+
     def _draw(
-        self,
-        axis: Axes,
-        data: pl.DataFrame,
-        *,
-        x: str,
-        y: str,
-        hue: str = "",
-        kind: str = "scatter",
+        self, axis: Axes, data: pl.DataFrame, *, x: str, y: str, hue: str, kind: str
     ) -> None:
         """Use Seaborn's native axes functions, with SQL order retained for lines."""
-        columns = data.to_dict(as_series=False)
         palette = sns.color_palette(self.style.palette)
         levels = data[hue].unique(maintain_order=True).to_list() if hue else []
         if len(levels) > len(palette) and not self.style.colors:
@@ -93,55 +101,24 @@ class Plot:
         colors = None
         if hue and not self.style.colors:
             colors = dict(zip(levels, palette[: len(levels)], strict=True))
-        if hue and self.style.colors:
-            absent = {str(level) for level in levels} - self.style.colors.keys()
-            if absent:
-                raise ValueError(f"style has no explicit colors for {sorted(absent)}")
+        elif hue:
+            self._named(str(level) for level in levels)
             colors = {level: self.style.colors[str(level)] for level in levels}
-        color = None if hue else palette[0]
-        match kind:
-            case "scatter":
-                sns.scatterplot(
-                    data=columns,
-                    x=x,
-                    y=y,
-                    hue=hue or None,
-                    hue_order=levels or None,
-                    palette=colors,
-                    color=color,
-                    ax=axis,
-                )
-            case "line":
-                sns.lineplot(
-                    data=columns,
-                    x=x,
-                    y=y,
-                    hue=hue or None,
-                    hue_order=levels or None,
-                    palette=colors,
-                    color=color,
-                    ax=axis,
-                    estimator=None,
-                    errorbar=None,
-                    sort=False,
-                )
-            case "bar":
-                # Each checked group has one value, so this sum is the identity.
-                sns.barplot(
-                    data=columns,
-                    x=x,
-                    y=y,
-                    hue=hue or None,
-                    hue_order=levels or None,
-                    palette=colors,
-                    color=color,
-                    ax=axis,
-                    estimator="sum",
-                    errorbar=None,
-                    saturation=1,
-                )
-            case _:
-                raise ValueError("plot kind must be scatter, line, or bar")
+        try:
+            draw, options = _KINDS[kind]
+        except KeyError:
+            raise ValueError("plot kind must be scatter, line, or bar") from None
+        draw(
+            data=data.to_dict(as_series=False),
+            x=x,
+            y=y,
+            hue=hue or None,
+            hue_order=levels or None,
+            palette=colors,
+            color=None if hue else palette[0],
+            ax=axis,
+            **options,
+        )
 
     def _outputs(self, paths: tuple[Path, ...], dpi: int | None) -> tuple[Path, ...]:
         """Check every destination before querying or creating a figure."""

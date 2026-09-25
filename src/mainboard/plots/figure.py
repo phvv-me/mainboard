@@ -36,11 +36,9 @@ class FigurePlot(Plot):
         dpi: int | None = None,
     ) -> tuple[Path, ...]:
         """Render one named figure; all SQL and output paths use the caller's cwd."""
-        paths = paths or specification.out
-        paths = self._outputs(paths, dpi)
+        paths = self._outputs(paths or specification.out, dpi)
         tables = {
-            name: query(panel.file if panel.file is not None else panel.sql)
-            for name, panel in specification.panels.items()
+            name: query(panel.file or panel.sql) for name, panel in specification.panels.items()
         }
         with mplstyle.context([self.style.theme, self.style.rc]), ExitStack() as cleanup:
             mpl.rcParams["savefig.dpi"] = dpi or self.style.dpi
@@ -62,16 +60,15 @@ class FigurePlot(Plot):
                     grid[min(rows) : max(rows) + 1, min(columns) : max(columns) + 1]
                 )
                 layers = [
-                    query(layer.file if layer.file is not None else layer.sql)
-                    if layer.file is not None or layer.sql.strip()
+                    query(layer.file or layer.sql)
+                    if layer.file or layer.sql.strip()
                     else tables[name]
                     for layer in panel.layers
                 ]
-                handles = PanelPlot(tables[name], panel, self.style).draw(target, layers)
-                shared.update(handles)
+                shared.update(PanelPlot(tables[name], panel, self.style).draw(target, layers))
             if shared:
-                ordered = list(dict.fromkeys((*self.style.colors, *shared)))
-                ordered = [label for label in ordered if label in shared]
+                ordered = [label for label in self.style.colors if label in shared]
+                ordered += [label for label in shared if label not in self.style.colors]
                 labels = [self.style.labels.get(label, label) for label in ordered]
                 legend = cast("Callable[..., Legend]", canvas.legend)
                 legend([shared[label] for label in ordered], labels, **self.style.legend)

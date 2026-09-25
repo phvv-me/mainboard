@@ -1,5 +1,3 @@
-# A tiny, reusable micro-benchmark: time a callable and compare alternatives.
-
 import time
 from collections.abc import Callable, Mapping
 from statistics import fmean
@@ -8,11 +6,9 @@ from patos import FrozenModel
 
 
 class BenchSample(FrozenModel):
-    """Timing of one callable: every per-iteration time in ``samples``, plus its aggregates.
+    """Timing of one callable.
 
-    samples: microseconds for each timed iteration, in the order they ran, so a caller that
-        needs the per-run rows reads them here instead of driving one-iteration benchmarks.
-        ``mean_us``, ``min_us`` and ``runs`` are read off this one record.
+    samples: microseconds of each timed iteration in run order; every aggregate reads them.
     """
 
     label: str
@@ -20,17 +16,14 @@ class BenchSample(FrozenModel):
 
     @property
     def mean_us(self) -> float:
-        """Mean microseconds per call over the timed iterations."""
         return fmean(self.samples)
 
     @property
     def min_us(self) -> float:
-        """Fastest microsecond time over the timed iterations."""
         return min(self.samples)
 
     @property
     def runs(self) -> int:
-        """How many timed iterations were recorded."""
         return len(self.samples)
 
 
@@ -46,11 +39,10 @@ def benchmark[T, S](
     warmup: int = 3,
     sync: Callable[[], S] | None = None,
 ) -> BenchSample:
-    """Time ``fn`` over ``iters`` runs after ``warmup`` untimed calls.
+    """Time zero-arg `fn` over `iters` runs after `warmup` untimed calls.
 
-    fn: the zero-arg callable to time (bind args with a lambda/partial).
-    sync: a barrier called after each run (e.g. ``torch.cuda.synchronize``) so async GPU
-        work is included in the timing rather than just the launch.
+    sync: a barrier called after the warmup and after each run (e.g.
+        `torch.cuda.synchronize`) so async GPU work is timed, not just its launch.
     """
     if iters < 1 or warmup < 0:
         raise ValueError("benchmark requires iters >= 1 and warmup >= 0")

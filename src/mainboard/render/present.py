@@ -14,10 +14,7 @@ if TYPE_CHECKING:
 
 
 def mode_of(*, json_mode: bool, agent: bool) -> str | None:
-    """The dispatch key `--json`/`--agent` select, `None` for the default human render.
-
-    Raises when both flags are set, since the two compact modes are mutually exclusive.
-    """
+    """The dispatch key `--json`/`--agent` select, `None` for the human render; not both."""
     if json_mode and agent:
         raise MissionError("pass only one of --json or --agent")
     return "json" if json_mode else ("agent" if agent else None)
@@ -28,12 +25,8 @@ def _record(
 ) -> None:
     """Print one entity as a rich field/value table, the default when `mode` is unset.
 
-    A single entity routinely has more fields than a terminal is wide, so it renders down
-    its own rows (one field per line) rather than across columns.
-
-    payload: the entity's field-name to value mapping (typically a model's `model_dump()`).
+    payload: the entity's fields, typically a model's `model_dump()`.
     fields: the field names to keep, every field when empty.
-    title: the table's heading.
     """
     del mode
     human.render_table(pairs_of(to_row(payload), fields=fields or None), title=title)
@@ -61,9 +54,7 @@ def _rows(
 ) -> None:
     """Print many entities as a rich table, the default when `mode` is unset.
 
-    payloads: the entities, each a field-name to value mapping.
     fields: the column names to keep, every field when empty.
-    title: the table's heading.
     """
     del mode
     human.render_table(

@@ -1,22 +1,14 @@
-# THE FIGURE CONTRACT, WHICH IS ALL OF THE FIGURE THIS SUBSYSTEM OWNS.
+# The figure contract, which is all of the figure this subsystem owns.
 #
-# A render reads receipts and nothing else, DECLARES every receipt it renders from, and REFUSES
-# with every gap named rather than drawing a partial view. A partial figure is worse than no
-# figure, because a table that quietly lost its worst row reads as a table whose worst row is good
-# news, and nothing on the page says otherwise.
-#
-# AND A RENDER IS DETERMINISTIC, WHICH IS A GATE RATHER THAN A NICETY. Two runs of the same render
-# over the same receipts must produce byte-identical files, so a rerun can be diffed against the
-# last one and come back empty. `rendered_twice` is that check, and a consumer wires it into its
-# own suite; what makes it pass is the consumer's own discipline, no timestamps, explicit orders,
-# fixed float precision and no library metadata stamped with the wall clock.
-#
-# THE PLOTTING STAYS WITH THE CONSUMER. A figure is a claim about a specific measurement and no
-# generic base can draw one. What is here is the refusal, the current-view read behind it and the
-# determinism check, which is the part every consumer would otherwise write again and slightly
-# differently.
+# A render reads receipts only, declares every receipt it draws from, and refuses with every gap
+# named rather than draw a partial view: a table that quietly lost its worst row reads as good
+# news. A render is also deterministic, a gate rather than a nicety: two renders over the same
+# receipts must be byte-identical so a rerun diffs empty. `rendered_twice` checks it; passing it is
+# the consumer's discipline (no timestamps, explicit orders, fixed float precision, no wall-clock
+# metadata). The plotting itself stays with the consumer.
 
 import abc
+from functools import partial
 from shutil import rmtree
 from typing import TYPE_CHECKING
 
@@ -34,13 +26,11 @@ if TYPE_CHECKING:
 class Need(FrozenModel):
     """One receipt set a render draws from, declared so a missing one is named and not skipped.
 
-    node: the claim whose store holds it.
     lane: a fragment of the lane's own id, every lane of the node when empty.
     keys: the keys that must all be present.
-    least: how many CELLS the lane must have at minimum, which is a different question from the
-        universe's samples per cell. This counts distinct coordinates a figure needs to draw a
-        line through; that counts repeated readings one coordinate owes before it is settled. A
-        render wanting the repeats reads every sample rather than raising this number.
+    least: how many CELLS the lane must have, the distinct coordinates a figure draws a line
+        through; not the universe's samples per cell. A render wanting the repeats reads every
+        sample instead.
     """
 
     node: str
@@ -58,7 +48,7 @@ class Gap(FrozenModel):
     why: str
 
     def line(self) -> str:
-        """This gap as the refusal prints it, naming what was wanted and where."""
+        """This gap as the refusal prints it."""
         where = f"{self.node or '.'} {self.lane}" + (f"[{self.key}]" if self.key else "")
         return f"  {where}: {self.why}"
 
@@ -67,7 +57,6 @@ class Refusal(RuntimeError):
     """Every gap at once, because a reader fixing one missing lane wants to see all of them."""
 
     def __init__(self, gaps: Sequence[Gap]) -> None:
-        """gaps: every receipt the render wanted and could not read."""
         self.gaps = tuple(gaps)
         listing = "\n".join(gap.line() for gap in self.gaps)
         super().__init__(
@@ -78,10 +67,7 @@ class Refusal(RuntimeError):
 
 
 class Figures(abc.ABC):
-    """A render that runs off one universe's receipts and refuses on a receipt it cannot read.
-
-    universe: the trial tree whose current view this draws from.
-    """
+    """A render that runs off one universe's receipts and refuses on a receipt it cannot read."""
 
     def __init__(self, universe: Universe) -> None:
         self.universe = universe
@@ -96,37 +82,29 @@ class Figures(abc.ABC):
         """Write every artifact under `out` and return what was written."""
 
     def gaps(self) -> tuple[Gap, ...]:
-        """Every declared need this universe cannot satisfy, in the order they were declared."""
+        """Every declared need this universe cannot satisfy, in declaration order."""
         found: list[Gap] = []
         for need in self.needs:
+            gap = partial(Gap, node=need.node, lane=need.lane)
             if not (self.universe.root / need.node).is_dir():
-                found.append(
-                    Gap(node=need.node, lane=need.lane, key="", why="no such node in the universe")
-                )
+                found.append(gap(key="", why="no such node in the universe"))
                 continue
             rows = self.rows(need.node, lane=need.lane)
             if len(rows) < need.least:
-                found.append(
-                    Gap(
-                        node=need.node,
-                        lane=need.lane,
-                        key="",
-                        why=f"{len(rows)} current trials, the render draws {need.least}",
-                    )
-                )
+                why = f"{len(rows)} current trials, the render draws {need.least}"
+                found.append(gap(key="", why=why))
             present = {str(row.get("key", "")) for row in rows}
             found.extend(
-                Gap(node=need.node, lane=need.lane, key=key, why="no current receipt at this key")
+                gap(key=key, why="no current receipt at this key")
                 for key in need.keys
                 if key not in present
             )
         return tuple(found)
 
     def render(self, out: Path) -> tuple[Path, ...]:
-        """Check every declared need, then write the whole render into a clean `out`.
+        """Check every declared need, then write the whole render into an emptied `out`.
 
-        The directory is emptied first so a rerun cannot leave an artifact from a render that no
-        longer draws it, which is what makes two runs comparable byte for byte.
+        Emptying first means a rerun cannot leave an artifact the render no longer draws.
         """
         gaps = self.gaps()
         if gaps:
@@ -139,30 +117,24 @@ class Figures(abc.ABC):
     def rows(
         self, node: str, *, lane: str = "", every: bool = False
     ) -> list[dict[str, JsonValue]]:
-        """One node's passing receipts as plain records, its JSON columns decoded.
+        """One node's passing receipts as plain records, their JSON columns decoded.
 
-        node: the claim to read. lane: a fragment of the lane id, every lane when empty.
-        every: keep every sample rather than the newest of each cell, which is what a render over
-            a repeated-sample program needs and what a representative table must not have.
+        lane: a fragment of the lane id, every lane when empty.
+        every: every sample rather than the newest of each cell, for a repeated-sample program;
+            a representative table must not have it.
         """
         store = self.universe.dataset(node)
-        frame = store.passing(every=every)
-        if not frame.columns:
-            return []
-        found = frame.to_dicts()
         return [
-            store.decoded(row) for row in found if not lane or lane in str(row.get("lane", ""))
+            store.decoded(row)
+            for row in store.passing(every=every).to_dicts()
+            if not lane or lane in str(row.get("lane", ""))
         ]
 
 
 def rendered_twice(figures: Figures, under: Path) -> tuple[str, ...]:
-    """Render twice into two directories and name every artifact whose bytes differ.
+    """Render twice under `under` and name every artifact whose bytes differ or that one lacks.
 
-    An empty answer is the gate passing. A name appearing here is either a file one render wrote
-    and the other did not, or the same file with different bytes, and both mean the render carries
-    something that is not in the receipts.
-
-    figures: the render to check. under: a scratch directory the two runs land in.
+    Empty is the gate passing; any name means the render carries something not in the receipts.
     """
     written = {
         side: {

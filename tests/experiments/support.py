@@ -17,13 +17,7 @@ if TYPE_CHECKING:
 def make_run(
     name: str, *, handle: str, submitted_at: str = "t0", verdict: str | None = None
 ) -> RunRecord:
-    """A dispatch `RunRecord` labeled `name`, resolved to `verdict` when one is given.
-
-    name: the free-text dispatch label a study join reads back.
-    handle: the scheduler handle the row is keyed by.
-    submitted_at: the ISO-8601 dispatch time the registry orders rows by.
-    verdict: the terminal outcome dispatch resolved, `None` while it has none.
-    """
+    """A dispatch `RunRecord` labeled `name`, resolved to `verdict` when one is given."""
     return RunRecord(
         handle=handle,
         target="gold",
@@ -62,11 +56,7 @@ class FakeBoundBoard:
 
 
 class FakeDispatcher:
-    """A `Dispatcher`-like stub whose `await_many` resolves from a pre-seeded verdict map.
-
-    Carries a real `cache`, exactly `Dispatcher.cache`'s shape, since a study's progress is
-    read by joining its ledger against dispatch's own resolved verdicts.
-    """
+    """A `Dispatcher`-like stub with a real `cache`, its `await_many` answered from `verdicts`."""
 
     def __init__(self, cache: Cache) -> None:
         self.cache = cache
@@ -81,12 +71,7 @@ class FakeDispatcher:
 
 
 def dispatch_cache() -> Cache:
-    """The dispatch run registry in a private in-memory database.
-
-    Every table the file-backed registry creates is created here too, so a join reads and
-    writes exactly what production does without paying the WAL journal's fsync per test, which
-    is what made every study test in this slice slow.
-    """
+    """The real dispatch run registry in memory, sparing each test the WAL journal's slow fsync."""
     return Cache(Path(":memory:"))
 
 

@@ -1,17 +1,12 @@
-# THE TRIALS SUBSYSTEM: what a measured trial writes down, and how anyone reads it back.
+# The trials subsystem: what a measured trial writes down, and how anyone reads it back.
 #
-# This is compute infrastructure and not anyone's science. A receipt store, a completeness rule, a
-# settle vocabulary and a render contract are the same machinery whether the trials behind them
-# are quantization sweeps, numeric reproducibility claims or kernel benchmarks, so they live with
-# the tool that already owns the `trial_receipt` wire contract, the `verdict` verb and tracking.
+# Compute infrastructure, not anyone's science: a receipt store, completeness rule, settle
+# vocabulary and render contract live with the tool that owns the `trial_receipt` wire contract,
+# the `verdict` verb and tracking. Nothing here names a consumer. Settle words, coverage axes,
+# tracked flags and storage layout are configuration; fixed are only the outcomes `passed` and
+# `failed` (an exit code derives from them) and the printed receipt line other tools read.
 #
-# NOTHING HERE NAMES A CONSUMER. The settle words are configuration, the coverage axes are
-# configuration, the tracked flags are configuration and the storage layout is configuration. What
-# is fixed is the two outcomes, `passed` and `failed`, because those are what an exit code is
-# derived from, and the shape of the printed receipt line, because that is a contract other tools
-# already read. A project joins by declaring, never by being known about here.
-#
-# A consumer's conftest is one registration line and one hook. The whole of it:
+# A consumer's whole conftest:
 #
 #     from mainboard.trials import Declaration, Universe, Vocabulary
 #
@@ -24,21 +19,12 @@
 #             flags=ARITHMETIC,
 #         )
 #
-# A lane is an ordinary test function that asks for `trial` and supplies measurements, and the
-# declared words are methods on it. Nothing in a lane names a run, a card, a commit, a claim or a
-# tracked flag, because every one of those is derived.
-#
-# A receipt identifies the captured source by SHA-256 and the registered input rows by digest.
-# New and edited files qualify by their captured bytes, not their version-control state.
-# Historical rejected receipts retain their original labels; no evidence is relabeled.
-#
-# TWO LANE KINDS CHOOSE THEIR OWN CELLS AND ARE OPTIONAL EXTRAS. `Hunt` states a law as a property
-# and spends a draw budget trying to break it, shrinking a failure to a minimal witness; `Study`
-# spends a budget of real evaluations walking toward a worst case and writes a receipt row per
-# ask-tell iteration. Their drivers, hypothesis and optuna, are extras this tool does not depend
-# on, and a lane declared without one refuses by naming the package and the extra. Both obey the
-# rule `adaptive` states: an adaptive result is a CANDIDATE, never coverage, and it is confirmed by
-# a declared parametrize cell on fresh seeds before any claim leans on it.
+# A lane is a test function that asks for `trial` and supplies measurements; the declared words
+# are methods on it, and run, card, commit, claim and tracked flags are all derived. A receipt
+# identifies the captured source by SHA-256 and registered input rows by digest, so new and edited
+# files qualify by their captured bytes, not their version-control state. Historical rejected
+# receipts keep their original labels. The optional adaptive lanes, `Hunt` and `Study`, choose
+# their own cells under the rule `adaptive` states.
 
 from ..dispatch.shared import SOURCE_VAR
 from .adaptive import Absent, Owed, driver
@@ -134,6 +120,4 @@ __all__ = [
     "rendered_twice",
     "source",
     "wire",
-    "Busy",
-    "CardLease",
 ]

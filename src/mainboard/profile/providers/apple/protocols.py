@@ -1,7 +1,4 @@
-# Structural contracts for the untyped Apple `os_signpost` surface.
-#
-# The `os-signpost` package ships no stubs, so these Protocols pin the `Signposter` interval
-# API the tracer drives and the opaque interval token it threads from begin to end.
+# Structural contracts for the untyped `os-signpost` package the tracer drives.
 
 from collections.abc import Callable
 from typing import Protocol
@@ -16,7 +13,6 @@ class Signposter(Protocol):
 
     def begin_interval(self, name: str) -> IntervalToken: ...
     def emit_event(self, name: str) -> None: ...
-
     def end_interval(self, name: str, token: IntervalToken) -> None: ...
 
 

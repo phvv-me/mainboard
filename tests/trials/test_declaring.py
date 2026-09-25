@@ -31,7 +31,6 @@ from .support import Card, Machine
 
 
 def knob(name: str, held_value: str) -> tuple[Flag, dict[str, str]]:
-    """One writable flag over a dictionary, plus the dictionary it moves."""
     state = {name: held_value}
     return (
         Flag(name=name, read=lambda: state[name], write=lambda value: state.update({name: value})),
@@ -39,13 +38,17 @@ def knob(name: str, held_value: str) -> tuple[Flag, dict[str, str]]:
     )
 
 
-def test_a_vocabulary_answers_only_for_the_words_its_consumer_declared() -> None:
-    """A word prints its declared letter or its own initial, and an undeclared one refuses.
+def dispatched(monkeypatch: pytest.MonkeyPatch, root: Path, closure: str, digest: str) -> None:
+    """Pose as a dispatched job whose captured closure listing is `closure` under `digest`."""
+    copied = root / ".mainboard-closure"
+    copied.write_bytes(Path(closure).read_bytes())
+    monkeypatch.setenv(CLOSURE_VAR, str(copied))
+    monkeypatch.setenv(DIGEST_VAR, digest)
 
-    The letter fallback matters because a consumer declaring five words should not have to type
-    five letters to get a readable progress line, and the refusal matters because settling a word
-    nobody declared writes a receipt no report can group.
-    """
+
+def test_a_vocabulary_answers_only_for_the_words_its_consumer_declared() -> None:
+    """A word prints its declared letter or its initial; an undeclared word would write a
+    receipt no report can group, so it refuses."""
     words = Vocabulary(
         words=(
             Word(name="validated", letter="V", stance=Stance.CONFIRMS),
@@ -64,12 +67,7 @@ def test_a_vocabulary_answers_only_for_the_words_its_consumer_declared() -> None
 
 
 def test_a_held_flag_comes_back_and_an_asserted_one_is_never_written() -> None:
-    """`held` restores what it recorded even when the block dies, and skips what has no write.
-
-    The asserted half is the whole reason `write` is optional: a knob the library only reads at
-    process start cannot honestly be moved back, so pretending to would put a value in a column
-    that the machine never had.
-    """
+    """A knob read only at process start cannot honestly be moved back, so it has no `write`."""
     writable, state = knob("policy", "pinned")
     watched = {"env": "unset"}
     asserted = Flag(name="env", read=lambda: watched["env"])
@@ -109,7 +107,6 @@ def test_a_held_flag_comes_back_and_an_asserted_one_is_never_written() -> None:
 def test_a_cell_never_lets_four_different_empties_read_as_one(
     values: Mapping[str, str], probing: Mapping[str, str], named: str
 ) -> None:
-    """An empty coordinate is four facts, and the outcome column is what tells them apart."""
     found = Cell(values=dict(values), probing={axis: Probed(why) for axis, why in probing.items()})
     assert found.named == named
     assert found.filters == {**values, "card_probed": probing["card"], "model_probed": "unasked"}
@@ -134,7 +131,6 @@ def test_a_cell_never_lets_four_different_empties_read_as_one(
 def test_a_lane_status_states_what_it_still_owes(
     want: int, have: int, missing: tuple[str, ...], state: str
 ) -> None:
-    """The three states, and a line that names the run when there is nothing left to take."""
     status = LaneStatus(
         lane="alpha/test_law.py::test_holds",
         want=want,
@@ -150,7 +146,6 @@ def test_a_lane_status_states_what_it_still_owes(
 
 
 def test_a_status_line_truncates_a_long_missing_list() -> None:
-    """Three names and an ellipsis, since a reader fixing a lane wants the count not the list."""
     status = LaneStatus(lane="l", want=5, have=0, missing=("a", "b", "c", "d"))
     assert "missing 4: a, b, c..." in status.line()
 
@@ -166,10 +161,7 @@ def test_a_local_source_is_captured_and_a_dispatched_source_is_verified(
     captured = source(tmp_path)
     assert captured == source(tmp_path)
     assert len(captured.digest) == 64 and not captured.mirrored
-    closure = tmp_path / ".mainboard-closure"
-    closure.write_bytes(Path(captured.closure).read_bytes())
-    monkeypatch.setenv(CLOSURE_VAR, str(closure))
-    monkeypatch.setenv(DIGEST_VAR, captured.digest)
+    dispatched(monkeypatch, tmp_path, captured.closure, captured.digest)
     mirrored = source(tmp_path)
     assert mirrored.mirrored and mirrored.digest == captured.digest
     assert mirrored.admissibility is Admissibility.ADMISSIBLE
@@ -182,11 +174,7 @@ def test_a_declared_listing_requires_an_authentic_digest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    captured = source(tmp_path)
-    closure = tmp_path / ".mainboard-closure"
-    closure.write_bytes(Path(captured.closure).read_bytes())
-    monkeypatch.setenv(CLOSURE_VAR, str(closure))
-    monkeypatch.setenv(DIGEST_VAR, "wrong")
+    dispatched(monkeypatch, tmp_path, source(tmp_path).closure, "wrong")
     with pytest.raises(RuntimeError, match="content digest"):
         source(tmp_path)
 
@@ -201,11 +189,7 @@ def test_nested_trial_projects_verify_the_dispatch_workspace(
     lane.write_text("pass")
     (tmp_path / "conftest.py").write_text("pass")
     captured = source(tmp_path)
-    closure = tmp_path / ".mainboard-closure"
-    closure.write_bytes(Path(captured.closure).read_bytes())
-    monkeypatch.setenv(CLOSURE_VAR, str(closure))
-    monkeypatch.setenv(DIGEST_VAR, captured.digest)
-
+    dispatched(monkeypatch, tmp_path, captured.closure, captured.digest)
     taken = Preflight(experiments, project, machine=Machine())
     assert taken.source.root == tmp_path.resolve()
     assert taken.digest == captured.digest
@@ -219,7 +203,6 @@ def test_nested_trial_projects_verify_the_dispatch_workspace(
 
 
 def test_a_probe_that_broke_is_never_mistaken_for_a_host_with_no_device() -> None:
-    """Found, absent and failed are three answers, and only the middle one is a clean machine."""
     found = card_of(Machine((Card(),)))
     assert found.id == "GPU-1111" and found.name == "Test Card"
     # The driver is the HOST driver and the runtime version rides beside it, never inside it.
@@ -238,7 +221,6 @@ def test_a_probe_that_broke_is_never_mistaken_for_a_host_with_no_device() -> Non
 def test_a_preflight_derives_every_field_a_receipt_would_otherwise_retype(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """One probe, one shape, and an installed distribution beside one this environment lacks."""
     monkeypatch.delenv(CLOSURE_VAR, raising=False)
     (tmp_path / "test_law.py").write_text("def test_holds(trial): ...\n")
     taken = Preflight(
@@ -271,7 +253,6 @@ def test_a_preflight_derives_every_field_a_receipt_would_otherwise_retype(
 def test_an_import_name_finds_a_platform_specific_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A logical receipt key survives a differently named platform distribution."""
 
     def provider_version(name: str) -> str:
         if name == "triton-windows":
@@ -306,12 +287,8 @@ def test_preflight_checks_captured_membership_and_detects_later_changes(tmp_path
 def test_a_digest_pins_the_bytes_on_disk_and_a_registration_row_pins_its_own_values(
     tmp_path: Path,
 ) -> None:
-    """Two dirty trees at one commit differ in files git is not carrying, so untracked ones count.
-
-    The relative path is folded in beside the bytes, so a file that MOVED changes the digest as
-    surely as a file that changed, and build output is skipped so one tree does not digest two
-    ways on two machines.
-    """
+    """Untracked files count, a moved file changes the digest like a changed one, and build
+    output is skipped so one tree digests one way on every machine."""
     (tmp_path / "alpha").mkdir()
     (tmp_path / "alpha" / "one.py").write_text("x = 1\n")
     first = digest_of(tmp_path, "*.py")
@@ -337,11 +314,8 @@ def test_a_digest_pins_the_bytes_on_disk_and_a_registration_row_pins_its_own_val
 
 
 def test_a_stage_holds_one_claim_and_refuses_a_release_that_did_not_come_back() -> None:
-    """Made once, dropped on leaving, and checked against the floor when a probe was declared.
-
-    The refusal is the answer to a run that lost 68 trials to a card eleven claims had filled,
-    where every claim was correct on its own and the session was what was wrong.
-    """
+    """The refusal answers a run that lost 68 trials to a card eleven claims had filled, each
+    claim correct on its own; a flat universe's claim is named as the root."""
     made: list[str] = []
     stage = Stage("alpha")
     first = stage.kept("qwen", lambda: made.append("qwen") or "bundle")
@@ -360,11 +334,6 @@ def test_a_stage_holds_one_claim_and_refuses_a_release_that_did_not_come_back() 
     resident["bytes"] = 900
     with pytest.raises(RuntimeError, match="gamma did not release"):
         leaking.drop()
-
-
-def test_a_flat_universe_names_its_stage_by_the_root_it_leaked_from() -> None:
-    """The refusal has to name something, and a flat universe's claim is the root itself."""
-    resident = iter([0, 10])
-    stage = Stage("", resident=lambda: next(resident))
+    flat = iter([0, 10])
     with pytest.raises(RuntimeError, match="the universe root did not release"):
-        stage.drop()
+        Stage("", resident=lambda: next(flat)).drop()
