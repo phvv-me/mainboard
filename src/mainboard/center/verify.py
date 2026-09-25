@@ -66,11 +66,8 @@ def spawned(command: Sequence[str], environment: Mapping[str, str]) -> tuple[int
 class Verification:
     """The readiness suite, run on the machine that asks.
 
-    board: the workspace, on this machine.
     workstation: this machine's git tooling, its own when None.
     system: this machine's census, read when None.
-    home: the user's home directory.
-    spawn: runs one command under an environment, a real process when None.
     smoke: runs the smoke command in the default environment, answering status and output.
     """
 
@@ -179,8 +176,8 @@ class Verification:
         tools = self.board.manifest.lint.tools
         search = os.pathsep.join(
             [
-                *(str(folder) for folder in self._folders()),
-                *(str(folder) for folder in self.provisioner.binaries("default")),
+                *map(str, self._folders()),
+                *map(str, self.provisioner.binaries("default")),
                 os.environ.get("PATH", ""),
             ]
         )
@@ -205,14 +202,14 @@ class Verification:
 
     def tree(self) -> list[Section]:
         """The repository tree: every owned repository checked out, current and saved."""
-        owned = self.board.git().owned()
+        tree = self.board.git()
         absent = [
             child.name
-            for repo in owned
+            for repo in tree.owned()
             for child in repo.children
             if child.owned and not child.initialized
         ]
-        states = self.board.git().status()
+        states = tree.status()
         behind = [state.repo for state in states if state.behind]
         unsaved = [
             state.repo for state in states if state.changed or state.untracked or state.ahead

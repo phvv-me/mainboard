@@ -54,10 +54,7 @@ posix_only = pytest.mark.skipif(
 
 
 class Forge:
-    """Bare remotes under `<root>/remotes/<owner>/<name>.git`, and working clones of them.
-
-    root: the directory every remote and clone lives under.
-    """
+    """Bare remotes under `<root>/remotes/<owner>/<name>.git`, and working clones of them."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -94,6 +91,13 @@ class Forge:
         self.git(seed, "push", "-q", "origin", "main")
         return seed
 
+    def publish(self, repo: Path, files: dict[str, str], message: str = "theirs") -> str:
+        """Commit `files` on `main` in the clone `repo` and push it, answering the new commit."""
+        self.git(repo, "switch", "-q", "main")
+        commit = self.commit(repo, message, files)
+        self.git(repo, "push", "-q", "origin", "main")
+        return commit
+
     def clone(self, url: str, dest: Path) -> Path:
         """A clone of `url` at `dest`, every submodule checked out."""
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -111,9 +115,7 @@ class Forge:
 
     def hook(self, owner: str, name: str, script: str) -> None:
         """Install a `pre-receive` hook on a remote, which is how a remote refuses a push."""
-        hook = self.bare(owner, name) / "hooks" / "pre-receive"
-        hook.write_text(script, encoding="utf-8", newline="\n")
-        hook.chmod(0o755)
+        install(self.bare(owner, name) / "hooks" / "pre-receive", script)
 
     def submodule(self, parent: Path, url: str, path: str, *flags: str) -> None:
         """Add the remote at `url` as a submodule of `parent` at `path`."""
@@ -125,13 +127,11 @@ class Forge:
         self.remote(FOREIGN, "ref", {"ref.txt": "ref\n"})
         lib = self.remote(OWNED, "lib", {"lib.txt": "lib\n"})
         self.submodule(lib, self.url(FOREIGN, "dep"), "vendor/dep")
-        self.commit(lib, "vendor dep", {})
-        self.git(lib, "push", "-q", "origin", "main")
+        self.publish(lib, {}, "vendor dep")
         root = self.remote("Pedrexus", "projects", {"mainboard.toml": MANIFEST})
         self.submodule(root, self.url(OWNED, "lib"), "packages/lib", "-b", "main")
         self.submodule(root, self.url(FOREIGN, "ref"), "references/ref")
-        self.commit(root, "add submodules", {})
-        self.git(root, "push", "-q", "origin", "main")
+        self.publish(root, {}, "add submodules")
         self.clone(self.url("Pedrexus", "projects"), self.root / "work")
 
 
@@ -156,17 +156,21 @@ class Workspace:
         return Tree(self.path, GitPolicy.model_validate({"owners": [OWNED], **policy}))
 
     def git(self, where: Path, *args: str) -> str:
-        """Run git in one of this checkout's repositories."""
         return self.forge.git(where, *args)
 
     def head(self, where: Path) -> str:
-        """The commit a repository of this checkout is on."""
         return self.git(where, "rev-parse", "HEAD")
 
     def colleague(self) -> Workspace:
         """A second checkout of the same remotes, the other machine in a pull or a push race."""
         url = self.forge.url("Pedrexus", "projects")
         return Workspace(self.forge, self.forge.clone(url, self.forge.root / "colleague"))
+
+
+def install(path: Path, script: str) -> None:
+    """Write `script` at `path` as an executable a POSIX shell runs."""
+    path.write_text(script, encoding="utf-8", newline="\n")
+    path.chmod(0o755)
 
 
 def _configure(config: Path, forge: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -206,9 +210,7 @@ def fake_lfs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A git-lfs first on PATH that records its calls and exits zero until told otherwise."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    script = bin_dir / "git-lfs"
-    script.write_text(_FAKE_LFS, encoding="utf-8", newline="\n")
-    script.chmod(0o755)
+    install(bin_dir / "git-lfs", _FAKE_LFS)
     (bin_dir / "code").write_text("0", encoding="utf-8")
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     return bin_dir

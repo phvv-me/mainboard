@@ -28,11 +28,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 _SCHEMA_VERSION = 1
-# FP32 lanes per multiprocessor by compute capability major version; the datasheet peak the
-# achieved rate is compared against. Volta and Turing (7) carry 64, Ampere data-center (8.0)
-# too, and every later part 128.
-_LANES_PER_SM = {7: 64, 8: 128, 9: 128, 10: 128, 12: 128}
-_AMPERE_DATACENTER = (8, 0)
 
 
 class Precision(StrEnum):
@@ -50,7 +45,6 @@ class Precision(StrEnum):
 class Rate(FrozenModel):
     """One precision's achieved rate.
 
-    precision: the operand precision.
     n: the square GEMM's side; operations are two n cubed.
     seconds: the median wall time of one GEMM, zero when unsupported.
     tflops: achieved tera-operations per second, zero when unsupported.
@@ -70,7 +64,6 @@ class Link(FrozenModel):
     """One copy path's achieved bandwidth.
 
     path: `device_to_device`, `host_to_device` or `device_to_host`.
-    megabytes: the buffer copied.
     gb_s: bytes moved over wall time; a device copy counts its read and its write.
     """
 
@@ -83,13 +76,10 @@ class StressReport(FrozenOpenModel):
     """One device's measured limits, the JSON another machine reads back.
 
     schema_version: format revision, bumped when a field's meaning changes.
-    device: the card's name.
     capability: compute capability as `major.minor`.
-    sm_count: multiprocessors.
     clock_khz: the maximum SM clock the device reports, which the datasheet peak uses.
-    datasheet_fp32_tflops: multiprocessors times lanes times two per clock.
+    datasheet_fp32_tflops: multiprocessors times FP32 lanes times two per clock.
     rates: one entry per precision, in the order measured.
-    links: the three copy paths.
     seconds: wall time of the whole probe.
     """
 
@@ -113,19 +103,15 @@ class Kernels(Protocol):
 
     def describe(self) -> tuple[str, tuple[int, int], int, int]:
         """Name, compute capability, multiprocessor count and clock in kHz."""
-        ...
 
     def gemm(self, precision: Precision, n: int) -> Callable[[], None]:
         """A closure running one n by n GEMM at `precision`, or raise when unsupported."""
-        ...
 
     def copy(self, path: str, megabytes: int) -> Callable[[], None]:
         """A closure moving `megabytes` along `path`."""
-        ...
 
     def synchronize(self) -> None:
         """Wait for every queued device operation."""
-        ...
 
 
 class TorchKernels:
@@ -148,11 +134,6 @@ class TorchKernels:
 
     def gemm(self, precision: Precision, n: int) -> Callable[[], None]:
         torch = self.torch
-        if precision in {Precision.FP32, Precision.TF32}:
-            torch.backends.cuda.matmul.allow_tf32 = precision == Precision.TF32
-            left = torch.randn(n, n, device=self.device)
-            right = torch.randn(n, n, device=self.device)
-            return lambda: torch.matmul(left, right)
         if precision == Precision.INT8:
             shape = (n, n)
             left = torch.randint(-128, 127, shape, device=self.device, dtype=torch.int8)
@@ -166,8 +147,12 @@ class TorchKernels:
             return lambda: torch._scaled_mm(
                 left, right, scale_a=scale, scale_b=scale, out_dtype=torch.bfloat16
             )
+        if precision in {Precision.FP32, Precision.TF32}:
+            torch.backends.cuda.matmul.allow_tf32 = precision == Precision.TF32
         dtype = {
             Precision.FP64: torch.float64,
+            Precision.FP32: torch.float32,
+            Precision.TF32: torch.float32,
             Precision.FP16: torch.float16,
             Precision.BF16: torch.bfloat16,
         }[precision]
@@ -197,7 +182,6 @@ class Stress:
     kernels: the device operations, PyTorch's unless a test injects its own.
     n: the square GEMM side for every precision but FP64, which runs at half the side
         because a consumer card's FP64 rate would make the full size take seconds.
-    megabytes: the copy buffer.
     warmups: untimed calls before the timed ones.
     repetitions: timed calls whose median is kept.
     """
@@ -221,7 +205,9 @@ class Stress:
         """Time every precision and copy path, answering the report."""
         start = perf_counter()
         device, capability, sm_count, clock_khz = self.kernels.describe()
-        lanes = 64 if capability == _AMPERE_DATACENTER else _LANES_PER_SM.get(capability[0], 128)
+        # FP32 lanes per multiprocessor: Volta and Turing (7.x) and data-center Ampere (8.0)
+        # carry 64, every other part 128.
+        lanes = 64 if capability[0] == 7 or capability == (8, 0) else 128
         rates = tuple(self._rate(precision) for precision in Precision)
         links = tuple(
             self._link(path) for path in ("device_to_device", "host_to_device", "device_to_host")
@@ -276,8 +262,7 @@ def main(*, device: int = 0, n: int = 8192, repetitions: int = 5) -> None:
     n: the square GEMM side.
     repetitions: timed calls per measurement.
     """
-    report = Stress(TorchKernels(device), n=n, repetitions=repetitions).measure()
-    print(report.model_dump_json())
+    print(Stress(TorchKernels(device), n=n, repetitions=repetitions).measure().model_dump_json())
 
 
 if __name__ == "__main__":

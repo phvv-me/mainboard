@@ -135,11 +135,7 @@ def fitness(tmp_path: Path) -> Fitness:
 def test_a_machine_no_census_described_is_one_row_saying_so(
     fitness: Fitness, host: str, fix: str
 ) -> None:
-    """Every other question would only repeat that absence, so it is the whole report.
-
-    A remote host gets the setup that records a census, and this machine, which can always be
-    asked again, gets nothing to run.
-    """
+    """A remote host gets the setup that records a census; this machine gets nothing to run."""
     assert fitness.judge(System(), host=host) == [
         Section(
             section="census",
@@ -155,10 +151,7 @@ def test_a_machine_no_census_described_is_one_row_saying_so(
 def test_a_fit_machine_passes_every_question_its_role_asks(
     fitness: Fitness, host: str, role: Role, sections: list[str]
 ) -> None:
-    """A center is asked about its tooling and checkout on top of what any machine is asked.
-
-    A report with nothing wrong also has nothing to run, so no passing row carries a fix.
-    """
+    """A center is also asked about its tooling and checkout, and no passing row carries a fix."""
     found = fitness.judge(machine(), host=host, role=role)
     assert [section.section for section in found] == sections
     assert {(section.verdict, section.fix) for section in found} == {(Verdict.PASS, "")}
@@ -192,10 +185,7 @@ def test_a_platform_is_fit_only_when_the_workspace_declares_it(
     detail: str,
     fix: str,
 ) -> None:
-    """A workspace declaring no platforms solves for the machine it lives on and nothing else.
-
-    An undeclared platform fails with the one line that adds it and the solve that follows.
-    """
+    """A workspace declaring no platforms solves for the machine it lives on and nothing else."""
     monkeypatch.setattr("mainboard.fitness.current_platform", lambda: "linux-aarch64")
     found = fitness_of(tmp_path, platforms).platform(machine(arch="aarch64"))
     assert (found.verdict, found.detail, found.fix) == (verdict, detail, fix)
@@ -223,10 +213,7 @@ def test_the_lock_must_hold_builds_for_this_machines_platform(
 
 
 def test_a_lock_is_read_once_however_many_questions_ask_about_it(fitness: Fitness) -> None:
-    """The lock and the CUDA builds both read one file, so a judge reads it only once.
-
-    An environment never solved is remembered as such too, rather than asked about again.
-    """
+    """The lock and the CUDA builds read one file once; a never-solved one is remembered too."""
     solved = lock(fitness, {"linux-64": [_CU128]})
     solved.unlink()
     assert fitness.lock(machine(), "default").verdict is Verdict.WARN
@@ -242,10 +229,7 @@ def test_a_lock_is_read_once_however_many_questions_ask_about_it(fitness: Fitnes
 def test_a_scheduler_login_node_answers_its_cards_once_with_the_caveat(
     fitness: Fitness, host: str
 ) -> None:
-    """A login node's cards say nothing about the compute node a job lands on.
-
-    So a machine with no card and no driver is not flagged, however high the CUDA floor.
-    """
+    """No card and no driver on a login node is not flagged, however high the CUDA floor."""
     found = fitness.judge(machine(cuda="", gpus=()), host=host)
     assert [section.section for section in found] == ["platform", "lock", "cards", "disk"]
     assert row(found, "cards").verdict is Verdict.PASS
@@ -280,10 +264,7 @@ def test_a_scheduler_login_node_answers_its_cards_once_with_the_caveat(
 def test_the_driver_is_judged_against_the_floor_of_the_environment_the_host_runs(
     fitness: Fitness, host: str, changes: dict[str, str], verdict: Verdict, detail: str
 ) -> None:
-    """An environment's own floor overrides the workspace's, and a Mac carries no CUDA floor.
-
-    Every row short of a pass names the one fix there is, a newer driver.
-    """
+    """An environment's own floor overrides the workspace's, and a Mac carries no CUDA floor."""
     found = row(fitness.judge(machine(**changes), host=host), "driver")
     assert (found.verdict, found.detail) == (verdict, detail)
     assert ("nvidia.com" in found.fix) is (verdict is not Verdict.PASS)
@@ -344,11 +325,7 @@ def test_locked_cuda_builds_must_run_on_this_driver_and_carry_kernels_for_this_c
     verdict: Verdict,
     detail: str,
 ) -> None:
-    """A Blackwell card on CUDA 12.4 builds imports and then fails its first kernel launch.
-
-    So the newest CUDA any build was compiled against, in either the wheel or the conda
-    spelling, has to be both within the driver and new enough for the card's generation.
-    """
+    """The newest locked CUDA, wheel or conda spelling, must suit the driver and the card."""
     lock(fitness, {"linux-64": locations})
     found = fitness.builds(machine(**changes), "default")
     assert (found.verdict, found.detail) == (verdict, detail)
@@ -431,10 +408,7 @@ def test_a_center_missing_a_tool_fails_with_each_install_this_platform_uses(
 def test_windows_links_and_long_paths_each_warn_with_their_own_switch(
     fitness: Fitness, system: str, symlinks: str, long_paths: bool, notes: list[str]
 ) -> None:
-    """Only Windows turns either off, and each refusal is named with the switch that lifts it.
-
-    A checkout still completes without them, links as junctions and copies, so it warns.
-    """
+    """Only Windows turns either off; a checkout still completes without them, so it warns."""
     found = fitness.links(machine(system=system, symlinks=symlinks, long_paths=long_paths))
     assert found.verdict is (Verdict.WARN if notes else Verdict.PASS)
     assert [
@@ -445,14 +419,12 @@ def test_windows_links_and_long_paths_each_warn_with_their_own_switch(
 
 
 @pytest.fixture
-def tracked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[Sequence[str]], None]:
+def tracked(tmp_path: Path) -> Callable[[Sequence[str]], None]:
     """Track `paths` in a real repository at the workspace root, whatever this disk folds.
 
     The entries go straight into the index, since a case-insensitive disk could not hold two
-    files differing only in case, and git reads none of this machine's configuration.
+    files differing only in case.
     """
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
     def git(*args: str, stdin: str = "") -> str:
         return subprocess.run(
@@ -530,7 +502,7 @@ def test_text_checks_out_with_the_newline_the_repository_stores(
 ) -> None:
     """`core.autocrlf=true` rewrites every text file unless `.gitattributes` pins the newline.
 
-    An empty expected detail marks the one warning, which names the setting that stops it.
+    An empty expected detail marks the one warning.
     """
     if attributes is not None:
         (fitness.root / ".gitattributes").write_text(attributes, encoding="utf-8")

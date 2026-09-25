@@ -3,18 +3,14 @@ from .drive_info import DriveInfo
 
 
 class HostDisk:
-    """All physical drives detected on the host.
-
-    cards: one DriveInfo per physical block device, each carrying its mounted
-    partitions for capacity and filesystem details.
-    """
+    """All physical drives detected on the host, each carrying its mounted partitions."""
 
     @property
     def cards(self) -> tuple[DriveInfo, ...]:
-        """Physical block devices enumerated from sysfs, empty when it is absent.
+        """Non-empty physical block devices in sysfs, pseudo devices skipped; empty off Linux.
 
-        Reads `drive_info.SYS_BLOCK` at call time (rather than a copied import) so the
-        same root a test points at also governs every `DriveInfo` field it builds.
+        Reads `drive_info.SYS_BLOCK` at call time (not a copied import) so the root a test
+        points at also governs every `DriveInfo` field it builds.
         """
         try:
             dev_dirs = sorted(drive_info_mod.SYS_BLOCK.iterdir())

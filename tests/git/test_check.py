@@ -42,8 +42,7 @@ def test_work_in_progress_warns_and_names_what_the_next_push_carries(
 
 def test_a_published_parent_recording_an_unserved_commit_fails(workspace: Workspace) -> None:
     loose = workspace.forge.commit(workspace.ref, "local only", {"x.txt": "x\n"})
-    workspace.forge.commit(workspace.path, "Record it", {})
-    workspace.git(workspace.path, "push", "-q", "origin", "main")
+    workspace.forge.publish(workspace.path, {})
 
     findings = workspace.tree().check()
 
@@ -73,9 +72,7 @@ def test_a_remote_that_does_not_answer_is_named_on_every_finding_it_shapes(
 
 
 def test_a_checkout_off_its_recorded_pointer_warns(workspace: Workspace) -> None:
-    seed = workspace.forge.seed(FOREIGN, "ref")
-    upstream = workspace.forge.commit(seed, "upstream", {"up.txt": "up\n"})
-    workspace.git(seed, "push", "-q", "origin", "main")
+    upstream = workspace.forge.publish(workspace.forge.seed(FOREIGN, "ref"), {"up.txt": "up\n"})
     workspace.git(workspace.ref, "fetch", "-q", "origin")
     workspace.git(workspace.ref, "checkout", "-q", "--detach", upstream)
 
@@ -86,11 +83,8 @@ def test_a_checkout_off_its_recorded_pointer_warns(workspace: Workspace) -> None
 
 def test_divergence_behind_and_untracked_branches_are_each_named(workspace: Workspace) -> None:
     colleague = workspace.colleague()
-    colleague.forge.commit(colleague.path, "theirs", {"theirs.txt": "theirs\n"})
-    colleague.git(colleague.path, "push", "-q", "origin", "main")
-    colleague.git(colleague.lib, "switch", "-q", "main")
-    colleague.forge.commit(colleague.lib, "theirs", {"theirs.txt": "theirs\n"})
-    colleague.git(colleague.lib, "push", "-q", "origin", "main")
+    colleague.forge.publish(colleague.path, {"theirs.txt": "theirs\n"})
+    colleague.forge.publish(colleague.lib, {"theirs.txt": "theirs\n"})
     workspace.forge.commit(workspace.path, "mine", {"mine.txt": "mine\n"})
     workspace.git(workspace.lib, "switch", "-q", "-c", "feature")
 

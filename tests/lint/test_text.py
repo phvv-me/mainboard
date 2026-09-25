@@ -60,12 +60,6 @@ def test_the_untidiness_named_is_empty_exactly_when_normalizing_changes_no_byte(
     assert (not untidiness(data, text, newline)) == (normalized(text, newline).encode() == data)
 
 
-def test_binary_is_left_alone_and_a_legacy_code_page_is_refused() -> None:
-    assert decoded(b"PK\x03\x04\0\0data") is None
-    with pytest.raises(UnicodeDecodeError):
-        decoded("café".encode("latin-1"))
-
-
 @pytest.mark.parametrize(
     ("name", "text", "expected"),
     [

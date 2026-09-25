@@ -27,10 +27,9 @@ _SCHEMA_VERSION = 1
 class Holder(FrozenModel):
     """One process holding a card.
 
-    pid: its process id.
     user: the account running it, empty when the host will not say.
     age_s: how long it has run, seconds.
-    command: its command line, abbreviated, empty when unreadable.
+    command: its command line cut to 80 characters, empty when unreadable.
     used_bytes: the card memory it holds when the driver attributes it.
     """
 
@@ -44,11 +43,7 @@ class Holder(FrozenModel):
 class CardOccupancy(FrozenModel):
     """One card's state at the moment of the reading.
 
-    index: the card's index on its host.
-    name: the card's name.
     utilization_pct: the compute utilization the driver reports.
-    memory_used_bytes: card memory in use.
-    memory_total_bytes: card memory in total.
     holders: the compute processes on it, empty when none or when the sensor cannot say.
     """
 
@@ -69,9 +64,7 @@ class Occupancy(FrozenOpenModel):
     """Every card of one host with who holds it, the JSON another machine reads back.
 
     schema_version: format revision, bumped when a field's meaning changes.
-    hostname: the host's network name.
-    at: when the reading was taken, UTC.
-    cards: one entry per card.
+    at: when the reading was taken, UTC ISO seconds.
     """
 
     schema_version: int = _SCHEMA_VERSION
@@ -109,12 +102,11 @@ def holder(pid: int, used_bytes: int) -> Holder:
     try:
         process = psutil.Process(pid)
         with process.oneshot():
-            command = " ".join(process.cmdline())[:80]
             return Holder(
                 pid=pid,
                 user=process.username(),
                 age_s=int(datetime.now(UTC).timestamp() - process.create_time()),
-                command=command,
+                command=" ".join(process.cmdline())[:80],
                 used_bytes=used_bytes,
             )
     except psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess:

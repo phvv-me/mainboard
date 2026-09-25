@@ -6,8 +6,7 @@
 # those can be present and still broken on a given center: a link checked out as a text file on
 # a Windows account that cannot make links, a server whose command is not on this machine's PATH,
 # a variable nothing defines, a path that exists only on the machine the file was written on.
-# Each is found here, and the links, the one thing a safe local action can fix, are repaired in
-# place.
+# Each is found here; the links, the one thing a safe local action can fix, are repaired in place.
 
 import json
 import os
@@ -39,15 +38,13 @@ _ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
 # The launcher that loads the workspace `.env` itself, so a server it starts needs nothing else.
 _TOOL = "mainboard"
 
-# The directory links git flattened to text files can be made as without the right to link.
 type Junction = Callable[[Path, Path], str]
 
 
 def junction(link: Path, target: Path) -> str:
     """Make `link` a Windows directory junction to `target`, answering why not, empty on success.
 
-    A junction needs no privilege, which is what makes it the stand-in for a directory link on an
-    account without Developer Mode.
+    A junction needs no privilege, so it stands in for a directory link without Developer Mode.
     """
     done = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=argv of fixed words and two paths since=2026-09-25
         ["cmd", "/d", "/c", "mklink", "/J", str(link), str(target)],
@@ -61,12 +58,10 @@ def junction(link: Path, target: Path) -> str:
 class Agents:
     """Validate every agent's workspace configuration here, repairing flattened links.
 
-    root: the workspace root.
     home: the user's home directory, where each agent keeps its per-user state.
     environment: the variables an agent started here sees, this process's own.
     dotenv: the variables the workspace `.env` defines, which `mainboard run` loads.
     which: finds a program on this machine's PATH, None when it is not there.
-    junction: makes a directory junction, the Windows stand-in for a directory link.
     """
 
     def __init__(
@@ -106,12 +101,12 @@ class Agents:
         repaired: list[str] = []
         broken: list[str] = []
         for path, target in self._flattened():
+            relative = path.relative_to(self.root).as_posix()
             try:
                 self._stand_in(path, target)
             except OSError as refusal:
-                broken.append(f"{path.relative_to(self.root).as_posix()} ({refusal})")
+                broken.append(f"{relative} ({refusal})")
                 continue
-            relative = path.relative_to(self.root).as_posix()
             Git(self.root).run("update-index", "--skip-worktree", "--", relative)
             repaired.append(relative)
         if broken:
@@ -141,18 +136,13 @@ class Agents:
         notes = []
         if "@AGENTS.md" not in (self.root / "CLAUDE.md").read_text(encoding="utf-8"):
             notes.append("CLAUDE.md does not include @AGENTS.md, so Claude Code never reads it")
-        if (self.root / ".claude").exists() and not (
-            self.root / ".claude" / "settings.json"
-        ).is_file():
+        claude = self.root / ".claude"
+        if claude.exists() and not (claude / "settings.json").is_file():
             notes.append(".claude does not reach .agents/settings.json")
-        if notes:
-            return Section(
-                section="agents: instructions", verdict=Verdict.WARN, detail="; ".join(notes)
-            )
         return Section(
             section="agents: instructions",
-            verdict=Verdict.PASS,
-            detail="AGENTS.md, CLAUDE.md and .claude -> .agents in place",
+            verdict=Verdict.WARN if notes else Verdict.PASS,
+            detail="; ".join(notes) or "AGENTS.md, CLAUDE.md and .claude -> .agents in place",
         )
 
     def servers(self) -> list[Section]:
@@ -252,12 +242,8 @@ class Agents:
         program = command[0] if isinstance(command, list) and command else command
         if isinstance(program, str) and program and not self.which(program):
             yield f"{server}: {program} is not on PATH"
-        text = json.dumps(entry)
-        launched = program == _TOOL
-        for name in sorted(set(variable.findall(text))):
-            if name in self.environment:
-                continue
-            if name in self.dotenv and launched:
+        for name in sorted(set(variable.findall(json.dumps(entry)))):
+            if name in self.environment or (name in self.dotenv and program == _TOOL):
                 continue
             where = (
                 "only in .env, which this server's launcher does not load"
@@ -265,8 +251,9 @@ class Agents:
                 else "undefined"
             )
             yield f"{server}: {name} is {where}"
-        for value in _strings(entry.get("env", entry.get("environment", {}))):
-            if _ABSOLUTE.match(value) and not Path(value).exists():
+        table = entry.get("env", entry.get("environment", {}))
+        for value in table.values() if isinstance(table, dict) else ():
+            if isinstance(value, str) and _ABSOLUTE.match(value) and not Path(value).exists():
                 yield f"{server}: {value} does not exist on this machine"
 
     def _flattened(self) -> list[tuple[Path, Path]]:
@@ -314,12 +301,3 @@ def dotenv(path: Path) -> dict[str, str]:
     return {
         name.strip(): value for name, sign, value in pairs if sign and not name.startswith("#")
     }
-
-
-def _strings(values: Json) -> list[str]:
-    """The string values of a server's environment table."""
-    return (
-        [value for value in values.values() if isinstance(value, str)]
-        if isinstance(values, dict)
-        else []
-    )

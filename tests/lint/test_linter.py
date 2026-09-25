@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from mainboard import MissionError, Project, load
-from mainboard.lint import Inventory, Linter, Report
+from mainboard import MissionError
+from mainboard.lint import Inventory, Report
 from mainboard.lint import linter as linter_module
 from mainboard.lint.process import Outcome
 
@@ -78,7 +78,7 @@ def test_a_check_writes_nothing_and_fails_with_every_writers_and_the_hygienes_ow
     workspace.write("notes.md", "fine\n")
     before = {name: (workspace.root / name).read_bytes() for name in ("pkgs/a/mod.py", "notes.md")}
 
-    report = _linter(workspace, check=True).lint(Inventory(workspace.root).changed())
+    report = workspace.linter(check=True).lint(Inventory(workspace.root).changed())
 
     assert {name: (workspace.root / name).read_bytes() for name in before} == before
     assert report.rewritten == ()
@@ -96,9 +96,7 @@ def test_a_check_writes_nothing_and_fails_with_every_writers_and_the_hygienes_ow
 def test_only_the_named_steps_run(workspace: Repository, check: bool) -> None:
     workspace.write("pkgs/a/mod.py", "x = 'bad'   \n")
 
-    report = _linter(workspace, check=check, only=["flag"]).lint(
-        [workspace.root / "pkgs/a/mod.py"]
-    )
+    report = workspace.linter(check=check, only=["flag"]).lint([workspace.root / "pkgs/a/mod.py"])
 
     assert [failure.step for failure in report.failures] == ["flag"]
     assert (workspace.root / "pkgs/a/mod.py").read_text() == "x = 'bad'   \n"
@@ -106,7 +104,7 @@ def test_only_the_named_steps_run(workspace: Repository, check: bool) -> None:
 
 def test_a_step_nobody_declared_is_refused_with_the_steps_there_are(workspace: Repository) -> None:
     with pytest.raises(MissionError, match="no lint step 'ruff'; the steps are text, first"):
-        _linter(workspace, only=["text", "ruff"])
+        workspace.linter(only=["text", "ruff"])
 
 
 def test_a_whole_owner_check_wakes_for_a_deleted_file_and_runs_inside_that_owner(
@@ -160,20 +158,15 @@ def test_per_file_commands_split_so_no_command_line_outgrows_the_budget(
     assert sorted(flagged) == [["m0.py"], ["m1.py"], ["m2.py"]]
 
 
-def test_nothing_to_read_runs_nothing_and_is_clean(workspace: Repository) -> None:
+def test_nothing_to_read_runs_nothing_and_a_per_file_tool_whose_files_are_gone_does_not_run(
+    workspace: Repository,
+) -> None:
     report = workspace.linter().lint([])
-
     assert report == Report(files=0)
     assert report.clean
     assert report.summary() == "lint: 0 files, rewrote 0, failed: none"
-
-
-def test_a_per_file_tool_whose_files_are_all_gone_does_not_run(workspace: Repository) -> None:
     (workspace.root / "pkgs/a/mod.py").unlink()
-
-    report = workspace.linter().lint([workspace.root / "pkgs/a/mod.py"])
-
-    assert report.clean
+    assert workspace.linter().lint([workspace.root / "pkgs/a/mod.py"]).clean
 
 
 def test_the_report_heads_each_finding_with_its_step_owner_and_exit() -> None:
@@ -185,10 +178,3 @@ def test_the_report_heads_each_finding_with_its_step_owner_and_exit() -> None:
 
     assert report.findings() == "ruff [pkgs/a] exited 1 after 0.2s\nE1"
     assert report.summary() == "lint: 3 files, rewrote 1 (a.py), failed: ruff"
-
-
-def _linter(
-    workspace: Repository, *, check: bool = False, only: list[str] | None = None
-) -> Linter:
-    manifest = load(workspace.root / Project().manifest)
-    return Linter(workspace.root, manifest, check=check, only=only or ())

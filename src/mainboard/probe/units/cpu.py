@@ -1,7 +1,7 @@
 from functools import cached_property
 from typing import ClassVar
 
-from ..enums import UnitKind, Vendor
+from ..enums import UnitKind
 from ..facts.memory import Memory
 from .unit import Unit
 
@@ -14,7 +14,6 @@ class CPU(Unit):
     logical_cores: int = 0
     physical_cores: int = 0
     current_clock_mhz: float | None = None
-    vendor: Vendor = Vendor.UNKNOWN
     kind: ClassVar[UnitKind] = UnitKind.CPU
     backend: str = "os"
 

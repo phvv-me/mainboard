@@ -1,16 +1,15 @@
 # The one CI gate a package states, in its own pyproject.toml, for every place that runs it.
 #
-# The gate used to live twice: as YAML steps GitHub ran and as whatever a developer remembered to
-# run before pushing. The two drifted, which is how a stale lock, a coverage hole and forty
-# Windows-only failures each reached CI first. Now `[tool.mainboard.ci]` is the gate and
-# `mainboard ci` is the only thing that runs it, from a developer's shell, with `--matrix` on a
-# remote host of each other platform before a push, and from the GitHub workflow, which is reduced
-# to checking out the code and calling that same verb.
+# The gate used to live twice, as YAML steps GitHub ran and as whatever a developer remembered to
+# run before pushing, and the two drifted: a stale lock, a coverage hole and forty Windows-only
+# failures each reached CI first. Now `[tool.mainboard.ci]` is the gate and `mainboard ci` alone
+# runs it: from a developer's shell, with `--matrix` on a remote host of each other platform before
+# a push, and from the GitHub workflow, which only checks out the code and calls that same verb.
 #
-# A step is a command line and never a shell script: Windows has no bash, and a gate that runs on
-# three platforms has to mean the same words on all three. A step runs on every platform the
-# package supports unless it names the ones it is for, which is also how a platform that needs a
-# different spelling (a coverage threshold Windows cannot meet) says so in the open.
+# A step is a command line, never a shell script: Windows has no bash, and a gate on three
+# platforms has to mean the same words on all three. A step runs on every platform the package
+# supports unless it names the ones it is for, which is also how a platform that needs a different
+# spelling (a coverage threshold Windows cannot meet) says so in the open.
 
 import tomllib
 from pathlib import Path
@@ -49,7 +48,6 @@ def family_of(platform: str) -> Family:
 class Step(Declared):
     """One command of the gate, run from the package directory and never through a shell.
 
-    name: what the report calls the step.
     run: the command line, split the way a POSIX shell splits words and never handed to one.
     only: the families the step runs on, every family the package supports when empty.
     timeout: seconds before the step and everything it started are stopped.
@@ -111,7 +109,6 @@ class Package(Declared):
     """A directory whose pyproject.toml declares a CI gate.
 
     root: the package directory, where every step runs.
-    definition: its gate.
     """
 
     root: Path
@@ -119,10 +116,7 @@ class Package(Declared):
 
     @classmethod
     def found(cls, start: Path) -> Self:
-        """The nearest package at or above `start` whose pyproject.toml declares a gate.
-
-        start: the directory the search begins in.
-        """
+        """The nearest package at or above `start` whose pyproject.toml declares a gate."""
         for directory in (start, *start.parents):
             try:
                 text = (directory / PYPROJECT).read_text(encoding="utf-8")

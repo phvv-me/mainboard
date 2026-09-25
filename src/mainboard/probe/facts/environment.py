@@ -4,27 +4,18 @@ from patos import FrozenModel
 
 from ..enums import Scheduler
 
+# In priority order: a login node often carries pueue beside the cluster's own scheduler, and a
+# job there belongs to the cluster.
+_LAUNCHERS = (("sbatch", Scheduler.SLURM), ("qsub", Scheduler.PBS), ("pueue", Scheduler.PUEUE))
+
 
 class Environment(FrozenModel):
-    """The host's execution environment, the job scheduler available on PATH.
-
-    scheduler: the job scheduler found on PATH.
-    """
+    """The host's execution environment, the job scheduler available on PATH."""
 
     scheduler: Scheduler = Scheduler.NONE
 
     @classmethod
     def probe(cls) -> Environment:
         """Detect the job scheduler on PATH."""
-        return cls(scheduler=Environment._detect_scheduler())
-
-    @staticmethod
-    def _detect_scheduler() -> Scheduler:
-        """Job scheduler on PATH, with cluster schedulers taking priority over pueue."""
-        if shutil.which("sbatch"):
-            return Scheduler.SLURM
-        if shutil.which("qsub"):
-            return Scheduler.PBS
-        if shutil.which("pueue"):
-            return Scheduler.PUEUE
-        return Scheduler.NONE
+        found = (scheduler for launcher, scheduler in _LAUNCHERS if shutil.which(launcher))
+        return cls(scheduler=next(found, Scheduler.NONE))

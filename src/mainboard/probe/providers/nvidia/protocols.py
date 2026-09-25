@@ -25,13 +25,11 @@ class CudaError(Protocol):
 
 
 class DeviceAttr(Protocol):
-    """The `cudaDeviceAttr` enum members read to probe memory coherence.
+    """The `cudaDeviceAttr` members read to probe memory coherence (see `NvidiaGPU.coherent`).
 
-    `cudaDevAttrPageableMemoryAccess` is set when the GPU can read host pageable memory
-    directly, and `cudaDevAttrConcurrentManagedAccess` when CPU and GPU may touch managed
-    pages concurrently. Both true is the Grace-Hopper / GB10 coherent-pool signature, where
-    host RAM is a peer NUMA node of HBM rather than a PCIe copy away, and
-    `cudaDevAttrHostNativeAtomicSupported` says device atomics on that host memory are native.
+    Pageable access: the GPU reads host pageable memory directly. Concurrent managed access: CPU
+    and GPU may touch managed pages at once. Host-native atomics: device atomics on host memory
+    are native, which only a coherent fabric (GH200, GB10) gives.
     """
 
     cudaDevAttrPageableMemoryAccess: int
@@ -42,24 +40,18 @@ class DeviceAttr(Protocol):
 class CudaRuntime(Protocol):
     """The `cuda.bindings.runtime` functions and enums the provider calls.
 
-    Every call returns the `(error, *values)` tuple the CUDA Runtime uses, where the
-    error is the opaque `cudaError_t` member compared against `cudaError_t.cudaSuccess`.
+    Every call returns `(error, *values)`, the error compared against `cudaError_t.cudaSuccess`.
     """
 
     cudaError_t: CudaError
     cudaDeviceAttr: DeviceAttr
 
     def cudaDeviceGetAttribute(self, attr: int, index: int) -> tuple[int, int]: ...
-
     def cudaDeviceGetPCIBusId(self, length: int, index: int) -> tuple[int, bytes]: ...
-
     def cudaRuntimeGetVersion(self) -> tuple[int, int]: ...
-
     def cudaGetDevice(self) -> tuple[int, int]: ...
-
     def cudaGetDeviceCount(self) -> tuple[int, int]: ...
     def cudaMemGetInfo(self) -> tuple[int, int, int]: ...
-
     def cudaSetDevice(self, index: int) -> tuple[int]: ...
 
 
@@ -85,11 +77,10 @@ class DriverModel(Protocol):
 
 
 class ClocksEvent(Protocol):
-    """The `nvmlClocksEventReasons` bits that mean the device is really being held back.
+    """The `nvmlClocksEventReasons` bits that cost real performance.
 
-    The enum carries benign members too (an idle device, an applied clock setting); only
-    the ones that cost real performance are named here, so the provider cannot read a
-    healthy device as a throttled one.
+    The benign members (an idle device, an applied clock setting) are left out, so the provider
+    cannot read a healthy device as a throttled one.
     """
 
     EVENT_REASON_SW_POWER_CAP: int
@@ -114,11 +105,7 @@ class PciInfo(Protocol):
 
 
 class Nvml(Protocol):
-    """The NVML functions the provider calls (snake_case `cuda.bindings._nvml`).
-
-    Handles are opaque device tokens threaded back into later calls, typed as the
-    dedicated `NvmlHandle` protocol below rather than inspected.
-    """
+    """The NVML functions the provider calls (snake_case `cuda.bindings._nvml`)."""
 
     ClockType: ClockDomain
     ClocksEventReasons: ClocksEvent
@@ -126,42 +113,26 @@ class Nvml(Protocol):
     TemperatureSensors: TemperatureSensor
 
     def device_get_count_v2(self) -> int: ...
-
     def device_get_compute_running_processes_v3(
         self, handle: NvmlHandle
     ) -> Sequence[ProcessInfo]: ...
 
     def device_get_cuda_compute_capability(self, handle: NvmlHandle) -> tuple[int, int]: ...
-
     def device_get_driver_model_v2(self, handle: NvmlHandle) -> tuple[int, int]: ...
-
     def device_get_current_clocks_event_reasons(self, handle: NvmlHandle) -> int: ...
-
     def device_get_handle_by_pci_bus_id_v2(self, pci_bus_id: str) -> NvmlHandle: ...
-
     def device_get_handle_by_index_v2(self, index: int) -> NvmlHandle: ...
     def device_get_handle_by_uuid(self, uuid: bytes) -> NvmlHandle: ...
-
     def device_get_max_clock_info(self, handle: NvmlHandle, clock: int) -> int: ...
-
     def device_get_memory_bus_width(self, handle: NvmlHandle) -> int: ...
-
     def device_get_memory_info_v2(self, handle: NvmlHandle) -> MemoryInfo: ...
-
     def device_get_name(self, handle: NvmlHandle) -> bytes | str: ...
-
     def device_get_power_usage(self, handle: NvmlHandle) -> int: ...
-
     def device_get_pci_info_v3(self, handle: NvmlHandle) -> PciInfo: ...
-
     def device_get_temperature_v(self, handle: NvmlHandle, sensor: int) -> int: ...
-
     def device_get_utilization_rates(self, handle: NvmlHandle) -> UtilizationInfo: ...
-
     def device_get_uuid(self, handle: NvmlHandle) -> bytes | str: ...
-
     def init_v2(self) -> None: ...
-
     def system_get_driver_version(self) -> bytes | str: ...
 
 
@@ -189,11 +160,10 @@ class SystemDevice(Protocol):
 
 
 class SystemDeviceType(Protocol):
-    """The `cuda.core.system.Device` class: a constructor by physical index and the enumeration
-    of every physical device, which ignores `CUDA_VISIBLE_DEVICES`."""
+    """The `cuda.core.system.Device` class, built by physical index; its enumeration of every
+    physical device ignores `CUDA_VISIBLE_DEVICES`."""
 
     def __call__(self, *, index: int) -> SystemDevice: ...
-
     def get_all_devices(self) -> Sequence[SystemDevice]: ...
 
 
@@ -201,7 +171,6 @@ class CoreSystem(Protocol):
     """The `cuda.core.system` module, a device factory plus its unsupported-feature error."""
 
     NotSupportedError: type[Exception]
-
     Device: SystemDeviceType
 
 

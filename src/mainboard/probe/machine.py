@@ -18,19 +18,16 @@ if TYPE_CHECKING:
 class Machine(Singleton):
     """Singleton facade for the host and hardware units.
 
-    Every hardware subsystem is best-effort, a host with no accelerator, no scheduler, or
-    no cgroup cap still answers with an empty or zeroed value rather than raising, so a
-    caller never needs to guard a probe behind a try/except. `compilers` is the one
-    deliberate exception, since a native CUDA build has no answer to give when the host
-    carries no CUDA device to target.
+    Every subsystem is best-effort: a host with no accelerator, no scheduler, or no cgroup cap
+    answers with an empty or zeroed value rather than raising. `compilers` is the one exception.
     """
 
     @cached_property
     def compilers(self) -> Compilers:
         """Host C++ and CUDA compilers targeting the newest CUDA device on this machine.
 
-        Raises `RuntimeError` when no CUDA device is present, because the compute
-        capability the build must target is read off the detected GPUs.
+        Raises `RuntimeError` without a CUDA device, the compute capability the build targets
+        being read off the detected GPUs.
         """
         capabilities = [gpu.cuda_architecture for gpu in self.gpus if isinstance(gpu, NvidiaGPU)]
         if not capabilities:

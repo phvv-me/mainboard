@@ -38,26 +38,16 @@ class GpuFact(FrozenOpenModel):
 class HostFacts(FrozenOpenModel):
     """A versioned, wire-portable snapshot of one host's compute resources.
 
-    This is the JSON another machine parses (a dispatcher sizing a job against a
-    remote host's cgroup cap and scratch space), so it stays a `FrozenOpenModel`,
-    letting a reader on an older `schema_version` tolerate a newer writer adding
-    fields instead of failing to parse.
+    This is the JSON another machine parses (a dispatcher sizing a job against a remote host's
+    cgroup cap and scratch space), so it stays a `FrozenOpenModel`: a reader on an older
+    `schema_version` tolerates a newer writer adding fields instead of failing to parse.
 
-    schema_version: format revision, bumped when a field's meaning changes, not
-    when one is only added (an addition is what `FrozenOpenModel` already
-    tolerates).
-    hostname: network name of the probed host.
-    cpu_name: CPU model name.
+    schema_version: bumped when a field's meaning changes, not when one is only added.
     cpu_logical_cores: logical CPU threads including hyperthreading.
-    memory_total_bytes: total system RAM.
     cgroup: the enforced cgroup memory cap, the real OOM-kill ceiling for a job.
-    scratch: the fastest writable node-local scratch tier with its free space.
-    scheduler: the job scheduler available on the host's PATH.
     pixi: the pixi this machine runs, empty when it runs none. Not hardware, but the one fact
         about a machine that decides whether the environments it builds are the ones a dispatch
         addressed, and until it was printed here nobody could see two hosts disagreeing.
-    gpus: detected GPUs with name, memory capacity, and dispatch key, empty when none.
-    fabric: detected InfiniBand/RoCE fabric ports, empty when none.
     system: the operating system, filesystem, git settings, tools and NVIDIA driver, read by the
         same census `center migrate` sends to a machine with no tool on it yet, so a finding
         about a host never depends on which verb looked. Empty from a host whose tool predates it.
@@ -85,18 +75,13 @@ class HostFacts(FrozenOpenModel):
         """
         machine = Machine()
         host = machine.host
-        cgroup, scratch = host.cgroup_memory, host.scratch
         return cls(
             hostname=platform.node(),
             cpu_name=machine.cpu.label,
             cpu_logical_cores=host.logical_cpus,
             memory_total_bytes=host.memory.total_bytes,
-            cgroup=CgroupCap(limit_bytes=cgroup.limit_bytes, capped=cgroup.capped),
-            scratch=ScratchInfo(
-                path=str(scratch.path) if scratch.path else None,
-                free_bytes=scratch.free_bytes,
-                source=scratch.source,
-            ),
+            cgroup=CgroupCap.model_validate(host.cgroup_memory.model_dump()),
+            scratch=ScratchInfo.model_validate(host.scratch.model_dump(mode="json")),
             scheduler=machine.environment.scheduler,
             pixi=PixiEngine().version(),
             gpus=tuple(

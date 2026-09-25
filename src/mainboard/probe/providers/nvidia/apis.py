@@ -9,9 +9,7 @@ if TYPE_CHECKING:
 
 def text(value: bytes | str) -> str:
     """Convert CUDA/NVML byte strings and scalars to text."""
-    if isinstance(value, bytes):
-        return value.decode(errors="replace")
-    return value
+    return value.decode(errors="replace") if isinstance(value, bytes) else value
 
 
 class NvidiaApis:
@@ -49,7 +47,7 @@ class NvidiaApis:
         )
 
     def _load_optional_cuda_layers(self) -> None:
-        """Load richer CUDA layers without making either one a discovery requirement."""
+        """Load the richer CUDA layers, neither of them a discovery requirement."""
         with suppress(ImportError, OSError):
             self.runtime = cast("CudaRuntime", import_module("cuda.bindings.runtime"))
         if self.runtime is not None:

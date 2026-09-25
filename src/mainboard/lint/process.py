@@ -22,7 +22,6 @@ class Outcome(FrozenModel):
     step: the tool name, or `text` for the built-in hygiene.
     owner: the owner directory, workspace-relative, `.` for the root.
     code: the exit code, `124` for a step killed at its deadline and `127` for a missing tool.
-    seconds: wall time the step took.
     output: everything the step printed, stdout and stderr interleaved.
     """
 

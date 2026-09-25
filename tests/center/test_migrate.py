@@ -313,34 +313,20 @@ def test_the_extras_carried_are_the_ones_this_center_installed(
     assert Migration.extras() == ["plot"]
 
 
-class Answered:
-    """`subprocess.run` answering with a fixed exit status and output, or refusing to start."""
-
-    def __init__(self, status: int = 0, output: str = "", refused: bool = False) -> None:
-        self.status = status
-        self.output = output
-        self.refused = refused
-
-    def completed(
-        self, argv: Sequence[str], **options: bool | int
-    ) -> subprocess.CompletedProcess[str]:
-        if self.refused:
-            raise FileNotFoundError(argv[0])
-        return subprocess.CompletedProcess(argv, self.status, self.output, "")
-
-
 @pytest.mark.parametrize(
-    ("answer", "token"),
-    [
-        (Answered(0, "gho_abc\n"), "gho_abc"),
-        (Answered(1, "not logged in"), ""),
-        (Answered(refused=True), ""),
-    ],
+    ("status", "output", "token"),
+    [(0, "gho_abc\n", "gho_abc"), (1, "not logged in", ""), (None, "", "")],
     ids=["signed in", "signed out", "no gh here"],
 )
 def test_the_github_token_is_whatever_gh_holds_and_nothing_otherwise(
-    monkeypatch: pytest.MonkeyPatch, answer: Answered, token: str
+    monkeypatch: pytest.MonkeyPatch, status: int | None, output: str, token: str
 ) -> None:
-    """An absent or signed-out gh is a missing login to report, never an exception."""
-    monkeypatch.setattr(migrate.subprocess, "run", answer.completed)
+    """An absent or signed-out gh (`None`: it cannot start) is a missing login, never a raise."""
+
+    def run(argv: Sequence[str], **options: bool | int) -> subprocess.CompletedProcess[str]:
+        if status is None:
+            raise FileNotFoundError(argv[0])
+        return subprocess.CompletedProcess(argv, status, output, "")
+
+    monkeypatch.setattr(migrate.subprocess, "run", run)
     assert github_token() == token

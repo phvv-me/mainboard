@@ -260,8 +260,7 @@ def test_every_lint_tool_must_start_from_the_environment_or_this_machine(
         {"fmt": [f"bin/fmtx-mainboard-test{suffix}", f"bin/fixx-mainboard-test{suffix}"]},
     )
     one = checks.lint()
-    installed_types = prefix(board) / "bin" / f"typesx-mainboard-test{suffix}"
-    installed_types.touch(mode=0o755)
+    (prefix(board) / "bin" / f"typesx-mainboard-test{suffix}").touch(mode=0o755)
     both = checks.lint()
 
     assert (missing.verdict, missing.detail) == (

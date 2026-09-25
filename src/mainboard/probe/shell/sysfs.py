@@ -5,12 +5,10 @@ _DMI_ROOT = Path("/sys/class/dmi/id")
 
 
 def read_dmi(field: str) -> str:
-    """Read a DMI identity field from `/sys/class/dmi/id`, stripped.
+    """A DMI identity field from `/sys/class/dmi/id`, e.g. `board_vendor`, stripped.
 
-    Returns an empty string when the field is absent or unreadable, so callers
-    can probe Linux-only DMI files without guarding their existence first.
-
-    field: DMI file name, e.g. `board_vendor` or `bios_version`.
+    Empty when the field is absent or unreadable, so callers probe Linux-only DMI files
+    without guarding their existence first.
     """
     with suppress(OSError):
         return (_DMI_ROOT / field).read_text(encoding="utf-8").strip()

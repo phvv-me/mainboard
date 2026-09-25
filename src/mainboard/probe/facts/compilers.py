@@ -24,10 +24,7 @@ _KIND_BY_MARKER = (
 
 
 class Compiler(FrozenModel):
-    """One discovered compiler binary.
-
-    path: absolute path to the compiler executable.
-    """
+    """One discovered compiler binary, by absolute path."""
 
     path: Path
 
@@ -45,10 +42,9 @@ class Compiler(FrozenModel):
 class Compilers(FrozenModel):
     """Host C++ and CUDA compilers with the release flags a native build configures with.
 
-    This is what a CMake or nanobind build reads to pin its toolchain, so each compiler is
-    resolved lazily and raises `FileNotFoundError` when it is genuinely absent, letting the
-    caller learn which half of the toolchain is missing instead of configuring a build
-    against an empty path.
+    What a CMake or nanobind build reads to pin its toolchain, so each compiler resolves lazily
+    and raises `FileNotFoundError` when absent: the caller learns which half of the toolchain is
+    missing instead of configuring a build against an empty path.
 
     arch: host CPU architecture, `aarch64` selecting Grace Clang when it is installed.
     cpu: host CPU model name, choosing the `-mcpu` target on aarch64.

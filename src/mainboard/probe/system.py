@@ -10,8 +10,7 @@ from .census import Census
 class Card(FrozenOpenModel):
     """One NVIDIA card as its driver describes it.
 
-    name: the card's marketing name, `NVIDIA GeForce RTX 5080` say.
-    driver: the driver version serving it.
+    name: the marketing name, `NVIDIA GeForce RTX 5080` say.
     capability: the compute capability, `12.0` for Blackwell consumer cards.
     vram_mb: its memory in MiB.
     """
@@ -30,8 +29,7 @@ class System(FrozenOpenModel):
     an older tool keeps parsing what a newer census adds.
 
     system: the kernel as `platform.system()` spells it, empty before any census ran.
-    release: the kernel or OS release.
-    version: the operating system's own name for its version.
+    version: the operating system's own name for its version, e.g. `Ubuntu 24.04.1 LTS`.
     arch: the machine architecture as `platform.machine()` spells it.
     python: the interpreter the census ran under.
     shells: every shell found, by name, with its path.
@@ -44,7 +42,6 @@ class System(FrozenOpenModel):
     git: the global git settings a clone inherits, empty values for unset ones.
     tools: every tool that answered with a version, by name.
     cuda: the maximum CUDA version the NVIDIA driver supports, empty without one.
-    gpus: every NVIDIA card the driver lists.
     """
 
     system: str = ""
@@ -66,10 +63,7 @@ class System(FrozenOpenModel):
 
     @classmethod
     def collected(cls, root: Path) -> System:
-        """This machine's census, the filesystem measured where `root` lives.
-
-        root: the workspace root, or where one is about to be put.
-        """
+        """This machine's census, the filesystem measured where the workspace `root` is or goes."""
         return cls.model_validate(Census().survey(str(root)))
 
     @property

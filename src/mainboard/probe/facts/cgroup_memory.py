@@ -5,9 +5,6 @@ from pathlib import Path
 import psutil
 from patos import FrozenModel
 
-# v2 writes one unified `0::/path` line and keeps `memory.max` under `<root>/<path>`; v1 writes
-# one line per controller (`N:memory:/path`) and keeps `memory.limit_in_bytes` plus the memsw
-# `memory.memsw.limit_in_bytes` under `<root>/memory/<path>`.
 _CGROUP_PROC = Path("/proc/self/cgroup")
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _V1_FILES = ("memory.limit_in_bytes", "memory.memsw.limit_in_bytes")
@@ -17,16 +14,15 @@ _V2_FILE = "memory.max"
 class CgroupMemory(FrozenModel):
     """The memory ceiling a job actually runs inside, read off the Linux cgroup tree.
 
-    A scheduler (PBS, SLURM) caps a job's memory by writing the limit onto a cgroup the job
-    shares, usually an ANCESTOR of the process's own leaf cgroup (the jobid scope), so the
-    enforced ceiling is the tightest finite value found walking from the process cgroup up to
-    the root. Both cgroup versions are read, v1 over `memory.limit_in_bytes` and the memsw
-    `memory.memsw.limit_in_bytes` (the RAM + swap ceiling Miyabi's GH200 PBS enforces), v2 over
-    `memory.max`. When no level carries a finite cap, the job is uncapped and `limit_bytes` is
-    the host's total RAM, so a caller always reads a finite ceiling to size a working set under.
+    A scheduler (PBS, SLURM) writes the limit onto a cgroup the job shares, usually an ANCESTOR
+    of the process's own leaf (the jobid scope), so the enforced ceiling is the tightest finite
+    cap walking from the process cgroup up to the root. v1 caps are `memory.limit_in_bytes` and
+    the memsw `memory.memsw.limit_in_bytes` (the RAM + swap ceiling Miyabi's GH200 PBS enforces),
+    v2's is `memory.max`.
 
-    limit_bytes: the tightest finite enforced cap in bytes, or the host total RAM when uncapped.
-    capped: whether a real cgroup limit was found (`False` means the host total RAM is reported).
+    limit_bytes: the tightest finite cap, or the host total RAM when uncapped, so a caller always
+        reads a finite ceiling to size a working set under.
+    capped: whether a real cgroup limit was found.
     """
 
     limit_bytes: int = 0
@@ -64,18 +60,15 @@ class CgroupMemory(FrozenModel):
 
     @classmethod
     def enforced_limit(cls) -> int | None:
-        """The tightest finite cgroup memory limit on this process, or `None` when uncapped.
+        """The tightest finite cgroup memory limit on this process, `None` when uncapped.
 
-        Resolves the process's cgroup membership from `/proc/self/cgroup`, then walks the
-        relevant node up to the root collecting every finite cap file value, and returns the
-        smallest. Returns `None` when `/proc/self/cgroup` is unreadable or no level is capped.
+        `/proc/self/cgroup` being unreadable also answers `None`.
         """
-        membership = cls.read_membership()
-        if membership is None:
+        if (membership := cls.read_membership()) is None:
             return None
         node, cap_files = membership
-        caps = [cap for level in cls.ancestors(node) for cap in cls.read_caps(level, cap_files)]
-        return min(caps) if caps else None
+        caps = (cap for level in cls.ancestors(node) for cap in cls.read_caps(level, cap_files))
+        return min(caps, default=None)
 
     @classmethod
     def probe(cls) -> CgroupMemory:
@@ -86,11 +79,10 @@ class CgroupMemory(FrozenModel):
 
     @classmethod
     def read_membership(cls) -> tuple[Path, tuple[str, ...]] | None:
-        """The starting cgroup node and its version's cap files, or `None` when unreadable.
+        """The starting cgroup node and its version's cap files, `None` when unreadable.
 
-        v2's unified line wins when present (`0::/path` under `<root>/<path>`, `memory.max`), and
-        otherwise the v1 memory-controller line is used (`<root>/memory/<path>`, the two
-        `limit_in_bytes` files). Returns `None` when the membership file cannot be read.
+        v2's unified `0::/path` line wins when present (node `<root>/<path>`); otherwise the v1
+        `N:memory:/path` line is used (node `<root>/memory/<path>`).
         """
         try:
             lines = _CGROUP_PROC.read_text(encoding="utf-8").splitlines()

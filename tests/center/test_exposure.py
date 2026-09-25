@@ -365,26 +365,11 @@ def test_the_path_file_puts_the_environment_first_once_however_often_it_is_sourc
     assert done.stdout.split(":") == expected
 
 
-@pytest.mark.parametrize("system", ["Windows", "Linux", "Darwin"])
-def test_the_executable_folders_follow_conda_s_own_activation_order(
-    tmp_path: Path, system: str
-) -> None:
+def test_the_executable_folders_follow_conda_s_own_activation_order(tmp_path: Path) -> None:
     """Windows prefixes spread executables over six folders, the prefix itself first."""
-    folders = directories(tmp_path, system)
-
-    expected = (
-        [
-            tmp_path,
-            tmp_path / "Library" / "mingw-w64" / "bin",
-            tmp_path / "Library" / "usr" / "bin",
-            tmp_path / "Library" / "bin",
-            tmp_path / "Scripts",
-            tmp_path / "bin",
-        ]
-        if system == "Windows"
-        else [tmp_path / "bin"]
-    )
-    assert folders == expected
+    windows = ["Library/mingw-w64/bin", "Library/usr/bin", "Library/bin", "Scripts", "bin"]
+    assert directories(tmp_path, "Windows") == [tmp_path, *(tmp_path / sub for sub in windows)]
+    assert directories(tmp_path, "Linux") == directories(tmp_path, "Darwin") == [tmp_path / "bin"]
 
 
 def test_the_commands_a_package_installs_are_read_from_conda_s_records(tmp_path: Path) -> None:

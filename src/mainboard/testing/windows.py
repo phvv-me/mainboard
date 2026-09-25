@@ -1,29 +1,26 @@
-# A POSIX machine made to answer the way a bare Windows box does, for the two differences that
-# broke this package on Windows more than any other: the tools a POSIX shell brings, and the way a
-# path reads once it is text.
+# A POSIX machine made to answer the way a bare Windows box does, for the differences that broke
+# this package on Windows most: the tools a POSIX shell brings, how a path reads as text, and two
+# file-system rules.
 #
-# THE TOOLS. A Windows center has no bash, sh, rsync, flock or timeout, so code that shells out to
-# one of them works on every developer's Mac and fails only on the Windows runner. The PATH is
-# rebuilt without them: a directory of links to everything else on PATH, since `/usr/bin` holds
-# git and bash side by side and dropping the directory would drop both. On Windows itself the
-# POSIX tools arrive as whole directories (Git for Windows' `usr/bin`), so those are dropped.
+# THE TOOLS. A Windows center has no bash, sh, rsync, flock or timeout, so code shelling out to
+# one works on every Mac and fails only on the Windows runner. The PATH is rebuilt without them
+# as a directory of links to everything else, since `/usr/bin` holds git and bash side by side.
+# On Windows itself the POSIX tools arrive as whole directories (Git for Windows' `usr/bin`), so
+# those are dropped.
 #
-# THE TEXT. `str(path)` is the one spelling that differs by platform while the program around it
-# does not: `pkg/one.py` on macOS, `pkg\one.py` on Windows. Every Windows-only failure of that
-# kind was a path turned into text another reader parses (an ssh config, a tool's argv, a line an
-# agent reads) and a test that expected forward slashes. So `str()` of a path renders with
-# backslashes when first-party code asks for it, exactly as Windows would, while the interpreter's
-# own machinery (`os.fspath`, pathlib itself) keeps the real spelling. Windows' own system calls
-# read a backslash path as the same file and this machine's do not, so a rendered spelling is read
-# back where the system reads it: parsed into a path again, opened, or handed to a process as its
-# working directory, its environment or an absolute path in its argv. What stays different is
-# exactly what differs on Windows: the text itself.
+# THE TEXT. `str(path)` is `pkg/one.py` on macOS and `pkg\one.py` on Windows, and every
+# Windows-only failure of that kind was a path turned into text another reader parses (an ssh
+# config, a tool's argv, a line an agent reads) and a test expecting forward slashes. So `str()`
+# of a path renders with backslashes when first-party code asks, while the interpreter's own
+# machinery (`os.fspath`, pathlib itself) keeps the real spelling. Windows' system calls read a
+# backslash path as the same file and this machine's do not, so a rendered spelling is read back
+# where the system reads it: parsed into a path again, opened, or handed to a process as its
+# working directory, its environment or an absolute path in its argv. Only the text differs, as
+# on Windows.
 #
-# THE FILES. Two file-system rules POSIX never enforces broke code only on Windows: a
-# `NamedTemporaryFile` cannot be opened again by name while it is still open, and a symlink needs
-# a privilege an ordinary account lacks. Both are enforced here, so a reopen fails with Windows'
-# own sharing violation and a link fails the way it does without Developer Mode, and code that
-# needs a fallback shows whether it has one.
+# THE FILES. A `NamedTemporaryFile` cannot be opened again by name while still open, and a
+# symlink needs a privilege an ordinary account lacks. Both are enforced, with Windows' own
+# errors, so code that needs a fallback shows whether it has one.
 
 import builtins
 import hashlib
@@ -55,11 +52,10 @@ POSIX_TOOLS = frozenset(
     {"bash", "sh", "dash", "zsh", "ksh", "rsync", "flock", "timeout", "setsid", "nohup", "stdbuf"}
 )
 
-# Where the interpreter's own code and every installed distribution live. A frame from any of
-# them keeps the real spelling, since that is the machinery that has to go on working. Each is
-# taken as sysconfig names it, as its links resolve, and as the loaded standard library itself
-# reports it, because a uv-managed interpreter is reached through a link that names another
-# directory than the one its code objects were compiled from.
+# Where the interpreter's own code and every installed distribution live, whose frames keep the
+# real spelling. Each is taken as sysconfig names it, as its links resolve, and as the loaded
+# standard library reports it, because a uv-managed interpreter is reached through a link naming
+# another directory than the one its code objects were compiled from.
 _DECLARED = [sysconfig.get_path(key) for key in ("stdlib", "platstdlib", "purelib", "platlib")]
 _SYSTEM = tuple(
     {
@@ -73,10 +69,7 @@ _SYSTEM = tuple(
 
 @cache
 def first_party(filename: str) -> bool:
-    """Whether code in `filename` is the project's own: neither the interpreter's nor installed.
-
-    filename: a code object's `co_filename`.
-    """
+    """Whether code in `filename` (a `co_filename`) is neither the interpreter's nor installed."""
     return not filename.startswith(("<", *_SYSTEM)) and not os.path.realpath(filename).startswith(
         _SYSTEM
     )
@@ -111,7 +104,6 @@ class Spelling:
     def real(self, value: str, *, relative: bool = True) -> str:
         """`value` with every rendered spelling in it read back to the path it stands for.
 
-        value: text that may carry a rendered path.
         relative: read relative spellings back too, not only absolute ones.
         """
         if "\\" not in value:
@@ -168,7 +160,6 @@ class Spelling:
 class Sharing:
     """Windows' rules for the files a test opens: no second open of a live temporary file.
 
-    spelling: the rendered paths an opened name is read back through first.
     live: every open `NamedTemporaryFile` that deletes itself, by the name it can be reached at.
     """
 
@@ -230,8 +221,9 @@ class WindowsLike:
         spelling = Spelling()
         monkeypatch.setattr(PurePath, "__str__", spelling.text(PurePath.__str__))
         monkeypatch.setattr(PurePath, "__init__", spelling.parsing(PurePath.__init__))
-        spawn = getattr(subprocess.Popen, SPAWN)
-        monkeypatch.setattr(subprocess.Popen, SPAWN, spelling.spawning(spawn))
+        monkeypatch.setattr(
+            subprocess.Popen, SPAWN, spelling.spawning(getattr(subprocess.Popen, SPAWN))
+        )
         sharing = Sharing(spelling)
         monkeypatch.setattr(
             tempfile, "NamedTemporaryFile", sharing.temporary(tempfile.NamedTemporaryFile)
@@ -242,14 +234,12 @@ class WindowsLike:
         monkeypatch.setattr(os, "symlink", unprivileged)
 
     def path(self, inherited: str) -> str:
-        """`inherited` with every POSIX tool gone and everything else still found.
-
-        inherited: the PATH the test started with.
-        """
+        """The PATH `inherited` with every POSIX tool gone and everything else still found."""
         directories = [Path(entry) for entry in inherited.split(os.pathsep) if entry]
         if self.platform == "win32":
-            kept = [directory for directory in directories if not _holds_posix(directory)]
-            return os.pathsep.join(os.fspath(directory) for directory in kept)
+            return os.pathsep.join(
+                os.fspath(directory) for directory in directories if not _holds_posix(directory)
+            )
         farm = self.farms / hashlib.blake2b(inherited.encode(), digest_size=8).hexdigest()
         if not farm.is_dir():
             self.farms.mkdir(parents=True, exist_ok=True)

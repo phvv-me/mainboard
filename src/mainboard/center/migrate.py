@@ -218,7 +218,6 @@ class Migration:
         """Send the parcels the destination does not already hold, answering one row.
 
         label: what the parcels are, the row's name.
-        parcels: every file of that kind this center carries.
         """
         self.watch(f"carrying {label} to {self.destination}")
         listing = [parcel.listing() for parcel in parcels]

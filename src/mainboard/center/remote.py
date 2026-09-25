@@ -34,10 +34,7 @@ _PRIVATE = stat.S_IRUSR | stat.S_IWUSR
 
 
 def where(root: str) -> dict[str, Json]:
-    """The workspace root and the home directory as this machine spells them, both absolute.
-
-    root: the root as given, `~` and relative forms allowed.
-    """
+    """Root and home, absolute in this machine's spelling; `root` may be relative or use `~`."""
     return {
         "root": str(Path(root).expanduser().absolute()),
         "home": str(Path.home()),
@@ -57,7 +54,6 @@ def inventory(root: str, parcels: Sequence[Mapping[str, str]]) -> list[Json]:
     content, `mtime:<seconds>:<size>` compares the stamp a shipped tree keeps, which is what lets
     a second migration skip gigabytes of receipts it already moved.
 
-    root: the workspace root.
     parcels: each `{"key", "anchor", "path", "fingerprint"}`.
     """
     return [
@@ -75,7 +71,6 @@ def place(root: str, secret: Sequence[str]) -> dict[str, Json]:
     moved aside to `<name>.migrate-backup` the first time, so whatever the destination had is
     never lost, and replaced; one holding the same bytes is left alone.
 
-    root: the workspace root.
     secret: the member names that are credentials, written readable by this user alone.
     """
     private = set(secret)
@@ -84,10 +79,10 @@ def place(root: str, secret: Sequence[str]) -> dict[str, Json]:
         for member in stream:
             anchor, _, relative = member.name.partition("/")
             target = _target(root, anchor, relative)
-            source = stream.extractfile(member)
-            if source is None:
-                continue
-            written += _write(target, source, mtime=member.mtime, private=member.name in private)
+            if (source := stream.extractfile(member)) is not None:
+                written += _write(
+                    target, source, mtime=member.mtime, private=member.name in private
+                )
     return {"written": written}
 
 
@@ -101,10 +96,8 @@ def clone(
     that holds anything else is refused, since nothing here may overwrite a directory it did not
     make.
 
-    root: where the workspace goes.
     url: the root repository's remote.
     branch: the branch the center is on, empty for a detached HEAD.
-    commit: the commit the center's HEAD is on.
     submodules: each owned submodule as `[parent, path]`, parents first, both relative.
     """
     base = Path(root).expanduser()
@@ -123,11 +116,11 @@ def login(token: str) -> dict[str, Json]:
 
     token: the GitHub token, read by gh from its stdin and never written anywhere else.
     """
-    signed = _run(("gh", "auth", "login", "--with-token"), stdin=token)
-    if signed[0]:
-        return {"signed": False, "detail": signed[1]}
-    wired = _run(("gh", "auth", "setup-git"))
-    return {"signed": True, "detail": "" if not wired[0] else wired[1]}
+    status, said = _run(("gh", "auth", "login", "--with-token"), stdin=token)
+    if status:
+        return {"signed": False, "detail": said}
+    status, said = _run(("gh", "auth", "setup-git"))
+    return {"signed": True, "detail": said if status else ""}
 
 
 def merge(path: str, key: str, entries: Mapping[str, Json]) -> dict[str, Json]:
@@ -137,8 +130,6 @@ def merge(path: str, key: str, entries: Mapping[str, Json]) -> dict[str, Json]:
     file a tool on this machine already keeps its own account in.
 
     path: the file, relative to home.
-    key: the top-level key whose object receives the entries.
-    entries: the members to set there.
     """
     target = Path.home() / path
     try:
@@ -224,20 +215,19 @@ def _prepare() -> None:
 
 def _checkout(base: Path, url: str, branch: str, commit: str) -> dict[str, str]:
     """Put the root repository at `commit`, cloning it first when it is not here yet."""
+    held = {"repo": ".", "outcome": "held"}
     if (base / ".git").exists():
-        origin = _git(base, "remote", "get-url", "origin")
-        if origin[1].strip() != url:
-            return {"repo": ".", "outcome": "held", "detail": f"{base} is another repository"}
+        if _git(base, "remote", "get-url", "origin")[1].strip() != url:
+            return {**held, "detail": f"{base} is another repository"}
         _git(base, "fetch", "--quiet", "origin")
         head = _git(base, "rev-parse", "HEAD")[1].strip()
         if head != commit and _git(base, "merge-base", "--is-ancestor", head, commit)[0]:
             return {
-                "repo": ".",
-                "outcome": "held",
+                **held,
                 "detail": f"{base} holds commits {commit[:12]} does not; left as it is",
             }
     elif base.exists() and any(base.iterdir()):
-        return {"repo": ".", "outcome": "held", "detail": f"{base} is not empty; choose --root"}
+        return {**held, "detail": f"{base} is not empty; choose --root"}
     else:
         found = _run(("git", "clone", "--no-checkout", "--quiet", url, str(base)))
         if found[0]:

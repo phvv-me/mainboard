@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from ..core.project import Project
 from ..core.section import Section, Verdict
 from ..dispatch.shells import quoted
+from ..workstation import abbreviated
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -62,9 +63,8 @@ _NAMED = 6
 
 
 def directories(prefix: Path, system: str) -> list[Path]:
-    """Every directory of `prefix` that holds executables, in the order PATH should carry them.
+    """Every directory of the installed `prefix` holding executables, in PATH order.
 
-    prefix: the installed environment prefix.
     system: the platform as `platform.system()` spells it.
     """
     if system == "Windows":
@@ -73,39 +73,34 @@ def directories(prefix: Path, system: str) -> list[Path]:
 
 
 def executables(prefix: Path, packages: Sequence[str], system: str) -> list[str]:
-    """The command names the declared `packages` put in `prefix`, from conda's own records.
-
-    prefix: the installed environment prefix.
-    packages: the conda package names the manifest declares.
-    system: the platform as `platform.system()` spells it.
-    """
-    wanted = set(packages)
-    names: set[str] = set()
-    for record in sorted((prefix / "conda-meta").glob("*.json")):
-        document = json.loads(record.read_text(encoding="utf-8"))
-        if document.get("name") not in wanted:
-            continue
-        for file in document.get("files", []):
-            path = Path(file)
-            if system == "Windows" and path.suffix.lower() in _RUNNABLE:
-                names.add(path.stem)
-            elif (
-                system != "Windows"
-                and path.parent.as_posix() == "bin"
-                and _runnable(prefix / path)
-            ):
-                names.add(path.name)
-    return sorted(names)
+    """The command names the declared conda `packages` put in `prefix`, from conda's records."""
+    records = [
+        json.loads(record.read_text(encoding="utf-8"))
+        for record in (prefix / "conda-meta").glob("*.json")
+    ]
+    files = [
+        Path(file)
+        for record in records
+        if record.get("name") in packages
+        for file in record.get("files", [])
+    ]
+    if system == "Windows":
+        return sorted({path.stem for path in files if path.suffix.lower() in _RUNNABLE})
+    return sorted(
+        {
+            path.name
+            for path in files
+            if path.parent.as_posix() == "bin" and _runnable(prefix / path)
+        }
+    )
 
 
 class Exposure:
     """Put an environment's executable directories on every shell's PATH, then prove it.
 
     folders: the environment's executable directories, first searched first.
-    system: the platform as `platform.system()` spells it.
     home: the user's home directory, where startup files and the PATH file live.
     shells: every shell on this machine, by name, with its path.
-    spawn: runs one command under an environment.
     """
 
     def __init__(
@@ -142,15 +137,7 @@ class Exposure:
 
     def _registry(self) -> Section:
         """Prepend the directories to the Windows user PATH, dropping older prefixes' entries."""
-        _, held = self.spawn(
-            (
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "[Environment]::GetEnvironmentVariable('Path','User')",
-            ),
-            os.environ,
-        )
+        _, held = self._powershell("[Environment]::GetEnvironmentVariable('Path','User')")
         entries = [entry for entry in held.strip().split(";") if entry]
         kept = [
             entry
@@ -162,22 +149,16 @@ class Exposure:
             return Section(
                 section="path", verdict=Verdict.PASS, detail="the environment is on the user PATH"
             )
-        value = ";".join(wanted)
-        status, said = self.spawn(
-            (
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                f"[Environment]::SetEnvironmentVariable('Path', {quoted(value)}, 'User')",
-            ),
-            os.environ,
+        command = (
+            f"[Environment]::SetEnvironmentVariable('Path', {quoted(';'.join(wanted))}, 'User')"
         )
+        status, said = self._powershell(command)
         if status:
             return Section(
                 section="path",
                 verdict=Verdict.FAIL,
                 detail=f"the user PATH could not be written: {said.strip()[-160:]}",
-                fix=f"[Environment]::SetEnvironmentVariable('Path', {quoted(value)}, 'User')",
+                fix=command,
             )
         return Section(
             section="path",
@@ -199,11 +180,9 @@ class Exposure:
             ),
             "export PATH",
         ]
-        changed = _written(path_file, "\n".join(lines) + "\n")
+        written = [path_file.name] if _written(path_file, "\n".join(lines) + "\n") else []
         files = sorted({file for kind in self.shells for file in _STARTUP.get(kind, ())})
-        wired = [file for file in files if _sourced(self.home / file)]
-        touched = [path_file.name] if changed else []
-        touched += wired
+        touched = written + [file for file in files if _sourced(self.home / file)]
         return Section(
             section="path",
             verdict=Verdict.PASS,
@@ -234,12 +213,11 @@ class Exposure:
                 _, said = self.spawn((path, "-NoProfile", "-Command", script), environment)
             case "cmd":
                 _, said = self.spawn((path, "/d", "/c", "where", *names), environment)
-                found: dict[str, tuple[str, str]] = {}
-                for line in said.splitlines():
-                    stem = Path(line.strip()).stem
-                    if stem in names and stem not in found:
-                        found[stem] = ("Application", line.strip())
-                return found
+                hits = [(Path(line.strip()).stem, line.strip()) for line in said.splitlines()]
+                # `where` lists hits in PATH order, so the first per name wins: build from the end.
+                return {
+                    stem: ("Application", hit) for stem, hit in reversed(hits) if stem in names
+                }
             case _:
                 loop = " ".join(posix_quote(name) for name in names)
                 script = (
@@ -268,9 +246,9 @@ class Exposure:
         if builtins:
             detail += f", {len(builtins)} are the shell's own builtins"
         if missing:
-            detail += f"; missing {_listed(missing)}"
+            detail += f"; missing {abbreviated(missing, _NAMED)}"
         if shadowed:
-            detail += f"; shadowed by {_listed(shadowed)}"
+            detail += f"; shadowed by {abbreviated(shadowed, _NAMED)}"
         if not missing and not shadowed:
             return Section(section=f"path {kind}", verdict=Verdict.PASS, detail=detail)
         aliases = [name for name in names if name in found and found[name][0] == "Alias"]
@@ -297,15 +275,9 @@ class Exposure:
         which this process, started before any change, does not carry itself.
         """
         if self.system == "Windows":
-            _, joined = self.spawn(
-                (
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + "
-                    "[Environment]::GetEnvironmentVariable('Path','User')",
-                ),
-                os.environ,
+            _, joined = self._powershell(
+                "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + "
+                "[Environment]::GetEnvironmentVariable('Path','User')"
             )
             return {**os.environ, "PATH": joined.strip()}
         return {
@@ -315,6 +287,10 @@ class Exposure:
             "SHELL": self.shells.get(kind, ""),
             "TERM": "dumb",
         }
+
+    def _powershell(self, script: str) -> tuple[int, str]:
+        """Run `script` in Windows PowerShell under this process's own environment."""
+        return self.spawn(("powershell", "-NoProfile", "-Command", script), os.environ)
 
 
 def _runnable(path: Path) -> bool:
@@ -352,9 +328,3 @@ def _prepended(folder: str) -> str:
     """The POSIX line putting `folder` at the front of PATH once, however often it is sourced."""
     held = posix_quote(folder)
     return f'case ":$PATH:" in *:{held}:*) ;; *) PATH={held}:"$PATH" ;; esac'
-
-
-def _listed(names: Sequence[str]) -> str:
-    """The first few names, and how many more there are."""
-    rest = len(names) - _NAMED
-    return ", ".join(names[:_NAMED]) + (f" and {rest} more" if rest > 0 else "")

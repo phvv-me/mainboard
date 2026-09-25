@@ -52,7 +52,7 @@ def normalized(text: str, newline: str = "\n") -> str:
 
 
 def problems(name: str, text: str) -> list[str]:
-    """What only a person can fix in `text`, each line naming the file it is in.
+    """What only a person can fix in `text`.
 
     name: the file's name, whose suffix selects the syntax check.
     text: the file's normalized content.
@@ -86,7 +86,6 @@ def examined(path: Path, attributes: Attributes) -> Examination:
     """Read `path` and say what normalizing it changes and what is left to fix, writing nothing.
 
     path: an existing regular file.
-    attributes: what `.gitattributes` says about it.
     """
     if attributes.binary or path.is_symlink():
         return Examination()
@@ -111,7 +110,6 @@ def untidiness(data: bytes, text: str, newline: str = "\n") -> tuple[str, ...]:
 
     data: the file's bytes.
     text: `data` decoded.
-    newline: the line ending the file is stored in.
     """
     unified = text.replace("\r\n", "\n").replace("\r", "\n")
     trimmed = "\n".join(line.rstrip(" \t") for line in unified.split("\n"))
@@ -132,8 +130,7 @@ def _syntax(name: str, text: str) -> str:
         elif name.endswith((".yaml", ".yml")):
             # Events rather than objects: syntax is the question, and a custom tag such as
             # `!reference` needs no constructor to be well formed.
-            for _ in yaml.parse(text, Loader=yaml.SafeLoader):
-                pass
+            list(yaml.parse(text, Loader=yaml.SafeLoader))
     except (tomllib.TOMLDecodeError, yaml.YAMLError) as error:
         return f"does not parse: {' '.join(str(error).split())}"
     return ""

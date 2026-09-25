@@ -112,9 +112,7 @@ def test_a_parent_recording_a_foreign_commit_its_remote_lacks_is_held(
 def test_a_pointer_the_remote_gained_since_the_last_fetch_is_found_by_fetching(
     workspace: Workspace,
 ) -> None:
-    seed = workspace.forge.seed(FOREIGN, "ref")
-    upstream = workspace.forge.commit(seed, "upstream moved", {"up.txt": "up\n"})
-    workspace.git(seed, "push", "-q", "origin", "main")
+    upstream = workspace.forge.publish(workspace.forge.seed(FOREIGN, "ref"), {"up.txt": "up\n"})
     workspace.git(workspace.ref, "fetch", "-q", "origin")
     workspace.git(workspace.ref, "checkout", "-q", "--detach", upstream)
     workspace.git(workspace.ref, "update-ref", "-d", "refs/remotes/origin/main")
@@ -128,8 +126,7 @@ def test_a_pointer_the_remote_gained_since_the_last_fetch_is_found_by_fetching(
 
 def test_a_diverged_branch_is_held_until_pulled(workspace: Workspace) -> None:
     colleague = workspace.colleague()
-    colleague.forge.commit(colleague.path, "theirs", {"theirs.txt": "theirs\n"})
-    colleague.git(colleague.path, "push", "-q", "origin", "main")
+    colleague.forge.publish(colleague.path, {"theirs.txt": "theirs\n"})
     workspace.forge.commit(workspace.path, "mine", {"mine.txt": "mine\n"})
     workspace.git(workspace.path, "fetch", "-q", "origin")
 

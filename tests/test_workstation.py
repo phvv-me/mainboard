@@ -15,12 +15,10 @@ _ORIGIN = "https://github.com/phvv-me/mainboard"
 # The arguments that make a git command line a question rather than a change.
 _READS = {"--get", "--get-urlmatch", "--version", "version", "--exec-path", "remote", "ls-files"}
 
-# A git answering every question with its standing default: a command that fails and says
-# nothing, which is what `git config --get` says about a key nobody set.
+# What `git config --get` says about a key nobody set: a failure and nothing more.
 _UNSET = (1, "")
 
-# Every command a workstation check may run and still leave this machine's software alone. A
-# read, a local git setting, or the one filter install git-lfs scopes to the global config.
+# The global writes a check may make and still leave this machine's software alone.
 _SAFE_WRITES = (
     ("git", "lfs", "install", "--skip-repo"),
     ("git", "config", "--global", "credential.helper", "manager"),
@@ -28,17 +26,12 @@ _SAFE_WRITES = (
     ("git", "config", "--global", "core.longpaths", "true"),
 )
 
-
-# The tools Windows and macOS each install with a command of their own; Windows alone also
-# names how its bundled tar arrives.
+# The tools Windows and macOS each install with a command of their own.
 _NATIVE = ("git", "git-lfs", "gh", "ssh")
 
 
 class Git:
-    """A scripted git: each argv answered from a table, and every command it was handed kept.
-
-    answers: what each exact command line answers, anything else failing silently.
-    """
+    """A scripted git answering each exact argv from a table, anything else as unset."""
 
     def __init__(self, answers: Mapping[tuple[str, ...], tuple[int, str]]) -> None:
         self.answers = dict(answers)
@@ -115,9 +108,8 @@ def test_no_state_of_the_machine_makes_a_check_run_an_install_or_leave_a_break_u
 ) -> None:
     """Installs and administrator switches are named, never run, whatever git answers.
 
-    Every command a check runs is git, and the only ones that write are the local settings
-    this module applies in place. A broken row always carries the command that repairs it, so
-    the verdict a report derives from a row is always explainable.
+    Every command is git, the only writes are the settings applied in place, and a broken row
+    always carries the command that repairs it.
     """
     answers = fit(tmp_path)
     probes = list(answers)
@@ -155,8 +147,7 @@ def test_a_missing_git_or_git_lfs_is_broken_and_names_this_platforms_installer(
 ) -> None:
     """Nothing that installs software is run here; the exact command is named instead.
 
-    Without git every later check would report the same absence under another name, so that
-    one row is the whole answer.
+    Without git, that one row is the whole answer.
     """
     missing, _ = station(tmp_path, system, {("git", "--version"): (1, "not installed here")})
     found = missing.examine()
@@ -303,8 +294,8 @@ def test_links_checked_out_while_they_were_off_are_named_with_the_checkout_that_
 ) -> None:
     """The re-checkout rewrites the working tree, so it is named, path by path, never run.
 
-    Naming the paths keeps the command from touching anything else a person has edited, which
-    a whole-tree checkout would throw away.
+    Naming the paths keeps it off anything else a person edited, which a whole-tree checkout
+    would throw away.
     """
     answers = fit(tmp_path)
     entries = "".join(f"120000 9f{index} 0\t{link}\0" for index, link in enumerate(links))
@@ -384,12 +375,7 @@ def test_the_link_probe_answers_the_os_refusal_or_nothing(
 def test_every_install_is_a_named_command_and_a_distributions_wherever_none_is_known(
     system: str, package: str
 ) -> None:
-    """A fix line always names something to run, and the installer is the platform's own.
-
-    Windows and macOS each have one installer, so a known package there names it; everything
-    else, a Linux distribution or a package this table never heard of, gets the distribution
-    install spelled with that package's name.
-    """
+    """Windows and macOS name their own installer for a known package, all else a distro's."""
     distribution = f"sudo apt install {package} (or the {package} package of this distribution)"
     native = {(system, tool) for system in ("Windows", "Darwin") for tool in _NATIVE}
     assert (install_command(system, package) == distribution) is ((system, package) not in native)

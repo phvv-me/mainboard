@@ -27,10 +27,7 @@ _VENDOR_BY_IMPLEMENTER = {
     "0x51": Vendor.QUALCOMM,
     "0x61": Vendor.APPLE,
 }
-_VENDOR_BY_VENDOR_ID = {
-    "GenuineIntel": Vendor.INTEL,
-    "AuthenticAMD": Vendor.AMD,
-}
+_VENDOR_BY_VENDOR_ID = {"GenuineIntel": Vendor.INTEL, "AuthenticAMD": Vendor.AMD}
 _ARM_PARTS = {
     ("0x41", "0xd08"): "Cortex-A72",
     ("0x41", "0xd4f"): "Neoverse-V2",
@@ -65,24 +62,19 @@ class Host:
 
     @cached_property
     def cgroup_memory(self) -> CgroupMemory:
-        """The enforced cgroup memory cap (v1 and v2), the real ceiling an OOM kill fires against.
+        """The enforced cgroup memory cap, the real ceiling an OOM kill fires against.
 
-        Walks both cgroup hierarchies up to the root and reports the tightest finite limit, or
-        the host's total RAM when the job is uncapped. This is the ceiling a memory-bounded
-        working set should size itself under, not psutil's free RAM (which on a coherent Grace
-        Hopper OS double-counts HBM through the second NUMA node).
+        A memory-bounded working set sizes itself under this, not psutil's free RAM, which on a
+        coherent Grace Hopper OS double-counts HBM through the second NUMA node.
         """
         return CgroupMemory.probe()
 
     @cached_property
     def cpu(self) -> str:
-        """CPU model name from `platform` or `/proc/cpuinfo`."""
+        """CPU model name: macOS `sysctl`, the cpuinfo model line, the ARM core mix, `platform`."""
         if platform.system() == "Darwin" and (brand := sysctl("machdep.cpu.brand_string")):
             return brand
-        text = self.cpuinfo_text
-        if not text:
-            return platform.processor() or "unknown"
-        if m := _CPU_MODEL_RE.search(text):
+        if m := _CPU_MODEL_RE.search(self.cpuinfo_text):
             return m.group(1).strip()
         if name := self.arm_cpu_name:
             return name
@@ -100,7 +92,7 @@ class Host:
 
     @cached_property
     def cpu_vendor(self) -> Vendor:
-        """CPU core vendor inferred from OS identity records."""
+        """CPU core vendor from the x86 `vendor_id` or the ARM MIDR implementer; Apple on macOS."""
         if platform.system() == "Darwin":
             return Vendor.APPLE
         for record in self.cpuinfo_records:
@@ -154,9 +146,5 @@ class Host:
 
     @cached_property
     def scratch(self) -> Scratch:
-        """The fastest writable node-local scratch tier with its free space.
-
-        The scheduler's node-local NVMe (`LOCALDIR`/`PBS_LOCALDIR`/`SLURM_TMPDIR`, then a bare
-        local mount) a spill engine offloads to, or an unavailable tier when nothing is writable.
-        """
+        """The fastest writable node-local scratch tier with its free space."""
         return Scratch.probe()

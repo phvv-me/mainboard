@@ -14,6 +14,8 @@ from mainboard.center.agents import Agents, dotenv, junction
 from mainboard.center.state import claude_key
 from mainboard.core.section import Verdict
 
+from ..git.conftest import Forge
+
 # The programs this fake machine has on its PATH.
 _ON_PATH = frozenset({"mainboard", "present", "uvx"})
 
@@ -39,14 +41,6 @@ _NAMES = st.from_regex(r"[A-Z_][A-Z0-9_]{0,6}", fullmatch=True)
 
 # A `.env` value: anything but a line break, which would end the line it sits on.
 _VALUES = st.text(string.ascii_letters + string.digits + " =:/._-#", max_size=12)
-
-
-def git(where: Path, *args: str, stdin: str = "") -> str:
-    """Run git in `where` for the fixture's own setup, failing the test on any error."""
-    done = subprocess.run(
-        ["git", "-C", str(where), *args], input=stdin, capture_output=True, text=True, check=True
-    )
-    return done.stdout.strip()
 
 
 def agents(
@@ -96,17 +90,18 @@ def flattened(tmp_path: Path) -> Path:
 def flatten(root: Path, links: Mapping[str, str]) -> Path:
     """`root` holding the agent files and `links` tracked as links but written as text files."""
     written(root, _FILES)
-    git(root, "init", "-q")
-    git(root, "add", "-A")
-    for relative, target in links.items():
-        blob = git(root, "hash-object", "-w", "--stdin", stdin=target)
-        git(root, "update-index", "--add", "--cacheinfo", f"120000,{blob},{relative}")
-    return written(root, links)
+    Forge.git(root, "init", "-q")
+    Forge.git(root, "add", "-A")
+    written(root, links)
+    for relative in links:
+        blob = Forge.git(root, "hash-object", "-w", "--", relative)
+        Forge.git(root, "update-index", "--add", "--cacheinfo", f"120000,{blob},{relative}")
+    return root
 
 
 def skipped(root: Path) -> set[str]:
     """The paths git was told to stop comparing."""
-    listed = git(root, "ls-files", "-v").splitlines()
+    listed = Forge.git(root, "ls-files", "-v").splitlines()
     return {line[2:] for line in listed if line.startswith("S ")}
 
 

@@ -8,11 +8,7 @@ from ..facts.memory import Memory
 
 
 class Unit(FrozenModel):
-    """Schedulable hardware execution resource.
-
-    A unit can be a CPU package or cluster, GPU, NPU, DSP, or other hardware
-    engine that executes work over memory.
-    """
+    """Schedulable hardware engine executing work over memory: a CPU package, GPU, NPU or DSP."""
 
     index: int = 0
     kind: ClassVar[UnitKind] = UnitKind.UNKNOWN

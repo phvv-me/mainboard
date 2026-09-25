@@ -1,24 +1,20 @@
 # What keeps a test suite off every real machine but the one it runs on.
 #
-# A suite that reaches a real host does not fail: ssh times out or answers "could not resolve",
-# the code under test reads that as an unreachable host, and the test goes green having proved
-# nothing, or goes red only on the one runner whose DNS or ssh agent answered differently. The
-# ad-hoc answer was an `ssh` stub first on PATH, which covered one tool on POSIX alone and let
-# the test pass. The seal covers every spawn Python makes, on every platform, and every socket
-# that leaves loopback, and whatever it refuses fails the test even when the code under test
-# swallowed the refusal.
+# A suite that reaches a real host does not fail: ssh times out or cannot resolve, the code under
+# test reads that as an unreachable host, and the test goes green having proved nothing, or red
+# only on the runner whose DNS or ssh agent answered differently. The seal refuses every spawn of
+# a remote tool and every socket that leaves loopback, on every platform, and whatever it refuses
+# fails the test even when the code under test swallowed the refusal.
 #
-# The same seal keeps this machine's own git configuration out: a developer's signing key, hooks
-# template, default branch or LFS filter never reaches a test, and a runner's never does either,
-# so a git fixture behaves the same on every machine, and one that leaned on a global identity
-# fails here first rather than on a fresh runner.
+# It also keeps this machine's git configuration out (signing key, hooks template, default
+# branch, LFS filter), so a git fixture behaves the same everywhere, and one that leaned on a
+# global identity fails here first rather than on a fresh runner.
 #
-# Two layers, because a remote tool is reached two ways. Python's own spawns all funnel through
-# `Popen._execute_child`, whichever module imported `Popen` and however it spelled the command,
-# so wrapping that one method sees plumbum's ssh sessions and a bare `subprocess.run` alike. A
-# tool that starts ssh itself (git over ssh, say) never passes back through Python, so a
-# directory of refusing stand-ins goes first on PATH as well, POSIX only since Windows resolves a
-# program by `.exe` and never runs a script stand-in.
+# Two layers, because a remote tool is reached two ways. Python's spawns all funnel through
+# `Popen._execute_child`, however the command was spelled, so wrapping it sees plumbum's ssh
+# sessions and a bare `subprocess.run` alike. A tool that starts ssh itself (git over ssh) never
+# passes back through Python, so refusing stand-ins go first on PATH too, POSIX only since
+# Windows resolves a program by `.exe` and never runs a script stand-in.
 
 import os
 import socket
@@ -32,29 +28,19 @@ if TYPE_CHECKING:
 
     import pytest
 
-# The programs that reach another machine: the ssh family and every batch scheduler's client.
+# The programs that reach another machine: the ssh family, then PBS's and Slurm's clients.
 REMOTE_TOOLS = frozenset(
-    {
-        "ssh",
-        "scp",
-        "sftp",
-        "qsub",
-        "qstat",
-        "qdel",
-        "pbsnodes",
-        "sbatch",
-        "squeue",
-        "scancel",
-        "sinfo",
-    }
+    {"ssh", "scp", "sftp"}
+    | {"qsub", "qstat", "qdel", "pbsnodes"}
+    | {"sbatch", "squeue", "scancel", "sinfo"}
 )
 
-# The one private method every `Popen` starts its child through, on POSIX and Windows alike, and
-# absent from the type stubs for being private, which is why it is reached by name.
+# The private method every `Popen` starts its child through, on POSIX and Windows alike; absent
+# from the type stubs, so it is reached by name.
 SPAWN = "_execute_child"
 
-# Where every stand-in appends the command line it was given, the one channel a process spawned
-# by another process has back to the test that caused it.
+# Where every stand-in appends its command line, the one channel a process spawned by another
+# process has back to the test that caused it.
 _LOG_VAR = "MAINBOARD_SEALED_LOG"
 
 _STAND_IN = f"""#!/bin/sh
@@ -82,10 +68,7 @@ class RemoteReached(RuntimeError):
 
 
 def program(args: Command) -> str:
-    """The program `args` starts, its bare lowercase name without a Windows extension.
-
-    args: what `Popen` was handed, a command line string or an argv whose first word runs.
-    """
+    """The program `args` starts, its bare lowercase name without a Windows extension."""
     match args:
         case str() | bytes():
             first = next(iter(os.fsdecode(args).split()), "")
@@ -98,10 +81,7 @@ def program(args: Command) -> str:
 
 
 def is_local(address: tuple[str, int] | tuple[str, int, int, int] | str | bytes) -> bool:
-    """Whether a socket `address` stays on this machine: a Unix path, loopback or the wildcard.
-
-    address: what `socket.connect` was handed for any family.
-    """
+    """Whether a socket `address` of any family stays here: a Unix path, loopback or wildcard."""
     if not isinstance(address, tuple):
         return True
     host = str(address[0]).lower()
@@ -116,7 +96,7 @@ def is_local(address: tuple[str, int] | tuple[str, int, int, int] | str | bytes)
 class Seal:
     """Every attempt one test made at another machine, refused as it happened.
 
-    stand_ins: the directory holding a refusing stand-in per remote tool, first on PATH.
+    stand_ins: the directory of refusing stand-ins, one per remote tool, first on PATH.
     """
 
     def __init__(self, stand_ins: Path) -> None:
@@ -154,11 +134,13 @@ class Seal:
         )
         monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.fspath(self.gitconfig))
         monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-        spawn = getattr(subprocess.Popen, SPAWN)
-        monkeypatch.setattr(subprocess.Popen, SPAWN, self._spawning(spawn))
+        monkeypatch.setattr(
+            subprocess.Popen, SPAWN, self._spawning(getattr(subprocess.Popen, SPAWN))
+        )
         for name in ("connect", "connect_ex"):
-            connect = getattr(socket.socket, name)
-            monkeypatch.setattr(socket.socket, name, self._connecting(connect))
+            monkeypatch.setattr(
+                socket.socket, name, self._connecting(getattr(socket.socket, name))
+            )
 
     def breaches(self) -> list[str]:
         """Every attempt so far, the ones Python refused and the ones a stand-in logged."""

@@ -3,6 +3,9 @@ from typing import NoReturn, Protocol
 
 from mainboard.probe.providers.nvidia.gpu import visible_devices
 
+# A 4090's memory as either device layer reports it: 24 GiB, 6 used and 18 free.
+RTX_4090_MEMORY = SimpleNamespace(total=24 * 1024**3, used=6 * 1024**3, free=18 * 1024**3)
+
 
 class FakeError(Exception):
     """Shared NVML/system error type for the fake CUDA stack."""
@@ -13,10 +16,12 @@ def raise_unsupported(*args, **kwargs) -> NoReturn:
     raise FakeError
 
 
-class CudaErrorT:
-    """Mimic `cudaError_t` with a single success sentinel."""
-
-    cudaSuccess = 0
+# `cudaError_t`, `nvmlClockType_t`, `nvmlTemperatureSensors_t` and NVML's Windows driver-model
+# enum, numbered like the real ones where a test reads the number.
+CudaErrorT = SimpleNamespace(cudaSuccess=0)
+FakeClockType = SimpleNamespace(CLOCK_SM=1, CLOCK_MEM=2)
+FakeTemperatureSensors = SimpleNamespace(TEMPERATURE_GPU=0)
+FakeDriverModel = SimpleNamespace(DRIVER_WDDM=0, DRIVER_WDM=1, DRIVER_MCDM=2)
 
 
 class CudaDeviceAttr:
@@ -72,59 +77,25 @@ class FakeRuntime:
         return None
 
 
-class MemoryInfo(Protocol):
-    total: int
-    used: int
-    free: int
-
-
-class FakeMemoryInfo:
-    def __init__(self, total: int, *, used: int, free: int) -> None:
-        self.total = total
-        self.used = used
-        self.free = free
-
-
 class FakeSystemDevice:
     """Mimic `cuda.core.system.Device` NVML-backed reads."""
 
     name = b"NVIDIA GeForce RTX 4090"
     uuid = "GPU-deadbeef"
     cuda_compute_capability = (8, 9)
-    arch = type("Arch", (), {"name": "ADA"})()
+    arch = SimpleNamespace(name="ADA")
+    memory_info = RTX_4090_MEMORY
+    utilization = SimpleNamespace(gpu=61, memory=37)
 
     def __init__(self, index: int = 0) -> None:
         self.index = index
         # The system layer names physical devices, eight hex digits of PCI domain.
         self.pci_bus_id = f"00000000:0{index}:00.0"
-        self.memory_info = FakeMemoryInfo(24 * 1024**3, used=6 * 1024**3, free=18 * 1024**3)
-        self.utilization = FakeUtilizationReading(gpu=61, memory=37)
 
     @classmethod
     def get_all_devices(cls) -> tuple[FakeSystemDevice, ...]:
         """Every physical device, the way `cuda.core.system.Device.get_all_devices` answers."""
         return tuple(cls(index=index) for index in range(2))
-
-
-class FakeUtilizationReading:
-    """A gpu/memory percentage pair as both device layers shape it."""
-
-    def __init__(self, *, gpu: int, memory: int) -> None:
-        self.gpu = gpu
-        self.memory = memory
-
-
-class FakeClockType:
-    """Mimic `nvmlClockType_t` for the SM and memory clock domains, numbered like NVML."""
-
-    CLOCK_SM = 1
-    CLOCK_MEM = 2
-
-
-class FakeTemperatureSensors:
-    """Mimic `nvmlTemperatureSensors_t`, read only for the die sensor."""
-
-    TEMPERATURE_GPU = 0
 
 
 class FakeClocksEventReasons:
@@ -142,29 +113,6 @@ class FakeClocksEventReasons:
     EVENT_REASON_SW_THERMAL_SLOWDOWN = 0x20
     THROTTLE_REASON_HW_THERMAL_SLOWDOWN = 0x40
     THROTTLE_REASON_HW_POWER_BRAKE_SLOWDOWN = 0x80
-
-
-class FakeProcessInfo:
-    """One NVML compute-context entry: the process and what it holds on the device."""
-
-    def __init__(self, *, pid: int, used_gpu_memory: int) -> None:
-        self.pid = pid
-        self.used_gpu_memory = used_gpu_memory
-
-
-class FakeDriverModel:
-    """NVML's Windows driver-model enum."""
-
-    DRIVER_WDDM = 0
-    DRIVER_WDM = 1
-    DRIVER_MCDM = 2
-
-
-class FakePciInfo:
-    """PCI identity in the normalized snake-case shape Mainboard consumes."""
-
-    def __init__(self, bus_id: str) -> None:
-        self.bus_id = bus_id
 
 
 class FakeNvml:
@@ -191,8 +139,8 @@ class FakeNvml:
         self.clocks_event_reasons = clocks_event_reasons
         self.count = device_count
 
-    def device_get_compute_running_processes_v3(self, handle: str) -> tuple[FakeProcessInfo, ...]:
-        return (FakeProcessInfo(pid=4242, used_gpu_memory=2 * 1024**3),)
+    def device_get_compute_running_processes_v3(self, handle: str) -> tuple[SimpleNamespace, ...]:
+        return (SimpleNamespace(pid=4242, used_gpu_memory=2 * 1024**3),)
 
     def device_get_count_v2(self) -> int:
         return self.count
@@ -222,8 +170,8 @@ class FakeNvml:
     def device_get_memory_bus_width(self, handle: str) -> int:
         return 384
 
-    def device_get_memory_info_v2(self, handle: str) -> FakeMemoryInfo:
-        return FakeMemoryInfo(24 * 1024**3, used=6 * 1024**3, free=18 * 1024**3)
+    def device_get_memory_info_v2(self, handle: str) -> SimpleNamespace:
+        return RTX_4090_MEMORY
 
     def device_get_name(self, handle: str) -> str:
         return "NVIDIA GeForce RTX 4090"
@@ -231,14 +179,14 @@ class FakeNvml:
     def device_get_power_usage(self, handle: str) -> int:
         return 17_647
 
-    def device_get_pci_info_v3(self, handle: str) -> FakePciInfo:
-        return FakePciInfo(handle.removeprefix("handle:"))
+    def device_get_pci_info_v3(self, handle: str) -> SimpleNamespace:
+        return SimpleNamespace(bus_id=handle.removeprefix("handle:"))
 
     def device_get_temperature_v(self, handle: str, sensor: int) -> int:
         return 42
 
-    def device_get_utilization_rates(self, handle: str) -> FakeUtilizationReading:
-        return FakeUtilizationReading(gpu=48, memory=22)
+    def device_get_utilization_rates(self, handle: str) -> SimpleNamespace:
+        return SimpleNamespace(gpu=48, memory=22)
 
     def device_get_uuid(self, handle: str) -> str:
         return "GPU-deadbeef"
@@ -254,9 +202,7 @@ class FakeSystem:
     """Mimic `cuda.core.system` module: Device factory plus NotSupportedError."""
 
     NotSupportedError = FakeError
-
-    def __init__(self) -> None:
-        self.Device = FakeSystemDevice
+    Device = FakeSystemDevice
 
 
 class FakeNvidiaApis:
@@ -296,7 +242,12 @@ class InstallNvidiaStack(Protocol):
     """Install a fake CUDA/NVML stack for this test and hand it back."""
 
     def __call__(
-        self, *, device_count: int = 2, has_cuda_core: bool = True, coherent: bool = False
+        self,
+        *,
+        device_count: int = 2,
+        has_cuda_core: bool = True,
+        coherent: bool = False,
+        hmm: bool = False,
     ) -> FakeNvidiaApis: ...
 
 
@@ -325,9 +276,8 @@ class FakeTensor:
 class FakeTorchCuda:
     """`torch.cuda` for one RTX 4090, counting the synchronizations a timing pays."""
 
-    def __init__(self) -> None:
-        self.current = ""
-        self.synchronized = 0
+    current = ""
+    synchronized = 0
 
     def get_device_properties(self, index: int) -> SimpleNamespace:
         return SimpleNamespace(
