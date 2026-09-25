@@ -308,3 +308,13 @@ def test_the_package_runs_as_a_module_for_a_job_that_calls_its_own_tool(
     with pytest.raises(SystemExit) as ended:
         runpy.run_module("mainboard", run_name="__main__")
     assert ended.value.code == 0
+
+
+def test_the_verbs_help_opens_with_the_usage_line_a_dispatch_probes_a_host_for(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A tool without the verb answers `--help` with the root usage, and succeeds doing it."""
+    with pytest.raises(SystemExit) as ended:
+        build(tmp_path)(["job", "--help"])
+    assert ended.value.code == 0
+    assert "Usage: mainboard job " in capsys.readouterr().out
