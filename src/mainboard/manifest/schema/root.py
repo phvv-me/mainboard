@@ -1,4 +1,4 @@
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import model_validator
 
@@ -15,6 +15,9 @@ from .scope import PlatformScope, Scope
 from .template import Template
 from .tracking import Tracking
 from .workspace import Header
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _DEFAULTS_KEY = "defaults"
 _RESERVED_ENVS = frozenset({"default", "dev"})
@@ -142,6 +145,13 @@ class Manifest(Scope):
                 f"{subject} names environment {env!r}, declared environments are "
                 f"{sorted(self.envs)}"
             )
+
+    def holding(self, held: Mapping[str, HostProfile]) -> Manifest:
+        """This manifest with the machines the workspace is holding laid over `[hosts]`.
+
+        held: the held machines' ssh profiles by alias.
+        """
+        return self.model_copy(update={"hosts": {**self.hosts, **held}}) if held else self
 
     def profile(self, alias: str) -> HostProfile:
         """The resolved profile for `alias`, defaults-only when undeclared.

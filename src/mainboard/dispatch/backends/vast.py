@@ -32,10 +32,12 @@ from .base import (
     Account,
     Credentials,
     Delivery,
+    Inventory,
     LogSource,
     Market,
     ProviderBackend,
     Rentable,
+    Rented,
     Standing,
     forgotten,
     http_transport,
@@ -221,7 +223,7 @@ def api_key() -> str:
     return key
 
 
-class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
+class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentable):
     """Rent a Vast.ai machine for one command, the container's own lifetime being the job's.
 
     Vast rents whole containers rather than running jobs, so `submit` picks a rentable offer
@@ -626,6 +628,20 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
                 f"vast refused offer {offer['id']} (HTTP {refused.code}): {str(reason)[:400]}"
             ) from refused
         return allocation.created(str(payload["new_contract"]))
+
+    def rentals(self) -> list[Rented]:
+        """Every instance on the account, as vast lists them, whoever created it."""
+        listed = self.request("GET", path="/instances/", query={"owner": "me"})
+        return [
+            Rented(
+                handle=str(row.get("id") or ""),
+                label=str(row.get("label") or ""),
+                gpu=f"{row.get('num_gpus') or 1}x {row.get('gpu_name') or 'unknown card'}",
+                status=str(row.get("actual_status") or ""),
+                usd_hr=float(row["dph_total"]) if row.get("dph_total") is not None else None,
+            )
+            for row in listed.get("instances") or []
+        ]
 
     def request(
         self, method: str, *, path: str, body: dict | None = None, query: dict | None = None

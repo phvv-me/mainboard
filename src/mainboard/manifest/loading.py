@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from ..core.errors import MissionError
+from .held import Holdings
 from .render.interpolate import Interpolator
 from .schema.plot import PlotStyle
 from .schema.root import Manifest
@@ -19,6 +20,8 @@ def load(path: Path) -> Manifest:
     Stdlib tomllib (TOML 1.1 arrives with Python 3.15), then the `{{ }}`
     rendering pass, then schema
     validation, so a template error and a schema error each name their spot.
+    The machines the workspace is holding join `[hosts]` last, so a held alias resolves
+    wherever a declared one does.
 
     path: the workspace manifest file.
     """
@@ -30,9 +33,10 @@ def load(path: Path) -> Manifest:
         raise MissionError(f"{path} is not valid TOML: {error}") from None
     rendered = Interpolator(path.parent).rendered(tree)
     try:
-        return Manifest.model_validate(rendered)
+        manifest = Manifest.model_validate(rendered)
     except ValidationError as error:
         raise MissionError(f"{path} failed validation:\n{error}") from None
+    return manifest.holding(Holdings(path.parent).profiles())
 
 
 def load_plot_config(root: Path, config: Path | None = None) -> Manifest:

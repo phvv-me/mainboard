@@ -24,6 +24,7 @@ from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .durable import schedule
 from .help import Help
+from .holds import Holds
 from .jobs import lanes as lanes_module
 from .listing import Listing
 from .manifest.loading import load, load_plot_config
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from .batch.watch import BatchStatus
     from .deps import Change
     from .dispatch.state import MonitorReport
+    from .manifest.held import Held
     from .manuscript import Report
     from .render.values import Node
     from .verdicts import StreamVerdict
@@ -503,6 +505,65 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
+    def hold(
+        provider: str,
+        *,
+        for_: Annotated[str, Parameter(name="--for")],
+        as_: Annotated[str, Parameter(name="--as")] = "",
+        gpu_name: str = "",
+        gpus: int = 0,
+        max_usd: float = 0.0,
+        env: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> None:
+        """Rent a machine and keep it as an ssh host until a deadline, set up and ready for jobs.
+
+        A rental per job rebuilds the environment every time; a held machine is set up once and
+        then takes `submit --on <alias>` in seconds. The machine gets an alias in the ssh config,
+        onboards like `setup`, and is recorded with its deadline, which `monitor` and `compute`
+        both enforce by releasing it, so a forgotten hold stops billing on time.
+
+        provider: the provider host to rent through, `vast` say.
+        for_: how long to keep it once it is ready, `3h`, `90m` or `1h30m`.
+        as_: the alias to reach it by, `<provider>-<card>` when omitted.
+        gpu_name: the card to rent, in the provider's own spelling.
+        gpus: cards per machine, the provider profile's default when 0.
+        max_usd: the spend cap over the whole hold, landing included, the provider's default
+            when 0.
+        env: the environment to set up, the provider profile's own when omitted.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the hold's fields.
+        """
+        with progress(f"holding a {gpu_name or provider} machine") as stage:
+            held = Holds(board("local")).hold(
+                provider,
+                duration=for_,
+                alias=as_,
+                gpu_name=gpu_name,
+                gpus=gpus,
+                max_usd=max_usd,
+                env=env,
+                watch=stage,
+            )
+        _held(held, json_mode=json, agent=agent, fields=fields, title="hold")
+
+    @app.command
+    def release(alias: str, *, json: bool = False, agent: bool = False, fields: str = "") -> None:
+        """End a held machine now: stop its billing, settle its record and drop its alias.
+
+        alias: the held machine's alias, as `hold` printed it.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the hold's fields.
+        """
+        with progress(f"releasing {alias}"):
+            held = Holds(board("local")).release(alias)
+        _held(held, json_mode=json, agent=agent, fields=fields, title="release")
+
+    @app.command
     def compute(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
         """List every compute path this workspace can reach, with prices and credit where cheap.
 
@@ -520,11 +581,19 @@ def build(root: Path | None = None) -> App:
 
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
+        Held machines past their deadline are released first, and every machine a provider
+        says this account is renting is listed after that provider, named by its hold when this
+        workspace holds it.
+
         fields: comma-separated name/kind/access/detail/usd_hr/credit_usd/observed_at/cached_at.
         """
         mode = mode_of(json_mode=json, agent=agent)
+        workspace = board("local")
+        for released in Holds(workspace).expire():
+            gone = f"{released.provider} {released.handle}"
+            print(f"released {released.alias}, {gone}", file=sys.stderr)
         with progress("probing every compute path"):
-            paths = board("local").compute().paths()
+            paths = workspace.compute().paths()
         rows(
             [path.model_dump() for path in paths],
             mode=mode,
@@ -1665,6 +1734,21 @@ def _status(status: BatchStatus, *, mode: str | None, fields: Sequence[str]) -> 
         fields=fields,
         title=f"{status.batch}: {status.running} running",
     )
+
+
+def _held(held: Held, *, json_mode: bool, agent: bool, fields: str, title: str) -> None:
+    """Print one held machine: its alias, where it came from, what it costs, when it ends."""
+    payload: dict[str, Node] = {
+        "alias": held.alias,
+        "provider": held.provider,
+        "handle": held.handle,
+        "gpu": held.gpu,
+        "usd_hr": held.usd_hr,
+        "deadline": held.deadline.isoformat(),
+        "root": held.profile.root,
+    }
+    mode = mode_of(json_mode=json_mode, agent=agent)
+    record(payload, mode=mode, fields=_fields(fields), title=title)
 
 
 def _report(report: Report, *, mode: str | None) -> None:

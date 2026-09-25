@@ -127,6 +127,10 @@ class Cache:
         """Advance evidence without replacing another process's computation or report fields."""
         return self._change(run, evidence=status)
 
+    def drop_host(self, alias: str) -> None:
+        """Forget `alias`'s onboarding, for a machine that no longer exists to be set up."""
+        self.connection.execute("DELETE FROM hosts WHERE alias = ?", (alias,))
+
     def host(self, alias: str) -> HostSetup:
         """`alias`'s recorded onboarding, raising when the host was never set up."""
         row = self.connection.execute(
@@ -289,6 +293,17 @@ class Cache:
         ).fetchone()
         if row is None:
             raise LookupError(f"no creation {label!r} on {target!r}")
+        return RunRecord.model_validate_json(row["data"])
+
+    def relet(self, run: RunRecord, lease: Lease) -> RunRecord:
+        """Replace `run`'s rental lease, the deadline a sweep releases the machine at."""
+        row = self.connection.execute(
+            "UPDATE runs SET data = json_set(data, '$.lease', json(?)) "
+            "WHERE target = ? AND handle = ? AND submitted_at = ? RETURNING data",
+            (lease.model_dump_json(), run.target, run.handle, run.submitted_at),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"no registered run {run.handle!r} on {run.target!r}")
         return RunRecord.model_validate_json(row["data"])
 
     def report(self, run: RunRecord, verdict: str) -> None:
