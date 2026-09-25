@@ -1,5 +1,4 @@
 import base64
-import shlex
 import shutil
 import sys
 from collections.abc import Sequence
@@ -332,9 +331,8 @@ def plan(**overrides: FieldValue) -> ExecutionPlan:
 
 
 def recorded(script: str) -> Job:
-    """The job record a rendered job script hands the host's tool on its last line."""
-    handover = script.rstrip("\n").splitlines()[-1]
-    return Job.model_validate_json(shlex.split(handover)[-1])
+    """The job record a rendered job script hands the host's tool."""
+    return Job.handed(script)
 
 
 def cache() -> Cache:

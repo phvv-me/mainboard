@@ -6,6 +6,7 @@
 # out, so the job behaves the same under PBS, pueue, a rented box or Windows, and nothing about
 # it is spelled in a shell grammar only some of those machines speak.
 
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -157,6 +158,31 @@ class Job(FrozenModel):
     provide: ToolCall | None = None
     attestation: ToolCall | None = None
     sampler: ToolCall | None = None
+
+    @classmethod
+    def read(cls, given: str) -> Job:
+        """The record `given` spells, or the one the job script at that path hands over.
+
+        A POSIX script hands its record over inline, which is what a scheduler feeding the
+        script to a shell on stdin still runs. Everything that can name the script instead, a
+        Windows queue whose shell would mangle the record's quotes or someone rerunning a job by
+        hand, names the file, and its last line is the handover carrying the record.
+
+        given: the record as JSON, or the path of a rendered job script.
+        """
+        if given.lstrip().startswith("{"):
+            return cls.model_validate_json(given)
+        return cls.handed(Path(given).read_text(encoding="utf-8"))
+
+    @classmethod
+    def handed(cls, script: str) -> Job:
+        """The record a rendered job script hands over, the last word of its last line.
+
+        Lines are what a shell reads, newline-separated and nothing else, since a command may
+        carry a character Python would also call a line break and the record keeps it raw.
+        """
+        handover = script.rstrip("\n").rpartition("\n")[2]
+        return cls.model_validate_json(shlex.split(handover)[-1])
 
 
 def walltime_seconds(walltime: str) -> int:

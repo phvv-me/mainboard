@@ -40,7 +40,10 @@ def test_a_walltime_converts_to_the_whole_seconds_the_runner_counts(
     assert walltime_seconds(walltime) == hours * 3600 + minutes * 60 + seconds
 
 
-@given(command=st.text(min_size=1), value=st.text())
+@given(
+    command=st.text(min_size=1) | st.sampled_from(["a\u2028b", "x\x85y", "'\"$(rm -rf /)\"'"]),
+    value=st.text(),
+)
 def test_the_script_hands_the_host_the_exact_record_whatever_the_command_holds(
     command: str, value: str
 ) -> None:

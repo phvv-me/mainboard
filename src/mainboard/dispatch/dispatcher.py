@@ -1015,13 +1015,25 @@ class Dispatcher:
         verify: str,
         containerize: Callable[[list[str]], list[str]] | None,
     ) -> None:
-        """Fail fast, in one plain sentence, when `plan.host`'s activated environment is broken.
+        """Fail fast, in one plain sentence, when `plan.host` cannot run the job it is sent.
 
         Runs `verify` through the same activation wrap every job depends on, turning a broken
         env (a stale install, a dependency the sync never shipped) into a clear diagnosis before
         the scheduler ever sees the job, instead of a raw traceback buried inside its log.
+
+        Then asks the host's own tool for the verb a job script hands over to, found the way the
+        script finds it. A host still carrying a tool from before jobs ran through it would take
+        the job, queue it, and end it at start with an unknown command and no exit artifact, so
+        the fix is named here instead.
         """
         body = wrap(plan, root, command=verify, containerize=containerize)
         retcode, _, err = remote["bash"][["-lc", body]].run(retcode=None)
         if retcode != 0:
             raise SystemExit(f"environment on {plan.host!r} is broken: {failure_reason(err)}")
+        runs = wrap(plan, root, command=f"{_TOOL} job --help >/dev/null", activate=False)
+        retcode, _, err = remote["bash"][["-lc", runs]].run(retcode=None)
+        if retcode != 0:
+            raise SystemExit(
+                f"{_TOOL} on {plan.host!r} cannot run a job ({failure_reason(err)}); run "
+                f"`{_TOOL} setup {plan.host}` to install this version there"
+            )

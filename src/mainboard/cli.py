@@ -1393,9 +1393,9 @@ def build(root: Path | None = None) -> App:
         environment, run the command under its walltime, frame its receipts back and answer its
         exit status.
 
-        record: the job record as JSON, exactly as the dispatch rendered it.
+        record: the job record as JSON, or the path of the job script that carries one.
         """
-        return Runner(Job.model_validate_json(record)).run()
+        return Runner(Job.read(record)).run()
 
     @app.command(show=False)
     def attest(stream: str, *, job: str = "") -> None:
