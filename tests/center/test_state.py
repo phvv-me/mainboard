@@ -200,7 +200,10 @@ def agents(home: Path, root: Path) -> Path:
         write(claude / "plugins" / name)
     write(claude / ".credentials.json", "{}")
     codex = home / ".codex"
-    write(codex / "config.toml", f'model = "o3"\n\n[projects."{root}"]\ntrust_level = "trusted"\n')
+    # Codex keys a project by its path in a literal string, which a Windows backslash survives.
+    write(
+        codex / "config.toml", f'model = "o3"\n\n[projects.\'{root}\']\ntrust_level = "trusted"\n'
+    )
     for name in ("auth.json", ".credentials.json", "rules/default.rules", "sessions/a.jsonl"):
         write(codex / name)
     database(codex / "memories_1.sqlite", "remember this")

@@ -237,7 +237,7 @@ def test_parallel_pins_freeze_the_listing_and_survive_mirror_replacement(
     replacement.write_text("v2\n")
     replacement.replace(root / "research/compression/pkg/mod.py")
     (root / image.listing).write_text("later listing\n")
-    assert trees.pin(local(), key="same", image=image, digest=digest) == str(frozen)
+    assert Path(trees.pin(local(), key="same", image=image, digest=digest)) == frozen
     assert (frozen / "research/compression/pkg/mod.py").read_text() == "v1\n"
     assert not list(Path(trees.base).glob(".pending.*"))
 
@@ -300,9 +300,10 @@ def test_wrappers_are_frozen_by_bytes_and_not_repaired_after_corruption(
         staged = f".mainboard/dispatch/jobs/job-{sha256(payload).hexdigest()}.sh"
         (root / staged).write_bytes(payload)
         (root / staged).chmod(0o640)
+        mode = (root / staged).stat().st_mode & 0o777
         trees.pin(local(), key="wrappers", image=image, digest=digest, script=staged)
         wrapper = frozen / Snapshots.script(staged)
-        assert wrapper.read_bytes() == payload and wrapper.stat().st_mode & 0o777 == 0o640
+        assert wrapper.read_bytes() == payload and wrapper.stat().st_mode & 0o777 == mode
         assert not wrapper.is_symlink() and not (frozen / WRAPPERS).is_symlink()
         (root / staged).write_text("changed mirror wrapper\n")
         trees.pin(local(), key="wrappers", image=image, digest=digest, script=staged)
@@ -430,7 +431,7 @@ def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding
     image = mirrored("research/compression")
     pinned = Path(snapshots.pin(local(), key="abc1234", image=image))
     (pinned / "research/compression/pkg/mod.py").unlink()
-    assert snapshots.pin(local(), key="abc1234", image=image) == str(pinned)
+    assert Path(snapshots.pin(local(), key="abc1234", image=image)) == pinned
     assert not (pinned / "research/compression/pkg/mod.py").exists()
 
 

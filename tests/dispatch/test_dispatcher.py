@@ -343,6 +343,7 @@ def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
     payload = b"#!/bin/sh\r\n# exact byte: \xff\r\n"
     authored.write_bytes(payload)
     authored.chmod(0o750)
+    mode = stat.S_IMODE(authored.stat().st_mode)
 
     def transfer(*args, **kwargs):
         shutil.copytree(
@@ -373,7 +374,7 @@ def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
         )
         == "frozen-control"
     )
-    assert authored.read_bytes() == payload and stat.S_IMODE(authored.stat().st_mode) == 0o750
+    assert authored.read_bytes() == payload and stat.S_IMODE(authored.stat().st_mode) == mode
 
 
 def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror_itself(

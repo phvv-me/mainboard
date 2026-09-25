@@ -23,6 +23,7 @@ from mainboard.dispatch.transport import SshTransport
 
 from .support import InProcessLink, links_on_this_host
 
+# A Windows target keeps neither execute bits nor links, the two things its survey declines.
 _MODES = sys.platform != "win32"
 
 # This interpreter as a shell would have it typed, which a path with a space needs quoted.
@@ -133,7 +134,10 @@ def test_an_execute_bit_crosses_on_its_own(tmp_path: Path) -> None:
 
 @links_on_this_host
 def test_a_path_that_changed_kind_is_pruned_before_it_is_remade(tmp_path: Path) -> None:
-    """Neither a directory nor a link is replaced by a rename, so each goes first."""
+    """Neither a directory nor a link is replaced by a rename, so each goes first.
+
+    A Windows target holds no links, so there each link arrives as the file it names.
+    """
     work, host = tmp_path / "work", tmp_path / "host"
     seed(work, "src/was-dir", "src/target.txt")
     (work / "src/link").symlink_to("target.txt")
@@ -143,8 +147,12 @@ def test_a_path_that_changed_kind_is_pruned_before_it_is_remade(tmp_path: Path) 
     (host / "src/moved").symlink_to("elsewhere.txt")
     pushed(work, host, ["src"])
     assert (host / "src/was-dir").is_file()
-    assert os.readlink(host / "src/link") == "target.txt"
-    assert os.readlink(host / "src/moved") == "target.txt"
+    for name in ("link", "moved"):
+        placed = host / "src" / name
+        if _MODES:
+            assert os.readlink(placed) == "target.txt"
+        else:
+            assert placed.read_text(encoding="utf-8") == "src/target.txt"
 
 
 @links_on_this_host

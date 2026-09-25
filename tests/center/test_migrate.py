@@ -14,6 +14,7 @@ from mainboard.center import migrate
 from mainboard.center.migrate import Migration, github_token
 from mainboard.center.state import claude_key
 from mainboard.core.errors import MissionError
+from mainboard.core.host import current_platform, pixi_platform
 from mainboard.core.section import Section, Verdict
 from mainboard.dispatch.onboard import Bootstrap, Onboarding
 from mainboard.dispatch.shells import Posix
@@ -200,8 +201,17 @@ def test_a_head_no_remote_holds_stops_the_move_before_the_destination_is_touched
 def test_a_platform_the_workspace_cannot_serve_stops_the_move_after_the_census(
     moving: Moving,
 ) -> None:
-    """The install would only rediscover it after the clone and the copy spent their time."""
-    alien = _FIT.model_copy(update={"system": "Plan9", "arch": "mips"})
+    """The install would only rediscover it after the clone and the copy spent their time.
+
+    The workspace declares no platforms, so it serves this machine's alone, and the destination
+    is whichever of two others this machine is not.
+    """
+    system, arch = next(
+        pair
+        for pair in [("Linux", "aarch64"), ("Darwin", "x86_64")]
+        if pixi_platform(*pair) != current_platform()
+    )
+    alien = _FIT.model_copy(update={"system": system, "arch": arch})
     moving.canned["census"] = alien.model_dump_json()
     report = _sections(moving.migration().run())
     assert report["destination: platform"].verdict is Verdict.FAIL
