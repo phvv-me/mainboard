@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .batch.watch import BatchStatus
     from .deps import Change
     from .dispatch.state import MonitorReport
+    from .git import Step
     from .render.values import Node
     from .verdicts import StreamVerdict
 
@@ -1521,12 +1522,144 @@ def build(root: Path | None = None) -> App:
         if listed.note:
             print(listed.note, file=sys.stderr)
 
+    git = App(
+        name="git",
+        help="Operate the workspace repository and its owned submodules as one tree.",
+    )
+    app.command(git)
+
+    @git.command(name="status")
+    def git_status(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
+        """Show every owned repository in the tree on one table, without touching the network.
+
+        Owned means the owner in the remote URL is the workspace root's own or one `[git]
+        owners` names; reference code pinned from anybody else is left out. Each row says the
+        branch (or `detached`), how far HEAD is ahead of and behind its upstream as last
+        fetched, how many paths are changed and untracked, and which remote branch already
+        holds HEAD, empty for a commit a parent pointer could not yet be cloned at.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over the status columns.
+        """
+        with progress("reading the repository tree"):
+            states = board("local").git().status()
+        rows(
+            [state.model_dump() for state in states],
+            mode=mode_of(json_mode=json, agent=agent),
+            fields=_fields(fields) or _GIT_STATUS_COLUMNS,
+            title="git status",
+        )
+
+    @git.command(name="pull")
+    def git_pull(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+        """Fast-forward every owned repository and bring submodule checkouts along, root first.
+
+        Every owned remote is fetched at once, then the tree is walked from the root down.
+        Nothing is merged or rebased: a diverged branch is held and named, and a fast-forward
+        that would overwrite local changes is refused by git itself. A detached HEAD is put back
+        on its trunk where that moves no commit. A submodule follows its parent's new pointer
+        only when it sat on the old one, and one never checked out is cloned at the recorded
+        pointer. Exits 1 when any repository was held or failed.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over repo/outcome/detail.
+        """
+        with progress("pulling the repository tree"):
+            steps = board("local").git().pull()
+        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git pull")
+
+    @git.command(name="commit")
+    def git_commit(
+        *,
+        message: Annotated[str, Parameter(name=["--message", "-m"])],
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> int:
+        """Commit every dirty owned repository, submodules first, then the pointers to them.
+
+        Each commit lands on a branch: a detached HEAD is attached to its trunk when that is a
+        fast-forward of the branch, and held otherwise, as is a repository behind its upstream
+        and a parent whose submodule did not commit. Anything under a `[git] never-commit`
+        pattern and files over the size ceiling that Git LFS does not carry stay out of the
+        commit, unstaged; the row names the oversized ones and any never-commit path that was
+        staged by hand. Exits 1 when any repository was held or failed.
+
+        message: the commit message, the same for every repository committed.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over repo/outcome/detail.
+        """
+        with progress("committing the repository tree"):
+            steps = board("local").git().commit(message)
+        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git commit")
+
+    @git.command(name="push")
+    def git_push(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+        """Push every owned repository, submodules before the parents that point at them.
+
+        A parent is pushed only once every submodule pointer its HEAD records is held by a
+        branch of that submodule's remote. Git LFS objects are uploaded first. A remote that
+        protects the tracked branch gets the commit on a branch named `<tool>/<branch>` after
+        this tool instead, and the row asks for the pull request. HTTPS pushes to GitHub can
+        use the `gh` login as a credential. Exits 1 when any repository was held or failed.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over repo/outcome/detail.
+        """
+        with progress("pushing the repository tree"):
+            steps = board("local").git().push()
+        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git push")
+
+    @git.command(name="check")
+    def git_check(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+        """Verify the tree is safe to clone and push, and exit 1 when anything fails.
+
+        Fetches every owned repository and the foreign submodules they point at, then reports
+        each pointer no branch of its remote holds, each diverged branch, each file in HEAD over
+        the size ceiling and each LFS repository with no git-lfs here as `fail`, and a detached
+        HEAD, unpushed or missing commits, and a checkout off its recorded pointer as `warn`.
+        An empty table is a consistent tree.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over repo/check/verdict/detail.
+        """
+        with progress("checking the repository tree"):
+            findings = board("local").git().check()
+        rows(
+            [finding.model_dump() for finding in findings],
+            mode=mode_of(json_mode=json, agent=agent),
+            fields=_fields(fields) or _GIT_CHECK_COLUMNS,
+            title="git check",
+        )
+        return 1 if any(finding.verdict is Verdict.FAIL for finding in findings) else 0
+
     return app
 
 
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
 _HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
+
+# The columns each `git` table carries, so a tree with nothing to say still renders its heading.
+_GIT_STATUS_COLUMNS = (
+    "repo",
+    "owner",
+    "branch",
+    "head",
+    "upstream",
+    "ahead",
+    "behind",
+    "changed",
+    "untracked",
+    "published",
+)
+_GIT_STEP_COLUMNS = ("repo", "outcome", "detail")
+_GIT_CHECK_COLUMNS = ("repo", "check", "verdict", "detail")
 
 # The columns the job listing always carries, so a cache nobody has dispatched from still renders
 # its heading, and so a settled row's empty live columns line up under the live rows' own.
@@ -1720,6 +1853,19 @@ def _status(status: BatchStatus, *, mode: str | None, fields: Sequence[str]) -> 
         fields=fields,
         title=f"{status.batch}: {status.running} running",
     )
+
+
+def _stepped(
+    steps: Sequence[Step], *, json_mode: bool, agent: bool, fields: str, title: str
+) -> int:
+    """Print one row per repository a tree verb walked, exiting 1 when any did not settle."""
+    rows(
+        [step.model_dump() for step in steps],
+        mode=mode_of(json_mode=json_mode, agent=agent),
+        fields=_fields(fields) or _GIT_STEP_COLUMNS,
+        title=title,
+    )
+    return 0 if all(step.outcome.settled for step in steps) else 1
 
 
 def _fields(raw: str) -> tuple[str, ...]:

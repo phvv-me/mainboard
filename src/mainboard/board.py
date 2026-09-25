@@ -65,6 +65,7 @@ from .engines.compile.state import SyncState
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
 from .experiments.identity import run_id
+from .git import Tree
 from .jobs.call import Fresh
 from .jobs.closure import Closure
 from .jobs.target import Target
@@ -439,6 +440,13 @@ class Board:
         env: the environment name, the bound host profile's own when empty.
         """
         return Doctor(self, env=env)
+
+    def git(self) -> Tree:
+        """This workspace's repository tree: the root and every submodule under it, as one.
+
+        Host-independent like `deps`, since the repositories live in this workspace's checkout.
+        """
+        return Tree(self.root, self.manifest.git)
 
     def expectation(
         self,

@@ -187,6 +187,28 @@ Profiles inherit `[hosts.defaults]`, values interpolate (`{{ env('LOCALDIR') }}`
 `{{ num_cpus() }}`), and queue policies are data the tool enforces at submit
 time with the error you wish the scheduler gave you.
 
+## One repository tree
+
+A workspace that is a git repository with submodules, nested ones included, is
+operated as one repository. Only the repositories whose remote owner is the
+root's own or one `[git]` names are ever written; pinned reference code from
+anybody else is read to verify the pointers that name it and otherwise left alone.
+
+```toml
+[git]
+owners = ["phvv-me", "ComputerVisionLaboratory"]
+ceiling-mb = 50                              # the default; LFS files are exempt
+never-commit = ["**/evidence/artifacts/**"]  # the default; git glob pathspecs
+```
+
+```console
+$ mainboard git status          # branch or detached, ahead/behind, dirty, published
+$ mainboard git pull            # fast-forward only, submodules follow their pointers
+$ mainboard git commit -m "…"   # submodules first, then the parents' pointers
+$ mainboard git push            # children first, pointers verified, protected main → branch
+$ mainboard git check           # everything a clone or the next push would trip on
+```
+
 ## What it replaces
 
 - environment managers that cannot name a host
