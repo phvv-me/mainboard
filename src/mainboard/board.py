@@ -52,7 +52,7 @@ from .dispatch.shared import logger
 from .dispatch.shells import dialect_for, is_windows, open_shell
 from .dispatch.shipment import Shipment
 from .dispatch.snapshots import Snapshots
-from .dispatch.targets import find_root
+from .dispatch.targets import home_of, placed, rooted
 from .dispatch.targets import resolve as resolved_profile
 from .dispatch.transport import SshTransport
 from .dispatch.vocabulary import Request, Resources
@@ -243,9 +243,9 @@ class ProviderJob:
             endpoint = self.backend.endpoint(self.handle.id, key=key)
             policy = SshTransport(endpoint=endpoint)
             root = self.handle.root or profile.root
-            if not root:
+            if root.startswith("~"):
                 with connection(endpoint.destination, policy) as remote:
-                    root = find_root(remote)
+                    root = placed(root, home=home_of(remote))
             self.board.dispatcher.fetch_path(
                 endpoint.destination, root=root, path=path, ssh=policy
             )
@@ -562,7 +562,6 @@ class Board:
             return Onboarding(
                 self.dispatcher,
                 plan,
-                root=plan.profile.root,
                 artifact=provisioner.artifact_for(plan.env),
                 resolve=resolve,
                 watch=watch,
@@ -755,10 +754,11 @@ class Board:
         """The resolved execution plan for this board's host.
 
         A bound host's profile is completed from what its setup probed, so a platform the
-        manifest never spelled out is still the one every later command stages for.
+        manifest never spelled out is still the one every later command stages for, and a `~`
+        root is the one path under that host's home.
         """
         plan = self.resolver.plan(self.host, env=env, container=container)
-        if self.local or plan.profile.platform:
+        if self.local:
             return plan
         try:
             recorded = self.dispatcher.cache.host(self.host)
@@ -789,13 +789,8 @@ class Board:
         )
 
     def remote_root(self) -> str:
-        """The declared workspace root on the bound host, refusing when absent."""
-        root = self.plan().profile.root
-        if not root:
-            raise MissionError(
-                f"host {self.host!r} declares no root; set [hosts.{self.host}] root"
-            )
-        return root
+        """The workspace root on the bound host, refusing one its setup never placed."""
+        return rooted(self.plan().profile, host=self.host)
 
     def rented(
         self,

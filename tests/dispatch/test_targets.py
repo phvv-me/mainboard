@@ -8,13 +8,13 @@ from hypothesis import strategies as st
 from mainboard import MissionError
 from mainboard.dispatch import Facts, resolve, smallest_fit, ssh_hosts
 from mainboard.dispatch import targets as targets_mod
-from mainboard.dispatch.targets import find_root, probe_capabilities
+from mainboard.dispatch.targets import home_of, placed, probe_capabilities, rooted
 from mainboard.manifest import HostProfile
 
 from ..strategies import WORDS
 from .support import RecordingTransport, machine_with
 
-_GPU_PROBE = """root=/work/x/projects
+_GPU_PROBE = """home=/home/me
 kind=pbs
 gpu=NVIDIA H100, 81920
 mem=131072000
@@ -48,7 +48,7 @@ def test_a_multi_alias_host_line_yields_each_of_its_destinations(tmp_path: Path)
 
 
 def test_the_capabilities_probe_parses_the_key_value_lines_its_own_script_prints() -> None:
-    for field in ("root=", "kind=", "gpu=", "mem=", "account=", "queue=", "pixi=", "uv="):
+    for field in ("home=", "kind=", "gpu=", "mem=", "account=", "queue=", "pixi=", "uv="):
         assert field in targets_mod._CAPABILITIES
         assert field in targets_mod._WINDOWS_CAPABILITIES
     assert "uname -sm" in targets_mod._CAPABILITIES
@@ -58,7 +58,7 @@ def test_the_capabilities_probe_parses_the_key_value_lines_its_own_script_prints
     assert transport.calls[-1][3:5] == ["miyabi-g", "bash"]
     assert facts == Facts(
         name="miyabi-g",
-        root="/work/x/projects",
+        home="/home/me",
         kind="pbs",
         account="labgrp",
         queue="interact-g",
@@ -73,7 +73,7 @@ def test_the_capabilities_probe_parses_the_key_value_lines_its_own_script_prints
 
 
 def test_a_host_with_no_bash_is_asked_the_same_questions_in_powershell() -> None:
-    windows = "root=C:/Users/me/projects\nkind=ssh\ngpu=NVIDIA GeForce RTX 5080, 16303\n"
+    windows = "home=C:/Users/me\nkind=ssh\ngpu=NVIDIA GeForce RTX 5080, 16303\n"
     windows += "mem=67108864\naccount=\nqueue=\npixi=\nuv=C:\\Users\\me\\.local\\bin\\uv.exe\n"
     windows += "platform=Windows AMD64\n"
     transport = RecordingTransport(
@@ -81,8 +81,8 @@ def test_a_host_with_no_bash_is_asked_the_same_questions_in_powershell() -> None
     )
     facts = probe_capabilities("homelab", ssh=transport)
     assert [argv[4] for argv in transport.calls] == ["bash", "powershell"]
-    assert (facts.root, facts.gpu_name, facts.gpu_mem_mb) == (
-        "C:/Users/me/projects",
+    assert (facts.home, facts.gpu_name, facts.gpu_mem_mb) == (
+        "C:/Users/me",
         "NVIDIA GeForce RTX 5080",
         16303,
     )
@@ -93,12 +93,12 @@ def test_a_host_with_no_bash_is_asked_the_same_questions_in_powershell() -> None
 
 
 def test_a_machine_with_no_gpu_engines_or_readable_memory_leaves_those_facts_unset() -> None:
-    bare = "root=~/projects\nkind=ssh\ngpu=\nmem=nonsense\naccount=me\nqueue=\npixi=\nuv=\n"
+    bare = "home=/Users/me\nkind=ssh\ngpu=\nmem=nonsense\naccount=me\nqueue=\npixi=\nuv=\n"
     facts = Facts.parsed("gold", f"{bare}platform=Darwin arm64\n")
     assert (facts.gpu_name, facts.gpu_mem_mb, facts.sysmem_gb) == (None, None, None)
     assert (facts.pixi, facts.uv, facts.platform) == ("", "", "Darwin arm64")
     assert facts.pixi_platform == "osx-arm64"
-    assert find_root(machine_with("/work/x/projects\n")) == "/work/x/projects"
+    assert home_of(machine_with("/home/me")) == "/home/me"
 
 
 @pytest.mark.parametrize(
@@ -116,12 +116,35 @@ def test_usable_memory_is_the_gpu_when_there_is_one_and_the_system_otherwise(
     assert facts.fits(32) is fits_32
 
 
+@given(home=st.sampled_from(["/home/me", "C:/Users/me"]), below=st.lists(WORDS, max_size=3))
+def test_a_tilde_root_is_placed_under_the_probed_home_and_any_other_root_is_kept(
+    home: str, below: list[str]
+) -> None:
+    tail = "".join(f"/{part}" for part in below)
+    assert placed(f"~{tail}", home=home) == f"{home}{tail}"
+    assert placed(f"~{tail}", home="") == f"~{tail}"
+    assert placed(f"/work/x{tail}", home=home) == f"/work/x{tail}"
+    assert placed(f"~me{tail}", home=home) == f"~me{tail}"
+
+
+def test_a_root_no_probe_has_placed_is_refused_with_the_setup_that_places_it() -> None:
+    assert rooted(HostProfile(root="/work/x"), host="gold") == "/work/x"
+    with pytest.raises(
+        MissionError, match=r"no probed home to place ~/.mainboard-jobs.*setup gold"
+    ):
+        rooted(HostProfile(), host="gold")
+
+
 def test_resolve_fills_only_the_gaps_the_manifest_left_open() -> None:
     facts = Facts(
-        name="gold", root="/work/x/projects", kind="pbs", account="labgrp", platform="Linux x86_64"
+        name="gold", home="/home/me", kind="pbs", account="labgrp", platform="Linux x86_64"
     )
-    filled = resolve(HostProfile(kind="auto", root="", account=""), facts)
-    assert (filled.kind, filled.root, filled.account) == ("pbs", "/work/x/projects", "labgrp")
+    filled = resolve(HostProfile(kind="auto", account=""), facts)
+    assert (filled.kind, filled.root, filled.account) == (
+        "pbs",
+        "/home/me/.mainboard-jobs",
+        "labgrp",
+    )
     assert filled.platform == "linux-64"
     declared = HostProfile(kind="ssh", root="/custom/root", account="declared", platform="win-64")
     kept = resolve(declared, facts)

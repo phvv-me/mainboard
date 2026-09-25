@@ -20,7 +20,7 @@ from .schedulers.pueue import Pueue
 from .schedulers.registry import pick
 from .shared import Watcher, announce, logger
 from .shells import HostShell, is_windows, open_shell
-from .targets import Facts, probe_capabilities, resolve
+from .targets import Facts, probe_capabilities, resolve, rooted
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -60,7 +60,8 @@ class HostSetup(FrozenModel):
     tool: the tool version the machine reports once installed.
     pixi: the pixi version the machine runs, which every setup and sync brings to the fleet's
         one pinned version, so a host that quietly moved shows here instead of in a dead wave.
-    capabilities: the host as the bootstrap probe found it, its root the one set up there; None
+    capabilities: the host as the bootstrap probe found it, carrying the home a `~` root was
+        placed under and never a root of its own, since `root` is the one set up there; None
         for an in-place install.
     hardware: the host's hardware snapshot, read back through the new activation.
     onboarded_at: ISO-8601 time the install finished.
@@ -329,7 +330,9 @@ class Onboarding:
     the lock's dependency path, where one machine's toolchain decides whether another platform's
     requirement can be read at all.
 
-    root: the workspace root on the host, discovered on the host when empty.
+    The workspace goes to the plan's root, a `~` in it placed under the home the probe (or, for
+    a sync, the recorded probe) found.
+
     artifact: the compiled manifest, lock and state shipped with the mirror; empty leaves the
         host to solve.
     resolve: the escape hatch for the rare host that genuinely must solve for itself.
@@ -344,7 +347,6 @@ class Onboarding:
         dispatcher: Dispatcher,
         plan: ExecutionPlan,
         *,
-        root: str = "",
         artifact: Sequence[str] = (),
         resolve: bool = False,
         watch: Watcher | None = None,
@@ -353,7 +355,6 @@ class Onboarding:
     ) -> None:
         self.dispatcher = dispatcher
         self.plan = plan
-        self.root = root
         self.artifact = tuple(artifact)
         self.resolve = resolve
         self.watch = watch or announce
@@ -467,10 +468,9 @@ class Onboarding:
         if sync_only:
             return self._sync(host)
         self.watch(f"probing {host}")
-        probed = probe_capabilities(host)
-        capabilities = probed.model_copy(update={"root": self.root or probed.root})
+        capabilities = probe_capabilities(host)
         self.plan = self.resolved(capabilities)
-        root = capabilities.root
+        root = rooted(self.plan.profile, host=host)
         with open_shell(self.plan, root) as shell:
             bootstrap = Bootstrap(shell, resolve=self.resolve, floor=self.floor)
             self._mirror(host, root)
@@ -524,9 +524,9 @@ class Onboarding:
         host whose pixi moved would otherwise rewrite the shipped lock under the queued wave.
         """
         recorded = self.dispatcher.cache.host(host)
-        root = self.root or recorded.root
         if recorded.capabilities is not None:
             self.plan = self.resolved(recorded.capabilities)
+        root = rooted(self.plan.profile, host=host)
         with open_shell(self.plan, root) as shell:
             self._mirror(host, root)
             pixi = self.align_pixi(shell, host=host)

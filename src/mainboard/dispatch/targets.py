@@ -8,6 +8,7 @@ from patos import FrozenModel
 
 from ..core.errors import MissionError
 from ..core.host import pixi_platform
+from ..core.project import Project
 from .shells import POWERSHELL, encoded
 from .transport import SshTransport
 
@@ -20,17 +21,11 @@ if TYPE_CHECKING:
 # The user's ssh client config; its concrete `Host` aliases are dispatch targets.
 _SSH_CONFIG = Path.home() / ".ssh" / "config"
 
-# Where to put the workspace: an HPC `/work` area if there is one, else `~/projects`.
-_ROOT_FINDER = (
-    'w=$(ls -d /work/*/"$USER"/projects 2>/dev/null | head -1); echo "${w:-$HOME/projects}"'
-)
-
 # Stock-tools capability probe printing `key=value` lines, run in a login shell so the HPC
 # scheduler is on PATH. A per-user engine is also looked for in its install directory, since a
 # non-interactive login shell often never reads the `.bashrc` line its installer appended.
 _CAPABILITIES = "\n".join(
     (
-        f"root=$({_ROOT_FINDER})",
         "if command -v sbatch >/dev/null 2>&1; then kind=slurm;"
         " elif command -v qsub >/dev/null 2>&1; then kind=pbs; else kind=ssh; fi",
         "gpu=$(nvidia-smi --query-gpu=name,memory.total"
@@ -44,9 +39,9 @@ _CAPABILITIES = "\n".join(
         'pixi=$(command -v pixi || ls "$HOME"/.pixi/bin/pixi 2>/dev/null)',
         'uv=$(command -v uv || ls "$HOME"/.local/bin/uv 2>/dev/null)',
         "platform=$(uname -sm)",
-        "printf 'root=%s\\nkind=%s\\ngpu=%s\\nmem=%s\\naccount=%s\\nqueue=%s\\n"
+        "printf 'home=%s\\nkind=%s\\ngpu=%s\\nmem=%s\\naccount=%s\\nqueue=%s\\n"
         "pixi=%s\\nuv=%s\\nplatform=%s\\n'"
-        ' "$root" "$kind" "$gpu" "$mem" "$(id -gn)" "$queue" "$pixi" "$uv" "$platform"',
+        ' "$HOME" "$kind" "$gpu" "$mem" "$(id -gn)" "$queue" "$pixi" "$uv" "$platform"',
     )
 )
 
@@ -62,8 +57,8 @@ _WINDOWS_CAPABILITIES = "\n".join(
         "$uv = (Get-Command uv -ErrorAction SilentlyContinue).Source",
         'if (-not $uv) { $uv = (Get-Item "$HOME\\.local\\bin\\uv.exe"'
         " -ErrorAction SilentlyContinue).FullName }",
-        "$root = \"$HOME/projects\" -replace '\\\\', '/'",
-        '"root=$root"',
+        "$userHome = $env:USERPROFILE -replace '\\\\', '/'",
+        '"home=$userHome"',
         '"kind=ssh"',
         '"gpu=$gpu"',
         '"mem=$mem"',
@@ -86,7 +81,7 @@ _PROBES = (
 class Facts(FrozenModel):
     """One host's bootstrap-probed capabilities, before any manifest override.
 
-    root: an HPC `/work` area, else `~/projects`.
+    home: the login home, forward-slashed on Windows, which a profile's `~` root is placed under.
     kind: the scheduler the login node's PATH exposes (`slurm` / `pbs` / `ssh`).
     account: the user's primary group, PBS `group_list`'s natural default.
     queue: the host's interactive queue, when one was discovered.
@@ -97,7 +92,7 @@ class Facts(FrozenModel):
     """
 
     name: str
-    root: str = "~/projects"
+    home: str = ""
     kind: str = "ssh"
     account: str = ""
     queue: str = ""
@@ -116,7 +111,7 @@ class Facts(FrozenModel):
         sysmem_kb = fields["mem"]
         return cls(
             name=name,
-            root=fields["root"],
+            home=fields["home"],
             kind=fields["kind"],
             account=fields["account"],
             queue=fields["queue"],
@@ -164,9 +159,17 @@ def ssh_hosts(config_path: Path = _SSH_CONFIG) -> list[str]:
     return hosts
 
 
-def find_root(remote: Machine) -> str:
-    """The workspace root to use on a POSIX host (an HPC `/work` area, else `~/projects`)."""
-    return str(remote["bash"][["-lc", _ROOT_FINDER]]()).strip()
+def home_of(remote: Machine) -> str:
+    """The login home of a POSIX host already connected, for a rental that no setup probed."""
+    return str(remote["bash"][["-lc", 'printf %s "$HOME"']]()).strip()
+
+
+def placed(root: str, *, home: str) -> str:
+    """`root` with a leading `~` spelled as the host's `home`, the one expansion every consumer
+    of a host's root shares, so the mirror, the runner and every shell line agree on one path.
+    Any other root, or a `~` whose home is still unknown, is returned as written."""
+    head, slash, rest = root.partition("/")
+    return f"{home}{slash}{rest}" if head == "~" and home else root
 
 
 def probe_capabilities(host: str, *, ssh: SshTransport | None = None) -> Facts:
@@ -188,15 +191,26 @@ def probe_capabilities(host: str, *, ssh: SshTransport | None = None) -> Facts:
     raise MissionError(f"{host!r} answered neither the bash nor the PowerShell probe: {said}")
 
 
+def rooted(profile: HostProfile, *, host: str) -> str:
+    """`profile`'s root on `host`, refusing a `~` that no probe of the host has placed yet, which
+    no shell line, scheduler directive or snapshot path could spell."""
+    if profile.root.startswith("~"):
+        raise MissionError(
+            f"{host!r} has no probed home to place {profile.root} under; "
+            f"run `{Project().name} setup {host}`"
+        )
+    return profile.root
+
+
 def resolve(profile: HostProfile, facts: Facts) -> HostProfile:
-    """`profile` with the gaps it left open (`kind: "auto"`, empty `root`, `account`,
-    `platform`) filled from `facts`; an explicit manifest value always wins, and the manifest
-    schema owns validation."""
+    """`profile` with the gaps it left open (`kind: "auto"`, a `~` root, `account`, `platform`)
+    filled from `facts`; an explicit manifest value always wins, and the manifest schema owns
+    validation."""
     updates: dict[str, str] = {}
     if profile.kind == "auto":
         updates["kind"] = facts.kind
-    if not profile.root:
-        updates["root"] = facts.root
+    if (root := placed(profile.root, home=facts.home)) != profile.root:
+        updates["root"] = root
     if not profile.account:
         updates["account"] = facts.account
     if not profile.platform and facts.pixi_platform:

@@ -25,10 +25,10 @@ from mainboard.manifest import HostProfile
 from .support import RecordingTransport, cache, machine_with, plan
 from .test_onboard import FakeDispatcher
 
-_ROOT = "C:/Users/me/mainboard-managed"
+_ROOT = "C:/Users/me/.mainboard-jobs"
 _FACTS_JSON = '{"schema_version": 1, "hostname": "homelab", "cpu_logical_cores": 16}'
 _WINDOWS_FACTS = Facts(
-    name="homelab", root="C:/Users/me/projects", platform="Windows AMD64", uv="C:/uv.exe"
+    name="homelab", home="C:/Users/me", platform="Windows AMD64", uv="C:/uv.exe"
 )
 
 
@@ -239,7 +239,7 @@ def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
     )
     dispatcher = FakeDispatcher(cache())
     undeclared = plan(host="homelab", profile=HostProfile(kind="ssh", sync={"include": ["src"]}))
-    setup = Onboarding(dispatcher, undeclared, root=_ROOT, digest="d1")
+    setup = Onboarding(dispatcher, undeclared, digest="d1")
     with caplog.at_level("WARNING", logger="mainboard.dispatch"):
         report = setup.run()
     assert dispatcher.mirrored == [("homelab", _ROOT)]
@@ -261,5 +261,5 @@ def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
 def test_a_windows_host_that_left_no_prefix_behind_is_refused_by_name() -> None:
     transport = RecordingTransport(rules=[("Test-Path", 1, "")])
     shell = WindowsShell(windows_plan(), _ROOT, ssh=transport)
-    with pytest.raises(MissionError, match="has no C:/Users/me/mainboard-managed/.mainboard/envs"):
+    with pytest.raises(MissionError, match="has no C:/Users/me/.mainboard-jobs/.mainboard/envs"):
         Bootstrap(shell).environment()

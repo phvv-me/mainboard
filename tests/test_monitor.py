@@ -406,10 +406,10 @@ def test_a_target_that_will_not_answer_is_asked_once_whatever_kinds_its_runs_car
 ) -> None:
     """A host redeclared under another scheduler splits its runs into two kind groups, but it is
     one machine the manifest can no longer resolve, reported once rather than raised."""
-    seed("19", target="gold", kind="pbs")  # the fixture's gold profile declares no root
+    seed("19", target="gold", kind="pbs")  # gold was never set up, so its root has no home
     seed("20", target="gold", kind="ssh")
     report = board.monitor().once()
-    assert [(host.host, "root" in host.reason) for host in report.unreachable_hosts] == [
+    assert [(host.host, "setup gold" in host.reason) for host in report.unreachable_hosts] == [
         ("gold", True)
     ]
     assert len(board.dispatcher.cache.tracked()) == 2
@@ -816,9 +816,7 @@ def test_a_rented_workspace_is_fetched_before_the_provider_destroys_it(
     monkeypatch.setattr(
         "mainboard.board.identity", lambda declared: Identity(private="/keys/id", public="pub")
     )
-    monkeypatch.setattr(
-        "mainboard.board.connection", lambda host, policy: machine_with("/rental/projects")
-    )
+    monkeypatch.setattr("mainboard.board.connection", lambda host, policy: machine_with("/rental"))
     transfers = []
 
     def fetch(host: str, **fields) -> None:
@@ -830,7 +828,7 @@ def test_a_rented_workspace_is_fetched_before_the_provider_destroys_it(
     assert item.pulled_path == "results/run"
     [(host, fields)] = transfers
     assert host == "root@rental.example"
-    assert fields["root"] == "/rental/projects"
+    assert fields["root"] == "/rental/.mainboard-jobs"
     assert fields["ssh"].endpoint.port == 2222
     assert Rented.calls[-1].get_method() == "DELETE"
 

@@ -27,7 +27,7 @@ from .shared import Watcher, announce, logger
 from .shells import PosixShell
 from .snapshots import CLOSURE, Snapshots
 from .sync import SyncLock
-from .targets import find_root
+from .targets import home_of, placed
 from .transport import SshTransport
 from .wrapping import connection, wrap
 
@@ -163,7 +163,7 @@ class Landing:
             SyncLock(rental.endpoint, self.dispatcher.sync.root),
             connection(where, policy) as remote,
         ):
-            root = self.plan.profile.root or find_root(remote)
+            root = placed(self.plan.profile.root, home=home_of(remote))
             listing = self.dispatcher.stage_listing(shipment)
             script = self.script(shipment, root=root, listing=listing)
             self.transferable(remote)

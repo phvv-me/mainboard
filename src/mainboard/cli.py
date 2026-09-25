@@ -23,7 +23,6 @@ from .core.section import Section, Verdict, failed
 from .delimiter import Delimiter
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
-from .dispatch.dispatcher import Dispatcher
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
 from .durable import schedule
@@ -588,16 +587,15 @@ def build(root: Path | None = None) -> App:
         A new query sees published files. Collection is not one transaction across servers.
 
         path: workspace-relative results file or directory, using forward slashes on every OS.
-        on: declared SSH host; root and bootstrap Python come from its manifest profile.
-            Python is a command in that host's SSH login shell, usually python3; quote an
-            absolute interpreter path as that shell requires. No remote Mainboard is needed.
+        on: declared SSH host; root and bootstrap Python come from its profile, a `~` root
+            expanded by that Python when no setup has placed it yet. Python is a command in that
+            host's SSH login shell, usually python3; quote an absolute interpreter path as that
+            shell requires. No remote Mainboard is needed.
         json: print a machine-readable collection summary.
         """
-        local_root = workspace_root()
-        profile = load(local_root / project.manifest).profile(on)
-        if not profile.root:
-            raise MissionError(f"declare hosts.{on}.root before collecting its results")
-        published = Dispatcher(root=local_root).fetch_path(on, root=profile.root, path=path)
+        workspace = board(on)
+        root = workspace.plan(container="none").profile.root
+        published = workspace.dispatcher.fetch_path(on, root=root, path=path)
         Output(json=json).print_record(
             {"host": on, "path": path, "new_files": published}, title="collection"
         )

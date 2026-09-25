@@ -101,7 +101,7 @@ class Moving:
 
     def facts(self, *, uv: str) -> Facts:
         """The destination as the stock probe finds it."""
-        return Facts(name=_DESTINATION, root=str(self.destination), uv=uv, platform="Linux x86_64")
+        return Facts(name=_DESTINATION, home=str(self.far), uv=uv, platform="Linux x86_64")
 
     def migration(self, *, token: str = "gho_secret") -> Migration:
         """A migration of this tree to the far side, with this machine's GitHub token."""

@@ -157,6 +157,10 @@ _WAITED = {"host": "", "timeout": 3600.0, "interval": 5.0, "stall": 1200.0, "say
                 {"root": "/work/xg25g007/x10537/projects", "path": "results/run"},
             ),
         ),
+        (
+            ["collect", "results/run", "--on", "gold"],
+            ("fetch_path", "", ("gold",), {"root": "~/.mainboard-jobs", "path": "results/run"}),
+        ),
     ],
     ids=[
         "run",
@@ -184,6 +188,7 @@ _WAITED = {"host": "", "timeout": 3600.0, "interval": 5.0, "stall": 1200.0, "say
         "attest a named job",
         "provide",
         "collect from the profile's root",
+        "collect from a default root the host's own Python expands",
     ],
 )
 def test_every_verb_reaches_the_board_method_it_names_with_the_flags_it_translated(
@@ -845,16 +850,6 @@ def test_submit_carries_every_need_it_was_given_to_the_board(
     [(verb, host, args, options)] = relayed
     assert (verb, host, args) == ("submit", _MIYABI_G, ("true",))
     assert options["needs"] == ("data/a", "data/b")
-
-
-def test_collect_refuses_a_host_without_a_declared_root_before_contacting_it(
-    depot: Path, relayed: Sequence[Relayed]
-) -> None:
-    """Without a root there is no remote path to read, and guessing one could publish the wrong
-    tree, so the refusal names the manifest key to declare and nothing is fetched."""
-    with pytest.raises(MissionError, match=r"declare hosts\.gold\.root"):
-        build(depot)(["collect", "results/run", "--on", "gold"])
-    assert relayed == []
 
 
 def test_a_query_without_sql_reads_the_runs_view(tmp_path: Path) -> None:
