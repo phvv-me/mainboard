@@ -155,12 +155,28 @@ def test_run_resolves_the_newest_row_and_refuses_a_handle_recorded_on_two_target
     assert store.run("H1").submitted_at == "t1"
     store.record(run_record("H1", target="crimson", submitted_at="t2"))
     assert store.run("H1", target="gold").submitted_at == "t1"
-    with pytest.raises(LookupError, match="recorded on crimson, gold"):
+    with pytest.raises(LookupError, match="names runs crimson H1, gold H1"):
         store.run("H1")
     with pytest.raises(LookupError, match="no recorded run 'ghost'"):
         store.run("ghost")
     with pytest.raises(LookupError, match="on 'gold'"):
         store.run("ghost", target="gold")
+
+
+def test_run_answers_to_the_name_jobs_prints_and_refuses_one_naming_several_runs() -> None:
+    """A run is found by its label, else its script, and a real handle beats a name."""
+    store = cache()
+    named = run_record("9", target="blackwell").model_copy(update={"name": "blackwell-db831e3d"})
+    store.record(named)
+    store.record(run_record("1", submitted_at="t1"))
+    store.record(run_record("2", submitted_at="t2"))
+    store.record(run_record("7", submitted_at="t3").model_copy(update={"name": "1"}))
+    assert store.run("blackwell-db831e3d") == named
+    assert store.run("1").handle == "1"
+    with pytest.raises(LookupError, match="'job.sh' names runs gold 1, gold 2"):
+        store.run("job.sh")
+    with pytest.raises(LookupError, match="no recorded run 'blackwell-db831e3d' on 'gold'"):
+        store.run("blackwell-db831e3d", target="gold")
 
 
 def test_a_host_is_stamped_when_it_was_onboarded_and_upserts_by_alias() -> None:

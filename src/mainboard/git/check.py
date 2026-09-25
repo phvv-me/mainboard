@@ -94,7 +94,7 @@ class Check:
             if not child.initialized:
                 detail = f"{child.name} is not checked out, so {short} is unverified"
                 findings.append(_warn(repo, "pointer", detail))
-            elif not child.homes(commit):
+            elif not child.serves(commit):
                 findings.append(self._unserved(repo, child, commit, published=published))
             elif child.head() != commit:
                 detail = (

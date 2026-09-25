@@ -486,6 +486,36 @@ def test_the_cancel_verb_destroys_the_rental_rather_than_leaving_it_stopped(
     ] * 2
 
 
+def test_a_host_gone_from_the_manifest_is_never_asked_and_cancel_settles_its_run_by_name(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A released rental's runs cost no pass a connect, and cancelling one by the name `jobs`
+    prints settles it cancelled, its lost output recorded as unverified."""
+
+    def asked(*_: str, **__: str) -> NoReturn:
+        pytest.fail("a host the manifest no longer declares was asked")
+
+    seed("9", target="blackwell", kind="ssh", name="blackwell-db831e3d")
+    monkeypatch.setattr(Board, "job", asked)
+    [down] = board.monitor().once().unreachable_hosts
+    assert (down.host, down.reason) == (
+        "blackwell",
+        "blackwell is no longer declared; `cancel` settles its runs",
+    )
+    [trial] = board.verdicts().cancel("blackwell-db831e3d").trials
+    record = board.dispatcher.cache.run("9", "blackwell")
+    assert (trial.verdict, trial.detail) == (
+        "unverified",
+        "cancelled: blackwell is no longer declared, so its output is lost",
+    )
+    assert (record.verdict, record.reported, record.evidence) == (
+        "cancelled",
+        "cancelled",
+        "unverified",
+    )
+    assert board.dispatcher.cache.tracked() == []
+
+
 def test_a_finished_scheduler_job_is_never_cancelled(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:

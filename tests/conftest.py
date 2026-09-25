@@ -83,6 +83,9 @@ walltime = "00:30:00"
 kind = "ssh"
 env = "serving"
 
+[hosts.rented]
+kind = "vast"
+
 [hosts.miyabi-g]
 kind = "pbs"
 root = "/work/xg25g007/x10537/projects"

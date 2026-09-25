@@ -202,7 +202,8 @@ class Verdicts:
         """Preserve available evidence, stop the run, and advance the cursor only after release.
 
         A cancel may discard incomplete work but records that loss rather than calling the
-        evidence complete. A held dispatch has no machine to contact.
+        evidence complete. A held dispatch, and a run whose host is no longer declared, have no
+        machine to contact.
 
         ended: the verdict a run still in flight settles on.
         exit_code: the exit status that verdict carries, the recorded one when None.
@@ -232,6 +233,9 @@ class Verdicts:
                 vocabulary.CANCELLED,
             )
             return self.handled(handle, host=host)
+        if not self.board.declares(record.target):
+            self._abandon(record)
+            return self.handled(handle, host=host)
         run = self.board.job(record.handle, host=record.target)
         monitor = self.board.monitor()
         receipts: tuple[str, ...] = ()
@@ -258,6 +262,23 @@ class Verdicts:
             monitor.track(record, state, detail=stopped(ended, code))
             cache.report(stored, verdict)
         return self.handled(handle, host=host)
+
+    def _abandon(self, record: RunRecord) -> None:
+        """Settle a run whose host the manifest no longer declares, asking that host nothing.
+
+        Its output went with the machine, so the evidence is recorded unverified and says why.
+        """
+        cache = self.board.dispatcher.cache
+        monitor = self.board.monitor()
+        detail = f"cancelled: {record.target} is no longer declared, so its output is lost"
+        monitor.evidence(record, (), status="unverified", detail=detail)
+        stored = cache.resolve(record, vocabulary.CANCELLED, None, vocabulary.CANCELLED)
+        verdict = stored.verdict or vocabulary.CANCELLED
+        state = JobState(
+            handle=record.handle, state=stored.state, exit_code=stored.exit_code, verdict=verdict
+        )
+        monitor.track(record, state, detail=detail)
+        cache.report(stored, verdict)
 
     def captured(self, handle: str, *, host: str = "") -> str:
         """`handle`'s output: the tail a settle brought home, else whatever the backend still has.

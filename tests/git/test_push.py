@@ -124,6 +124,29 @@ def test_a_pointer_the_remote_gained_since_the_last_fetch_is_found_by_fetching(
     assert _remote_head(workspace, "Pedrexus", "projects") == workspace.head(workspace.path)
 
 
+@pytest.mark.parametrize("published", [True, False])
+def test_a_shallow_clone_asks_its_remote_for_a_pointer_its_refs_cannot_trace(
+    workspace: Workspace, published: bool
+) -> None:
+    """A `--depth 1` submodule behind its remote tip, the way `submodule update` leaves one."""
+    seed = workspace.forge.seed(FOREIGN, "ref")
+    pinned = workspace.forge.publish(seed, {"pinned.txt": "pinned\n"})
+    workspace.forge.publish(seed, {"later.txt": "later\n"})
+    workspace.git(workspace.ref, "fetch", "-q", "--depth=1", "origin")
+    workspace.git(workspace.ref, "fetch", "-q", "--depth=1", "origin", pinned)
+    workspace.git(workspace.ref, "checkout", "-q", "--detach", pinned)
+    if not published:
+        pinned = workspace.forge.commit(workspace.ref, "local reference edit", {"x.txt": "x\n"})
+    workspace.forge.commit(workspace.path, "Point at the reference", {})
+
+    root = workspace.tree().push()[-1]
+
+    assert root.outcome is (Outcome.DONE if published else Outcome.HELD)
+    assert workspace.git(workspace.ref, "rev-parse", "--is-shallow-repository") == "true"
+    if not published:
+        assert root.detail.startswith(f"records references/ref@{pinned[:7]}, which")
+
+
 def test_a_diverged_branch_is_held_until_pulled(workspace: Workspace) -> None:
     colleague = workspace.colleague()
     colleague.forge.publish(colleague.path, {"theirs.txt": "theirs\n"})
