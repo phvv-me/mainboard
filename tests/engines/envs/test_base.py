@@ -26,5 +26,4 @@ def test_resolve_finds_the_backend_each_mode_declares_and_lists_them_when_it_can
 def test_pins_system_packages_reads_only_its_own_guardrail(
     guardrails: list[Guardrail], *, pinned: bool
 ) -> None:
-    """A plain marker an env backend reads, never a container runtime flag."""
     assert EnvBackend.pins_system_packages(guardrails) is pinned

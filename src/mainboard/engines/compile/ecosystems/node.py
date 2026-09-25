@@ -26,7 +26,7 @@ _LOCKS = {
 
 
 class NodeOptions(FrozenOpenModel):
-    """The `[nodejs]` settings that sit beside its dependency tables.
+    """The `[nodejs]` settings beside its dependency tables.
 
     manager: the package manager binary that installs and links `node_modules`.
     app: whether this workspace is itself the JavaScript application, so its `package.json`
@@ -40,9 +40,8 @@ class NodeOptions(FrozenOpenModel):
 class NodeManager(Tool):
     """The package manager `[nodejs] manager` names, run in the directory it installs into.
 
-    npm, pnpm, yarn and bun read the same `package.json` and write the same `node_modules`,
-    and each installs into its working directory rather than behind a per-tool flag, so a
-    manifest naming a different manager needs nothing here but that manager's binary name.
+    npm, pnpm, yarn and bun share `package.json`, `node_modules` and install-into-cwd, so the
+    binary name is all that differs.
     """
 
     def __init__(self, name: str, directory: Path) -> None:
@@ -50,7 +49,7 @@ class NodeManager(Tool):
         self.directory = directory
 
     def available(self) -> bool:
-        """Whether a `package.json` was generated for this manager to install from."""
+        """Whether a `package.json` was generated to install from."""
         return (self.directory / _MANIFEST).is_file()
 
     def cwd(self) -> Path:
@@ -58,22 +57,17 @@ class NodeManager(Tool):
 
 
 class Node(Ecosystem):
-    """The Node.js toolchain: a generated `package.json`, installed by the declared manager.
+    """The Node.js toolchain: a generated `package.json` plus the manager's lock.
 
-    The generated manifest and the manager's resolved lock jointly define the install.
-    An ordinary toolchain keeps them inside the generated environment directory,
-    while `app = true` moves them to the workspace root,
-    where a bundler and a `node` process resolve imports the way the ecosystem expects.
+    Both live in the generated directory, or at the workspace root with `app = true`, where a
+    bundler and `node` resolve imports the way the ecosystem expects.
     """
 
     toolchain: ClassVar[str] = "nodejs"
-    # One `package.json` and one `node_modules` serve the whole workspace, in the generated
-    # directory or at the root, never one per environment.
     shared: ClassVar[bool] = True
 
     @property
     def directory(self) -> Path:
-        """Where `package.json` and `node_modules` live for this toolchain."""
         return self.workspace if self.options.app else self.out
 
     @property
@@ -84,23 +78,19 @@ class Node(Ecosystem):
 
     @property
     def manifest(self) -> Path:
-        """The generated `package.json` the manager installs from."""
         return self.directory / _MANIFEST
 
     @cached_property
     def options(self) -> NodeOptions:
-        """The table's settings beyond its deps, defaulted when it declares none."""
         return NodeOptions.model_validate(self.table.model_extra or {})
 
     def binary_dirs(self) -> tuple[Path, ...]:
-        """Where the manager links the executables its packages ship."""
         return (self.directory / _MODULES / ".bin",)
 
     def compiled(self) -> PackageJson:
-        """This table as a `package.json`.
+        """This table as a `package.json`, named `-npm` unless it is the application.
 
-        A toolchain that is not the application gets a `-npm` suffixed name, so the generated
-        manifest never claims to be the package the workspace itself publishes.
+        The suffix keeps the generated manifest from claiming the workspace's published package.
         """
         name = self.project if self.options.app else f"{self.project}-npm"
         return PackageJson.compiled(
@@ -108,10 +98,9 @@ class Node(Ecosystem):
         )
 
     def generate(self, files: Writer) -> None:
-        """Write the `package.json` for this table, or drop the one a bare table left behind.
+        """Write this table's `package.json`, or delete it (not empty it) once nothing is declared.
 
-        A `package.json` surviving the removal of the last declared dependency would keep
-        reinstalling it, so the file is deleted rather than emptied.
+        A surviving one would keep reinstalling the last dependency removed.
         """
         if not (self.deps or self.fields):
             files.remove(self.manifest)
@@ -150,9 +139,8 @@ class Node(Ecosystem):
     def sync(self, *, resolve: bool = False) -> None:
         """Install the generated manifest from its lock unless resolution was requested.
 
-        The manager is itself a conda package, reached through the activated environment the
-        second stage runs inside, and it needs no environment flag of its own because the
-        directory it runs in is the environment it installs into.
+        The manager is a conda package on the activated environment's PATH and needs no
+        environment flag, since its working directory is what it installs into.
         """
         if not (self.deps or self.fields):
             return

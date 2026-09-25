@@ -9,15 +9,11 @@ from .toml import Toml
 if TYPE_CHECKING:
     from ...manifest import Manifest
 
-# Every platform family pixi names a virtual package for, and the reach of any floor this table
-# below does not pin down.
+# Every platform family pixi names a virtual package for, the reach of an unlisted floor.
 _EVERY_FAMILY = frozenset({"linux", "osx", "win"})
 
-# Which families can actually provide each floor pixi accepts on a platform descriptor. A macOS
-# deployment target is meaningless to a Linux solve, a glibc version to a macOS one, and CUDA to
-# either kind of Apple machine, so a floor never travels outside the family whose machines carry
-# the matching virtual package. `archspec` is a microarchitecture every machine has, and a key
-# pixi learns after this table was written rides everywhere rather than being dropped.
+# The families whose machines carry each floor's virtual package: a macOS target means nothing
+# to a Linux solve, glibc to a macOS one, CUDA to Apple. A key pixi adds later rides everywhere.
 _FLOOR_FAMILIES: dict[str, frozenset[str]] = {
     "archspec": _EVERY_FAMILY,
     "cuda": frozenset({"linux", "win"}),
@@ -32,20 +28,16 @@ _FLOOR_FAMILIES: dict[str, frozenset[str]] = {
 class SystemFloors(FrozenModel):
     """One `[system]` table, answering which of its floors a given platform can meet.
 
-    Declaring `macos = "14.0"` states a deployment target for a workspace's Apple builds, not a
-    requirement its Linux builds have to satisfy, and copying it onto a Linux platform is what
-    makes pixi warn every Linux clone that the machine does not provide `__osx`.
+    Copying `macos = "14.0"` onto a Linux platform makes pixi warn every Linux clone that the
+    machine does not provide `__osx`.
 
-    declared: the floors as the manifest wrote them, keyed by pixi's virtual package name.
+    declared: keyed by pixi's virtual package name.
     """
 
     declared: dict[str, str] = {}
 
     def on(self, platform: str) -> dict[str, str]:
-        """The declared floors that mean something on one pixi platform.
-
-        platform: a pixi platform string such as `linux-aarch64`.
-        """
+        """The declared floors that mean something on one pixi platform (`linux-aarch64`)."""
         family = platform_family(platform)
         return {
             key: value
@@ -55,16 +47,11 @@ class SystemFloors(FrozenModel):
 
 
 class PlatformVariant(FrozenModel):
-    """One entry in pixi's workspace platform list, bare or named after the floors it carries.
+    """One entry in pixi's platform list: the bare platform, or with floors a named
+    `<platform>-<suffix>` table each environment selects by name.
 
-    Floors are what give a platform a name at all: an entry with none is the plain platform
-    string every pixi manifest already spells, and only an entry that genuinely raises something
-    becomes a `<platform>-<suffix>` table each environment has to select by name.
-
-    platform: the pixi platform this entry solves for.
-    suffix: what the named form is called after, `system` for the workspace's own floors and the
-        environment's name for a floor that environment raised.
-    floors: the virtual package floors this entry carries, already scoped to the platform.
+    suffix: `system` for the workspace's own floors, else the environment that raised them.
+    floors: already scoped to the platform.
     """
 
     platform: str
@@ -94,12 +81,7 @@ class PlatformMatrix(FrozenModel):
     def spread(
         system: dict[str, str], suffix: str, platforms: Sequence[str]
     ) -> dict[str, PlatformVariant]:
-        """One `[system]` table over `platforms`, each entry keeping only the floors it can meet.
-
-        system: the declared floors, keyed by pixi's virtual package name.
-        suffix: what the named variants are called after.
-        platforms: the pixi platforms the table is spread across.
-        """
+        """One `[system]` table over `platforms`, each keeping only the floors it can meet."""
         floors = SystemFloors(declared=system)
         return {
             platform: PlatformVariant(platform=platform, suffix=suffix, floors=floors.on(platform))
@@ -110,19 +92,15 @@ class PlatformMatrix(FrozenModel):
     def from_manifest(cls, manifest: Manifest) -> Self:
         """Expand a manifest's virtual package floors into named Pixi platform variants.
 
-        A floor reaches only the platforms whose family can provide it, so a macOS deployment
-        target lands on the osx targets alone and a Linux collaborator never carries an `__osx`
-        requirement no machine of theirs can satisfy. An env that raises its own floors gets a
-        `<platform>-<env>` variant of every platform those floors reach and rides the workspace's
-        own entry everywhere else, and a floor that survives anywhere forces each env to name the
-        variants it runs on.
+        An env raising its own floors gets a `<platform>-<env>` variant wherever they reach and
+        the workspace's entry elsewhere, and a floor surviving anywhere forces each env to name
+        the variants it runs on.
         """
-        # An undeclared platform list means this machine, so a zero-config manifest
-        # compiles to a workspace pixi can actually install here.
+        # An undeclared platform list means this machine, so a zero-config manifest installs here.
         platforms = manifest.workspace.platforms or [current_platform()]
         root = cls.spread(manifest.system, "system", platforms)
-        # Spread the workspace floors again instead of indexing ``root``: an isolated
-        # environment may intentionally add a platform the default environment cannot solve.
+        # Spread again rather than index `root`: an isolated environment may add a platform the
+        # default environment cannot solve.
         chosen = {
             name: cls.spread(env.system, name, env.platforms or platforms)
             if env.system and env.system != manifest.system

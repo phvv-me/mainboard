@@ -12,55 +12,42 @@ if TYPE_CHECKING:
 
 
 class EnvBackend(Registry, abc.ABC):
-    """A way of laying a managed environment onto a bind-mounted host prefix.
+    """A way of laying a managed environment onto a bind-mounted host prefix outside the image.
 
-    The prefix always lives outside the image, so a backend only has to describe how to
-    fill it (`provision_argv`) and how a shell already inside the container reaches it
-    (`activation_snippet`). Concrete implementations enroll under this root, keyed to a
-    manifest `EnvMode` through the `mode` class attribute, and are looked up by `resolve`.
+    Implementations enroll here keyed by their manifest `mode` and are looked up by `resolve`.
     """
 
     mode: ClassVar[EnvMode]
 
     @staticmethod
     def pins_system_packages(guardrails: Sequence[Guardrail]) -> bool:
-        """Whether `guardrails` asks the backend to pin the image's tuned system packages.
+        """Whether to pin the image's tuned system packages.
 
-        A plain marker an env backend reads while assembling its own provisioning or
-        activation commands. `PIN_SYSTEM_PACKAGES` never becomes a container runtime
-        flag the way `UNSET_PIP_CONSTRAINT` does, since keeping a resolver from
-        shadowing the image's tuned builds is entirely an env-layer concern.
+        Unlike `UNSET_PIP_CONSTRAINT` this never becomes a runtime flag: keeping a resolver from
+        shadowing the image's tuned builds is an env-layer concern only.
         """
         return Guardrail.PIN_SYSTEM_PACKAGES in guardrails
 
     @classmethod
     @abc.abstractmethod
     def activation_snippet(cls, prefix: Path, *, guardrails: Sequence[Guardrail] = ()) -> str:
-        """Bash that activates the environment already provisioned at `prefix`.
+        """Bash, run inside the container, that activates the environment provisioned at `prefix`.
 
-        prefix: the bind-mounted host path the environment was provisioned at.
-        guardrails: the container's guardrails, so the snippet can apply the ones that
-            only make sense at activation time (clearing an inherited `PIP_CONSTRAINT`).
+        guardrails: the container's, for those that apply at activation (an inherited
+            `PIP_CONSTRAINT`).
         """
 
     @classmethod
     @abc.abstractmethod
     def provision_argv(cls, prefix: Path, *, python: str = "python3") -> list[list[str]]:
-        """The commands that create the managed environment at `prefix`.
+        """The argvs, run in order inside the container, that create the environment at `prefix`.
 
-        Each inner list is one argv to run in order, from inside the container, against
-        the bind-mounted host path `prefix`.
-
-        prefix: the bind-mounted host path the environment is built at.
-        python: the interpreter to provision with, when the backend invokes one directly.
+        python: the interpreter, when the backend invokes one directly.
         """
 
 
 def resolve(mode: EnvMode) -> type[EnvBackend]:
-    """The backend implementation for a manifest's `EnvMode`.
-
-    mode: the manifest's declared environment mode.
-    """
+    """The backend implementation for a manifest's `EnvMode`."""
     try:
         return EnvBackend.find(mode, attr="mode")
     except LookupError:

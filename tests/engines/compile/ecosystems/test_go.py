@@ -28,7 +28,6 @@ _TOOL = "example.com/tool"
     ],
 )
 def test_the_executable_name_follows_the_module_path(module: str, executable: str) -> None:
-    """`example.com/tool/v2` still installs as `tool`, so the suffix names no executable."""
     assert Go.executable(module) == executable
 
 
@@ -50,7 +49,6 @@ def test_a_requirement_go_can_resolve_becomes_a_module_reference(
 
 
 def test_a_version_range_is_refused_where_it_is_declared() -> None:
-    """Go resolves one version, so a range would reach the module proxy as a broken reference."""
     with pytest.raises(MissionError, match=r"example.com/tool.*never a range"):
         Go.reference(_TOOL, Spec.model_validate(">=1.4"))
 
@@ -58,11 +56,6 @@ def test_a_version_range_is_refused_where_it_is_declared() -> None:
 def test_sync_installs_every_declared_module_and_unlinks_what_was_dropped(
     bind: Bind, pixi: Pixi, fp: FakeProcess, tool_paths: Mapping[str, str]
 ) -> None:
-    """Sync installs what the table declares and prunes what it dropped.
-
-    `GOBIN` is one directory inside the generated tree that this workspace owns outright,
-    so an executable the table stopped declaring is pruned rather than left to shadow.
-    """
     go = bind(Go, {"deps": {_TOOL: "v1.4.0"}})
     go.gobin.mkdir(parents=True)
     go.gobin.joinpath("tool").write_text("")
@@ -73,17 +66,10 @@ def test_sync_installs_every_declared_module_and_unlinks_what_was_dropped(
 
     assert go.gobin == pixi.manifest.parent / "go" / "bin"
     assert go.binary_dirs() == (go.gobin,)
-    assert list(fp.calls[0]) == [
-        tool_paths["pixi"],
-        "run",
-        "--manifest-path",
-        str(pixi.manifest),
-        "--environment",
-        "default",
-        "go",
-        "install",
-        f"{_TOOL}@v1.4.0",
-    ]
+    assert " ".join(fp.calls[0]) == (
+        f"{tool_paths['pixi']} run --manifest-path {pixi.manifest} --environment default "
+        f"go install {_TOOL}@v1.4.0"
+    )
     assert sorted(path.name for path in go.gobin.iterdir()) == ["tool"]
 
 

@@ -16,34 +16,23 @@ from .tool import Tool
 if TYPE_CHECKING:
     from plumbum.commands.base import BaseCommand
 
-# THE ONE PIXI THE WHOLE FLEET RUNS.
-#
-# pixi rewrites the lock it reads, and each version spells some of it differently: 0.77 labels a
-# named platform variant `p1`, 0.79 labels it with the manifest's own name. That is a difference
-# no workspace declares and none can see, and on 2026-09-05 it split one compiled artifact into
-# two environment addresses across a workstation on 0.77 and a Miyabi login node on 0.79, killing
-# every job of a wave with `found no built environment`. `pixi_lock.canonical` is what keeps such
-# a rewrite from moving an address; this constant is what keeps the rewrite from happening.
-#
-# It is the version this workspace solves with, so a host installs exactly it rather than
-# whatever the installer's `latest` means on the day that host was set up. Raising it is a
-# deliberate act: bump it here, re-solve, and set every host up again.
+# THE ONE PIXI THE WHOLE FLEET RUNS. Each version rewrites the lock differently (0.77 labels a
+# named platform variant `p1`, 0.79 by the manifest's name); on 2026-09-05 that split one artifact
+# into two environment addresses across 0.77 and 0.79 hosts, killing a wave with `found no built
+# environment`. `pixi_lock.canonical` keeps such a rewrite from moving an address; this pin keeps
+# it from happening. To raise it: bump it here, re-solve, and set every host up again.
 PIXI_VERSION = "0.79.0"
 
-# mainboard's engine. `pip install mainboard` brings no `pixi` binary, so it installs one on
-# first use with the official installer for the current operating system, always at the pinned
-# version, which the installer reads from its own `PIXI_VERSION`.
+# `pip install mainboard` brings no pixi, so first use runs the official installer at the pin.
 POSIX_INSTALLER = f"curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION={PIXI_VERSION} sh"
 WINDOWS_INSTALLER = (
     f"$Env:PIXI_VERSION='{PIXI_VERSION}'; irm -useb https://pixi.sh/install.ps1 | iex"
 )
 
-# The tool announcing the install, so nothing here spells its name.
 _TOOL = Project().name
 
-# The startup file pixi's installer appends its own PATH line to, chosen from the basename of
-# `$SHELL` exactly as the installer's own case statement does. A shell it has no rule for is
-# absent here, which is the same silence the installer keeps.
+# The startup file pixi's installer appends a PATH line to, by `$SHELL` basename, mirroring the
+# installer's own case statement (an unlisted shell is left alone there too).
 _SHELL_RC = {
     "bash": "~/.bashrc",
     "fish": "~/.config/fish/config.fish",
@@ -53,22 +42,16 @@ _SHELL_RC = {
 
 
 class PixiEngine(Tool):
-    """Where the pixi binary is, and what it can do without a workspace to point at.
-
-    Finding it (and installing it the first time) is the one job every workspace-scoped `Pixi`
-    shares, so it lives here alone.
-    """
+    """The pixi binary, found or installed on first use, and what it does without a workspace."""
 
     name = "pixi"
 
     @cached_property
     def command(self) -> BaseCommand:
-        """The pixi executable.
+        """pixi on PATH, else `PIXI_HOME/bin` (a non-login shell drops it), else bootstrapped.
 
-        Prefer it on PATH, fall back to `PIXI_HOME/bin` when a non-login remote shell has
-        dropped it, and bootstrap the engine when it is absent everywhere. Windows tools in a
-        Pixi exec environment still follow the cross-platform ``HOME`` convention, so bind its
-        actual user-profile path rather than trusting a launcher-specific inherited value.
+        On Windows `HOME` is bound to the real user profile, since tools in a pixi exec
+        environment follow it and a launcher may pass another.
         """
         try:
             command = local["pixi"]
@@ -79,10 +62,9 @@ class PixiEngine(Tool):
         return command
 
     def version(self) -> str:
-        """The pixi this machine runs as `X.Y.Z`, empty when none resolves anywhere.
+        """The pixi this machine runs as `X.Y.Z`, empty when none resolves.
 
-        Never bootstraps. Asking a machine what it runs must not change what it runs, and this
-        is the question `facts`, `doctor` and every host alignment ask before deciding anything.
+        Never bootstraps: `facts`, `doctor` and host alignment ask this without changing it.
         """
         for candidate in ("pixi", str(self.binary_path())):
             try:
@@ -92,16 +74,12 @@ class PixiEngine(Tool):
         return ""
 
     def aligned(self) -> bool:
-        """Whether this machine's pixi is the one the whole fleet is pinned to."""
+        """Whether this machine's pixi is the fleet's pin."""
         return self.version() == PIXI_VERSION
 
     @staticmethod
     def appended_shell_file() -> str:
-        """The startup file pixi's installer is about to append a PATH line to, else empty.
-
-        Empty in the two cases where nothing is touched, `PIXI_NO_PATH_UPDATE` suppressing the
-        edit and a `$SHELL` the installer has no rule for.
-        """
+        """The startup file pixi's installer will append a PATH line to, else empty."""
         if os.environ.get("PIXI_NO_PATH_UPDATE") or platform.system() == "Windows":
             return ""
         return _SHELL_RC.get(PurePath(os.environ.get("SHELL", "")).name, "")
@@ -112,13 +90,7 @@ class PixiEngine(Tool):
         return Path(os.environ.get("PIXI_HOME") or Path.home() / ".pixi")
 
     def bootstrap(self) -> None:
-        """Install pixi (the engine) when it is missing, so `pip install mainboard` is enough.
-
-        Runs pixi's official installer, which places the binary in `PIXI_HOME/bin` and, unless
-        `PIXI_NO_PATH_UPDATE` says otherwise, appends a PATH line to the startup file of
-        whatever `$SHELL` names. Editing a personal file is not something a first use should do
-        without saying so, so that file is named here before the installer runs.
-        """
+        """Run pixi's installer into `PIXI_HOME/bin`, first naming the rc file it will edit."""
         sys.stderr.write(f"{_TOOL}: installing pixi engine…\n")
         if appended := self.appended_shell_file():
             sys.stderr.write(f"{_TOOL}: the pixi installer adds a PATH line to {appended}\n")
@@ -147,7 +119,7 @@ class PixiEngine(Tool):
         return local[executable]["-c", POSIX_INSTALLER]
 
     def installed_binary(self) -> Path:
-        """Return the fallback Pixi binary after bootstrapping it when absent."""
+        """The fallback Pixi binary, bootstrapped when absent."""
         binary = self.binary_path()
         if not binary.exists():
             self.bootstrap()

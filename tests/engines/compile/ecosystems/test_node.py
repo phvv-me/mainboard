@@ -28,11 +28,6 @@ if TYPE_CHECKING:
 def test_where_a_toolchain_installs_follows_whether_it_is_the_application(
     *, app: bool, name: str, bind: Bind, pixi: Pixi, tmp_path: Path, files: Writer
 ) -> None:
-    """`app` moves the whole node tree to the application root.
-
-    A bundler resolves `node_modules` from there, and a toolchain that is not the
-    application never claims the name the workspace publishes.
-    """
     node = bind(Node, {"app": app, "deps": {"vite": ">=5"}})
     directory = tmp_path if app else pixi.manifest.parent
 
@@ -67,14 +62,12 @@ def test_runtime_dev_and_declared_fields_land_where_the_manager_reads_them(
 
 
 def test_a_package_key_that_is_not_a_table_is_ignored_rather_than_merged(bind: Bind) -> None:
-    """`package` names the fields table, so a scalar there cannot become manifest fields."""
     assert bind(Node, {"deps": {"vite": "*"}, "package": "module"}).fields == {}
 
 
 def test_a_table_left_without_dependencies_drops_its_generated_manifest(
     bind: Bind, files: Writer
 ) -> None:
-    """A surviving `package.json` would keep reinstalling what the manifest stopped declaring."""
     node = bind(Node, {})
     node.manifest.write_text('{"name": "w-npm"}\n')
 
@@ -92,10 +85,6 @@ def test_a_source_requirement_npm_would_misread_is_refused_at_compile(bind: Bind
 def test_sync_installs_through_the_declared_manager_once_there_is_a_manifest(
     bind: Bind, fp: FakeProcess, stub_binary: Callable[[str], str]
 ) -> None:
-    """The manager needs no environment flag.
-
-    The directory it runs in is the environment it installs into.
-    """
     pnpm = stub_binary("pnpm")
     node = bind(Node, {"manager": "pnpm", "deps": {"vite": "*"}})
 
@@ -180,7 +169,6 @@ def test_empty_node_table_does_not_install_a_stray_manifest(bind: Bind, fp: Fake
 
 
 def test_a_manager_without_a_native_lock_is_refused_a_frozen_install(bind: Bind) -> None:
-    """Only a manager whose lock pins the whole tree can install the same one on a host."""
     node = bind(Node, {"manager": "deno", "deps": {"vite": "*"}})
     with pytest.raises(MissionError, match="manager='deno' has no supported frozen mode"):
         node.frozen_inputs()

@@ -26,11 +26,6 @@ def test_either_apptainer_or_its_singularity_alias_makes_a_host_usable(
     *,
     available: bool,
 ) -> None:
-    """Either binary name makes the runtime available.
-
-    Apptainer is the maintained successor of Singularity and stays command-line compatible
-    with it, so a host that only ships the legacy binary is still usable.
-    """
     which(*installed)
     assert Apptainer.is_available() is available
     assert Apptainer.launcher() == launcher
@@ -47,44 +42,22 @@ def test_either_apptainer_or_its_singularity_alias_makes_a_host_usable(
                 passthrough=["HF_TOKEN"],
                 guardrails=[Guardrail.UNSET_PIP_CONSTRAINT],
             ),
-            [
-                "apptainer",
-                "exec",
-                "--nv",
-                "--bind",
-                "/scratch",
-                "--bind",
-                "/host/prefix:/prefix",
-                "--pwd",
-                "/workspace",
-                "--env",
-                "HF_TOKEN",
-                _IMAGE,
-                "env",
-                "-u",
-                "PIP_CONSTRAINT",
-                "python",
-                "run.py",
-            ],
+            f"apptainer exec --nv --bind /scratch --bind /host/prefix:/prefix --pwd /workspace "
+            f"--env HF_TOKEN {_IMAGE} env -u PIP_CONSTRAINT python run.py",
             id="gpu-binds-workdir-passthrough-and-a-guardrail",
         ),
         pytest.param(
             Container(image=_IMAGE, gpus=False, guardrails=[]),
-            ["apptainer", "exec", "--bind", "/host/prefix:/prefix", _IMAGE, "python", "run.py"],
+            f"apptainer exec --bind /host/prefix:/prefix {_IMAGE} python run.py",
             id="nothing-declared-beyond-the-image",
         ),
     ],
 )
 def test_the_launcher_argv_wraps_the_command_in_what_the_container_declared(
-    container: Container, argv: list[str], which: Callable[..., None]
+    container: Container, argv: str, which: Callable[..., None]
 ) -> None:
-    """A baked-in variable is unset by wrapping the command.
-
-    No runtime flag can unset a variable baked into the image, so `UNSET_PIP_CONSTRAINT` is
-    enforced with a plain `env -u`.
-    """
     which()
-    assert (
-        Apptainer.command(container, prefix_bind="/host/prefix:/prefix", argv=["python", "run.py"])
-        == argv
+    command = Apptainer.command(
+        container, prefix_bind="/host/prefix:/prefix", argv=["python", "run.py"]
     )
+    assert command == argv.split()

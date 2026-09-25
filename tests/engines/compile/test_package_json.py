@@ -44,7 +44,6 @@ from mainboard.manifest.schema.spec import Json
 def test_a_compiled_manifest_carries_what_the_node_manager_installs_from(
     deps: Mapping[str, str], dev: Mapping[str, str], fields: dict[str, Json], body: dict[str, Json]
 ) -> None:
-    """`[nodejs.package]` is the escape hatch, so it is merged last and overrides."""
     compiled = PackageJson.compiled(
         name="w-npm",
         deps={name: Spec.model_validate(spec) for name, spec in deps.items()},
@@ -58,7 +57,6 @@ def test_a_compiled_manifest_carries_what_the_node_manager_installs_from(
 
 
 def test_a_requirement_carrying_a_source_is_refused_with_what_it_carries() -> None:
-    """Compiled to a bare `*`, a git source would silently install a registry package."""
     with pytest.raises(MissionError, match=r"lib.*git, path.*\[nodejs.package\]"):
         PackageJson.requirement(
             "lib", Spec.model_validate({"git": "https://example.com/l.git", "path": "../l"})

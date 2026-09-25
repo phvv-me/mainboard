@@ -128,10 +128,6 @@ def test_a_virtual_package_floor_expands_into_named_platform_variants(
     default: list[str],
     manifest_from: Callable[[str], Manifest],
 ) -> None:
-    """A floor binds only the platforms whose family can provide it.
-
-    Any floor that survives forces each env to name the variants it runs on.
-    """
     listed = ", ".join(f'"{platform}"' for platform in platforms)
     manifest = manifest_from(f'[workspace]\nname = "w"\nplatforms = [{listed}]\n{declared}')
     matrix = PlatformMatrix.from_manifest(manifest)
@@ -141,12 +137,10 @@ def test_a_virtual_package_floor_expands_into_named_platform_variants(
 
 
 def test_a_floor_pixi_learns_later_still_reaches_every_platform() -> None:
-    """An unrecognized floor key is carried everywhere rather than silently dropped."""
     floors = SystemFloors(declared={"quantum": "1.0"})
     assert floors.on(_LINUX64) == floors.on(_OSX) == {"quantum": "1.0"}
 
 
 def test_an_undeclared_platform_list_compiles_for_this_machine() -> None:
-    """A zero-config manifest still compiles to a workspace pixi can install here."""
     matrix = PlatformMatrix.from_manifest(Manifest(workspace=Header(name="zero-config")))
     assert matrix.workspace == [current_platform()]

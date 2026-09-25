@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -6,6 +6,14 @@ from filelock import FileLock
 
 from mainboard import MissionError
 from mainboard.engines.compile.generated import Writer
+
+
+@pytest.fixture
+def writer(tmp_path: Path) -> Iterator[Writer]:
+    """A writer whose sync lock is held for the whole test."""
+    lock = FileLock(tmp_path / ".sync.lock")
+    with lock:
+        yield Writer(lock)
 
 
 @pytest.mark.parametrize(
@@ -19,51 +27,31 @@ from mainboard.engines.compile.generated import Writer
 def test_no_edit_survives_the_release_of_the_sync_lock(
     edit: Callable[[Writer, Path], None], tmp_path: Path
 ) -> None:
-    """A writer stashed past its block fails loudly.
-
-    Failing beats racing whoever holds the lock now.
-    """
     writer = Writer(FileLock(tmp_path / ".sync.lock"))
     with pytest.raises(MissionError, match="no longer held"):
         edit(writer, tmp_path / "pixi.toml")
 
 
-def test_a_file_is_replaced_only_once_its_complete_contents_reach_disk(tmp_path: Path) -> None:
-    """New content lands as a fresh inode, and unchanged content is not rewritten at all."""
-    lock = FileLock(tmp_path / ".sync.lock")
-    target = tmp_path / "pixi.toml"
-    with lock:
-        writer = Writer(lock)
-        writer.write(target, "first\n")
-        first = target.stat().st_ino
-
-        writer.write(target, "second\n")
-        assert target.read_text() == "second\n"
-        assert target.stat().st_ino != first
-        second = target.stat().st_ino
-
-        writer.write(target, "second\n")
-        assert target.stat().st_ino == second
-
-
-def test_staged_bytes_keep_binary_content_and_line_endings(tmp_path: Path) -> None:
-    lock = FileLock(tmp_path / ".sync.lock")
+def test_new_bytes_land_as_a_fresh_inode_and_unchanged_ones_are_not_rewritten(
+    writer: Writer, tmp_path: Path
+) -> None:
     path = tmp_path / "job.sh"
     payload = b"#!/bin/sh\r\n# binary: \xff\r\n"
-    with lock:
-        writer = Writer(lock)
-        writer.write(path, payload)
-        inode = path.stat().st_ino
-        assert path.read_bytes() == payload
-        writer.write(path, payload)
-        assert path.stat().st_ino == inode
-        writer.write(path, "text\r\n")
-        assert path.read_bytes() == b"text\r\n"
+    writer.write(path, "first\n")
+    first = path.stat().st_ino
+    writer.write(path, payload)
+    assert path.read_bytes() == payload
+    assert path.stat().st_ino != first
+    second = path.stat().st_ino
+    writer.write(path, payload)
+    assert path.stat().st_ino == second
+    writer.write(path, "text\r\n")
+    assert path.read_bytes() == b"text\r\n"
     assert not list(tmp_path.glob(".*.tmp"))
 
 
 def test_windows_generated_files_keep_the_directorys_inherited_acl(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    writer: Writer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The atomic sibling keeps inheritance; POSIX modes never sever its Windows DACL."""
     chmod_calls: list[tuple[int, int]] = []
@@ -82,21 +70,18 @@ def test_windows_generated_files_keep_the_directorys_inherited_acl(
         lambda descriptor, mode: chmod_calls.append((descriptor, mode)),
     )
     monkeypatch.setattr(Path, "replace", record_replace)
-    lock = FileLock(tmp_path / ".sync.lock")
-    with lock:
-        Writer(lock).write(tmp_path / "state.toml", "[envs]\n")
+    writer.write(tmp_path / "state.toml", "[envs]\n")
 
     assert chmod_calls == []
-    assert len(replacements) == 1
-    staged, target = replacements[0]
+    [(staged, target)] = replacements
     assert staged.parent == target.parent == tmp_path
 
 
-def test_remove_drops_a_generated_file_the_manifest_no_longer_asks_for(tmp_path: Path) -> None:
-    lock = FileLock(tmp_path / ".sync.lock")
+def test_remove_drops_a_generated_file_the_manifest_no_longer_asks_for(
+    writer: Writer, tmp_path: Path
+) -> None:
     target = tmp_path / "package.json"
     target.write_text("{}")
-    with lock:
-        Writer(lock).remove(target)
-        Writer(lock).remove(tmp_path / "never-existed.json")
+    writer.remove(target)
+    writer.remove(tmp_path / "never-existed.json")
     assert not target.exists()

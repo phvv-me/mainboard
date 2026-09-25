@@ -11,20 +11,15 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
     from importlib.metadata import Distribution
 
-# pixi installs its PyPI half through uv, which stamps every distribution it writes with this
-# installer, so a conda-owned record belongs to another manager and is never touched here.
+# uv stamps every distribution pixi installs with this, so a conda-owned record is never touched.
 _INSTALLER = "uv-pixi"
 _ARTIFACT_SUFFIXES = frozenset({".dylib", ".pyd", ".so"})
 # The extensions an import resolves through, as opposed to a linked library a `.so` carries.
 _EXTENSION_SUFFIXES = frozenset({".pyd", ".so"})
-# What a compiler opens. Build configuration is deliberately not here: `pyproject.toml`,
-# `CMakeLists.txt` and their kind are rewritten in place by every tool that touches packaging,
-# so their clocks move without a single translation unit changing, while a `.cpp` whose clock
-# moved is a `.cpp` somebody wrote to.
+# What a compiler opens. Build configuration (`pyproject.toml`, `CMakeLists.txt`) is left out:
+# packaging tools rewrite it in place, moving its clock with no translation unit changed.
 _SOURCE_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".pyx", ".rs"})
-# Directories a build writes into rather than compiles from. Descending into them would let a
-# vendored `.venv`, a `target/` of freshly unpacked crates, or a `build/` of copied headers
-# date every package as permanently out of date.
+# Directories a build writes into rather than compiles from, which would date every package.
 _IGNORED_DIRS = frozenset({"__pycache__", "build", "dist", "node_modules", "target"})
 
 
@@ -38,26 +33,17 @@ def site_packages(prefix: Path) -> tuple[Path, ...]:
 
 
 def recorded_extensions(name: str, *, prefix: Path) -> tuple[Path, ...]:
-    """The compiled extensions the environment at `prefix` holds for import name `name`.
+    """The compiled extensions the environment at `prefix` records for import name `name`.
 
-    Asked of that environment's own dist-infos and never of the interpreter asking: the process
-    dispatching a job is a uv tool whose own site-packages holds none of what the job's target
-    environment holds, and it read its own metadata for a day and deferred nothing (2026-09-07).
-    The shape read here is the one thing a package's installed form is knowable from without
-    running its code: a build backend is free to install a compiled extension anywhere while
-    redirecting only the pure Python half of an editable install back to the source, and the
-    RECORD is where that split is written down.
+    Read from that environment's dist-infos, never the asking interpreter's: the dispatching uv
+    tool holds none of the target's packages, and reading its own metadata deferred nothing for
+    a day (2026-09-07). The RECORD is where a build backend writes down an editable's split
+    between redirected Python sources and extensions installed anywhere.
 
-    The import name maps to a distribution the way `importlib.metadata.packages_distributions`
-    maps it, off a declared `top_level.txt` or inferred from the RECORD's own paths, with the
-    same last resort of a distribution named exactly like the import; the first distribution to
-    claim the name wins, ordered by distribution name so the answer never depends on directory
-    reading order. What comes back is where the environment says the extensions are, whether or
-    not every file is still there: a recorded extension gone missing is exactly the state the
-    caller has to know about, not one to silently drop.
-
-    name: the top-level import name, the package directory under its import root.
-    prefix: the compiled environment's prefix, whose site-packages are read.
+    The name maps to a distribution as `packages_distributions` maps it (`top_level.txt`, else
+    RECORD paths, else a distribution named exactly like it), the first claim winning in
+    distribution-name order. Recorded paths come back even when missing, which the caller must
+    know about.
     """
     found = sorted(
         (
@@ -69,22 +55,29 @@ def recorded_extensions(name: str, *, prefix: Path) -> tuple[Path, ...]:
     )
     for dist, site in found:
         if name in _import_roots(dist):
-            return _recorded(dist, site)
+            return _recorded(dist, site, _EXTENSION_SUFFIXES)
     for dist, site in found:
         if str(dist.name or "").casefold() == name.casefold():
-            return _recorded(dist, site)
+            return _recorded(dist, site, _EXTENSION_SUFFIXES)
     return ()
+
+
+def _declared_roots(dist: Distribution) -> list[str]:
+    """The import roots `dist`'s `top_level.txt` declares."""
+    return (dist.read_text("top_level.txt") or "").split()
+
+
+def _record_paths(dist: Distribution) -> list[str]:
+    """The paths `dist`'s RECORD lists, read raw since `Distribution.files` drops missing ones."""
+    return [row[0] for row in csv.reader((dist.read_text("RECORD") or "").splitlines()) if row]
 
 
 def _import_roots(dist: Distribution) -> set[str]:
     """The top-level import names `dist` claims, declared or inferred from its RECORD."""
-    declared = (dist.read_text("top_level.txt") or "").split()
-    if declared:
+    if declared := _declared_roots(dist):
         return set(declared)
-    record = dist.read_text("RECORD") or ""
     roots: set[str] = set()
-    for row in csv.reader(record.splitlines()):
-        path = PurePosixPath(row[0])
+    for path in map(PurePosixPath, _record_paths(dist)):
         if ".." in path.parts or path.parts[0].endswith(".dist-info"):
             continue
         if len(path.parts) > 1:
@@ -94,14 +87,9 @@ def _import_roots(dist: Distribution) -> set[str]:
     return roots
 
 
-def _recorded(dist: Distribution, site: Path) -> tuple[Path, ...]:
-    """The compiled extensions `dist`'s RECORD records, absolute, under `site`."""
-    record = dist.read_text("RECORD") or ""
-    return tuple(
-        site / row[0]
-        for row in csv.reader(record.splitlines())
-        if row and Path(row[0]).suffix in _EXTENSION_SUFFIXES
-    )
+def _recorded(dist: Distribution, site: Path, suffixes: frozenset[str]) -> tuple[Path, ...]:
+    """The files with `suffixes` that `dist`'s RECORD lists, absolute under `site`."""
+    return tuple(site / path for path in _record_paths(dist) if Path(path).suffix in suffixes)
 
 
 class DirInfo(FrozenOpenModel):
@@ -111,109 +99,72 @@ class DirInfo(FrozenOpenModel):
 
 
 class DirectUrl(FrozenOpenModel):
-    """A PEP 610 `direct_url.json`, saying where an installed distribution came from.
-
-    Only a local editable tree is interesting here, since everything else pixi installs is a
-    wheel it can lay down again from the lock alone.
-    """
+    """A PEP 610 `direct_url.json`, of interest only for a local editable tree."""
 
     url: str = ""
     dir_info: DirInfo = DirInfo()
 
     @property
     def editable(self) -> bool:
-        """Whether the distribution imports straight from a source tree somebody still edits."""
         return self.dir_info.editable
 
     @property
     def source(self) -> Path | None:
-        """The local directory an editable was installed from, `None` for anything else."""
+        """The local directory an editable was installed from."""
         if not self.editable or not self.url.startswith("file://"):
             return None
         return Path.from_uri(self.url)
 
     @classmethod
     def beside(cls, distribution: Distribution) -> DirectUrl:
-        """Parse the record shipped next to ``distribution``, empty when it ships none."""
+        """Parse the record shipped next to `distribution`, empty when it ships none."""
         return cls.model_validate_json(distribution.read_text("direct_url.json") or "{}")
 
 
 class InstalledPackage:
     """One uv-installed distribution, judged by what is on disk rather than by what is locked.
 
-    A wheel is judged by its files, since one whose import roots disappeared keeps its
-    `dist-info` and still counts as installed. An editable is judged by its clock, since it
-    keeps whatever extension was compiled the first time however far its sources have moved on.
+    site_packages: the tree holding its `dist-info` and import roots.
     """
 
     def __init__(self, distribution: Distribution, site_packages: Path) -> None:
-        """Bind one distribution to the site-packages tree it was read from.
-
-        distribution: the installed distribution, as `importlib.metadata` found it.
-        site_packages: the directory holding its `dist-info` and its import roots.
-        """
         self.distribution = distribution
         self.site_packages = site_packages
 
     @property
     def name(self) -> str:
-        """The distribution name pixi would reinstall this package by."""
         return self.distribution.name
 
     @cached_property
     def origin(self) -> DirectUrl:
-        """Where this distribution was installed from."""
         return DirectUrl.beside(self.distribution)
 
-    def artifacts(self) -> list[Path]:
-        """The compiled extension modules this install recorded as its own.
-
-        `RECORD` is read here rather than through `Distribution.files`, which silently drops
-        every path that has gone missing. A recorded extension nobody can find is exactly the
-        state this audit exists to report.
-        """
-        recorded = self.distribution.read_text("RECORD") or ""
-        return [
-            self.site_packages / row[0]
-            for row in csv.reader(recorded.splitlines())
-            if Path(row[0]).suffix in _ARTIFACT_SUFFIXES
-        ]
+    def artifacts(self) -> tuple[Path, ...]:
+        """The compiled extension modules this install recorded, present or not."""
+        return _recorded(self.distribution, self.site_packages, _ARTIFACT_SUFFIXES)
 
     def damaged(self) -> bool:
         """Whether this wheel declares import roots and not one of them survives.
 
-        A distribution declaring no root claims nothing that could go missing, and an editable
-        is left to :meth:`outdated` because it imports through a path hook rather than from
-        files under site-packages.
+        Its `dist-info` still counts it installed. An editable is left to `outdated`, since it
+        imports through a path hook rather than from site-packages.
         """
         if self.origin.editable:
             return False
-        declared = self.distribution.read_text("top_level.txt") or ""
-        roots = [root for line in declared.splitlines() if (root := line.strip())]
+        roots = _declared_roots(self.distribution)
         return bool(roots) and not any(self.importable(root) for root in roots)
 
     def importable(self, root: str) -> bool:
-        """Whether ``root`` still resolves to a package directory, a module, or an extension."""
+        """Whether `root` still resolves to a package directory, a module, or an extension."""
         return (self.site_packages / root).exists() or any(self.site_packages.glob(f"{root}.*"))
 
     def outdated(self) -> bool:
-        """Whether an editable's extensions are behind the sources they were compiled from.
+        """Whether an editable's extensions are missing or behind the sources they compiled.
 
-        Two ways an extension stops answering for its tree, asked as the two questions they are
-        rather than fused into one clock reading. A recorded extension nobody can find is gone,
-        and nothing absent can be current. An extension that is there is behind only when a file
-        a compiler opens is newer than the newest artifact this install wrote, which is when that
-        build finished; measuring against the oldest instead called a package with several
-        extensions stale for the very sources its own build was compiling.
-
-        What counts as a source is what a compiler opens, and build configuration is not it.
-        `pyproject.toml` and `CMakeLists.txt` are rewritten in place by anything that touches
-        packaging, so cutoken read as needing a reinstall on a clock two days ahead of its own
-        `.cpp` while being byte-identical to the commit that last changed it (2026-09-05) -- a
-        reinstall of an extension newer than everything it was built from.
-
-        Only a package that compiled something can go out of date this way, so a pure Python
-        editable, which imports its sources directly, never comes back true.
+        Behind means a compiler input newer than the newest artifact, when the build finished;
+        the oldest would call a multi-extension build stale for its own sources. Build config is
+        no input: cutoken read stale on a `pyproject.toml` clock two days ahead of its
+        byte-identical `.cpp` (2026-09-05). A pure Python editable is never outdated.
         """
         source = self.origin.source
         artifacts = self.artifacts()
@@ -227,10 +178,9 @@ class InstalledPackage:
 
     @staticmethod
     def _newest_source(tree: Path) -> int:
-        """The newest modification time, in nanoseconds, among the files a compiler would open.
+        """The newest mtime in ns among the files a compiler would open, `0` when there are none.
 
-        Dot directories and build output trees are skipped, and `0` comes back for a tree holding
-        nothing to compile, which is every pure Python package.
+        Dot directories and build output trees are skipped.
         """
         newest = 0
         for directory, subdirectories, filenames in tree.walk():
@@ -248,13 +198,9 @@ class InstalledPackage:
 class EnvironmentAudit:
     """Names the PyPI packages an installed environment has to reinstall to be trustworthy.
 
-    `pixi install` reconciles an environment against its lock, which says whether a package is
-    recorded as installed and never whether what it left behind still works. Two failures
-    survive that. A wheel whose files were removed underneath pixi, by a swapped CUDA provider
-    or a half-deleted cache, keeps its `dist-info` and still counts as installed while none of
-    its import roots exist. An editable carrying a compiled extension keeps the artifact of its
-    first build however far its sources have moved on. Neither is visible in the lock, so the
-    audit reads the environment itself and takes a prefix and nothing else.
+    `pixi install` checks a package is recorded, not that it still works. Invisible to the lock:
+    a wheel whose files vanished underneath (a swapped CUDA provider, a half-deleted cache), and
+    an editable still carrying the extension of its first build. So the audit reads the prefix.
     """
 
     def __init__(self, prefix: Path) -> None:
@@ -262,7 +208,7 @@ class EnvironmentAudit:
 
     @staticmethod
     def names(packages: Iterable[InstalledPackage]) -> tuple[str, ...]:
-        """The distinct distribution names, ordered case-insensitively for a stable argv."""
+        """The distinct names, ordered case-insensitively for a stable argv."""
         return tuple(sorted({package.name for package in packages}, key=str.casefold))
 
     def damaged(self) -> tuple[str, ...]:

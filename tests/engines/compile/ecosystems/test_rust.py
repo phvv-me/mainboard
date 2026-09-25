@@ -28,27 +28,19 @@ def _record(rust: Rust, *entries: str) -> None:
 @pytest.mark.parametrize(
     ("declared", "args"),
     [
-        pytest.param("*", [], id="an-unconstrained-requirement-pins-nothing"),
-        pytest.param(">=14", ["--version", ">=14"], id="a-version-pin-becomes-a-version-flag"),
+        pytest.param("*", "", id="an-unconstrained-requirement-pins-nothing"),
+        pytest.param(">=14", "--version >=14", id="a-version-pin-becomes-a-version-flag"),
         pytest.param(
             {"version": ">=0.1", "git": "https://example.com/c.git", "rev": "abc", "locked": True},
-            [
-                "--version",
-                ">=0.1",
-                "--git",
-                "https://example.com/c.git",
-                "--rev",
-                "abc",
-                "--locked",
-            ],
+            "--version >=0.1 --git https://example.com/c.git --rev abc --locked",
             id="every-source-extra-becomes-the-cargo-flag-of-the-same-name",
         ),
     ],
 )
 def test_a_declared_crate_becomes_the_cargo_flags_that_express_it(
-    declared: Json, args: list[str]
+    declared: Json, args: str
 ) -> None:
-    assert Rust.install_args(Spec.model_validate(declared)) == args
+    assert Rust.install_args(Spec.model_validate(declared)) == args.split()
 
 
 @pytest.mark.parametrize(
@@ -64,7 +56,6 @@ def test_a_declared_crate_becomes_the_cargo_flags_that_express_it(
 def test_only_a_readable_constraint_can_report_an_installed_crate_as_drifted(
     constraint: str, installed: str, *, satisfied: bool
 ) -> None:
-    """Trusting cargo's own record beats reinstalling on every single sync."""
     assert Rust.satisfied(constraint, installed=installed) is satisfied
 
 
@@ -82,7 +73,6 @@ def test_only_a_readable_constraint_can_report_an_installed_crate_as_drifted(
 def test_what_cargo_recorded_under_the_prefix_is_read_back_by_name_and_version(
     entries: tuple[str, ...], installed: dict[str, str], bind: Bind
 ) -> None:
-    """A `.crates.toml` key reads `name version (source)`, and a partial one records nothing."""
     rust = bind(Rust, {})
     if entries:
         _record(rust, *entries)
@@ -92,11 +82,6 @@ def test_what_cargo_recorded_under_the_prefix_is_read_back_by_name_and_version(
 def test_sync_installs_a_missing_crate_against_the_environment_prefix(
     bind: Bind, pixi: Pixi, fp: FakeProcess, tool_paths: Mapping[str, str]
 ) -> None:
-    """Crates land in the environment's own `bin/`.
-
-    Activation exports them with everything else and no extra directory of this toolchain's
-    own ever reaches PATH.
-    """
     rust = bind(Rust, {"deps": {"ripgrep": ">=14"}})
     fp.register([fp.any()], stdout="installed\n")
 
@@ -104,22 +89,10 @@ def test_sync_installs_a_missing_crate_against_the_environment_prefix(
 
     assert rust.prefix == pixi.env_prefix("default")
     assert rust.binary_dirs() == ()
-    assert list(fp.calls[0]) == [
-        tool_paths["pixi"],
-        "run",
-        "--manifest-path",
-        str(pixi.manifest),
-        "--environment",
-        "default",
-        "cargo",
-        "install",
-        "--root",
-        str(rust.prefix),
-        "--version",
-        ">=14",
-        "--force",
-        "ripgrep",
-    ]
+    assert " ".join(fp.calls[0]) == (
+        f"{tool_paths['pixi']} run --manifest-path {pixi.manifest} --environment default "
+        f"cargo install --root {rust.prefix} --version >=14 --force ripgrep"
+    )
 
 
 def test_sync_leaves_a_crate_that_already_satisfies_its_constraint_alone(

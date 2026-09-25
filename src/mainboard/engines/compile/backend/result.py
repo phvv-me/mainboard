@@ -11,11 +11,10 @@ class CommandResult(NamedTuple):
 
     @property
     def succeeded(self) -> bool:
-        """Whether the command exited cleanly."""
         return self.returncode == 0
 
     def replay(self) -> None:
-        """Write retained output to the caller's streams and flush it immediately."""
+        """Write retained output to the caller's streams, flushed."""
         sys.stdout.write(self.stdout)
         sys.stdout.flush()
         sys.stderr.write(self.stderr)

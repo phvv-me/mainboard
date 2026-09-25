@@ -18,18 +18,23 @@ if TYPE_CHECKING:
 
 _TEMPLATE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 
-# What a declared placeholder is masked with while the command is split. A placeholder is written
-# with spaces inside its braces, and the split has to happen before any value is bound, so each
-# one becomes this stand-in first: it carries no whitespace, no quote and no escape, so `shlex`
-# moves it through as part of whichever token it was written in and the value that replaces it
-# afterwards is exactly one argv element however many spaces or backslashes it holds.
+# The stand-in a placeholder is masked with while the command is split: no whitespace, quote or
+# escape, so `shlex` keeps it inside its token and the value replacing it is one argv element.
 _SLOT = "\x00mainboard-argument-{index}\x00"
 
 
 def _table(value: Json | None, *, field: str, task: str) -> dict[str, Json]:
-    """Return one task table, refusing a generated manifest whose shape is not executable."""
+    """One task table, refusing a generated manifest whose shape is not executable."""
     if not isinstance(value, dict):
         raise MissionError(f"task {task!r} has a non-table {field!r} value")
+    return value
+
+
+def _string(body: dict[str, Json], field: str, *, task: str) -> str:
+    """One string task field, empty when absent."""
+    value = body.get(field, "")
+    if not isinstance(value, str):
+        raise MissionError(f"task {task!r} has a non-string {field!r} value")
     return value
 
 
@@ -62,23 +67,15 @@ class WindowsTask:
             body: dict[str, Json] = {"cmd": value}
         else:
             body = _table(value, field="definition", task=name)
-        command = body.get("cmd", "")
-        if not isinstance(command, str):
-            raise MissionError(f"task {name!r} has a non-string 'cmd' value")
-        cwd_value = body.get("cwd", "")
-        if not isinstance(cwd_value, str):
-            raise MissionError(f"task {name!r} has a non-string 'cwd' value")
-        cwd = Path(cwd_value)
-        if not cwd.is_absolute():
-            cwd = manifest.parent / cwd
         environment = _table(body.get("env", {}), field="env", task=name)
         env = {key: item for key, item in environment.items() if isinstance(item, str)}
         if len(env) != len(environment):
             raise MissionError(f"task {name!r} has a non-string environment value")
         return cls(
             name=name,
-            command=command,
-            cwd=cwd.resolve(),
+            command=_string(body, "cmd", task=name),
+            # pathlib keeps an absolute `cwd` as written.
+            cwd=(manifest.parent / _string(body, "cwd", task=name)).resolve(),
             env=env,
             dependencies=_strings(body.get("depends-on"), field="depends-on", task=name),
             arguments=_strings(body.get("args"), field="args", task=name),
@@ -87,24 +84,13 @@ class WindowsTask:
     def invocation(self, argv: Sequence[str]) -> tuple[tuple[str, ...], dict[str, str]]:
         """Bind typed arguments and return plain executable argv plus the task environment.
 
-        The declared command is what is vetted and what is split, both before a single value is
-        bound, and each resulting token is rendered on its own afterwards. That order is the
-        whole contract: one binding is exactly one argv element.
-
-        Rendering first and splitting the result broke it twice over. A value with a space in it
-        (`--filter {{ pattern }}` bound to `not slow`) became two arguments, and a Windows path
-        lost its backslashes to the shell-quoting rules of a split that was never meant to read
-        user data. Vetting the rendered string was the same mistake from the other side: an
-        ordinary value carrying `*`, `&` or a glob failed the task for task-shell syntax the
-        manifest never contained.
+        The declared command is vetted and split before any value is bound, so one binding is
+        exactly one argv element. Rendering first split `not slow` into two arguments, ate a
+        Windows path's backslashes, and refused a value holding `*` or `&` as task-shell syntax.
         """
         bindings, trailing = self._bound(argv)
         masked, slots = self._masked()
-        if "{{" in masked or "}}" in masked:
-            raise MissionError(
-                f"task {self.name!r} uses a template expression the restricted Windows "
-                "runner cannot reproduce"
-            )
+        self._refuse_template(masked)
         self._refuse_task_shell(self.name, masked)
         try:
             declared = tuple(shlex.split(masked, posix=True))
@@ -119,12 +105,7 @@ class WindowsTask:
         return (*tokens, *trailing), environment
 
     def _masked(self) -> tuple[str, dict[str, str]]:
-        """The declared command with every placeholder replaced by a stand-in, and what each was.
-
-        The one preparation the split needs: `{{ suite }}` is four shlex tokens and its
-        stand-in is one, so masking is what lets the quoting rules apply to the manifest's own
-        text while the value bound into it is never split at all.
-        """
+        """The declared command with each placeholder masked, and what each stand-in stands for."""
         slots: dict[str, str] = {}
 
         def mask(match: re.Match[str]) -> str:
@@ -135,30 +116,31 @@ class WindowsTask:
         return _TEMPLATE.sub(mask, self.command), slots
 
     def _filled(self, token: str, slots: dict[str, str], bindings: dict[str, str]) -> str:
-        """One split token with its stand-ins replaced by the values bound to them.
-
-        token: a token of the split, masked command.
-        slots: every stand-in in that command and the argument it stands for.
-        bindings: the values the caller bound to the declared arguments.
-        """
+        """One split token with its stand-ins replaced by the values bound to them."""
         for slot, argument in slots.items():
-            if slot not in token:
-                continue
-            try:
-                token = token.replace(slot, bindings[argument])
-            except KeyError:
-                raise MissionError(
-                    f"task {self.name!r} refers to undeclared argument {argument!r}"
-                ) from None
+            if slot in token:
+                token = token.replace(slot, self._value(argument, bindings))
         return token
 
+    def _value(self, argument: str, bindings: dict[str, str]) -> str:
+        try:
+            return bindings[argument]
+        except KeyError:
+            raise MissionError(
+                f"task {self.name!r} refers to undeclared argument {argument!r}"
+            ) from None
+
+    def _refuse_template(self, text: str) -> None:
+        if "{{" in text or "}}" in text:
+            raise MissionError(
+                f"task {self.name!r} uses a template expression the restricted Windows "
+                "runner cannot reproduce"
+            )
+
     def _bound(self, argv: Sequence[str]) -> tuple[dict[str, str], tuple[str, ...]]:
-        """`argv` split into this task's declared argument values and whatever trails them.
+        """`argv` split into declared argument values and the rest, after an optional `--`.
 
-        A task that declares no arguments binds nothing and forwards every token, which is what
-        `run <task> extra` has always meant for a task with no typed surface.
-
-        argv: the tokens the caller typed after the task name.
+        A task declaring no arguments forwards every token.
         """
         if not self.arguments:
             return {}, tuple(argv)
@@ -178,30 +160,15 @@ class WindowsTask:
 
     def _render(self, value: str, bindings: dict[str, str]) -> str:
         """Render the simple named argument templates Mainboard's task schema accepts."""
-
-        def replace(match: re.Match[str]) -> str:
-            try:
-                return bindings[match.group(1)]
-            except KeyError as error:
-                raise MissionError(
-                    f"task {self.name!r} refers to undeclared argument {match.group(1)!r}"
-                ) from error
-
-        rendered = _TEMPLATE.sub(replace, value)
-        if "{{" in rendered or "}}" in rendered:
-            raise MissionError(
-                f"task {self.name!r} uses a template expression the restricted Windows "
-                "runner cannot reproduce"
-            )
+        rendered = _TEMPLATE.sub(lambda match: self._value(match.group(1), bindings), value)
+        self._refuse_template(rendered)
         return rendered
 
     @staticmethod
     def _refuse_task_shell(name: str, command: str) -> None:
         """Reject syntax whose Deno task-shell meaning plain Windows argv cannot preserve.
 
-        Only ever asked about the declared command. What a caller binds into it is data, and a
-        value holding a glob or an ampersand is an argument rather than a chain, so vetting it
-        would refuse the manifest for something the manifest does not say.
+        Only the declared command is vetted: a bound value is data, never a chain.
         """
         message = (
             f"task {name!r} uses task-shell syntax unsupported by the restricted Windows "
@@ -232,11 +199,10 @@ class WindowsTask:
 
 
 class WindowsTaskRunner:
-    """Run a generated task graph without starting Pixi inside a restricted Windows app.
+    """Replaces `pixi run` inside a restricted Windows app, running the generated task graph.
 
-    Pixi still compiles, solves, installs, and captures the complete activation. This runner
-    only replaces ``pixi run`` after installation, where Pixi 0.78 otherwise initializes its
-    authentication store before launching a child and fails to discover the sandboxed profile.
+    Pixi 0.78 initializes its auth store before launching a child and cannot find the sandboxed
+    profile; it still compiles, solves, installs and records the activation.
     """
 
     def __init__(self, manifest: Path, environment: str) -> None:

@@ -4,11 +4,7 @@ from .docker import DockerCompatible
 
 
 class Podman(DockerCompatible):
-    """Wraps argv for `podman run`.
-
-    Podman has no `--gpus` flag. NVIDIA's own guidance for Podman is the Container
-    Device Interface, exposed through `--device nvidia.com/gpu=all`.
-    """
+    """Wraps argv for `podman run`, exposing GPUs through NVIDIA's CDI since it has no `--gpus`."""
 
     binary: ClassVar[str] = "podman"
 
