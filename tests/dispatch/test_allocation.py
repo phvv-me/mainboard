@@ -42,16 +42,13 @@ def test_binding_keeps_one_row_its_original_time_and_the_provider_label() -> Non
     assert allocation.cache.creation(allocation.label, record.target) == record
 
 
-def test_cancelled_preparation_cannot_cross_the_create_boundary() -> None:
+@pytest.mark.parametrize("cancelled", [True, False], ids=["cancelled", "entered-twice"])
+def test_only_a_prepared_request_crosses_the_create_boundary(cancelled: bool) -> None:
     allocation = created_request()
-    allocation.cache.resolve(allocation.record, "cancelled", None, "cancelled")
-    with pytest.raises(ValueError, match="no longer prepared"):
+    if cancelled:
+        allocation.cache.resolve(allocation.record, "cancelled", None, "cancelled")
+    else:
         allocation.begin()
-
-
-def test_the_create_boundary_cannot_be_entered_twice() -> None:
-    allocation = created_request()
-    allocation.begin()
     with pytest.raises(ValueError, match="no longer prepared"):
         allocation.begin()
 

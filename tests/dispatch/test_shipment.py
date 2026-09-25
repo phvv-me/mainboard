@@ -21,6 +21,20 @@ from mainboard.jobs.target import Target
 from ..support import Lab
 
 
+def closure_of(
+    lab: Lab, *spelled: str, distributions: tuple[str, ...] = Lab.DISTRIBUTIONS
+) -> Closure:
+    """The closure the lab's job (or the target `spelled`) ships against the lab environment."""
+    target = Target.spelled(list(spelled or [Lab.JOB]), lab.root)
+    assert target is not None
+    return Closure.of(
+        target,
+        root=lab.root,
+        distributions=distributions,
+        environment=lab.root / Lab.ENVIRONMENT,
+    )
+
+
 def test_a_command_ships_the_mirror_under_the_trees_provenance_and_exports_only_what_it_has() -> (
     None
 ):
@@ -35,14 +49,7 @@ def test_a_command_ships_the_mirror_under_the_trees_provenance_and_exports_only_
 
 
 def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> None:
-    target = Target.spelled([Lab.JOB, "--x", "3"], lab.root)
-    assert target is not None
-    closure = Closure.of(
-        target,
-        root=lab.root,
-        distributions=Lab.DISTRIBUTIONS,
-        environment=lab.root / Lab.ENVIRONMENT,
-    )
+    closure = closure_of(lab, Lab.JOB, "--x", "3")
     shipment = Shipment.of_closure(closure, root=lab.root)
     shipment.admit(lab.root)
     assert shipment.sealed
@@ -67,9 +74,7 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
         "PYTHONPATH=" + ":".join(str(lab.root / place) for place in closure.roots),
     ]
     assert f"{CLOSURE_VAR}={lab.root / '.mainboard/dispatch/jobs/closure.tsv'}" in local
-    assert local[-6:] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x"] or local[
-        -7:-1
-    ] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x"]
+    assert local[-7:] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x", "3"]
 
 
 def test_local_import_roots_use_the_native_path_separator(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -90,19 +95,12 @@ def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
     lab.write(
         "research/camp/experiments/node/run.py", "import ext\n\n\ndef main() -> None:\n    pass\n"
     )
-    environment = lab.compiled(
+    lab.compiled(
         "camp-ext",
         lab.root / f"{Lab.ENVIRONMENT}/lib/python3.14/site-packages/ext/"
         "_native.cpython-314-x86_64-linux-gnu.so",
     )
-    target = Target.spelled([Lab.JOB], lab.root)
-    assert target is not None
-    closure = Closure.of(
-        target,
-        root=lab.root,
-        distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src"),
-        environment=environment,
-    )
+    closure = closure_of(lab, distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src"))
     shipment = Shipment.of_closure(closure, root=lab.root)
     assert shipment.deferred == ("ext",)
     assert shipment.exports()[DEFERRED_VAR] == "ext"
@@ -114,15 +112,8 @@ def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
 def test_research_admission_accepts_edits_before_capture_and_refuses_later_changes(
     lab: Lab, changed: str, late: bool
 ) -> None:
-    target = Target.spelled([Lab.JOB], lab.root)
-    assert target is not None
-    path = changed if changed.startswith("packages/") else f"{target.node}/{changed}"
-    closure = Closure.of(
-        target,
-        root=lab.root,
-        distributions=Lab.DISTRIBUTIONS,
-        environment=lab.root / Lab.ENVIRONMENT,
-    )
+    closure = closure_of(lab)
+    path = changed if changed.startswith("packages/") else f"{closure.target.node}/{changed}"
     before = Shipment.of_closure(closure, root=lab.root)
     lab.write(path, (lab.root / path).read_text() + "\n# changed\n")
     shipment = before if late else Shipment.of_closure(closure, root=lab.root)
@@ -135,34 +126,20 @@ def test_research_admission_accepts_edits_before_capture_and_refuses_later_chang
 
 @pytest.mark.parametrize("removed", ["node.md", "run.py"])
 def test_research_admission_refuses_disappearing_files(lab: Lab, removed: str) -> None:
-    target = Target.spelled([Lab.JOB], lab.root)
-    assert target is not None
-    closure = Closure.of(
-        target,
-        root=lab.root,
-        distributions=Lab.DISTRIBUTIONS,
-        environment=lab.root / Lab.ENVIRONMENT,
-    )
+    closure = closure_of(lab)
     shipment = Shipment.of_closure(closure, root=lab.root)
-    (lab.root / target.node / removed).unlink()
+    (lab.root / closure.target.node / removed).unlink()
     with pytest.raises((MissionError, FileNotFoundError)):
         shipment.admit(lab.root)
 
 
 def test_research_admission_keeps_historical_seals_and_never_imports_the_job(lab: Lab) -> None:
-    target = Target.spelled([Lab.JOB], lab.root)
-    assert target is not None
     node = lab.write(
-        f"{target.node}/node.md",
+        f"{Path(Lab.JOB).parent.as_posix()}/node.md",
         "---\nstatus: refuted\nregistration_sha256: preserved-retired-seal\n---\n",
     )
     lab.write(Lab.JOB, "raise RuntimeError('must not import')\napp = None\n")
-    closure = Closure.of(
-        target,
-        root=lab.root,
-        distributions=Lab.DISTRIBUTIONS,
-        environment=lab.root / Lab.ENVIRONMENT,
-    )
+    closure = closure_of(lab)
     original = node.read_bytes()
     shipment = Shipment.of_closure(closure, root=lab.root)
     shipment.admit(lab.root)
@@ -177,11 +154,8 @@ def test_research_admission_keeps_historical_seals_and_never_imports_the_job(lab
 def test_ordinary_dirty_software_and_commands_keep_their_existing_admission(lab: Lab) -> None:
     path = "packages/tool/tests/experiments/test_case.py"
     lab.write(path, "def test_case():\n    raise RuntimeError('must not import')\n")
-    target = Target.spelled([path], lab.root)
-    assert target is not None and not target.registration
-    closure = Closure.of(
-        target, root=lab.root, distributions=(), environment=lab.root / Lab.ENVIRONMENT
-    )
+    closure = closure_of(lab, path, distributions=())
+    assert not closure.target.registration
     shipment = Shipment.of_closure(closure, root=lab.root)
     assert shipment.source.identity.startswith("sha256:")
     shipment.admit(lab.root)
@@ -198,11 +172,7 @@ def test_real_closures_quote_paths_and_parameter_ids_before_admission(
     file = "research/project with spaces/experiments/node/test_law.py"
     lab.write(file, "def test_law():\n    raise RuntimeError('must not import')\n")
     node = lab.write("research/project with spaces/experiments/node/node.md", "# registered\n")
-    target = Target.spelled([f"{prefix}{file}::{name}"], lab.root)
-    assert target is not None
-    closure = Closure.of(
-        target, root=lab.root, distributions=(), environment=lab.root / Lab.ENVIRONMENT
-    )
+    closure = closure_of(lab, f"{prefix}{file}::{name}", distributions=())
     shipment = Shipment.of_closure(closure, root=lab.root)
     shipment.admit(lab.root)
     node.write_text("changed after sealing\n")

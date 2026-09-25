@@ -32,7 +32,7 @@ from mainboard.dispatch.snapshots import CLOSURE, Snapshots
 from mainboard.dispatch.state import Cache
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
-from mainboard.runtime.job import PrefixActivation, ToolCall, WorkspaceActivation
+from mainboard.runtime.job import Job, PrefixActivation, ToolCall, WorkspaceActivation
 
 from ..support import Lab
 from .support import (
@@ -57,20 +57,27 @@ _CONTAINERIZED = {
 }
 
 
-class _StubStrategy:
-    """A `Strategy`-shaped double that always resolves to one canned scheduler."""
-
-    def __init__(self, scheduler: RecordingScheduler) -> None:
-        self.scheduler = scheduler
-
-    def select(self, kind: str, default: str | None = None) -> RecordingScheduler:
-        del kind, default
-        return self.scheduler
-
-
 def shipped(dispatcher: Dispatcher, command: str, imports: tuple[str, ...] = ()) -> Shipment:
     """`command` as a board ships it to the dispatcher: the mirror, under the tree's provenance."""
     return Shipment.of_command(command, source=dispatcher.source(command), imports=imports)
+
+
+def submitted(backend: RecordingScheduler, workdir: Path) -> tuple[str, Job]:
+    """The pinned root the one submission ran in, and the job its staged script hands over."""
+    [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
+    staged = workdir / ".mainboard/dispatch/jobs" / Path(script).name
+    return root, recorded(staged.read_text(encoding="utf-8"))
+
+
+def compiled(workdir: Path) -> tuple[str, str]:
+    """A workspace with `src/run.py` and a compiled manifest and lock, the pair it returns."""
+    (workdir / "src").mkdir()
+    (workdir / "src/run.py").write_text("print(1)")
+    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
+    (workdir / group[0]).parent.mkdir(parents=True)
+    for path, text in zip(group, "xy", strict=True):
+        (workdir / path).write_text(text)
+    return group
 
 
 @pytest.mark.parametrize("entry", ["submit", "allocating"])
@@ -104,7 +111,7 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> RecordingScheduler:
     """Pin the backend, the connection, git and the clock, every seam a dispatch reaches."""
     scheduler = RecordingScheduler()
     monkeypatch.setattr(dispatch_module, "pick", lambda profile: scheduler)
-    monkeypatch.setattr(registry, "SCHEDULERS", _StubStrategy(scheduler))
+    monkeypatch.setattr(registry.SCHEDULERS, "select", lambda kind, default=None: scheduler)
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
     monkeypatch.setattr(dispatch_module, "sleep", lambda seconds: None)
     return scheduler
@@ -149,19 +156,27 @@ def dispatcher(workdir: Path, backend: RecordingScheduler) -> Dispatcher:
     instance.required: list[list[list[str]]] = []
     instance.pins = RecordingAgent()
 
-    def mirror(execution: ExecutionPlan, root: str, **kwargs: object) -> list[str]:
-        del execution, root
-        extra = kwargs.get("extra", ())
-        instance.shipped.append(tuple(extra) if isinstance(extra, tuple | list) else ())
-        needed = kwargs.get("required", ())
-        instance.required.append(
-            [list(group) for group in needed] if isinstance(needed, tuple | list) else []
-        )
+    def mirror(
+        execution: ExecutionPlan,
+        root: str,
+        *,
+        extra: Sequence[str] = (),
+        required: Sequence[Sequence[str]] = (),
+        **_: str,
+    ) -> list[str]:
+        instance.shipped.append(tuple(extra))
+        instance.required.append([list(group) for group in required])
         return ["src"]
 
     instance.mirror = mirror
     instance.agent = lambda execution, ssh=None: instance.pins
     return instance
+
+
+@pytest.fixture
+def standalone(workdir: Path) -> Dispatcher:
+    """A dispatcher over `workdir` with nothing doubled but its in-memory state."""
+    return Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
 
 
 @pytest.mark.parametrize(
@@ -191,6 +206,16 @@ def test_a_numeric_scheduler_id_is_stored_as_text_wherever_a_handle_travels() ->
 def test_run_renders_a_job_script_ships_it_and_hands_back_a_pollable_handle(
     dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
+    """The compiled trio the environment was addressed by ships whole, as one required group.
+
+    It lives under the generated tree every mirror denies, so a submit once pinned an address
+    and shipped nothing to reach it by. On 2026-09-06 the mirror's compile missed two new task
+    rows (`[tasks.head-paper]`): the workstation pinned a9d234f5f0dd2e93, the host read
+    db8171ec0bd191b2, and every job of the wave died at environment prime.
+    """
+    trio = tuple(
+        f".mainboard/envs/default/{name}" for name in ("pixi.toml", "pixi.lock", "state.toml")
+    )
     resources = Resources(gpus=4, walltime="01:00:00", queue="gen-S", mem_gb=240)
     handle = dispatcher.run(
         plan(),
@@ -198,6 +223,7 @@ def test_run_renders_a_job_script_ships_it_and_hands_back_a_pollable_handle(
         root="/repo",
         resources=resources,
         fetch="out/",
+        artifact=trio,
     )
     assert (handle.id, handle.host, handle.kind, handle.fetch_path) == (
         "H1",
@@ -206,16 +232,16 @@ def test_run_renders_a_job_script_ships_it_and_hands_back_a_pollable_handle(
         "out/",
     )
     [(_root, script, args)] = [call for name, call in backend.calls if name == "submit"]
-    assert script.startswith(".mainboard-jobs/")
-    assert args == ()
+    assert script.startswith(".mainboard-jobs/") and args == ()
     [(staged,)] = dispatcher.shipped
     assert Snapshots.script(staged) == script
     assert (workdir / staged).is_file()
     assert backend.submit_resources == resources
+    assert dispatcher.required == [[list(trio)]]
 
 
 def test_run_renders_the_job_script_against_the_plans_own_environment(
-    dispatcher: Dispatcher, workdir: Path
+    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
     """A job queued for `serving` must activate serving, not whatever was installed last."""
     dispatcher.run(
@@ -224,8 +250,7 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
         root="/repo",
         resources=Resources(),
     )
-    [generated] = (workdir / ".mainboard" / "dispatch" / "jobs").glob("job-*.sh")
-    job = recorded(generated.read_text())
+    _root, job = submitted(backend, workdir)
     # The job activates through the snapshot this dispatch pinned, whose `.mainboard` is a
     # symlink back to the mirror, so it gets the mirror's environment out of a tree whose code
     # no later sync can rewrite.
@@ -255,6 +280,7 @@ def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
 def test_run_containerized_wraps_the_command_via_the_builder_or_refuses_without_one(
     dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
+    """It activates the image, which no lock on this host describes, so it builds nothing."""
     containerized = plan(**_CONTAINERIZED)
     with pytest.raises(LookupError, match="no container argv builder"):
         dispatcher.run(
@@ -270,9 +296,9 @@ def test_run_containerized_wraps_the_command_via_the_builder_or_refuses_without_
         resources=Resources(),
         containerize=lambda inner: ["apptainer", "exec", "image.sif", *inner],
     )
-    [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    job = recorded((workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text())
+    _root, job = submitted(backend, workdir)
     assert job.container == ("apptainer", "exec", "image.sif", "bash", "-c", "python -m foo")
+    assert job.provide is None
 
 
 def test_submit_admits_the_request_before_a_single_ssh_connection(
@@ -296,21 +322,7 @@ def test_submit_admits_the_request_before_a_single_ssh_connection(
     assert backend.calls == []
 
 
-def test_submit_records_content_identity_without_git(
-    dispatcher: Dispatcher,
-    backend: RecordingScheduler,
-) -> None:
-    handle = dispatcher.submit(
-        plan(), "/repo", script="train.sh", args=("--x", "1"), resources=Resources()
-    )
-    [run] = dispatcher.cache.recent(10)
-    assert (run.handle, run.target, run.git_sha, run.dirty) == (handle, "gold", "", None)
-    assert run.args == "--x 1" and run.script == "train.sh"
-    assert not run.commit and len(run.digest) == 64
-    assert run.source == f"sha256-{run.digest}"
-
-
-def test_direct_script_submission_keeps_the_prepared_path_and_arguments(
+def test_a_direct_script_is_recorded_staged_quoted_and_by_content_identity_without_git(
     dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
     script = workdir / "script with spaces.sh"
@@ -319,12 +331,15 @@ def test_direct_script_submission_keeps_the_prepared_path_and_arguments(
     handle = dispatcher.submit(
         plan(), "/repo", script=str(script), args=args, resources=Resources()
     )
-    record = dispatcher.cache.run(handle)
+    [run] = dispatcher.cache.recent(10)
+    assert (run.handle, run.target, run.git_sha, run.dirty) == (handle, "gold", "", None)
+    assert not run.commit and len(run.digest) == 64
+    assert run.source == f"sha256-{run.digest}"
     [(_, prepared, submitted_args)] = [call for name, call in backend.calls if name == "submit"]
-    assert Snapshots.script(record.script) == prepared
-    assert record.script.startswith(".mainboard/dispatch/jobs/")
-    assert (workdir / record.script).read_bytes() == script.read_bytes()
-    assert submitted_args == args and record.args == "--label 'a b'"
+    assert Snapshots.script(run.script) == prepared
+    assert run.script.startswith(".mainboard/dispatch/jobs/")
+    assert (workdir / run.script).read_bytes() == script.read_bytes()
+    assert submitted_args == args and run.args == "--label 'a b'"
 
 
 @links_on_this_host
@@ -378,11 +393,9 @@ def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
 
 
 def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror_itself(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
+    dispatcher: Dispatcher, backend: RecordingScheduler
 ) -> None:
     """The fault this exists for: a later sync of another tree rewrote the code under live jobs."""
-    machine = machine_with()
-    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
     handle = dispatcher.run(
         plan(),
         shipped(dispatcher, "python -m foo"),
@@ -419,38 +432,25 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     dispatched with, so the script builds exactly that one if the host lacks it and then
     activates it and nothing else. The library path is ordered ahead of whatever the machine
     exported, which is how thirty two jobs died importing sqlite3 against `/lib64`'s libstdc++.
+    The dispatch builds it once itself before anything is queued, so a wave finds it built.
     """
     machine = machine_with()
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
     prefix = "/repo/.mainboard/prefixes/default/abcd1234"
-
+    announced: list[str] = []
     dispatcher.run(
         plan(),
         shipped(dispatcher, "python -m foo"),
         root="/repo",
         resources=Resources(),
+        watch=announced.append,
         prefix=prefix,
     )
-
-    [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    job = recorded(
-        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
-    )
-    # It names the address the dispatch pinned, so a host that reads the shipped artifact as
-    # another environment says which two addresses and which two pixis instead of building one
-    # beside the one every job of the wave is waiting for. It runs from the mirror, where built
-    # environments live, and nothing in the job asks pixi to reconcile anything, which is what
-    # made a shared prefix a race in the first place.
+    root, job = submitted(backend, workdir)
+    # Nothing in the job asks pixi to reconcile anything, which made a shared prefix a race.
+    artifact = f"{root}/.mainboard/envs/default"
     assert job.provide == ToolCall(
-        args=(
-            "provide",
-            "default",
-            "--source",
-            f"{root}/.mainboard/envs/default",
-            "--expect",
-            "abcd1234",
-        ),
-        cwd="/repo",
+        args=("provide", "default", "--source", artifact, "--expect", "abcd1234"), cwd="/repo"
     )
     assert job.activation == PrefixActivation(
         prefix=prefix, env="default", refusal=job.activation.refusal
@@ -461,13 +461,16 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     # And the tree points at that environment rather than at the mirror's mutable one.
     [request] = dispatcher.pins.requests
     assert request["pin"]["prefix"] == prefix
+    [asked] = [line for line in machine.lines if "provide" in line]
+    assert asked.startswith("cd /repo && ")
+    assert asked.endswith(
+        f"mainboard provide default --source {artifact} --expect abcd1234 >/dev/null"
+    )
+    assert f"built default on gold for {root}" in announced
 
 
 def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
-    dispatcher: Dispatcher,
-    backend: RecordingScheduler,
-    workdir: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
     """A prefix is shared, so the editable install inside it points at the machine's mirror.
 
@@ -476,41 +479,24 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
     job freezes it instead: the pinned tree's import roots go on `PYTHONPATH` ahead of anything
     the environment adds, and nothing the submitting shell exported survives.
     """
-    machine = machine_with()
-    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-
+    imports = ("src", "packages/lab-core/src", ".mainboard/vendor/sample-lib/src")
     dispatcher.run(
         plan(),
-        shipped(
-            dispatcher,
-            "python -m foo",
-            imports=("src", "packages/lab-core/src", ".mainboard/vendor/sample-lib/src"),
-        ),
+        shipped(dispatcher, "python -m foo", imports=imports),
         root="/repo",
         resources=Resources(),
     )
-
-    [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    job = recorded(
-        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
-    )
+    pinned, job = submitted(backend, workdir)
     assert pinned != "/repo"
     # The vendored root rides with the workspace's own: a house package that lives outside the
     # root is compiled inside it, so the tree a job is pinned to carries it like any other.
-    assert job.pythonpath == (
-        f"{pinned}/src:{pinned}/packages/lab-core/src:{pinned}/.mainboard/vendor/sample-lib/src"
-    )
+    assert job.pythonpath == ":".join(f"{pinned}/{place}" for place in imports)
 
 
 def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_is(
-    dispatcher: Dispatcher,
-    backend: RecordingScheduler,
-    workdir: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
     """The listing rides beside the script, the pin copies what it names, the job reads it."""
-    machine = machine_with()
-    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
     (workdir / "a").mkdir()
     (workdir / "a/run.py").write_text("pass")
     (workdir / "mainboard.toml").write_text("")
@@ -526,11 +512,9 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
         first_party=("core", "experiments"),
         deferred=("cutoken",),
     )
-
     handle = dispatcher.run(
         plan(), sealed, root="/repo", resources=Resources(), fetch="a/evidence"
     )
-
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
     listing = f".mainboard/dispatch/jobs/{sealed.listing_name}"
     assert (workdir / listing).read_text(encoding="utf-8") == sealed.listing
@@ -567,53 +551,6 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     )
 
 
-def test_a_containerized_job_has_no_environment_of_its_own_to_build(
-    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
-) -> None:
-    """What it activates is the image, which no lock on this host describes."""
-    dispatcher.run(
-        plan(**_CONTAINERIZED),
-        shipped(dispatcher, "python -m foo"),
-        root="/repo",
-        resources=Resources(),
-        containerize=lambda argv: ["apptainer", "exec", "img.sif", *argv],
-    )
-    [(_root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    job = recorded(
-        (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(encoding="utf-8")
-    )
-    assert job.provide is None
-
-
-def test_a_dispatch_builds_the_addressed_environment_before_the_wave_starts(
-    dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """One process, before anything is queued, so a wave of nodes finds its environment built.
-
-    It runs from the mirror, where a host keeps its built environments, and builds from the
-    snapshot's own copy of the artifact, so what a job activates and what was built from are
-    the same content.
-    """
-    del backend
-    machine = machine_with()
-    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-    announced: list[str] = []
-    dispatcher.run(
-        plan(),
-        shipped(dispatcher, "python -m foo"),
-        root="/repo",
-        resources=Resources(),
-        watch=announced.append,
-        prefix="/repo/.mainboard/prefixes/default/abcd1234",
-    )
-
-    [asked] = [line for line in machine.lines if "provide" in line]
-    assert asked.startswith("cd /repo && ")
-    assert "mainboard provide default --source /repo/.mainboard/dispatch/sources/" in asked
-    assert asked.endswith(" --expect abcd1234 >/dev/null")
-    assert [told for told in announced if told.startswith("built default on gold for /repo")]
-
-
 def test_a_failed_prefix_build_prevents_scheduler_submission(
     dispatcher: Dispatcher, backend: RecordingScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -628,23 +565,17 @@ def test_a_failed_prefix_build_prevents_scheduler_submission(
             resources=Resources(),
             prefix="/repo/.mainboard/prefixes/default/abcd1234",
         )
-
     assert not any(name == "submit" for name, _ in backend.calls)
 
 
 def test_source_identity_is_read_once_for_script_and_snapshot(
-    dispatcher: Dispatcher,
-    backend: RecordingScheduler,
-    workdir: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
-    monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
     shipment = shipped(dispatcher, "python -m foo")
     (workdir / "mainboard.toml").write_text("# later edit")
     dispatcher.run(plan(), shipment, root="/repo", resources=Resources())
-    [(root, script, _)] = [call for name, call in backend.calls if name == "submit"]
-    assert root.endswith(shipment.source.key)
-    assert str(root) in (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text()
+    root, job = submitted(backend, workdir)
+    assert root.endswith(shipment.source.key) and job.root == root
 
 
 def test_equal_source_reuses_snapshot_and_changed_bytes_get_a_new_one(
@@ -741,13 +672,7 @@ def test_probe_absorbs_an_unreachable_host_while_state_names_it(
 def test_states_asks_the_host_once_and_only_re_asks_what_the_listing_missed(
     dispatcher: Dispatcher, backend: RecordingScheduler
 ) -> None:
-    """One listing for the whole host, then one further question per handle it did not cover.
-
-    A dispatch cache that has been accumulating for months holds a thousand runs on one box, so
-    the listing is what keeps a sweep to a single round trip. What the listing does not span (a
-    `squeue` that only sees live jobs, a PBS server that purged its history) is where the job's
-    real ending is, and that is worth one question each rather than a guess.
-    """
+    """One listing for the whole host, then one further question per handle it did not cover."""
     backend.state_result = JobState(handle="H1", state="F", exit_code=0, verdict="ok")
     listed = [Handle(id=name, host="gold", root="/repo", kind="ssh") for name in ("H1", "H2")]
     resolved = dispatcher.states([*listed, listed[0]])
@@ -756,10 +681,7 @@ def test_states_asks_the_host_once_and_only_re_asks_what_the_listing_missed(
     assert dispatcher.states([]) == {}
 
 
-@pytest.mark.parametrize(
-    "fetch_path",
-    ["out/", "a/b/c.json"],
-)
+@pytest.mark.parametrize("fetch_path", ["out/", "a/b/c.json"])
 def test_fetch_pulls_the_recorded_path_back_into_its_own_parent_directory(
     dispatcher: Dispatcher,
     workdir: Path,
@@ -777,17 +699,8 @@ def test_fetch_pulls_the_recorded_path_back_into_its_own_parent_directory(
         lambda self, host, **kwargs: pulled.append((self.root, host, kwargs)),
     )
     dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh", fetch_path=fetch_path))
-    assert pulled == [
-        (
-            workdir,
-            "gold",
-            {
-                "root": "/repo",
-                "path": fetch_path.rstrip("/"),
-                "python": "remote-python",
-            },
-        )
-    ]
+    asked = {"root": "/repo", "path": fetch_path.rstrip("/"), "python": "remote-python"}
+    assert pulled == [(workdir, "gold", asked)]
     with pytest.raises(LookupError, match="no fetch path"):
         dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh"))
 
@@ -888,6 +801,7 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
 @pytest.mark.parametrize("recorded_run", [False, True])
 @pytest.mark.parametrize("resource", ["project", "project/output", "project/output/row.json"])
 def test_explicit_output_resource_is_refused_before_transfer(
+    standalone: Dispatcher,
     workdir: Path,
     pushes: list[dict[str, object]],
     recorded_run: bool,
@@ -896,14 +810,13 @@ def test_explicit_output_resource_is_refused_before_transfer(
     source = workdir / "project/output"
     source.mkdir(parents=True)
     (source / "row.json").write_text("stale local data")
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     if recorded_run:
-        instance.cache.record(
+        standalone.cache.record(
             run_record("old").model_copy(update={"fetch_path": "project/output"})
         )
     execution = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["project"]}))
     with pytest.raises(ValueError, match="separate immutable input"):
-        instance.mirror(
+        standalone.mirror(
             execution,
             "/repo",
             extra=[resource],
@@ -936,38 +849,37 @@ def test_submission_records_outputs_before_releasing_the_mirror_lock(
 
 
 @pytest.mark.parametrize("path", ["/absolute", "../escape", "."])
-def test_mirror_refuses_unsafe_declared_output_protection(workdir: Path, path: str) -> None:
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+def test_mirror_refuses_unsafe_declared_output_protection(
+    standalone: Dispatcher, path: str
+) -> None:
     with pytest.raises(ValueError, match="relative path below"):
-        instance._protected_outputs(path)
+        standalone._protected_outputs(path)
 
 
 def test_every_host_is_mirrored_by_its_own_python_whatever_its_os(
-    workdir: Path, pushes: list[dict[str, object]]
+    standalone: Dispatcher, workdir: Path, pushes: list[dict[str, object]]
 ) -> None:
     """A Windows host takes the same mirror as any other, asked through the Python it names."""
     (workdir / "src").mkdir()
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    instance.cache.save_host(HostSetup(host="homelab", root="C:/w"))
+    standalone.cache.save_host(HostSetup(host="homelab", root="C:/w"))
     profile = HostProfile(
         kind="ssh", root="C:/w", platform="win-64", python="py -3", sync={"include": ["src"]}
     )
-    assert instance.mirror(plan(host="homelab", profile=profile), "C:/w") == ["src"]
+    assert standalone.mirror(plan(host="homelab", profile=profile), "C:/w") == ["src"]
     [push] = pushes
     agent = push["agent"]
     assert (push["root"], agent.host, agent.python) == ("C:/w", "homelab", "py -3")
-    assert instance.cache.host("homelab").synced_at
+    assert standalone.cache.host("homelab").synced_at
 
 
 def test_a_second_request_while_a_creation_is_unresolved_is_refused_before_any_provider(
-    workdir: Path,
+    standalone: Dispatcher,
 ) -> None:
     """The first may have allocated a billable instance, so its label is reconciled first."""
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    shipment = shipped(instance, "python -m train")
-    instance.allocating(plan(), shipment, Resources(), evidence="not_started").begin()
+    shipment = shipped(standalone, "python -m train")
+    standalone.allocating(plan(), shipment, Resources(), evidence="not_started").begin()
     with pytest.raises(MissionError, match="unresolved creation"):
-        instance.allocating(plan(), shipment, Resources(), evidence="not_started")
+        standalone.allocating(plan(), shipment, Resources(), evidence="not_started")
 
 
 def test_mirror_refuses_an_undeclared_include_and_warns_about_a_stale_one(
@@ -986,6 +898,7 @@ def test_mirror_refuses_an_undeclared_include_and_warns_about_a_stale_one(
     monkeypatch.setattr(dispatch_module.logger, "warning", lambda msg, *a: warned.append((msg, a)))
     instance.mirror(plan(profile=partly), "/repo")
     [push] = pushes
+    # One scope: the vendored rule costs a workspace that declares no outside dependency nothing.
     [scope] = push["scopes"]
     assert scope.roots == ("src",)
     [(message, args)] = warned
@@ -994,20 +907,13 @@ def test_mirror_refuses_an_undeclared_include_and_warns_about_a_stale_one(
 
 
 def test_mirror_ships_a_required_group_by_name_or_refuses_an_incomplete_one(
-    workdir: Path, pushes: list[dict[str, object]]
+    standalone: Dispatcher, workdir: Path, pushes: list[dict[str, object]]
 ) -> None:
     """The compiled artifact must ride the mirror whole, since a half lock installs nothing."""
-    (workdir / "src").mkdir()
-    envdir = workdir / ".mainboard/envs/default"
-    envdir.mkdir(parents=True)
-    (envdir / "pixi.toml").write_text("x")
-    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
+    group = compiled(workdir)
     with pytest.raises(LookupError, match="incomplete"):
-        instance.mirror(host, "/repo", required=[group])
-    (envdir / "pixi.lock").write_text("y")
-    instance.mirror(host, "/repo", required=[group], extra=[group[0]])
+        standalone.mirror(plan(), "/repo", required=[(*group, ".mainboard/envs/default/gone")])
+    standalone.mirror(plan(), "/repo", required=[group], extra=[group[0]])
     [push] = pushes
     assert push["named"] == list(group)
 
@@ -1015,6 +921,7 @@ def test_mirror_ships_a_required_group_by_name_or_refuses_an_incomplete_one(
 @pytest.mark.parametrize("spelling", ("required", "extra", "include"))
 @pytest.mark.parametrize("resource", ("src/.card.lock.local.0", "src/.card.lock.local/input.json"))
 def test_mirror_refuses_explicit_card_lease_resources_before_transfer(
+    standalone: Dispatcher,
     workdir: Path,
     pushes: list[dict[str, object]],
     spelling: str,
@@ -1023,11 +930,10 @@ def test_mirror_refuses_explicit_card_lease_resources_before_transfer(
     path = workdir / resource
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("not transferable")
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     include = [resource] if spelling == "include" else ["src"]
     host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": include}))
     with pytest.raises(ValueError, match="card leases cannot be declared"):
-        instance.mirror(
+        standalone.mirror(
             host,
             "/repo",
             required=[(resource,)] if spelling == "required" else (),
@@ -1038,7 +944,7 @@ def test_mirror_refuses_explicit_card_lease_resources_before_transfer(
 
 @pytest.mark.usefixtures("on_this_machine")
 def test_a_narrow_host_mirrors_named_job_files_without_touching_other_projects(
-    workdir: Path,
+    standalone: Dispatcher, workdir: Path
 ) -> None:
     """Pruning reaches only the include paths, so a named file never opens its tree to it."""
     job = "research/camp/experiments/node/run.py"
@@ -1056,8 +962,7 @@ def test_a_narrow_host_mirrors_named_job_files_without_touching_other_projects(
     (workdir / "mainboard.toml").write_text("[workspace]\nname = 'lab'\n")
     base = HostProfile(sync={"include": ["research", "packages"]})
     profile = HostProfile(sync={"include": ["mainboard.toml"]}).inheriting(base)
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    instance.mirror(plan(profile=profile), str(landed), extra=[job])
+    standalone.mirror(plan(profile=profile), str(landed), extra=[job])
     assert (landed / job).read_text() == "local\n"
     assert (landed / "mainboard.toml").is_file()
     assert all((landed / path).read_text() == "remote\n" for path in untouched)
@@ -1065,7 +970,7 @@ def test_a_narrow_host_mirrors_named_job_files_without_touching_other_projects(
 
 @pytest.mark.usefixtures("on_this_machine")
 def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
-    workdir: Path,
+    standalone: Dispatcher, workdir: Path
 ) -> None:
     """The one end-to-end proof that a dispatch shipping both actually delivers both.
 
@@ -1074,21 +979,12 @@ def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
     lacked when it was told to run a script the mirror never carried and answered `No such file
     or directory`, exit 127 (vast 49865738, 2026-09-04).
     """
-    (workdir / "src").mkdir()
-    (workdir / "src/run.py").write_text("print(1)")
-    envdir = workdir / ".mainboard/envs/default"
-    envdir.mkdir(parents=True)
-    (envdir / "pixi.toml").write_text("x")
-    (envdir / "pixi.lock").write_text("y")
-    jobs = workdir / ".mainboard/dispatch/jobs"
-    jobs.mkdir(parents=True)
-    (jobs / "job-abc.sh").write_text("#!/bin/bash\nexit 0\n")
-    landed = workdir / "host-side"
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
-    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
+    group = compiled(workdir)
     script = ".mainboard/dispatch/jobs/job-abc.sh"
-    instance.mirror(host, str(landed), required=[group], extra=[script])
+    (workdir / script).parent.mkdir(parents=True)
+    (workdir / script).write_text("#!/bin/bash\nexit 0\n")
+    landed = workdir / "host-side"
+    standalone.mirror(plan(), str(landed), required=[group], extra=[script])
     assert (landed / "src/run.py").is_file()
     assert (landed / group[0]).is_file()
     assert (landed / script).is_file()
@@ -1097,7 +993,7 @@ def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
 @links_on_this_host
 @pytest.mark.usefixtures("on_this_machine")
 def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refer_to(
-    workdir: Path,
+    standalone: Dispatcher, workdir: Path
 ) -> None:
     """A house package outside the workspace root is compiled at `.mainboard/vendor/<dist>`.
 
@@ -1120,11 +1016,7 @@ def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refe
     (source / "src/sample_lib/__pycache__/stale.pyc").write_text("noise")
     landed = workdir / "host-side"
     (landed / ".mainboard/vendor/retired").mkdir(parents=True)
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
-
-    instance.mirror(host, str(landed))
-
+    standalone.mirror(plan(), str(landed))
     arrived = landed / ".mainboard/vendor/sample-lib"
     assert arrived.is_dir() and not arrived.is_symlink()
     assert not (arrived / "src").is_symlink()
@@ -1134,23 +1026,11 @@ def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refe
     assert not (landed / ".mainboard/vendor/retired").exists()
 
 
-def test_a_workspace_with_nothing_vendored_ships_one_scope(
-    workdir: Path, pushes: list[dict[str, object]]
-) -> None:
-    """The rule costs a workspace that declares no outside dependency nothing at all."""
-    (workdir / "src").mkdir()
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
-
-    instance.mirror(host, "/repo")
-
-    [push] = pushes
-    assert len(push["scopes"]) == 1
-
-
 @setgid_inherits
 @pytest.mark.usefixtures("on_this_machine")
-def test_a_real_mirror_never_overrides_the_hosts_setgid_group(workdir: Path) -> None:
+def test_a_real_mirror_never_overrides_the_hosts_setgid_group(
+    standalone: Dispatcher, workdir: Path
+) -> None:
     """`.mainboard/envs/<env>`, shipped by name, must inherit the host's group.
 
     A directory made under a setgid parent inherits that parent's group and its own setgid bit
@@ -1165,26 +1045,14 @@ def test_a_real_mirror_never_overrides_the_hosts_setgid_group(workdir: Path) -> 
     if len(groups) < 2:
         pytest.skip("the runner belongs to a single group, so no group mismatch can be shown")
     project_gid = next(gid for gid in groups if gid != os.getgid())
-    (workdir / "src").mkdir()
-    (workdir / "src/run.py").write_text("print(1)")
-    envdir = workdir / ".mainboard/envs/default"
-    envdir.mkdir(parents=True)
-    (envdir / "pixi.toml").write_text("x")
-    (envdir / "pixi.lock").write_text("y")
+    group = compiled(workdir)
     landed = workdir / "host-side"
     landed.mkdir()
     os.chown(landed, -1, project_gid)
     landed.chmod(landed.stat().st_mode | stat.S_ISGID)
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
-    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
-    instance.mirror(host, str(landed), required=[group])
-    for made in (
-        landed / ".mainboard",
-        landed / ".mainboard/envs",
-        landed / ".mainboard/envs/default",
-    ):
-        found = made.stat()
+    standalone.mirror(plan(), str(landed), required=[group])
+    for made in (".mainboard", ".mainboard/envs", ".mainboard/envs/default"):
+        found = (landed / made).stat()
         assert found.st_gid == project_gid, (
             f"{made} landed on group {found.st_gid}, not {project_gid}"
         )
@@ -1202,13 +1070,7 @@ def test_the_manifest_owns_the_walltime_default_never_the_dispatch_code() -> Non
 def test_a_held_dispatch_is_one_durable_row_carrying_the_request_that_makes_it_again(
     dispatcher: Dispatcher,
 ) -> None:
-    """A request held only in the process that made it dies with that process.
-
-    So it goes into the same registry every dispatched run lives in, keyed by an id of our own
-    since no scheduler ever took it, and holding the same job twice keeps one row rather than
-    growing one per attempt. The row carries the ask itself, which is what lets a sweep on
-    another day make exactly the same dispatch.
-    """
+    """The row carries the ask itself, so a sweep on another day makes the same dispatch."""
     asked = Request(
         target="miyabi-g",
         command="python -m foo",
@@ -1228,34 +1090,3 @@ def test_a_held_dispatch_is_one_durable_row_carrying_the_request_that_makes_it_a
     # through rather than settling into a verdict the job never had.
     dispatcher.cache.forget(again)
     assert dispatcher.cache.live() == []
-
-
-def test_a_dispatch_ships_the_very_artifact_it_addressed_its_environment_by(
-    dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
-) -> None:
-    """A submit used to pin an address and ship no artifact for anyone to reach it by.
-
-    The compiled pair lives under the generated tree, which every mirror denies, so only
-    `setup`, `sync` and a rental landing named it and only they carried it. A submit therefore
-    addressed the workstation's compile and left the host holding whatever its own last compile
-    had produced. On 2026-09-06 two task rows were added to the monorepo manifest and the
-    mirror's compile stayed at the morning's, missing `[tasks.head-paper]`: the workstation
-    pinned a9d234f5f0dd2e93, the host read db8171ec0bd191b2, and every job of the wave died at
-    environment prime with a mirror nobody had told to catch up.
-    """
-    trio = (
-        ".mainboard/envs/default/pixi.toml",
-        ".mainboard/envs/default/pixi.lock",
-        ".mainboard/envs/default/state.toml",
-    )
-
-    dispatcher.run(
-        plan(),
-        shipped(dispatcher, "python -m foo"),
-        root="/repo",
-        resources=Resources(),
-        artifact=trio,
-    )
-
-    del backend, workdir
-    assert dispatcher.required == [[list(trio)]]
