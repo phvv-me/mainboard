@@ -28,7 +28,7 @@ from .durable import schedule
 from .help import Help
 from .holds import Holds
 from .jobs import lanes as lanes_module
-from .lint import EditHook, GitHook, Inventory, Linter, Report
+from .lint import Inventory, Linter, Report
 from .listing import Listing
 from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
@@ -938,66 +938,31 @@ def build(root: Path | None = None) -> App:
             print(manuscript.show(phrase, dpi=dpi).as_posix())
         return 1 if report.problems else 0
 
-    lint = App(name="lint")
-    app.command(lint)
-
-    def linter(root: Path) -> Linter:
-        return Linter(root, load(root / project.manifest))
-
-    @lint.default
-    def lint_files(*paths: Path) -> int:
+    @app.command
+    def lint(*paths: Path, check: bool = False, only: str = "", json: bool = False) -> int:
         """Fix what can be fixed, then check, over the changed files or everything under PATHS.
 
-        With no path the pass reads every file that differs from HEAD or is new, deletions
-        included, so the everyday call costs what the edit did. A path widens it to every file
-        git tracks or would track at or beneath it, so `lint .` at the root reads the whole
-        workspace. The exit is nonzero when a file was rewritten or a check failed, which is
-        the answer a commit hook and a CI job both need.
+        With no path the pass reads every file that differs from HEAD or is new, submodules
+        entered and deletions included, so the everyday call costs what the edit did. A path
+        widens it to every file git tracks or would track at or beneath it, so `lint .` at the
+        root reads the whole workspace. The exit is nonzero when a file was rewritten or a step
+        failed, the one answer a person, an agent, a hook and a CI job all act on.
 
         paths: files or directories, relative to the working directory.
+        check: write nothing: run each tool's read-only `check` command and report what the
+            text hygiene would repair, the mode for CI and for verifying a tree.
+        only: the steps to run, comma-separated tool names with `text` for the built-in
+            hygiene; every step when empty, so `--only ruff-format` is a formatter alone.
+        json: print the report as canonical JSON instead of the findings and a summary line.
         """
         root = workspace_root()
         inventory = Inventory(root)
         files = (
             inventory.under([path.resolve() for path in paths]) if paths else inventory.changed()
         )
-        return _linted(linter(root).lint(files), advice="")
-
-    @lint.command(name="commit")
-    def lint_commit() -> int:
-        """Lint the files the commit being made touches, the pre-commit hook's command.
-
-        The files are read as they stand in the work tree, so a file staged in part is checked
-        whole. A rewrite fails the commit, since what git is about to record is the unrewritten
-        copy in the index.
-        """
-        root = workspace_root()
-        report = linter(root).lint(Inventory(root).staged())
-        return _linted(report, advice="stage the rewritten files and commit again")
-
-    @lint.command(name="edit")
-    def lint_edit() -> None:
-        """Lint the file a Claude Code PostToolUse payload on stdin names.
-
-        Repairs land silently and whatever is left rides back to the agent as hook context.
-        The exit is always zero, so a finding informs the next edit rather than blocking this
-        one, and a file outside every workspace is left alone.
-        """
-        edited = EditHook.model_validate_json(sys.stdin.read()).edited
-        if edited is None:
-            return
-        try:
-            root = project.find_root(edited.parent)
-        except FileNotFoundError:
-            return
-        report = linter(root).lint([edited])
-        if report.failures:
-            print(EditHook.context(report.findings()))
-
-    @lint.command(name="install-hook")
-    def lint_install_hook() -> None:
-        """Make every `git commit` in this workspace run `lint commit` first."""
-        print(GitHook(workspace_root()).install())
+        steps = [step.strip() for step in only.split(",") if step.strip()]
+        linter = Linter(root, load(root / project.manifest), check=check, only=steps)
+        return _linted(linter.lint(files), json_mode=json)
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
@@ -1912,16 +1877,18 @@ def _agreed() -> bool:
     return input().strip().lower() in {"y", "yes"}
 
 
-def _linted(report: Report, *, advice: str) -> int:
-    """Print a lint pass's findings and summary, exiting nonzero unless nothing needed doing.
+def _linted(report: Report, *, json_mode: bool) -> int:
+    """Print a lint pass, exiting nonzero unless nothing needed doing.
 
-    advice: what to do once files were rewritten, empty when rerunning is advice enough.
+    The JSON mode prints the report whole, one document a script can read; the default prints
+    each failing step's own words and then the summary line.
     """
-    if report.failures:
-        print(report.findings())
-    print(report.summary())
-    if report.rewritten and advice:
-        print(advice)
+    if json_mode:
+        record(report.model_dump(mode="json"), mode="json", fields=(), title="lint")
+    else:
+        if report.failures:
+            print(report.findings())
+        print(report.summary())
     return 0 if report.clean else 1
 
 

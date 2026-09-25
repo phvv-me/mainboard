@@ -37,13 +37,11 @@ class Inventory:
         self.root = root
 
     def changed(self) -> list[Path]:
-        """Every file that differs from HEAD or is new, deletions included."""
-        return sorted(set(self._changed(self.root)))
+        """Every file that differs from HEAD or is new, deletions included.
 
-    def staged(self) -> list[Path]:
-        """What the commit being made records, deletions included and submodule pointers not."""
-        names = self._names(self.root, "diff", "--cached", "--name-only", "--relative", "-z")
-        return sorted(path for path in (self.root / name for name in names) if not path.is_dir())
+        A repository with no commit yet has no HEAD to differ from, so every file in it is new.
+        """
+        return sorted(set(self._changed(self.root)))
 
     def under(self, paths: Sequence[Path]) -> list[Path]:
         """Every file at or beneath `paths` that git tracks or would track.
@@ -85,8 +83,8 @@ class Inventory:
 
     def _changed(self, repository: Path) -> Iterator[Path]:
         names = [
-            *self._names(repository, "diff", "--name-only", "--relative", "-z", "HEAD"),
             *self._names(repository, "ls-files", "--others", "--exclude-standard", "-z"),
+            *self._differing(repository),
         ]
         for name in names:
             path = repository / name
@@ -94,6 +92,12 @@ class Inventory:
                 yield from self._changed(path)
             else:
                 yield path
+
+    def _differing(self, repository: Path) -> list[str]:
+        """What differs from HEAD in `repository`, everything git tracks while HEAD is unborn."""
+        if git(repository, "rev-parse", "--verify", "--quiet", "HEAD").returncode:
+            return self._names(repository, "ls-files", "--cached", "-z")
+        return self._names(repository, "diff", "--name-only", "--relative", "-z", "HEAD")
 
     def _listed(self, directory: Path) -> Iterator[Path]:
         names = self._names(

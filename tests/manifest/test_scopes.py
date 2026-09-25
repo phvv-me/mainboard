@@ -166,7 +166,7 @@ def test_the_environment_roster_answers_by_name_and_refuses_a_stranger() -> None
         (
             {
                 "lint": Lint(
-                    tools={"ruff": LintTool(run="ruff check", files=("*.py",), env="ghost")}
+                    tools={"ruff": LintTool(check="ruff check", files=("*.py",), env="ghost")}
                 )
             },
             "lint tool 'ruff' names environment 'ghost'",

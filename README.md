@@ -258,23 +258,31 @@ exclude = ["**/datasets/", "**/references/"]   # never read, never rewritten
 owners = ["packages/*", "research/*"]           # beside every dir holding pyproject.toml or .git
 
 [lint.tools.ruff-format]
-run = "ruff format --force-exclude {files}"
+check = "ruff format --check --force-exclude {files}"   # read-only, what --check runs
+fix = "ruff format --force-exclude {files}"             # fix phase, in declaration order
 files = ["*.py", "*.pyi"]
-writes = true                                  # fix phase, in declaration order
 
 [lint.tools.pyrefly]
-run = "pyrefly check"                          # no {files}: checks the whole owner
+check = "pyrefly check"                        # no {files}: checks the whole owner
 files = ["*.py", "*.pyi", "pyproject.toml"]
 ```
 
+```console
+$ mainboard lint                        # what differs from HEAD or is new, submodules too
+$ mainboard lint .                      # everything git tracks or would, beneath here
+$ mainboard lint --check --json         # CI: write nothing, report it all, fail on any of it
+$ mainboard lint src --only ruff-format # one step; `text` names the built-in hygiene
+```
+
 `mainboard lint` repairs text (UTF-8, the newline `.gitattributes` names, no
-trailing blanks, one final newline), runs the writing tools in order, then every
-check at once, each inside the owner of the files it matched and under the
-workspace environment's PATH. With no path it reads what differs from HEAD;
-`mainboard lint .` reads everything. `mainboard lint install-hook` makes every
-commit run `mainboard lint commit` over the staged files, and `mainboard lint
-edit` is the Claude Code PostToolUse hook: it repairs the file an agent just
-wrote and hands whatever is left back as context.
+trailing blanks, one final newline), runs each writing tool's `fix` in order,
+then every `check` at once, each inside the owner of the files it matched and
+under the workspace environment's PATH. `--check` writes nothing: the hygiene
+names what it would repair and every tool runs its read-only `check`, so a tree
+that passes it is one the writing pass would leave alone. A person, an agent, a
+hook and CI all call the same command and read the same exit code. A
+`mainboard.toml` holding only `[lint]` is enough to use it in any git
+repository.
 
 ## What it replaces
 
