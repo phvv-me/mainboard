@@ -93,7 +93,8 @@ def _unserved(repo: Repo) -> str:
     """The first submodule pointer HEAD records that no branch of its remote holds, as `path@sha`.
 
     What this machine last heard from each remote is asked first, and a submodule is fetched
-    only when that says no, so a pointer pushed from another machine is not held for stale refs.
+    only when that says no, so a pointer pushed from another machine is not held for stale refs;
+    a shallow or branchless clone then asks its remote for the commit itself.
     A submodule never checked out cannot be asked and is left to `check`.
     """
     recorded = repo.pointers()
@@ -102,6 +103,6 @@ def _unserved(repo: Repo) -> str:
         if not (commit and child.initialized) or child.homes(commit):
             continue
         child.fetch()
-        if not child.homes(commit):
+        if not child.serves(commit):
             return f"{child.name}@{commit[:7]}"
     return ""

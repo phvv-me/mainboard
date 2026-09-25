@@ -1,13 +1,14 @@
 import posixpath
 import re
 from functools import cached_property
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, NamedTuple
 
 from .process import Git
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from pathlib import Path
 
 # Every repository in the tree answers to `origin`: a submodule is cloned with that name and the
 # workspace root is a clone too, so there is no second remote to choose between.
@@ -261,6 +262,32 @@ class Repo:
             f"refs/remotes/{REMOTE}/",
         )
         return found.stdout.split() if found.succeeded else []
+
+    def serves(self, commit: str) -> bool:
+        """Whether `origin` hands out `commit`, which a clone of a parent pointing at it needs.
+
+        A remote branch this clone knows holding it answers without the network. A shallow clone
+        cannot trace a branch back past its boundary and a clone with no remote branches has none
+        to trace, so either asks the remote itself for that one commit.
+        """
+        return bool(self.homes(commit)) or (self._blind() and self._offered(commit))
+
+    def _blind(self) -> bool:
+        """Whether this clone's remote branches cannot say which commits the remote holds."""
+        shallow = self.git.line("rev-parse", "--is-shallow-repository") == "true"
+        return shallow or not self.git.out("for-each-ref", "--count=1", f"refs/remotes/{REMOTE}/")
+
+    def _offered(self, commit: str) -> bool:
+        """Whether `origin` serves `commit` when asked for it alone, without its history or tree.
+
+        The fetch lands in a scratch repository, so this clone's objects and shallow boundary
+        stay as they were; a remote that ignores the tree filter sends one snapshot at most.
+        """
+        with TemporaryDirectory() as scratch:
+            probe = Git(Path(scratch))
+            probe.out("init", "--quiet", "--bare")
+            asked = ("fetch", "--quiet", "--depth=1", "--filter=tree:0", self.url, commit)
+            return probe.run(*asked, network=True).succeeded
 
     def pointers(self) -> dict[str, str]:
         """The commit HEAD records for every submodule path, keyed by that path."""
