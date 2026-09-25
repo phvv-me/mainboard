@@ -1,10 +1,9 @@
 # A pytest plugin any house package registers to catch, on a developer's own machine, the
 # failures that used to surface only on a CI runner of another operating system.
 #
-# Registered the ordinary way, `pytest_plugins = ["mainboard.testing"]` in the rootdir conftest,
-# and not as a `pytest11` entry point, for the reason `mainboard.trials.pytest_plugin` gives: an
-# entry point is imported before pytest-cov starts, and would load into every pytest session on a
-# machine this tool is installed beside.
+# Registered with `pytest_plugins = ["mainboard.testing"]` in the rootdir conftest, not as a
+# `pytest11` entry point, which is imported before pytest-cov starts and would load into every
+# pytest session on a machine this tool is installed beside.
 #
 # Three things, each one line for a test to ask for:
 #
@@ -43,10 +42,7 @@ _MARKER = "windows_like"
 
 
 def case_variants(name: str) -> tuple[str, ...]:
-    """`name` spelled the ways a case-insensitive filesystem (Windows, macOS) reads as one file.
-
-    name: a file or directory name.
-    """
+    """`name` spelled the ways a case-insensitive filesystem (Windows, macOS) reads as one file."""
     return tuple(dict.fromkeys((name, name.lower(), name.upper(), name.swapcase())))
 
 

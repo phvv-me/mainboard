@@ -1,13 +1,11 @@
-# The center workstation's own tooling: the one machine that holds the monorepo and runs this
-# tool, which can be macOS, Linux or a native Windows box with no WSL in sight. Every question
-# here is about git on this machine rather than about the workspace, whether git runs at all,
-# whether large files arrive as files instead of as pointer text, whether an https remote can
-# authenticate without a password prompt nobody is there to answer, and on Windows whether the
+# The center workstation's git tooling, on macOS, Linux or native Windows (no WSL): whether git
+# runs, whether large files arrive as files rather than pointer text, whether an https remote
+# authenticates without a password prompt nobody is there to answer, and on Windows whether the
 # repository's symbolic links and deep paths survive a checkout.
 #
-# A repair that is a local git setting is applied here, since knowing the exact command and
-# printing it for a person to type would only make that person the slowest step. A repair that
-# needs an installer or an administrator is never run: it is named, exactly, per platform.
+# A repair that is a local git setting is applied here, since printing it for a person to type
+# would only make that person the slowest step. A repair that needs an installer or an
+# administrator is never run: it is named, exactly, per platform.
 
 import platform
 from pathlib import Path
@@ -22,9 +20,8 @@ from .durable import Shell, locally
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-# The installs a machine may be missing, keyed by package and then by `platform.system()`. A
-# system not named for a package is read as a Linux distribution, the one family left that has
-# no single installer.
+# Installs keyed by package, then by `platform.system()`. A system not named is read as a Linux
+# distribution, the one family with no single installer.
 _INSTALLS = {
     "git": {"Windows": "winget install --id Git.Git -e", "Darwin": "xcode-select --install"},
     "git-lfs": {
@@ -42,7 +39,7 @@ _DISTRIBUTION = "sudo apt install {package} (or the {package} package of this di
 # The credential helper each platform ships with its git, as git names it after `credential-`.
 _KEYCHAIN = {"Windows": "manager", "Darwin": "osxkeychain"}
 
-# How the standard helper arrives when it is missing, and what stands in for one on Linux.
+# How the standard helper arrives when missing, and what stands in for one on Linux.
 _KEYCHAIN_INSTALL = {"Windows": _INSTALLS["git"]["Windows"], "Darwin": "brew install git"}
 _PLAINTEXT_HELPER = "git config --global credential.helper store"
 
@@ -53,10 +50,10 @@ DEVELOPER_MODE = (
     "/f /v AllowDevelopmentWithoutDevLicense /d 1` as administrator)"
 )
 
-# The mode git records a symbolic link under in its index.
+# The index mode of a symbolic link.
 _LINK_MODE = "120000"
 
-# How many unmaterialized links a detail line names before it only counts the rest.
+# How many names a detail line lists before it only counts the rest.
 _NAMED = 3
 
 # Why this process cannot create a symbolic link, empty when it can.
@@ -67,9 +64,14 @@ def install_command(system: str, package: str) -> str:
     """The command that installs `package` on a `system` machine, a distribution's when unknown.
 
     system: the platform as `platform.system()` spells it.
-    package: the tool, `git`, `git-lfs`, `gh` or `ssh`.
     """
     return _INSTALLS.get(package, {}).get(system, _DISTRIBUTION.format(package=package))
+
+
+def abbreviated(names: Sequence[str], named: int = _NAMED) -> str:
+    """The first `named` of `names`, then only a count of the rest."""
+    rest = len(names) - named
+    return ", ".join(names[:named]) + (f" and {rest} more" if rest > 0 else "")
 
 
 def refusal_to_link() -> str:
@@ -89,7 +91,6 @@ def refusal_to_link() -> str:
 class Readiness(FrozenModel):
     """One question about this workstation's tooling, answered after any safe repair ran.
 
-    check: the area asked about, the row's name in a report.
     broken: whether work in this workspace goes wrong until the fix is run.
     detail: the one line behind the answer, naming any setting this check just changed.
     fix: the command a person still has to run, empty when nothing is left to do.
@@ -105,9 +106,12 @@ class Workstation:
     """The center machine's git tooling, probed through one bounded seam and repaired in place.
 
     Every probe is one git command run through `shell`, under that shell's own deadline, so a
-    test hands in a scripted git and no answer here ever depends on the machine running it. The
-    checks run one after another because three of them may write the same global git config,
-    and git refuses a second writer on a locked config rather than waiting for the first.
+    test hands in a scripted git. The checks run one after another because three of them may
+    write the same global git config, and git refuses a second writer on a locked config rather
+    than waiting for the first.
+
+    root: the workspace repository the local settings and remotes belong to.
+    system: the platform as `platform.system()` spells it, this machine's when empty.
     """
 
     def __init__(
@@ -118,23 +122,15 @@ class Workstation:
         system: str = "",
         linking: Linking = refusal_to_link,
     ) -> None:
-        """root: the workspace repository the local settings and remotes belong to.
-
-        shell: runs one command and answers with its status and output, this machine's bounded
-            runner when left alone.
-        system: the platform as `platform.system()` spells it, this machine's when empty.
-        linking: says why a symbolic link cannot be created here, empty when it can.
-        """
         self.root = root
         self.shell = shell
         self.system = system or platform.system()
         self.linking = linking
 
     def examine(self) -> list[Readiness]:
-        """Every check this platform needs, git first since each later one is a git command.
+        """Every check this platform needs, or git's alone when git does not run.
 
-        A machine without git is that one answer, because every other check would only report
-        the same absence under a different name.
+        Every later check is a git command, so it would only report the same absence.
         """
         git = self.git()
         if git.broken:
@@ -192,8 +188,7 @@ class Workstation:
         if not uncovered:
             return Readiness(check="credentials", detail="every https remote has a helper")
         remotes = ", ".join(uncovered)
-        helper = self._keychain()
-        if helper:
+        if helper := self._keychain():
             return self._applied(
                 "credentials",
                 ("git", "config", "--global", "credential.helper", helper),
@@ -228,8 +223,7 @@ class Workstation:
         a plain file holding its target's path, which only a re-checkout of those paths turns
         into a link, named rather than run since it rewrites the working tree.
         """
-        refusal = self.linking()
-        if refusal:
+        if refusal := self.linking():
             return Readiness(
                 check="symlinks",
                 broken=True,
@@ -246,15 +240,12 @@ class Workstation:
             if configured.fix:
                 return configured
             changed = f"{configured.detail}; "
-        flat = self._flattened_links()
-        if flat:
-            unnamed = len(flat) - _NAMED
-            named = ", ".join(flat[:_NAMED]) + (f" and {unnamed} more" if unnamed > 0 else "")
+        if flat := self._flattened_links():
             return Readiness(
                 check="symlinks",
                 detail=(
-                    f"{changed}{len(flat)} links were checked out as plain files ({named}); "
-                    f"checking those paths out again makes them links"
+                    f"{changed}{len(flat)} links were checked out as plain files "
+                    f"({abbreviated(flat)}); checking those paths out again makes them links"
                 ),
                 fix=join(("git", "-C", str(self.root), "checkout", "--", *flat)),
             )
@@ -271,12 +262,7 @@ class Workstation:
         )
 
     def _applied(self, check: str, command: Sequence[str], done: str) -> Readiness:
-        """Run one safe local git setting, answering `done` or the command left to run.
-
-        check: the row the setting belongs to.
-        command: the git invocation that makes the setting.
-        done: the detail once it took.
-        """
+        """Run one safe local git setting, answering `done` or the command left to run."""
         status, said = self.shell(command)
         if status:
             return Readiness(
@@ -287,10 +273,7 @@ class Workstation:
         return Readiness(check=check, detail=done)
 
     def _config(self, *query: str) -> str:
-        """The effective value of one git setting in this repository, empty when unset.
-
-        query: the `git config` arguments that read it, `--get` or `--get-urlmatch` among them.
-        """
+        """The effective value of one git setting in this repository, empty when unset."""
         status, said = self.shell(("git", "-C", str(self.root), "config", *query))
         return "" if status else said.strip()
 
