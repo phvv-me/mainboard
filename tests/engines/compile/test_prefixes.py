@@ -22,7 +22,7 @@ _WORKSPACE = '[workspace]\nname = "w"\n'
 
 
 def hooked(fp: FakeProcess, pixi: str, *, occurrences: int = 1) -> None:
-    """Answer pixi's shell hook, and on Windows the recorded activation a prefix keeps beside it."""
+    """Answer pixi's shell hook, and on Windows the activation record a prefix keeps too."""
     fp.register(
         [pixi, "shell-hook", fp.any(min=2, max=2), "--frozen", "--json", fp.any()],
         stdout='{"environment_variables": {}, "activation_scripts": []}',

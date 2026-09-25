@@ -207,7 +207,7 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
         prefix=f"{pinned}/.mainboard/envs/serving/.pixi/envs/serving",
         refusal=job.activation.refusal,
     )
-    assert "mainboard install serving --on gold" in job.activation.refusal
+    assert "mainboard setup gold --env serving" in job.activation.refusal
 
 
 def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
