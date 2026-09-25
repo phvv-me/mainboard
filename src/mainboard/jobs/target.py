@@ -22,23 +22,16 @@ SEPARATOR = "::"
 # The names a bare file spelling means, in the order they are looked for.
 DEFAULTS = ("app", "main")
 
-# The file prefix that makes a target a pytest module, the conventional boundary pytest itself
-# collects by. A `test_` file runs through pytest, so it gets fixtures, parametrization and
+# The file prefix making a target a pytest module, so it gets fixtures, parametrization and
 # setup/teardown without mainboard growing an experiment DSL beside them.
 TEST_PREFIX = "test_"
 
 
 def home_of(file: Path, *, root: Path) -> Path:
-    """Find the import root, retaining namespace descendants of a regular package.
-
-    A missing initializer does not end an enclosing package: its descendants may
-    be namespace portions. Find the outermost regular ancestor through valid Python
-    directory names. A script without such an ancestor keeps its own directory.
-    A wholly namespace-based tree requires a separately declared import root.
-
-    file: the module, absolute.
-    root: the highest directory the climb may reach.
-    """
+    """The import root of absolute `file`: above its outermost regular package, climbing through
+    identifier-named directories below `root`, since a missing initializer may be a namespace
+    portion. A script outside any package keeps its own directory; a wholly namespace-based tree
+    needs a separately declared import root."""
     file.relative_to(root)
     climb = takewhile(lambda parent: parent != root and parent.name.isidentifier(), file.parents)
     packages = [parent for parent in climb if (parent / "__init__.py").is_file()]
@@ -54,10 +47,10 @@ def dotted(file: Path, *, home: Path) -> str:
 class Target(FrozenModel):
     """One job as spelled: a file, the name inside it, and the arguments it runs with.
 
-    file: the job file, workspace-relative.
-    name: a cyclopts `App` or a zero-argument function defined in that module, or a pytest node
-        id inside a `test_` file (`Class::test_case[param]` included, everything after the
-        first separator), or empty meaning the whole test file.
+    file: workspace-relative.
+    name: a cyclopts `App` or a zero-argument function in that module, or a pytest node id in a
+        `test_` file (`Class::test_case[param]`, everything after the first separator), or empty
+        meaning the whole test file.
     args: the tokens handed to the application or to pytest, none for a function.
     """
 
@@ -69,13 +62,9 @@ class Target(FrozenModel):
     def spelled(cls, tokens: Sequence[str], root: Path) -> Target | None:
         """The job `tokens` spell, or None when they are an ordinary command line.
 
-        A first token naming a Python file is a job, `::name` picking the target inside it and
-        a bare file meaning `app` and then `main`, whichever the file defines -- or, for a
-        `test_` file, meaning the whole file's tests. A name given for a file that is not there
-        is refused rather than passed on as a command.
-
-        tokens: the command tokens as the caller typed them.
-        root: the workspace root the file is spelled from.
+        A first token naming a Python file is a job, `::name` picking the target and a bare file
+        meaning `app` then `main` (a `test_` file: all its tests). A name given for a missing
+        file is refused rather than passed on as a command.
         """
         if not tokens:
             return None
@@ -92,13 +81,13 @@ class Target(FrozenModel):
 
     @property
     def spelling(self) -> str:
-        """The target as a command line spells it, its arguments quoted."""
+        """The target as a command line spells it, arguments quoted."""
         head = f"{self.file}{SEPARATOR}{self.name}" if self.name else self.file
         return shlex.join([head, *self.args])
 
     @property
     def test(self) -> bool:
-        """Whether the job file is a pytest module, and so runs through pytest."""
+        """Whether the job file is a pytest module, run through pytest."""
         return PurePosixPath(self.file).stem.startswith(TEST_PREFIX)
 
     @property
@@ -119,9 +108,8 @@ class Target(FrozenModel):
     def declaration(self, root: Path) -> Declaration:
         """What the target declared beyond its imports, read off the file's syntax.
 
-        A pytest node id names its function through the class and the parameters it is run
-        with, and the declaration sits on the function behind both: `Class::test_case[1]`
-        declares what `test_case` declared.
+        `Class::test_case[1]` declares what `test_case` declared. A test under `experiments/<x>/`
+        declaring no fetch fetches its `datasets/experiments/<x>` sibling.
         """
         declaration = declared(parsed(root / self.file), self.name.partition("[")[0])
         if self.test and not declaration.fetch:
@@ -147,20 +135,18 @@ class Target(FrozenModel):
         """The name a bare file spelling means: a whole pytest file, else `app` then `main`."""
         if PurePosixPath(file.name).stem.startswith(TEST_PREFIX):
             return ""
+        body = parsed(file).body
         defined = {
             target.id
-            for node in parsed(file).body
+            for node in body
             if isinstance(node, ast.Assign)
             for target in node.targets
             if isinstance(target, ast.Name)
         } | {
-            node.name
-            for node in parsed(file).body
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            node.name for node in body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
         }
-        for name in DEFAULTS:
-            if name in defined:
-                return name
+        if found := next((name for name in DEFAULTS if name in defined), None):
+            return found
         choices = " or ".join(f"`{name}`" for name in DEFAULTS)
         raise MissionError(
             f"{file} defines neither {choices}; spell the target as {file}{SEPARATOR}<name>"

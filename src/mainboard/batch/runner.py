@@ -1,7 +1,6 @@
 # The three verbs over one declared batch: measure what must ship, price it, then dispatch it.
-# Each verb publishes what it learned as receipts and reads what the last one left, so the three
-# compose in any order a person actually works in and none of them holds state in memory that the
-# next one needs.
+# Each verb publishes what it learned as receipts and reads what the last one left, so they
+# compose in any order and none holds state in memory the next one needs.
 
 from typing import TYPE_CHECKING
 
@@ -33,13 +32,11 @@ _BATCHES = "batches"
 # How a batch's jobs are labelled in the run registry, the prefix `labelled_batch` reads back.
 _LABEL = "batch:"
 
-# What a dispatch is allowed to fail with before it becomes this job's row rather than the end of
-# the batch. A target that refuses one job says nothing about the next one, and a batch that dies
-# on its second job of five has already spent the first one's dispatch for nothing.
+# What a dispatch may fail with and become this job's row rather than end the batch: one refusal
+# says nothing about the next job, and dying on job two of five wastes job one's dispatch.
 _REFUSALS = (MissionError, HostUnreachable, OSError, LookupError, SystemExit)
 
-# What a job the selection left out is recorded as, the one sentence that keeps it apart from a
-# job a target refused: nothing happened to it, it was not asked for.
+# What a job the selection left out is recorded as: not refused, just not asked for.
 _UNSELECTED = "skipped: not named by --only"
 
 # What a row's `state` column says about the request, one word per thing that can happen to it.
@@ -49,14 +46,10 @@ DISPATCHED = "dispatched"
 class Dispatched(FrozenModel):
     """What one job's dispatch came to, whether or not a target took it.
 
-    job: the job's name inside the batch.
-    target: the alias it was sent to.
-    state: what happened to the request, `dispatched`, `held`, `refused` or `skipped`. Named in
-        its own column because the three that carry no handle used to read alike, and a job the
-        target's quota merely postponed is the one a reader must not file beside a rejection.
+    state: `dispatched`, `held`, `refused` or `skipped`, its own column since the three without
+        a handle read alike, and a quota postponement must not be filed beside a rejection.
     handle: the scheduler or provider handle, empty when the target did not take it.
-    kind: how that target is reached.
-    reason: why it was refused or held, empty when it was accepted.
+    reason: why it was refused, held or skipped, empty when it was accepted.
     """
 
     job: str
@@ -70,14 +63,10 @@ class Dispatched(FrozenModel):
 class Batch:
     """One declared batch of jobs, prepared, priced and dispatched as a unit.
 
-    The batch's identity is its declaration, so the same spec always addresses the same receipts
-    stream and the three verbs write one log between them. That log is the only thing they share:
-    `estimate` prices whatever `prepare` measured rather than measuring again, and `watch` finds
-    every dispatched job in it by id alone, without the spec that declared them.
-
-    A selection narrows what a verb acts on without touching that identity, so a plan whose nine
-    ready jobs go out today and whose four remaining ones go out tomorrow is one batch and one
-    stream throughout, and the jobs left behind are recorded as skipped rather than left silent.
+    Its identity is its declaration, so the verbs share one receipts stream and nothing else:
+    `estimate` prices what `prepare` measured, and `watch` finds every job by id alone. A
+    `selection` (all jobs when None) narrows a verb without touching that identity, so waves of one
+    plan share one stream and the jobs left behind are recorded as skipped.
     """
 
     def __init__(
@@ -88,12 +77,6 @@ class Batch:
         bus: Bus | None = None,
         selection: Selection | None = None,
     ) -> None:
-        """board: the workspace the jobs are dispatched from.
-
-        spec: the declared batch.
-        bus: where receipts go, the batch's own NDJSON file when None.
-        selection: which of the plan's jobs this run acts on, all of them when None.
-        """
         self.board = board
         self.spec = spec
         self.dir = directory(board, spec.batch_id)
@@ -104,16 +87,14 @@ class Batch:
 
     @property
     def id(self) -> str:
-        """The batch identity, its spec's own."""
         return self.spec.batch_id
 
     def dispatch(self, job: BatchJob, *, watch: Watcher | None = None) -> Dispatched:
         """Send one job to its target, recording its handle, its refusal, or its hold.
 
-        A target that refuses on its own count quota has not rejected the job, it has said the
-        queue is full right now, so the request is held at this workstation and the durable sweep
-        asks again rather than the job being dropped from the wave (four of thirteen, miyabi-g's
-        njobs-g limit, 2026-09-04). Every other refusal is still a refusal.
+        A count-quota refusal only says the queue is full now, so the request is held for the
+        durable sweep to ask again rather than dropped from the wave (four of thirteen, miyabi-g's
+        njobs-g limit, 2026-09-04).
         """
         bound = self.board.on(job.target)
         try:
@@ -141,12 +122,7 @@ class Batch:
         return Dispatched(job=job.name, target=job.target, handle=run.handle.id, kind=kind)
 
     def estimate(self) -> BatchEstimate:
-        """Price every job from what this workspace already recorded. Nothing runs.
-
-        Whatever `prepare` measured is read back from the receipts rather than measured again,
-        so pricing a batch costs nothing at all once it has been prepared, and a job nobody
-        prepared is measured here so the row is never a blank where the bytes should be.
-        """
+        """Price every job from what `prepare` measured, measuring the rest. Nothing runs."""
         self.open()
         prepared = latest(self.bus.replay(), Topic.PREPARED)
         transfer = Transfer(self.board)
@@ -162,14 +138,10 @@ class Batch:
         return table
 
     def labelling(self, job: str) -> str:
-        """The dispatch label one job of this batch carries, its key in the run registry.
+        """The dispatch label of one job (empty for the whole batch), its run-registry key.
 
-        The job rides in the label because the label is the only thing that reaches the machine
-        running the job, and what that machine publishes about itself has to say which job it
-        is. Dispatch keeps a label as free text and never parses it, so this method and
-        `labelled_batch` are the only two places the `batch:` shape is spelled out.
-
-        job: the job's name inside the batch, empty for the batch as a whole.
+        The label is all that reaches the machine running the job, which must say which job it is.
+        Dispatch never parses it; only this and `labelled_batch` spell the `batch:` shape.
         """
         return f"{_LABEL}{self.id}/{job}" if job else f"{_LABEL}{self.id}"
 
@@ -191,9 +163,7 @@ class Batch:
     def prepare(self) -> list[TransferSet]:
         """Measure what each job must still put on its target, and publish each measurement.
 
-        The analysis a dispatch is worth doing before: a job whose data never reached its host
-        is a job that fails after the queue wait rather than before it, and a mirror that has
-        drifted is minutes of transfer nobody planned for.
+        Missing data fails a job after the queue wait, and a drifted mirror is unplanned transfer.
         """
         self.open()
         transfer = Transfer(self.board)
@@ -203,16 +173,8 @@ class Batch:
         return measured
 
     def held(self, job: BatchJob, refusal: BaseException) -> Dispatched:
-        """Keep one job whose target had no room, so the next sweep asks for it again.
-
-        The request goes into the run registry, which is what makes the hold durable: the sweep
-        that resubmits it runs on a cron and knows nothing about the process that held it. The
-        receipt is published beside it so this batch's own watch has a row to show rather than a
-        gap where a job of the plan should be.
-        """
-        told = Dispatched(
-            job=job.name, target=job.target, state=vocabulary.HELD, reason=str(refusal)
-        )
+        """Keep one job whose target had no room in the run registry, durable for the cron sweep
+        that resubmits it, with a receipt so this batch's watch shows a row."""
         self.board.dispatcher.hold(
             Request(
                 target=job.target,
@@ -220,43 +182,20 @@ class Batch:
                 name=self.labelling(job.name),
                 **job.submission(),
             ),
-            reason=told.reason,
+            reason=str(refusal),
         )
-        publish(
-            self.bus,
-            self.id,
-            Topic.HELD,
-            job=job.name,
-            data={"target": job.target, "reason": told.reason},
-        )
-        return told
+        return self.told(job, vocabulary.HELD, Topic.HELD, str(refusal))
 
     def refused(self, job: BatchJob, refusal: BaseException) -> Dispatched:
         """Record one target's refusal as the receipt the batch keeps in place of a handle."""
-        told = Dispatched(
-            job=job.name, target=job.target, state=vocabulary.VANISHED, reason=str(refusal)
-        )
-        publish(
-            self.bus,
-            self.id,
-            Topic.REFUSED,
-            job=job.name,
-            data={"target": job.target, "reason": told.reason},
-        )
-        return told
+        return self.told(job, vocabulary.VANISHED, Topic.REFUSED, str(refusal))
 
     def run(self, *, watch: Watcher | None = None) -> list[Dispatched]:
-        """Dispatch every job to its own target and publish what each dispatch came to.
+        """Dispatch every selected job to its own target, one refusal being only that job's row,
+        and record the unselected as skipped.
 
-        One target refusing is that job's row and the next job still goes, since a batch spread
-        over a fleet routinely meets one machine that is asleep, out of quota, or not declared,
-        and the other four jobs are still worth running.
-
-        A job the selection left out is recorded as skipped rather than left unmentioned, so
-        every reader of this stream knows there is nothing coming for it.
-
-        watch: announces what each dispatch does on the far side, which for a queued host is the
-            priming of the environment its wave will run in.
+        watch: announces what each dispatch does on the far side, for a queued host the priming
+            of the environment its wave will run in.
         """
         self.open()
         return [
@@ -265,23 +204,15 @@ class Batch:
         ]
 
     def skip(self, job: BatchJob) -> Dispatched:
-        """Record one job the selection left out, so nothing downstream waits for it.
+        """Record one job the selection left out, which would otherwise read as a lost dispatch."""
+        return self.told(job, vocabulary.SKIPPED, Topic.SKIPPED, _UNSELECTED)
 
-        A watch builds its rows out of these receipts, and a declared job with no line at all
-        reads exactly like one whose dispatch was lost. This is the line that says the difference:
-        nothing happened to it, it was not asked for.
-        """
-        told = Dispatched(
-            job=job.name, target=job.target, state=vocabulary.SKIPPED, reason=_UNSELECTED
-        )
+    def told(self, job: BatchJob, state: str, topic: Topic, reason: str) -> Dispatched:
+        """Publish why `job` has no handle and answer its row."""
         publish(
-            self.bus,
-            self.id,
-            Topic.SKIPPED,
-            job=job.name,
-            data={"target": job.target, "reason": told.reason},
+            self.bus, self.id, topic, job=job.name, data={"target": job.target, "reason": reason}
         )
-        return told
+        return Dispatched(job=job.name, target=job.target, state=state, reason=reason)
 
 
 def labelled_batch(label: str) -> str:

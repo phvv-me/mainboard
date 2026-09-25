@@ -56,7 +56,6 @@ class Beacon:
             say(CELL, f"{report.outcome} {report.nodeid}")
 
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
-        """Mark the end of the pytest session with its exit status."""
         del session
         if not self.nested:
             say(SESSION, str(int(exitstatus)))
@@ -65,12 +64,10 @@ class Beacon:
 class Runner:
     """Install the boundary with pytest's hook, before any plugin or conftest loads.
 
-    pytest offers no public hook at this point. Its installer is replaced only during this
-    invocation, and both the installer and meta-path entries are restored even on failure.
-    The original hook remains pytest's loader and receives its normal rewrite registrations.
-
-    A dispatched job, the one whose wrapper staged a receipts file, also reports each cell
-    through the beacon, since its log is what a waiter reads its progress off.
+    pytest offers no public hook at this point, so its installer is replaced for this invocation
+    only and restored with the meta-path entries even on failure; the original hook stays
+    pytest's loader. A dispatched job (its wrapper staged a receipts file) also reports each cell
+    through the beacon, since a waiter reads its progress off the log.
     """
 
     def __init__(self, guard: Guard | None) -> None:
