@@ -1,11 +1,7 @@
 import base64
 import json
-import os
 import shlex
-import shutil
 import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
@@ -14,33 +10,6 @@ from mainboard.dispatch.evidence import RECEIPTS_VAR, framing, receipts_in, stag
 # One trial receipt long enough that vast's 500-character line limit would cut it in half, which
 # is the whole reason this channel exists.
 _RECEIPT = json.dumps({"trial_receipt": {"run_id": "r1", "outcome": "passed", "pad": "x" * 900}})
-
-
-@pytest.fixture(scope="module")
-def posix_bash() -> str:
-    """A real POSIX Bash, never Windows' WSL launcher shim.
-
-    GitHub's Windows image puts ``System32/bash.exe`` on PATH even when no WSL distribution
-    exists. Git for Windows ships the Bash and coreutils that can actually exercise this remote
-    POSIX protocol, so use that installation explicitly instead of trusting the ambiguous name.
-    """
-    if sys.platform != "win32":
-        if bash := shutil.which("bash"):
-            return bash
-        pytest.skip("remote Bash protocol test needs Bash")
-
-    roots = [Path(git).resolve().parent.parent] if (git := shutil.which("git")) else []
-    roots.extend(
-        Path(value) / "Git"
-        for name in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")
-        if (value := os.environ.get(name))
-    )
-    if bash := next(
-        (root / "bin" / "bash.exe" for root in roots if (root / "bin" / "bash.exe").is_file()),
-        None,
-    ):
-        return str(bash)
-    pytest.skip("remote Bash protocol test needs Git for Windows Bash")
 
 
 def block(receipts: str) -> str:

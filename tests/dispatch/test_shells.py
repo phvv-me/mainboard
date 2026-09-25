@@ -1,5 +1,6 @@
 import base64
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -158,6 +159,67 @@ def test_open_shell_picks_the_family_off_the_profile(monkeypatch: pytest.MonkeyP
     assert isinstance(open_shell(windows_plan(), _ROOT), WindowsShell)
 
 
+def test_the_windows_dialect_probes_files_and_opens_its_sessions_in_powershell() -> None:
+    dialect = dialect_for(HostProfile(platform="win-64"))
+    assert dialect.is_file("C:/a b.txt") == (
+        "if (Test-Path -LiteralPath 'C:/a b.txt' -PathType Leaf) { exit 0 } else { exit 1 }"
+    )
+    assert dialect.noop == "exit 0"
+    session = dialect.session("homelab", "mainboard shell")
+    assert session[:5] == ["ssh", "-t", "homelab", "powershell", "-NoProfile"]
+    assert decoded(session) == "mainboard shell"
+
+
+def test_a_foreground_command_is_handed_the_terminal_as_its_activated_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the process launch is scripted: what each family launches is the activated stage."""
+    launched: list[list[str]] = []
+
+    def launch(command: list[str]) -> int:
+        launched.append(list(command))
+        return 3
+
+    monkeypatch.setattr(
+        "mainboard.dispatch.shells.foreground", lambda command: launch(command.bound)
+    )
+    monkeypatch.setattr("mainboard.dispatch.shells.subprocess.call", launch)
+    posix = PosixShell(machine_with(), plan(), "/repo")
+    windows = WindowsShell(windows_plan(), _ROOT, ssh=RecordingTransport())
+    assert posix.foreground("mainboard shell") == 3
+    assert windows.foreground("mainboard shell") == 3
+    assert launched[0] == ["-lc", posix.stage("mainboard shell", activate=True)]
+    assert decoded(launched[1]) == windows.stage("mainboard shell", activate=True)
+
+
+def test_a_windows_write_makes_its_directory_and_quotes_the_text_as_data() -> None:
+    transport = RecordingTransport()
+    WindowsShell(windows_plan(), _ROOT, ssh=transport).write("C:/cfg/it's.toml", "a = 'b'")
+    assert transport.scripts[-1].endswith(
+        "New-Item -ItemType Directory -Force -Path 'C:/cfg' | Out-Null; "
+        "Set-Content -LiteralPath 'C:/cfg/it''s.toml' -Value 'a = ''b''' -NoNewline; "
+        "exit $LASTEXITCODE"
+    )
+
+
+def test_a_posix_shell_closes_the_bounded_session_it_was_handed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded session owns an ssh process group, so leaving the shell must end it."""
+
+    class Session:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("mainboard.dispatch.shells.BoundedSshMachine", Session)
+    session = Session()
+    with PosixShell(session, plan(), "/repo"):
+        assert not session.closed
+    assert session.closed
+
+
 def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -209,6 +271,8 @@ def test_a_windows_host_that_left_no_prefix_behind_is_refused_by_name() -> None:
 def test_the_tarball_lists_what_rsync_would_send_and_ships_only_what_the_host_lacks(
     tmp_path: Path,
 ) -> None:
+    if shutil.which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
     workspace = tmp_path / "ws"
     (workspace / "src").mkdir(parents=True)
     (workspace / "src" / "keep.py").write_text("print(1)\n")

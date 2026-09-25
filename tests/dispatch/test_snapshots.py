@@ -197,6 +197,52 @@ def test_a_host_that_dropped_while_pinning_reads_as_unreachable_not_as_a_broken_
         Snapshots("/work/projects").pin(remote, key="abc1234", image=mirrored("src"))
 
 
+_SEALED = Sealed(listing=".mainboard/dispatch/jobs/closure-abc.tsv")
+
+
+@pytest.mark.parametrize(
+    ("fields", "refusal"),
+    [
+        pytest.param({"key": "a/b"}, "one directory name", id="a-key-that-is-a-path"),
+        pytest.param(
+            {"image": _SEALED, "digest": "ab"},
+            "complete closure digest",
+            id="a-truncated-closure-digest",
+        ),
+        pytest.param(
+            {"image": _SEALED.model_copy(update={"needs": ("/etc",)}), "digest": "ab" * 32},
+            "relative paths below the root",
+            id="a-need-outside-the-workspace",
+        ),
+        pytest.param(
+            {"image": _SEALED, "digest": "ab" * 32, "results": f"{WRAPPERS}/x"},
+            "relative paths below the root",
+            id="sealed-results-over-the-frozen-wrappers",
+        ),
+        pytest.param(
+            {"results": CLOSURE},
+            "must not replace snapshot control files",
+            id="mirrored-results-over-the-closure",
+        ),
+        pytest.param(
+            {"script": ".mainboard/dispatch/jobs/job-abc.sh"},
+            "full SHA-256 name",
+            id="a-wrapper-not-named-by-its-whole-digest",
+        ),
+    ],
+)
+def test_a_pin_refuses_a_path_that_could_replace_its_own_controls_before_reaching_the_host(
+    fields: dict[str, str | Sealed], refusal: str
+) -> None:
+    """Every one of these would have the snapshot shell link or remove over what it verifies."""
+    remote = machine_with()
+    with pytest.raises(ValueError, match=refusal):
+        Snapshots("/work/projects").pin(
+            remote, **{"key": "abc1234", "image": mirrored("src"), **fields}
+        )
+    assert remote.calls == []
+
+
 def _mirror(root: Path) -> None:
     """A host mirror as a sync leaves one: shipped source, a data dir, an env, host artifacts."""
     (root / "research/compression/pkg").mkdir(parents=True)

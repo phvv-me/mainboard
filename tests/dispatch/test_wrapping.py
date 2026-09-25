@@ -121,29 +121,32 @@ def test_a_named_environment_is_never_optional_however_the_caller_asks() -> None
     ],
 )
 def test_frozen_activation_requires_completion_and_matching_identity(
-    tmp_path: Path, stamp: str | None, script: bool, succeeds: bool
+    tmp_path: Path, posix_bash: str, stamp: str | None, script: bool, succeeds: bool
 ) -> None:
+    """The snippet runs on a POSIX host, so its prefix is spelled and its files are written so."""
     prefix = tmp_path / "prefix with spaces" / "a123"
     (prefix / ".pixi/envs/default/bin").mkdir(parents=True)
     if stamp is not None:
-        (prefix / ".mainboard-prefix").write_text(stamp)
+        (prefix / ".mainboard-prefix").write_text(stamp, newline="\n")
     if script:
-        (prefix / "activate.sh").write_text("export MAINBOARD_TEST_ACTIVATED=yes\n")
-    command = frozen_activation(str(prefix), "default")
+        (prefix / "activate.sh").write_text("export MAINBOARD_TEST_ACTIVATED=yes\n", newline="\n")
+    command = frozen_activation(prefix.as_posix(), "default")
     command += '\n[ "$MAINBOARD_TEST_ACTIVATED" = yes ]'
-    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, timeout=5)
+    result = subprocess.run([posix_bash, "-c", command], capture_output=True, text=True, timeout=5)
     assert (result.returncode == 0) == succeeds
     if not succeeds:
         assert "no completed environment with the expected identity" in result.stderr
 
 
-def test_frozen_activation_propagates_a_failed_activation_script(tmp_path: Path) -> None:
+def test_frozen_activation_propagates_a_failed_activation_script(
+    tmp_path: Path, posix_bash: str
+) -> None:
     prefix = tmp_path / "a123"
     prefix.mkdir()
-    (prefix / ".mainboard-prefix").write_text("a123\n")
-    (prefix / "activate.sh").write_text("return 7\n")
+    (prefix / ".mainboard-prefix").write_text("a123\n", newline="\n")
+    (prefix / "activate.sh").write_text("return 7\n", newline="\n")
     result = subprocess.run(
-        ["bash", "-c", frozen_activation(str(prefix), "default")],
+        [posix_bash, "-c", frozen_activation(prefix.as_posix(), "default")],
         capture_output=True,
         text=True,
         timeout=5,

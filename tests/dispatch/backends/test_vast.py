@@ -18,6 +18,7 @@ from mainboard.dispatch.backends.vast import (
     api_key,
     capability,
     cuda_max_good,
+    download,
     exit_sentinel,
 )
 from mainboard.dispatch.evidence import framing, staging
@@ -326,18 +327,19 @@ def test_pick_refuses_an_architecture_this_cuda_no_longer_builds_for() -> None:
     [
         (cuda_max_good, "cuda_max_good", 0.0, 13.3),
         (capability, "compute_cap", 0, 890),
+        (download, "inet_down", 0.0, 900.0),
     ],
-    ids=["driver-version", "compute-capability"],
+    ids=["driver-version", "compute-capability", "download-rate"],
 )
 def test_a_row_that_publishes_nothing_never_satisfies_a_floor(
     reader: Callable[[Mapping], float], field: str, absent: float, present: float
 ) -> None:
     """Silence reads as too old, since the unknown machine is the one that costs a rental."""
     blank = offer(11, dph=0.4)
-    del blank[field]
+    blank.pop(field, None)
     assert reader(blank) == absent
     assert reader(offer(11, dph=0.4, **{field: "not a number"})) == absent
-    assert reader(offer(11, dph=0.4)) == present
+    assert reader(offer(11, dph=0.4, **{field: present})) == present
 
 
 @given(
@@ -881,6 +883,72 @@ def test_a_definitive_create_refusal_closes_the_reservation_it_opened() -> None:
     allocation.interrupted()
     closed = allocation.cache.creation(allocation.label, allocation.record.target)
     assert closed.verdict == "failed", "and the dispatcher's exit closes it"
+
+
+def test_a_server_fault_on_the_create_keeps_the_reservation_for_a_reconciliation() -> None:
+    """A 5xx proves nothing either way, so the label stays `submitting` until it is reconciled.
+
+    Its body is a gateway's page rather than the API's JSON, and the refusal still names the
+    offer and the status instead of failing on the body it could not read.
+    """
+    fault = HTTPError(
+        f"{_ROOT}/asks/11/", 502, "Bad Gateway", Message(), BytesIO(b"<html>gateway</html>")
+    )
+    backend = vast_backend(fault)
+    allocation = created_request()
+    with pytest.raises(MissionError, match=r"offer 11 \(HTTP 502\): $"):
+        backend.rented(
+            offer(11, dph=0.17),
+            plan=vast_plan(),
+            launch={"runtype": "ssh"},
+            allocation=allocation,
+            resources=Resources(max_usd=1.0, walltime="00:30:00"),
+        )
+    held = allocation.cache.creation(allocation.label, allocation.record.target)
+    assert held.verdict == "submitting"
+
+
+def taken(identifier: int) -> HTTPError:
+    """The refusal Vast answers a create with once someone else rented `identifier` first."""
+    return HTTPError(
+        f"{_ROOT}/asks/{identifier}/",
+        400,
+        "Bad Request",
+        Message(),
+        BytesIO(b'{"msg":"error 404/3603: no_such_ask"}'),
+    )
+
+
+@pytest.mark.parametrize(
+    ("offers", "refusal"),
+    [
+        pytest.param([], "no rentable 1x any offer", id="a-market-with-nothing-in-it"),
+        pytest.param([11], "no rentable 1x any offer", id="a-page-whose-every-offer-was-taken"),
+        pytest.param([11, 22, 33, 44], "took 3 offers", id="a-market-moving-faster-than-a-rent"),
+    ],
+)
+def test_a_rental_the_market_cannot_place_is_refused_rather_than_searched_again(
+    offers: list[int], refusal: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty page, a page emptied by takers, or three takers in a row end the rent.
+
+    The refusal's own unfloored search is the only other search, so a moving market cannot turn
+    one rent into a loop over fresh pages, and every create it declined leaves the reservation
+    back at prepared.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    keypair(tmp_path)
+    page = {"offers": [offer(identifier, dph=0.5) for identifier in offers]}
+    backend = vast_backend(page, *(taken(identifier) for identifier in offers[:3]), {})
+    allocation = created_request()
+    with pytest.raises(MissionError, match=refusal):
+        backend.rent(
+            vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"), allocation=allocation
+        )
+    assert backend.transport.urls.count(f"{_ROOT}/bundles/") <= 2
+    assert allocation.cache.creation(allocation.label, allocation.record.target).verdict == (
+        "prepared"
+    )
 
 
 def test_a_rental_that_never_comes_up_is_destroyed_rather_than_left_billing(

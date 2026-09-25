@@ -139,6 +139,7 @@ def test_terminal_noise_is_stripped_before_a_log_is_quoted_as_a_cause() -> None:
 @pytest.mark.parametrize(
     ("verdict", "exit_code", "expected"),
     [
+        ("cancelled", None, "cancelled (stopped on purpose, not by the job or the queue)"),
         ("vanished", None, "vanished (the scheduler no longer remembers the job)"),
         ("failed", 137, "killed by SIGKILL (out of memory or walltime, exit 137)"),
         ("failed", 3, "exited 3"),
@@ -194,6 +195,12 @@ def test_verdict_line_leads_with_the_handle_then_whatever_details_exist(
             "7 is running on gold; scheduler state R",
         ),
         (JobState(handle="7", verdict="running"), "", "", "7 is running"),
+        (
+            JobState(handle="7", state="Q", verdict="queued", estimated_start="2026-09-05T10:00"),
+            "",
+            "",
+            "7 is queued; scheduler state Q; estimated start 2026-09-05T10:00",
+        ),
     ],
 )
 def test_a_job_that_printed_nothing_still_says_where_it_stands(

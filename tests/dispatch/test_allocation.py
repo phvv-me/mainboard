@@ -123,3 +123,41 @@ def test_a_precreate_refusal_does_not_leave_an_unknown_paid_instance() -> None:
     record = allocation.cache.run(allocation.label)
     assert record.verdict == "failed" and record.reported == "failed"
     assert allocation.cache.tracked() == []
+
+
+@pytest.mark.parametrize("handle", ["", "None"])
+def test_a_create_answered_without_a_handle_stays_submitting_for_a_reconciliation(
+    handle: str,
+) -> None:
+    """An answer naming no instance does not prove none was made, so only the label can tell."""
+    allocation = created_request()
+    allocation.begin()
+    with pytest.raises(MissionError, match="reconcile its label"):
+        allocation.created(handle)
+    assert allocation.cache.run(allocation.label).verdict == "submitting"
+
+
+def test_a_request_that_already_holds_its_handle_is_left_to_the_monitor() -> None:
+    """A late refusal or interruption cannot relabel a creation the provider already confirmed."""
+    allocation = created_request()
+    allocation.begin()
+    allocation.created("provider-42")
+    allocation.refused()
+    allocation.interrupted()
+    record = allocation.cache.run("provider-42")
+    assert (record.verdict, record.reported) == ("queued", None)
+
+
+def test_each_creation_transition_refuses_a_request_not_standing_where_it_expects() -> None:
+    """Every step names the one state it moves from, so a stale caller is told, never obeyed."""
+    allocation = created_request()
+    store, record = allocation.cache, allocation.record
+    with pytest.raises(ValueError, match="invalid prepared transition to 'queued'"):
+        store.leave_prepared(record, "queued")
+    with pytest.raises(ValueError, match="is not submitting; nothing to reopen"):
+        store.reopen(record)
+    with pytest.raises(LookupError, match="no submitting creation"):
+        store.bind(record, "provider-42")
+    with pytest.raises(LookupError, match="no creation 'elsewhere'"):
+        store.creation("elsewhere", record.target)
+    assert store.run(record.handle).verdict == "prepared"

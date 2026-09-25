@@ -142,9 +142,13 @@ class Tarball:
         """
         destination = self.ssh.destination(host)
         unpack = f'tar -xzf - -C "{root}"'
-        with NamedTemporaryFile("w", encoding="utf-8", suffix=".files") as names:
+        # Closed before tar reads it and removed when the block exits, since Windows refuses a
+        # second process a file still open for deletion on close.
+        with NamedTemporaryFile(
+            "w", encoding="utf-8", suffix=".files", delete_on_close=False
+        ) as names:
             names.write("\0".join(files))
-            names.flush()
+            names.close()
             pack = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=tar argv built from typed fields since=2026-09-11
                 [
                     "tar",

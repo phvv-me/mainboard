@@ -61,11 +61,11 @@ class _FakeProcess:
         self.communicate_calls = 0
         self.wait_calls: list[float | None] = []
 
-    def communicate(self, timeout: float, input: str | None = None) -> tuple[str, str]:
+    def communicate(self, timeout: float, input: bytes | None = None) -> tuple[bytes, bytes]:
         self.communicate_calls += 1
         if self.raise_timeout and self.communicate_calls == 1:
             raise subprocess.TimeoutExpired(cmd="ssh", timeout=timeout)
-        return self.stdout_text, self.stderr_text
+        return self.stdout_text.encode(), self.stderr_text.encode()
 
     def wait(self, timeout: float | None = None) -> None:
         self.wait_calls.append(timeout)
@@ -207,6 +207,32 @@ def test_a_silent_255_is_unreachable_only_for_the_connect_probe(
     assert type(caught.value) is raised
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stderr", "raised"),
+    [
+        pytest.param(0, "", None, id="a-clean-answer"),
+        pytest.param(3, "not installed", None, id="a-probe-that-said-no"),
+        pytest.param(255, "Connection refused", HostUnreachable, id="a-host-that-dropped"),
+        pytest.param(1, "Host key verification failed.", ConnectionError, id="a-changed-host-key"),
+    ],
+)
+def test_invoke_answers_any_exit_a_command_gave_and_raises_only_what_ssh_itself_hit(
+    returncode: int, stderr: str, raised: type[BaseException] | None
+) -> None:
+    """A probe exiting non-zero answered the question; a transport fault answered nothing."""
+    script = (
+        "import sys; sys.stdout.write('said'); "
+        f"sys.stderr.write({stderr!r}); sys.exit({returncode})"
+    )
+    command = (sys.executable, "-c", script)
+    if raised is not None:
+        with pytest.raises(raised):
+            SshTransport().invoke(command, "host", operation="probe")
+        return
+    answer = SshTransport().invoke(command, "host", operation="probe", bounded=False)
+    assert answer == (returncode, "said", stderr)
+
+
 def test_run_reports_a_host_unreachable_when_ssh_cannot_even_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -287,7 +313,8 @@ def test_evidence_stream_can_outlive_the_control_deadline(tmp_path: Path) -> Non
     command = (
         sys.executable,
         "-c",
-        "import time; time.sleep(0.3); print('complete evidence')",
+        # Raw bytes, since a Windows `print` would end its own line in `\r\n`.
+        "import sys, time; time.sleep(0.3); sys.stdout.buffer.write(b'complete evidence\\n')",
     )
     policy = ShortPolicy()
     with pytest.raises(HostUnreachable, match="timed out after 0.1s"):
@@ -517,7 +544,7 @@ def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liven
         "-p",
         "41022",
         "-i",
-        "/keys/id",
+        str(Path("/keys/id")),
         "-o",
         "IdentitiesOnly=yes",
         "-o",

@@ -198,7 +198,7 @@ class SshTransport(FrozenModel):
         return self.endpoint.destination if self.endpoint else host
 
     @staticmethod
-    def terminate(process: subprocess.Popen[str]) -> None:
+    def terminate(process: subprocess.Popen[bytes]) -> None:
         """Terminate the whole SSH process group so ProxyJump children cannot remain."""
         with suppress(ProcessLookupError, PermissionError, psutil.Error):
             terminate_process_tree(process.pid)
@@ -305,20 +305,20 @@ class SshTransport(FrozenModel):
                 stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                 stdout=sink,
                 stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 start_new_session=True,
             )
         except OSError as error:
             raise HostUnreachable(
                 f"ssh {operation} to {host!r} could not start: {error}"
             ) from error
+        # Bytes both ways, because a text-mode pipe on Windows writes every `\n` of the input as
+        # `\r\n`, and the bash reading it on the host takes that `\r` as part of each command.
+        sent = None if input_text is None else input_text.encode("utf-8")
         try:
-            stdout, stderr = process.communicate(input=input_text, timeout=timeout)
+            stdout, stderr = process.communicate(input=sent, timeout=timeout)
         except subprocess.TimeoutExpired as error:
             self.__raise_after_terminating(process, host=host, operation=operation, cause=error)
-        return process.returncode, stdout or "", stderr or ""
+        return process.returncode, _decoded(stdout), _decoded(stderr)
 
     @staticmethod
     def __check(returncode: int, stderr: str, *, host: str, operation: str) -> None:
@@ -342,7 +342,7 @@ class SshTransport(FrozenModel):
             raise RuntimeError(f"ssh connect to {host!r} returned without the expected marker")
 
     @staticmethod
-    def __force_killpg(process: subprocess.Popen[str]) -> None:
+    def __force_killpg(process: subprocess.Popen[bytes]) -> None:
         """Escalate to SIGKILL after a SIGTERM'd process group failed to exit in time."""
         with suppress(ProcessLookupError, PermissionError, psutil.Error):
             terminate_process_tree(process.pid, force=True)
@@ -350,7 +350,7 @@ class SshTransport(FrozenModel):
 
     def __raise_after_terminating(
         self,
-        process: subprocess.Popen[str],
+        process: subprocess.Popen[bytes],
         *,
         host: str,
         operation: str,
@@ -361,6 +361,12 @@ class SshTransport(FrozenModel):
         raise HostUnreachable(
             f"ssh {operation} to {host!r} timed out after {cause.timeout:g}s"
         ) from cause
+
+
+def _decoded(output: bytes | None) -> str:
+    """Captured bytes as a text-mode pipe reads them: UTF-8, with universal newlines."""
+    text = (output or b"").decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _detail(stderr: str, returncode: int) -> str:

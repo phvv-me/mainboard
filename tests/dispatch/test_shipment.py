@@ -66,7 +66,7 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
         "env",
         "PYTHONPATH=" + ":".join(str(lab.root / place) for place in closure.roots),
     ]
-    assert f"{CLOSURE_VAR}={lab.root}/.mainboard/dispatch/jobs/closure.tsv" in local
+    assert f"{CLOSURE_VAR}={lab.root / '.mainboard/dispatch/jobs/closure.tsv'}" in local
     assert local[-6:] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x"] or local[
         -7:-1
     ] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x"]
@@ -76,9 +76,10 @@ def test_local_import_roots_use_the_native_path_separator(monkeypatch: pytest.Mo
     shipment = Shipment.of_command(
         "python -m job", source=Source(identity="", key="untracked"), imports=("a", "b")
     )
+    root = Path("/workspace")
     monkeypatch.setattr(os, "pathsep", ";")
-    assert shipment.local_exports(Path("/workspace"))["PYTHONPATH"] == "/workspace/a;/workspace/b"
-    assert "PYTHONPATH=/workspace/a:/workspace/b" in shipment.locally(Path("/workspace"))
+    assert shipment.local_exports(root)["PYTHONPATH"] == f"{root / 'a'};{root / 'b'}"
+    assert f"PYTHONPATH={root / 'a'}:{root / 'b'}" in shipment.locally(root)
 
 
 def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
@@ -208,3 +209,18 @@ def test_real_closures_quote_paths_and_parameter_ids_before_admission(
     with pytest.raises(MissionError, match="changed after Mainboard prepared"):
         shipment.admit(lab.root)
     assert shlex.split(shipment.spelling) == [f"{file}::{name}"]
+
+
+def test_a_registered_research_target_spelled_as_a_bare_command_is_refused(tmp_path: Path) -> None:
+    """Only a captured closure proves what a research run executed, and a plain line carries none.
+
+    Admission reads the spelling alone before it reads any file, so an empty line passes and the
+    research one is refused without a workspace behind either.
+    """
+    source = Source(identity="", key="untracked")
+    Shipment.of_command("", source=source, imports=()).admit(tmp_path)
+    research = Shipment.of_command(
+        "research/study/experiments/node/test_law.py::test_law", source=source, imports=()
+    )
+    with pytest.raises(MissionError, match="requires a captured Mainboard source bundle"):
+        research.admit(tmp_path)

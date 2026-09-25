@@ -18,6 +18,7 @@ from mainboard.dispatch import (
     Dispatcher,
     GitignoreFilter,
     Handle,
+    HostSetup,
     Shipment,
     SyncLock,
     Verdict,
@@ -29,6 +30,7 @@ from mainboard.dispatch.provenance import listing as source_listing
 from mainboard.dispatch.schedulers import HostUnreachable, registry
 from mainboard.dispatch.snapshots import CLOSURE, Snapshots
 from mainboard.dispatch.state import Cache
+from mainboard.dispatch.sync import binary
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
@@ -44,7 +46,7 @@ from .support import (
 )
 
 if TYPE_CHECKING:
-    from mainboard.dispatch.transport import Machine
+    from mainboard.dispatch.transport import Machine, SshTransport
 
 _CONTAINERIZED = {
     "profile": HostProfile(kind="ssh", root="/repo", container="ngc", sync={"include": ["src"]}),
@@ -728,6 +730,20 @@ def test_fetch_pulls_the_recorded_path_back_into_its_own_parent_directory(
         dispatcher.fetch(Handle(id="H1", host="gold", root="/repo", kind="ssh"))
 
 
+def test_a_collection_that_could_not_be_trusted_is_refused_naming_the_path_and_host(
+    dispatcher: Dispatcher, workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A conflict, a failed stream or a torn archive all end the fetch with one mission error."""
+    (workdir / "mainboard.toml").write_text("[workspace]\nname = 'test'\n[hosts.gold]\n")
+
+    def conflicting(self: dispatch_module.Collector, host: str, **_: str) -> int:
+        raise ValueError("conflicting collected evidence, local copy preserved: out/a")
+
+    monkeypatch.setattr(dispatch_module.Collector, "pull", conflicting)
+    with pytest.raises(MissionError, match="collection of out/ from gold failed: conflicting"):
+        dispatcher.fetch_path("gold", root="/repo", path="out/")
+
+
 def test_a_rendered_and_a_staged_script_are_both_content_addressed(
     dispatcher: Dispatcher, workdir: Path
 ) -> None:
@@ -867,6 +883,43 @@ def test_mirror_refuses_unsafe_declared_output_protection(workdir: Path, path: s
         instance._protected_outputs(path)
 
 
+def test_a_windows_host_is_mirrored_by_tarball_under_the_rules_rsync_would_have_run(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No rsync answers on the far side, so the same file set is handed to the tar route whole."""
+    (workdir / "src").mkdir()
+    mirrored: list[tuple[str, str, dict[str, Sequence[str] | str]]] = []
+
+    class Recording:
+        def __init__(self, root: Path, ssh: SshTransport) -> None:
+            del root, ssh
+
+        def mirror(self, execution: ExecutionPlan, root: str, **rules: Sequence[str]) -> None:
+            mirrored.append((execution.host, root, rules))
+
+    monkeypatch.setattr(dispatch_module, "Tarball", Recording)
+    monkeypatch.setattr(dispatch_module, "rsync", lambda *a, **k: pytest.fail("rsync reached"))
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    instance.cache.save_host(HostSetup(host="homelab", root="C:/w"))
+    profile = HostProfile(kind="ssh", root="C:/w", platform="win-64", sync={"include": ["src"]})
+    assert instance.rsync_up(plan(host="homelab", profile=profile), "C:/w") == ["src"]
+    [(host, root, rules)] = mirrored
+    assert (host, root, rules["paths"][0], rules["vendored"]) == ("homelab", "C:/w", "src", "")
+    assert "/src/***" not in rules["exclude"], "nothing required, so no remainder rule"
+    assert instance.cache.host("homelab").synced_at
+
+
+def test_a_second_request_while_a_creation_is_unresolved_is_refused_before_any_provider(
+    workdir: Path,
+) -> None:
+    """The first may have allocated a billable instance, so its label is reconciled first."""
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    shipment = shipped(instance, "python -m train")
+    instance.allocating(plan(), shipment, Resources(), evidence="not_started").begin()
+    with pytest.raises(MissionError, match="unresolved creation"):
+        instance.allocating(plan(), shipment, Resources(), evidence="not_started")
+
+
 def test_rsync_up_refuses_an_undeclared_include_and_warns_about_a_stale_one(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -948,8 +1001,12 @@ def test_rsync_up_refuses_explicit_card_lease_resources_before_transfer(
 def test_a_narrow_host_mirrors_named_job_files_without_touching_other_projects(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if which("rsync") is None:
-        pytest.skip("the optional rsync executable is not installed")
+    # The pruning under test is what a remote mirror does, which only upstream rsync performs;
+    # Apple's openrsync, the only rsync on a stock macOS runner, deletes the excluded paths too.
+    try:
+        binary(mirror=True)
+    except RuntimeError:
+        pytest.skip("mirroring needs upstream rsync, and only Apple's openrsync is installed")
     job = "research/camp/experiments/node/run.py"
     untouched = (
         "research/camp/papers/frozen.tex",

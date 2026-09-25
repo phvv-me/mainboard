@@ -8,7 +8,7 @@ from mainboard.dispatch import landing as landing_module
 from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.landing import Landing, renter
 from mainboard.dispatch.provenance import Source
-from mainboard.dispatch.rentals import LAUNCH, Rental
+from mainboard.dispatch.rentals import LAUNCH, Rental, handoff
 from mainboard.dispatch.shared import state_dir
 from mainboard.dispatch.snapshots import SOURCES
 from mainboard.dispatch.state import Cache
@@ -248,6 +248,53 @@ def test_a_landing_that_fails_anywhere_ends_the_rental_it_was_holding(
     assert record.script == "python train.py"
     assert record.evidence == "not_started" and record.verdict == "failed"
     assert LAUNCH not in " ".join(host.lines)
+
+
+def test_a_machine_that_cannot_be_given_rsync_is_ended_before_any_mirror(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without rsync nothing can reach the box, so the rental is released rather than billed."""
+    host = machine_with(
+        "/root/projects\n",
+        rules=[("command -v rsync", 1, ""), ("apt-get", 100, "E: Unable to locate package")],
+    )
+    landed, backend, dispatcher = landing(workdir, host, monkeypatch)
+    with pytest.raises(MissionError, match="no rsync and could not install one: E: Unable"):
+        landed.land(shipped(dispatcher, "python train.py"))
+    assert dispatcher.mirrored == []
+    assert backend.cancelled == ["4242"]
+
+
+def test_a_rental_the_registry_never_recorded_is_still_ended_when_its_landing_fails(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With no row to settle, ending the rental is all that stands between it and a bill."""
+    host = machine_with("/root/projects\n", rules=[("mb_snap", 1, "disk full")])
+    landed, backend, dispatcher = landing(workdir, host, monkeypatch)
+    monkeypatch.setattr(
+        backend,
+        "rent",
+        lambda execution, resources, *, allocation: Rental(handle="4242", endpoint=_ENDPOINT),
+    )
+    with (
+        caplog.at_level("WARNING", logger="mainboard.dispatch"),
+        pytest.raises(SystemExit, match="could not pin the source tree"),
+    ):
+        landed.land(shipped(dispatcher, "python train.py"))
+    assert backend.cancelled == ["4242"]
+    assert any("failed before provisioning" in message for message in caplog.messages)
+
+
+def test_a_launch_the_entrypoint_refused_names_why_and_keeps_the_rental_tracked(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The line may have reached the box before the refusal, so the monitor settles it."""
+    host = machine_with("/root/projects\n", rules=[(handoff(), 1, "disk quota exceeded")])
+    landed, backend, dispatcher = landing(workdir, host, monkeypatch)
+    with pytest.raises(MissionError, match="could not start the job on the rental: disk quota"):
+        landed.land(shipped(dispatcher, "python train.py"))
+    assert backend.cancelled == []
+    assert dispatcher.cache.run("4242", "vast") in dispatcher.cache.tracked()
 
 
 def test_a_rental_is_durably_registered_before_provisioning(

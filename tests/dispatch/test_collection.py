@@ -1,14 +1,17 @@
 """Portable collection preserves evidence across retries, corruption, and racing writers."""
 
 import os
+import sys
 from io import BytesIO, TextIOWrapper
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
 import pytest
 
+from mainboard.dispatch.collection import pack as pack_module
 from mainboard.dispatch.collection.collector import Collector, KnownDigests
-from mainboard.dispatch.collection.pack import _paths, pack
+from mainboard.dispatch.collection.pack import _immutable, _paths, pack
+from mainboard.dispatch.transport import SshTransport
 
 
 def test_collection_retries_and_conflicts(tmp_path: Path) -> None:
@@ -166,3 +169,145 @@ def test_pack_excludes_unpublished_objects_before_stat(
         lambda selected: iter([*vanished, published]),
     )
     assert list(_paths(tmp_path, "data")) == [published]
+
+
+class LocalPython:
+    """The transport a pull rides, with the one ssh hop replaced by this interpreter.
+
+    Everything else is real: the pack script travels on stdin exactly as it would to a host,
+    runs in its own process, and streams its archive back through the bounded transport.
+    """
+
+    options = ("-o", "BatchMode=yes")
+    deadline = 30.0
+
+    def __init__(self) -> None:
+        self.commands: list[tuple[str, ...]] = []
+
+    def destination(self, host: str) -> str:
+        return host
+
+    def run(
+        self, command: tuple[str, ...], host: str, *, operation: str, **streams: str | Path
+    ) -> str:
+        self.commands.append(command)
+        return SshTransport().run((sys.executable, "-"), host, operation=operation, **streams)
+
+
+def packed(monkeypatch: pytest.MonkeyPatch, root: Path, relative: str) -> list[str]:
+    """The entry names `pack` streams for `relative` under `root`."""
+    stream = BytesIO()
+    stdout = TextIOWrapper(stream, encoding="utf-8")
+    with monkeypatch.context() as changed:
+        changed.setattr("sys.stdout", stdout)
+        pack(str(root), relative=relative)
+    with ZipFile(stream) as archive:
+        return archive.namelist()
+
+
+def test_a_pull_runs_the_pack_script_on_the_host_and_publishes_only_what_is_new(
+    tmp_path: Path,
+) -> None:
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    (remote / "data").mkdir(parents=True)
+    (remote / "data/held").write_bytes(b"already here")
+    (remote / "data/new").write_bytes(b"new evidence")
+    (local / "data").mkdir(parents=True)
+    (local / "data/held").write_bytes(b"already here")
+    transport = LocalPython()
+    collector = Collector(local, transport)
+    assert collector.pull("gold", root=str(remote), path="data", python="python3.14") == 1
+    assert (local / "data/new").read_bytes() == b"new evidence"
+    assert transport.commands == [("ssh", "-o", "BatchMode=yes", "gold", "python3.14 -")]
+
+
+def test_collection_refuses_an_archive_naming_one_file_twice(tmp_path: Path) -> None:
+    archive = tmp_path / "transfer.zip"
+    with pytest.warns(UserWarning, match="Duplicate name"), ZipFile(archive, "w") as packed:
+        packed.writestr("data/one", b"first")
+        packed.writestr("data/one", b"second")
+    with pytest.raises(ValueError, match="duplicate collection entry: data/one"):
+        Collector(tmp_path).merge(archive, path="data")
+
+
+def test_collection_never_publishes_through_a_local_link_out_of_the_workspace(
+    tmp_path: Path,
+) -> None:
+    root, elsewhere = tmp_path / "local", tmp_path / "elsewhere"
+    root.mkdir()
+    elsewhere.mkdir()
+    (root / "data").symlink_to(elsewhere, target_is_directory=True)
+    archive = tmp_path / "transfer.zip"
+    with ZipFile(archive, "w") as packed:
+        packed.writestr("data/one", b"incoming")
+    with pytest.raises(ValueError, match="escapes workspace"):
+        Collector(root).merge(archive, path="data")
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_pack_ships_one_named_file_and_refuses_a_link_out_of_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "remote"
+    (root / "data").mkdir(parents=True)
+    (root / "data/result.json").write_text("{}")
+    (root / "outside").symlink_to(tmp_path, target_is_directory=True)
+    assert packed(monkeypatch, root, "data/result.json") == ["data/result.json"]
+    with pytest.raises(ValueError, match="escapes the remote workspace"):
+        packed(monkeypatch, root, "outside")
+
+
+@pytest.mark.parametrize(
+    ("records", "refusal"),
+    [
+        pytest.param(b'{"offset":', None, id="nothing-complete-yet"),
+        pytest.param(b'{"offset":-1}\n', "invalid event offset", id="a-negative-offset"),
+        pytest.param(b'{"offset":"0"}\n', "invalid event offset", id="an-offset-as-text"),
+        pytest.param(b'{"offset":0}\n{"offset":99}\n', "noncontiguous event offsets", id="a-gap"),
+    ],
+)
+def test_pack_snapshots_only_complete_contiguous_event_records(
+    records: bytes, refusal: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offsets are what let a later read deduplicate overlapping captures, so they must hold."""
+    events = tmp_path / "data/events"
+    events.mkdir(parents=True)
+    (events / "live.ndjson").write_bytes(records)
+    if refusal is None:
+        assert packed(monkeypatch, tmp_path, "data") == []
+        return
+    with pytest.raises(ValueError, match=refusal):
+        packed(monkeypatch, tmp_path, "data")
+
+
+def test_pack_refuses_a_file_written_while_it_was_archived(tmp_path: Path) -> None:
+    """Only the archive is scripted, standing in for a writer racing the copy."""
+    written = tmp_path / "data/result.bin"
+    written.parent.mkdir()
+    written.write_bytes(b"first")
+
+    class Racing:
+        def write(self, path: Path, name: str) -> None:
+            with path.open("ab") as appended:
+                appended.write(b" and more")
+
+    with pytest.raises(RuntimeError, match="file changed during collection"):
+        _immutable(Racing(), written, base=tmp_path)
+
+
+def test_pack_surfaces_a_directory_it_cannot_list_instead_of_skipping_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Silently walking past an unreadable directory would ship an incomplete result as whole."""
+    locked = tmp_path / "data/locked"
+    locked.mkdir(parents=True)
+    listing = os.scandir
+
+    def scandir(path: str) -> os._ScandirIterator[str]:
+        if Path(path) == locked:
+            raise PermissionError(13, "Permission denied", str(path))
+        return listing(path)
+
+    monkeypatch.setattr(pack_module.os, "scandir", scandir)
+    with pytest.raises(PermissionError, match="Permission denied"):
+        list(_paths(tmp_path, "data"))

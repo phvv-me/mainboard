@@ -13,6 +13,7 @@ from mainboard.dispatch.rentals import (
     published,
     reachable,
     seeded,
+    unlocked,
     waiting,
 )
 from mainboard.dispatch.transport import Endpoint, HostUnreachable
@@ -54,6 +55,32 @@ def test_a_locked_key_is_passed_over_before_anything_is_rented(
     monkeypatch.setattr("mainboard.dispatch.rentals.unlocked", lambda private: False)
     with pytest.raises(MissionError, match="ssh-add"):
         identity()
+
+
+@pytest.mark.parametrize(
+    ("bare", "fingerprint", "agent", "usable"),
+    [
+        pytest.param(0, "", "", True, id="a-key-with-no-passphrase"),
+        pytest.param(1, "256 SHA256:abc me (ED25519)", "256 SHA256:abc me", True, id="agent-held"),
+        pytest.param(1, "256 SHA256:abc me (ED25519)", "256 SHA256:xyz other", False, id="locked"),
+        pytest.param(1, "", "256 SHA256:abc me", False, id="an-unreadable-public-half"),
+    ],
+)
+def test_a_key_is_usable_unattended_when_it_opens_bare_or_an_agent_holds_its_fingerprint(
+    bare: int, fingerprint: str, agent: str, usable: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`unlocked` is imported before the suite-wide stand-in replaces it, so this is the real one.
+
+    Only ssh-keygen and ssh-add are scripted: the question is how their three answers combine.
+    """
+    answers = {"-y": (bare, ""), "-lf": (0, fingerprint), "-l": (0, agent)}
+
+    def run(argv: list[str], **_: bool) -> subprocess.CompletedProcess[str]:
+        retcode, stdout = answers[argv[1]]
+        return subprocess.CompletedProcess(argv, retcode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(rentals_module.subprocess, "run", run)
+    assert unlocked(Path("/keys/id_ed25519")) is usable
 
 
 def test_the_key_sent_with_a_create_is_the_one_the_private_half_derives(tmp_path: Path) -> None:
