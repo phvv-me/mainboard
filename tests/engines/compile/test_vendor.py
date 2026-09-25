@@ -13,10 +13,7 @@ from mainboard.engines.compile.provisioner import environment_shard
 from mainboard.engines.compile.state import SyncState
 from mainboard.engines.compile.vendor import outside, vendor_root
 
-# A workspace that installs itself and depends on a house package two directories above its
-# root, the shape every unpublished house package arrives in. It resolves on the workstation,
-# where the workspace sits inside the monorepo holding that package, and names nothing at all on
-# a host, where the mirror is a sibling of the monorepo's mirror rather than a child of it.
+# A self-installing workspace depending on a house package two directories above its root.
 _MANIFEST = """
 [workspace]
 name = "lab"
@@ -28,12 +25,9 @@ sample-lib = { path = "../../packages/sample_lib", editable = true }
 
 _PYPROJECT = '[project]\nname = "sample-lib"\nversion = "0.1.0"\n'
 
-# Where the compiled artifact of the default environment spells the vendored dependency: inside
-# the workspace, three parents up from the shard it is written into, on every machine.
 _VENDORED = "../../../.mainboard/vendor/sample-lib"
 
-# A lock as pixi writes one for an editable path dependency: the location, relative to the
-# manifest it was solved from, and no hash of anything under it.
+# A lock as pixi writes one for an editable path dependency: a relative location, no hash.
 _LOCK = f"version: 7\npackages:\n- pypi: {_VENDORED}\n  name: sample-lib\n"
 
 
@@ -92,21 +86,13 @@ def compile_at(root: Path, environment: str = "default") -> Compiler:
 def test_whether_a_declared_path_leaves_the_root_is_arithmetic_and_not_a_stat(
     path: str, leaves: bool
 ) -> None:
-    """A host answers this the same way as the workstation, where neither location exists."""
     assert outside(path) is leaves
 
 
 def test_a_dependency_that_leaves_the_root_is_compiled_at_a_location_inside_it(
     tmp_path: Path,
 ) -> None:
-    """The declared path is the one thing in a manifest that cannot travel.
-
-    It resolves from the workspace root, and what stands above that root is not the same tree on
-    a host. So the compiled artifact never spells it: what it records is a location under the
-    root, which a mirror carries like any other, which anchors into the machine's own workspace
-    on the way into a prefix, and which reads back as one of this workspace's own editable
-    packages when a dispatch asks what a job must import.
-    """
+    """The artifact records a root-relative location a mirror carries and a prefix anchors."""
     root = workstation(tmp_path)
     compiled = compile_at(root).pixi.manifest.read_text(encoding="utf-8")
 
@@ -123,14 +109,6 @@ def test_a_dependency_that_leaves_the_root_is_compiled_at_a_location_inside_it(
 def test_a_workstation_and_a_hosts_mirror_reach_one_environment_and_one_resolution(
     tmp_path: Path,
 ) -> None:
-    """The two numbers a dispatch turns on must not depend on which machine computed them.
-
-    A prefix is addressed by the compiled manifest and the lock beside it, and a lock is vouched
-    for by a digest over that manifest and every local project's own metadata. Both now read one
-    location that exists on both machines, so a host installs from the lock the workstation
-    solved instead of refusing it, and the address the dispatch pinned is the address the host
-    builds.
-    """
     here = workstation(tmp_path)
     solved = compile_at(here)
     solved.pixi.lock.write_text(_LOCK, encoding="utf-8")
@@ -140,8 +118,7 @@ def test_a_workstation_and_a_hosts_mirror_reach_one_environment_and_one_resoluti
 
     assert digest_of(solved.out) == digest_of(landed.out)
     assert solved.resolution_digest() == landed.resolution_digest()
-    # And the host left the copy the mirror carried exactly as it found it, since there is no
-    # tree above its root to link into and nothing better to say about it.
+    # The host left the mirror's copy as it found it.
     copy = there / vendor_root() / "sample-lib"
     assert copy.is_dir() and not (copy / "src").is_symlink()
     assert (copy / "src" / "sample_lib" / "__init__.py").read_text() == "SHADE = 'ai'\n"
@@ -150,13 +127,7 @@ def test_a_workstation_and_a_hosts_mirror_reach_one_environment_and_one_resoluti
 def test_the_vendored_copy_is_a_real_directory_whose_entries_track_the_source(
     tmp_path: Path,
 ) -> None:
-    """Real so nothing resolves it elsewhere, linked so an edit needs no re-vendoring.
-
-    A resolver handed a symlinked project root is free to record where it really went, and one
-    canonicalised path would put this machine's own tree back into the lock. The entries under
-    it are links, which is the whole of the editable semantics the manifest used to get by
-    naming the source directly: an edit is seen by the next import, with nothing rerun.
-    """
+    """Real so no resolver records the source path, linked so an edit needs no re-vendoring."""
     root = workstation(tmp_path)
     source = tmp_path / "mono" / "packages" / "sample_lib"
     compile_at(root)
@@ -169,8 +140,7 @@ def test_the_vendored_copy_is_a_real_directory_whose_entries_track_the_source(
     (source / "src" / "sample_lib" / "__init__.py").write_text("SHADE = 'kon'\n", encoding="utf-8")
     assert (vendored / "src" / "sample_lib" / "__init__.py").read_text() == "SHADE = 'kon'\n"
 
-    # A file added or removed at the source's own root changes what the package is, and reaches
-    # the vendored directory on the next compile.
+    # A file added or removed at the source's root reaches the vendored directory.
     (source / "README.md").write_text("sample_lib\n", encoding="utf-8")
     (source / "pyproject.toml").unlink()
     compile_at(root)
@@ -181,13 +151,7 @@ def test_the_vendored_copy_is_a_real_directory_whose_entries_track_the_source(
 def test_a_vendored_sources_code_never_moves_an_address_but_its_metadata_does(
     tmp_path: Path,
 ) -> None:
-    """An editable install contributes dependency metadata to a prefix, and no code.
-
-    So a queued wave cannot be stranded by an edit under the package it imports, which is why
-    that source is pinned in the tree a job runs from rather than in the environment. The one
-    file a solve does read is the package's own `pyproject.toml`, and moving that has to
-    invalidate the lock, because it is exactly what the lock answered to.
-    """
+    """Code edits never strand a queued wave; its `pyproject.toml` is what the lock answered to."""
     root = workstation(tmp_path)
     compiler = compile_at(root)
     compiler.pixi.lock.write_text(_LOCK, encoding="utf-8")
@@ -203,12 +167,6 @@ def test_a_vendored_sources_code_never_moves_an_address_but_its_metadata_does(
 
 
 def test_a_source_that_is_neither_here_nor_vendored_is_refused_by_name(tmp_path: Path) -> None:
-    """Named where it was declared, rather than several layers down in pixi's own report.
-
-    pixi answers a location that is not there with `does not appear to be a Python project`,
-    about a path it had already rewritten, which says nothing about the manifest line that is
-    wrong nor about the mirror that never carried the tree.
-    """
     root = tmp_path / "mono" / "research" / "repro"
     (root / "src").mkdir(parents=True)
     (root / "mainboard.toml").write_text(_MANIFEST, encoding="utf-8")
@@ -220,7 +178,6 @@ def test_a_source_that_is_neither_here_nor_vendored_is_refused_by_name(tmp_path:
 def test_a_distribution_the_manifest_stopped_declaring_leaves_the_vendored_tree(
     tmp_path: Path,
 ) -> None:
-    """The tree holds what the manifest declares and nothing else, so no mirror ships a stray."""
     root = workstation(tmp_path)
     compile_at(root)
     assert (root / vendor_root() / "sample-lib").is_dir()
@@ -236,11 +193,7 @@ def test_a_distribution_the_manifest_stopped_declaring_leaves_the_vendored_tree(
 def test_one_environments_compile_keeps_what_another_environment_declares(
     tmp_path: Path,
 ) -> None:
-    """Two shards write into one vendored tree, and neither may sweep the other's package.
-
-    Which is why the roster is read off the whole manifest and never off one environment's
-    projection of it, the only thing every other file in a shard is compiled from.
-    """
+    """The roster is read off the whole manifest, never one environment projection."""
     root = workstation(
         tmp_path,
         manifest=(
@@ -254,10 +207,8 @@ def test_one_environments_compile_keeps_what_another_environment_declares(
     assert (root / vendor_root() / "sample-lib" / "pyproject.toml").is_file()
 
 
-# Verbatim from research/reproducibility/.mainboard/envs/default/pixi.lock, solved by pixi
-# 0.79.0 on 2026-09-06 from a manifest spelling `../../../.mainboard/vendor/atpx`. pixi kept the
-# workspace's own root as the three parents it was handed and collapsed the vendored pair into
-# two, which is one directory written two ways and was read as two.
+# Verbatim from research/reproducibility's lock, solved by pixi 0.79.0 on 2026-09-06 from a
+# manifest spelling `../../../.mainboard/vendor/atpx`, which it collapsed to two parents.
 _SOLVED_LOCK = """version: 7
 environments:
   default:
@@ -281,22 +232,12 @@ packages:
   - cycler>=0.12
 """
 
-# The same lock as pixi would have written it had it kept the spelling it was handed. One
-# artifact, two texts, and until 2026-09-06 two addresses.
+# The same lock with the spelling pixi was handed.
 _HANDED_LOCK = _SOLVED_LOCK.replace("../../vendor/", "../../../.mainboard/vendor/")
 
 
 def test_a_prefix_resolves_the_spelling_pixi_chose_and_not_only_the_one_it_was_handed() -> None:
-    """The lock pixi actually wrote, taken into a prefix on a host, must name real directories.
-
-    `anchored` matched the exact three parents `rerooted` writes, which held for as long as the
-    only local source was the workspace root itself. pixi 0.79 normalised the vendored pair to
-    two parents, that token rode into the prefix untouched, and it resolved against the prefix
-    rather than the workspace: `error extracting extension from
-    /work/xg25g007/x10537/reproducibility/.mainboard/prefixes/default/e04076233b9a4bb3/../../vendor/atpx`,
-    `Failed to update PyPI packages for environment 'default'`, and Miyabi job 3299884 died with
-    no torch in the environment at all.
-    """
+    """pixi 0.79 re-spelled the vendored path and Miyabi job 3299884 lost torch."""
     host = PurePosixPath("/work/xg25g007/x10537/reproducibility")
     resolved = anchored(
         _SOLVED_LOCK, root=host, generated_dir=environment_shard("default")
@@ -311,12 +252,6 @@ def test_a_prefix_resolves_the_spelling_pixi_chose_and_not_only_the_one_it_was_h
 def test_two_spellings_of_one_vendored_directory_are_one_environment_address(
     tmp_path: Path,
 ) -> None:
-    """A rewrite that moves no package, version or hash may not move an address.
-
-    Which is the whole reason a digest is taken over a canonical lock rather than over the bytes
-    pixi last happened to write. A location it respells is that same rewrite: two texts, one
-    dependency, and a workstation and a host that pinned different environments over it.
-    """
     shards = []
     for side, lock in (("solved", _SOLVED_LOCK), ("handed", _HANDED_LOCK)):
         shard = tmp_path / side / ".mainboard" / "envs" / "default"
@@ -340,11 +275,6 @@ def test_two_spellings_of_one_vendored_directory_are_one_environment_address(
 def test_only_a_token_that_reaches_inside_the_workspace_is_ever_rewritten(
     untouched: str,
 ) -> None:
-    """Prose, a path that merely contains a step, and one that climbs past the root all stand.
-
-    The last is the point: a location above the workspace names something no mirror carries, and
-    inventing a place for it on a host would hide exactly the fault vendoring exists to end.
-    """
     assert (
         anchored(
             untouched, root=PurePosixPath("/work/lab"), generated_dir=environment_shard("default")
@@ -353,11 +283,8 @@ def test_only_a_token_that_reaches_inside_the_workspace_is_ever_rewritten(
     )
 
 
-# Verbatim from /home/pedro/projects/.mainboard/envs/default/pixi.toml, the monorepo's own
-# compiled artifact. `{{ config_root }}` renders to the manifest's directory at load time, on
-# the promise the manifest states in as many words, that a host mirroring the repository
-# elsewhere still gets its own root. So this one line is the machine's rather than the
-# workspace's, and every other byte of the file is the same everywhere.
+# Verbatim from the monorepo's compiled artifact, whose one machine-specific line is the root
+# `{{ config_root }}` rendered.
 _ROOTED_MANIFEST = """[workspace]
 name = "life"
 version = "0.1.0"
@@ -375,9 +302,7 @@ path = "../../../packages/sample_lib"
 editable = true
 """
 
-# And from the lock beside it, which carries no machine path at all: every local source it
-# records is already relative, which is why the two machines' locks are byte-identical and only
-# the manifest split them.
+# The lock beside it carries only relative sources, so only the manifest split the machines.
 _ROOTED_LOCK = """version: 7
 platforms:
 - name: linux-64-system
@@ -389,15 +314,7 @@ packages:
 
 
 def test_one_workspace_compiled_on_two_machines_is_one_environment(tmp_path: Path) -> None:
-    """A compile is machine-independent in everything but the root it renders, and that is fatal.
-
-    A prefix is addressed by the content of the artifact, so the one value that is this
-    machine's rather than this workspace's became an address of its own: the workstation pinned
-    a4c06131efc5808c, the host recompiled its own mirror and read fc4975ef2096b9ac, and Miyabi
-    jobs 3300221, 3300226, 3300241 and 3300249 all died at environment prime with no prefix ever
-    built under the monorepo mirror. The reproducibility workspace, whose compiled artifact
-    carries no machine path at all, went on dispatching throughout.
-    """
+    """Miyabi jobs 3300221, 3300226, 3300241 and 3300249 died at prime over the root."""
     digests = []
     for root in (tmp_path / "home/pedro/projects", tmp_path / "work/xg25g007/x10537/projects"):
         shard = root / ".mainboard" / "envs" / "default"
@@ -415,12 +332,6 @@ def test_one_workspace_compiled_on_two_machines_is_one_environment(tmp_path: Pat
 
 
 def test_an_export_the_workspace_really_changed_still_moves_the_address(tmp_path: Path) -> None:
-    """Writing the machine's root out is not the same as ignoring what a workspace exports.
-
-    Stripping the activation table would have been the cheaper answer and the wrong one: a
-    workspace that genuinely changes what it exports would then keep being served a prefix built
-    before the change, whose own activation script was generated from the older text.
-    """
     digests = []
     for level in ("INFO", "DEBUG"):
         shard = tmp_path / level / ".mainboard" / "envs" / "default"
@@ -444,14 +355,7 @@ def test_an_export_the_workspace_really_changed_still_moves_the_address(tmp_path
 def test_a_host_reading_a_pinned_snapshot_addresses_what_the_mirror_compiled(
     tmp_path: Path,
 ) -> None:
-    """A job's artifact is read out of a snapshot under the mirror, never where it was written.
-
-    So the root it was compiled FOR cannot be the directory it is standing in: the snapshot's
-    own root is `<mirror>/.mainboard/dispatch/sources/<key>`, which matches nothing in the text
-    and leaves the machine's root counting as content. That is how a host still read
-    fc4975ef2096b9ac against a pinned 136d5ed03c0f20a5 after the roots themselves had been
-    reconciled.
-    """
+    """A snapshot root matched nothing: a host read fc4975ef2096b9ac, not 136d5ed03c0f20a5."""
     mirror = tmp_path / "work/xg25g007/x10537/projects"
     for shard in (
         mirror / ".mainboard/envs/default",

@@ -29,10 +29,7 @@ _BARE = '[workspace]\nname = "w"\n'
 _GROWN = '[workspace]\nname = "w"\n[deps]\nripgrep = "*"\n'
 _PROJECT = "mainboard"
 
-# One edit per declared manifest table, so which side of `Manifest.uncompiled` a table sits on
-# is decided by the compiler rather than by whoever last remembered to update a set. Every
-# table gets an edit, and the test below reads the compiled output to say whether that edit
-# reached it.
+# One edit per declared manifest table; the compiled output decides its `uncompiled` side.
 _EDITS: dict[str, Json] = {
     "workspace": {"name": "w", "version": "9.9.9"},
     "vars": {"where": "elsewhere"},
@@ -80,14 +77,7 @@ def test_every_declared_manifest_table_is_classified_by_this_suite() -> None:
 def test_a_manifest_table_moves_the_digest_exactly_when_a_compile_reads_it(
     table: str, compiler_from: CompilerFrom
 ) -> None:
-    """What the compiled pixi manifest says, not a hand-kept list, is what makes an env stale.
-
-    Editing a host profile, a container, a gate, a template or a var reaches no generated file,
-    so every installed environment must stay fresh through it, and editing anything a compile
-    translates must stale them all. The compiled text is the whole answer for the declared
-    tables here: the second stage reads scopes (`[deps]`, `[dev]`, `[envs]`, `[on]`) and the
-    workspace name, which are the same tables that already reach this text.
-    """
+    """The compiled text, not a hand-kept list, decides staleness; verb-only tables never do."""
     bare = compiler_from(_BARE)
     edited = compiler_from(tomlkit.dumps({**tomllib.loads(_BARE), table: _EDITS[table]}))
     compiled = [
@@ -142,10 +132,6 @@ def test_selected_environment_digests_follow_only_the_scopes_they_inherit(
 def test_staleness_starts_once_something_has_been_compiled_to_be_stale_against(
     compiler_from: CompilerFrom, files: Writer, pixi: Pixi
 ) -> None:
-    """A workspace with nothing compiled yet is not stale.
-
-    First provisioning is `provision`'s job rather than `activated`'s.
-    """
     compiler = compiler_from(_BARE)
     assert compiler.stale() is False
 
@@ -175,13 +161,7 @@ def test_the_dotenv_loader_is_generated_only_when_the_workspace_asks_for_it(
 def test_a_variable_declared_false_is_unset_rather_than_set_to_an_empty_string(
     compiler_from: CompilerFrom, files: Writer
 ) -> None:
-    """An empty variable is still defined, which is a different thing from an absent one.
-
-    `[env]` could only ever set, so declaring a clean arithmetic environment was structurally
-    impossible from the manifest and needed an `env -u` workaround downstream. pixi's own
-    activation table cannot say "not set", so the clear becomes shell in a generated script that
-    every consumer of the activation already sources.
-    """
+    """An empty variable is still defined, a different thing from an absent one."""
     declared = '[workspace]\nname = "w"\n[env]\nKEEP = "1"\n'
     compiler = compiler_from(f"{declared}OMP_NUM_THREADS = false\nMKL_NUM_THREADS = false\n")
     compiler.write(files)
@@ -239,11 +219,6 @@ def test_write_never_blesses_a_lock_it_did_not_solve(
 def test_the_resolution_digest_covers_what_a_solve_reads(
     other: str, *, same: bool, compiler_from: CompilerFrom, files: Writer
 ) -> None:
-    """The digest leaves activation out.
-
-    Leaving it in would make the digest depend on where the workspace lives and so refuse
-    every host whose root differs from the machine that solved.
-    """
     bare = compiler_from(_BARE)
     bare.write(files)
     before = bare.resolution_digest()
@@ -256,7 +231,6 @@ def test_the_resolution_digest_covers_what_a_solve_reads(
 def test_target_specific_activation_cannot_change_what_the_lock_resolves(
     compiler_from: CompilerFrom, files: Writer
 ) -> None:
-    """Platform activation is runtime state, just like workspace activation."""
     base = '[workspace]\nname = "w"\nplatforms = ["linux-64", "win-64"]\n'
     compiler = compiler_from(base)
     compiler.write(files)
@@ -286,12 +260,6 @@ def test_target_specific_activation_cannot_change_what_the_lock_resolves(
 def test_editing_an_environments_own_tasks_leaves_the_lock_it_was_solved_against_alone(
     edited: str, *, same: bool, compiler_from: CompilerFrom, files: Writer
 ) -> None:
-    """A per-environment task compiles into `[feature.<name>.tasks]`, which the pop never reached.
-
-    So renaming a command moved this digest, refused the lock sitting beside it, forced a full
-    re-solve on a machine that wanted no such thing, and then invalidated that same lock on every
-    host already holding it. What a command is called cannot change which versions resolve.
-    """
     base = '[workspace]\nname = "w"\n[envs.serving.tasks]\nserve = "vllm serve"\n'
     before = compiler_from(base, environment="serving")
     before.write(files)
@@ -308,12 +276,7 @@ def test_editing_an_environments_own_tasks_leaves_the_lock_it_was_solved_against
 def test_the_resolution_digest_follows_every_local_python_projects_own_metadata(
     compiler_from: CompilerFrom, files: Writer, tmp_path: Path
 ) -> None:
-    """Editable metadata drift counts as staleness wherever it is declared.
-
-    Editable source metadata drifts the lock without changing a manifest byte, a path
-    declared only inside `[envs.*]` counts too, and one with nothing on disk yet never
-    raises.
-    """
+    """Editable metadata drift counts wherever declared; an absent path never raises."""
     compiler = compiler_from(
         """
         [workspace]
@@ -354,7 +317,6 @@ def test_install_locked_refuses_a_lock_nothing_on_disk_vouches_for(
     files: Writer,
     pixi: Pixi,
 ) -> None:
-    """The refusal compares the lock's own recorded resolution against what is on disk now."""
     pixi.manifest.write_text('[workspace]\nplatforms = ["linux-64"]\n')
     if solved:
         pixi.lock.write_text("version: 7\n")
@@ -365,12 +327,7 @@ def test_install_locked_refuses_a_lock_nothing_on_disk_vouches_for(
 def test_the_refusal_names_the_digests_and_the_file_they_were_read_from(
     compiler_from: CompilerFrom, pixi: Pixi
 ) -> None:
-    """A concurrent compile and a stale lock reach the same refusal, and only one is a stale lock.
-
-    The message used to name only `install --resolve`, the command that had just succeeded, so a
-    workspace another process was compiling into looked like one nobody had solved (miyabi-g,
-    `atpx = ">=0.0.7"` and `">=0.0.8"` alternating between consecutive commands, 2026-09-05).
-    """
+    """On miyabi-g the refusal named the command that had just succeeded (2026-09-05)."""
     pixi.manifest.write_text('[workspace]\nplatforms = ["linux-64"]\n', encoding="utf-8")
     pixi.lock.write_text("version: 7\n", encoding="utf-8")
     compiler = compiler_from(_BARE)
@@ -390,11 +347,7 @@ def test_the_refusal_names_the_digests_and_the_file_they_were_read_from(
 def test_vouch_reads_the_generated_files_under_the_lock_that_writes_them(
     environment: str, generated: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A real shard cannot read while the workspace compiler owns the generated files.
-
-    The old flat compiler fixture put both locks in the same directory, hiding the race.
-    Always release the writer and bound the worker join, including on assertion failure.
-    """
+    """Always release the writer and bound the worker join, even on assertion failure."""
     monkeypatch.setattr(Project, "out_dir", property(lambda self: generated))
     provisioner = Provisioner(
         tmp_path, Manifest.model_validate(tomllib.loads(f"{_BARE}[envs.serving]\n"))
@@ -450,11 +403,6 @@ def test_a_lock_blessed_for_another_environment_says_which_one(
 def test_install_locked_accepts_a_lock_solved_somewhere_else_from_this_very_tree(
     compiler_from: CompilerFrom, files: Writer, pixi: Pixi, fp: FakeProcess
 ) -> None:
-    """A shipped lock installs without a solve.
-
-    A host that never solved installs from a lock it was handed together with the manifest
-    and the metadata that lock was solved from.
-    """
     pixi.manifest.write_text('[workspace]\nplatforms = ["linux-64"]\n')
     pixi.lock.write_text("version: 7\n")
     compiler = compiler_from(_BARE)
@@ -474,14 +422,7 @@ def test_install_locked_blesses_the_lock_after_a_successful_resolve(
     fp: FakeProcess,
     solver_version: str,
 ) -> None:
-    """Blessing happens only once a solve has returned without raising.
-
-    And it records which pixi returned, since the lock is pixi's file and each version writes
-    parts of it differently, so a host arriving at another environment address can name the two
-    versions that disagreed rather than only the two numbers.
-    """
-    # `resolve=True` recurses into a second, locked install to verify the freshly solved lock
-    # (`Pixi.install`'s known double-install wart), so the lock must already exist by then.
+    # `resolve=True` re-installs locked to verify the solve, so the lock must exist by then.
     pixi.lock.write_text("version: 7\n")
     compiler = compiler_from(_BARE)
     compiler.write(files)

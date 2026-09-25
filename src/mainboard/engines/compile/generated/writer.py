@@ -14,31 +14,23 @@ if TYPE_CHECKING:
 
 
 class Writer:
-    """Generated-file edits, valid only while the sync lock it was handed is still held.
+    """Generated-file edits, handed out by `GeneratedFiles.locked()` and valid only under its lock.
 
-    A caller cannot build one of these, only receive it from `GeneratedFiles.locked()`, and
-    every edit re-checks that lock, so an instance stashed past its block fails loudly instead
-    of racing the process that holds the lock now.
+    Every edit re-checks the lock, so an instance stashed past its block fails loudly instead of
+    racing whoever holds the lock now.
     """
 
     def __init__(self, lock: FileLock) -> None:
         self.lock = lock
 
     def held(self) -> None:
-        """Refuse to touch a generated file once the sync lock has been released."""
         if not self.lock.is_locked:
             raise MissionError(
                 "The workspace sync lock is no longer held, so nothing may be written."
             )
 
     def remove(self, path: Path) -> None:
-        """Drop what the manifest no longer asks for: a file, a link, or a whole tree.
-
-        A tree because a vendored path dependency is a directory of links, and a distribution
-        the manifest stopped declaring has to leave with the same call that retires a generated
-        script. A link is unlinked rather than followed, so retiring one never reaches the
-        source it points at.
-        """
+        """Drop a file, a link (never followed to its source), or a tree such as a vendored dep."""
         self.held()
         if path.is_symlink() or not path.is_dir():
             path.unlink(missing_ok=True)
@@ -48,9 +40,9 @@ class Writer:
     def link(self, path: Path, target: Path) -> None:
         """Point one generated symlink at `target`, replacing whatever stands there now.
 
-        How a vendored path dependency reaches its source: the entry is a link, so an edit under
-        the source is seen by the next import with nothing to re-vendor, while the directory
-        holding it stays real and a resolver handed it cannot record somewhere else.
+        A vendored path dependency is a real directory of links, so an edit under the source
+        reaches the next import with nothing to re-vendor, while a resolver handed the directory
+        cannot record somewhere else.
         """
         self.held()
         if path.is_symlink() and path.readlink() == target:
@@ -82,13 +74,10 @@ class Writer:
 
     @staticmethod
     def _make_portable(stream: IOBase) -> None:
-        """Set a public generated-file mode without severing Windows ACL inheritance.
+        """Set mode 0644, independent of the umask, except on Windows.
 
-        Python 3.14 implements the full chmod mode surface on Windows. Applying POSIX ``0644``
-        there creates a protected owner-only DACL rather than the ordinary inherited ACL of the
-        workspace directory, making a generated manifest unreadable to another process identity.
-        Windows files therefore keep the ACL inherited at creation; POSIX retains the explicit
-        mode that makes a generated artifact independent of the caller's umask.
+        There Python 3.14's chmod turns 0644 into a protected owner-only DACL instead of the
+        inherited one, leaving the file unreadable to another process identity.
         """
         if platform.system() != "Windows":
             os.fchmod(stream.fileno(), 0o644)

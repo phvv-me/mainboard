@@ -24,34 +24,22 @@ _PIN = re.compile(r"v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+incompatible)?|[0-9a
 
 
 class Go(Ecosystem):
-    """The Go toolchain: modules installed as executables into a `GOBIN` this workspace owns.
+    """The Go toolchain: `go install module@version` links one executable per module into `GOBIN`.
 
-    `go install module@version` builds in module-independent mode and drops one executable per
-    module into `GOBIN`, so the whole backend is that command plus the directory it points at.
-    Go resolves an exact version, a branch, a commit or `latest` and understands no ranges, so
-    a range is refused where it is written rather than passed on as a reference no module proxy
-    can resolve.
+    Go resolves an exact version, branch, commit or `latest` but no range, so a range is refused
+    where it is written rather than passed to a module proxy that cannot resolve it.
     """
 
     toolchain: ClassVar[str] = "go"
-    # `GOBIN` is one directory inside the generated tree, shared by every environment, and
-    # `sync` prunes whatever it no longer finds declared.
     shared: ClassVar[bool] = True
 
     @property
     def gobin(self) -> Path:
-        """The generated directory `go install` links executables into."""
         return self.out.joinpath(*_GOBIN)
 
     @staticmethod
     def executable(module: str) -> str:
-        """The executable name `go install` gives `module`.
-
-        The last element of the module path, or the one before it when that element is a major
-        version suffix, since `example.com/tool/v2` still installs as `tool`.
-
-        module: the declared module path.
-        """
+        """The executable `go install` gives `module`: `example.com/tool/v2` installs as `tool`."""
         elements = module.rstrip("/").split("/")
         if len(elements) > 1 and _MAJOR.fullmatch(elements[-1]):
             return elements[-2]
@@ -59,14 +47,7 @@ class Go(Ecosystem):
 
     @staticmethod
     def reference(module: str, spec: Spec) -> str:
-        """The `module@version` argument `go install` takes for one declared requirement.
-
-        An unconstrained requirement resolves as `latest`, a bare semver gains the `v` prefix
-        Go requires, and anything else (a branch, a tag, a commit) rides through as written.
-
-        module: the declared module path.
-        spec: its declared requirement.
-        """
+        """The `go install` argument: `*` as `latest`, bare semver gaining `v`, else as written."""
         version = spec.version
         if version == "*":
             return f"{module}@latest"
@@ -79,7 +60,6 @@ class Go(Ecosystem):
         return f"{module}@{f'v{version}' if numbered else version}"
 
     def binary_dirs(self) -> tuple[Path, ...]:
-        """Where installed modules land, since Go links them outside the environment prefix."""
         return (self.gobin,)
 
     def frozen_inputs(self) -> tuple[Path, ...]:
@@ -91,10 +71,8 @@ class Go(Ecosystem):
     def sync(self, *, resolve: bool = False) -> None:
         """Install every declared module, and unlink an executable the table no longer declares.
 
-        Go writes no install record the way cargo does, so every declared module is installed
-        on each sync rather than diffed first. Reading the version back out of each executable
-        would cost one `go version` process per binary to skip an install the module cache
-        already makes cheap.
+        Go keeps no install record, and a `go version` per binary would cost more than the
+        install the module cache already makes cheap, so every sync installs everything.
         """
         if not resolve:
             self.frozen_inputs()

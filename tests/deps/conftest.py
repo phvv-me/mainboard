@@ -11,11 +11,8 @@ from mainboard import Manifest
 if TYPE_CHECKING:
     from pathlib import Path
 
-# A manifest carrying one table of every shape the addressing has to reach: conda and an
-# ecosystem, runtime and development, both spellings of a development table, a platform overlay
-# and an environment with an overlay of its own. Written the way the real manifest is written,
-# values aligned into a column and comments introducing the table below them, so an edit that
-# disturbs either shows up here.
+# One table of every shape the addressing reaches, aligned and commented like the real manifest
+# so an edit disturbing either shows up.
 _MANIFEST = """\
 [workspace]
 name      = "lab"
@@ -71,13 +68,11 @@ flashinfer = "*"
 
 @pytest.fixture
 def text() -> str:
-    """The fixture manifest exactly as it would sit on disk."""
     return _MANIFEST
 
 
 @pytest.fixture
 def manifest() -> Manifest:
-    """The fixture manifest, parsed and validated."""
     return Manifest.model_validate(tomllib.loads(_MANIFEST))
 
 
@@ -90,11 +85,7 @@ def root(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def stub_pixi(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    """Put a `pixi` on plumbum's PATH so a search resolves without one being installed.
-
-    Autouse, because the engine bootstraps pixi when the name is absent, and running the
-    installer would eat the fake process a test registered for the call under test.
-    """
+    """Stub `pixi` on PATH, lest the engine bootstrap it and eat a registered fake."""
     bindir = tmp_path_factory.mktemp("bin")
     executable = bindir / "pixi"
     executable.write_text("#!/bin/sh\n")

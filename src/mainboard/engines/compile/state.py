@@ -7,38 +7,27 @@ from patos import FrozenModel
 if TYPE_CHECKING:
     from pathlib import Path
 
-# The single freshness-truth file: one file, one atomic replace, one coherent snapshot per
-# read, so concurrent processes never see a torn multi-file protocol.
+# One file, one atomic replace, so concurrent readers never see a torn snapshot.
 _FILENAME = "state.toml"
 
 
 class SyncState(FrozenModel):
     """The compile-freshness snapshot of one generated environment shard.
 
-    `environment` names the logical Mainboard environment the directory belongs to.
-    `compiled_from` is that environment's selected-manifest digest, and `solved_from` is the
-    resolution digest the lock beside it was solved from. The latter is written only when a
-    solve succeeds, so staleness is a comparison against the lock rather than a flag somebody
-    has to remember to clear. Keeping all four beside one shard means no environment can
-    accidentally vouch for another one's generated files or lock.
+    Kept beside its shard, so no environment can vouch for another one's files or lock.
 
-    `solved_by` is the pixi that produced the lock, recorded beside the blessing because a lock
-    is pixi's file rather than this package's and each version writes some of it differently.
-    The fleet is pinned to one pixi (`backend.PIXI_VERSION`) so that never varies; this is what
-    lets a machine say out loud that a lock in front of it came from another one.
-
-    `compiled_at` is the absolute workspace root the artifact beside it was rendered for, and it
-    is the one thing about that artifact that belongs to a machine rather than to the workspace.
-    `{{ config_root }}` renders to the manifest's own directory so a host mirroring the
-    repository elsewhere exports its own root, so the compiled `[activation.env]` genuinely says
-    something different on each machine. A prefix is addressed by content, so without this the
-    address moved with the root and no host could build what a workstation pinned. Recorded
-    rather than derived, because the artifact is read from wherever it was copied to (a mirror,
-    a pinned snapshot under it) and only it knows which root its own text spells.
-
-    `runtime_from` identifies the complete selected second-stage declarations after normalizing
-    workspace paths. It excludes unrelated tasks and host tables and joins the generated files
-    and ordered host modules in the immutable-prefix identity.
+    environment: the logical Mainboard environment the directory belongs to.
+    compiled_from: that environment's selected-manifest digest.
+    solved_from: the resolution digest the lock was solved from, written only when a solve
+        succeeds, so staleness compares against the lock rather than a flag to clear.
+    solved_by: the pixi that wrote the lock, since each version writes it differently; the fleet
+        pins `backend.PIXI_VERSION`, so this names a lock that came from another pixi.
+    compiled_at: the absolute workspace root the artifact was rendered for, the one
+        machine-specific input (`{{ config_root }}` renders to it). Recorded rather than derived,
+        since only the artifact knows which root its text spells wherever it was copied, and
+        without it a content address would move with the root.
+    runtime_from: the path-normalized second-stage digest, joining the generated files and
+        ordered host modules in the immutable-prefix identity.
     """
 
     environment: str = ""
@@ -50,32 +39,19 @@ class SyncState(FrozenModel):
 
     @staticmethod
     def path(out: Path) -> Path:
-        """Where the state file lives under generated dir ``out``."""
         return out / _FILENAME
 
     @classmethod
     def load(cls, out: Path) -> Self:
-        """The state under generated dir ``out``, empty when absent or unreadable.
-
-        Empty reads as stale everywhere, the safe direction, the next write recomputes every
-        digest and re-derives the lock-stale flag from the drift check, so no marker
-        archaeology is ever needed.
-        """
+        """The state under `out`, empty (stale everywhere) when absent or unreadable."""
         try:
             data = tomllib.loads(cls.path(out).read_text(encoding="utf-8"))
         except FileNotFoundError, tomllib.TOMLDecodeError:
             return cls()
-        return cls(
-            environment=str(data.get("environment", "")),
-            compiled_from=str(data.get("compiled_from", "")),
-            solved_from=str(data.get("solved_from", "")),
-            solved_by=str(data.get("solved_by", "")),
-            compiled_at=str(data.get("compiled_at", "")),
-            runtime_from=str(data.get("runtime_from", "")),
-        )
+        return cls(**{name: str(data.get(name, "")) for name in cls.model_fields})
 
     def render(self) -> str:
-        """The TOML text of this state, a fixed tiny schema rendered by hand."""
+        """The TOML text of this fixed tiny schema, rendered by hand."""
         lines = [
             "# Generated by mainboard: the single compile-freshness truth, written",
             "# atomically under the workspace sync lock. Do not edit.",

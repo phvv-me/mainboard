@@ -15,16 +15,10 @@ if TYPE_CHECKING:
 
 
 def load(path: Path) -> Manifest:
-    """Parse, interpolate, and validate the manifest at `path`.
+    """Parse, interpolate, and validate the manifest at `path`, each error naming its spot.
 
-    Stdlib tomllib (TOML 1.1 arrives with Python 3.15), then the `{{ }}`
-    rendering pass, then schema
-    validation, so a template error and a schema error each name their spot.
-    The machines the workspace is holding join `[hosts]` last, so a held alias resolves
-    wherever a declared one does. A manifest without `[workspace]` names a workspace after its
-    directory, so a file holding nothing but `[lint]` is a whole workspace.
-
-    path: the workspace manifest file.
+    Held machines join `[hosts]` last, so a held alias resolves like a declared one. Without
+    `[workspace]` the workspace is named after its directory.
     """
     try:
         tree = tomllib.loads(path.read_text(encoding="utf-8"))

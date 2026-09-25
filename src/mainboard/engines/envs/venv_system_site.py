@@ -7,11 +7,7 @@ from .base import EnvBackend
 
 
 class VenvSystemSite(EnvBackend):
-    """A stdlib venv layered over the image's system site-packages.
-
-    `--system-site-packages` keeps the image's tuned wheels (torch and friends) visible
-    to the venv, so provisioning only ever adds packages on top instead of rebuilding them.
-    """
+    """A stdlib venv seeing the image's tuned wheels (torch and friends), only adding on top."""
 
     mode: ClassVar[EnvMode] = EnvMode.VENV_SYSTEM_SITE
 
@@ -19,9 +15,7 @@ class VenvSystemSite(EnvBackend):
     def activation_snippet(cls, prefix: Path, *, guardrails: Sequence[Guardrail] = ()) -> str:
         lines = [f'source "{prefix / "bin" / "activate"}"']
         if Guardrail.UNSET_PIP_CONSTRAINT in guardrails:
-            # NGC base images bake PIP_CONSTRAINT into the image `ENV`, pinning installs
-            # to versions that predate whatever this venv is layering on top, so a plain
-            # `pip install` inside it fails resolution unless the inherited pin is cleared.
+            # NGC images bake an old PIP_CONSTRAINT into their `ENV`, which fails any newer pin.
             lines.append("unset PIP_CONSTRAINT")
         return "\n".join(lines)
 

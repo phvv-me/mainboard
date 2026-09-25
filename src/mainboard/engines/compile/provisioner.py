@@ -33,12 +33,10 @@ _WINDOWS_DEVICES = frozenset(
 
 
 def environment_segment(environment: str) -> str:
-    """Validate a logical environment name before using it as a generated path segment.
+    """Validate a logical environment name as a generated path segment, portably.
 
-    The contract is deliberately portable rather than host-dependent: a manifest accepted on
-    Linux must not become an invalid or aliased directory when the same lock reaches Windows.
-    Windows device names remain reserved even with an extension, so ``con.txt`` is rejected
-    beside the obvious traversal and separator spellings.
+    What Linux accepts must stay a valid, unaliased directory on Windows, so device names are
+    refused even with an extension (`con.txt`).
     """
     stem = environment.partition(".")[0].upper()
     if (
@@ -54,23 +52,15 @@ def environment_segment(environment: str) -> str:
     return environment
 
 
-# Where a generated environment records the lock and manifest its prefix was last brought in
-# line with, so the update pixi would otherwise perform inside every command happens once.
+# The lock and resolver inputs a shard's prefix was last synced with, so a sync happens once.
 _SYNCED = ".mainboard-synced"
 
-# The directory each logical environment's generated shard lives under, inside the generated
-# tree. One spelling, because its depth is also what every workspace-relative path inside a
-# compiled artifact is written against (see `pixi_manifest.rerooted`).
+# Where each environment's shard lives; its depth is what compiled paths are written against.
 _ENVS = "envs"
 
 
 def environment_shard(environment: str) -> PurePosixPath:
-    """The workspace-relative directory `environment`'s compiled artifact is generated into.
-
-    Path arithmetic alone, so a caller that has only a name, and no workspace to ask, still
-    knows where that environment's manifest and lock are written and how deep in the tree they
-    sit.
-    """
+    """The workspace-relative directory `environment`'s artifact is generated into, by name."""
     return PurePosixPath(Project().out_dir) / _ENVS / environment_segment(environment)
 
 
@@ -89,18 +79,10 @@ def validate_environment_roster(manifest: Manifest) -> None:
 
 
 def task_line(manifest: Manifest, command: str, *, env: str) -> str:
-    """``command`` handed back to pixi when its first word names a task compiled for ``env``.
+    """`command` routed through `pixi run` when its first word names a task for `env`.
 
-    A declared task reaches an environment through the generated `pixi.toml`, and pixi is the
-    runner that resolves one, so a task name goes to pixi rather than to a shell that knows no
-    such command. Everything else is returned exactly as written, so an ordinary command line
-    still runs as the line it is. The generated manifest is named relatively because every
-    wrapped command has already changed into the workspace root, on this machine or a remote
-    one.
-
-    manifest: the workspace manifest declaring the tasks.
-    command: the command line as the caller wrote it.
-    env: the environment the command runs in, whose own tasks join the workspace-wide ones.
+    Anything else is returned as written. The manifest path is relative, since every wrapped
+    command already runs from the workspace root.
     """
     validate_environment_roster(manifest)
     env = environment_segment(env)
@@ -108,19 +90,14 @@ def task_line(manifest: Manifest, command: str, *, env: str) -> str:
     if command.partition(" ")[0] not in declared:
         return command
     generated = environment_shard(env) / Pixi.filename
-    # Frozen, or every task invocation could silently re-solve and rewrite the lock, which
-    # on a remote host would overwrite the pair the workstation shipped. Locks change only
-    # through an explicit resolve.
+    # Frozen, or a task could re-solve and overwrite the lock a workstation shipped.
     return f"pixi run --manifest-path {generated.as_posix()} --frozen -e {env} {command}"
 
 
 class _EnvironmentShard:
     """The compiler and installers bound to one generated environment directory.
 
-    Everything here reads this environment's projection of the manifest, except the vendored
-    path dependencies, which are the workspace's rather than one environment's: they live beside
-    the shards, several environments may declare the same distribution, and a compile that saw
-    only its own projection would retire what the environment beside it depends on.
+    All read this environment's projection, except `Vendor`, which is the workspace's.
     """
 
     def __init__(self, root: Path, manifest: Manifest, directory: Path, environment: str) -> None:
@@ -142,10 +119,8 @@ class _EnvironmentShard:
 class Provisioner:
     """Compiles a manifest into a pixi workspace and keeps it installed and activatable.
 
-    Every entry point recompiles under one lock when the manifest has moved on, so a caller is
-    never served env vars or dependencies from a `.mainboard/` that no longer matches
-    ``manifest``. pixi installs conda and Python, and the second stage then installs every
-    other ecosystem the manifest declares into that same environment.
+    Every entry point recompiles under one lock once the manifest moved on, so nothing is served
+    from a stale `.mainboard/`.
     """
 
     def __init__(self, root: Path, manifest: Manifest) -> None:
@@ -167,50 +142,41 @@ class Provisioner:
         return self._shards[environment]
 
     def environment_dir(self, environment: str = "default") -> Path:
-        """The generated directory owned by one logical environment."""
         return self._shard(environment).directory
 
     def pixi_for(self, environment: str = "default") -> Pixi:
-        """The Pixi backend whose manifest and prefix belong to ``environment``."""
         return self._shard(environment).pixi
 
     def compiler_for(self, environment: str = "default") -> Compiler:
-        """The compiler whose projection and state belong to ``environment``."""
         return self._shard(environment).compiler
 
     def solver_version(self) -> str:
-        """The version of the pixi that solves here, empty on a machine that has none."""
+        """The pixi that solves here, empty on a machine that has none."""
         return self._shard("default").pixi.version()
 
     @property
     def pixi(self) -> Pixi:
-        """The default shard's Pixi backend, retained for default-environment callers."""
         return self.pixi_for()
 
     @property
     def stage(self) -> SecondStage:
-        """The default shard's second-stage compiler."""
         return self._shard().stage
 
     @property
     def compiler(self) -> Compiler:
-        """The default shard's compiler."""
         return self.compiler_for()
 
     @property
     def artifact(self) -> tuple[str, ...]:
-        """The compiled dependency artifact a host installs from, workspace-relative.
+        """The default compiled artifact a host installs from, workspace-relative.
 
-        The generated install and activation inputs, their locks, and the state naming which
-        resolution those locks belong to. Shipping the complete group lets a host
-        install frozen instead of solving on its own toolchain, which is the whole point: a
-        solve reads dependency metadata, reading metadata builds source distributions, and a
-        host's compiler is the last thing that belongs in a lock's dependency path.
+        Shipped whole so a host installs frozen: solving there would build sdists with the host's
+        compiler, the last thing that belongs in a lock's dependency path.
         """
         return self.artifact_for("default")
 
     def artifact_for(self, environment: str) -> tuple[str, ...]:
-        """Every defining generated input, with resolved second-stage locks required locally."""
+        """Every defining generated input and lock, second-stage locks required locally."""
         shard = self._shard(environment)
         paths = (
             shard.pixi.manifest,
@@ -222,14 +188,9 @@ class Provisioner:
         return tuple(dict.fromkeys(path.relative_to(self.root).as_posix() for path in paths))
 
     def activate(self, env: str = "default", *, modules: Mapping[str, str] = {}) -> Path:
-        """Write ``env``'s generated activation script for this host and return its path.
+        """Write `env`'s own `activate.sh` for this host (see `ActivationScript`), returning it.
 
-        Formats ``modules`` (name -> version, a per-host map since Lmod stacks differ machine
-        to machine) as guarded `module purge` + `module load` lines, followed by pixi's own
-        activation and the second stage's own binary directories, so a job or interactive
-        shell that `source`s it reaches everything this workspace installed, not only what pixi
-        did. Each environment writes its own script, so installing one never overwrites the
-        activation another environment's commands still source.
+        modules: this host's Lmod stack, name to version.
         """
         self.out.mkdir(exist_ok=True)
         shard = self._shard(env)
@@ -238,34 +199,24 @@ class Provisioner:
         return ActivationScript(path, hook, self.binaries(env)).write(modules)
 
     def runs_here(self, env: str = "default") -> bool:
-        """Whether `env` declares the platform this machine is, so it can be installed here."""
+        """Whether `env` declares this machine's platform, so it can be installed here."""
         return self._shard(env).pixi.runs_here()
 
     def recompiled(self, env: str = "default") -> None:
         """Bring `env`'s generated artifact in line with the manifest, and touch nothing else.
 
-        What a dispatch needs and all it needs. `refreshed` would do the compile and then bring
-        this machine's own prefix in line with the lock, which is minutes of pixi for a command
-        that is about to run somewhere else entirely, and `provision` would install. A dispatch
-        addresses an environment by the content of this artifact and ships that same artifact to
-        the host, so the one thing it cannot do is read a compile older than the manifest it was
-        invoked under: a task row added this afternoon moved the workstation's address while the
-        host went on holding the morning's, and every job of that wave died at environment prime.
-
-        Unconditional, like `provision` and unlike `activated`, since `Compiler.stale` reads a
-        workspace with nothing compiled yet as fresh and the writer is already a no-op once the
-        generated file matches. A dispatch that compiled nothing would ship nothing.
+        All a dispatch needs, without `refreshed`'s local sync: an older compile once moved the
+        workstation's address away from the host's and killed a wave at environment prime.
+        Unconditional, since `stale` reads nothing compiled as fresh and a no-op write is free.
         """
         with GeneratedFiles(directory=self.out).locked() as files:
             self._shard(env).compiler.write(files)
 
     @contextmanager
     def activated(self, env: str = "default") -> Generator[None]:
-        """Recompile ``env`` if stale, then expose everything it installed on PATH for the block.
+        """Recompile `env` if stale, then put everything it installed on PATH for the block.
 
-        pixi's own `bin/` comes first, and the directories the second-stage toolchains link
-        into go ahead of it, so a tool installed by npm is reachable by name exactly like a
-        conda one, the same order the generated `activate.sh` writes.
+        Second-stage directories lead pixi's `bin/`, the order `activate.sh` writes.
         """
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
@@ -283,12 +234,7 @@ class Provisioner:
         *,
         exports: dict[str, str] | None = None,
     ) -> int:
-        """Compile stale generated files, then let Pixi activate and run ``command``.
-
-        Local execution deliberately goes through Pixi instead of a host shell. Pixi already
-        owns the environment and a cross-platform task shell, so Windows and POSIX machines
-        execute the same manifest without mainboard maintaining a second command grammar.
-        """
+        """Compile stale generated files, then let Pixi's cross-platform runner run `command`."""
         shard = self.refreshed(env)
         with local.cwd(str(self.root)), self.runtime(shard, env):
             if exports:
@@ -306,31 +252,19 @@ class Provisioner:
     @staticmethod
     @contextmanager
     def runtime(shard: _EnvironmentShard, env: str) -> Generator[None]:
-        """Hand Pixi an environment the runtime step has already added its facts to.
+        """Hand Pixi an environment the runtime step already added its facts to.
 
-        pixi's own activation leaves every variable this step sets alone, so setting them on the
-        way in is the same as a job's runner setting them after entering the environment, which
-        is what keeps a local run and a dispatched one in one world.
-
-        shard: the environment's compile stack, whose prefix the step reads.
-        env: the environment being entered.
+        pixi's activation leaves these variables alone, so a local run matches a dispatched one.
         """
         added = Runtime(shard.pixi.env_prefix(env)).changes(dict(local.env))
         with local.env(**added):
             yield
 
     def refreshed(self, env: str) -> _EnvironmentShard:
-        """``env``'s compile stack with its generated files current, ready to run a command in.
+        """`env`'s compile stack with its generated files current, ready to run a command in.
 
-        A recompile rewrites the generated manifest, and on Windows the cached activation is
-        read as stale the moment that file is newer than it, so a manifest edit followed by an
-        ordinary `run` used to recompile, invalidate the cache and then refuse every command
-        until someone reinstalled the whole environment. The cache is Pixi's own answer about a
-        prefix that is already installed, so it is retaken here beside the recompile that
-        invalidated it, and the refusal is kept for the one case it was written for: a prefix
-        that is genuinely not installed.
-
-        env: the environment whose generated files are being brought up to date.
+        A recompile makes the Windows activation cache read stale, so an installed prefix has
+        it retaken here rather than refusing every command until a reinstall.
         """
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
@@ -345,23 +279,10 @@ class Provisioner:
     def synchronized(self, shard: _EnvironmentShard, env: str) -> None:
         """Bring `env`'s prefix in line with its lock once, under the lock the caller holds.
 
-        pixi does this on the way into every command it runs, which is a race when nine jobs
-        start together out of one pinned tree: they share the prefix, each decides for itself
-        that it needs updating, and the loser meets the environment mid-write. Doing it here
-        makes it one process at a time, and stamping what was synced makes it happen once
-        rather than once per command. The stamp names the lock revision and the selected
-        resolver inputs, including local Python project/build-system/resolver metadata.
-        Tasks and activation still recompile, but cannot require a Pixi reinstall. This is
-        not a complete build-artifact identity: backend-specific tool configuration and
-        editable native source still require explicit installation when they change.
-
-        An environment nothing has installed is left alone, and so is one with no lock to be in
-        line with. A command in either is refused by the activation with the one line that names
-        the install to run, and syncing there would answer that question with pixi's words
-        instead.
-
-        shard: the environment's compile stack.
-        env: the environment being entered.
+        pixi's own per-command sync races when a wave shares a prefix (see `Pixi.sync`). The
+        stamp names the lock revision and resolver inputs, so tasks and activation never force a
+        reinstall; tool configuration and editable native sources still need an explicit one.
+        An uninstalled or unlocked environment is left for activation to refuse by name.
         """
         if not shard.pixi.ready(env) or not shard.pixi.lock.is_file():
             return
@@ -375,11 +296,7 @@ class Provisioner:
             stamp.write_text(current, encoding="utf-8")
 
     def binaries(self, env: str) -> list[Path]:
-        """The second-stage binary directories that exist, in the order PATH should carry them.
-
-        A directory nothing has installed into yet is left out rather than exported as a dead
-        PATH entry, so an environment provisioned without a `[nodejs]` table exports nothing.
-        """
+        """The existing second-stage binary directories in PATH order, never a dead entry."""
         return [
             directory
             for directory in self._shard(env).stage.binary_dirs(env)
@@ -389,21 +306,12 @@ class Provisioner:
     def provision(
         self, env: str = "default", *, resolve: bool = False, refresh: bool = False
     ) -> None:
-        """Compile ``env``, then install it under one lock.
+        """Compile `env` unconditionally, then install it, all under the workspace lock.
 
-        Unlike :meth:`activated`, this always compiles rather than gating on `Compiler.stale`,
-        since `stale` reads "nothing compiled yet" as fresh (first provisioning is exactly this
-        method's job, not `activated`'s), and the writer it goes through is itself a no-op once
-        the generated file already matches, so an unconditional compile costs nothing extra on
-        an already-fresh env. The whole provisioning runs under the workspace lock, not just the
-        compile, so two agents sharing this checkout never let one rewrite the manifest while
-        the other is still solving against it. The second stage runs last, inside that same
-        lock, because every manager it drives ships as a conda package pixi has just installed.
+        The whole run holds the lock so no agent rewrites the manifest mid-solve; the second
+        stage runs last since its managers are conda packages pixi just installed.
 
-        ``refresh`` asks the indexes for the newest releases the manifest still allows before
-        installing, which is a solve by definition and so implies ``resolve``. Without it a
-        provision keeps whatever the lock already pins, since satisfying the manifest and being
-        current are different questions and only the caller knows which one was asked.
+        refresh: take the newest releases the manifest allows first, a solve implying `resolve`.
         """
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:

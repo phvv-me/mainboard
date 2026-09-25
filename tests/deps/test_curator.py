@@ -115,7 +115,6 @@ def test_add_writes_the_requirement_it_was_given_where_its_neighbours_already_ar
     before: str,
     after: str,
 ) -> None:
-    """A spec carrying its own range is written exactly as the caller wrote it."""
     changes = deps.add(spec, ecosystem=ecosystem, dev=dev, resolve=False)
     assert changes == [Change(name=name, where=where, before=before, after=after)]
     assert constraint(deps, where, name) == after
@@ -138,7 +137,6 @@ def test_adding_a_requirement_and_removing_it_restores_the_manifest(
     dev: bool,
     where: str,
 ) -> None:
-    """The two verbs are one inverse pair, and dropping never asks where it was written."""
     before = deps.path.read_text(encoding="utf-8")
     deps.add(spec, ecosystem=ecosystem, env=env, dev=dev, resolve=False)
     dropped = moved(deps.remove(name, resolve=False), name)
@@ -151,14 +149,12 @@ def test_adding_a_requirement_and_removing_it_restores_the_manifest(
 def test_add_pins_a_bare_name_to_what_the_index_publishes(
     deps: Dependencies, publishes: Callable[[str], None]
 ) -> None:
-    """A name with no range is looked up rather than left unconstrained."""
     publishes("4.70.0")
     changes = deps.add("tqdm", ecosystem="python", resolve=False)
     assert moved(changes, "tqdm").after == ">=4.70.0, <5"
 
 
 def test_add_refuses_an_environment_the_manifest_never_declared(deps: Dependencies) -> None:
-    """The refusal comes from the schema, roster and all, before anything is written."""
     with pytest.raises(MissionError, match="no environment 'ghost'"):
         deps.add("tqdm", env="ghost", resolve=False)
 
@@ -173,13 +169,11 @@ def test_add_refuses_an_environment_the_manifest_never_declared(deps: Dependenci
 def test_remove_refuses_a_name_nothing_declares_and_names_what_it_searched(
     deps: Dependencies, ecosystem: str, match: str
 ) -> None:
-    """The refusal is actionable because it says where it already looked."""
     with pytest.raises(MissionError, match=match):
         deps.remove("ghost", ecosystem=ecosystem, resolve=False)
 
 
 def test_a_name_declared_in_more_than_one_table_has_to_be_named(deps: Dependencies) -> None:
-    """Guessing which one was meant is how the wrong requirement gets dropped silently."""
     deps.add("torch>=1", ecosystem="python", env="serving", resolve=False)
     with pytest.raises(MissionError, match=r"declared in .*Name one with --lang"):
         deps.remove("torch", resolve=False)
@@ -190,7 +184,6 @@ def test_a_name_declared_in_more_than_one_table_has_to_be_named(deps: Dependenci
 def test_upgrade_moves_one_constraint_to_the_newest_release(
     deps: Dependencies, publishes: Callable[[str], None], solved: list[tuple[str, bool, bool]]
 ) -> None:
-    """Named, the manifest itself moves, which is the only way past a declared ceiling."""
     publishes("3.1.0")
     changes = deps.upgrade("torch", ecosystem="python")
     assert moved(changes, "torch").before == ">=2.9"
@@ -201,7 +194,6 @@ def test_upgrade_moves_one_constraint_to_the_newest_release(
 def test_a_bare_upgrade_leaves_the_manifest_alone_and_refreshes_the_lock(
     deps: Dependencies, solved: list[tuple[str, bool, bool]]
 ) -> None:
-    """Nothing was declared differently, so only the lock had anywhere to move."""
     before = deps.path.read_text(encoding="utf-8")
     changes = deps.upgrade()
     assert deps.path.read_text(encoding="utf-8") == before
@@ -212,7 +204,6 @@ def test_a_bare_upgrade_leaves_the_manifest_alone_and_refreshes_the_lock(
 def test_a_solve_reports_every_pin_it_moved_in_the_environment_it_was_aimed_at(
     deps: Dependencies, solved: list[tuple[str, bool, bool]]
 ) -> None:
-    """Adding one requirement and learning it dragged others is exactly what this reports."""
     changes = deps.add("ray>=2", ecosystem="python", env="serving")
     locked = {
         change.name: (change.before, change.after)
@@ -231,7 +222,6 @@ def test_a_solve_reports_every_pin_it_moved_in_the_environment_it_was_aimed_at(
 def test_registries_report_only_what_the_manifest_actually_configures(
     deps: Dependencies,
 ) -> None:
-    """The workspace channels and a declared Python mirror, and nothing invented for the rest."""
     assert deps.registries("conda") == ("rapidsai", "conda-forge")
     assert deps.registries("python") == ("https://mirror.internal/simple",)
     assert deps.registries("nodejs") == ()

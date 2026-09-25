@@ -12,11 +12,7 @@ if TYPE_CHECKING:
 
 
 class PackageJson(FlexModel):
-    """The compiled `package.json` a workspace's Node.js manager installs from.
-
-    Extra keys ride through from `[nodejs.package]` (`type`, `engines`, `pnpm`), so an
-    application controls its own manifest fields without mainboard hardcoding a framework.
-    """
+    """The compiled `package.json`, extra keys riding through from `[nodejs.package]`."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -26,13 +22,10 @@ class PackageJson(FlexModel):
 
     @staticmethod
     def requirement(name: str, spec: Spec) -> str:
-        """The npm version string for `spec`, refusing the source forms npm would misread.
+        """The npm version string for `spec`.
 
-        A `path`, `git` or `url` spec compiled to a bare `*` would install the registry
-        package of the same name, so anything beyond a version fails fast instead.
-
-        name: the package the requirement belongs to, named in the failure.
-        spec: the declared requirement.
+        A `path`, `git` or `url` spec is refused, since as a bare `*` it would install the
+        registry package of the same name.
         """
         extras = sorted(spec.model_extra or {})
         if extras:
@@ -54,9 +47,8 @@ class PackageJson(FlexModel):
     ) -> Self:
         """Build the manifest for one Node.js toolchain table.
 
-        name: the `name` field, which npm requires even for a private manifest.
-        deps: requirements becoming `dependencies`.
-        dev: requirements becoming `devDependencies`, omitted entirely when empty.
+        name: required by npm even for a private manifest.
+        dev: becomes `devDependencies`, omitted entirely when empty.
         fields: `[nodejs.package]` entries merged verbatim over the generated ones.
         """
         body: dict[str, Json] = {
@@ -71,5 +63,4 @@ class PackageJson(FlexModel):
         return cls.model_validate(body)
 
     def to_json(self) -> str:
-        """Render to `package.json` text."""
         return self.model_dump_json(indent=2) + "\n"

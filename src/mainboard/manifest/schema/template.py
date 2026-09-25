@@ -7,12 +7,9 @@ from .spec import Json
 class Template(Declared):
     """One project template this workspace keeps, under the name `new` renders it by.
 
-    path: where the template lives, a workspace-relative directory or any location the renderer
-        itself resolves, a git URL included.
-    into: the directory a rendered project lands under, workspace-relative, the workspace root
-        itself when empty.
-    answers: the questions this workspace always answers the same way, which is half of what
-        turns a questionnaire into one argument.
+    path: a workspace-relative directory or anything the renderer resolves, a git URL included.
+    into: the workspace-relative directory projects land under, the root when empty.
+    answers: the questions this workspace always answers the same way.
     """
 
     path: str

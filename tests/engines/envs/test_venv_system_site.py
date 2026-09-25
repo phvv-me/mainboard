@@ -10,7 +10,6 @@ _SOURCE = 'source "/prefix/bin/activate"'
 
 
 def test_provision_argv_lays_a_venv_over_the_images_system_site_packages() -> None:
-    """The image's tuned wheels stay visible, so provisioning only ever adds on top."""
     assert VenvSystemSite.provision_argv(_PREFIX) == [
         ["python3", "-m", "venv", "--system-site-packages", "/prefix"]
     ]

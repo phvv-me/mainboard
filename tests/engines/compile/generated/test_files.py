@@ -7,12 +7,7 @@ if TYPE_CHECKING:
 
 
 def test_locked_creates_the_directory_and_shares_one_reentrant_lock(tmp_path: Path) -> None:
-    """Two instances on one path share a reentrant lock.
-
-    `Provisioner.provision` opens the lock once around the whole install while
-    `Compiler.stale` reads state through the same directory, so they must not deadlock
-    against each other.
-    """
+    """`Provisioner.provision` holds it around a `Compiler.stale` taking it again."""
     directory = tmp_path / ".mainboard"
     with GeneratedFiles(directory=directory).locked() as outer:
         assert directory.is_dir()

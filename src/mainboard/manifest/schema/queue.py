@@ -4,13 +4,11 @@ from ...core.base import Declared
 
 
 class QueuePolicy(Declared):
-    """One scheduler queue's operational envelope, enforced at submit time.
+    """One scheduler queue's envelope, enforced at submit time.
 
-    The typed home for what previously lived as prose: walltime ceilings
-    (miyabi's `short-g` rejects exactly `08:00:00`, so its ceiling is
-    `07:59:59`), the cgroup memory ceiling actually accepted at submit, and
-    whether jobs may target the queue at all (router queues are listed but not
-    submittable).
+    max_walltime: miyabi's `short-g` rejects exactly `08:00:00`, so its ceiling is `07:59:59`.
+    mem_ceiling_gb: the cgroup memory ceiling actually accepted at submit.
+    submittable: false for a router queue that is listed but not targetable.
     """
 
     max_walltime: str = ""
@@ -21,10 +19,7 @@ class QueuePolicy(Declared):
     notes: str = ""
 
     def admits_walltime(self, walltime: str) -> bool:
-        """Whether `walltime` (HH:MM:SS) fits under this queue's ceiling.
-
-        walltime: the requested wall-clock limit.
-        """
+        """Whether `walltime` (HH:MM:SS) fits under this queue's ceiling."""
         if not self.max_walltime:
             return True
         return _seconds(walltime) <= _seconds(self.max_walltime)
@@ -33,23 +28,13 @@ class QueuePolicy(Declared):
 class Defaults(Declared):
     """A host's submit-time defaults, any of which a CLI flag overrides.
 
-    `mem_gb` and `walltime` accept expressions over `attempt` (the 1-based
-    retry number), evaluated at submit time, so a retried job escalates its
-    request instead of dying to the same ceiling twice.
-
-    `gpu_name` and `max_usd` are what a metered provider host needs and an
-    owned one ignores: the GPU type to rent, and the spend cap every provider
-    backend refuses to submit without, declared once per host rather than
-    retyped on every submit.
-
-    `vram_gb` is the card memory a job on this host needs, which a batch default has no other
-    way to say: `facts`, `compute`, `setup` and `center verify` flag a host whose largest card
-    holds less, before a job finds out by running out of memory. Zero declares no need.
-
-    `interact_queue` is the one queue name a batch default cannot stand in for.
-    A site that routes interactive allocations somewhere else entirely (Miyabi
-    sends them to the parent `interact-g` router while every batch job goes to
-    a leaf) declares it here once, and `interact` uses it instead of `queue`.
+    mem_gb: an expression over `attempt` (1-based retry), so a retry escalates; so is `walltime`.
+    gpu_name: the GPU type a metered provider rents; owned hosts ignore it.
+    max_usd: the spend cap every provider backend refuses to submit without.
+    vram_gb: card memory a job needs, flagged by `facts`, `compute`, `setup` and `center verify`
+        on a host whose largest card holds less; zero declares no need.
+    interact_queue: where `interact` goes instead of `queue`, for a site routing interactive
+        allocations elsewhere (Miyabi's `interact-g` router).
     """
 
     queue: str = ""

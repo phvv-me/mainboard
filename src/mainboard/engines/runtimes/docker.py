@@ -7,12 +7,7 @@ from .base import ContainerRuntime
 
 
 class DockerCompatible(ContainerRuntime):
-    """Shared `run --rm` argv assembly for the docker-CLI-compatible runtimes.
-
-    Docker and Podman agree on almost every flag, and the one place they diverge is how
-    a GPU gets exposed, so that single decision is left to `gpu_flags` while everything
-    else (binds, workdir, env passthrough, guardrails) is built once here.
-    """
+    """Shared `run --rm` argv for the docker-CLI runtimes, which differ only in `gpu_flags`."""
 
     @classmethod
     def command(cls, container: Container, *, prefix_bind: str, argv: Sequence[str]) -> list[str]:

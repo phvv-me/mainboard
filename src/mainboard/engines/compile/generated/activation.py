@@ -14,14 +14,10 @@ if TYPE_CHECKING:
 
 @cache
 def _templates() -> Environment:
-    """The shell templates shipped as package data, loaded on the first render.
+    """The shell templates shipped as package data, so they stay diffable and shellcheck-able.
 
-    They ship as data so they stay diffable and shellcheck-able. Autoescaping is a jinja2 default
-    meant for HTML/XML output, but this template renders bash, where escaping `&` `<` `>` into
-    HTML entities would corrupt the script, so it is off on purpose.
-
-    Built here rather than at import because jinja2 is 6 ms of a cold start that this package's
-    console entry point pays on every command, and only an install writes an activation.
+    Autoescaping is off because HTML-escaping `&` `<` `>` corrupts bash. Built lazily because
+    jinja2 costs 6 ms of every cold start and only an install renders one.
     """
     from jinja2 import Environment, PackageLoader
 
@@ -34,8 +30,7 @@ def _templates() -> Environment:
     )
 
 
-# Where Lmod / environment-modules drops its shell init. The first that exists wins, and on a
-# host without modules (a laptop, gold) none exist and module setup degrades to a harmless no-op.
+# Where Lmod / environment-modules drops its shell init, first existing one wins.
 _MODULE_INITS = (
     "/usr/share/lmod/lmod/init/bash",
     "/etc/profile.d/modules.sh",
@@ -45,11 +40,9 @@ _MODULE_INITS = (
 
 
 def module_init_snippet(inits: Sequence[str] = _MODULE_INITS) -> str:
-    """A bash snippet that loads `module` into a non-login shell from the first init that exists.
+    """Bash that defines the `module` function, undefined in PBS non-login shells.
 
-    `module` is a shell function and is undefined in PBS non-login shells, so a job must source
-    the Lmod/environment-modules init before any `module load`. The loop stops at the first
-    present init and is a clean no-op on a host that ships none.
+    It sources the first init that exists and is a no-op on a host with none (a laptop, gold).
     """
     candidates = " ".join(shlex.quote(init) for init in inits)
     return (
@@ -59,26 +52,19 @@ def module_init_snippet(inits: Sequence[str] = _MODULE_INITS) -> str:
 
 
 def module_specs(modules: Mapping[str, str]) -> tuple[str, ...]:
-    """Name each declared module, in load order, with its optional version."""
+    """Each declared module, in load order, as `name/version` or bare `name`."""
     return tuple(f"{name}/{version}" if version else name for name, version in modules.items())
 
 
 class ActivationScript:
-    """Generates a per-host `.mainboard/activate.sh` that sets up the whole runtime in one
-    `source`.
+    """A per-host `.mainboard/activate.sh` that sets up the whole runtime in one `source`.
 
-    The script sources the module init, `module purge`s, `module load`s the pinned modules
-    (`modules` is a per-host `name -> version` map, since Lmod stacks differ machine to
-    machine), then applies pixi's own activation (the same env vars, PATH, and activation
-    scripts `Provisioner.activated()` applies), exports the directories the second-stage
-    toolchains linked their executables into, and finally evaluates what
-    `runtime.activation` prints, run by the very interpreter that wrote the script so no PATH
-    decides which tool answers. Sourcing it makes `python -m <module>` and an npm-installed tool
-    alike Just Work from a bare PBS or interactive shell. Declared modules must load
-    successfully; only an empty module map skips this stage.
+    In order: the module init, `module purge` and `module load` of the per-host pinned modules
+    (which must load; an empty map skips the block), pixi's activation (as
+    `Provisioner.activated()` applies it), `binaries` on PATH, then what `runtime.activation`
+    prints, run by the interpreter that wrote the script so no PATH decides which tool answers.
 
-    binaries: directories to prepend to PATH after pixi's own activation, the same ones
-        `Provisioner.activated()` exports in-process.
+    binaries: the second-stage directories `Provisioner.activated()` also exports.
     """
 
     def __init__(self, path: Path, hook: str, binaries: Sequence[Path] = ()) -> None:
@@ -87,11 +73,7 @@ class ActivationScript:
         self.binaries = binaries
 
     def render(self, modules: Mapping[str, str]) -> str:
-        """The `activate.sh` text: modules, pixi activation, PATH, then the runtime step.
-
-        With no ``modules`` declared the whole module block is omitted, so the script never
-        purges whatever stack the surrounding job had loaded.
-        """
+        """The `activate.sh` text; no `modules` omits the block, never purging the job's stack."""
         specs = shlex.join(module_specs(modules))
         return (
             _templates()
@@ -100,19 +82,13 @@ class ActivationScript:
                 module_init=module_init_snippet(),
                 modules=specs,
                 hook=self.hook.strip(),
-                # A colon, always: this template is bash and the line it renders is `export
-                # PATH=...:"$PATH"`. Joining with the running machine's own separator wrote a
-                # Windows `;` into a script only bash reads, so the whole PATH arrived as one
-                # unusable entry.
+                # A colon even on Windows: only bash reads this, and `;` made one unusable entry.
                 binaries=":".join(shlex.quote(str(path)) for path in self.binaries),
                 runtime=shlex.join([sys.executable, "-m", f"{Project().name}.runtime.activation"]),
             )
         )
 
     def write(self, modules: Mapping[str, str]) -> Path:
-        """Write the `activate.sh` loading ``modules`` to :attr:`path` and return it.
-
-        Line feeds on every machine, since bash reads a Windows `\\r\\n` as part of each command.
-        """
+        """Write `activate.sh` with line feeds, since bash reads `\\r` as part of each command."""
         self.path.write_text(self.render(modules), encoding="utf-8", newline="\n")
         return self.path

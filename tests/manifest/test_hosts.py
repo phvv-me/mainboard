@@ -42,7 +42,6 @@ def test_inheriting_never_drops_a_rule_and_an_empty_base_is_the_identity(
 def test_profiles_resolve_from_the_manifest_and_a_stranger_still_gets_the_defaults(
     loaded: Manifest,
 ) -> None:
-    """Declared hosts layer over `[hosts.defaults]`, and an undeclared one is the base alone."""
     gold = loaded.profile("gold")
     assert gold.kind == "ssh"
     assert gold.env == "serving"
@@ -87,12 +86,10 @@ def test_a_host_can_narrow_its_sync_scope_without_losing_safety_rules(
 def test_a_queue_admits_only_a_walltime_under_its_declared_ceiling(
     loaded: Manifest, queue: str, walltime: str, admitted: bool
 ) -> None:
-    """A queue the host never declared is permissive, since the ceiling is what it declares."""
     assert loaded.profile("miyabi-g").policy(queue).admits_walltime(walltime) is admitted
 
 
 def test_a_hosts_own_observe_posture_wins_wholesale_over_the_defaults_profile() -> None:
-    """The posture is one table, so naming `level` does not drag the base's channel along."""
     base = HostProfile(observe=Observe(level="stream", channel="stream", poll_seconds=5.0))
     own = HostProfile(observe=Observe(level="off"))
     assert own.inheriting(base).observe == Observe(level="off")

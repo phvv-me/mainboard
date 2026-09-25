@@ -13,13 +13,9 @@ class Sync(Declared):
     protect: list[str] = []
 
     def merged(self, over: Self) -> Self:
-        """This sync scope layered over `over`, preserving inherited safety rules.
+        """This sync scope layered over `over`: a declared include replaces, the rest add.
 
-        An explicitly declared include list replaces the inherited transfer scope;
-        omitting it inherits that scope. Excludes and protections remain additive,
-        so narrowing a host never drops workspace-wide artifact protections.
-
-        over: the lower-precedence sync scope being overlaid.
+        So narrowing a host never drops a workspace-wide protection.
         """
         return type(self)(
             include=self.include if "include" in self.model_fields_set else over.include,
@@ -29,27 +25,15 @@ class Sync(Declared):
 
 
 class HostProfile(Declared):
-    """One remote (or local) machine's execution profile.
+    """One remote (or local) machine's execution profile, inheriting `[hosts.defaults]` per field.
 
-    Everything the previous generation scattered across `lote.toml` hints,
-    global chefe `[modules]`, prose skill files, and userland constants: which
-    scheduler kind, which env and container, the module stack, queue policies,
-    submit defaults, sync scope, host variables, and the environment every job
-    on the host exports. A profile inherits the `[hosts.defaults]` table
-    field-by-field before its own keys apply.
-
-    platform: the pixi platform the host runs, `win-64` say; probed at setup when left empty,
-        and what decides whether the host is reached through a login `bash` or PowerShell.
-    python: bootstrap interpreter command in the remote SSH login shell. Standard-library
-        collection needs no activated environment or installed Mainboard on the destination.
-        Quote an absolute interpreter path as that shell requires.
-
-    `vars` are read by this machine's backends (an hpc-ai API key, a rental's
-    parameters) and never leave it; `exports` are set for every job the host
-    runs, after its environment is entered and before the command, which is where a fact
-    about the host's world lives, such as `HF_HUB_OFFLINE = "1"` on a cluster
-    whose compute nodes must never ask the Hub for a gated checkpoint the shared
-    cache already holds.
+    platform: the pixi platform (`win-64`), probed at setup when empty; it decides whether the
+        host is reached through a login `bash` or PowerShell.
+    python: the bootstrap interpreter in the remote ssh login shell, quoted as that shell needs;
+        standard-library collection needs no environment or Mainboard there.
+    vars: read by this machine's backends (an API key, rental parameters), never shipped.
+    exports: set for every job after its environment is entered, for facts about the host's
+        world (`HF_HUB_OFFLINE = "1"` where compute nodes must never ask the Hub).
     """
 
     kind: str = "auto"
@@ -70,10 +54,7 @@ class HostProfile(Declared):
     observe: Observe = Observe()
 
     def inheriting(self, base: Self) -> Self:
-        """This profile with `base` filling every field the profile left unset.
-
-        base: the `[hosts.defaults]` profile being inherited from.
-        """
+        """This profile with `base` filling every unset field and merging the tables."""
         fields = self.model_dump(exclude_unset=True)
         fields["sync"] = self.sync.merged(base.sync)
         fields["modules"] = {**base.modules, **self.modules}
@@ -84,10 +65,7 @@ class HostProfile(Declared):
         return type(self).model_validate(merged)
 
     def policy(self, queue: str) -> QueuePolicy:
-        """The declared policy for `queue`, permissive when the host names none.
-
-        queue: the scheduler queue being targeted.
-        """
+        """The declared policy for `queue`, permissive when the host names none."""
         return self.queues.get(queue, QueuePolicy())
 
 

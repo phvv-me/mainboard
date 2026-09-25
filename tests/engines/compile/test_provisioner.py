@@ -27,6 +27,21 @@ _PINNED = '[workspace]\nname = "w"\nplatforms = ["linux-64"]\n'
 _WRAPPED = "pixi run --manifest-path .mainboard/envs/{env}/pixi.toml --frozen"
 
 
+@pytest.fixture
+def synced(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Stub pixi's run and capture to succeed, ready every prefix, and record each sync."""
+    recorded: list[str] = []
+    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
+    monkeypatch.setattr(
+        Pixi,
+        "capture",
+        lambda self, command, env="default", *, timeout=None: CommandResult(0, "", ""),
+    )
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
+    monkeypatch.setattr(Pixi, "sync", lambda self, env: recorded.append(env))
+    return recorded
+
+
 def _solvable(provisioner: Provisioner, environment: str = "default") -> None:
     """Seed the lock a real `pixi install --resolve` would leave behind as it solves.
 
@@ -43,10 +58,7 @@ def test_provision_compiles_and_installs_under_one_lock(
     fp: FakeProcess,
     solver_version: str,
 ) -> None:
-    """A second provision recompiles nothing.
-
-    The writer is a no-op once the generated file already matches.
-    """
+    """A second provision recompiles nothing, the writer being a no-op on a match."""
     provisioner = Provisioner(tmp_path, manifest_from(_PINNED))
     assert provisioner.out == tmp_path / ".mainboard"
     assert provisioner.pixi.manifest == provisioner.out / "envs" / "default" / "pixi.toml"
@@ -71,7 +83,6 @@ def test_run_and_capture_recompile_a_stale_environment_before_delegating(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both execution paths repair generated state before the backend can observe it."""
     observed: list[tuple[str, tuple[str, ...], str, float | None]] = []
 
     def run(pixi: Pixi, command: Sequence[str], env: str = "default") -> int:
@@ -114,13 +125,7 @@ def test_a_local_run_normalizes_the_working_directory_to_the_workspace_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`mainboard run` promises the repo root, whichever subdirectory it was typed in.
-
-    An ad-hoc command takes the cwd it is started in, so a command typed from a package
-    directory used to run there while a declared task still ran from the compiled root: the same
-    verb, two working directories, and the manifest's own contract broken for exactly the half
-    nobody had a task for.
-    """
+    """Ad-hoc commands and declared tasks alike run from the repo root."""
     seen: list[Path] = []
     monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": _cwd(seen))
     monkeypatch.setattr(
@@ -158,25 +163,9 @@ def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
     monkeypatch: pytest.MonkeyPatch,
     edit: str,
     installs: int,
+    synced: list[str],
 ) -> None:
-    """pixi updates a prefix on the way into every command, which is a race for a whole wave.
-
-    Nine jobs starting together out of one pinned tree share the prefix, so each decides for
-    itself that it needs updating and the losers meet it mid-write (miyabi-g, 2026-09-05). The
-    update is taken here instead, inside the lock that already serializes the compile, and
-    stamped with the lock and manifest it was taken against so nothing repeats it until one of
-    them moves.
-    """
-    synced: list[str] = []
     activated: list[str] = []
-    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
-    monkeypatch.setattr(
-        Pixi,
-        "capture",
-        lambda self, command, env="default", *, timeout=None: CommandResult(0, "", ""),
-    )
-    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
-    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
     monkeypatch.setattr(Pixi, "cache_windows_activation", lambda self, env: activated.append(env))
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     provisioner.recompiled()
@@ -203,13 +192,9 @@ def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
 def test_local_resolver_metadata_refreshes_an_unchanged_manifest_prefix(
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    synced: list[str],
 ) -> None:
     """The manifest alone cannot see an editable project's changed requirements."""
-    synced: list[str] = []
-    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
-    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
-    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
     metadata = tmp_path / "packages" / "local" / "pyproject.toml"
     metadata.parent.mkdir(parents=True)
     metadata.write_text('[project]\nname = "local"\n', encoding="utf-8")
@@ -230,15 +215,8 @@ def test_an_environment_nothing_installed_is_never_synced_on_the_way_in(
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    synced: list[str],
 ) -> None:
-    """A command there is refused by the activation, which names the install to run.
-
-    Syncing would answer that question with pixi's words instead, and a workspace with no lock
-    has nothing to be brought in line with at all.
-    """
-    synced: list[str] = []
-    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
-    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
     monkeypatch.setattr(Pixi, "ready", lambda self, env: False)
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     provisioner.pixi.manifest.parent.mkdir(parents=True)
@@ -256,20 +234,12 @@ def test_running_after_a_manifest_edit_retakes_the_activation_the_recompile_inva
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    synced: list[str],
 ) -> None:
-    """A recompile makes the generated manifest newer than the cached Windows activation.
-
-    That cache is read as stale the moment it is older than the manifest, so an edit followed by
-    an ordinary `run` refused every command until someone reinstalled the whole environment. The
-    cache is Pixi's own answer about a prefix that is already installed, so it is retaken beside
-    the recompile, and only a prefix that is genuinely not installed still refuses.
-    """
     observed: list[str] = []
-    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
     monkeypatch.setattr(
         Pixi, "cache_windows_activation", lambda self, env: observed.append("activation")
     )
-    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     provisioner.pixi.manifest.parent.mkdir(parents=True)
     provisioner.pixi.manifest.write_text("stale")
@@ -402,7 +372,6 @@ def test_an_environment_name_cannot_escape_or_alias_its_portable_shard_directory
 def test_environment_names_that_are_portable_segments_keep_their_logical_spelling(
     manifest_from: Callable[[str], Manifest], tmp_path: Path
 ) -> None:
-    """Dots, underscores and hyphens remain available for ordinary logical names."""
     provisioner = Provisioner(
         tmp_path, manifest_from('[workspace]\nname = "w"\n[envs."py3.14_cuda-13"]\n')
     )
@@ -423,7 +392,6 @@ def test_task_wrapping_validates_the_environment_before_interpolating_its_manife
 def test_environment_names_cannot_alias_on_a_case_insensitive_filesystem(
     manifest_from: Callable[[str], Manifest], tmp_path: Path
 ) -> None:
-    """The same manifest keeps one shard per environment on all three operating systems."""
     manifest = manifest_from('[workspace]\nname = "w"\n[envs.Train]\n[envs.train]\n')
     with pytest.raises(MissionError, match="case-insensitive filesystem"):
         Provisioner(tmp_path, manifest)
@@ -466,7 +434,6 @@ def test_activated_recompiles_a_provisioned_env_that_has_gone_stale(
 def test_activated_puts_a_second_stage_toolchains_binaries_ahead_of_the_env(
     manifest_from: Callable[[str], Manifest], tmp_path: Path
 ) -> None:
-    """A tool npm installed is reachable by name exactly like a conda one."""
     provisioner = Provisioner(tmp_path, manifest_from(_NODE))
     linked = provisioner.environment_dir() / "node_modules" / ".bin"
     linked.mkdir(parents=True)
@@ -486,7 +453,6 @@ def test_activated_puts_a_second_stage_toolchains_binaries_ahead_of_the_env(
 def test_activated_leaves_out_a_directory_nothing_has_installed_into(
     manifest_from: Callable[[str], Manifest], tmp_path: Path
 ) -> None:
-    """An environment provisioned without a `[nodejs]` table exports no dead PATH entry."""
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     before = local.env["PATH"]
 
@@ -532,11 +498,6 @@ def test_the_generated_activation_is_bash_wherever_it_was_written(
     fp: FakeProcess,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`activate.sh` is sourced by bash whatever machine wrote it, so its PATH is colon-joined.
-
-    Joining with the writing machine's own separator put a Windows `;` into a script only bash
-    reads, which is a PATH of one unusable entry.
-    """
     monkeypatch.setattr(os, "pathsep", ";")
     provisioner = Provisioner(tmp_path, manifest_from(_NODE))
     linked = provisioner.environment_dir() / "node_modules" / ".bin"
@@ -555,7 +516,6 @@ def test_the_generated_activation_is_bash_wherever_it_was_written(
 def test_activate_gives_a_named_environment_its_own_script(
     manifest_from: Callable[[str], Manifest], tmp_path: Path, fp: FakeProcess
 ) -> None:
-    """Installing one environment must not overwrite the activation another one is sourced by."""
     provisioner = Provisioner(tmp_path, manifest_from(f"{_BARE}[envs.serving]\n"))
     fp.register([fp.any()], stdout="export PATH=/env/serving/bin:$PATH\n")
 
@@ -572,7 +532,6 @@ def test_provision_installs_the_second_stage_after_pixi(
     stub_binary: Callable[[str], str],
     solver_version: str,
 ) -> None:
-    """Every second-stage manager ships as a conda package, so pixi has to land first."""
     npm = stub_binary("npm")
     provisioner = Provisioner(tmp_path, manifest_from(f'{_BARE}[nodejs.deps]\nprettier = ">=3"\n'))
     _solvable(provisioner)
@@ -666,7 +625,6 @@ def test_a_refresh_asks_the_indexes_before_installing_and_blesses_the_result(
 def test_task_line_hands_only_a_declared_task_to_pixi(
     command: str, env: str, line: str, manifest_from: Callable[[str], Manifest]
 ) -> None:
-    """The manifest path is relative because a wrapped command already changed into the root."""
     manifest = manifest_from(
         f'{_BARE}[tasks]\nlint = "ruff check"\n[envs.serving.tasks]\nserve = "vllm serve"\n'
     )
@@ -722,11 +680,6 @@ def test_a_resolve_for_a_platform_this_machine_is_not_solves_the_lock_and_instal
     fp: FakeProcess,
     solver_version: str,
 ) -> None:
-    """A lock solved for a card elsewhere ships with `setup`, which installs it where it runs.
-
-    The Windows card's environment is solved from the Linux workstation, and neither pixi nor
-    the second stage is asked to install a prefix this machine could never execute.
-    """
     foreign = '[workspace]\nname = "w"\nplatforms = ["linux-ppc64le"]\n'
     provisioner = Provisioner(tmp_path, manifest_from(foreign))
     fp.register([fp.any()], stdout="lock solved\n")

@@ -16,7 +16,7 @@ _EXTENSION = "core.cpython-314-x86_64-linux-gnu.so"
 
 @pytest.fixture
 def site_packages(tmp_path: Path) -> Path:
-    """The site-packages tree of a provisioned environment prefix, empty to start with."""
+    """The empty site-packages tree of a provisioned environment prefix."""
     tree = tmp_path / "prefix" / "lib" / "python3.14" / "site-packages"
     tree.mkdir(parents=True)
     return tree
@@ -24,23 +24,17 @@ def site_packages(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def audit(site_packages: Path) -> EnvironmentAudit:
-    """An audit of the prefix owning the site-packages tree each test populates."""
     return EnvironmentAudit(site_packages.parent.parent.parent)
 
 
 def aged(path: Path, moment: int) -> None:
-    """Stamp ``path`` with a modification time the test chose, in nanoseconds."""
+    """Stamp `path` with a modification time in nanoseconds."""
     os.utime(path, ns=(moment, moment))
 
 
 def test_a_wheel_that_lost_every_import_root_is_damaged_and_named_in_a_stable_order(
     audit: EnvironmentAudit, record: Record, site_packages: Path
 ) -> None:
-    """A repair reinstalls the same damage the same way.
-
-    A `dist-info` outliving its own files is what a swapped provider leaves behind, and the
-    argv a repair builds is ordered case-insensitively.
-    """
     for name in ("Zeta", "alpha", "Beta"):
         record(site_packages, name, roots=f"{name.lower()}\n")
 
@@ -59,7 +53,6 @@ def test_a_wheel_that_lost_every_import_root_is_damaged_and_named_in_a_stable_or
 def test_a_wheel_keeping_one_import_root_is_left_alone(
     surviving: str, audit: EnvironmentAudit, record: Record, site_packages: Path
 ) -> None:
-    """One surviving root is enough, in whichever shape Python can import it from."""
     record(site_packages, "demo", roots="demo\ndemo_compat\n")
     if surviving.endswith((".py", ".so")):
         site_packages.joinpath(surviving).write_text("")
@@ -79,11 +72,6 @@ def test_a_wheel_keeping_one_import_root_is_left_alone(
 def test_a_record_claiming_nothing_pixi_installed_is_never_reinstalled(
     installer: str, roots: str, audit: EnvironmentAudit, record: Record, site_packages: Path
 ) -> None:
-    """A repair touches only what is pixi's to reinstall.
-
-    Metadata-only distributions claim nothing that could go missing, and only what uv
-    installed for pixi qualifies, however broken a conda one looks.
-    """
     record(site_packages, "claimless", installer=installer, roots=roots)
 
     assert audit.suspect() == ()
@@ -92,7 +80,6 @@ def test_a_record_claiming_nothing_pixi_installed_is_never_reinstalled(
 def test_an_editable_is_judged_by_its_clock_and_not_by_its_import_roots(
     audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
 ) -> None:
-    """An editable imports through a path hook, so absent site-packages roots mean nothing."""
     source = tmp_path / "editable-demo"
     source.mkdir()
     record(
@@ -107,31 +94,41 @@ def test_an_editable_is_judged_by_its_clock_and_not_by_its_import_roots(
     assert audit.suspect() == ()
 
 
+def _native_editable(
+    record: Record, site_packages: Path, source: Path, *, built: bool = True
+) -> Path:
+    """Record `source` as an editable carrying one extension, written when `built`."""
+    module = source.name.replace("-", "_")
+    source.mkdir(parents=True, exist_ok=True)
+    record(
+        site_packages,
+        source.name,
+        url=source.as_uri(),
+        editable=True,
+        files=[f"{module}/{_EXTENSION}"],
+    )
+    artifact = site_packages / module / _EXTENSION
+    if built:
+        artifact.parent.mkdir()
+        artifact.write_bytes(b"compiled")
+    return artifact
+
+
 def test_a_native_editable_is_dated_by_its_compiled_sources_alone(
     audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
 ) -> None:
     """A `.py` edit is already live in an editable, while a `.cpp` edit needs the rebuild."""
     source = tmp_path / "native-demo"
-    source.joinpath("src").mkdir(parents=True)
-    record(
-        site_packages,
-        "native-demo",
-        url=source.as_uri(),
-        editable=True,
-        files=[f"native_demo/{_EXTENSION}"],
-    )
-    artifact = site_packages / "native_demo" / _EXTENSION
-    artifact.parent.mkdir()
-    artifact.write_bytes(b"compiled")
-    source.joinpath("src", "core.cpp").write_text("void changed() {}\n")
-    source.joinpath("src", "wrapper.py").write_text("from .core import run\n")
-    aged(source / "src" / "core.cpp", 1_000_000_000)
+    artifact = _native_editable(record, site_packages, source)
+    source.joinpath("core.cpp").write_text("void changed() {}\n")
+    source.joinpath("wrapper.py").write_text("from .core import run\n")
+    aged(source / "core.cpp", 1_000_000_000)
     aged(artifact, 2_000_000_000)
-    aged(source / "src" / "wrapper.py", 3_000_000_000)
+    aged(source / "wrapper.py", 3_000_000_000)
 
     assert audit.suspect() == ()
 
-    aged(source / "src" / "core.cpp", 4_000_000_000)
+    aged(source / "core.cpp", 4_000_000_000)
 
     assert audit.suspect() == ("native-demo",)
     assert audit.damaged() == ()
@@ -140,52 +137,35 @@ def test_a_native_editable_is_dated_by_its_compiled_sources_alone(
 def test_a_native_editable_whose_extension_vanished_is_rebuilt(
     audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
 ) -> None:
-    """A recorded extension nobody can find is gone, and nothing absent is current.
-
-    Asked as its own question rather than through a clock, so it holds for a tree with no
-    source file whose mtime could have outranked a missing artifact's.
-    """
+    """Asked apart from any clock, so it holds with no source file newer than anything."""
     source = tmp_path / "native-demo"
-    source.mkdir()
-    record(
-        site_packages,
-        "native-demo",
-        url=source.as_uri(),
-        editable=True,
-        files=[f"native_demo/{_EXTENSION}"],
-    )
+    _native_editable(record, site_packages, source, built=False)
     source.joinpath("Cargo.toml").write_text("[package]\n")
 
     assert audit.suspect() == ("native-demo",)
 
 
-def test_a_build_configuration_clock_never_dates_an_extension_newer_than_its_sources(
-    audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
+@pytest.mark.parametrize(
+    "noise",
+    [
+        pytest.param("pyproject.toml", id="packaging-configuration-rewritten-in-place"),
+        pytest.param("CMakeLists.txt", id="build-configuration-rewritten-in-place"),
+        pytest.param(".venv/include/vendored.h", id="a-header-under-a-dot-directory"),
+        pytest.param("target/debug/generated.c", id="a-source-under-build-output"),
+    ],
+)
+def test_a_newer_file_no_compile_reads_never_dates_an_extension(
+    noise: str, audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
 ) -> None:
-    """Packaging files are rewritten in place by everything that touches packaging.
-
-    cutoken's `pyproject.toml` and `CMakeLists.txt` read two days ahead of its own `.cpp` while
-    being byte-identical to the commit that last changed them (2026-09-05), and the doctor asked
-    for a reinstall of an extension newer than everything it was compiled from.
-    """
+    """cutoken read stale on a `pyproject.toml` two days ahead of its `.cpp` (2026-09-05)."""
     source = tmp_path / "config-demo"
-    source.mkdir()
-    record(
-        site_packages,
-        "config-demo",
-        url=source.as_uri(),
-        editable=True,
-        files=[f"config_demo/{_EXTENSION}"],
-    )
-    artifact = site_packages / "config_demo" / _EXTENSION
-    artifact.parent.mkdir()
-    artifact.write_bytes(b"compiled")
+    artifact = _native_editable(record, site_packages, source)
     source.joinpath("core.cpp").write_text("void run() {}\n")
-    for packaging in ("pyproject.toml", "CMakeLists.txt"):
-        source.joinpath(packaging).write_text("touched, not edited\n")
-        aged(source / packaging, 9_000_000_000)
+    source.joinpath(noise).parent.mkdir(parents=True, exist_ok=True)
+    source.joinpath(noise).write_text("touched, not compiled\n")
     aged(source / "core.cpp", 1_000_000_000)
     aged(artifact, 2_000_000_000)
+    aged(source / noise, 9_000_000_000)
 
     assert audit.suspect() == ()
 
@@ -193,11 +173,7 @@ def test_a_build_configuration_clock_never_dates_an_extension_newer_than_its_sou
 def test_a_build_that_wrote_several_extensions_is_dated_by_the_one_it_finished_with(
     audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
 ) -> None:
-    """A build is over when its last artifact lands, so the sources it compiled are behind it.
-
-    Dating one against the first artifact written called every package with more than one
-    extension stale for the very sources that build had just consumed.
-    """
+    """The first artifact would call a multi-extension build stale for its own sources."""
     source = tmp_path / "many-demo"
     source.mkdir()
     files = [f"many_demo/first{_EXTENSION}", f"many_demo/second{_EXTENSION}"]
@@ -255,7 +231,6 @@ def test_an_install_with_nothing_to_rebuild_is_left_alone(
     site_packages: Path,
     tmp_path: Path,
 ) -> None:
-    """With no local tree there is no clock to read, and nothing compiled can go out of date."""
     source = tmp_path / "demo-source"
     source.mkdir()
     source.joinpath(marker).write_text("newer than anything installed\n")
@@ -268,34 +243,6 @@ def test_an_install_with_nothing_to_rebuild_is_left_alone(
         editable=True,
         files=files,
     )
-
-    assert audit.suspect() == ()
-
-
-def test_build_output_inside_a_source_tree_never_dates_a_rebuild(
-    audit: EnvironmentAudit, record: Record, site_packages: Path, tmp_path: Path
-) -> None:
-    """A vendored `.venv` or `target/` is full of newer headers nothing here compiles from."""
-    source = tmp_path / "vendored-demo"
-    for vendored in (".venv/include", "target/debug", "src"):
-        source.joinpath(vendored).mkdir(parents=True)
-    record(
-        site_packages,
-        "vendored-demo",
-        url=source.as_uri(),
-        editable=True,
-        files=[f"vendored_demo/{_EXTENSION}"],
-    )
-    artifact = site_packages / "vendored_demo" / _EXTENSION
-    artifact.parent.mkdir()
-    artifact.write_bytes(b"compiled")
-    source.joinpath("src", "core.rs").write_text("fn main() {}\n")
-    source.joinpath(".venv", "include", "vendored.h").write_text("#define VENDORED 1\n")
-    source.joinpath("target", "debug", "generated.c").write_text("int generated(void);\n")
-    aged(source / "src" / "core.rs", 1_000_000_000)
-    aged(artifact, 2_000_000_000)
-    aged(source / ".venv" / "include" / "vendored.h", 3_000_000_000)
-    aged(source / "target" / "debug" / "generated.c", 3_000_000_000)
 
     assert audit.suspect() == ()
 
@@ -328,11 +275,6 @@ def test_the_extensions_an_import_resolves_through_are_read_off_the_claiming_rec
     record: Record,
     site_packages: Path,
 ) -> None:
-    """With no `top_level.txt`, the RECORD's own paths say which imports a distribution owns.
-
-    Its metadata and anything climbing out of site-packages claim nothing, and the name of the
-    distribution itself is the last resort, the way `packages_distributions` settles it.
-    """
     record(site_packages, distribution, files=files)
     prefix = site_packages.parent.parent.parent
 

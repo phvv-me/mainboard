@@ -19,7 +19,6 @@ _PRETTIER = '[nodejs.deps]\nprettier = ">=3"\n'
 def test_every_ecosystem_is_bound_even_when_the_manifest_declares_none(
     stage_from: Callable[[str], SecondStage],
 ) -> None:
-    """A deleted table still needs its ecosystem, since cleaning up after it is its job."""
     assert {implementation.toolchain for implementation in Ecosystem.implementations()} == {
         "nodejs",
         "rust",
@@ -31,7 +30,6 @@ def test_every_ecosystem_is_bound_even_when_the_manifest_declares_none(
 def test_a_table_reaches_the_ecosystem_that_owns_it_and_no_other(
     stage_from: Callable[[str], SecondStage],
 ) -> None:
-    """`[python]` becomes pypi dependencies in the generated pixi manifest, never a stage."""
     stage = stage_from(f'{_HEADER}{_PRETTIER}[python.deps]\ntorch = "*"\n')
     assert set(stage.toolchains("default")) == {"nodejs", "python"}
     ecosystems = stage.ecosystems("default")
@@ -91,7 +89,6 @@ def test_a_toolchain_table_is_merged_over_every_scope_that_applies(
     stage_from: Callable[[str], SecondStage],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Least specific scope first, so a later table overrides an earlier one key by key."""
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.setattr("platform.machine", lambda: "x86_64")
     stage = stage_from(f"{_HEADER}{declared}")
@@ -112,11 +109,7 @@ def test_an_undeclared_environment_is_refused_with_the_declared_roster(
 def test_a_workspace_wide_toolchain_reads_every_environments_tables(
     stage_from: Callable[[str], SecondStage],
 ) -> None:
-    """Each toolchain sees exactly the scope it installs into.
-
-    One `package.json` serves every env, so provisioning one env may not narrow it, while a
-    toolchain installing into the pixi prefix sees only the environment being provisioned.
-    """
+    """A shared toolchain sees every env's tables; a prefix one only the env being provisioned."""
     stage = stage_from(
         f"{_HEADER}"
         '[dev.nodejs.deps]\nprettier = ">=3"\n'
@@ -134,7 +127,6 @@ def test_a_workspace_wide_toolchain_reads_every_environments_tables(
 def test_provisioning_an_environment_never_drops_another_ones_generated_manifest(
     stage_from: Callable[[str], SecondStage], files: Writer
 ) -> None:
-    """The bug this closes deleted `package.json` and orphaned the node_modules beside it."""
     stage = stage_from(f'{_HEADER}[dev.nodejs.deps]\nprettier = ">=3"\n[envs.serving]\n')
 
     stage.generate(files, "default")
@@ -160,7 +152,6 @@ def test_install_runs_every_toolchains_installer_inside_the_provisioned_environm
     tool_paths: Mapping[str, str],
     stub_binary: Callable[[str], str],
 ) -> None:
-    """Every manager ships as a conda package pixi has just installed."""
     npm = stub_binary("npm")
     stage = stage_from(f'{_HEADER}{_PRETTIER}[rust.deps]\nripgrep = ">=14"\n')
     stage.generate(files, "default")

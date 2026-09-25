@@ -7,11 +7,7 @@ from .base import ContainerRuntime
 
 
 class Apptainer(ContainerRuntime):
-    """Wraps argv for `apptainer exec`, whose binary is sometimes still named `singularity`.
-
-    Apptainer is the maintained successor of Singularity and stays command-line compatible
-    with it, so a host that only ships the legacy `singularity` binary is still usable.
-    """
+    """Wraps argv for `apptainer exec`, falling back to its command-compatible `singularity`."""
 
     binary: ClassVar[str] = "apptainer"
     legacy_binary: ClassVar[str] = "singularity"
@@ -32,14 +28,11 @@ class Apptainer(ContainerRuntime):
 
     @classmethod
     def is_available(cls) -> bool:
-        """Whether either `apptainer` or its `singularity` alias is on PATH."""
         return shutil.which(cls.binary) is not None or shutil.which(cls.legacy_binary) is not None
 
     @classmethod
     def launcher(cls) -> str:
-        """The binary this host actually exposes, `apptainer` preferred over `singularity`."""
-        if shutil.which(cls.binary):
+        """The binary this host exposes, `apptainer` preferred."""
+        if shutil.which(cls.binary) or not shutil.which(cls.legacy_binary):
             return cls.binary
-        if shutil.which(cls.legacy_binary):
-            return cls.legacy_binary
-        return cls.binary
+        return cls.legacy_binary

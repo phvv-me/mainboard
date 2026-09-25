@@ -19,13 +19,11 @@ if TYPE_CHECKING:
 
 
 class SecondStage:
-    """Every toolchain a workspace declares beyond conda and Python, for one manifest.
+    """Every toolchain a manifest declares beyond conda and Python.
 
-    pixi installs the conda environment, and the ecosystems here then fill it with whatever
-    their own managers own. The three phases they take part in stay in step: the compile
-    generates what those managers read, provisioning runs them, and activation exports the
-    executables they linked. Which ecosystems take part is read from the manifest rather than
-    listed here, so declaring `[go]` in a workspace that never had one needs no wiring.
+    The compile generates what their managers read, provisioning runs them, and activation
+    exports what they linked. Participation comes from the manifest, so a new `[go]` needs no
+    wiring.
     """
 
     def __init__(self, root: Path, manifest: Manifest, out: Path, pixi: Pixi) -> None:
@@ -35,11 +33,10 @@ class SecondStage:
         self.pixi = pixi
 
     def digest(self) -> str:
-        """The selected second-stage declarations, independent of the workspace's location.
+        """A location-independent digest of every second-stage table, in scope and overlay order.
 
-        Rust and Go read their specs directly rather than through a generated file. Node's
-        manager and app location also live outside package.json. Preserve every selected scope
-        and platform selector, including overlay order, without unrelated tasks or host tables.
+        Rust, Go and Node's manager and app settings never reach a generated file, so the
+        declarations themselves are hashed, leaving tasks and host tables out.
         """
         scopes = [
             ("root", self.manifest),
@@ -86,14 +83,9 @@ class SecondStage:
     def ecosystems(self, env: str) -> list[Ecosystem]:
         """One bound ecosystem per implementation, in registration order.
 
-        Every implementation is built, not only the ones the manifest still declares, because
-        an ecosystem is also what cleans up after a table that was deleted: a `package.json`
-        outliving its `[nodejs]` table would keep reinstalling packages nobody declares. A
-        table no implementation claims (`[python]`, which pixi compiles itself) is ignored. An
-        implementation whose tree is the workspace's rather than the environment's binds to the
-        whole manifest instead (`Ecosystem.shared`).
-
-        env: the environment whose merged tables the ecosystems bind to.
+        Every implementation is built, declared or not, since it is what cleans up after a
+        deleted table. A table none claims (`[python]`, pixi's own) is ignored, and a `shared`
+        implementation binds to the whole manifest.
         """
         scoped = self.toolchains(env)
         shared = self.merged(self.shared_scopes())
@@ -127,7 +119,7 @@ class SecondStage:
                 ecosystem.sync(resolve=resolve)
 
     def merged(self, scopes: Sequence[Scope]) -> dict[str, Toolchain]:
-        """Every ecosystem table across `scopes`, each merged over the ones beneath it."""
+        """Every ecosystem table across `scopes`, each merged over the ones before it."""
         merged: dict[str, Toolchain] = {}
         for scope in scopes:
             for name, table in scope.toolchains().items():
@@ -142,12 +134,9 @@ class SecondStage:
     def scopes(self, env: str) -> list[Scope]:
         """Every scope whose tables apply to `env` on this machine, least specific first.
 
-        The base manifest and its platform overlays come first (`[dev]` joins them for the
-        default environment, the one a bare `mainboard run` uses), then the named environment
-        and its own overlays, so a later table overrides an earlier one. An environment
-        declaring `no-default` starts from nothing but itself, exactly as it solves in pixi.
-
-        env: the environment name, refused here when the manifest never declared it.
+        The base manifest and its overlays (plus `[dev]` for `default`), then the named
+        environment and its overlays. `no-default` starts from the environment alone, as pixi
+        solves it. An undeclared `env` is refused.
         """
         named = self.manifest.environment(env)
         scopes: list[Scope] = []
@@ -161,10 +150,8 @@ class SecondStage:
     def shared_scopes(self) -> list[Scope]:
         """Every scope this machine matches anywhere in the manifest, whichever env owns it.
 
-        What a workspace-level toolchain installs cannot depend on which environment is being
-        provisioned, because there is one generated `package.json` and one `node_modules` for
-        all of them. Reading a single environment's view made provisioning an environment that
-        declares no table of its own delete the file the others install from.
+        A shared toolchain has one tree for every environment, so reading one environment's view
+        would let provisioning an environment with no table delete what the others install from.
         """
         return [
             *self.overlays(self.manifest),

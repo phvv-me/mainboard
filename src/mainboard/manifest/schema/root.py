@@ -27,49 +27,23 @@ _RESERVED_ENVS = frozenset({"default", "dev"})
 
 
 class Manifest(Scope):
-    """The validated workspace manifest: deps, envs, containers, hosts, one file.
+    """The validated workspace manifest, itself the root `Scope` (`[deps]`, ecosystem tables).
 
-    The root is itself a `Scope`, so `[deps]` and the ecosystem tables sit at
-    the top level exactly as before, with `[vars]` feeding interpolation,
-    `[containers.*]` declaring base images, and `[hosts.*]` carrying per-host
-    execution profiles that inherit `[hosts.defaults]`.
+    Beside it: `[vars]` feed interpolation, `[containers.*]` declare base images, `[hosts.*]`
+    are execution profiles inheriting `[hosts.defaults]`, `[gates.*]` are what `doctor` asks,
+    `[templates.*]` what `new` renders, `[tracking]` where receipts are mirrored, `[papers.*]`
+    what `paper` builds, `[plots.*]` how charts look, `[admission.<card>]` how idle a card must
+    be before a trial, `[git]` whose repositories `git` may write and what never commits,
+    `[lint]` what `lint` runs and leaves alone, `[ci]` the hosts `ci --matrix` runs on.
 
-    These tables carry no dependency at all and let a workspace hand
-    its own decisions to the verbs that would otherwise have to guess them:
-    `[gates.*]` names the commands `doctor` asks for a verdict, `[templates.*]`
-    names the project templates `new` renders, and `[tracking]` names where a
-    batch's receipts are mirrored beyond this workspace's own files.
-    `[papers.*]` names the manuscripts `paper` builds and checks against their page rule.
-    `[plots.*]` names palette, theme, and output settings for result charts.
-    `[admission.<card>]` says how idle a named card must be before a trial measures on it.
-    `[git]` says whose repositories in the submodule tree `git` may write, and what never
-    enters a commit.
-    `[lint]` names what `lint` leaves alone, which directories own their files, and the
-    formatters and linters it runs over them.
-    `[ci]` names the hosts `ci --matrix` runs a package's gate on beside this machine.
-
-    `[env]` sets a variable to a string and clears one with `false`. Clearing
-    is not the same as setting an empty string, which is what the table could
-    say before: an empty `OMP_NUM_THREADS` is still defined, so `${VAR:-default}`
-    and `[ -n "$VAR" ]` both behave differently from an unset one, and declaring
-    a genuinely clean environment was therefore impossible from here and needed
-    an `env -u` workaround downstream. `true` is refused rather than guessed at,
-    since a variable is either given a value or taken away and there is no third
-    thing it could mean.
+    `[env]` sets a variable with a string and clears one with `false`, which an empty string
+    (still defined for `${VAR:-default}` and `[ -n "$VAR" ]`) cannot do; `true` is refused.
     """
 
-    # The tables no compile reads, the exact complement of what `PixiManifest.from_manifest`
-    # and the second stage translate. `[gates]` is what `doctor` asks, `[templates]` is what
-    # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
-    # `[hosts]` are how a job reaches a machine, `[papers]` is what `paper` builds, `[plots]` is
-    # how results are drawn, `[git]` is how the repository tree is committed and pushed, `[lint]`
-    # is what `lint` runs, `[ci]` is where a package's gate runs, and `[vars]` has already been
-    # folded into every string that quotes it by the time a manifest validates, so a var a
-    # compiled table really uses moves the digest through that table's own rendered value. None
-    # of them reaches a generated file, so editing one must not make every installed environment
-    # stale. The classification is proved table by table against the compiler's own output in
-    # `tests/engines/compile/test_compiler.py`, so a table added to the schema is refused until
-    # somebody decides which side of this line it sits on.
+    # The exact complement of what `PixiManifest.from_manifest` and the second stage translate
+    # (`[vars]` is already folded into every string quoting it), so editing one never stales an
+    # environment. `tests/engines/compile/test_compiler.py` proves the split table by table, so
+    # a new schema table is refused until it is classified.
     uncompiled: ClassVar[frozenset[str]] = frozenset(
         {
             "admission",
@@ -111,11 +85,7 @@ class Manifest(Scope):
 
     @model_validator(mode="after")
     def env_values_set_or_clear(self) -> Manifest:
-        """Refuse `true` in `[env]`, since only `false` means anything there.
-
-        A variable is either given a value or taken away, so a boolean has exactly one useful
-        reading and guessing at the other one would hide a typo behind a plausible default.
-        """
+        """Refuse `true` in `[env]`, a typo rather than a third meaning."""
         wrong = sorted(name for name, value in self.env.items() if value is True)
         if wrong:
             raise ValueError(
@@ -125,10 +95,7 @@ class Manifest(Scope):
         return self
 
     def environment(self, name: str) -> Env:
-        """The named environment table, refusing unknown names with the roster.
-
-        name: the environment name, `default` always allowed.
-        """
+        """The named environment table (`default` always), refusing others with the roster."""
         if name == "default":
             return Env()
         try:
@@ -164,17 +131,11 @@ class Manifest(Scope):
             )
 
     def holding(self, held: Mapping[str, HostProfile]) -> Manifest:
-        """This manifest with the machines the workspace is holding laid over `[hosts]`.
-
-        held: the held machines' ssh profiles by alias.
-        """
+        """This manifest with the held machines' ssh profiles laid over `[hosts]`."""
         return self.model_copy(update={"hosts": {**self.hosts, **held}}) if held else self
 
     def profile(self, alias: str) -> HostProfile:
-        """The resolved profile for `alias`, defaults-only when undeclared.
-
-        alias: the host name, an ssh-config alias or `local`.
-        """
+        """The resolved profile for `alias` (ssh alias or `local`), defaults if undeclared."""
         profiles = self.profiles()
         if alias in profiles:
             return profiles[alias]

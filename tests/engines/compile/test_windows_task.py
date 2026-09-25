@@ -8,6 +8,7 @@ from plumbum import local
 from mainboard import MissionError
 from mainboard.engines.compile.backend import CommandResult, Process
 from mainboard.engines.compile.backend.windows_task import WindowsTask, WindowsTaskRunner
+from mainboard.manifest.schema.spec import Json
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -15,12 +16,25 @@ if TYPE_CHECKING:
     from plumbum.commands.base import BaseCommand
 
 
+def _manifest(tmp_path: Path, text: str) -> Path:
+    manifest = tmp_path / "pixi.toml"
+    manifest.write_text(text, encoding="utf-8")
+    return manifest
+
+
+def _task(tmp_path: Path, command: str, **body: Json) -> WindowsTask:
+    return WindowsTask.parse("check", {"cmd": command, **body}, manifest=tmp_path / "pixi.toml")
+
+
+def _succeed(command: BaseCommand) -> CommandResult:
+    return CommandResult(0, "", "")
+
+
 def test_the_windows_runner_preserves_the_task_graph_cwd_environment_and_arguments(
     tmp_path: Path,
     stub_binary: Callable[[str], str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The fallback runs shared dependencies once, then binds the selected feature task."""
     manifest = tmp_path / ".mainboard" / "envs" / "default" / "pixi.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
@@ -84,16 +98,11 @@ def test_the_windows_runner_stops_on_the_dependency_exit_code(
     tmp_path: Path,
     stub_binary: Callable[[str], str],
 ) -> None:
-    """A failed prerequisite prevents the dependent command and retains its exact code."""
-    manifest = tmp_path / "pixi.toml"
-    manifest.write_text(
-        """[tasks.prepare]
-cmd = "prepare"
-[tasks.check]
-cmd = "check"
-depends-on = ["prepare"]
-""",
-        encoding="utf-8",
+    """A failed prerequisite stops the dependent command and keeps its exact code."""
+    manifest = _manifest(
+        tmp_path,
+        '[tasks.prepare]\ncmd = "prepare"\n[tasks.check]\ncmd = "check"\n'
+        'depends-on = ["prepare"]\n',
     )
     stub_binary("prepare.exe")
     seen: list[str] = []
@@ -124,18 +133,10 @@ depends-on = ["prepare"]
     ],
 )
 def test_the_windows_runner_refuses_an_invalid_dependency_graph(
-    tasks: str,
-    message: str,
-    tmp_path: Path,
+    tasks: str, message: str, tmp_path: Path
 ) -> None:
-    """An invalid graph fails before a command can be reported as successful."""
-    manifest = tmp_path / "pixi.toml"
-    manifest.write_text(tasks, encoding="utf-8")
-
     with pytest.raises(MissionError, match=message):
-        WindowsTaskRunner(manifest, "default").run(
-            ("a",), lambda command: CommandResult(0, "", "")
-        )
+        WindowsTaskRunner(_manifest(tmp_path, tasks), "default").run(("a",), _succeed)
 
 
 @pytest.mark.parametrize(
@@ -148,22 +149,16 @@ def test_the_windows_runner_refuses_an_invalid_dependency_graph(
         pytest.param("echo first\rsecond", id="carriage-return"),
     ],
 )
-def test_the_windows_runner_refuses_task_shell_syntax(
-    command: str,
-    tmp_path: Path,
-) -> None:
+def test_the_windows_runner_refuses_task_shell_syntax(command: str, tmp_path: Path) -> None:
     """Direct argv execution never silently changes Pixi's Deno task-shell grammar."""
-    task = WindowsTask.parse("check", {"cmd": command}, manifest=tmp_path / "pixi.toml")
-
     with pytest.raises(MissionError, match="uses task-shell syntax unsupported"):
-        task.invocation(())
+        _task(tmp_path, command).invocation(())
 
 
 @pytest.mark.skipif(platform.system() != "Windows", reason="restricted Windows runner")
 def test_the_windows_runner_executes_a_real_dependency_in_its_declared_directory(
     tmp_path: Path,
 ) -> None:
-    """The restricted Windows path executes both real commands with graph, cwd, and env intact."""
     manifest = tmp_path / ".mainboard" / "envs" / "default" / "pixi.toml"
     manifest.parent.mkdir(parents=True)
     tmp_path.joinpath("work").mkdir()
@@ -189,14 +184,10 @@ def test_the_windows_runner_executes_a_real_dependency_in_its_declared_directory
 
 
 def test_a_commandless_aggregator_runs_a_shorthand_string_dependency_once(
-    tmp_path: Path,
-    stub_binary: Callable[[str], str],
+    tmp_path: Path, stub_binary: Callable[[str], str]
 ) -> None:
-    """Shorthand tasks and a string dependency keep Pixi's commandless aggregator behavior."""
-    manifest = tmp_path / "pixi.toml"
-    manifest.write_text(
-        '[tasks]\nprepare = "prepare"\n[tasks.all]\ndepends-on = "prepare"\n',
-        encoding="utf-8",
+    manifest = _manifest(
+        tmp_path, '[tasks]\nprepare = "prepare"\n[tasks.all]\ndepends-on = "prepare"\n'
     )
     prepare = stub_binary("prepare.exe")
     observed: list[list[str]] = []
@@ -213,64 +204,33 @@ def test_a_commandless_aggregator_runs_a_shorthand_string_dependency_once(
 
 
 def test_typed_arguments_work_without_a_trailing_separator(tmp_path: Path) -> None:
-    """Required typed values bind directly and malformed calls fail before execution."""
-    task = WindowsTask.parse(
-        "check",
-        {"cmd": "check {{ suite }}", "args": ["suite"], "cwd": str(tmp_path)},
-        manifest=tmp_path / "pixi.toml",
-    )
-
+    task = _task(tmp_path, "check {{ suite }}", args=["suite"], cwd=str(tmp_path))
     assert task.invocation(("unit",)) == (("check", "unit"), {})
     with pytest.raises(MissionError, match="needs 1 arguments"):
         task.invocation(())
 
-    quoted = WindowsTask.parse(
-        "markers",
-        {"cmd": "pytest -m 'not slow'"},
-        manifest=tmp_path / "pixi.toml",
-    )
-    assert quoted.invocation(()) == (("pytest", "-m", "not slow"), {})
 
-    escaped = WindowsTask.parse(
-        "python",
-        {"cmd": r'python -c "print(\"ok\")"'},
-        manifest=tmp_path / "pixi.toml",
-    )
-    assert escaped.invocation(()) == (("python", "-c", 'print("ok")'), {})
-
-    nested = WindowsTask.parse(
-        "nested",
-        {"cmd": '''python -c "print('ok')"'''},
-        manifest=tmp_path / "pixi.toml",
-    )
-    assert nested.invocation(()) == (("python", "-c", "print('ok')"), {})
-
-    empty = WindowsTask.parse(
-        "empty",
-        {"cmd": "   "},
-        manifest=tmp_path / "pixi.toml",
-    )
-    with pytest.raises(MissionError, match="has an empty command"):
-        empty.invocation(())
-
-
-def test_one_bound_value_is_exactly_one_argument_however_it_is_written(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("command", "argv"),
+    [
+        pytest.param("pytest -m 'not slow'", ("pytest", "-m", "not slow"), id="single-quotes"),
+        pytest.param(r'python -c "print(\"ok\")"', ("python", "-c", 'print("ok")'), id="escaped"),
+        pytest.param('''python -c "print('ok')"''', ("python", "-c", "print('ok')"), id="nested"),
+    ],
+)
+def test_a_declared_command_splits_by_posix_quoting(
+    command: str, argv: tuple[str, ...], tmp_path: Path
 ) -> None:
-    """The value a caller binds is data, and a split can only be told about the manifest's text.
+    assert _task(tmp_path, command).invocation(()) == (argv, {})
 
-    Rendering into the command string and splitting the result made `not slow` two arguments and
-    ate the backslashes out of a Windows path, which is a different command from the one the
-    task declared and the one the caller asked for.
-    """
-    task = WindowsTask.parse(
-        "check",
-        {
-            "cmd": "pytest -m {{ markers }} --rootdir {{ root }}",
-            "args": ["markers", "root"],
-            "env": {"SUITE": "{{ markers }}"},
-        },
-        manifest=tmp_path / "pixi.toml",
+
+def test_one_bound_value_is_exactly_one_argument_however_it_is_written(tmp_path: Path) -> None:
+    """Splitting after rendering made `not slow` two arguments and ate a path's backslashes."""
+    task = _task(
+        tmp_path,
+        "pytest -m {{ markers }} --rootdir {{ root }}",
+        args=["markers", "root"],
+        env={"SUITE": "{{ markers }}"},
     )
 
     argv, environment = task.invocation(("not slow", r"C:\Users\me\work"))
@@ -291,65 +251,41 @@ def test_one_bound_value_is_exactly_one_argument_however_it_is_written(
 def test_a_value_carrying_shell_punctuation_is_an_argument_and_not_a_chain(
     value: str, tmp_path: Path
 ) -> None:
-    """Vetting the rendered command blamed the manifest for what the caller typed.
-
-    Only the declared command can be task-shell syntax; what is bound into it reaches the child
-    as one argument whatever punctuation it holds.
-    """
-    task = WindowsTask.parse(
-        "check",
-        {"cmd": "pytest -k {{ pattern }}", "args": ["pattern"]},
-        manifest=tmp_path / "pixi.toml",
-    )
-
+    task = _task(tmp_path, "pytest -k {{ pattern }}", args=["pattern"])
     assert task.invocation((value,)) == (("pytest", "-k", value), {})
 
 
 @pytest.mark.parametrize(
-    ("command", "message"),
+    ("command", "env", "message"),
     [
-        pytest.param("check {{ missing }}", "refers to undeclared argument", id="unknown-name"),
         pytest.param(
-            "check {{ suite | upper }}",
-            "uses a template expression",
-            id="unsupported-expression",
+            "check {{ missing }}", {}, "refers to undeclared argument", id="unknown-name"
         ),
-        pytest.param('python -c "print(1)', "invalid command quoting", id="unclosed-double-quote"),
+        pytest.param(
+            "check {{ suite | upper }}", {}, "uses a template expression", id="an-expression"
+        ),
+        pytest.param(
+            'python -c "print(1)', {}, "invalid command quoting", id="unclosed-double-quote"
+        ),
+        pytest.param("   ", {}, "has an empty command", id="an-empty-command"),
+        pytest.param(
+            "check",
+            {"SUITE": "{{ missing }}"},
+            "refers to undeclared argument",
+            id="an-environment-naming-an-unknown-argument",
+        ),
+        pytest.param(
+            "check",
+            {"SUITE": "{{ suite | upper }}"},
+            "uses a template expression",
+            id="an-environment-expression",
+        ),
     ],
 )
-def test_typed_arguments_refuse_templates_the_fallback_cannot_bind(
-    command: str,
-    message: str,
-    tmp_path: Path,
+def test_a_task_refuses_templates_the_fallback_cannot_bind(
+    command: str, env: dict[str, Json], message: str, tmp_path: Path
 ) -> None:
-    """Template failures name the unsupported contract instead of changing the command."""
-    task = WindowsTask.parse(
-        "check",
-        {"cmd": command, "args": ["suite"]},
-        manifest=tmp_path / "pixi.toml",
-    )
-
-    with pytest.raises(MissionError, match=message):
-        task.invocation(("unit",))
-
-
-@pytest.mark.parametrize(
-    ("value", "message"),
-    [
-        pytest.param("{{ missing }}", "refers to undeclared argument", id="unknown-name"),
-        pytest.param("{{ suite | upper }}", "uses a template expression", id="an-expression"),
-    ],
-)
-def test_a_task_environment_refuses_templates_the_fallback_cannot_bind(
-    value: str, message: str, tmp_path: Path
-) -> None:
-    """An environment value is held to the contract its command is, rather than passed raw."""
-    task = WindowsTask.parse(
-        "check",
-        {"cmd": "check", "args": ["suite"], "env": {"SUITE": value}},
-        manifest=tmp_path / "pixi.toml",
-    )
-
+    task = _task(tmp_path, command, args=["suite"], env=env)
     with pytest.raises(MissionError, match=message):
         task.invocation(("unit",))
 
@@ -385,24 +321,15 @@ def test_a_task_environment_refuses_templates_the_fallback_cannot_bind(
     ],
 )
 def test_the_windows_runner_refuses_malformed_generated_task_fields(
-    body: str,
-    message: str,
-    tmp_path: Path,
+    body: str, message: str, tmp_path: Path
 ) -> None:
-    """A corrupt generated manifest fails at its precise task field."""
-    manifest = tmp_path / "pixi.toml"
-    manifest.write_text(body, encoding="utf-8")
-
     with pytest.raises(MissionError, match=message):
-        WindowsTaskRunner(manifest, "default").run(
-            ("check",), lambda command: CommandResult(0, "", "")
-        )
+        WindowsTaskRunner(_manifest(tmp_path, body), "default").run(("check",), _succeed)
 
 
 def test_an_isolated_environment_excludes_root_tasks(tmp_path: Path) -> None:
-    """A no-default feature exposes only its own declared task set."""
-    manifest = tmp_path / "pixi.toml"
-    manifest.write_text(
+    manifest = _manifest(
+        tmp_path,
         """[environments.isolated]
 features = ["isolated"]
 no-default-feature = true
@@ -411,18 +338,16 @@ root = "root"
 [feature.isolated.tasks]
 check = "check"
 """,
-        encoding="utf-8",
     )
 
     runner = WindowsTaskRunner(manifest, "isolated")
 
     assert set(runner.tasks) == {"check"}
     with pytest.raises(MissionError, match="received no declared task"):
-        runner.run(("root",), lambda command: CommandResult(0, "", ""))
+        runner.run(("root",), _succeed)
 
 
 def test_the_windows_runner_requires_a_generated_manifest(tmp_path: Path) -> None:
-    """The restricted path reports a missing generated manifest as a Mainboard error."""
     with pytest.raises(MissionError, match="generated Pixi manifest does not exist"):
         WindowsTaskRunner(tmp_path / "missing.toml", "default")
 

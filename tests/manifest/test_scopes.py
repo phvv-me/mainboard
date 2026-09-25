@@ -30,7 +30,6 @@ from ..strategies import SPECS, WORDS
 def test_a_spec_reads_a_bare_string_or_a_table_and_names_its_own_kind(
     declaration: str | dict[str, str | bool], version: str, *, path: bool, editable: bool
 ) -> None:
-    """`torch = ">=2.9"` is shorthand, and a source requirement says so rather than pin a range."""
     spec = Spec.model_validate(declaration)
     assert spec.version == version
     assert spec.is_path is path
@@ -39,7 +38,6 @@ def test_a_spec_reads_a_bare_string_or_a_table_and_names_its_own_kind(
 
 @given(low=SPECS, high=SPECS)
 def test_layering_a_spec_prefers_the_overlay_unless_it_is_a_wildcard(low: str, high: str) -> None:
-    """A wildcard says nothing, so the layer underneath keeps its say and extras merge on top."""
     base = Spec.model_validate({"version": low, "index": "a", "channel": "x"})
     over = Spec.model_validate({"version": high, "index": "b"})
     merged = over.merged(base)
@@ -72,18 +70,15 @@ def test_a_source_and_a_registry_version_replace_rather_than_merge(
     over: dict[str, str | bool | list[str]],
     expected: dict[str, str | bool | list[str]],
 ) -> None:
-    """A platform may replace a published dependency with one exact development source."""
     assert Spec.model_validate(over).merged(Spec.model_validate(base)).model_dump() == expected
 
 
 def test_an_ecosystem_entry_must_be_a_table_and_not_a_version_string() -> None:
-    """`python = "3.14"` is a requirement in `[deps]`, never an ecosystem of its own."""
     with pytest.raises(ValueError, match="table with a deps key"):
         Toolchain.model_validate("3.14")
 
 
 def test_a_platform_scope_discovers_ecosystems_and_layers_activation_over_a_base() -> None:
-    """Conda deps, each ecosystem and the plain extras all merge, and nothing else is a chain."""
     base = PlatformScope.model_validate(
         {
             "deps": {"python": ">=3.13", "pueue": "*"},
@@ -121,7 +116,6 @@ def test_a_platform_scope_discovers_ecosystems_and_layers_activation_over_a_base
 def test_a_scope_collects_every_local_path_requirement_across_its_ecosystems(
     names: list[str],
 ) -> None:
-    """A path requirement is what a sync has to ship, wherever in the scope it was declared."""
     scope = Scope.model_validate(
         {
             "deps": {names[0]: {"path": f"packages/{names[0]}"}},
@@ -132,7 +126,6 @@ def test_a_scope_collects_every_local_path_requirement_across_its_ecosystems(
 
 
 def test_a_scope_answers_a_requirement_from_conda_first_then_each_ecosystem() -> None:
-    """Whoever asks for a package does not care which table it arrives through."""
     scope = Scope.model_validate(
         {
             "deps": {"python": "3.14.*"},
@@ -149,7 +142,6 @@ def test_a_scope_answers_a_requirement_from_conda_first_then_each_ecosystem() ->
 
 
 def test_the_environment_roster_answers_by_name_and_refuses_a_stranger() -> None:
-    """`default` is always there because pixi always has it, and everything else is declared."""
     manifest = Manifest(workspace=Header(name="lab"), envs={"serving": Env()})
     assert manifest.environment("serving") is manifest.envs["serving"]
     assert manifest.environment("default").deps == {}
@@ -176,6 +168,5 @@ def test_the_environment_roster_answers_by_name_and_refuses_a_stranger() -> None
 def test_a_manifest_refuses_a_name_that_points_at_no_table(
     tables: dict[str, dict[str, Env | HostProfile] | Lint], match: str
 ) -> None:
-    """A host or lint tool naming a missing container or environment fails at load."""
     with pytest.raises(ValueError, match=match):
         Manifest(workspace=Header(name="lab"), **tables)

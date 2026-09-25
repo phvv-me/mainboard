@@ -22,24 +22,29 @@ def manifest_with_floors(pixi: Pixi) -> None:
     )
 
 
-def test_floor_overrides_answer_empty_without_a_generated_manifest(pixi: Pixi) -> None:
-    assert Pixi._floor_overrides(pixi.manifest) == {}
-
-
+@pytest.mark.parametrize(
+    ("compiled", "exported", "overrides"),
+    [
+        pytest.param(False, None, {}, id="no-generated-manifest"),
+        pytest.param(True, None, {"CONDA_OVERRIDE_CUDA": "13.0"}, id="a-descriptor-floor"),
+        pytest.param(True, "12.4", {}, id="a-callers-own-export-stands"),
+    ],
+)
 def test_floor_overrides_map_descriptor_floors_to_conda_override_vars(
-    pixi: Pixi, monkeypatch: pytest.MonkeyPatch
+    pixi: Pixi,
+    monkeypatch: pytest.MonkeyPatch,
+    exported: str | None,
+    overrides: dict[str, str],
+    *,
+    compiled: bool,
 ) -> None:
-    monkeypatch.delenv("CONDA_OVERRIDE_CUDA", raising=False)
-    manifest_with_floors(pixi)
-    assert Pixi._floor_overrides(pixi.manifest) == {"CONDA_OVERRIDE_CUDA": "13.0"}
-
-
-def test_floor_overrides_leave_a_callers_own_export_standing(
-    pixi: Pixi, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("CONDA_OVERRIDE_CUDA", "12.4")
-    manifest_with_floors(pixi)
-    assert Pixi._floor_overrides(pixi.manifest) == {}
+    if exported is None:
+        monkeypatch.delenv("CONDA_OVERRIDE_CUDA", raising=False)
+    else:
+        monkeypatch.setenv("CONDA_OVERRIDE_CUDA", exported)
+    if compiled:
+        manifest_with_floors(pixi)
+    assert Pixi._floor_overrides(pixi.manifest) == overrides
 
 
 def test_command_vouches_declared_floors_through_its_environment(
@@ -68,7 +73,6 @@ def test_windows_home_storage_failure_names_the_outside_sandbox_provisioning_com
     resolve: bool,
     command: str,
 ) -> None:
-    """A restricted profile failure explains where and how to retry the same provision."""
     result = CommandResult(
         1,
         "",
@@ -100,7 +104,6 @@ def test_other_pixi_install_failures_keep_the_generic_diagnostic(
     operating_system: str,
     stderr: str,
 ) -> None:
-    """Only the known Windows profile signature is attributed to an application sandbox."""
     result = CommandResult(1, "", stderr)
     monkeypatch.setattr(platform, "system", lambda: operating_system)
     monkeypatch.setattr(Pixi, "environment_result", lambda *args, **kwargs: result)
@@ -145,13 +148,7 @@ def test_version_reads_the_pixi_this_machine_runs_and_never_installs_one(
     pixi: Pixi,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`facts`, `doctor` and every host alignment ask this before deciding anything.
-
-    So it must never bootstrap: asking a machine what it runs cannot be what changes what it
-    runs, and the old spelling went through the engine's resolved command, which installs pixi
-    on a machine that has none. The empty name is pixi's own home, resolved here rather than at
-    collection because `PIXI_HOME` is read per call.
-    """
+    """The empty name is pixi's home, resolved here since `PIXI_HOME` is read per call."""
     named = str(PixiEngine.binary_path()) if resolves == "" else resolves
     monkeypatch.setattr(engine, "local", _Machine({named: expected} if named else {}))
     assert pixi.version() == expected

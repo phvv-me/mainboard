@@ -29,14 +29,12 @@ if TYPE_CHECKING:
 # What pixi writes into a prefix's `conda-meta/` once an installation has finished.
 _FINGERPRINT = ".pixi-environment-fingerprint"
 
-# Pixi's own complete activation result, including conda package hooks. It is generated after a
-# successful Windows provision, while Pixi can still initialize its process-global auth store,
-# then consumed by explicit commands that run inside a restricted application sandbox.
+# Pixi's complete activation, conda package hooks included, recorded after a Windows provision
+# (while Pixi can still initialize its auth store) for commands run inside a restricted sandbox.
 _WINDOWS_ACTIVATION = "activation-windows.json"
 
-# The env var conda tooling reads to vouch each virtual-package floor a platform descriptor can
-# carry. A machine that cannot present the package itself still installs the frozen lock its
-# jobs will run under, the cluster login node with no GPU driver being the canonical case.
+# The env var vouching each virtual-package floor, so a machine that cannot present the package
+# (a login node with no GPU driver) still installs the frozen lock its jobs run under.
 _FLOOR_OVERRIDES = {
     "archspec": "CONDA_OVERRIDE_ARCHSPEC",
     "cuda": "CONDA_OVERRIDE_CUDA",
@@ -48,18 +46,19 @@ _FLOOR_OVERRIDES = {
 }
 
 
+def _executable_dirs(prefix: Path, *, windows: bool) -> list[str]:
+    """The prefix's existing command directories: root, `Scripts`, `Library/bin` on Windows."""
+    candidates = (
+        (prefix, prefix / "Scripts", prefix / "Library" / "bin") if windows else (prefix / "bin",)
+    )
+    return [str(candidate) for candidate in candidates if candidate.is_dir()]
+
+
 class Pixi(Tool):
     """The one seam to the pixi binary, pinned to the `pixi.toml` it owns in a workspace env dir.
 
-    Every command that provisions or queries an environment goes through this class on
-    purpose, so the lock rules and the drift diagnosis are stated once. That is why so much of
-    the compile pipeline depends on it and why it depends on so little: the argv building comes
-    from :class:`Tool`, running a child belongs to :class:`Process`, and what comes back is a
-    :class:`CommandResult`.
-
-    Finding the executable (and installing it the first time) is a different job from owning a
-    workspace manifest, so :class:`PixiEngine` is held rather than inherited, and only its
-    resolved command is used.
+    Every provisioning or query command goes through here, so the lock rules and drift diagnosis
+    are stated once. `PixiEngine` finds the executable and is held rather than inherited.
     """
 
     name = "pixi"
@@ -70,22 +69,16 @@ class Pixi(Tool):
         self.manifest = out / self.filename
 
     def version(self) -> str:
-        """The pixi that runs here as `X.Y.Z`, empty on a machine where none resolves."""
         return self.engine.version()
 
     @property
     def command(self) -> BaseCommand:
-        """The pixi executable, resolved by the engine, vouching the workspace's floors.
+        """The engine's pixi with the workspace's `overrides` bound over its own environment.
 
-        Every declared virtual-package floor rides along as its `CONDA_OVERRIDE_*` variable, so
-        a frozen install succeeds on a machine that cannot present the package itself, and a
-        value the caller already exported always wins. Bind the complete overlay once so adding
-        a floor cannot discard Windows' required HOME binding. Read per invocation rather than
-        cached, since the floors live in a manifest the compiler may write moments earlier.
+        Read per invocation, since the compiler may have just rewritten the floors. Bound in one
+        overlay so a floor cannot discard Windows' HOME binding, and outright rather than through
+        `with_env`, which returns a bare command when empty, so callers see one shape.
         """
-        # Bound outright rather than through `with_env`, which hands the bare command back
-        # when there is nothing to bind, so a caller reads one shape of environment on every
-        # platform: what the engine already bound, the floors, or nothing.
         engine = self.engine.command
         environment = dict(engine.env or {}) | self.overrides
         executable = Path(engine.formulate()[0])
@@ -93,54 +86,33 @@ class Pixi(Tool):
 
     @property
     def executable(self) -> Path:
-        """The resolved pixi binary itself, without the environment `command` binds onto it.
-
-        A caller that replaces this process rather than spawning one needs the path and the
-        environment separately, since binding them together is a convenience only a child
-        process inherits.
-        """
+        """The resolved binary alone, for a caller replacing this process rather than spawning."""
         return Path(self.engine.command.formulate()[0])
 
     @property
     def lock(self) -> Path:
-        """The lock file paired with the compiled Pixi manifest."""
         return self.manifest.with_suffix(".lock")
 
     @property
     def overrides(self) -> dict[str, str]:
-        """The `CONDA_OVERRIDE_*` variables this workspace's declared floors vouch for."""
         return Pixi._floor_overrides(self.manifest)
 
     @contextmanager
     def activated(self, env: str = "default") -> Generator[None]:
-        """Prepend the provisioned environment's executable directories for the block.
-
-        Pixi's Windows prefixes expose commands from the root, ``Scripts`` and ``Library/bin``;
-        POSIX prefixes use ``bin``. The env may not exist yet, in which case PATH is untouched.
-        """
-        prefix = self.env_prefix(env)
-        candidates = (
-            (prefix, prefix / "Scripts", prefix / "Library" / "bin")
-            if platform.system() == "Windows"
-            else (prefix / "bin",)
-        )
-        binaries = [str(candidate) for candidate in candidates if candidate.is_dir()]
-        path = local.env["PATH"]
-        with local.env(PATH=os.pathsep.join([*binaries, str(path)])):
+        """Prepend the environment's existing executable directories to PATH for the block."""
+        windows = platform.system() == "Windows"
+        binaries = _executable_dirs(self.env_prefix(env), windows=windows)
+        with local.env(PATH=os.pathsep.join([*binaries, str(local.env["PATH"])])):
             yield
 
     @contextmanager
     def direct_windows_environment(self, env: str) -> Generator[None]:
-        """Activate a Windows prefix with accessible profile and external temporary storage.
+        """Activate a Windows prefix with an accessible profile and temporary storage.
 
-        The temporary directory must not live in the workspace. Provenance is sampled after this
-        context opens, so even a successfully cleaned directory would make the working tree look
-        dirty while an experiment is running.
+        The temporary directory lives outside the workspace, since provenance sampled inside this
+        context would otherwise see a dirty tree.
         """
-        exported, scripts = self._cached_windows_activation()
-        cleared: set[str] = set()
-        for script in scripts:
-            self._apply_generated_activation(script, exported, cleared)
+        exported, cleared = self._windows_activation()
         with (
             TemporaryDirectory(prefix="mainboard-run-", ignore_cleanup_errors=True) as temporary,
             local.env(
@@ -157,7 +129,6 @@ class Pixi(Tool):
             yield
 
     def env_prefix(self, env: str) -> Path:
-        """The provisioned pixi environment prefix for ``env``."""
         return self.manifest.parent / ".pixi" / "envs" / env
 
     def environment_result(self, verb: str, *args: str, resolve: bool = False) -> CommandResult:
@@ -167,29 +138,23 @@ class Pixi(Tool):
                 f"pixi.lock is missing. Run `{Project().name} install --resolve` on a "
                 "solve-capable machine to create and verify the generated manifest/lock pair."
             )
+        editable = self._has_editable_paths()
         return self.within_cwd(
             Process.stream,
             verb,
             *args,
-            locked=not resolve and not self._has_editable_paths(),
-            frozen=not resolve and self._has_editable_paths(),
+            locked=not resolve and not editable,
+            frozen=not resolve and editable,
         )
 
     def solve(self) -> None:
-        """Solve the lock for every platform the manifest declares, installing nothing.
-
-        A solve is not an install: a lock can be solved here for a platform this machine cannot
-        run, then shipped to the host that can (a Windows card from a Linux workstation).
-        """
+        """Solve the lock for every declared platform, installing nothing, even ones not this."""
         result = self.within_cwd(Process.stream, "lock")
         if result.returncode:
             raise MissionError("`pixi lock` failed (see its output above)")
 
     def runs_here(self) -> bool:
-        """Whether the compiled manifest declares the platform this machine is.
-
-        A manifest that declares no platforms, or none compiled yet, runs here.
-        """
+        """Whether the compiled manifest declares this platform, or none, or is not compiled."""
         try:
             parsed = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -202,37 +167,25 @@ class Pixi(Tool):
         return not names or current_platform() in names
 
     def install(self, env: str, *, resolve: bool = False) -> None:
-        """Install ``env`` locked by default and verify every explicitly resolved lock."""
-        locked = not resolve
+        """Install `env` locked by default and verify every explicitly resolved lock."""
         result = self.environment_result("install", "-e", env, resolve=resolve)
-        self._raise_on_lock_drift(result, locked=locked)
+        self._raise_on_lock_drift(result, locked=not resolve)
         self._raise_on_inaccessible_windows_home(result, env=env, resolve=resolve)
         if result.returncode:
             raise MissionError("`pixi install` failed (see its output above)")
-        # Known wart carried over from chefe: a resolve re-installs once more from the
-        # now-verified lock, so `install(env, resolve=True)` runs `pixi install` twice. The
-        # repair pass rides that second, locked call, so an environment is audited once and
-        # always against a lock pixi has already verified.
+        # Known wart from chefe: a resolve installs twice, the repair riding the second, locked
+        # call, so an environment is audited once against a verified lock.
         if resolve:
             self.install(env)
         else:
             self.repair(env)
 
     def sync(self, env: str) -> None:
-        """Bring the installed prefix in line with the lock, without touching the lock itself.
+        """Bring the installed prefix in line with the lock, frozen, raising what pixi said.
 
-        The update `pixi run` performs on its way into a command, taken deliberately instead of
-        as a side effect. For one command that side effect is fine; for a wave of nine jobs
-        starting together out of one pinned tree it is a race, since they share the prefix and
-        each one decides for itself that it needs updating. The loser sees the environment
-        mid-write: `Failed to update PyPI packages ... No such file or directory`, or an editable
-        package that has vanished for the moment it takes to relink (miyabi-g, 2026-09-05).
-
-        Frozen, because a job is never the place a lock gets solved. A failure is raised with
-        what pixi said, since an environment that cannot be brought current is not something to
-        run a command in.
-
-        env: the environment whose prefix is brought up to the lock.
+        The update `pixi run` does as a side effect, taken deliberately: jobs of one wave sharing
+        a prefix raced it and the loser saw it mid-write (`Failed to update PyPI packages ... No
+        such file or directory`, or a vanished editable; miyabi-g, 2026-09-05).
         """
         result = self.within_cwd(Process.capture, "install", "--frozen", "-e", env)
         if result.returncode:
@@ -242,13 +195,10 @@ class Pixi(Tool):
             )
 
     def locked(self, env: str) -> dict[str, str]:
-        """Every package the lock pins for ``env``, by name and version, without solving.
+        """Every package the lock pins for `env`, name to version, empty when it has none.
 
-        ``--frozen`` reads the lock exactly as it sits instead of checking it against the
-        manifest, which is what lets a caller take one reading before an edit and one after and
-        report only what the solve actually moved. An environment the lock does not carry
-        answers with nothing, since a snapshot of what is not there yet is empty rather than an
-        error.
+        `--frozen` reads the lock as it sits, so readings before and after an edit show exactly
+        what the solve moved.
         """
         if not self.lock.exists():
             return {}
@@ -260,11 +210,7 @@ class Pixi(Tool):
         return {str(package["name"]): str(package["version"]) for package in packages}
 
     def ready(self, env: str) -> bool:
-        """Whether pixi ever finished installing ``env``.
-
-        pixi stamps the environment fingerprint only once an installation completes, so an
-        existing prefix directory is not enough. An interrupted install leaves one behind.
-        """
+        """Whether pixi finished installing `env`: its fingerprint, not a mere prefix, exists."""
         return (self.env_prefix(env) / "conda-meta" / _FINGERPRINT).is_file()
 
     def run(
@@ -274,26 +220,17 @@ class Pixi(Tool):
         *,
         exports: dict[str, str] | None = None,
     ) -> int:
-        """Run exact task or command argv through Pixi's cross-platform runner.
+        """Run a task or command argv through Pixi, each token a distinct argument, no shell.
 
-        Pixi owns environment activation while each caller-owned token remains a distinct
-        process argument. No intermediate shell reparses quoting or operators. On Windows an
-        explicit argv executes directly from the installed prefix. A declared task is resolved
-        from the generated Pixi manifest and executed under the same cached activation: Pixi
-        0.78's authentication store cannot resolve the profile directory in restricted Windows
-        application sandboxes even when ``HOME`` and ``USERPROFILE`` are correct. The narrow
-        fallback keeps task cwd, dependencies, environment, argument forwarding, and exit codes
-        without starting Pixi before the child.
+        Under a restricted Windows sandbox, where Pixi 0.78's auth store cannot resolve the
+        profile even with `HOME` and `USERPROFILE` right, an argv runs straight from the prefix
+        and a declared task through `WindowsTaskRunner`, both under the cached activation and
+        without starting Pixi.
 
-        command: task name and arguments, or an ad-hoc command argv.
-        env: generated environment in which to execute it.
+        command: a task name and arguments, or an ad-hoc argv.
         """
         if self._restricted_windows_command(command):
-            if not self.ready(env):
-                raise MissionError(
-                    f"environment {env!r} is not installed; run `{Project().name} install {env}`"
-                )
-            runner = WindowsTaskRunner(self.manifest, env)
+            runner = self._restricted_runner(env)
             with self.direct_windows_environment(env), local.env(**(exports or {})):
                 if command[0] in runner.tasks:
                     return runner.run(command, Process.stream).returncode
@@ -305,13 +242,9 @@ class Pixi(Tool):
     def capture(
         self, command: Sequence[str], env: str = "default", *, timeout: float | None = None
     ) -> CommandResult:
-        """Run through Pixi while capturing output under ``timeout`` seconds."""
+        """`run`, capturing output under `timeout` seconds."""
         if self._restricted_windows_command(command):
-            if not self.ready(env):
-                raise MissionError(
-                    f"environment {env!r} is not installed; run `{Project().name} install {env}`"
-                )
-            runner = WindowsTaskRunner(self.manifest, env)
+            runner = self._restricted_runner(env)
             with self.direct_windows_environment(env):
                 if command[0] in runner.tasks:
                     deadline = None if timeout is None else monotonic() + timeout
@@ -331,6 +264,14 @@ class Pixi(Tool):
             *command,
         )
 
+    def _restricted_runner(self, env: str) -> WindowsTaskRunner:
+        """The sandbox task runner for an installed `env`."""
+        if not self.ready(env):
+            raise MissionError(
+                f"environment {env!r} is not installed; run `{Project().name} install {env}`"
+            )
+        return WindowsTaskRunner(self.manifest, env)
+
     def _restricted_windows_command(self, command: Sequence[str]) -> bool:
         """Whether a Windows command can use cached activation and explicit auth storage."""
         return (
@@ -341,7 +282,6 @@ class Pixi(Tool):
 
     @property
     def windows_activation_cache(self) -> Path:
-        """Pixi's cached complete Windows activation result for this environment shard."""
         return self.manifest.parent / _WINDOWS_ACTIVATION
 
     def cache_windows_activation(self, env: str) -> None:
@@ -360,30 +300,26 @@ class Pixi(Tool):
         self.windows_activation_cache.write_text(text, encoding="utf-8")
 
     def recorded_environment(self, env: str, base: Mapping[str, str]) -> dict[str, str]:
-        """`base` inside ``env`` as the recorded Windows activation describes it.
+        """`base` entered into `env` the way a restricted command enters it, as a plain mapping.
 
-        The same activation a restricted command enters, as a plain mapping for a caller that
-        starts its own process: the recorded variables over `base`, the declared clears taken
-        out, and the prefix's executable directories leading `PATH`.
-
-        env: the environment the record activates.
-        base: the environment being entered from.
+        The recorded variables over `base`, the declared clears taken out, and the prefix's
+        executable directories leading `PATH`.
         """
+        exported, cleared = self._windows_activation()
+        entered = {
+            name: value for name, value in {**base, **exported}.items() if name not in cleared
+        }
+        binaries = _executable_dirs(self.env_prefix(env), windows=True)
+        entered["PATH"] = os.pathsep.join([*binaries, entered.get("PATH", "")])
+        return entered
+
+    def _windows_activation(self) -> tuple[dict[str, str], set[str]]:
+        """The recorded activation's exports and clears, its generated scripts applied."""
         exported, scripts = self._cached_windows_activation()
         cleared: set[str] = set()
         for script in scripts:
             self._apply_generated_activation(script, exported, cleared)
-        entered = {
-            name: value for name, value in {**base, **exported}.items() if name not in cleared
-        }
-        prefix = self.env_prefix(env)
-        binaries = [
-            str(directory)
-            for directory in (prefix, prefix / "Scripts", prefix / "Library" / "bin")
-            if directory.is_dir()
-        ]
-        entered["PATH"] = os.pathsep.join([*binaries, entered.get("PATH", "")])
-        return entered
+        return exported, cleared
 
     def _cached_windows_activation(self) -> tuple[dict[str, str], list[Path]]:
         """Load the complete activation Pixi recorded when this prefix was provisioned."""
@@ -417,8 +353,7 @@ class Pixi(Tool):
     ) -> None:
         """Apply Mainboard's generated dotenv/unset batch scripts, refusing arbitrary ones.
 
-        A POSIX shell script declared for every platform is skipped rather than refused: pixi
-        cannot run it on Windows either, so its effects were never part of the activation here.
+        A POSIX `.sh` is skipped: pixi cannot run it on Windows either.
         """
         if script.suffix == ".sh":
             return
@@ -441,11 +376,8 @@ class Pixi(Tool):
                 if line.startswith("#") or "=" not in line:
                     continue
                 name, _, value = line.partition("=")
-                # Upper-cased on both sides of the question, because that is what the block this
-                # feeds is compared against: the cached activation was loaded upper-cased, and
-                # the batch script this reproduces skips a name `if not defined`, which Windows
-                # answers without regard to case. Testing `foo` against a cached `FOO` said no
-                # and put both spellings in the same CreateProcess block.
+                # Upper-cased like the cached activation, since the batch `if not defined` is
+                # case-blind; `foo` beside a cached `FOO` put both in one CreateProcess block.
                 key = name.upper()
                 if key and key not in os.environ and key not in exported:
                     exported[key] = value
@@ -463,13 +395,10 @@ class Pixi(Tool):
         )
 
     def repair(self, env: str) -> None:
-        """Reinstall whatever ``env`` still holds that can no longer be trusted to import.
+        """Reinstall whatever `env` holds that can no longer be trusted to import.
 
-        Only a finished installation is audited, because a prefix an interrupted install
-        abandoned half-written reads as damaged everywhere and would turn one broken package
-        into a whole-environment reinstall. A reinstall that leaves a wheel still missing every
-        import root it declares is a failure rather than a repair, so it raises here instead of
-        handing back an environment whose first import is the one that fails.
+        Only a finished install is audited, since a half-written prefix reads damaged everywhere.
+        A wheel still missing every import root after the reinstall raises.
         """
         if not self.ready(env):
             return
@@ -487,13 +416,9 @@ class Pixi(Tool):
 
     @staticmethod
     def _floor_overrides(manifest: Path) -> dict[str, str]:
-        """The `CONDA_OVERRIDE_*` values for every floor the generated `manifest` declares.
+        """The `CONDA_OVERRIDE_*` values for the floors in `manifest`'s platform descriptors.
 
-        Floors are read from the workspace platform descriptors the compiler wrote, the one place
-        they already live, and an override the process env already carries is left to stand so a
-        caller keeps the last word.
-
-        manifest: path to the generated pixi manifest.
+        An override the process already exports is left to stand, so the caller has the last word.
         """
         try:
             parsed = tomllib.loads(manifest.read_text(encoding="utf-8"))
@@ -509,25 +434,14 @@ class Pixi(Tool):
         }
 
     def shell_hook(self, env: str = "default", *, shell: str = "bash") -> str:
-        """The activation script for ``env`` as a sourceable ``shell`` snippet.
-
-        It carries the env vars, PATH, and `[activation] scripts` pixi sets when entering the
-        env, the exact activation :meth:`activated` performs, captured as text so a generated
-        `activate.sh` can reproduce the whole pixi env without invoking pixi at job time.
-        """
-        # Frozen, like every install: a host runs the lock it was shipped and never solves, and
-        # without the flag a lock pixi reads as out of date is re-solved for every platform,
-        # which is how a Windows host came to build an osx-arm64 sdist (2026-09-11).
+        """Pixi's full activation of `env` as a sourceable `shell` snippet, for `activate.sh`."""
+        # Frozen: unfrozen, a lock pixi reads as stale is re-solved for every platform, which is
+        # how a Windows host came to build an osx-arm64 sdist (2026-09-11).
         command = self.command["shell-hook", "--frozen", "-s", shell, "-e", env, *self.scope()]
         return Process.output(command, "pixi shell-hook")
 
     def update(self, env: str) -> None:
-        """Move ``env``'s lock to the newest releases the manifest still allows.
-
-        The one verb that re-reads the indexes inside the declared bounds. `install` keeps
-        whatever the lock already pins as long as it satisfies the manifest, which is the right
-        default and the reason asking for newer releases has to be its own request.
-        """
+        """Move `env`'s lock to the newest releases the manifest allows, which `install` keeps."""
         if self.within_cwd(Process.stream, "update", "-e", env).returncode:
             raise MissionError("`pixi update` failed (see its output above)")
 
@@ -535,11 +449,10 @@ class Pixi(Tool):
     def _raise_on_lock_drift(result: CommandResult, *, locked: bool) -> None:
         """Turn Pixi's pre-task lock rejection into an actionable recovery message."""
         failure = f"{result.stdout}\n{result.stderr}".lower().replace("-", " ")
-        task_started = "pixi task (" in failure
         if (
             result.returncode
             and locked
-            and not task_started
+            and "pixi task (" not in failure
             and "lock file" in failure
             and "not up to date" in failure
         ):
@@ -574,7 +487,6 @@ class Pixi(Tool):
             manifest = tomllib.loads(self.manifest.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return False
-
         pending = [manifest]
         while pending:
             value = pending.pop()

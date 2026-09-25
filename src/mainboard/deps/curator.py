@@ -14,32 +14,22 @@ if TYPE_CHECKING:
     from ..board import Board
     from ..manifest import Manifest
 
-# What a change reports where a requirement was not there, on either side of the edit.
 _ABSENT = "absent"
-
-# The environment a workspace-wide edit resolves against, pixi's own name for the one every
-# bare command runs in.
 _DEFAULT = "default"
-
-# Where a moved pin is reported from, since the lock is one file for every environment.
 _LOCK = "pixi.lock"
-
 # pixi's `[pypi-options]` key naming the Python index a workspace resolves through.
 _INDEX_URL = "index-url"
 
-# The characters that separate a name from the constraint after it. A leading one is part of
-# the name instead, which is what keeps a scoped npm package (`@openai/codex`) whole while
-# still splitting the `@` that npm itself writes between a scoped name and its range.
+# What separates a name from its constraint; a leading one belongs to the name, keeping a scoped
+# npm package (`@openai/codex`) whole while splitting npm's own `name@range`.
 _OPERATORS = "<>=!~^@ "
 
 
 class Change(FrozenModel):
     """One requirement or locked version an edit moved, and where it moved.
 
-    name: the dependency that moved.
     where: the manifest table declaring it, or the lock when the solve moved it.
-    before: what it was, `absent` when nothing declared it.
-    after: what it is now, `absent` when the edit dropped it.
+    before: `absent` when nothing declared it; `after` likewise when the edit dropped it.
     """
 
     name: str
@@ -49,22 +39,17 @@ class Change(FrozenModel):
 
 
 class Dependencies:
-    """What the workspace declares, edited in the manifest and then re-solved.
+    """What the workspace declares: add, remove or upgrade in the manifest, then re-solve.
 
-    The three verbs a dependency change already needed and had to be done by hand: write the
-    requirement into the right table, drop it, or move it to the newest release. Each one ends
-    the same way, by handing the manifest to the provisioner that `install` uses, so a change
-    is never left declared but unsolved, and each reports the same thing, every constraint and
-    every locked version that actually moved.
+    Each verb ends in `install`'s provisioner, so nothing is left declared but unsolved, and
+    reports every constraint and locked version that moved.
     """
 
     def __init__(self, board: Board) -> None:
-        """board: the workspace whose manifest is edited and whose environment is re-solved."""
         self.board = board
 
     @property
     def path(self) -> Path:
-        """The workspace manifest file."""
         return self.board.root / self.board.project.manifest
 
     def add(
@@ -78,15 +63,9 @@ class Dependencies:
     ) -> list[Change]:
         """Declare `spec` in the table its flags name, then re-solve.
 
-        A spec carrying its own constraint is written exactly as given. A bare name is asked of
-        the ecosystem's index and pinned to what it publishes, so `add tqdm` and `upgrade tqdm`
-        write the same requirement and neither one has to be looked up by hand.
+        A bare name is pinned to what the ecosystem's index publishes, as `upgrade` would.
 
-        spec: the requirement, a bare name or a name with the constraint it carries.
-        ecosystem: whose resolver installs it, `conda` for the manifest's default one.
         env: an environment name, the workspace-wide table when empty.
-        dev: whether it is a development-only requirement.
-        resolve: re-solve after the edit, which is what makes the lock answer for it.
         """
         self.environment(env)
         name, constraint = Dependencies._split(spec)
@@ -106,12 +85,7 @@ class Dependencies:
         return env
 
     def locate(self, name: str, *, ecosystem: str, env: str, dev: bool) -> Slot:
-        """The one table declaring `name`, refusing when none does or several do.
-
-        Refusing on several is the honest answer rather than a guess, since a name declared for
-        conda and again for an environment's Python is two different requirements and dropping
-        the wrong one is silent until the next solve.
-        """
+        """The one table declaring `name`, refusing none, and several rather than guessing."""
         searched = self.searched(ecosystem=ecosystem, env=env, dev=dev)
         found = [slot for slot in searched if name in searched[slot]]
         if not found:
@@ -131,12 +105,7 @@ class Dependencies:
         return index.pin(index.latest(name))
 
     def registries(self, ecosystem: str) -> tuple[str, ...]:
-        """Where the manifest says this ecosystem resolves from, empty for a public default.
-
-        Only the two the manifest actually configures answer here, the conda channels the
-        workspace declares and a Python index it points somewhere other than PyPI, since those
-        are the two whose newest release genuinely differs from the public one.
-        """
+        """The conda channels, or a non-PyPI Python index, the manifest resolves from."""
         manifest = self.board.manifest
         if ecosystem == "conda":
             return tuple(manifest.workspace.channels)
@@ -156,15 +125,7 @@ class Dependencies:
     ) -> list[Change]:
         """Drop `name` from the one table declaring it, then re-solve.
 
-        With no flags the whole manifest is searched, so dropping a requirement never asks the
-        caller to remember which table it was written into. Flags narrow that search to the
-        tables they name, which is also how a name declared in several tables is told apart.
-
-        name: the dependency to drop.
-        ecosystem: narrow the search to one resolver's tables.
-        env: narrow the search to one environment's tables.
-        dev: narrow the search to development-only tables.
-        resolve: re-solve after the edit.
+        The whole manifest is searched unless the flags narrow it to the tables they name.
         """
         slot = self.locate(name, ecosystem=ecosystem, env=env, dev=dev)
         manifest = ManifestText(self.path.read_text(encoding="utf-8"))
@@ -178,14 +139,8 @@ class Dependencies:
         return self.settled(manifest, change, env=env, resolve=resolve)
 
     def resolved(self, manifest: Manifest, *, env: str, refresh: bool = False) -> list[Change]:
-        """Re-solve the environment and report every pin the lock moved.
+        """Re-solve `env` and report every pin the solve itself moved, read via `pixi list`.
 
-        The lock is read before and after through pixi's own frozen listing, so what is
-        reported is what the solve did rather than what the edit asked for, which is the
-        difference between adding one requirement and learning it dragged forty others with it.
-
-        manifest: the manifest to solve from, the reloaded one after an edit.
-        env: the environment to re-solve, the default one when empty.
         refresh: ask the indexes for newer releases inside the declared bounds.
         """
         provisioner = Provisioner(self.board.root, manifest)
@@ -216,12 +171,7 @@ class Dependencies:
     def settled(
         self, manifest: ManifestText, change: Change, *, env: str, resolve: bool
     ) -> list[Change]:
-        """Write the edited manifest, then re-solve, reporting the constraint and the lock.
-
-        The manifest is validated by reloading it before anything solves against it, so an edit
-        that would not parse is reported as the edit it was rather than as a solver failure
-        several minutes later.
-        """
+        """Write the edited manifest, reload it (failing fast on a bad edit), then re-solve."""
         self.path.write_text(manifest.text(), encoding="utf-8")
         self.board.shared.pop("manifest", None)
         self.board.shared.pop("resolver", None)
@@ -238,29 +188,14 @@ class Dependencies:
 
     @staticmethod
     def _split(spec: str) -> tuple[str, str]:
-        """A requirement as written, split into the name and whatever constraint it carries.
-
-        The `@` npm writes between a package and its range is a separator rather than part of the
-        constraint, so it is dropped once it has done its job of marking where the name ended.
-        """
+        """A requirement split into its name and constraint, npm's `@` separator dropped."""
         cut = next((at for at, mark in enumerate(spec) if at and mark in _OPERATORS), len(spec))
         return spec[:cut].strip(), spec[cut:].strip().removeprefix("@").strip()
 
     def upgrade(
         self, name: str = "", *, ecosystem: str = "", env: str = "", dev: bool = False
     ) -> list[Change]:
-        """Move `name` to its newest release, or the whole lock forward inside its bounds.
-
-        Named, this rewrites one constraint to what the ecosystem's index publishes now, which
-        is the only way past a ceiling the manifest itself declares. Unnamed, nothing in the
-        manifest changes and the lock is re-solved against the indexes, which moves every pin
-        as far as the constraints already allow.
-
-        name: the dependency to bump, every declared one inside its bounds when empty.
-        ecosystem: narrow the search to one resolver's tables.
-        env: narrow the search to one environment's tables.
-        dev: narrow the search to development-only tables.
-        """
+        """Move `name` to its newest release, past its ceiling, or the whole lock within bounds."""
         if not name:
             self.environment(env)
             return self.resolved(self.board.manifest, env=env, refresh=True)

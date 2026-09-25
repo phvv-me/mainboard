@@ -23,7 +23,6 @@ _MANIFESTS = st.builds(
 
 
 def test_load_renders_and_validates_the_full_fixture(loaded: Manifest) -> None:
-    """One pass through tomllib, the `{{ }}` rendering, and the schema, in that order."""
     assert loaded.workspace.name == "lab"
     assert loaded.vars["scratch"] == "/scratch/lab"
     assert loaded.vars["station"].startswith(("linux-", "macos-", "windows-"))
@@ -64,7 +63,6 @@ def test_a_manifest_without_a_workspace_table_names_its_workspace_after_its_dire
 def test_a_manifest_that_cannot_be_read_names_what_went_wrong(
     tmp_path: Path, body: str | None, match: str
 ) -> None:
-    """A missing file, broken TOML, a template error and a schema error each name their spot."""
     path = tmp_path / Project().manifest
     if body is not None:
         path.write_text(body, encoding="utf-8")
