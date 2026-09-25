@@ -279,12 +279,10 @@ def test_a_second_lock_builds_beside_the_first_and_never_into_it(
     assert first.parent == second.parent
     assert {path.name: path.read_bytes() for path in first.iterdir() if path.is_file()} == before
     assert (first / STAMP).read_text(encoding="utf-8").strip() == first.name
-    # Each prefix keeps the artifact it was built from, so neither can be read as the other's.
     assert (first / "pixi.lock").read_text(encoding="utf-8") != (second / "pixi.lock").read_text(
         encoding="utf-8"
     )
-    # And each carries the activation a job sources, naming itself rather than the mirror's
-    # mutable environment.
+    # Its activation names itself, not the mirror's mutable environment.
     assert "export ONE=1" in (first / "activate.sh").read_text(encoding="utf-8")
 
 
@@ -308,8 +306,7 @@ def test_a_workspace_that_installs_itself_is_built_against_its_root_and_not_the_
     assert (built / "dotenv.sh").read_text(encoding="utf-8") == f'. "{root}/.env"\n'
     # Nothing relative survives anywhere in the copy, whatever the artifact declared it for.
     assert not [path for path in built.iterdir() if "../.." in path.read_text(encoding="utf-8")]
-    # And the environment is still addressed by what it was built from, not by where: the source
-    # keeps its bytes, so the digest a dispatch pinned is the one the host arrives at.
+    # The source keeps its bytes, so the pinned digest is the one the host arrives at.
     assert digest_of(self_installing) == digest == built.name
 
 
@@ -429,8 +426,6 @@ def test_prune_keeps_every_environment_a_pinned_tree_still_names(
     dropped = prefixes.prune(live=live)
 
     assert live == {"kept"}
-    # The oldest environment on the host survives because a tree still activates it, and the one
-    # a moment younger, which nothing names, does not.
     assert dropped == ["stale"]
     assert sorted(entry.name for entry in prefixes.base.iterdir()) == [
         "kept",

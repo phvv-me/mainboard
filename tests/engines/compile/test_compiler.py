@@ -29,10 +29,7 @@ _BARE = '[workspace]\nname = "w"\n'
 _GROWN = '[workspace]\nname = "w"\n[deps]\nripgrep = "*"\n'
 _PROJECT = "mainboard"
 
-# One edit per declared manifest table, so which side of `Manifest.uncompiled` a table sits on
-# is decided by the compiler rather than by whoever last remembered to update a set. Every
-# table gets an edit, and the test below reads the compiled output to say whether that edit
-# reached it.
+# One edit per declared manifest table; the compiled output decides its `uncompiled` side.
 _EDITS: dict[str, Json] = {
     "workspace": {"name": "w", "version": "9.9.9"},
     "vars": {"where": "elsewhere"},
@@ -425,8 +422,7 @@ def test_install_locked_blesses_the_lock_after_a_successful_resolve(
     fp: FakeProcess,
     solver_version: str,
 ) -> None:
-    # `resolve=True` recurses into a second, locked install to verify the freshly solved lock
-    # (`Pixi.install`'s known double-install wart), so the lock must already exist by then.
+    # `resolve=True` re-installs locked to verify the solve, so the lock must exist by then.
     pixi.lock.write_text("version: 7\n")
     compiler = compiler_from(_BARE)
     compiler.write(files)

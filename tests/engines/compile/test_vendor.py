@@ -13,10 +13,7 @@ from mainboard.engines.compile.provisioner import environment_shard
 from mainboard.engines.compile.state import SyncState
 from mainboard.engines.compile.vendor import outside, vendor_root
 
-# A workspace that installs itself and depends on a house package two directories above its
-# root, the shape every unpublished house package arrives in. It resolves on the workstation,
-# where the workspace sits inside the monorepo holding that package, and names nothing at all on
-# a host, where the mirror is a sibling of the monorepo's mirror rather than a child of it.
+# A self-installing workspace depending on a house package two directories above its root.
 _MANIFEST = """
 [workspace]
 name = "lab"
@@ -28,12 +25,9 @@ sample-lib = { path = "../../packages/sample_lib", editable = true }
 
 _PYPROJECT = '[project]\nname = "sample-lib"\nversion = "0.1.0"\n'
 
-# Where the compiled artifact of the default environment spells the vendored dependency: inside
-# the workspace, three parents up from the shard it is written into, on every machine.
 _VENDORED = "../../../.mainboard/vendor/sample-lib"
 
-# A lock as pixi writes one for an editable path dependency: the location, relative to the
-# manifest it was solved from, and no hash of anything under it.
+# A lock as pixi writes one for an editable path dependency: a relative location, no hash.
 _LOCK = f"version: 7\npackages:\n- pypi: {_VENDORED}\n  name: sample-lib\n"
 
 
@@ -124,8 +118,7 @@ def test_a_workstation_and_a_hosts_mirror_reach_one_environment_and_one_resoluti
 
     assert digest_of(solved.out) == digest_of(landed.out)
     assert solved.resolution_digest() == landed.resolution_digest()
-    # And the host left the copy the mirror carried exactly as it found it, since there is no
-    # tree above its root to link into and nothing better to say about it.
+    # The host left the mirror's copy as it found it.
     copy = there / vendor_root() / "sample-lib"
     assert copy.is_dir() and not (copy / "src").is_symlink()
     assert (copy / "src" / "sample_lib" / "__init__.py").read_text() == "SHADE = 'ai'\n"
@@ -147,8 +140,7 @@ def test_the_vendored_copy_is_a_real_directory_whose_entries_track_the_source(
     (source / "src" / "sample_lib" / "__init__.py").write_text("SHADE = 'kon'\n", encoding="utf-8")
     assert (vendored / "src" / "sample_lib" / "__init__.py").read_text() == "SHADE = 'kon'\n"
 
-    # A file added or removed at the source's own root changes what the package is, and reaches
-    # the vendored directory on the next compile.
+    # A file added or removed at the source's root reaches the vendored directory.
     (source / "README.md").write_text("sample_lib\n", encoding="utf-8")
     (source / "pyproject.toml").unlink()
     compile_at(root)
@@ -215,10 +207,8 @@ def test_one_environments_compile_keeps_what_another_environment_declares(
     assert (root / vendor_root() / "sample-lib" / "pyproject.toml").is_file()
 
 
-# Verbatim from research/reproducibility/.mainboard/envs/default/pixi.lock, solved by pixi
-# 0.79.0 on 2026-09-06 from a manifest spelling `../../../.mainboard/vendor/atpx`. pixi kept the
-# workspace's own root as the three parents it was handed and collapsed the vendored pair into
-# two, which is one directory written two ways and was read as two.
+# Verbatim from research/reproducibility's lock, solved by pixi 0.79.0 on 2026-09-06 from a
+# manifest spelling `../../../.mainboard/vendor/atpx`, which it collapsed to two parents.
 _SOLVED_LOCK = """version: 7
 environments:
   default:
@@ -242,8 +232,7 @@ packages:
   - cycler>=0.12
 """
 
-# The same lock as pixi would have written it had it kept the spelling it was handed. One
-# artifact, two texts, and until 2026-09-06 two addresses.
+# The same lock with the spelling pixi was handed.
 _HANDED_LOCK = _SOLVED_LOCK.replace("../../vendor/", "../../../.mainboard/vendor/")
 
 
@@ -294,11 +283,8 @@ def test_only_a_token_that_reaches_inside_the_workspace_is_ever_rewritten(
     )
 
 
-# Verbatim from /home/pedro/projects/.mainboard/envs/default/pixi.toml, the monorepo's own
-# compiled artifact. `{{ config_root }}` renders to the manifest's directory at load time, on
-# the promise the manifest states in as many words, that a host mirroring the repository
-# elsewhere still gets its own root. So this one line is the machine's rather than the
-# workspace's, and every other byte of the file is the same everywhere.
+# Verbatim from the monorepo's compiled artifact, whose one machine-specific line is the root
+# `{{ config_root }}` rendered.
 _ROOTED_MANIFEST = """[workspace]
 name = "life"
 version = "0.1.0"
@@ -316,9 +302,7 @@ path = "../../../packages/sample_lib"
 editable = true
 """
 
-# And from the lock beside it, which carries no machine path at all: every local source it
-# records is already relative, which is why the two machines' locks are byte-identical and only
-# the manifest split them.
+# The lock beside it carries only relative sources, so only the manifest split the machines.
 _ROOTED_LOCK = """version: 7
 platforms:
 - name: linux-64-system

@@ -36,16 +36,10 @@ def manifest_from() -> Callable[[str], Manifest]:
 
 @pytest.fixture(autouse=True)
 def tool_paths(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
-    """Stub a `pixi` executable on plumbum's PATH.
+    """Stub `pixi` on plumbum's PATH, yielding the resolved path a fake registers against.
 
-    Backend commands resolve without the real tool installed, and `pytest-subprocess`
-    intercepts the actual invocation. Yields the tool's resolved absolute path, which is what
-    plumbum runs and therefore what a fake registers.
-
-    Autouse, because `PixiEngine.command` falls back to bootstrapping pixi when the name is
-    absent from PATH. Without the stub these tests pass only on a machine that already has pixi
-    installed, and on one that does not the bootstrap runs the installer as an extra subprocess
-    that eats the registered fake before the call under test is ever made.
+    Autouse, since without it `PixiEngine.command` bootstraps pixi on a machine lacking one and
+    the installer eats the registered fake.
     """
     bindir = tmp_path_factory.mktemp("bin")
     executable = bindir / "pixi"
@@ -65,11 +59,7 @@ def isolated_pixi_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def solver_version(fp: FakeProcess, tool_paths: dict[str, str]) -> str:
-    """Answer `pixi --version` with the pinned version, which a successful solve records.
-
-    Registered before a test's own fakes so the probe is answered by this entry rather than
-    eating one of the generic `fp.any()` slots the test set aside for pixi itself.
-    """
+    """Answer `pixi --version` with the pin, registered before a test's own `fp.any()` fakes."""
     fp.register([tool_paths["pixi"], "--version"], stdout=f"pixi {PIXI_VERSION}\n", occurrences=4)
     return PIXI_VERSION
 
@@ -91,27 +81,19 @@ def files(pixi: Pixi) -> Iterator[Writer]:
 
 @pytest.fixture
 def stub_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Callable[[str], str]]:
-    """A factory placing a fake executable on plumbum's PATH, returning its resolved path.
-
-    `pytest-subprocess` intercepts the run itself, so the file only has to exist and be
-    executable for plumbum's lookup to resolve it, and that resolved path is what a fake
-    process registers against.
-    """
+    """A factory placing a fake executable on plumbum's PATH, returning its resolved path."""
     bindir = tmp_path_factory.mktemp("stubs")
 
     def install(name: str) -> str:
-        # Windows runs a program only by a `PATHEXT` spelling, so a bare name stands there as
-        # its `.exe`, which is what both plumbum and a manager's launcher resolve it to.
+        # Windows runs a program only by a `PATHEXT` spelling, so a bare name stands as `.exe`.
         if os.name == "nt":
             executable = bindir / (name if Path(name).suffix else f"{name}.exe")
         else:
             executable = bindir / name.removesuffix(".exe")
         executable.write_text("#!/bin/sh\n")
         executable.chmod(0o755)
-        # A Windows lookup finds `worker.exe` for `worker` through PATHEXT and a POSIX one
-        # does not, so the same stub also stands under its bare name there, and the path
-        # handed back is the one the lookup on this platform resolves to. The check reads
-        # the real platform, since a test may already be pretending to be Windows.
+        # POSIX has no PATHEXT, so an `.exe` stub also stands bare there. `os.name` is the real
+        # platform, since a test may be pretending to be Windows.
         if os.name != "nt" and executable.suffix == ".exe":
             bare = executable.with_suffix("")
             bare.write_text("#!/bin/sh\n")
@@ -177,18 +159,11 @@ def compiler_from(
 
 @pytest.fixture
 def record() -> Record:
-    """A factory writing one `dist-info` the way an installer leaves it behind.
+    """A factory writing one `dist-info` as an installer leaves it, returning its import root.
 
-    Returns the import root the distribution declares, which is the path a damaged package is
-    missing and a fake reinstall puts back.
-
-    site_packages: the tree the record is written into.
-    name: the distribution name, which is also what a repair reinstalls it by.
-    installer: the manager claiming the record, `uv-pixi` for everything pixi installs.
-    roots: the `top_level.txt` import roots, the file left out entirely when empty.
-    url: where the install came from, its PEP 610 record left out entirely when empty.
-    editable: whether that PEP 610 record marks the install as editable.
-    files: the `RECORD` paths relative to site-packages, the file left out when `None`.
+    roots: `top_level.txt`, omitted when empty.
+    url: the PEP 610 source, its record omitted when empty.
+    files: `RECORD` paths relative to site-packages, omitted when `None`.
     """
 
     def write(

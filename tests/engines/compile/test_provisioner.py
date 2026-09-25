@@ -27,6 +27,21 @@ _PINNED = '[workspace]\nname = "w"\nplatforms = ["linux-64"]\n'
 _WRAPPED = "pixi run --manifest-path .mainboard/envs/{env}/pixi.toml --frozen"
 
 
+@pytest.fixture
+def synced(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Stub pixi's run and capture to succeed, ready every prefix, and record each sync."""
+    recorded: list[str] = []
+    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
+    monkeypatch.setattr(
+        Pixi,
+        "capture",
+        lambda self, command, env="default", *, timeout=None: CommandResult(0, "", ""),
+    )
+    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
+    monkeypatch.setattr(Pixi, "sync", lambda self, env: recorded.append(env))
+    return recorded
+
+
 def _solvable(provisioner: Provisioner, environment: str = "default") -> None:
     """Seed the lock a real `pixi install --resolve` would leave behind as it solves.
 
@@ -148,17 +163,9 @@ def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
     monkeypatch: pytest.MonkeyPatch,
     edit: str,
     installs: int,
+    synced: list[str],
 ) -> None:
-    synced: list[str] = []
     activated: list[str] = []
-    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
-    monkeypatch.setattr(
-        Pixi,
-        "capture",
-        lambda self, command, env="default", *, timeout=None: CommandResult(0, "", ""),
-    )
-    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
-    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
     monkeypatch.setattr(Pixi, "cache_windows_activation", lambda self, env: activated.append(env))
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     provisioner.recompiled()
@@ -185,13 +192,9 @@ def test_entering_an_environment_brings_it_in_line_with_its_lock_once(
 def test_local_resolver_metadata_refreshes_an_unchanged_manifest_prefix(
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    synced: list[str],
 ) -> None:
     """The manifest alone cannot see an editable project's changed requirements."""
-    synced: list[str] = []
-    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
-    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
-    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
     metadata = tmp_path / "packages" / "local" / "pyproject.toml"
     metadata.parent.mkdir(parents=True)
     metadata.write_text('[project]\nname = "local"\n', encoding="utf-8")
@@ -212,10 +215,8 @@ def test_an_environment_nothing_installed_is_never_synced_on_the_way_in(
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    synced: list[str],
 ) -> None:
-    synced: list[str] = []
-    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
-    monkeypatch.setattr(Pixi, "sync", lambda self, env: synced.append(env))
     monkeypatch.setattr(Pixi, "ready", lambda self, env: False)
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     provisioner.pixi.manifest.parent.mkdir(parents=True)
@@ -233,13 +234,12 @@ def test_running_after_a_manifest_edit_retakes_the_activation_the_recompile_inva
     manifest_from: Callable[[str], Manifest],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    synced: list[str],
 ) -> None:
     observed: list[str] = []
-    monkeypatch.setattr(Pixi, "run", lambda self, command, env="default": 0)
     monkeypatch.setattr(
         Pixi, "cache_windows_activation", lambda self, env: observed.append("activation")
     )
-    monkeypatch.setattr(Pixi, "ready", lambda self, env: True)
     provisioner = Provisioner(tmp_path, manifest_from(_BARE))
     provisioner.pixi.manifest.parent.mkdir(parents=True)
     provisioner.pixi.manifest.write_text("stale")

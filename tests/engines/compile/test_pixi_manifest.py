@@ -29,22 +29,19 @@ if TYPE_CHECKING:
 
 _PROJECT = "mainboard"
 
-# The keys a dependency spec really carries beside its version, a local source, a remote one,
-# and the flags that qualify them.
+# The keys a dependency spec carries beside its version.
 _EXTRAS = st.dictionaries(
     st.sampled_from(["path", "git", "editable", "index"]),
     st.one_of(PATHS, st.booleans()),
     max_size=2,
 )
 
-# Dependency tables as a manifest declares them, small enough that a falsifying example is
-# still readable.
+# Dependency tables small enough that a falsifying example stays readable.
 _TABLE = st.dictionaries(WORDS, SPECS, max_size=3)
 
 
-# Ten examples rather than the profile's thirty, because this suite is the fast gate and a
-# full compile per example is the most expensive thing in it. Every branch these properties
-# reach is pinned by an `@example` or by a parametrized case, never by the search.
+# Ten examples rather than thirty: a compile per example is this fast gate's costliest step, and
+# every branch is pinned by an `@example` or a parametrized case, never by the search.
 @settings(max_examples=10)
 @given(version=SPECS, extras=_EXTRAS)
 @example(version=">=2.9", extras={})
@@ -221,8 +218,7 @@ def test_a_task_takes_pixis_own_keys_and_runs_from_the_repo_root(
             'dotenv = false\nscripts = ["scripts/activate.sh"]\n',
             {"scripts": ["../scripts/activate.sh"]},
         ),
-        # A cleared variable cannot ride in pixi's own string-to-string env table, so it becomes
-        # the unset script, sourced after the dotenv loader so the clear beats a `.env` fill.
+        # A clear becomes the unset script, sourced after the dotenv loader.
         (
             "\n[env]\nOMP_NUM_THREADS = false\n",
             {"scripts": ["dotenv.sh", "unset.sh"]},

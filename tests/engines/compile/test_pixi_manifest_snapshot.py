@@ -17,16 +17,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 def test_the_whole_compile_surface_renders_the_pinned_pixi_manifest(
     manifest_from: Callable[[str], Manifest],
 ) -> None:
-    """The kitchen manifest separates default, inherited and isolated solve surfaces.
-
-    `fixtures/kitchen.toml` declares every table shape the compiler emits, so a change in
-    what pixi is handed shows up as a diff.
-
-    It carries a workspace floor one environment raises, dependency sources that must be
-    rerooted out of `.mainboard/` and one that must not, tasks in all four shapes, solver
-    options with their override sub-table, per-platform overlays, a dev table, and an
-    environment that starts from nothing but itself.
-    """
+    """`fixtures/kitchen.toml` declares every table shape the compiler emits, per solve surface."""
     source = (_FIXTURES / "kitchen.toml").read_text(encoding="utf-8")
     manifest = manifest_from(source)
     default = tomllib.loads(PixiManifest.from_manifest(manifest, project_name=_PROJECT).to_toml())
