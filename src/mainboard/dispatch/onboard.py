@@ -553,7 +553,7 @@ class Onboarding:
         with open_shell(self.plan, root) as shell:
             bootstrap = Bootstrap(shell, resolve=self.resolve, floor=self.floor)
             self.watch(f"mirroring the workspace to {host}:{root}")
-            self.dispatcher.rsync_up(
+            self.dispatcher.mirror(
                 self.plan, root, required=[self.artifact] if self.artifact else []
             )
             self.watch(f"installing {_TOOL} on {host}")
@@ -598,7 +598,7 @@ class Onboarding:
         the environment compiled from it, so nothing here reinstalls or re-probes either.
         Refuses when the host has never been onboarded, since there is nothing yet to sync.
 
-        THE RECORD IS RE-READ AFTER THE MIRROR, NOT BEFORE. `rsync_up` stamps `synced_at` on
+        THE RECORD IS RE-READ AFTER THE MIRROR, NOT BEFORE. `mirror` stamps `synced_at` on
         its own, mid-block, and building the saved record from a copy taken before that would
         overwrite the very stamp it just wrote.
 
@@ -615,7 +615,7 @@ class Onboarding:
             self.plan = self.resolved(recorded.capabilities)
         with open_shell(self.plan, root) as shell:
             self.watch(f"mirroring the workspace to {host}:{root}")
-            self.dispatcher.rsync_up(
+            self.dispatcher.mirror(
                 self.plan, root, required=[self.artifact] if self.artifact else []
             )
             pixi = self.align_pixi(shell, host=host)

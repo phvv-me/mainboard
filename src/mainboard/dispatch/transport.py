@@ -6,8 +6,7 @@
 # which is the whole difference between a declared host and one rented for a single job.
 
 import os
-import shlex
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp/rsync options), not untrusted input since=2026-08-17
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp options), not untrusted input since=2026-08-17
 from contextlib import ExitStack, suppress
 from math import ceil
 from pathlib import Path
@@ -116,12 +115,12 @@ class Endpoint(FrozenModel):
     @field_validator("identity")
     @classmethod
     def expanded(cls, value: str) -> str:
-        """A key path with `~` resolved, since rsync's own `-e` parser honours no shell at all."""
+        """A key path with `~` resolved, since ssh receives it as one argument with no shell."""
         return str(Path(value).expanduser()) if value else value
 
     @property
     def destination(self) -> str:
-        """The `user@address` every ssh, scp and rsync command names this machine by."""
+        """The `user@address` every ssh and scp command names this machine by."""
         return f"{self.user}@{self.address}" if self.user else self.address
 
     @property
@@ -187,11 +186,6 @@ class SshTransport(FrozenModel):
     def options(self) -> tuple[str, ...]:
         """The liveness overrides plus whatever the bound machine needs to be reached at all."""
         return (*self.liveness, *(self.endpoint.options if self.endpoint else ()))
-
-    @property
-    def rsync_shell(self) -> str:
-        """rsync's remote shell under this same SSH policy."""
-        return shlex.join(("ssh", *self.options))
 
     def destination(self, host: str) -> str:
         """`host` as ssh must spell it: the bound machine when there is one, else the alias."""

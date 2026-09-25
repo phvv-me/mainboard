@@ -1,17 +1,16 @@
 import inspect
 import os
+import shutil
 import stat
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, nullcontext
 from pathlib import Path
-from shutil import which
 from threading import Barrier
 from typing import TYPE_CHECKING
 
 import pytest
 from plumbum import local
-from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import Board, ExecutionPlan, MissionError
 from mainboard.dispatch import (
@@ -24,29 +23,31 @@ from mainboard.dispatch import (
     Verdict,
 )
 from mainboard.dispatch import dispatcher as dispatch_module
+from mainboard.dispatch.agent import Agent
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.provenance import SourceTree
 from mainboard.dispatch.provenance import listing as source_listing
 from mainboard.dispatch.schedulers import HostUnreachable, registry
 from mainboard.dispatch.snapshots import CLOSURE, Snapshots
 from mainboard.dispatch.state import Cache
-from mainboard.dispatch.sync import binary
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 
 from ..support import Lab
 from .support import (
+    InProcessLink,
+    RecordingAgent,
     RecordingScheduler,
     cache,
+    links_on_this_host,
     machine_with,
-    pins_on_this_host,
     plan,
     run_record,
     setgid_inherits,
 )
 
 if TYPE_CHECKING:
-    from mainboard.dispatch.transport import Machine, SshTransport
+    from mainboard.dispatch.transport import Machine
 
 _CONTAINERIZED = {
     "profile": HostProfile(kind="ssh", root="/repo", container="ngc", sync={"include": ["src"]}),
@@ -83,7 +84,7 @@ def test_direct_dispatch_entries_refuse_stale_registration_before_external_work(
     else:
         node.write_text("changed after seal\n")
     dispatcher = board.dispatcher
-    monkeypatch.setattr(dispatcher, "rsync_up", lambda *a, **kw: pytest.fail("transport reached"))
+    monkeypatch.setattr(dispatcher, "mirror", lambda *a, **kw: pytest.fail("transport reached"))
     monkeypatch.setattr(
         dispatcher.cache, "reserve", lambda *a, **kw: pytest.fail("creation reserved")
     )
@@ -108,16 +109,43 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> RecordingScheduler:
 
 
 @pytest.fixture
+def on_this_machine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every agent a dispatch asks answers in this process, against this machine's paths."""
+    monkeypatch.setattr(dispatch_module, "SshLink", lambda host, ssh=None: InProcessLink(host))
+
+
+class RecordingMirror:
+    """A `Mirror` double that keeps what each push was asked to carry, and carries nothing."""
+
+    pushes: list[dict[str, object]] = []
+
+    def __init__(self, workspace: Path, agent: Agent) -> None:
+        self.agent = agent
+
+    def push(self, root: str, **asked: object) -> None:
+        RecordingMirror.pushes.append({"root": root, "agent": self.agent, **asked})
+
+
+@pytest.fixture
+def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Every push a dispatch makes, recorded instead of carried."""
+    monkeypatch.setattr(dispatch_module, "Mirror", RecordingMirror)
+    monkeypatch.setattr(RecordingMirror, "pushes", [])
+    return RecordingMirror.pushes
+
+
+@pytest.fixture
 def dispatcher(workdir: Path, backend: RecordingScheduler) -> Dispatcher:
     """A dispatcher whose mirror only records what it was asked to ship, on `instance.shipped`.
 
     The double answers the allowlist the real mirror would have shipped, since that file set is
-    what the snapshot of the mirror copies.
+    what the snapshot of the mirror copies. Its host's agent records every pin on `pins`.
     """
     del backend
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     instance.shipped: list[tuple[str, ...]] = []
     instance.required: list[list[list[str]]] = []
+    instance.pins = RecordingAgent()
 
     def mirror(execution: ExecutionPlan, root: str, **kwargs: object) -> list[str]:
         del execution, root
@@ -129,7 +157,8 @@ def dispatcher(workdir: Path, backend: RecordingScheduler) -> Dispatcher:
         )
         return ["src"]
 
-    instance.rsync_up = mirror
+    instance.mirror = mirror
+    instance.agent = lambda execution, ssh=None: instance.pins
     return instance
 
 
@@ -292,7 +321,7 @@ def test_direct_script_submission_keeps_the_prepared_path_and_arguments(
     assert submitted_args == args and record.args == "--label 'a b'"
 
 
-@pins_on_this_host
+@links_on_this_host
 def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
     dispatcher: Dispatcher,
     backend: RecordingScheduler,
@@ -300,7 +329,7 @@ def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Use real staging, rsync, and pinning; the scheduler never executes the script."""
+    """Use real staging, a real copy, and a real pin; the scheduler never executes the script."""
     mirror = tmp_path / "remote"
     mirror.mkdir()
     (workdir / "src").mkdir(exist_ok=True)
@@ -310,7 +339,9 @@ def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
     authored.chmod(0o750)
 
     def transfer(*args, **kwargs):
-        local["rsync"]["-a", "--exclude=remote", str(workdir) + "/", str(mirror) + "/"]()
+        shutil.copytree(
+            workdir, mirror, ignore=shutil.ignore_patterns("remote"), dirs_exist_ok=True
+        )
         return ["src"]
 
     def submit(remote, root, *, script, args, resources):
@@ -320,7 +351,8 @@ def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
         assert args == ("--label", "a b")
         return "frozen-control"
 
-    monkeypatch.setattr(dispatcher, "rsync_up", transfer)
+    monkeypatch.setattr(dispatcher, "mirror", transfer)
+    monkeypatch.setattr(dispatcher, "agent", lambda execution, ssh=None: Agent(InProcessLink()))
     monkeypatch.setattr(dispatcher, "_verify", lambda *a, **kw: None)
     monkeypatch.setattr(dispatcher, "_prime", lambda *a, **kw: None)
     monkeypatch.setattr(dispatch_module, "connection", lambda host: nullcontext(local))
@@ -359,10 +391,11 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     assert handle.root == "/repo"
     # The tree is materialised from the file set that transfer shipped, before anything is
     # queued into it, and the declared results path is linked back to the mirror.
-    [built] = [line for line in machine.lines if "--link-dest" in line]
-    assert '--link-dest=/repo/ src "$mb_snap"/' in built
-    assert f"mb_final={pinned}" in built
-    assert 'ln -sfn "$mb_root"/out/raw "$mb_snap"/out/raw' in built
+    [request] = dispatcher.pins.requests
+    asked = request["pin"]
+    assert Snapshots(asked["root"]).path(asked["key"]) == pinned
+    assert asked["image"]["kind"] == "mirrored" and asked["image"]["scope"]["roots"] == ["src"]
+    assert asked["results"] == "out/raw"
     [run] = dispatcher.cache.recent(10)
     assert run.source == pinned.rsplit("/", maxsplit=1)[-1]
 
@@ -406,8 +439,8 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     # race in the first place.
     assert "run --env" not in body
     # And the tree points at that environment rather than at the mirror's mutable one.
-    [built] = [line for line in machine.lines if "mb_snap=" in line]
-    assert f"ln -s {prefix}/.pixi " in built
+    [request] = dispatcher.pins.requests
+    assert request["pin"]["prefix"] == prefix
 
 
 def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
@@ -495,12 +528,14 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     assert "export MAINBOARD_DEFERRED=cutoken" in body
     assert f"export MAINBOARD_SOURCE={captured.identity}" in body
     assert f"cd {pinned}" in body
-    [built] = [line for line in machine.lines if "mb_snap=" in line]
-    assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --filter' in built
-    assert "--files-from=-" in built
-    assert "hide .card.lock" in built and "protect .card.lock" in built
-    assert 'ln -sfn "$mb_root"/data/corpus "$mb_snap"/data/corpus' in built
-    assert "for d in" not in built
+    [request] = dispatcher.pins.requests
+    image = request["pin"]["image"]
+    assert (image["kind"], image["listing"], image["needs"]) == (
+        "sealed",
+        listing,
+        ["data/corpus"],
+    )
+    assert image["digest"] == sealed.source.digest
     [run] = dispatcher.cache.recent(10)
     assert (run.handle, run.dirty, run.source, run.commit) == (
         handle.id,
@@ -762,13 +797,12 @@ def test_a_rendered_and_a_staged_script_are_both_content_addressed(
         dispatcher._prepare_script("./missing/job.sh")  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
 
 
+@pytest.mark.usefixtures("on_this_machine")
 @pytest.mark.parametrize("local_output", ["missing", "empty", "stale"])
 def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch, local_output: str
+    workdir: Path, local_output: str
 ) -> None:
     """Missing or empty local data cannot erase another running job's declared output."""
-    if which("rsync") is None:
-        pytest.skip("the optional rsync executable is not installed")
     source, landed = workdir / "project", workdir / "host-side"
     source.mkdir()
     (source / "current.py").write_text("current source")
@@ -791,12 +825,6 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
             update={"fetch_path": output, "verdict": "ok"}
         )
     )
-    real = dispatch_module.rsync
-    monkeypatch.setattr(
-        dispatch_module,
-        "rsync",
-        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
-    )
     ready = Barrier(2)
 
     def mirror(job: int) -> None:
@@ -804,8 +832,11 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
         host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["project"]}))
         with closing(instance.cache.connection):
             ready.wait(timeout=10)
-            instance.rsync_up(
-                host, "/repo", fetch="project/new-output", extra=["project/selected-input.json"]
+            instance.mirror(
+                host,
+                str(landed),
+                fetch="project/new-output",
+                extra=["project/selected-input.json"],
             )
             instance.cache.record(
                 run_record(str(job)).model_copy(update={"fetch_path": "project/new-output"})
@@ -827,30 +858,31 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
     assert not (landed / "project/measurementst").exists()
 
 
-@pytest.mark.parametrize("recorded", [False, True])
+@pytest.mark.parametrize("recorded_run", [False, True])
 @pytest.mark.parametrize("resource", ["project", "project/output", "project/output/row.json"])
 def test_explicit_output_resource_is_refused_before_transfer(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch, recorded: bool, resource: str
+    workdir: Path,
+    recorded: list[dict[str, object]],
+    recorded_run: bool,
+    resource: str,
 ) -> None:
     source = workdir / "project/output"
     source.mkdir(parents=True)
     (source / "row.json").write_text("stale local data")
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    if recorded:
+    if recorded_run:
         instance.cache.record(
             run_record("old").model_copy(update={"fetch_path": "project/output"})
         )
-    monkeypatch.setattr(
-        dispatch_module, "rsync", lambda *a, **kw: pytest.fail("transport reached")
-    )
     execution = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["project"]}))
     with pytest.raises(ValueError, match="separate immutable input"):
-        instance.rsync_up(
+        instance.mirror(
             execution,
             "/repo",
             extra=[resource],
-            fetch="" if recorded else "project/output",
+            fetch="" if recorded_run else "project/output",
         )
+    assert recorded == []
 
 
 def test_submission_records_outputs_before_releasing_the_mirror_lock(
@@ -883,29 +915,20 @@ def test_mirror_refuses_unsafe_declared_output_protection(workdir: Path, path: s
         instance._protected_outputs(path)
 
 
-def test_a_windows_host_is_mirrored_by_tarball_under_the_rules_rsync_would_have_run(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
+def test_every_host_is_mirrored_by_its_own_python_whatever_its_os(
+    workdir: Path, recorded: list[dict[str, object]]
 ) -> None:
-    """No rsync answers on the far side, so the same file set is handed to the tar route whole."""
+    """A Windows host takes the same mirror as any other, asked through the Python it names."""
     (workdir / "src").mkdir()
-    mirrored: list[tuple[str, str, dict[str, Sequence[str] | str]]] = []
-
-    class Recording:
-        def __init__(self, root: Path, ssh: SshTransport) -> None:
-            del root, ssh
-
-        def mirror(self, execution: ExecutionPlan, root: str, **rules: Sequence[str]) -> None:
-            mirrored.append((execution.host, root, rules))
-
-    monkeypatch.setattr(dispatch_module, "Tarball", Recording)
-    monkeypatch.setattr(dispatch_module, "rsync", lambda *a, **k: pytest.fail("rsync reached"))
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     instance.cache.save_host(HostSetup(host="homelab", root="C:/w"))
-    profile = HostProfile(kind="ssh", root="C:/w", platform="win-64", sync={"include": ["src"]})
-    assert instance.rsync_up(plan(host="homelab", profile=profile), "C:/w") == ["src"]
-    [(host, root, rules)] = mirrored
-    assert (host, root, rules["paths"][0], rules["vendored"]) == ("homelab", "C:/w", "src", "")
-    assert "/src/***" not in rules["exclude"], "nothing required, so no remainder rule"
+    profile = HostProfile(
+        kind="ssh", root="C:/w", platform="win-64", python="py -3", sync={"include": ["src"]}
+    )
+    assert instance.mirror(plan(host="homelab", profile=profile), "C:/w") == ["src"]
+    [push] = recorded
+    agent = push["agent"]
+    assert (push["root"], agent.host, agent.python) == ("C:/w", "homelab", "py -3")
     assert instance.cache.host("homelab").synced_at
 
 
@@ -920,33 +943,31 @@ def test_a_second_request_while_a_creation_is_unresolved_is_refused_before_any_p
         instance.allocating(plan(), shipment, Resources(), evidence="not_started")
 
 
-def test_rsync_up_refuses_an_undeclared_include_and_warns_about_a_stale_one(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
+def test_mirror_refuses_an_undeclared_include_and_warns_about_a_stale_one(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch, recorded: list[dict[str, object]]
 ) -> None:
     instance = Dispatcher(root=workdir)
     empty = HostProfile(kind="ssh", root="/repo", sync={"include": []})
     with pytest.raises(LookupError, match="nothing to sync"):
-        instance.rsync_up(plan(profile=empty), "/repo")
+        instance.mirror(plan(profile=empty), "/repo")
     gone = HostProfile(kind="ssh", root="/repo", sync={"include": ["gone"]})
     with pytest.raises(LookupError, match="missing locally"):
-        instance.rsync_up(plan(profile=gone), "/repo")
+        instance.mirror(plan(profile=gone), "/repo")
     (workdir / "src").mkdir()
     partly = HostProfile(kind="ssh", root="/repo", sync={"include": ["src", "packages/meteng"]})
-    sent: dict[str, str | Sequence[str]] = {}
-    monkeypatch.setattr(
-        dispatch_module, "rsync", lambda sources, dest, flags, **k: sent.update(sources=sources)
-    )
     warned: list[tuple[str, tuple[int | str, ...]]] = []
     monkeypatch.setattr(dispatch_module.logger, "warning", lambda msg, *a: warned.append((msg, a)))
-    instance.rsync_up(plan(profile=partly), "/repo")
-    assert sent["sources"][0] == "src"
+    instance.mirror(plan(profile=partly), "/repo")
+    [push] = recorded
+    [scope] = push["scopes"]
+    assert scope.roots == ("src",)
     [(message, args)] = warned
     assert "stale sync include" in message
     assert args[:2] == (1, "packages/meteng")
 
 
-def test_rsync_up_punches_a_required_group_through_the_denylist_or_refuses_an_incomplete_one(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
+def test_mirror_ships_a_required_group_by_name_or_refuses_an_incomplete_one(
+    workdir: Path, recorded: list[dict[str, object]]
 ) -> None:
     """The compiled artifact must ride the mirror whole, since a half lock installs nothing."""
     (workdir / "src").mkdir()
@@ -957,26 +978,18 @@ def test_rsync_up_punches_a_required_group_through_the_denylist_or_refuses_an_in
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
     with pytest.raises(LookupError, match="incomplete"):
-        instance.rsync_up(host, "/repo", required=[group])
+        instance.mirror(host, "/repo", required=[group])
     (envdir / "pixi.lock").write_text("y")
-    sent: dict[str, str | Sequence[str] | bool] = {}
-    monkeypatch.setattr(
-        dispatch_module,
-        "rsync",
-        lambda sources, dest, flags, **k: sent.update(sources=sources, **k),
-    )
-    instance.rsync_up(host, "/repo", required=[group])
-    assert ".mainboard/envs/default/pixi.toml" in sent["sources"]
-    assert "/.mainboard/" in sent["include"]
-    assert "/.mainboard/***" in sent["exclude"]
-    assert sent["allow_vanished"] is False
+    instance.mirror(host, "/repo", required=[group], extra=[group[0]])
+    [push] = recorded
+    assert push["named"] == list(group)
 
 
 @pytest.mark.parametrize("spelling", ("required", "extra", "include"))
 @pytest.mark.parametrize("resource", ("src/.card.lock.local.0", "src/.card.lock.local/input.json"))
-def test_rsync_up_refuses_explicit_card_lease_resources_before_transfer(
+def test_mirror_refuses_explicit_card_lease_resources_before_transfer(
     workdir: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    recorded: list[dict[str, object]],
     spelling: str,
     resource: str,
 ) -> None:
@@ -986,27 +999,21 @@ def test_rsync_up_refuses_explicit_card_lease_resources_before_transfer(
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     include = [resource] if spelling == "include" else ["src"]
     host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": include}))
-    monkeypatch.setattr(
-        dispatch_module, "rsync", lambda *_args, **_kwargs: pytest.fail("transfer reached")
-    )
     with pytest.raises(ValueError, match="card leases cannot be declared"):
-        instance.rsync_up(
+        instance.mirror(
             host,
             "/repo",
             required=[(resource,)] if spelling == "required" else (),
             extra=(resource,) if spelling == "extra" else (),
         )
+    assert recorded == []
 
 
+@pytest.mark.usefixtures("on_this_machine")
 def test_a_narrow_host_mirrors_named_job_files_without_touching_other_projects(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
+    workdir: Path,
 ) -> None:
-    # The pruning under test is what a remote mirror does, which only upstream rsync performs;
-    # Apple's openrsync, the only rsync on a stock macOS runner, deletes the excluded paths too.
-    try:
-        binary(mirror=True)
-    except RuntimeError:
-        pytest.skip("mirroring needs upstream rsync, and only Apple's openrsync is installed")
+    """Pruning reaches only the include paths, so a named file never opens its tree to it."""
     job = "research/camp/experiments/node/run.py"
     untouched = (
         "research/camp/papers/frozen.tex",
@@ -1020,35 +1027,26 @@ def test_a_narrow_host_mirrors_named_job_files_without_touching_other_projects(
         (landed / path).parent.mkdir(parents=True, exist_ok=True)
         (landed / path).write_text("remote\n")
     (workdir / "mainboard.toml").write_text("[workspace]\nname = 'lab'\n")
-    real = dispatch_module.rsync
-    monkeypatch.setattr(
-        dispatch_module,
-        "rsync",
-        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
-    )
     base = HostProfile(sync={"include": ["research", "packages"]})
     profile = HostProfile(sync={"include": ["mainboard.toml"]}).inheriting(base)
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-    instance.rsync_up(plan(profile=profile), "/repo", extra=[job])
+    instance.mirror(plan(profile=profile), str(landed), extra=[job])
     assert (landed / job).read_text() == "local\n"
     assert (landed / "mainboard.toml").is_file()
     assert all((landed / path).read_text() == "remote\n" for path in untouched)
 
 
+@pytest.mark.usefixtures("on_this_machine")
 def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
+    workdir: Path,
 ) -> None:
     """The one end-to-end proof that a dispatch shipping both actually delivers both.
 
-    A required group is punched through the denylist by naming its own directory and then
-    excluding everything under it that was not asked for, and the staged job script lives under
-    that same generated directory. Named only as a source it is dropped by that remainder rule,
-    which is how a landed rental was told to run a script the mirror never carried and answered
-    `No such file or directory`, exit 127 (vast 49865738, 2026-09-04). Nothing but a real
-    transfer can tell the two filter sets apart, so this runs one.
+    The staged job script lives under the generated tree the denylist refuses, beside the
+    compiled lock a required group names. Both ship by name, which is what a landed rental once
+    lacked when it was told to run a script the mirror never carried and answered `No such file
+    or directory`, exit 127 (vast 49865738, 2026-09-04).
     """
-    if which("rsync") is None:
-        pytest.skip("the optional rsync executable is not installed")
     (workdir / "src").mkdir()
     (workdir / "src/run.py").write_text("print(1)")
     envdir = workdir / ".mainboard/envs/default"
@@ -1059,41 +1057,30 @@ def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
     jobs.mkdir(parents=True)
     (jobs / "job-abc.sh").write_text("#!/bin/bash\nexit 0\n")
     landed = workdir / "host-side"
-    real = dispatch_module.rsync
-    monkeypatch.setattr(
-        dispatch_module,
-        "rsync",
-        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
-    )
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
     group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
     script = ".mainboard/dispatch/jobs/job-abc.sh"
-    instance.rsync_up(host, "/repo", required=[group], extra=[script])
+    instance.mirror(host, str(landed), required=[group], extra=[script])
     assert (landed / "src/run.py").is_file()
     assert (landed / group[0]).is_file()
     assert (landed / script).is_file()
 
 
+@links_on_this_host
+@pytest.mark.usefixtures("on_this_machine")
 def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refer_to(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
+    workdir: Path,
 ) -> None:
     """A house package outside the workspace root is compiled at `.mainboard/vendor/<dist>`.
 
     On the machine that has the source that directory holds links into it, which is what keeps
     the editable install editable. A link is the one thing this transfer must not carry: landed
     as a link on a host it points at a tree nothing ever put there, and every environment built
-    from the shipped lock dies on a path that is not a Python project. Only a real transfer can
-    say which of the two arrived.
+    from the shipped lock dies on a path that is not a Python project.
     """
-    if which("rsync") is None:
-        pytest.skip("the optional rsync executable is not installed")
     (workdir / "src").mkdir()
     (workdir / "src/run.py").write_text("print(1)")
-    envdir = workdir / ".mainboard/envs/default"
-    envdir.mkdir(parents=True)
-    (envdir / "pixi.toml").write_text("x")
-    (envdir / "pixi.lock").write_text("y")
     source = workdir / "outside/sample_lib"
     (source / "src/sample_lib").mkdir(parents=True)
     (source / "src/sample_lib/__init__.py").write_text("SHADE = 'ai'\n")
@@ -1105,17 +1092,11 @@ def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refe
     (source / "src/sample_lib/__pycache__").mkdir()
     (source / "src/sample_lib/__pycache__/stale.pyc").write_text("noise")
     landed = workdir / "host-side"
-    real = dispatch_module.rsync
-    monkeypatch.setattr(
-        dispatch_module,
-        "rsync",
-        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
-    )
+    (landed / ".mainboard/vendor/retired").mkdir(parents=True)
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
-    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
 
-    instance.rsync_up(host, "/repo", required=[group])
+    instance.mirror(host, str(landed))
 
     arrived = landed / ".mainboard/vendor/sample-lib"
     assert arrived.is_dir() and not arrived.is_symlink()
@@ -1123,44 +1104,36 @@ def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refe
     assert (arrived / "src/sample_lib/__init__.py").read_text() == "SHADE = 'ai'\n"
     assert (arrived / "pyproject.toml").is_file()
     assert not (arrived / "src/sample_lib/__pycache__").exists()
+    assert not (landed / ".mainboard/vendor/retired").exists()
 
 
-def test_a_workspace_with_nothing_vendored_ships_no_second_transfer(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_workspace_with_nothing_vendored_ships_one_scope(
+    workdir: Path, recorded: list[dict[str, object]]
 ) -> None:
     """The rule costs a workspace that declares no outside dependency nothing at all."""
     (workdir / "src").mkdir()
-    (workdir / "src/run.py").write_text("print(1)")
-    sent: list[Sequence[str]] = []
-    monkeypatch.setattr(
-        dispatch_module, "rsync", lambda sources, dest, flags, **k: sent.append(sources) or ""
-    )
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
 
-    instance.rsync_up(host, "/repo")
+    instance.mirror(host, "/repo")
 
-    assert len(sent) == 1
+    [push] = recorded
+    assert len(push["scopes"]) == 1
 
 
-@pins_on_this_host
 @setgid_inherits
-def test_a_real_mirror_never_overrides_the_hosts_setgid_group(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`.mainboard/envs/<env>`, punched through the denylist, must inherit the host's group.
+@pytest.mark.usefixtures("on_this_machine")
+def test_a_real_mirror_never_overrides_the_hosts_setgid_group(workdir: Path) -> None:
+    """`.mainboard/envs/<env>`, shipped by name, must inherit the host's group.
 
     A directory made under a setgid parent inherits that parent's group and its own setgid bit
-    for free; `ARCHIVE`'s `-p`/`-g`/`-o` used to overwrite the first implied directory this
-    transfer creates with the workstation's own mode and group instead, undoing that inheritance
+    for free; stamping the workstation's own mode and group on it would undo that inheritance
     the instant it happened. An 8 GB prefix landed on the invoking user's personal group rather
     than the shared project one this way and blew its inode quota (Miyabi, 2026-09-05).
 
     Needs a second group the runner belongs to, to stand in for the shared project group a
     setgid mirror root carries: skipped where there is only one to pick from.
     """
-    if which("rsync") is None:
-        pytest.skip("the optional rsync executable is not installed")
     groups = sorted({os.getgid(), *os.getgroups()})
     if len(groups) < 2:
         pytest.skip("the runner belongs to a single group, so no group mismatch can be shown")
@@ -1175,16 +1148,10 @@ def test_a_real_mirror_never_overrides_the_hosts_setgid_group(
     landed.mkdir()
     os.chown(landed, -1, project_gid)
     landed.chmod(landed.stat().st_mode | stat.S_ISGID)
-    real = dispatch_module.rsync
-    monkeypatch.setattr(
-        dispatch_module,
-        "rsync",
-        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
-    )
     instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
     host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
     group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
-    instance.rsync_up(host, "/repo", required=[group])
+    instance.mirror(host, str(landed), required=[group])
     for made in (
         landed / ".mainboard",
         landed / ".mainboard/envs",
@@ -1195,32 +1162,6 @@ def test_a_real_mirror_never_overrides_the_hosts_setgid_group(
             f"{made} landed on group {found.st_gid}, not {project_gid}"
         )
         assert found.st_mode & stat.S_ISGID, f"{made} lost its inherited setgid bit"
-
-
-@pytest.mark.parametrize(
-    ("extra", "raised", "detail"),
-    [
-        ((), ProcessExecutionError, "exit code: 23"),
-        ((".mainboard/dispatch/jobs/job-x.sh",), RuntimeError, "submission aborted"),
-    ],
-)
-def test_rsync_up_preserves_an_ordinary_mirror_error_but_wraps_a_failed_required_transfer(
-    workdir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    extra: tuple[str, ...],
-    raised: type[BaseException],
-    detail: str,
-) -> None:
-    (workdir / "src").mkdir()
-    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
-
-    def fail(*a, **k) -> None:
-        raise ProcessExecutionError(["rsync"], 23, "", "connection reset")
-
-    monkeypatch.setattr(dispatch_module, "rsync", fail)
-    host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["src"]}))
-    with pytest.raises(raised, match=detail):
-        instance.rsync_up(host, "/repo", extra=extra)
 
 
 def test_the_manifest_owns_the_walltime_default_never_the_dispatch_code() -> None:

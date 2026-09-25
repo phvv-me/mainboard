@@ -1,27 +1,40 @@
-# Mirror a workspace onto a host: the `.gitignore` filter and the `rsync` command builder.
+# What a mirror carries and what it may never touch: every repository's own view of its files,
+# the permanent denylist, the host's own filter patterns, and the lock that serializes one
+# target's mirrors.
+#
+# The file set is decided per repository the way git decides it. Where git answers on this
+# machine, each repository in the workspace lists its own files: every file it tracks, whatever
+# an ignore file says, and the untracked files its own ignore files leave. A parent's ignore file
+# never reaches into a repository nested below it, which is what once dropped a submodule's
+# tracked `build/` sources under the monorepo's `build/` rule and broke the host's Rust build.
+# Where git does not answer, the same ignore files are read directly, repository boundaries
+# included. The host's excludes and the denylist then apply on top of either.
 
 import hashlib
+import shutil
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=git argv built from typed fields, not untrusted input since=2026-09-25
 from fnmatch import fnmatchcase
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Self
 
 import pathspec
 from filelock import FileLock
-from patos import StrFlag
-from plumbum import CommandNotFound, local
-from plumbum.commands.processes import ProcessExecutionError
+from patos import FrozenModel
 
-from .shared import logger, state_dir, state_path
-from .transport import Endpoint, HostUnreachable, is_transport_failure
+from ..core.errors import MissionError
+from .agent import Rules, Scope, walk
+from .agent.program import FILE, LINK
+from .shared import state_dir, state_path
+from .transport import Endpoint
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
-    from plumbum.commands.base import BaseCommand
-
-# Always skipped regardless of `.gitignore`. `.git` has no trailing slash so it also matches
-# a submodule's `.git` file, not just the superproject's `.git/` directory.
+# Always skipped regardless of `.gitignore`, in the filter pattern language `patterns` reads.
+# `.git` has no trailing slash so it also matches a submodule's `.git` file, not just the
+# superproject's `.git/` directory.
 ALWAYS_EXCLUDE = (
     ".git",
     ".env",
@@ -35,212 +48,49 @@ ALWAYS_EXCLUDE = (
     "*/evidence/receipts/***",
 )
 
-# Host/device coordination is never transferable, even under an explicit include rule.
-_CARD_LEASES = (".card.lock", ".card.lock.*")
-
-# macOS ships Apple's openrsync as /usr/bin/rsync; upstream rsync usually arrives via Homebrew
-# or MacPorts at these roots, searched after PATH.
-_UPSTREAM_FALLBACKS = ("/opt/homebrew/bin/rsync", "/usr/local/bin/rsync", "/opt/local/bin/rsync")
+# Host/device coordination is never transferable, even under an explicit include rule, and a
+# mirror never removes one a host holds.
+CARD_LEASES = (".card.lock", ".card.lock.*")
 
 
-def binary(*, mirror: bool) -> str:
-    """The local rsync to run, preferring upstream rsync over Apple's openrsync.
-
-    openrsync cannot prune inside directories that exist on both ends of a remote `--relative`
-    transfer, so a remote mirror silently keeps the stale files it was meant to remove. PATH is
-    searched first, then the Homebrew/MacPorts roots.
-    mirror: whether the transfer prunes a remote end (`--delete`), which demands upstream rsync
-        and raises when only openrsync is installed.
-    """
-    for candidate in ("rsync", *_UPSTREAM_FALLBACKS):
-        try:
-            version = local[candidate]("--version")
-        except CommandNotFound, OSError:
-            continue
-        if "openrsync" not in version:
-            return candidate
-    if mirror:
-        raise RuntimeError(
-            "mirroring needs upstream rsync, but only Apple's openrsync is installed "
-            "and it cannot prune stale files on a remote host. Run `brew install rsync`"
-        )
-    return "rsync"
-
-
-class Rsync(StrFlag):
-    """rsync switches; OR-combine them and each member carries its literal flag."""
-
-    ARCHIVE = "-a"  # recurse + preserve perms/times/symlinks/...
-    COMPRESS = "-z"
-    RELATIVE = "-R"  # recreate each source path under dest
-    RECURSIVE = "-r"
-    VERBOSE = "-v"
-    DRY_RUN = "-n"
-    CHECKSUM = "-c"  # compare by checksum, not size+mtime
-    UPDATE = "-u"  # skip files newer on the receiver
-    LINKS = "-l"
-    COPY_LINKS = "-L"  # send what a symlink refers to, never the symlink
-    PERMS = "-p"
-    TIMES = "-t"
-    HUMAN = "-h"
-    DELETE = "--delete"  # mirror removals
-    DELETE_AFTER = "--delete-after"  # apply transferred per-directory filters before pruning
-    PARTIAL = "--partial"  # keep partially transferred files
-    PROGRESS = "--progress"
-    STATS = "--stats"
-
-
-def rsync_argv(
-    flags: Rsync | Sequence[Rsync],
-    paths: Sequence[str],
-    *,
-    include: Sequence[str] = (),
-    exclude: Sequence[str] = (),
-    protect: Sequence[str] = (),
-    hide: Sequence[str] = (),
-    filters: Sequence[str] = (),
-    rsh: str | None = None,
-    bwlimit: int | None = None,
-    timeout: int | None = None,
-    extra: Sequence[str] = (),
-) -> list[str]:
-    """The rsync argv: side-specific filters before includes, then ordinary filters and paths.
-
-    Public because a transfer is not the only thing that runs rsync: a host pinning a snapshot
-    of its own mirror builds the same argv with the same filter rules and runs it there, and one
-    builder is what keeps the two from drifting into different file sets.
-    """
-    members = [*flags]
-    short = "".join(member.string[1] for member in members if len(member.string) == 2)
-    args: list[str] = [f"-{short}"] if short else []
-    args += [member.string for member in members if member.string.startswith("--")]
-    if rsh is not None:
-        args += ["-e", rsh]
-    if bwlimit is not None:
-        args.append(f"--bwlimit={bwlimit}")
-    if timeout is not None:
-        args.append(f"--timeout={timeout}")
-    for option, patterns in (
-        (
-            "--filter",
-            [
-                f"{action} {pattern}"
-                for action, group in (
-                    ("hide", (*_CARD_LEASES, *hide)),
-                    ("protect", (*_CARD_LEASES, *protect)),
-                )
-                for pattern in group
-            ],
-        ),
-        ("--include", include),
-        ("--filter", filters),
-        ("--exclude", exclude),
-    ):
-        args.extend(argument for pattern in patterns for argument in (option, pattern))
-    args += [*extra, *paths]
-    return args
-
-
-def rsync(
-    sources: str | Sequence[str],
-    dest: str,
-    flags: Rsync | Sequence[Rsync] = Rsync.ARCHIVE | Rsync.COMPRESS,
-    *,
-    include: Sequence[str] = (),
-    exclude: Sequence[str] = (),
-    protect: Sequence[str] = (),
-    hide: Sequence[str] = (),
-    filters: Sequence[str] = (),
-    rsh: str | None = None,
-    bwlimit: int | None = None,
-    timeout: int | None = None,
-    extra: Sequence[str] = (),
-    allow_vanished: bool = True,
-    host: str = "",
-    cwd: Path | None = None,
-) -> str:
-    """Run `rsync` locally (it connects to remote hosts itself); return its stdout.
-
-    The binary comes from `binary`, which prefers upstream rsync and refuses to mirror a remote
-    end with Apple's openrsync.
-    sources: one path or many. dest: `host:/path/` or a local dir.
-    flags: combined `Rsync` flag or sequence of members; single-letter ones merge into one `-azR`
-        group.
-    include / exclude: filter patterns emitted before and after `filters`.
-    protect: receiver-side `protect` filter rules emitted before include/exclude, shielding
-        remote-only paths from `--delete` pruning.
-    hide: sender-side exclusions emitted before includes, preventing protected output uploads.
-    filters: ordered rsync filter rules, such as Git ignore merge rules.
-    rsh: remote shell (`-e`). bwlimit: KB/s cap. timeout: seconds.
-    extra: raw flags for anything not covered above.
-    allow_vanished: accept rsync code 24 for ordinary changing mirrors. Required job-script
-        transfers disable this so submission cannot continue after a partial sync.
-    cwd: the directory relative source paths are read from, this process's own when None. A
-        workspace mirror passes its root, since `--relative` rebuilds each source path under the
-        destination and a path read from a subdirectory would name a different file or none.
-    """
-    paths = [*([sources] if isinstance(sources, str) else sources), dest]
-    mirror = Rsync.DELETE in [*flags] and any(":" in path for path in paths)
-    args = rsync_argv(
-        flags,
-        paths,
-        include=include,
-        exclude=exclude,
-        protect=protect,
-        hide=hide,
-        filters=filters,
-        rsh=rsh,
-        bwlimit=bwlimit,
-        timeout=timeout,
-        extra=extra,
-    )
-    command: BaseCommand = local[binary(mirror=mirror)][args]
-    if cwd is not None:
-        command = command.with_cwd(cwd)
-    try:
-        output = str(command())
-    except ProcessExecutionError as error:
-        output = _absorb_or_raise(error, host=host, allow_vanished=allow_vanished)
-    else:
-        _log_deletions(output)
-    return output
-
-
-def _absorb_or_raise(error: ProcessExecutionError, *, host: str, allow_vanished: bool) -> str:
-    """The partial stdout for an absorbed transport blip or a code-24 vanished-file mirror.
-
-    Every other failure re-raises, a translated `HostUnreachable` for a transport-shaped one so
-    a dead host reads the same way every scheduler backend already reports it.
-    """
-    output = str(error.stdout)
-    _log_deletions(output)
-    stderr = str(error.stderr)
-    retcode = int(error.retcode) if error.retcode is not None else -1
-    if host and (is_transport_failure(retcode, stderr) or retcode == 30):
-        lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-        detail = next(
-            (
-                line
-                for line in lines
-                if "connection" in line.lower() or "timed out" in line.lower()
-            ),
-            lines[-1] if lines else "transport timed out",
-        )
-        raise HostUnreachable(f"rsync to {host!r} failed: {detail}") from error
-    if retcode != 24 or not allow_vanished:
-        raise error
-    return output
-
-
-def _log_deletions(output: str) -> None:
-    """Note every receiver path rsync reports deleting, one warning per invocation."""
-    deleted = [
-        line.removeprefix("deleting ")
-        for line in output.splitlines()
-        if line.startswith("deleting ")
+def compiled(lines: Sequence[str]) -> list[tuple[str, bool]]:
+    """Ignore-file lines as the `(regex, verdict)` pairs a `Rules` base holds, in order."""
+    # pyrefly: ignore  reason=pathspec from_lines stub over-narrows to AnyStr since=2026-08-16
+    spec = pathspec.GitIgnoreSpec.from_lines(lines)
+    return [
+        (pattern.regex.pattern, bool(pattern.include))
+        for pattern in spec.patterns
+        if pattern.include is not None and pattern.regex is not None
     ]
-    if deleted:
-        logger.warning("rsync deleted %d path(s): %s", len(deleted), ", ".join(deleted))
+
+
+def patterns(declared: Sequence[str], *, paths: Sequence[str] = ()) -> Rules:
+    """Filter patterns, as `[hosts.*.sync]` and the denylist write them, as one root rule set.
+
+    The language is gitignore's with the two readings a mirror's patterns have always had. A
+    pattern is anchored to the workspace root only when it starts with `/`, so `data/raw` names
+    every `data/raw` in the tree, and `dir/***` names a directory and everything beneath it.
+
+    declared: the patterns, every one of which excludes what it matches.
+    paths: literal workspace-relative paths, each matching itself and everything beneath it.
+    """
+    lines = []
+    for pattern in declared:
+        written = pattern.removesuffix("/***") + "/" if pattern.endswith("/***") else pattern
+        floating = "/" in written.rstrip("/") and not written.startswith(("/", "**/"))
+        lines.append(f"**/{written}" if floating else written)
+    return Rules({"": compiled(lines)}, paths)
+
+
+class Listing(FrozenModel):
+    """What version control says a tree holds.
+
+    files: every file in scope, tracked or untracked and not ignored.
+    kept: the tracked files the repositories' own ignore files would drop, shipped all the same.
+    """
+
+    files: tuple[str, ...]
+    kept: tuple[str, ...]
 
 
 class SyncLock:
@@ -258,7 +108,7 @@ class SyncLock:
         )
         digest = hashlib.blake2s(identity.encode(), digest_size=8).hexdigest()
         self.path = state_path(root) / "locks" / f"sync-{digest}.lock"
-        # Nested rsync calls must share the outer transaction's reentrant lock instance.
+        # A mirror nested inside a dispatch's transaction shares its reentrant lock instance.
         self.lock = FileLock(self.path.resolve(), is_singleton=True)
 
     def __enter__(self) -> Self:
@@ -273,35 +123,30 @@ class SyncLock:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Release the kernel lock even when rsync raises."""
+        """Release the kernel lock even when the mirror raises."""
         del exc_type, exc_value, traceback
         if self.lock.is_locked:
             self.lock.release()
 
 
 class GitignoreFilter:
-    """Git ignore rules for rsync.
+    """The workspace's ignore files as one rule set, and its repositories' own file lists.
 
-    Rsync reads the workspace root ignore file once as a global rule set, then discovers every
-    nested `.gitignore` as it descends. This preserves each file's directory context and lets
-    rsync apply the same excludes while pruning the receiver.
+    The rules are read the way git reads them: the root file and every nested `.gitignore`
+    apply from the directory that declares them, a deeper file overriding its parents, and a
+    repository's `info/exclude` and the user's global excludes join at its root, where a
+    parent's rules stop. Each file is read once, the first time a walk or a question reaches its
+    directory, and the compiled rules travel to a target as they are, so a host prunes by exactly
+    the rules this machine shipped by and needs no ignore parser of its own.
 
-    root: the repo whose `.gitignore` drives the denylist; defaults to the current working
-        directory, the repo you dispatch from.
+    root: the repo whose ignore files decide; defaults to the current working directory, the
+        repo you dispatch from.
     """
 
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or Path.cwd()
-        gitignore = self.root / ".gitignore"
-        lines = self.__lines(gitignore)
-        # pyrefly: ignore  reason=pathspec from_lines stub over-narrows to AnyStr since=2026-08-16
-        self.spec = pathspec.GitIgnoreSpec.from_lines(lines)
-        self.filters = [
-            *(["merge,- .gitignore"] if gitignore.is_file() else []),
-            ":- .gitignore",
-        ]
-        self.excludes = list(ALWAYS_EXCLUDE)
-        self.nested: dict[Path, pathspec.GitIgnoreSpec] = {}
+        self.rules = Rules(discover=self.__declared)
+        self.__indexes: dict[str, tuple[tuple[int, int, int], list[str], list[str]]] = {}
 
     @staticmethod
     def validate_sources(paths: Sequence[str]) -> None:
@@ -312,77 +157,216 @@ class GitignoreFilter:
             if any(
                 fnmatchcase(part, pattern)
                 for part in PurePosixPath(path).parts
-                for pattern in _CARD_LEASES
+                for pattern in CARD_LEASES
             )
         ]
         if leases:
             raise ValueError(f"card leases cannot be declared as transferable source: {leases}")
 
-    def control_files(self, sources: Sequence[str]) -> list[str]:
-        """Ignore files above source roots that the receiver needs before deletion.
-
-        A narrow source such as `research/projects` inherits `research/.gitignore` on the
-        sender, but that parent file is outside the transferred subtree. Shipping each existing
-        ancestor from the workspace root downward lets `--delete-after` apply the same
-        directory-relative rules on the receiver.
-        """
-        files: list[str] = []
-        seen: set[Path] = set()
-        for source in sources:
-            path = Path(source)
-            if path.is_absolute():
-                path = path.relative_to(self.root)
-            ancestors = reversed((path.parent, *path.parent.parents))
-            for ancestor in ancestors:
-                gitignore = ancestor / ".gitignore"
-                if gitignore in seen or not (self.root / gitignore).is_file():
-                    continue
-                seen.add(gitignore)
-                files.append(gitignore.as_posix())
-        return files
-
     def ignored(self, path: str | Path) -> bool:
-        """Apply optional ignore-file syntax without invoking version control."""
+        """Whether the ignore files claim `path`, without invoking version control."""
         candidate = Path(path)
         if candidate.is_absolute() and candidate.is_relative_to(self.root):
             candidate = candidate.relative_to(self.root)
-        suffix = "/" if (self.root / candidate).is_dir() else ""
-        ignored = self.spec.check_file(candidate.as_posix() + suffix).include
-        for parent in reversed(candidate.parents):
-            if parent == Path():
-                continue
-            if parent not in self.nested:
-                self.nested[parent] = pathspec.GitIgnoreSpec.from_lines(
-                    self.__lines(self.root / parent / ".gitignore")
-                )
-            matched = self.nested[parent].check_file(
-                candidate.relative_to(parent).as_posix() + suffix
-            )
-            if matched.include is not None:
-                ignored = matched.include
-        return bool(ignored)
+        directory = (self.root / candidate).is_dir()
+        return self.rules.matches(candidate.as_posix(), directory=directory)
+
+    def scope(self, roots: Sequence[str], *, deny: Rules) -> Scope:
+        """The workspace tree under `roots`, as a mirror ships it and a host prunes it.
+
+        roots: the workspace-relative paths the tree starts from.
+        deny: what is excluded whatever the repositories say.
+        """
+        listing = self.tracked(roots, deny=deny)
+        if listing is None:
+            return Scope(roots, ignore=self.rules, deny=deny)
+        return Scope(roots, ignore=self.rules, deny=deny, keep=listing.kept, listed=listing.files)
 
     def files(self, directory: str) -> list[str]:
-        """Walk a source directory without requiring an index, history, or Git binary."""
-        home = self.root / directory
-        denied = pathspec.GitIgnoreSpec.from_lines(ALWAYS_EXCLUDE)
-        found: list[str] = []
-        for folder, directories, files in home.walk():
-            directories[:] = sorted(
-                name
-                for name in directories
-                if not denied.match_file((folder / name).relative_to(self.root).as_posix() + "/")
-                and not self.ignored((folder / name).relative_to(self.root))
-            )
-            found.extend(
-                (folder / name).relative_to(self.root).as_posix()
-                for name in sorted(files)
-                if not denied.match_file((folder / name).relative_to(self.root).as_posix())
-                and not self.ignored((folder / name).relative_to(self.root))
-                and (folder / name).is_file()
-            )
-        return sorted(found)
+        """The source files under `directory`, a link counted when it leads to a file.
 
-    @staticmethod
-    def __lines(gitignore: Path) -> list[str]:
-        return gitignore.read_text(encoding="utf-8").splitlines() if gitignore.exists() else []
+        The same set a mirror ships, read without history: from each repository's own list
+        where git answers, from the ignore files where it does not.
+        """
+        scope = self.scope([directory], deny=patterns(ALWAYS_EXCLUDE))
+        return sorted(
+            entry.path
+            for entry in walk(str(self.root), scope)
+            if entry.kind == FILE or (entry.kind == LINK and (self.root / entry.path).is_file())
+        )
+
+    def tracked(self, roots: Sequence[str], *, deny: Rules | None = None) -> Listing | None:
+        """Every file its repository would call source under `roots`, or None without git.
+
+        Each repository answers for itself, the workspace and every repository inside it, a
+        registered submodule or a nested clone alike: every file it tracks, whatever any ignore
+        file says, and the untracked files its own ignore files leave. A path it tracks but no
+        longer holds is left out by the walk that states it. Git also names the tracked files
+        its ignore files would drop, which a target is told to keep.
+
+        deny: what is excluded whatever the repositories say, so a repository nested where it
+            claims is never asked at all.
+        """
+        if self.__git is None or not (self.root / ".git").exists():
+            return None
+        found: list[str] = []
+        kept: list[str] = []
+        pending = [""]
+        while pending:
+            repository = pending.pop()
+            specs = _within(repository, roots)
+            if specs is not None and not (deny and deny.matches(repository, directory=True)):
+                files, ignored, nested = self.__repository(repository, specs)
+                found += files
+                kept += ignored
+                pending += nested
+        return Listing(files=_under(found, roots), kept=_under(kept, roots))
+
+    def __repository(
+        self, repository: str, specs: list[str]
+    ) -> tuple[list[str], list[str], list[str]]:
+        """One repository's files, those it tracks but ignores, and the repositories nested in
+        it, as workspace paths.
+
+        Its tracked files come from its index whole, read once for as long as the index stands;
+        its untracked files come from a walk narrowed to `specs`, which is not cheap, and a
+        pathspec reaching into a submodule is left to that submodule, since git refuses one.
+
+        repository: the repository's root, workspace-relative, "" for the workspace itself.
+        specs: the pathspecs inside it that are in scope, empty for all of it.
+        """
+        indexed, links = self.__indexed(repository)
+        files = list(indexed)
+        nested = [link for link in links if (self.root / repository / link / ".git").exists()]
+        narrowed = [
+            spec
+            for spec in specs
+            if not any(spec == link or spec.startswith(link + "/") for link in links)
+        ]
+        ignored: list[str] = []
+        if narrowed or not specs:
+            for path in self.__listed(repository, ["--others", "--exclude-standard"], narrowed):
+                (nested if path.endswith("/") else files).append(path.rstrip("/"))
+            standard = ["--cached", "--ignored", "--exclude-standard"]
+            ignored = self.__listed(repository, standard, narrowed)
+        return (
+            [_joined(repository, path) for path in files],
+            [_joined(repository, path) for path in ignored],
+            [_joined(repository, path) for path in nested],
+        )
+
+    def __indexed(self, repository: str) -> tuple[list[str], list[str]]:
+        """What `repository`'s index tracks, files apart from submodule links.
+
+        Remembered against the index file's stamp, so a dispatch reading several roots reads a
+        large index once, and a `git add` in between is seen.
+        """
+        index = (_gitdir(self.root / repository) or self.root / repository / ".git") / "index"
+        try:
+            status = index.stat()
+        except FileNotFoundError:
+            return [], []
+        stamp = (status.st_size, status.st_mtime_ns, status.st_ino)
+        remembered = self.__indexes.get(repository)
+        if remembered is not None and remembered[0] == stamp:
+            return remembered[1], remembered[2]
+        files: list[str] = []
+        links: list[str] = []
+        for row in self.__listed(repository, ["--stage"]):
+            meta, _, path = row.partition("\t")
+            (links if meta.startswith("160000 ") else files).append(path)
+        self.__indexes[repository] = (stamp, files, links)
+        return files, links
+
+    @cached_property
+    def __git(self) -> str | None:
+        """The git this machine answers with, None when it has none."""
+        return shutil.which("git")
+
+    @cached_property
+    def __excludes(self) -> list[tuple[str, bool]]:
+        """The user's global excludes, which join every repository's rules at its root."""
+        configured = self.__run(["config", "--path", "--get", "core.excludesFile"], check=False)
+        default = Path.home() / ".config" / "git" / "ignore"
+        chosen = Path(configured.strip()) if configured.strip() else default
+        return _read(chosen)
+
+    def __listed(
+        self, repository: str, options: Sequence[str], specs: Sequence[str] = ()
+    ) -> list[str]:
+        """`git ls-files` in `repository` under `specs`, one entry per NUL-separated record."""
+        where = str(self.root / repository)
+        output = self.__run(["-C", where, "ls-files", "-z", *options, "--", *specs])
+        return [record for record in output.split("\0") if record]
+
+    def __run(self, arguments: list[str], *, check: bool = True) -> str:
+        """One git command's output; a failing one refuses by what git said, unless unchecked."""
+        answered = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=git argv built from typed fields since=2026-09-25
+            [self.__git or "git", "--literal-pathspecs", *arguments],
+            capture_output=True,
+            check=False,
+        )
+        if check and answered.returncode:
+            said = answered.stderr.decode("utf-8", errors="replace").strip()
+            raise MissionError(f"git could not list the workspace's files: {said}")
+        return answered.stdout.decode("utf-8", errors="surrogateescape")
+
+    def __declared(self, base: str) -> tuple[list[tuple[str, bool]], bool]:
+        """The compiled rules that apply from `base` down, and whether a repository starts there.
+
+        A repository root carries the user's global excludes and its own `info/exclude` ahead
+        of its `.gitignore`, which is the order git lets them override each other in.
+        """
+        directory = self.root / base
+        rows = _read(directory / ".gitignore")
+        gitdir = _gitdir(directory)
+        if gitdir is None:
+            return rows, False
+        global_rows = self.__excludes if self.__git is not None else []
+        return [*global_rows, *_read(gitdir / "info" / "exclude"), *rows], True
+
+
+def _read(ignore: Path) -> list[tuple[str, bool]]:
+    """The compiled rules of one ignore file, none when there is no such file."""
+    try:
+        return compiled(ignore.read_text(encoding="utf-8").splitlines())
+    except FileNotFoundError, NotADirectoryError, IsADirectoryError:
+        return []
+
+
+def _gitdir(directory: Path) -> Path | None:
+    """The git directory of the repository rooted at `directory`, None when none starts there.
+
+    A submodule's `.git` is a file naming its git directory elsewhere, relative to it.
+    """
+    marker = directory / ".git"
+    if marker.is_dir():
+        return marker
+    if not marker.is_file():
+        return None
+    named = marker.read_text(encoding="utf-8").strip().removeprefix("gitdir:").strip()
+    return directory / named
+
+
+def _under(paths: Sequence[str], roots: Sequence[str]) -> tuple[str, ...]:
+    """`paths` that lie at or below one of `roots`, sorted and without repeats."""
+    exact, beneath = set(roots), tuple(f"{top}/" for top in roots)
+    return tuple(sorted(path for path in set(paths) if path in exact or path.startswith(beneath)))
+
+
+def _joined(repository: str, path: str) -> str:
+    """`path` inside `repository`, as a workspace-relative path."""
+    return f"{repository}/{path}" if repository else path
+
+
+def _within(repository: str, roots: Sequence[str]) -> list[str] | None:
+    """The pathspecs that narrow `repository`'s untracked listing to `roots`.
+
+    Empty when a root holds the whole repository, None when no root reaches into it at all.
+    """
+    if not repository:
+        return list(roots)
+    if any(repository == top or repository.startswith(top + "/") for top in roots):
+        return []
+    inside = [top[len(repository) + 1 :] for top in roots if top.startswith(repository + "/")]
+    return inside or None

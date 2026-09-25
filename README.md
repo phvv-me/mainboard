@@ -534,6 +534,21 @@ Mirroring neither uploads nor deletes them, even under broader include rules.
 Declaring a lease as an explicit source or resource fails before transfer;
 missing required source files still fail instead of accepting a partial shipment.
 
+Source mirroring needs no rsync, tar or Bash on either end. The host's own Python
+(the profile's `python`, 3.9 or later) runs a standard-library agent that
+Mainboard streams over the SSH channel on every transfer. Both ends describe their
+files by size and SHA-256, remembered by each file's stamp, so only changed files
+cross, as one compressed tar stream. Paths the workspace no longer holds are pruned
+inside the include paths only, never where an ignore file, the host's `exclude`,
+its `protect` rules, a declared output or a card lease applies. Snapshot pins run
+in the same agent under a kernel file lock. Where Git answers on the workstation,
+each repository in the workspace decides its own files: everything it tracks, plus
+the untracked files its own ignore files leave. A parent's ignore file never
+reaches into a nested repository or submodule. Without Git the same ignore files
+are read directly. Sync patterns read like `.gitignore` lines, except that a
+pattern is anchored only by a leading `/` and `dir/***` names a directory with
+everything beneath it.
+
 The views are `jobs`, `runs`, `trials`, `events`, `metrics`, and `artifacts`.
 Project, run, host, hardware, and source remain explicit; combining storage never
 means combining scientific conclusions. `Results(root).table(schema, project=...)`
@@ -547,8 +562,9 @@ inputs, and hardware. No repository, Git executable, clean worktree, commit, or 
 is required. Newly written and modified files are ordinary source. Mainboard hashes
 their actual bytes with SHA-256, preserves a content-addressed source ZIP under
 `.mainboard/source-archives/`, and verifies the listing and bytes before acquisition.
-An edit after capture requires a new bundle, not a commit. Optional `.gitignore`
-files control discovery without invoking Git; secrets and output protections remain.
+An edit after capture requires a new bundle, not a commit. Discovery follows the
+same per-repository file set as mirroring, reading `.gitignore` files directly when
+no Git answers; secrets and output protections remain.
 Historical Git metadata and inadmissible receipts are retained as historical data,
 not relabeled by this policy change. The pilot
 experiments no longer maintain a second source-file list or a hash of another seal.

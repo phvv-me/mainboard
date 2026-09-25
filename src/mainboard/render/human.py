@@ -89,7 +89,7 @@ def diverted() -> Iterator[None]:
 
     Stdout belongs to the one document a verb prints when its work is done, which is what lets
     `--json` be parsed whole instead of line by line. Work prints too, though, and none of it is
-    the document: a tracking SDK announces its credentials, rsync narrates a transfer, a library
+    the document: a tracking SDK announces its credentials, a transfer narrates itself, a library
     greets the terminal it thinks it has. All of that is diverted here, at the descriptor as well
     as at `sys.stdout`, so a child process is as quiet on stdout as this one is, and the document
     is printed after the block on the stdout this hands back untouched.

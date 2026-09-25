@@ -5,19 +5,20 @@ import pytest
 from mainboard import MissionError
 from mainboard.dispatch import Dispatcher, GitignoreFilter, Shipment
 from mainboard.dispatch import landing as landing_module
+from mainboard.dispatch.agent import AgentRefused
 from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.landing import Landing, renter
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.rentals import LAUNCH, Rental, handoff
 from mainboard.dispatch.shared import state_dir
-from mainboard.dispatch.snapshots import SOURCES
+from mainboard.dispatch.snapshots import SOURCES, Snapshots
 from mainboard.dispatch.state import Cache
 from mainboard.dispatch.transport import Endpoint
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
 from .backends.support import BareBackend
-from .support import RecordingMachine, machine_with, plan
+from .support import RecordingAgent, RecordingMachine, machine_with, plan
 
 # The machine a rental hands over, and the resources every landing below runs under.
 _ENDPOINT = Endpoint(address="ssh5.vast.ai", port=41022, user="root", identity="/keys/id")
@@ -64,6 +65,18 @@ def shipped(dispatcher: Dispatcher, command: str) -> Shipment:
     return Shipment.of_command(command, source=dispatcher.source(command), imports=())
 
 
+class PinningAgent(RecordingAgent):
+    """A rental's agent double that also marks, in the machine's own log, when it was asked."""
+
+    def __init__(self, machine: RecordingMachine) -> None:
+        super().__init__()
+        self.machine = machine
+
+    def ask(self, request, *, payload=None):
+        self.machine.calls.append(["agent", "mainboard-agent-pin"])
+        return super().ask(request, payload=payload)
+
+
 def dispatcher_for(workdir: Path) -> Dispatcher:
     """A dispatcher whose mirror only records what it was asked to ship, and where."""
     instance = Dispatcher(cache=Cache(workdir / "dispatch.sqlite"), sync=GitignoreFilter(workdir))
@@ -77,7 +90,8 @@ def dispatcher_for(workdir: Path) -> Dispatcher:
         )
         return ["src"]
 
-    instance.rsync_up = mirror
+    instance.mirror = mirror
+    instance.reached: list[str] = []
     return instance
 
 
@@ -88,6 +102,13 @@ def landing(
     monkeypatch.setattr(landing_module, "connection", lambda where, ssh=None: host)
     backend = FakeRenter(**overrides)
     dispatcher = dispatcher_for(workdir)
+    dispatcher.pins = PinningAgent(host)
+
+    def agent(execution, ssh=None) -> PinningAgent:
+        dispatcher.reached.append(ssh.destination(execution.host))
+        return dispatcher.pins
+
+    dispatcher.agent = agent
     return (
         Landing(dispatcher, backend, plan(**_RENTED), resources=_ASKED),
         backend,
@@ -111,28 +132,34 @@ def test_a_rental_gets_the_workspace_the_tool_and_the_environment_before_the_job
     assert backend.asked == [("vast", "00:30:00")]
     root, extra, where = dispatcher.mirrored[0]
     assert (root, where) == ("/root/projects", "root@ssh5.vast.ai")
+    assert dispatcher.reached == ["root@ssh5.vast.ai"]
     assert extra[0].startswith(f"{state_dir()}/jobs/job-")
     ordered = [
         next(at for at, line in enumerate(host.lines) if marker in line)
-        for marker in ("uv tool install", "mainboard install default", "mb_snap", LAUNCH)
+        for marker in (
+            "uv tool install",
+            "mainboard install default",
+            "mainboard-agent-pin",
+            LAUNCH,
+        )
     ]
     assert ordered == sorted(ordered)
     assert host.ran("--profile vast")
 
 
-def test_a_machine_that_ships_no_rsync_is_given_one_before_the_mirror_is_attempted(
+def test_a_machine_that_ships_no_python_is_given_one_before_the_mirror_is_attempted(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """rsync runs on both ends, and a rented image often ships none of it at all.
+    """The mirror's far end is the machine's own Python, which a bare image may lack.
 
     Both lines run on the bare connection, since the workspace they would otherwise `cd` into is
     what the mirror underneath them is about to create.
     """
-    host = machine_with("/root/projects\n", rules=[("command -v rsync", 1, "")])
+    host = machine_with("/root/projects\n", rules=[("python3 -c pass", 1, "")])
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     landed.land(shipped(dispatcher, "python train.py"))
-    assert "command -v rsync" in host.lines
-    assert host.ran("apt-get install -y -qq rsync")
+    assert "python3 -c pass" in host.lines
+    assert host.ran("apt-get install -y -qq python3")
     equipped = machine_with("/root/projects\n")
     landed, _, dispatcher = landing(workdir, equipped, monkeypatch)
     landed.land(shipped(dispatcher, "python train.py"))
@@ -189,10 +216,8 @@ def test_rental_results_link_to_the_live_root_that_fetch_reads(
         update={"fetch": "research/project/datasets/node"}
     )
     landed.land(shipment)
-    assert host.ran(
-        'ln -sfn "$mb_root"/research/project/datasets/node '
-        '"$mb_snap"/research/project/datasets/node'
-    )
+    [request] = dispatcher.pins.requests
+    assert request["pin"]["results"] == "research/project/datasets/node"
 
 
 def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(
@@ -214,7 +239,8 @@ def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(
     snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
     assert "/sources/sha256-" in snapshot
     assert snapshot in (dispatcher.root / script).read_text(encoding="utf-8")
-    assert host.ran(f"mb_final={snapshot}")
+    [request] = dispatcher.pins.requests
+    assert Snapshots(request["pin"]["root"]).path(request["pin"]["key"]) == snapshot
 
 
 def test_a_pinned_tree_the_job_could_not_activate_from_ends_the_rental(
@@ -239,8 +265,9 @@ def test_a_landing_that_fails_anywhere_ends_the_rental_it_was_holding(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The failed rental remains tracked independently of this process's cleanup attempt."""
-    host = machine_with("/root/projects\n", rules=[("mb_snap", 1, "no space left on device")])
+    host = machine_with("/root/projects\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
+    dispatcher.pins.answer = AgentRefused("no space left on device")
     with pytest.raises(SystemExit, match="could not pin the source tree"):
         landed.land(shipped(dispatcher, "python train.py"))
     assert backend.cancelled == ["4242"]
@@ -250,16 +277,16 @@ def test_a_landing_that_fails_anywhere_ends_the_rental_it_was_holding(
     assert LAUNCH not in " ".join(host.lines)
 
 
-def test_a_machine_that_cannot_be_given_rsync_is_ended_before_any_mirror(
+def test_a_machine_that_cannot_be_given_python_is_ended_before_any_mirror(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Without rsync nothing can reach the box, so the rental is released rather than billed."""
+    """Without Python nothing can reach the box, so the rental is released rather than billed."""
     host = machine_with(
         "/root/projects\n",
-        rules=[("command -v rsync", 1, ""), ("apt-get", 100, "E: Unable to locate package")],
+        rules=[("python3 -c pass", 1, ""), ("apt-get", 100, "E: Unable to locate package")],
     )
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
-    with pytest.raises(MissionError, match="no rsync and could not install one: E: Unable"):
+    with pytest.raises(MissionError, match="no python and could not install one: E: Unable"):
         landed.land(shipped(dispatcher, "python train.py"))
     assert dispatcher.mirrored == []
     assert backend.cancelled == ["4242"]
@@ -269,8 +296,9 @@ def test_a_rental_the_registry_never_recorded_is_still_ended_when_its_landing_fa
     workdir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """With no row to settle, ending the rental is all that stands between it and a bill."""
-    host = machine_with("/root/projects\n", rules=[("mb_snap", 1, "disk full")])
+    host = machine_with("/root/projects\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
+    dispatcher.pins.answer = AgentRefused("disk full")
     monkeypatch.setattr(
         backend,
         "rent",
@@ -358,8 +386,9 @@ def test_a_cancelled_provisioning_job_cannot_start_after_cancellation(
 def test_failed_setup_cleanup_keeps_its_handle_for_a_later_monitor(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    host = machine_with("/root/projects\n", rules=[("mb_snap", 1, "disk full")])
+    host = machine_with("/root/projects\n")
     landed, backend, dispatcher = landing(workdir, host, monkeypatch)
+    dispatcher.pins.answer = AgentRefused("disk full")
 
     def unavailable(handle: str) -> None:
         raise MissionError("provider cleanup unavailable")

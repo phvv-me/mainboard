@@ -86,7 +86,7 @@ def test_a_file_the_job_names_directly_ships_without_a_directory_around_it(lab: 
 
 
 def test_nothing_the_mirror_refuses_is_ever_counted(lab: Board) -> None:
-    """The denylist, the host's own excludes and every `.gitignore`, as rsync itself sees them."""
+    """The denylist, the host's own excludes and every `.gitignore`, as the mirror applies them."""
     (lab.root / ".gitignore").write_text("*.log\n")
     written(lab.root, "packages/core/train.py")
     written(lab.root, "packages/core/run.log")
@@ -95,7 +95,7 @@ def test_nothing_the_mirror_refuses_is_ever_counted(lab: Board) -> None:
     written(lab.root, "packages/data/raw/dump.bin")
     written(lab.root, "packages/rust/target/release/lib.rlib")
     (lab.root / "packages/rust/.gitignore").write_text("target/\n")
-    # The nested ignore file itself ships, since the mirror hands it to the receiver to prune with.
+    # The nested ignore file itself ships, since it is source like any other.
     assert measured(lab).files == 2
 
 
@@ -110,15 +110,6 @@ def test_a_symlink_is_never_followed_into_a_second_copy_of_the_tree(lab: Board) 
         pytest.skip(f"this Windows account cannot create symlinks: {fault}")
     (lab.root / "packages/dangling").symlink_to(lab.root / "packages/gone")
     assert measured(lab).files == 1
-
-
-def test_the_ignore_rules_of_a_directory_are_read_once_however_deep_the_walk(lab: Board) -> None:
-    written(lab.root, "packages/core/a.py")
-    written(lab.root, "packages/core/b.py")
-    transfer = Transfer(lab)
-    transfer.set_for(spec({"target": "miyabi-g", "command": "true"}).jobs[0])
-    assert Path("packages/core") in transfer.nested
-    assert transfer.rules(Path("packages/core")) is transfer.rules(Path("packages/core"))
 
 
 def test_a_measurement_streams_a_file_larger_than_one_read(lab: Board) -> None:

@@ -47,7 +47,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: uv run pyrefly check
       # Linux and macOS each meet the package's 100% branch-coverage gate. Windows runs that
-      # same suite without the threshold because its deliberate Bash/rsync/symlink skips make
+      # same suite without the threshold because its deliberate Bash/symlink skips make
       # a per-host coverage total meaningless; it still exercises native path, process, shell
       # and ACL-preserving generated-file behavior. Matrix data changes the option without
       # duplicating the command.

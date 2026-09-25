@@ -1,5 +1,4 @@
 import os
-import shlex
 import signal
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=monkeypatches Popen for hermetic tests, never runs a real process since=2026-08-18
 import sys
@@ -136,9 +135,6 @@ def test_the_ssh_policy_overrides_liveness_and_leaves_every_alias_setting_intact
         "BatchMode=yes",
     )
     assert policy.deadline == pytest.approx(5.0 + 3.0 * 2 + 5.0)
-    assert policy.rsync_shell == "ssh -o ConnectTimeout=5 -o ServerAliveInterval=3 " + (
-        "-o ServerAliveCountMax=2 -o BatchMode=yes"
-    )
 
 
 def test_a_native_process_tree_is_signalled_children_first_and_tolerates_a_vanished_child(
@@ -555,8 +551,6 @@ def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liven
         "-o",
         "LogLevel=ERROR",
     )
-    key = shlex.join(("-i", str(Path("/keys/id"))))
-    assert "-p 41022" in policy.rsync_shell and key in policy.rsync_shell
     assert Path(Endpoint(address="a", identity="~/.ssh/id").identity).is_absolute()
 
 

@@ -1,24 +1,40 @@
 import base64
-import shutil
+import os
+import subprocess
 import sys
-from collections.abc import Sequence
+import threading
+import traceback
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 import pytest
 
 from mainboard import ExecutionPlan
 from mainboard.dispatch import now
+from mainboard.dispatch.agent import Link
+from mainboard.dispatch.agent import program as agent_program
 from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Container, HostProfile
 
-# A pin is a Linux host's job, rsync under an flock, and a machine without either (macOS ships
-# no flock) cannot stand in for that host.
-pins_on_this_host = pytest.mark.skipif(
-    shutil.which("rsync") is None or shutil.which("flock") is None,
-    reason="the pin runs rsync under flock on the host",
+
+def _links() -> bool:
+    """Whether this account can make a symbolic link, which Windows grants only on request."""
+    with TemporaryDirectory() as scratch:
+        try:
+            os.symlink(scratch, os.path.join(scratch, "probe"))
+        except OSError:
+            return False
+    return True
+
+
+# A pin links the environment, the data and the results back to the mirror, and a mirror
+# carries a link as a link, so an account that cannot make one cannot stand in for a host.
+links_on_this_host = pytest.mark.skipif(
+    not _links(), reason="this account cannot create symbolic links"
 )
 # A setgid directory passes its bit to what is made under it on Linux; BSD, macOS included,
 # inherits the group without the bit, so the bit a Linux host keeps cannot be checked here.
@@ -40,6 +56,89 @@ type Rule = tuple[str, int, str]
 # One `(marker, error)` pair: when `marker` appears in the argv, the command raises instead of
 # answering, the way a client whose daemon refused its control socket does.
 type Fault = tuple[str, BaseException]
+
+
+class InProcess:
+    """A `Process` running the agent's own `run` on a thread over real pipes, in this process.
+
+    The framed source is read off the pipe and compiled, which proves it parses, and then the
+    already imported agent answers, so every line it runs is measured and a test pays no
+    interpreter start.
+    """
+
+    def __init__(self) -> None:
+        stdin, feed = os.pipe()
+        drain, stdout = os.pipe()
+        listen, stderr = os.pipe()
+        self.stdin = os.fdopen(feed, "wb")
+        self.stdout = os.fdopen(drain, "rb")
+        self.stderr = os.fdopen(listen, "rb")
+        self.pid = os.getpid()
+        self.returncode: int | None = None
+        self.thread = threading.Thread(
+            target=self.__serve, args=(stdin, stdout, stderr), daemon=True
+        )
+        self.thread.start()
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.thread.join(timeout)
+        if self.thread.is_alive():
+            raise subprocess.TimeoutExpired("agent", timeout or 0.0)
+        return self.returncode or 0
+
+    def __serve(self, stdin: int, stdout: int, stderr: int) -> None:
+        with (
+            open(stdin, "rb") as source,
+            open(stdout, "wb") as answer,
+            open(stderr, "w", encoding="utf-8") as said,
+        ):
+            compile(source.read(int(source.readline())), "mainboard-agent", "exec")
+            try:
+                self.returncode = agent_program.run(source, answer, said)
+            except Exception:
+                traceback.print_exc(file=said)
+                self.returncode = 1
+
+
+class InProcessLink(Link):
+    """A `Link` whose target is this machine's own file system, reached without a process.
+
+    commands: every command line the agent was started with.
+    """
+
+    def __init__(self, host: str = "local") -> None:
+        super().__init__(host)
+        self.commands: list[str] = []
+
+    def spawn(self, command: str) -> InProcess:
+        self.commands.append(command)
+        return InProcess()
+
+    def end(self, process: InProcess) -> None:
+        process.wait()
+
+
+class RecordingAgent:
+    """An `Agent` double that records each request and answers the one record a pin gives back.
+
+    answer: raised instead of answering when it is an exception, the records to give back else.
+    """
+
+    def __init__(
+        self, answer: list[dict[str, str]] | BaseException | None = None, host: str = "gold"
+    ) -> None:
+        self.answer = [{"path": "pinned"}] if answer is None else answer
+        self.host = host
+        self.requests: list[dict[str, dict[str, object]]] = []
+
+    def ask(
+        self, request: dict[str, dict[str, object]], *, payload: Callable[..., None] | None = None
+    ) -> list[dict[str, str]]:
+        del payload
+        self.requests.append(request)
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
 
 
 def created_request() -> Allocation:

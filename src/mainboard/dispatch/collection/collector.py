@@ -1,8 +1,6 @@
 """Portable, staged collection of project-owned evidence through existing OpenSSH."""
 
 import filecmp
-import hashlib
-import json
 import os
 import shutil
 from pathlib import Path, PurePosixPath
@@ -13,44 +11,8 @@ from filelock import FileLock
 
 from ...core.project import Project
 from ...trials.artifacts import relative_path
+from ..agent import Digests
 from ..transport import SshTransport
-
-
-class KnownDigests:
-    """The digests of published evidence, remembered by each file's size and modification time.
-
-    Collection never rewrites a published file, so one whose size and timestamp have not moved
-    still holds the bytes it was hashed with. Without this memory every sweep re-read every byte
-    under every unsettled run's results path, and one 28 GB evidence tree held a `wait` inside a
-    single pass for minutes past its own timeout.
-    """
-
-    def __init__(self, path: Path) -> None:
-        """path: the JSON file the memory lives in, created on the first save."""
-        self.path = path
-        try:
-            self.held: dict[str, list[int | str]] = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError, json.JSONDecodeError:
-            self.held = {}
-
-    def of(self, file: Path, *, key: str) -> str:
-        """`file`'s SHA-256, read off the memory while its size and timestamp stand."""
-        status = file.stat()
-        stamp = [status.st_size, status.st_mtime_ns]
-        remembered = self.held.get(key)
-        if remembered is not None and remembered[:2] == stamp:
-            return str(remembered[2])
-        with file.open("rb") as source:
-            digest = hashlib.file_digest(source, "sha256").hexdigest()
-        self.held[key] = [*stamp, digest]
-        return digest
-
-    def save(self) -> None:
-        """Publish the memory by rename, so a reader never meets half a document."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        staged = self.path.with_suffix(f".{os.getpid()}.tmp")
-        staged.write_text(json.dumps(self.held), encoding="utf-8")
-        staged.replace(self.path)
 
 
 class Collector:
@@ -108,14 +70,14 @@ class Collector:
 
     def _known(self, relative: PurePosixPath) -> dict[str, str]:
         """Skip only byte-identical published files; live event snapshots still transfer."""
-        digests = KnownDigests(self.root / Project().out_dir / "collection.digests.json")
+        digests = Digests(str(self.root / Project().out_dir / "collection.digests.json"))
         published = (
             path
             for path in (self.root / relative).rglob("*")
             if not path.is_symlink() and path.is_file() and path.parent.name != "events"
         )
         known = {
-            key: digests.of(path, key=key)
+            key: digests.of(str(path), key=key)
             for path in published
             for key in (path.relative_to(self.root).as_posix(),)
         }

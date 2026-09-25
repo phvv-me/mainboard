@@ -385,7 +385,7 @@ exclude = ["src", "tests"]
 # scenario or property with its whole story in one body, and helpers take their axes as named
 # keywords. Splitting to a ten-statement ceiling would multiply the test count the policy
 # exists to hold down. In `src`, `cli.build` is the declarative verb table whose statement
-# count is the roster's length, and `_rsync_args` mirrors rsync's own flag surface.
+# count is the roster's length.
 [tool.mcmr.rules."ALL-FUNC0001"]
 exclude = ["tests", "src/mainboard/cli.py"]
 
@@ -393,7 +393,7 @@ exclude = ["tests", "src/mainboard/cli.py"]
 exclude = ["tests"]
 
 [tool.mcmr.rules."ALL-FUNC0010"]
-exclude = ["tests", "src/mainboard/cli.py", "src/mainboard/dispatch/sync.py"]
+exclude = ["tests", "src/mainboard/cli.py"]
 
 # mainboard is a standalone published package, and the house `common.log` logger lives in the
 # monorepo tree this checkout cannot depend on, so module-level `logging.getLogger(__name__)`
@@ -495,13 +495,14 @@ exclude = ["src/mainboard/__init__.py"]
 [tool.mcmr.rules."PY-MODE0006"]
 exclude = ["tests"]
 
-# An `except ...: continue` in these three loops is a candidate filter, not a swallowed fault:
-# an unreadable version string, a missing rsync binary and an unsupported CUPTI activity kind
-# are each skipped so the loop can keep what the host really offers.
+# An `except ...: continue` in these loops is a candidate filter, not a swallowed fault: an
+# unreadable version string, a kernel lock Windows gave up waiting on, a path a mirror prunes
+# that another pass already removed, and an unsupported CUPTI activity kind are each skipped so
+# the loop can keep what the host really offers.
 [tool.mcmr.rules."ALL-ERRO0001"]
 exclude = [
   "src/mainboard/deps/indexes.py",
-  "src/mainboard/dispatch/sync.py",
+  "src/mainboard/dispatch/agent/program.py",
   "src/mainboard/profile/providers/nvidia/tracer.py",
 ]
 

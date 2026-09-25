@@ -41,7 +41,7 @@ from mainboard.experiments.identity import study_label
 from mainboard.manifest import HostProfile
 
 from .dispatch.backends.support import FakeTransport, refused
-from .dispatch.support import RecordingScheduler, machine_with, plan
+from .dispatch.support import RecordingAgent, RecordingScheduler, machine_with, plan
 from .support import Lab
 
 if TYPE_CHECKING:
@@ -311,7 +311,7 @@ def test_a_finished_job_reports_only_the_results_it_could_actually_bring_back(
     probing(board, monkeypatch, finishing())
 
     def explode(handle: Handle, **kw: SshTransport | None) -> None:
-        raise ProcessExecutionError(["rsync"], 23, "", "no such file")
+        raise ProcessExecutionError(["ssh"], 23, "", "no such file")
 
     monkeypatch.setattr(board.dispatcher, "fetch", explode)
     report = board.monitor().once()
@@ -609,7 +609,7 @@ def test_a_provider_that_refuses_the_cancel_is_a_warning_not_a_failed_sweep(
 def test_empty_successful_transfer_retains_receipt_referenced_evidence(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression for Vast 50237293: rsync exited zero against the wrong empty root."""
+    """Regression for Vast 50237293: a transfer exited zero against the wrong empty root."""
     record = seed("31", name="empty-transfer", fetch_path="research/project/datasets/node")
     probing(board, monkeypatch, finishing())
     content = b"measured data"
@@ -780,7 +780,8 @@ def test_queued_native_submission_cannot_verify_an_empty_transfer(
     scheduler = RecordingScheduler()
     monkeypatch.setattr(dispatch_module, "pick", lambda profile: scheduler)
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
-    monkeypatch.setattr(dispatcher, "rsync_up", lambda *args, **kwargs: [])
+    monkeypatch.setattr(dispatcher, "mirror", lambda *args, **kwargs: [])
+    monkeypatch.setattr(dispatcher, "agent", lambda *args, **kwargs: RecordingAgent())
     spelling = "'research/project with spaces/experiments/node/test_law.py::test_law' -- -q"
     shipment = board.shipment(spelling, board.plan())
     shipment.admit(lab.root)

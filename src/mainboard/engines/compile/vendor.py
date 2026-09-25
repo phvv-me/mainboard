@@ -35,7 +35,7 @@
 # manifest named the source directly.
 #
 # A HOST HAS NO SOURCE TO LINK TO, and does not need one. The mirror carries the vendored tree
-# with the referent of every link in place of the link (see `Dispatcher.rsync_up`), so what
+# with the referent of every link in place of the link (see `Dispatcher.mirror`), so what
 # lands there is the ordinary directory of real files that the manifest and the lock already
 # name, and a compile on the host leaves it exactly as the mirror left it. Vendoring is
 # therefore a workstation act that a host inherits, and a workspace whose source is gone and

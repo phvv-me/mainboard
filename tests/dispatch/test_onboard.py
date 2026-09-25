@@ -66,7 +66,7 @@ class FakeDispatcher:
         self.mirrored: list[tuple[str, str]] = []
         self.required: list[Sequence[str]] = []
 
-    def rsync_up(
+    def mirror(
         self, execution: ExecutionPlan, root: str, *, required: Sequence[Sequence[str]] = ()
     ) -> None:
         self.mirrored.append((execution.host, root))
