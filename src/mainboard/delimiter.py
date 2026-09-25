@@ -1,18 +1,15 @@
 # Where a verb's own options end and the command it hands on begins.
 #
-# `run`, `submit` and `shell` take another program's argv, and they used to need `--` in front
-# of it: `mainboard run pytest --noconftest` read `--noconftest` as an option of this tool and
-# refused it, so every agent session learned to type the delimiter or failed once first. The rule
-# `uv run` and `docker run` follow is the one a reader already expects: this tool's options come
-# first, and the first token that is not one of them starts the command, which from there on is
-# passed through verbatim, delimiters and flags included.
+# `run`, `submit` and `shell` take another program's argv. Following `uv run` and `docker run`,
+# this tool's options come first and the first token that is not one of them starts the command,
+# passed through verbatim from there, so `mainboard run pytest --noconftest` needs no `--`.
 #
 # The delimiter is placed rather than the parser loosened. Letting the command parameter swallow
 # leading hyphens folded an option this tool does not know into the user's command instead of
 # refusing it, and four jobs failed on a remote host minutes later that way (2026-08-25). So the
-# scan below walks only the options the verb actually declares, each with the number of values it
-# takes, and stops at the first token that is neither: a word is the command and gets its `--`,
-# while an unknown option is left in place for the parser to refuse by name.
+# scan walks only the options the verb declares, each with the number of values it takes, and
+# stops at the first token that is neither: a word is the command and gets its `--`, while an
+# unknown option is left in place for the parser to refuse by name.
 
 from inspect import Parameter, signature
 from typing import TYPE_CHECKING
@@ -39,8 +36,6 @@ class Delimiter:
         Anything else comes back unchanged: a verb with no trailing command, an argv that already
         delimits itself, one that names no command at all, and one whose options include a name
         the verb does not declare, which the parser then refuses with that name.
-
-        tokens: the argv after the program name.
         """
         _, apps, rest = self.app.parse_commands(tokens)
         widths = _widths(apps[-1])

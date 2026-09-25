@@ -1,5 +1,6 @@
 import sys
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import partial
 from json import dumps, loads
 from pathlib import Path
@@ -8,8 +9,6 @@ from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 from cyclopts import App, Parameter
 from plumbum import local as localhost
 from pydantic import JsonValue
-
-import mainboard
 
 from . import staleness
 from .batch.spec import BatchSpec, Selection
@@ -31,7 +30,7 @@ from .durable import schedule
 from .help import Help
 from .holds import Holds
 from .jobs import lanes as lanes_module
-from .lint import Inventory, Linter, Report
+from .lint import Inventory, Linter
 from .listing import Listing
 from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
@@ -45,9 +44,10 @@ from .runtime.runner import Runner
 from .vigil import STALL_SECONDS
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from .batch.estimate import JobEstimate
+    from .batch.runner import Batch
     from .batch.watch import BatchStatus
     from .ci import Result as CiResult
     from .deps import Change
@@ -58,6 +58,76 @@ if TYPE_CHECKING:
     from .manuscript import Report as PaperReport
     from .render.values import Node
     from .verdicts import StreamVerdict
+
+
+@Parameter(name="*")
+@dataclass(frozen=True, kw_only=True)
+class Output:
+    """How a verb prints its document: the default rich table or one of two compact modes."""
+
+    json: bool = False
+    """print canonical JSON instead of the default rich table."""
+    agent: bool = False
+    """print the compact tabular mode instead of the default rich table."""
+    fields: str = ""
+    """a comma-separated projection over the printed fields."""
+
+    def __post_init__(self) -> None:
+        """Refuse both compact modes at once before the verb does any work."""
+        mode_of(json_mode=self.json, agent=self.agent)
+
+    @property
+    def mode(self) -> str | None:
+        """The render key, `None` for the default rich table."""
+        return mode_of(json_mode=self.json, agent=self.agent)
+
+    def projection(self, default: Sequence[str] = ()) -> Sequence[str]:
+        """The `--fields` names, trimmed and blanks dropped, `default` when none were given."""
+        return tuple(part.strip() for part in self.fields.split(",") if part.strip()) or default
+
+    def print_rows(
+        self, payloads: Sequence[Mapping[str, Node]], *, title: str, columns: Sequence[str] = ()
+    ) -> None:
+        """Print many entities, `columns` keeping an empty table's heading unless projected."""
+        rows(payloads, mode=self.mode, fields=self.projection(columns), title=title)
+
+    def print_record(self, payload: Mapping[str, Node], *, title: str) -> None:
+        """Print one entity."""
+        record(payload, mode=self.mode, fields=self.projection(), title=title)
+
+
+_RICH = Output()
+
+
+@Parameter(name="*")
+@dataclass(frozen=True, kw_only=True)
+class Declared:
+    """A batch's declaration beyond its spec file: inline jobs, a selection, `[vars]` values."""
+
+    job: tuple[str, ...] = ()
+    """a `target:command` job, repeatable, for a batch declared without a file."""
+    name: str = ""
+    """the batch's name when declared with `--job` rather than a file."""
+    only: str = ""
+    """the plan's jobs to act on, names or `kind-*` globs, comma-separated; all when unset."""
+    set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = ()
+    """a `name=value` filling one of the spec file's `[vars]`, repeatable."""
+
+    def batch(self, board: Board, spec: str) -> Batch:
+        """The declared batch over `board`'s workspace, `spec` relative to its root."""
+        return board.batch(self._spec(board.root, spec), selection=Selection.of(self.only))
+
+    def _spec(self, root: Path, spec: str) -> BatchSpec:
+        if spec:
+            return BatchSpec.load(root / spec, _answers(self.set_))
+        if self.set_:
+            raise MissionError("--set fills a spec file's [vars]; a --job batch declares none")
+        if not self.job:
+            raise MissionError("declare a batch: a spec file, or --job target:command")
+        return BatchSpec.inline(self.name or "batch", self.job)
+
+
+_SPEC_ONLY = Declared()
 
 
 def build(root: Path | None = None) -> App:
@@ -82,34 +152,23 @@ def build(root: Path | None = None) -> App:
         """
         Help(app).show(" ".join(query))
 
-    # A trailing-command verb hands its command on verbatim, from the first token that is not one
-    # of its own options, so `run pytest --noconftest` needs no `--` (see `delimiter.py`, which
-    # places it). cyclopts honours the delimiter for its own help flags but not for its version
-    # flag, so these verbs give up `--version` entirely (the root app still answers it) rather
-    # than answering `run python --version` with this tool's version.
-    #
-    # The command tokens are deliberately NOT `allow_leading_hyphen`. That annotation told
-    # cyclopts to stop recognising options for this parameter, which meant an option this CLI
-    # does not know was folded into the user's command instead of refused, and then failed on
-    # the remote host minutes later (four jobs lost this way, 2026-08-25). The placement walks
-    # only declared options, so `--walltim` before the command is still refused by name.
+    # A trailing-command verb hands its command on verbatim from the first token that is not one
+    # of its own options, `Delimiter` placing the `--` (see `delimiter.py` for why the command is
+    # not `allow_leading_hyphen`). cyclopts honours the delimiter for its help flags but not for
+    # its version flag, so these verbs give up `--version` (the root app still answers it) rather
+    # than answer `run python --version` with this tool's version.
     @app.command(version_flags=[])
-    def run(
-        *command: str,
-        on: str = "local",
-        env: str = "",
-        container: str = "",
-    ) -> int:
+    def run(*command: str, on: str = "local", env: str = "", container: str = "") -> int:
         """Run a command, or a job spelled `path/to/file.py::name`, through the host's plan.
 
         Native file targets run locally with the same runner and closure format as submitted
-        jobs. Use submit for remote file targets; run collection and help locally. Plain
-        remote diagnostic commands execute over SSH, on a cluster's login
-        endpoint rather than in a batch allocation. The exit code is the command's own.
+        jobs; use submit for remote file targets, and run collection and help locally. Plain
+        remote diagnostic commands execute over SSH, on a cluster's login endpoint rather than in
+        a batch allocation. The exit code is the command's own.
 
         command: the command tokens, from the first token that is not an option of this verb,
             passed on verbatim with its own flags; a job's arguments follow `--`.
-        on: the host alias the command runs on, `local` for this machine.
+        on: the host alias, `local` for this machine.
         env: an environment name overriding the profile's choice.
         container: a container override, `none` forcing bare.
         """
@@ -133,16 +192,14 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         container: str = "",
         yes: bool = False,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> None:
         """Dispatch a command, or a job spelled `path/to/file.py::name`, on a host.
 
         A job ships exactly the code it imports and the directory it lives in, runs through the
         one runner in the host's environment, and stamps its receipts with a provenance scoped
         to those files. A command ships the mirror and keeps the whole-tree provenance. Either
-        way the handle is printed.
+        way the handle is printed, bare unless a compact mode asks for the whole record.
 
         The expectation prints first, the same manners a batch has: the resolved target, the
         queue policy's admission, and what the meter will say, a provider's rate for a rented
@@ -151,7 +208,6 @@ def build(root: Path | None = None) -> App:
 
         command: the command tokens, from the first token that is not an option of this verb,
             or `path/to/file.py::name` and, after `--`, the arguments its application takes.
-        on: the host alias the job targets.
         gpu_name: the GPU type to rent, for a metered provider host.
         max_usd: the spend cap a provider host refuses to submit without.
         attempt: the 1-based try number feeding expression defaults.
@@ -161,9 +217,6 @@ def build(root: Path | None = None) -> App:
         needs: a workspace-relative data path the job reads on the host, repeatable, joining
             the ones the job file declares; refused for a command, which reaches the mirror.
         yes: dispatch without asking, what a script passes.
-        json: print the handle as canonical JSON instead of the bare id.
-        agent: print the handle in the compact tabular mode instead of the bare id.
-        fields: a comma-separated projection over the handle's fields.
         """
         line = joined(command)
         workspace = board(on)
@@ -177,10 +230,8 @@ def build(root: Path | None = None) -> App:
             max_usd=max_usd,
             attempt=attempt,
         )
-        print(
-            _expected(priced, results=workspace.results(fetch, node=node, command=line)),
-            file=sys.stderr,
-        )
+        pulled = workspace.results(fetch, node=node, command=line)
+        print(_expected(priced, results=pulled), file=sys.stderr)
         if not yes and sys.stdin.isatty() and not _agreed():
             raise SystemExit(1)
         with progress(f"submitting on {on}") as stage:
@@ -201,15 +252,10 @@ def build(root: Path | None = None) -> App:
                 env=env,
                 container=container,
             )
-        if not json and not agent:
+        if output.mode is None:
             print(job.handle.id)
             return
-        record(
-            job.handle.model_dump(),
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="handle",
-        )
+        output.print_record(job.handle.model_dump(), title="handle")
 
     @app.command
     def add(
@@ -219,9 +265,7 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         dev: bool = False,
         resolve: bool = True,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> None:
         """Declare a dependency in the manifest and re-solve, showing what the lock did.
 
@@ -230,20 +274,17 @@ def build(root: Path | None = None) -> App:
         one the flags name, and where the manifest already writes that kind of requirement in a
         particular table, the edit joins it there.
 
-        spec: the requirement, a bare name or a name with the constraint it carries.
-        lang: the ecosystem whose resolver installs it, `conda` by default.
+        lang: the ecosystem whose resolver installs it.
         env: an environment name, the workspace-wide table when omitted.
         dev: declare it as a development-only requirement.
-        resolve: re-solve after the edit, `--no-resolve` to stage several edits and solve once.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
+        resolve: `--no-resolve` stages several edits to solve once.
         fields: a comma-separated projection over name/where/before/after.
         """
         with progress(f"adding {spec}"):
             changes = (
                 board("local").deps().add(spec, ecosystem=lang, env=env, dev=dev, resolve=resolve)
             )
-        _changed(changes, json_mode=json, agent=agent, fields=fields, title="add")
+        _changed(changes, output, title="add")
 
     @app.command
     def remove(
@@ -253,23 +294,15 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         dev: bool = False,
         resolve: bool = True,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> None:
         """Drop a dependency from the manifest and re-solve, showing what the lock did.
 
         With no flags the whole manifest is searched, so dropping a requirement never asks
-        which table it was written into. Flags narrow that search, which is also how a name
+        which table it was written into. `--lang`, `--env` and `--dev` narrow that search to one
+        ecosystem's, one environment's or the development-only tables, which is also how a name
         declared in more than one table is told apart.
 
-        name: the dependency to drop.
-        lang: narrow the search to one ecosystem's tables.
-        env: narrow the search to one environment's tables.
-        dev: narrow the search to development-only tables.
-        resolve: re-solve after the edit.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over name/where/before/after.
         """
         with progress(f"removing {name}"):
@@ -278,7 +311,7 @@ def build(root: Path | None = None) -> App:
                 .deps()
                 .remove(name, ecosystem=lang, env=env, dev=dev, resolve=resolve)
             )
-        _changed(changes, json_mode=json, agent=agent, fields=fields, title="remove")
+        _changed(changes, output, title="remove")
 
     @app.command
     def upgrade(
@@ -287,28 +320,21 @@ def build(root: Path | None = None) -> App:
         lang: Annotated[str, Parameter(name=["--lang", "-l"])] = "",
         env: str = "",
         dev: bool = False,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> None:
         """Move one dependency to its newest release, or the whole lock forward in its bounds.
 
         Named, the constraint itself is rewritten to what the ecosystem publishes now, which is
         the only way past a ceiling the manifest declares. Unnamed, the manifest is untouched
         and the lock is re-solved against the indexes, moving every pin as far as the declared
-        constraints already allow.
+        constraints already allow. `--lang`, `--env` and `--dev` narrow the search for the name
+        to one ecosystem's, one environment's or the development-only tables.
 
-        name: the dependency to bump, every declared one inside its bounds when omitted.
-        lang: narrow the search to one ecosystem's tables.
-        env: narrow the search to one environment's tables.
-        dev: narrow the search to development-only tables.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over name/where/before/after.
         """
         with progress(f"upgrading {name or 'the lock'}"):
             changes = board("local").deps().upgrade(name, ecosystem=lang, env=env, dev=dev)
-        _changed(changes, json_mode=json, agent=agent, fields=fields, title="upgrade")
+        _changed(changes, output, title="upgrade")
 
     @app.command
     def new(
@@ -318,9 +344,7 @@ def build(root: Path | None = None) -> App:
         description: str = "",
         dest: str = "",
         answer: tuple[str, ...] = (),
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> None:
         """Scaffold a project from one of this workspace's declared templates.
 
@@ -333,15 +357,12 @@ def build(root: Path | None = None) -> App:
         it, and half of that edit landing on its own is worse than none of it.
 
         name: the project name, which becomes its slug, its package and its task prefix.
-        template: the template to render, a declared name or any location copier accepts.
+        template: a declared template name or any location copier accepts.
         description: the one sentence the README and the task rows carry.
         dest: where to render it, under the template's own declared home when omitted.
         answer: a further `question=value` for the template, repeatable.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over project/path/tasks/paste/snippet.
         """
-        mode = mode_of(json_mode=json, agent=agent)
         with progress(f"rendering {name}"):
             made = (
                 board("local")
@@ -355,16 +376,16 @@ def build(root: Path | None = None) -> App:
                 )
             )
         payload = made.model_dump()
-        # The rows print whole and pasteable at a terminal, so repeating them wrapped inside a
-        # table cell would only make them harder to copy back out. A compact mode keeps the
-        # field, since a caller reading the record has nowhere else to get them.
-        if mode is None and made.snippet:
+        # The rows print whole and pasteable at a terminal, since wrapped inside a table cell
+        # they are harder to copy back out. A compact mode keeps the field, the only place a
+        # caller reading the record gets them.
+        if output.mode is None and made.snippet:
             print(made.snippet)
             payload.pop("snippet")
-        record(payload, mode=mode, fields=_fields(fields), title="new")
+        output.print_record(payload, title="new")
 
     @app.command
-    def doctor(env: str = "", *, json: bool = False, agent: bool = False, fields: str = "") -> int:
+    def doctor(env: str = "", *, output: Output = _RICH) -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
         The questions asked at once and bounded: does the manifest still say something
@@ -376,13 +397,11 @@ def build(root: Path | None = None) -> App:
         is `center verify`'s question.
 
         env: the environment to examine, the local profile's own when omitted.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over section/verdict/detail/fix.
         """
         with progress("examining the workspace"):
             sections = board("local").doctor(env).sections()
-        return _sectioned(sections, json_mode=json, agent=agent, fields=fields, title="doctor")
+        return _sectioned(sections, output, title="doctor")
 
     @app.command
     def install(env: str = "", *, resolve: bool = False, profile: str = "") -> None:
@@ -417,7 +436,7 @@ def build(root: Path | None = None) -> App:
 
         command: on a host, a command to run instead of handing over the terminal, from the
             first token that is not an option of this verb.
-        on: the host alias the shell opens on, `local` for this machine.
+        on: the host alias, `local` for this machine.
         env: the environment name, the profile's declared choice when omitted.
         queue: on a queued host, the queue the allocation targets, the profile's when omitted.
         walltime: on a queued host, the session's wall-clock limit, the profile's when omitted.
@@ -441,9 +460,7 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         resolve: bool = False,
         sync_only: bool = False,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> None:
         """Onboard a host until it can run jobs, then show what it became and what that means.
 
@@ -453,46 +470,33 @@ def build(root: Path | None = None) -> App:
         followed by the findings `facts` shows, judged from the software census read back
         through the new activation.
 
-        host: the host alias to set up.
         env: an environment name overriding the host profile's own.
         resolve: let the host run its own dependency solve instead of installing the shipped
             lock, which puts that host's compiler in the resolution path.
         sync_only: re-mirror and re-provision a host already set up, skipping the tool
-            reinstall and the hardware probe, the fast path back after only the manifest moved.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
+            reinstall and the hardware probe, what `sync` does.
         fields: a comma-separated projection over the setup record's fields.
         """
         workspace = board(host)
         with progress(f"setting up {host}") as stage:
             report = workspace.install(env, resolve=resolve, watch=stage, sync_only=sync_only)
-        _onboarded(workspace, report, json_mode=json, agent=agent, fields=fields, title="setup")
+        _onboarded(workspace, report, output, title="setup")
 
     @app.command
-    def sync(
-        host: str,
-        *,
-        env: str = "",
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
-    ) -> None:
+    def sync(host: str, *, env: str = "", output: Output = _RICH) -> None:
         """Re-mirror a host already set up and re-provision it from the shipped lock.
 
         The fast path back after source moved: the tool is not reinstalled and the hardware is
         not probed again, so a Python edit reaches the host in the time the mirror takes. A
         host never set up needs `setup` first, which is where the probe and the tool come from.
 
-        host: the host alias to bring up to date.
         env: an environment name overriding the host profile's own.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the setup record's fields.
         """
         workspace = board(host)
         with progress(f"syncing {host}") as stage:
             report = workspace.install(env, resolve=False, watch=stage, sync_only=True)
-        _onboarded(workspace, report, json_mode=json, agent=agent, fields=fields, title="sync")
+        _onboarded(workspace, report, output, title="sync")
 
     @app.command
     def hold(
@@ -504,9 +508,7 @@ def build(root: Path | None = None) -> App:
         gpus: int = 0,
         max_usd: float = 0.0,
         env: str = "",
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> None:
         """Rent a machine and keep it as an ssh host until a deadline, set up and ready for jobs.
 
@@ -523,8 +525,6 @@ def build(root: Path | None = None) -> App:
         max_usd: the spend cap over the whole hold, landing included, the provider's default
             when 0.
         env: the environment to set up, the provider profile's own when omitted.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the hold's fields.
         """
         with progress(f"holding a {gpu_name or provider} machine") as stage:
@@ -538,82 +538,68 @@ def build(root: Path | None = None) -> App:
                 env=env,
                 watch=stage,
             )
-        _held(held, json_mode=json, agent=agent, fields=fields, title="hold")
+        _held(held, output, title="hold")
 
     @app.command
-    def release(alias: str, *, json: bool = False, agent: bool = False, fields: str = "") -> None:
+    def release(alias: str, *, output: Output = _RICH) -> None:
         """End a held machine now: stop its billing, settle its record and drop its alias.
 
         alias: the held machine's alias, as `hold` printed it.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the hold's fields.
         """
         with progress(f"releasing {alias}"):
             held = Holds(board("local")).release(alias)
-        _held(held, json_mode=json, agent=agent, fields=fields, title="release")
+        _held(held, output, title="release")
 
     @app.command
-    def compute(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
+    def compute(*, output: Output = _RICH) -> None:
         """List every compute path this workspace can reach, with prices and credit where cheap.
 
-        This machine first, then each declared host with whether it answers and whether it was
-        ever set up, then each provider backend with whether its credentials are present here,
-        what the account has left to spend, and a live rate where asking for one is cheap. Every
-        probe is bounded and runs beside the others, so the whole fleet answers in the time the
-        slowest one takes, and a host that is down or a provider with no key is a row rather than
-        a failure. No credential is ever printed, only whether one was found.
+        Held machines past their deadline are released first. Then this machine, then each
+        declared host with whether it answers and whether it was ever set up, then each provider
+        backend with whether its credentials are present here, what the account has left to
+        spend, and a live rate where asking for one is cheap, followed by every machine the
+        provider says this account is renting, named by its hold when this workspace holds it.
+        Every probe is bounded and runs beside the others, so the whole fleet answers in the
+        time the slowest one takes, and a host that is down or a provider with no key is a row
+        rather than a failure. No credential is ever printed, only whether one was found.
 
         Provisioned means cached setup, not current job readiness. Hardware may be stale;
         cached_at names its onboarding observation and observed_at names this live survey.
         GPU availability is not checked. PBS/Slurm reachability concerns the login endpoint,
         not an allocated compute node. Inspect jobs and facts before scheduling experiments.
 
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
-        Held machines past their deadline are released first, and every machine a provider
-        says this account is renting is listed after that provider, named by its hold when this
-        workspace holds it.
-
         fields: comma-separated name/kind/access/detail/usd_hr/credit_usd/observed_at/cached_at.
         """
-        mode = mode_of(json_mode=json, agent=agent)
         workspace = board("local")
         for released in Holds(workspace).expire():
             gone = f"{released.provider} {released.handle}"
             print(f"released {released.alias}, {gone}", file=sys.stderr)
         with progress("probing every compute path"):
             paths = workspace.compute().paths()
-        rows(
-            [path.model_dump() for path in paths],
-            mode=mode,
-            fields=_fields(fields),
-            title="compute",
-        )
+        output.print_rows([path.model_dump() for path in paths], title="compute")
 
     @app.command
     def collect(path: str, *, on: str, json: bool = False) -> None:
         """Collect remote evidence for queries, including runs started directly on that node.
 
+        Complete files are immutable. Conflicts preserve the local copy and fail collection.
+        Live event snapshots exclude incomplete records; queries deduplicate overlapping frames.
+        A new query sees published files. Collection is not one transaction across servers.
+
         path: workspace-relative results file or directory, using forward slashes on every OS.
         on: declared SSH host; root and bootstrap Python come from its manifest profile.
             Python is a command in that host's SSH login shell, usually python3; quote an
             absolute interpreter path as that shell requires. No remote Mainboard is needed.
-        json: return a machine-readable collection summary.
-        Complete files are immutable. Conflicts preserve the local copy and fail collection.
-        Live event snapshots exclude incomplete records; queries deduplicate overlapping frames.
-        A new query sees published files. Collection is not one transaction across servers.
+        json: print a machine-readable collection summary.
         """
         local_root = workspace_root()
-        profile = load(local_root / Project().manifest).profile(on)
+        profile = load(local_root / project.manifest).profile(on)
         if not profile.root:
             raise MissionError(f"declare hosts.{on}.root before collecting its results")
         published = Dispatcher(root=local_root).fetch_path(on, root=profile.root, path=path)
-        record(
-            {"host": on, "path": path, "new_files": published},
-            mode=mode_of(json_mode=json, agent=False),
-            fields=(),
-            title="collection",
+        Output(json=json).print_record(
+            {"host": on, "path": path, "new_files": published}, title="collection"
         )
 
     @app.command
@@ -641,18 +627,12 @@ def build(root: Path | None = None) -> App:
         source = _query_source(sql, file)
         if source is None:
             source = "SELECT * FROM runs"
-        results = mainboard.Results(workspace_root())
+        results = Results(workspace_root())
         if out is not None:
-            saved = results.export(source, out, project=project)
-            print(saved)
+            print(results.export(source, out, project=project))
             return
         frame = results.query(source, project=project)
-        rows(
-            loads(frame.write_json()),
-            mode=mode_of(json_mode=json, agent=False),
-            fields=(),
-            title="results",
-        )
+        Output(json=json).print_rows(loads(frame.write_json()), title="results")
 
     @app.command
     def plot(
@@ -683,7 +663,7 @@ def build(root: Path | None = None) -> App:
         x, y, hue: column names; omit hue for one series.
         out: a new output path; repeat for multiple formats, such as .pdf and .png.
         project: restrict scientific rows to this research project.
-        kind: scatter, line, or bar; bar requires one row per x/hue group.
+        kind: bar requires one row per x/hue group.
         style: a named [plots.<name>] entry; defaults to paper when declared.
         dpi: raster resolution, overriding the style's DPI when supplied.
         title: the chart title, including the measurement scope when appropriate.
@@ -719,38 +699,27 @@ def build(root: Path | None = None) -> App:
             style = style or specification.style
         style = style or ("paper" if "paper" in manifest.plots else "")
         if style:
-            styles = manifest.plots
             try:
-                settings = styles[style]
+                settings = manifest.plots[style]
             except KeyError:
                 raise MissionError(
-                    f"no plot style {style!r}; declared styles are {sorted(styles)}"
+                    f"no plot style {style!r}; declared styles are {sorted(manifest.plots)}"
                 ) from None
+        results = Results(workspace_root())
         if specification is not None:
-            for path in FigurePlot(settings).render(
-                specification,
-                partial(Results(workspace_root()).query, project=project),
-                *out,
-                dpi=dpi,
-            ):
-                print(path)
-            return
-        assert source is not None
-        frame = mainboard.Results(workspace_root()).query(source, project=project)
-        for path in Plot(frame, settings).save(
-            *out, x=x, y=y, hue=hue, kind=kind, dpi=dpi, title=title
-        ):
+            saved = FigurePlot(settings).render(
+                specification, partial(results.query, project=project), *out, dpi=dpi
+            )
+        else:
+            assert source is not None
+            saved = Plot(results.query(source, project=project), settings).save(
+                *out, x=x, y=y, hue=hue, kind=kind, dpi=dpi, title=title
+            )
+        for path in saved:
             print(path)
 
     @app.command
-    def monitor(
-        *,
-        every: str = "",
-        watch: float = 0.0,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
-    ) -> None:
+    def monitor(*, every: str = "", watch: float = 0.0, output: Output = _RICH) -> None:
         """Settle every dispatched job that ended since the last pass, then exit.
 
         The durable sweep a periodic cron runs. It resolves every job the dispatch cache still
@@ -758,7 +727,7 @@ def build(root: Path | None = None) -> App:
         verdicts in the study ledgers that own them, and reports only what changed, so a second
         pass with nothing new says exactly that. A host that cannot be reached is reported with
         why and its jobs are left for the next pass, so no outcome ever depends on the process
-        that dispatched the job still being alive.
+        that dispatched the job still being alive. A compact mode prints the whole report.
 
         `--every` is what makes that last sentence true of the schedule as well as of the pass.
         It hands the sweep to this machine's own service manager, so the period outlives the
@@ -766,8 +735,6 @@ def build(root: Path | None = None) -> App:
 
         every: install the periodic pass at this period (`20m`), `0` removing what is installed.
         watch: seconds between repeated passes in the foreground, one pass and exit when 0.
-        json: print the whole report as canonical JSON instead of the default rich table.
-        agent: print the whole report in the compact tabular mode instead of the rich table.
         fields: a comma-separated projection over the report's fields.
         """
         if every:
@@ -777,27 +744,17 @@ def build(root: Path | None = None) -> App:
                 print(f"{project.name}: run `{settling.fix}`")
             return
         sweep = board("local").monitor()
-        mode = mode_of(json_mode=json, agent=agent)
-        chosen = _fields(fields)
+        label = "sweeping dispatched jobs"
+        show = partial(_present, output=output)
         if not watch:
-            with progress("sweeping dispatched jobs"):
+            with progress(label):
                 report = sweep.once()
-            _present(report, mode=mode, fields=chosen)
+            show(report)
             return
-        # Each pass is taken inside its own progress block rather than iterated over, so the
-        # sweep's own noise is diverted the way a single pass's is and each report still prints
-        # as a document of its own.
-        with suppress(KeyboardInterrupt, StopIteration):
-            passes = sweep.watch(watch)
-            while True:
-                with progress("sweeping dispatched jobs"):
-                    report = next(passes)
-                _present(report, mode=mode, fields=chosen)
+        _followed(sweep.watch(watch), label, show)
 
     @app.command
-    def facts(
-        on: str = "local", *, json: bool = False, agent: bool = False, fields: str = ""
-    ) -> None:
+    def facts(on: str = "local", *, output: Output = _RICH) -> None:
         """Show the host's probed hardware and software facts, then what they mean here.
 
         The facts are the hardware inventory beside the software census: operating system and
@@ -809,17 +766,14 @@ def build(root: Path | None = None) -> App:
         `--json` prints the facts alone, the wire snapshot one machine answers another with.
 
         on: the host alias to probe, `local` for this machine.
-        json: print the facts as canonical JSON instead of the default rich tables.
-        agent: print the compact tabular mode instead of the default rich tables.
         fields: a comma-separated projection over the fact fields.
         """
         workspace = board(on)
         with progress(f"probing {on}"):
             found = workspace.facts()
-        mode = mode_of(json_mode=json, agent=agent)
-        record(found.model_dump(), mode=mode, fields=_fields(fields), title="facts")
-        if mode != "json":
-            _judged(workspace.findings(found.system), mode=mode, title=f"findings: {on}")
+        output.print_record(found.model_dump(), title="facts")
+        if output.mode != "json":
+            _judged(workspace.findings(found.system), mode=output.mode, title=f"findings: {on}")
 
     @app.command
     def gpus(
@@ -829,15 +783,15 @@ def build(root: Path | None = None) -> App:
 
         The screen that says whether a card can take an acquisition. `facts` describes the
         hardware and `jobs` what this workspace dispatched; a resident server or another user's
-        run appears only here.
+        run appears only here. `--json` prints the readings keyed by host, one line for a single
+        host, which is what a remote read parses.
 
         on: the host alias to read, `local` for this machine.
         every: read this machine and every declared ssh host instead of one host.
         json: print the readings as JSON instead of the table.
         agent: print the compact tabular mode instead of the default rich table.
         """
-        base = workspace_root()
-        manifest = load(base / project.manifest)
+        manifest = load(workspace_root() / project.manifest)
         remote = [alias for alias, profile in manifest.hosts.items() if profile.kind == "ssh"]
         names = ["local", *remote] if every else [on]
         listed: list[dict[str, str | int | float | bool]] = []
@@ -862,41 +816,25 @@ def build(root: Path | None = None) -> App:
                 continue
             readings[name] = occupancy.model_dump(mode="json")
             listed.extend(occupancy_rows(name, occupancy))
-        if json and not every:
-            # One host prints its reading alone, one line, which is what a remote read parses.
-            print(dumps(readings.get(on, {})))
-            return
         if json:
-            print(dumps(readings, indent=2))
+            print(dumps(readings, indent=2) if every else dumps(readings.get(on, {})))
             return
-        rows(listed, mode=mode_of(json_mode=False, agent=agent), fields=(), title="gpus")
+        Output(agent=agent).print_rows(listed, title="gpus")
 
     @app.command
-    def check(
-        *,
-        on: str = "",
-        env: str = "",
-        container: str = "",
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
-    ) -> None:
+    def check(*, on: str = "", env: str = "", container: str = "", output: Output = _RICH) -> None:
         """Validate the workspace manifest, showing what it declares or what a host resolves to.
 
         on: a host alias, `local` for this machine, to show the execution plan it resolves to
             instead of the manifest's declarations.
         env: with `--on`, an environment name overriding the profile's choice.
         container: with `--on`, a container name overriding the profile's, `none` for bare.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the declared or planned fields.
         """
-        base = workspace_root()
-        manifest = load(base / project.manifest)
-        mode = mode_of(json_mode=json, agent=agent)
+        manifest = load(workspace_root() / project.manifest)
         if on:
             resolved = Resolver(manifest).plan(on, env=env, container=container)
-            record(resolved.model_dump(), mode=mode, fields=_fields(fields), title="plan")
+            output.print_record(resolved.model_dump(), title="plan")
             return
         if env or container:
             raise MissionError("--env and --container override a host's plan; pass --on too")
@@ -908,7 +846,7 @@ def build(root: Path | None = None) -> App:
             "papers": tuple(sorted(manifest.papers)),
             "tasks": tuple(sorted(manifest.tasks)),
         }
-        record(payload, mode=mode, fields=_fields(fields), title="check")
+        output.print_record(payload, title="check")
 
     @app.command
     def lint(*paths: Path, check: bool = False, only: str = "", json: bool = False) -> int:
@@ -933,20 +871,21 @@ def build(root: Path | None = None) -> App:
             inventory.under([path.resolve() for path in paths]) if paths else inventory.changed()
         )
         steps = [step.strip() for step in only.split(",") if step.strip()]
-        linter = Linter(root, load(root / project.manifest), check=check, only=steps)
-        return _linted(linter.lint(files), json_mode=json)
+        report = Linter(root, load(root / project.manifest), check=check, only=steps).lint(files)
+        if json:
+            record(report.model_dump(mode="json"), mode="json", fields=(), title="lint")
+        else:
+            if report.failures:
+                print(report.findings())
+            print(report.summary())
+        return 0 if report.clean else 1
 
     ci = App(name="ci", help="Run a package's CI gate, the very steps its GitHub workflow runs.")
     app.command(ci)
 
     @ci.default
     def ci_run(
-        package: Path | None = None,
-        *,
-        matrix: bool = False,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        package: Path | None = None, *, matrix: bool = False, output: Output = _RICH
     ) -> int:
         """Run the gate `[tool.mainboard.ci]` declares, exactly as the package's CI job runs it.
 
@@ -959,8 +898,6 @@ def build(root: Path | None = None) -> App:
 
         package: a directory inside the package, the working directory when omitted.
         matrix: also run on one declared host per other platform, the check before a push.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over leg/os/step/verdict/seconds.
         """
         found = Package.found((package or Path.cwd()).resolve())
@@ -979,12 +916,7 @@ def build(root: Path | None = None) -> App:
             for result in leg.run(found.definition.on(leg.family)):
                 _told(result)
                 results.append(result)
-        rows(
-            [result.row() for result in results],
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields) or _CI_COLUMNS,
-            title="ci",
-        )
+        output.print_rows([result.row() for result in results], title="ci", columns=_CI_COLUMNS)
         return 1 if any(result.failed for result in results) else 0
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
@@ -1030,9 +962,7 @@ def build(root: Path | None = None) -> App:
         per_job: how many cells one job takes when no name groups them, 0 for all in one.
         rerun: run cells whose data is already complete.
         timeout: seconds one cell may take before its process is killed.
-        queue: the scheduler queue for queued hosts.
-        walltime: the walltime for queued hosts.
-        mem_gb: the memory for queued hosts.
+        queue, walltime, mem_gb: what a queued host's scheduler is asked for.
         gpus: cards per job, the host profile's default when 0.
         gpu_name: the card a provider host rents, in the provider's own spelling.
         max_usd: the spend cap of one rental on a provider host; one group is one rental.
@@ -1042,15 +972,13 @@ def build(root: Path | None = None) -> App:
         yes: dispatch without asking.
         agent: print the compact tabular mode instead of the default rich table.
         """
-        base = workspace_root()
-        manifest = load(base / project.manifest)
+        manifest = load(workspace_root() / project.manifest)
         hosts = [alias.strip() for alias in on.split(",") if alias.strip()]
-        unsupported = [
+        if unsupported := [
             host
             for host in hosts
             if host in manifest.hosts and manifest.hosts[host].platform == "win-64"
-        ]
-        if unsupported:
+        ]:
             raise MissionError(
                 f"queued lanes do not support Windows hosts: {', '.join(unsupported)}; "
                 "no jobs were dispatched. Use a bounded native run there and collect its receipts."
@@ -1062,10 +990,10 @@ def build(root: Path | None = None) -> App:
             raise MissionError(f"{target} collected no cells")
         groups = lanes_module.grouped(cells, by=group, per_job=per_job)
         served = node or lanes_module.node_of(target)
+        fresh = ["--fresh", "--timeout", str(timeout)]
         pytest_args = ["-p", "no:randomly", "-q", "--no-header", *(["--rerun"] if rerun else [])]
-        plan = lanes_module.summary(hosts, groups)
-        mode = mode_of(json_mode=False, agent=agent)
-        rows(plan, mode=mode, fields=(), title="lanes")
+        shown = Output(agent=agent)
+        shown.print_rows(lanes_module.summary(hosts, groups), title="lanes")
         if dry_run:
             return 0
         if not yes and sys.stdin.isatty() and not _agreed():
@@ -1073,7 +1001,6 @@ def build(root: Path | None = None) -> App:
         dispatched: list[tuple[str, str, str]] = []
         exit_code = 0
         for host in hosts:
-            fresh = ["--fresh", "--timeout", str(timeout)]
             for chosen in groups:
                 line = [target, "--", *fresh, *chosen.ids, "--", *pytest_args]
                 if host == "local":
@@ -1095,11 +1022,8 @@ def build(root: Path | None = None) -> App:
                         node=served,
                     )
                 dispatched.append((host, chosen.name, job.handle.id))
-        rows(
-            [{"host": h, "group": g, "handle": i} for h, g, i in dispatched],
-            mode=mode,
-            fields=(),
-            title="dispatched",
+        shown.print_rows(
+            [{"host": h, "group": g, "handle": i} for h, g, i in dispatched], title="dispatched"
         )
         if not wait:
             return exit_code
@@ -1111,32 +1035,9 @@ def build(root: Path | None = None) -> App:
             exit_code = exit_code or settled.code
         return exit_code
 
-    def declared(
-        spec: str, job: tuple[str, ...], name: str, given: tuple[str, ...] = ()
-    ) -> BatchSpec:
-        """The batch the caller declared, a spec file or repeated `target:command` flags.
-
-        given: `name=value` pairs replacing the spec file's `[vars]`.
-        """
-        if spec:
-            return BatchSpec.load(workspace_root() / spec, _answers(given))
-        if given:
-            raise MissionError("--set fills a spec file's [vars]; a --job batch declares none")
-        if not job:
-            raise MissionError("declare a batch: a spec file, or --job target:command")
-        return BatchSpec.inline(name or "batch", job)
-
     @batch.command(name="prepare")
     def batch_prepare(
-        spec: str = "",
-        *,
-        job: tuple[str, ...] = (),
-        name: str = "",
-        only: str = "",
-        set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        spec: str = "", *, declared: Declared = _SPEC_ONLY, output: Output = _RICH
     ) -> None:
         """Measure what each job must still put on its target, and record the measurement.
 
@@ -1146,41 +1047,22 @@ def build(root: Path | None = None) -> App:
         Nothing is dispatched.
 
         spec: the batch spec file, relative to the workspace root.
-        job: a `target:command` job, repeatable, for a batch declared without a file.
-        name: the batch's name when declared with `--job` rather than a file.
-        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
-            plan when unset.
-        set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the transfer columns.
         """
-        batched = board("local").batch(
-            declared(spec, job, name, set_), selection=Selection.of(only)
-        )
+        batched = declared.batch(board("local"), spec)
         with progress(f"measuring {batched.id}"):
             measured = [transfer.model_dump() for transfer in batched.prepare()]
         _tabled(
             measured,
             _TRANSFER_COLUMNS,
             summing=("files", "raw_bytes", "wire_bytes"),
-            json_mode=json,
-            agent=agent,
-            fields=fields,
+            output=output,
             title=f"prepare: {batched.id}",
         )
 
     @batch.command(name="estimate")
     def batch_estimate(
-        spec: str = "",
-        *,
-        job: tuple[str, ...] = (),
-        name: str = "",
-        only: str = "",
-        set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        spec: str = "", *, declared: Declared = _SPEC_ONLY, output: Output = _RICH
     ) -> None:
         """Price every job of a batch before any of it runs, one row each and a total.
 
@@ -1191,41 +1073,22 @@ def build(root: Path | None = None) -> App:
         dispatched, nothing is rented, and no target is even contacted.
 
         spec: the batch spec file, relative to the workspace root.
-        job: a `target:command` job, repeatable, for a batch declared without a file.
-        name: the batch's name when declared with `--job` rather than a file.
-        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
-            plan when unset.
-        set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the estimate columns.
         """
-        batched = board("local").batch(
-            declared(spec, job, name, set_), selection=Selection.of(only)
-        )
+        batched = declared.batch(board("local"), spec)
         with progress(f"pricing {batched.id}"):
             priced = [row.model_dump() for row in batched.estimate().jobs]
         _tabled(
             priced,
             _ESTIMATE_COLUMNS,
             summing=("wire_bytes", "runtime_s", "expected_usd", "p90_usd"),
-            json_mode=json,
-            agent=agent,
-            fields=fields,
+            output=output,
             title=f"estimate: {batched.id}",
         )
 
     @batch.command(name="run")
     def batch_run(
-        spec: str = "",
-        *,
-        job: tuple[str, ...] = (),
-        name: str = "",
-        only: str = "",
-        set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = (),
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        spec: str = "", *, declared: Declared = _SPEC_ONLY, output: Output = _RICH
     ) -> None:
         """Dispatch every job of a batch to its own target, printing the batch id and each handle.
 
@@ -1244,39 +1107,21 @@ def build(root: Path | None = None) -> App:
         identity, so tomorrow's wave writes to the same receipts stream.
 
         spec: the batch spec file, relative to the workspace root.
-        job: a `target:command` job, repeatable, for a batch declared without a file.
-        name: the batch's name when declared with `--job` rather than a file.
-        only: the plan's jobs to act on, names or `kind-*` globs, comma-separated; the whole
-            plan when unset.
-        set_: a `name=value` filling one of the spec file's `[vars]`, repeatable.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over job/target/state/handle/kind/reason.
         """
-        batched = board("local").batch(
-            declared(spec, job, name, set_), selection=Selection.of(only)
-        )
-        mode = mode_of(json_mode=json, agent=agent)
+        batched = declared.batch(board("local"), spec)
         with progress(f"dispatching {batched.id}") as stage:
             dispatched = batched.run(watch=stage)
-        if mode is None:
+        if output.mode is None:
             print(batched.id)
-        rows(
+        output.print_rows(
             [entry.model_dump() for entry in dispatched],
-            mode=mode,
-            fields=_fields(fields) or _DISPATCH_COLUMNS,
             title=f"run: {batched.id}",
+            columns=_DISPATCH_COLUMNS,
         )
 
     @batch.command(name="watch")
-    def batch_watch(
-        batch_id: str,
-        *,
-        interval: float = 0.0,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
-    ) -> None:
+    def batch_watch(batch_id: str, *, interval: float = 0.0, output: Output = _RICH) -> None:
         """Show every job of a dispatched batch, on every target, as the durable sweep settles it.
 
         Each pass runs the same sweep a cron runs, so results are pulled back and provider
@@ -1285,24 +1130,17 @@ def build(root: Path | None = None) -> App:
 
         batch_id: the batch to watch, as `run` printed it.
         interval: seconds between passes, following until every job settles; one pass when 0.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over job/target/handle/state/verdict/detail.
         """
         watcher = board("local").watch(batch_id)
-        mode = mode_of(json_mode=json, agent=agent)
-        chosen = _fields(fields) or _STATUS_COLUMNS
+        label = f"sweeping {batch_id}"
+        show = partial(_status, output=output)
         if not interval:
-            with progress(f"sweeping {batch_id}"):
+            with progress(label):
                 status = watcher.once()
-            _status(status, mode=mode, fields=chosen)
+            show(status)
             return
-        with suppress(KeyboardInterrupt, StopIteration):
-            passes = watcher.follow(interval)
-            while True:
-                with progress(f"sweeping {batch_id}"):
-                    status = next(passes)
-                _status(status, mode=mode, fields=chosen)
+        _followed(watcher.follow(interval), label, show)
 
     @batch.command(name="wait")
     def batch_wait(
@@ -1311,9 +1149,7 @@ def build(root: Path | None = None) -> App:
         timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
         stall: float = STALL_SECONDS,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> int:
         """Block until every job of a batch settles, print the batch's verdict, exit its code.
 
@@ -1329,19 +1165,9 @@ def build(root: Path | None = None) -> App:
         interval: seconds between sweeps, the dispatch default when 0.
         stall: seconds a running job may print nothing on an idle card before the wait stops
             and exits 4; 0 never calls a job stalled.
-        json: print the verdict as canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
-        return wait(
-            batch_id,
-            timeout=timeout,
-            interval=interval,
-            stall=stall,
-            json=json,
-            agent=agent,
-            fields=fields,
-        )
+        return wait(batch_id, timeout=timeout, interval=interval, stall=stall, output=output)
 
     @app.command(show=False)
     def provide(env: str = "", *, source: str = "", expect: str = "", json: bool = False) -> None:
@@ -1396,7 +1222,7 @@ def build(root: Path | None = None) -> App:
         A dispatched job runs this for itself before its command starts, so the verb is here for
         a measurement somebody takes by hand and for the job scripts that already call it.
 
-        stream: the receipts stream the attestation belongs to, a batch id or a run's name.
+        stream: the receipts stream, a batch id or a run's name.
         job: the job inside that stream, the stream itself when omitted.
         """
         board("local").attest(stream, job=job or stream)
@@ -1420,7 +1246,7 @@ def build(root: Path | None = None) -> App:
         A dispatched job starts this for itself, so this verb is here for a command somebody
         runs by hand and for the job scripts that already call it.
 
-        stream: the receipts stream the samples belong to, a batch id or a run's name.
+        stream: the receipts stream, a batch id or a run's name.
         job: the job inside that stream, the stream itself when omitted.
         interval: seconds between readings, the manifest's own when 0.
         seconds: stop after this long, 0 to run until interrupted.
@@ -1440,9 +1266,7 @@ def build(root: Path | None = None) -> App:
         timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
         stall: float = STALL_SECONDS,
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        output: Output = _RICH,
     ) -> int:
         """Block until a dispatched job settles, print its receipts-derived outcome, exit its code.
 
@@ -1465,8 +1289,6 @@ def build(root: Path | None = None) -> App:
         interval: seconds between polls, the dispatch default when 0.
         stall: seconds a running job may print nothing on an idle card before the wait stops
             and exits 4; 0 never calls a job stalled.
-        json: print the outcome as canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
         print(f"waiting on {handle}", file=sys.stderr, flush=True)
@@ -1483,8 +1305,7 @@ def build(root: Path | None = None) -> App:
                     say=_said,
                 )
             )
-        _settled(settled, json_mode=json, agent=agent, fields=fields)
-        return settled.code
+        return _settled(settled, output)
 
     @app.command
     def logs(handle: str, *, on: str = "") -> int:
@@ -1520,14 +1341,7 @@ def build(root: Path | None = None) -> App:
         return 0
 
     @app.command
-    def cancel(
-        handle: str,
-        *,
-        on: str = "",
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
-    ) -> int:
+    def cancel(handle: str, *, on: str = "", output: Output = _RICH) -> int:
         """Stop a dispatched job on whatever took it and settle its record in the same pass.
 
         The verb a provably doomed run needs. Without it a job could only die at its own
@@ -1542,25 +1356,14 @@ def build(root: Path | None = None) -> App:
 
         handle: the job to cancel, as `submit` printed it.
         on: the host alias narrowing a handle recorded on several hosts.
-        json: print the outcome as canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
         with progress(f"cancelling {handle}"):
             settled = board("local").verdicts().cancel(handle, host=on)
-        _settled(settled, json_mode=json, agent=agent, fields=fields)
-        return settled.code
+        return _settled(settled, output)
 
     @app.command
-    def verdict(
-        target: str,
-        *,
-        on: str = "",
-        run: str = "",
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
-    ) -> int:
+    def verdict(target: str, *, on: str = "", run: str = "", output: Output = _RICH) -> int:
         """Print the settled truth the on-disk receipts hold, and exit with what it adds up to.
 
         The anti-fabrication verb. Dashboards, notification digests and progress summaries are
@@ -1577,19 +1380,14 @@ def build(root: Path | None = None) -> App:
         target: a receipts store directory, a stream id, a receipts file, or a dispatched handle.
         on: the host alias narrowing a handle recorded on several hosts.
         run: which run of a receipts store to score, its newest when unset.
-        json: print the rows as canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
         with progress(f"reading {target}"):
             settled = board("local").verdicts().of(target, host=on, run=run)
-        _settled(settled, json_mode=json, agent=agent, fields=fields)
-        return settled.code
+        return _settled(settled, output)
 
     @app.command
-    def jobs(
-        *, limit: int = 20, json: bool = False, agent: bool = False, fields: str = ""
-    ) -> None:
+    def jobs(*, limit: int = 20, output: Output = _RICH) -> None:
         """List every dispatched job still in flight, then the most recently settled ones.
 
         A live job is never left out and never answered from memory. Each host is asked once
@@ -1602,18 +1400,13 @@ def build(root: Path | None = None) -> App:
         than stopping quietly at twenty rows.
 
         limit: how many settled runs to show behind the live ones, newest first.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the row's columns, cells/quiet_s/gpu_pct
             among them.
         """
         with progress("asking every host about its live jobs"):
             listed = Listing(board("local"), limit=limit).taken()
-        rows(
-            [row.model_dump() for row in listed.rows],
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields) or _JOB_COLUMNS,
-            title="jobs",
+        output.print_rows(
+            [row.model_dump() for row in listed.rows], title="jobs", columns=_JOB_COLUMNS
         )
         if listed.note:
             print(listed.note, file=sys.stderr)
@@ -1631,7 +1424,6 @@ def build(root: Path | None = None) -> App:
         What `pkill -P`, `kill -- -pgid` and `taskkill /T` each do on one system. Exits 1 when a
         process was already gone, naming it.
 
-        pids: the processes to stop.
         force: kill at once instead of asking each process to terminate first.
         """
         gone = Processes().kill(pids, force=force)
@@ -1647,7 +1439,6 @@ def build(root: Path | None = None) -> App:
         and exits with its own status, or 124 when it had to be stopped, as GNU `timeout` does.
         A tree that ignores the request to stop is killed after a short grace.
 
-        seconds: the hard limit.
         command: the program and its arguments, from the first token after the limit.
         """
         return Processes().timeout(seconds, command)
@@ -1661,7 +1452,6 @@ def build(root: Path | None = None) -> App:
         The loop around `sleep`, `test` and `nc` that no Windows shell runs. Exits 0 once every
         named condition holds and 1 when the timeout passed first.
 
-        file: a path that must exist.
         port: a `host:port` that must accept a TCP connection.
         pid: a process that must have exited.
         timeout: seconds to wait at most, 0 for as long as it takes.
@@ -1675,7 +1465,7 @@ def build(root: Path | None = None) -> App:
     app.command(center)
 
     @center.command
-    def verify(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+    def verify(*, output: Output = _RICH) -> int:
         """Say whether this machine is ready to be the center, and exit 1 when it is not.
 
         Every question at once, each row with the one command that repairs it: this machine's
@@ -1686,26 +1476,17 @@ def build(root: Path | None = None) -> App:
         whether every lint tool can start, the repository tree, every agent's configuration
         (AGENTS.md, CLAUDE.md, the `.claude` and `.codex` links, `.mcp.json`, `opencode.json`),
         the default environment put on the PATH every agent shell starts from and proven from
-        each shell kind, and the tracked scripts that would behave differently
-        here, each named with its portable replacement.
+        each shell kind, and the tracked scripts that would behave differently here, each named
+        with its portable replacement.
 
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over section/verdict/detail/fix.
         """
         with progress("verifying this center"):
             sections = Verification(board("local")).sections()
-        return _sectioned(sections, json_mode=json, agent=agent, fields=fields, title="verify")
+        return _sectioned(sections, output, title="verify")
 
     @center.command
-    def migrate(
-        destination: str,
-        *,
-        root: str = "",
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
-    ) -> int:
+    def migrate(destination: str, *, root: str = "", output: Output = _RICH) -> int:
         """Move the center to another machine ssh reaches, Windows, macOS or Linux.
 
         Probes the destination (operating system, shells, filesystem, links, long paths, disk,
@@ -1726,13 +1507,11 @@ def build(root: Path | None = None) -> App:
         destination: the ssh alias of the machine becoming the center.
         root: where the workspace goes there, `~/projects` when omitted; an existing directory
             is used only when it is empty or already this repository.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over section/verdict/detail/fix.
         """
         with progress(f"moving the center to {destination}") as stage:
             sections = Migration(board("local"), destination, root=root, watch=stage).run()
-        return _sectioned(sections, json_mode=json, agent=agent, fields=fields, title="migrate")
+        return _sectioned(sections, output, title="migrate")
 
     @center.command
     def paper(
@@ -1760,7 +1539,7 @@ def build(root: Path | None = None) -> App:
         manuscript = board("local").paper(name)
         with progress(f"building {name}"):
             report = manuscript.check()
-        _report(report, mode=mode_of(json_mode=json, agent=agent))
+        _report(report, mode=Output(json=json, agent=agent).mode)
         for phrase in show:
             print(manuscript.show(phrase, dpi=dpi).as_posix())
         return 1 if report.problems else 0
@@ -1772,7 +1551,7 @@ def build(root: Path | None = None) -> App:
     center.command(git)
 
     @git.command(name="status")
-    def git_status(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
+    def git_status(*, output: Output = _RICH) -> None:
         """Show every owned repository in the tree on one table, without touching the network.
 
         Owned means the owner in the remote URL is the workspace root's own or one `[git]
@@ -1781,21 +1560,18 @@ def build(root: Path | None = None) -> App:
         fetched, how many paths are changed and untracked, and which remote branch already
         holds HEAD, empty for a commit a parent pointer could not yet be cloned at.
 
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the status columns.
         """
         with progress("reading the repository tree"):
             states = board("local").git().status()
-        rows(
+        output.print_rows(
             [state.model_dump() for state in states],
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields) or _GIT_STATUS_COLUMNS,
             title="git status",
+            columns=_GIT_STATUS_COLUMNS,
         )
 
     @git.command(name="pull")
-    def git_pull(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+    def git_pull(*, output: Output = _RICH) -> int:
         """Fast-forward every owned repository and bring submodule checkouts along, root first.
 
         Every owned remote is fetched at once, then the tree is walked from the root down.
@@ -1805,21 +1581,15 @@ def build(root: Path | None = None) -> App:
         only when it sat on the old one, and one never checked out is cloned at the recorded
         pointer. Exits 1 when any repository was held or failed.
 
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over repo/outcome/detail.
         """
         with progress("pulling the repository tree"):
             steps = board("local").git().pull()
-        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git pull")
+        return _stepped(steps, output, title="git pull")
 
     @git.command(name="commit")
     def git_commit(
-        *,
-        message: Annotated[str, Parameter(name=["--message", "-m"])],
-        json: bool = False,
-        agent: bool = False,
-        fields: str = "",
+        *, message: Annotated[str, Parameter(name=["--message", "-m"])], output: Output = _RICH
     ) -> int:
         """Commit every dirty owned repository, submodules first, then the pointers to them.
 
@@ -1831,16 +1601,14 @@ def build(root: Path | None = None) -> App:
         staged by hand. Exits 1 when any repository was held or failed.
 
         message: the commit message, the same for every repository committed.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over repo/outcome/detail.
         """
         with progress("committing the repository tree"):
             steps = board("local").git().commit(message)
-        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git commit")
+        return _stepped(steps, output, title="git commit")
 
     @git.command(name="push")
-    def git_push(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+    def git_push(*, output: Output = _RICH) -> int:
         """Push every owned repository, submodules before the parents that point at them.
 
         A parent is pushed only once every submodule pointer its HEAD records is held by a
@@ -1849,16 +1617,14 @@ def build(root: Path | None = None) -> App:
         this tool instead, and the row asks for the pull request. HTTPS pushes to GitHub can
         use the `gh` login as a credential. Exits 1 when any repository was held or failed.
 
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over repo/outcome/detail.
         """
         with progress("pushing the repository tree"):
             steps = board("local").git().push()
-        return _stepped(steps, json_mode=json, agent=agent, fields=fields, title="git push")
+        return _stepped(steps, output, title="git push")
 
     @git.command(name="check")
-    def git_check(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+    def git_check(*, output: Output = _RICH) -> int:
         """Verify the tree is safe to clone and push, and exit 1 when anything fails.
 
         Fetches every owned repository and the foreign submodules they point at, then reports
@@ -1867,30 +1633,25 @@ def build(root: Path | None = None) -> App:
         HEAD, unpushed or missing commits, and a checkout off its recorded pointer as `warn`.
         An empty table is a consistent tree.
 
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over repo/check/verdict/detail.
         """
         with progress("checking the repository tree"):
             findings = board("local").git().check()
-        rows(
+        output.print_rows(
             [finding.model_dump() for finding in findings],
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields) or _GIT_CHECK_COLUMNS,
             title="git check",
+            columns=_GIT_CHECK_COLUMNS,
         )
         return 1 if any(finding.verdict is Verdict.FAIL for finding in findings) else 0
 
     return app
 
 
-# The columns every judged report carries, so a clean one still renders its heading.
+# The columns each table always carries, so an empty one still renders its heading; the batch
+# tables' totals row is also summed over this shape, and the job listing lines a settled row's
+# empty live columns up under the live rows' own.
 _SECTION_ROW = ("section", "verdict", "detail", "fix")
-
-# The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
-
-# The columns each `git` table carries, so a tree with nothing to say still renders its heading.
 _GIT_STATUS_COLUMNS = (
     "repo",
     "owner",
@@ -1906,9 +1667,6 @@ _GIT_STATUS_COLUMNS = (
 _GIT_STEP_COLUMNS = ("repo", "outcome", "detail")
 _CI_COLUMNS = ("leg", "os", "step", "verdict", "seconds")
 _GIT_CHECK_COLUMNS = ("repo", "check", "verdict", "detail")
-
-# The columns the job listing always carries, so a cache nobody has dispatched from still renders
-# its heading, and so a settled row's empty live columns line up under the live rows' own.
 _JOB_COLUMNS = (
     "state",
     "host",
@@ -1922,9 +1680,6 @@ _JOB_COLUMNS = (
     "submitted_at",
     "cause",
 )
-
-# The columns each batch table carries, named here so an empty batch still renders its heading and
-# so the totals row is summed over the same shape the rows are printed in.
 _TRANSFER_COLUMNS = ("job", "target", "files", "raw_bytes", "wire_bytes", "since")
 _ESTIMATE_COLUMNS = (
     "job",
@@ -1978,9 +1733,8 @@ def _expected(priced: JobEstimate, *, results: str = "") -> str:
     rate came from rides beside it for the same reason: a live offer can be rented at that price
     and a stored one is last week's.
 
-    What comes back is named here too, and its absence is named out loud: a run whose results
-    path is nothing pulls nothing home, and the only moment that is cheap to notice is before
-    the job goes out rather than after it has written a wave of receipts onto a cluster.
+    A run that pulls nothing home says so out loud, since the only moment that is cheap to
+    notice is before the job goes out rather than after it wrote a wave of receipts on a cluster.
 
     results: the path this dispatch pulls back, empty when it declared none.
     """
@@ -1999,13 +1753,10 @@ def _expected(priced: JobEstimate, *, results: str = "") -> str:
 def _unprinted(workspace: Board, handle: str, *, host: str) -> int:
     """Say where a run that has printed nothing stands, and exit on whether it still might.
 
-    The registry row is what this stands on, since it is durable and always there for a real
-    handle, and the backend is asked on top of it for the state and the start time only a live
-    scheduler knows. A host that will not answer therefore still gets a line, built from what
-    was last recorded, rather than the bare "no output" that used to be the whole answer.
+    The durable registry row, always there for a real handle, is what this stands on; the
+    backend is asked on top of it for the state and start time only a live scheduler knows, so
+    a host that will not answer still gets a line built from what was last recorded.
 
-    workspace: the board holding the run registry and the host profiles.
-    handle: the run that printed nothing.
     host: the alias narrowing a handle recorded on several hosts.
     """
     absent = f"no output on file for {handle}"
@@ -2029,25 +1780,23 @@ def _unprinted(workspace: Board, handle: str, *, host: str) -> int:
     return 2
 
 
-def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: str) -> None:
-    """Print one stream's settled rows, the stream named in the heading.
+def _settled(settled: StreamVerdict, output: Output) -> int:
+    """Print one stream's settled rows under its name, and answer its exit code.
 
-    A stream with no rows says why on stderr rather than printing a bare heading over nothing.
-    An empty table is the one answer a reader cannot act on, since it looks identical whether
-    the run has not started, the evidence landed elsewhere, or the harness wrote a shape this
-    verb was never taught. The note goes to stderr so a machine-readable mode stays exactly what
-    it was on stdout.
+    A stream with no rows says why on stderr, since an empty table looks identical whether the
+    run has not started, the evidence landed elsewhere, or the harness wrote a shape this verb
+    was never taught; stderr keeps a machine-readable stdout exactly what it was.
     """
-    rows(
+    output.print_rows(
         [trial.model_dump() for trial in settled.trials],
-        mode=mode_of(json_mode=json_mode, agent=agent),
-        fields=_fields(fields) or _VERDICT_COLUMNS,
         title=f"verdict: {settled.stream}",
+        columns=_VERDICT_COLUMNS,
     )
     if settled.note:
         print(settled.note, file=sys.stderr)
     if settled.stalled:
         print(f"stalled: {settled.stalled}", file=sys.stderr)
+    return settled.code
 
 
 def _said(line: str) -> None:
@@ -2071,6 +1820,19 @@ def _agreed() -> bool:
     return input().strip().lower() in {"y", "yes"}
 
 
+def _followed[T](passes: Iterator[T], label: str, show: Callable[[T], None]) -> None:
+    """Show each pass as it lands until the passes end or the reader interrupts.
+
+    Each pass is taken inside its own progress block rather than iterated over, so the sweep's
+    own noise is diverted the way a single pass's is and each report prints as its own document.
+    """
+    with suppress(KeyboardInterrupt, StopIteration):
+        while True:
+            with progress(label):
+                passed = next(passes)
+            show(passed)
+
+
 def _judged(sections: list[Section], *, mode: str | None, title: str) -> None:
     """Print a machine's findings as a table of their own, under the record they judge."""
     rows(
@@ -2078,78 +1840,40 @@ def _judged(sections: list[Section], *, mode: str | None, title: str) -> None:
     )
 
 
-def _onboarded(
-    workspace: Board, report: HostSetup, *, json_mode: bool, agent: bool, fields: str, title: str
-) -> None:
+def _onboarded(workspace: Board, report: HostSetup, output: Output, *, title: str) -> None:
     """Print a setup record, then the findings its read-back census adds up to.
 
     The JSON mode keeps the record whole and adds the findings under `findings`, so a script
     reads both from one document.
     """
-    mode = mode_of(json_mode=json_mode, agent=agent)
     census = report.hardware.system if report.hardware else System()
     findings = workspace.findings(census)
-    if mode == "json":
+    if output.mode == "json":
         payload: dict[str, Node] = {
             **report.model_dump(),
             "findings": [row.model_dump() for row in findings],
         }
-        record(payload, mode=mode, fields=_fields(fields), title=title)
+        output.print_record(payload, title=title)
         return
-    record(report.model_dump(), mode=mode, fields=_fields(fields), title=title)
-    _judged(findings, mode=mode, title=f"findings: {report.host}")
+    output.print_record(report.model_dump(), title=title)
+    _judged(findings, mode=output.mode, title=f"findings: {report.host}")
 
 
-def _sectioned(
-    sections: list[Section], *, json_mode: bool, agent: bool, fields: str, title: str
-) -> int:
+def _sectioned(sections: list[Section], output: Output, *, title: str) -> int:
     """Print a report's rows and answer its exit status: 1 when any row failed."""
-    rows(
-        [section.model_dump() for section in sections],
-        mode=mode_of(json_mode=json_mode, agent=agent),
-        fields=_fields(fields) or _SECTION_ROW,
-        title=title,
+    output.print_rows(
+        [section.model_dump() for section in sections], title=title, columns=_SECTION_ROW
     )
     return 1 if failed(sections) else 0
 
 
-def _linted(report: Report, *, json_mode: bool) -> int:
-    """Print a lint pass, exiting nonzero unless nothing needed doing.
-
-    The JSON mode prints the report whole, one document a script can read; the default prints
-    each failing step's own words and then the summary line.
-    """
-    if json_mode:
-        record(report.model_dump(mode="json"), mode="json", fields=(), title="lint")
-    else:
-        if report.failures:
-            print(report.findings())
-        print(report.summary())
-    return 0 if report.clean else 1
-
-
-def _exit_on_mission_error(error: MissionError) -> NoReturn:
-    """Print `error` to stderr without a traceback, then exit 1."""
-    print(error, file=sys.stderr)
-    raise SystemExit(1) from None
-
-
-def _changed(
-    changes: Sequence[Change], *, json_mode: bool, agent: bool, fields: str, title: str
-) -> None:
+def _changed(changes: Sequence[Change], output: Output, *, title: str) -> None:
     """Print one edit's constraint move and every pin its solve moved, as one table.
 
-    Both are the same fact, something moved from one version to another somewhere, so they
-    render as one shape rather than two tables a reader has to align by eye. Where the move
-    happened is the column that tells them apart, a manifest table for the requirement and the
-    lock for everything the solve dragged with it.
+    Both are one fact, a version moving somewhere, so they share one shape; `where` tells a
+    manifest table's requirement from the lock's pins the solve dragged along.
     """
-    rows(
-        [change.model_dump() for change in changes],
-        mode=mode_of(json_mode=json_mode, agent=agent),
-        fields=_fields(fields),
-        title=title,
-    )
+    output.print_rows([change.model_dump() for change in changes], title=title)
 
 
 def _tabled(
@@ -2157,9 +1881,7 @@ def _tabled(
     columns: Sequence[str],
     *,
     summing: Sequence[str],
-    json_mode: bool,
-    agent: bool,
-    fields: str,
+    output: Output,
     title: str,
 ) -> None:
     """Print an analysis table: one row per job, then one row adding up what the batch costs.
@@ -2167,38 +1889,28 @@ def _tabled(
     The total rides in the table rather than beside it, since every mode a caller can ask for
     renders rows and a figure printed outside them would be the one number `--json` dropped.
     """
-    rows(
-        [*payloads, totals(payloads, columns=columns, summing=summing)],
-        mode=mode_of(json_mode=json_mode, agent=agent),
-        fields=_fields(fields) or columns,
-        title=title,
-    )
+    total = totals(payloads, columns=columns, summing=summing)
+    output.print_rows([*payloads, total], title=title, columns=columns)
 
 
-def _status(status: BatchStatus, *, mode: str | None, fields: Sequence[str]) -> None:
+def _status(status: BatchStatus, output: Output) -> None:
     """Print one pass over a batch, its still-running count in the heading."""
-    rows(
+    output.print_rows(
         [job.model_dump() for job in status.jobs],
-        mode=mode,
-        fields=fields,
         title=f"{status.batch}: {status.running} running",
+        columns=_STATUS_COLUMNS,
     )
 
 
-def _stepped(
-    steps: Sequence[Step], *, json_mode: bool, agent: bool, fields: str, title: str
-) -> int:
+def _stepped(steps: Sequence[Step], output: Output, *, title: str) -> int:
     """Print one row per repository a tree verb walked, exiting 1 when any did not settle."""
-    rows(
-        [step.model_dump() for step in steps],
-        mode=mode_of(json_mode=json_mode, agent=agent),
-        fields=_fields(fields) or _GIT_STEP_COLUMNS,
-        title=title,
+    output.print_rows(
+        [step.model_dump() for step in steps], title=title, columns=_GIT_STEP_COLUMNS
     )
     return 0 if all(step.outcome.settled for step in steps) else 1
 
 
-def _held(held: Held, *, json_mode: bool, agent: bool, fields: str, title: str) -> None:
+def _held(held: Held, output: Output, *, title: str) -> None:
     """Print one held machine: its alias, where it came from, what it costs, when it ends."""
     payload: dict[str, Node] = {
         "alias": held.alias,
@@ -2209,8 +1921,7 @@ def _held(held: Held, *, json_mode: bool, agent: bool, fields: str, title: str) 
         "deadline": held.deadline.isoformat(),
         "root": held.profile.root,
     }
-    mode = mode_of(json_mode=json_mode, agent=agent)
-    record(payload, mode=mode, fields=_fields(fields), title=title)
+    output.print_record(payload, title=title)
 
 
 def _report(report: PaperReport, *, mode: str | None) -> None:
@@ -2247,11 +1958,6 @@ def _report(report: PaperReport, *, mode: str | None) -> None:
     )
 
 
-def _fields(raw: str) -> tuple[str, ...]:
-    """`raw`'s comma-separated field names, trimmed and blank entries dropped."""
-    return tuple(part.strip() for part in raw.split(",") if part.strip()) if raw else ()
-
-
 def _answers(given: Sequence[str]) -> dict[str, str]:
     """The `question=value` pairs a caller passed, refusing one written without its value."""
     split = [pair.partition("=") for pair in given]
@@ -2260,72 +1966,44 @@ def _answers(given: Sequence[str]) -> dict[str, str]:
     return {question: answer for question, _, answer in split}
 
 
-def _present(report: MonitorReport, *, mode: str | None, fields: tuple[str, ...]) -> None:
+def _present(report: MonitorReport, output: Output) -> None:
     """Print one sweep's report, the whole document in the compact modes, else what moved.
 
     A cron reads the full report, counts and `changed` flag included, and branches on it; a
     person at a terminal wants the jobs that actually settled this pass, one row each, with the
-    still-running count in the heading. The change table names its columns even when nothing
-    moved, so a quiet pass still prints its heading instead of nothing at all.
+    still-running count in the heading and the columns named even when nothing moved.
     """
-    if mode is not None:
-        payload = {**report.model_dump(), "changed": report.changed}
-        record(payload, mode=mode, fields=fields, title="monitor")
+    if output.mode is not None:
+        output.print_record({**report.model_dump(), "changed": report.changed}, title="monitor")
         return
-    rows(
+    output.print_rows(
         _changes(report),
-        mode=mode,
-        fields=fields or _CHANGE_COLUMNS,
         title="monitor: sweep skipped; another monitor owns settlement"
         if report.running is None
         else f"monitor: {report.running} running",
+        columns=_CHANGE_COLUMNS,
     )
 
 
 def _changes(report: MonitorReport) -> list[dict[str, str]]:
-    """What moved this pass: every job that settled, every dispatch a quota is still holding, and
-    every host that could not be reached, one row each.
+    """What moved this pass, one row each: every job that settled or was re-dispatched, every
+    dispatch a quota is still holding, and every host that could not be reached.
 
-    A held dispatch is on the table because it is the one thing here that nobody else reports: it
-    has no handle a scheduler knows and no verdict to settle, so a sweep that says nothing about
-    it is a job waiting in silence.
+    A held dispatch is here because nothing else reports it: it has no handle a scheduler knows
+    and no verdict to settle, so a sweep silent about it is a job waiting in silence.
     """
-    return [
-        *(
-            {
-                "host": run.target,
-                "handle": run.handle,
-                "outcome": "dispatched",
-                "detail": run.name,
-            }
-            for run in report.resumed
-        ),
-        *(
-            {"host": run.target, "handle": run.handle, "outcome": "held", "detail": run.reason}
-            for run in report.held
-        ),
-        *(
-            {
-                "host": job.target,
-                "handle": job.handle,
-                "outcome": "ok",
-                "detail": job.pulled_path or "",
-            }
-            for job in report.finished
-        ),
-        *(
-            {"host": job.target, "handle": job.handle, "outcome": "failed", "detail": job.reason}
-            for job in report.failed
-        ),
-        *(
-            {"host": host.host, "handle": "", "outcome": "unreachable", "detail": host.reason}
-            for host in report.unreachable_hosts
-        ),
+    moved = [
+        *((run.target, run.handle, "dispatched", run.name) for run in report.resumed),
+        *((run.target, run.handle, "held", run.reason) for run in report.held),
+        *((job.target, job.handle, "ok", job.pulled_path or "") for job in report.finished),
+        *((job.target, job.handle, "failed", job.reason) for job in report.failed),
+        *((host.host, "", "unreachable", host.reason) for host in report.unreachable_hosts),
     ]
+    return [dict(zip(_CHANGE_COLUMNS, row, strict=True)) for row in moved]
 
 
 def main() -> None:
-    """Console entry point, `MissionError` printed without a traceback.
+    """Console entry point, `MissionError` printed to stderr without a traceback, exit 1.
 
     The snapshot is brought up to its source first, which re-executes this same command on the
     new code when the source moved, and says so on stderr only. A trailing-command verb then gets
@@ -2337,4 +2015,5 @@ def main() -> None:
     try:
         app(Delimiter(app).placed(sys.argv[1:]))
     except MissionError as error:
-        _exit_on_mission_error(error)
+        print(error, file=sys.stderr)
+        raise SystemExit(1) from None
