@@ -1,10 +1,10 @@
 # The ssh aliases a held rental is reached by, written into the user's own ssh config.
 #
-# A held machine has to answer to a name for the whole session, from this tool, from rsync and
-# from a person typing `ssh <alias>`, and the one place all three look a name up is the ssh
-# config. Each alias is one marked block, put first in the file so a broad `Host *` further down
-# never overrides its address, and removed again by its markers when the machine is released.
-# Nothing outside a block is ever touched.
+# A held machine has to answer to a name for the whole session, from this tool, from the
+# mirror's ssh and from a person typing `ssh <alias>`, and the one place all three look a name
+# up is the ssh config. Each alias is one marked block, put first in the file so a broad
+# `Host *` further down never overrides its address, and removed again by its markers when the
+# machine is released. Nothing outside a block is ever touched.
 
 import os
 from pathlib import Path

@@ -206,20 +206,28 @@ def test_a_submodule_ships_its_tracked_build_sources_under_a_parent_that_ignores
     git(work, "commit", "-q", "-m", "workspace")
     ignores = GitignoreFilter(work)
     roots = ["src", "build", "packages", "vendor"]
-    assert ignores.tracked(roots) == [
+    listing = ignores.tracked(roots)
+    assert listing.files == (
         "build/forced.txt",
         "packages/mcmr/.gitignore",
         "packages/mcmr/src/graph/build/building.rs",
         "packages/mcmr/src/graph/build/fresh.rs",
         "src/app.py",
         "vendor/clone/build/keep.rs",
-    ]
-    assert ignores.tracked(["packages/mcmr/src"]) == [
+    )
+    assert listing.kept == ("build/forced.txt",)
+    assert ignores.tracked(["packages/mcmr/src"]).files == (
         "packages/mcmr/src/graph/build/building.rs",
         "packages/mcmr/src/graph/build/fresh.rs",
-    ]
-    assert ignores.tracked(["elsewhere"]) == []
-    assert ignores.files("packages") == ignores.tracked(["packages"])
+    )
+    assert ignores.tracked(["elsewhere"]).files == ()
+    assert list(ignores.files("packages")) == list(ignores.tracked(["packages"]).files)
+    assert (
+        "vendor/clone/build/keep.rs"
+        not in ignores.tracked(roots, deny=patterns(["vendor/"])).files
+    )
+    git(work, "add", "src/x.swp", "-f")
+    assert "src/x.swp" in ignores.tracked(["src"]).files
     seed(host, "packages/mcmr/target/debug/bin", "packages/mcmr/src/graph/build/gone.rs")
     seed(host, "build/cache.o", "src/editor.swp")
     agent = Agent(InProcessLink(), python=sys.executable)

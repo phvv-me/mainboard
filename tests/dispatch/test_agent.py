@@ -142,15 +142,18 @@ def test_a_listed_scope_states_its_files_and_the_directories_below_its_roots(
 ) -> None:
     """Version control already named the files, so nothing is walked and a gone one is skipped.
 
-    The deny rules still apply, and a listed file the ignore rules would drop is kept by name so
-    a target walking the same rules takes it too.
+    The deny rules still apply, and the ignore rules of every directory holding a listed file
+    are read at once, so the spec a target prunes by carries them before any walk.
     """
     seed(tmp_path, "pkg/src/build/tracked.rs", "pkg/src/run.py", "pkg/.env", "pkg/dump/x.bin")
     (tmp_path / "pkg/fifo").mkdir()
+    read: list[str] = []
+    ignore = Rules(discover=lambda base: read.append(base) or (compiled(["build/"]), False))
     scope = Scope(
         ["pkg/src", "pkg/.env", "pkg/dump"],
-        ignore=Rules({"": compiled(["build/"])}),
+        ignore=ignore,
         deny=Rules({"": compiled([".env", "dump/"])}),
+        keep=["pkg/src/build/tracked.rs"],
         listed=[
             "pkg/.env",
             "pkg/dump/x.bin",
@@ -160,7 +163,7 @@ def test_a_listed_scope_states_its_files_and_the_directories_below_its_roots(
             "pkg/src/run.py",
         ],
     )
-    assert scope.keep == {"pkg/src/build/tracked.rs"}
+    assert sorted(read) == ["", "pkg", "pkg/src", "pkg/src/build"]
     found = [(entry.path, entry.kind) for entry in walk(str(tmp_path), scope)]
     assert found == [
         ("pkg/src", DIRECTORY),
@@ -168,6 +171,9 @@ def test_a_listed_scope_states_its_files_and_the_directories_below_its_roots(
         ("pkg/src/build/tracked.rs", FILE),
         ("pkg/src/run.py", FILE),
     ]
+    target = Scope.of(scope.spec())
+    assert not target.excluded("pkg/src/build", directory=True)
+    assert target.excluded("pkg/src/build/out.o", directory=False)
 
 
 @links_on_this_host
