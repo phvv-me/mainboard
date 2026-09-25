@@ -14,6 +14,7 @@ from patos import FrozenModel
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..manifest.loading import load
+from ..manifest.schema.workspace import DATA
 from .sync import GitignoreFilter
 
 if TYPE_CHECKING:
@@ -96,15 +97,15 @@ class SourceTree:
         return self.filter.files([directory])
 
     def sources(self) -> list[str]:
-        """The workspace's source: what a host is sent, less what `[hosts.defaults.sync]` excludes.
+        """The workspace's source: every file a host could be sent, less its `[workspace] data`.
 
-        Data stays out, since a dataset a trial reads is pinned through `needs` or `resources`,
-        never archived as source, and one tracked evidence tree once made a 12 GB archive.
+        A dataset a trial reads is pinned through `needs` or `resources`, never archived as
+        source; a host mirror still ships whatever its own sync include names.
         """
         manifest = self.root / Project().manifest
-        excluded = load(manifest).defaults.sync.exclude if manifest.is_file() else []
+        data = load(manifest).workspace.data if manifest.is_file() else DATA
         return self.filter.files(
-            sorted(entry.name for entry in self.root.iterdir()), excluded=excluded
+            sorted(entry.name for entry in self.root.iterdir()), excluded=data
         )
 
     def seal(self, files: Sequence[str], *, built: Sequence[str] = ()) -> tuple[Source, list[Row]]:

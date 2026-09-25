@@ -120,17 +120,31 @@ def test_archives_preserve_original_bytes_and_reject_corruption(lab: Lab) -> Non
         pytest.param(True, marks=pytest.mark.skipif(not shutil.which("git"), reason="no git")),
     ],
 )
-def test_sources_leave_out_the_data_no_host_is_sent(tmp_path: Path, tracked: bool) -> None:
-    """A dataset, even one git tracks, is pinned by the trial that reads it, never archived."""
+def test_sources_leave_out_the_data_a_host_still_ships(tmp_path: Path, tracked: bool) -> None:
+    """Data, even what git tracks, is pinned by the trial that reads it, never archived; a host
+    whose sync include names it still receives it."""
     lab = Lab(tmp_path)
-    lab.write("mainboard.toml", '[hosts.defaults.sync]\nexclude = ["/datasets/"]\n')
     lab.write("experiments/law/test_law.py", "pass")
+    lab.write("experiments/law/evidence/run.json", "{}")
     lab.write("datasets/experiments/law/rows.parquet", "rows")
+    lab.write("corpora/text.txt", "words")
     lab.write("experiments/law/.card.lock", "")
     if tracked:
         subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
         subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
-    assert SourceTree(tmp_path).sources() == ["experiments/law/test_law.py", "mainboard.toml"]
+    tree = SourceTree(tmp_path)
+    assert tree.sources() == ["corpora/text.txt", "experiments/law/test_law.py"]
+    lab.write("mainboard.toml", '[workspace]\nname = "w"\ndata = ["/corpora/"]\n')
+    assert tree.sources() == [
+        "datasets/experiments/law/rows.parquet",
+        "experiments/law/evidence/run.json",
+        "experiments/law/test_law.py",
+        "mainboard.toml",
+    ]
+    shipped = tree.filter.files(["datasets", "experiments"])
+    assert {"datasets/experiments/law/rows.parquet", "experiments/law/evidence/run.json"} <= set(
+        shipped
+    )
 
 
 def test_a_killed_archival_leaves_one_partial_its_retry_replaces(lab: Lab) -> None:
