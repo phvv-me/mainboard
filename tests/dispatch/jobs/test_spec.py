@@ -19,13 +19,7 @@ from ..support import FieldValue, plan, recorded
 
 def spec(**overrides: FieldValue | ToolCall | tuple[str, ...]) -> JobSpec:
     """A `JobSpec` for gold's default environment under `/repo`, overridden field by field."""
-    fields: dict[str, FieldValue | ToolCall | tuple[str, ...]] = {
-        "cmd": "run",
-        "plan": plan(),
-        "root": "/repo",
-    }
-    fields.update(overrides)
-    return JobSpec.model_validate(fields)
+    return JobSpec.model_validate({"cmd": "run", "plan": plan(), "root": "/repo", **overrides})
 
 
 @given(
@@ -48,8 +42,8 @@ def test_the_script_hands_the_host_the_exact_record_whatever_the_command_holds(
     command: str, value: str
 ) -> None:
     """Quotes, newlines and shell syntax are data in the record, never script text."""
-    job = spec(cmd=command, exports={"NOTE": value}).job(pbs=False)
-    assert recorded(spec(cmd=command, exports={"NOTE": value}).render(pbs=False)) == job
+    rendered = spec(cmd=command, exports={"NOTE": value})
+    assert recorded(rendered.render(pbs=False)) == rendered.job(pbs=False)
 
 
 def test_a_pbs_render_needs_an_explicit_walltime_and_carries_the_full_header() -> None:
@@ -137,15 +131,8 @@ def test_the_job_owns_its_pythonpath_command_and_container() -> None:
         True,
     )
     assert not spec(isolate_pythonpath=False).job(pbs=False).isolate_pythonpath
-    contained = spec(container=("apptainer", "exec", "image.sif", "bash", "-c", "run"))
-    assert contained.job(pbs=False).container == (
-        "apptainer",
-        "exec",
-        "image.sif",
-        "bash",
-        "-c",
-        "run",
-    )
+    argv = ("apptainer", "exec", "image.sif", "bash", "-c", "run")
+    assert spec(container=argv).job(pbs=False).container == argv
 
 
 def test_a_dispatched_job_carries_the_provenance_a_mirror_cannot_derive_and_nothing_empty() -> (

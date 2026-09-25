@@ -11,13 +11,13 @@ def test_history_replays_every_recorded_invocation_oldest_to_newest() -> None:
     history.record("submit", (3, "gold", "job.sh"), monotonic(), "ok", handle="H1")
     history.record("ls", (), monotonic(), "error", detail="boom")
     first, second = history.recent(10)
-    assert (first.command, first.target, first.handle, first.outcome) == (
+    assert (first.command, first.target, first.handle, first.outcome, first.args) == (
         "submit",
         "gold",
         "H1",
         "ok",
+        ["3", "gold", "job.sh"],
     )
-    assert first.args == ["3", "gold", "job.sh"]
     assert first.duration_ms is not None
     assert (second.command, second.target, second.detail) == ("ls", None, "boom")
 

@@ -133,16 +133,6 @@ def test_the_backend_submits_lists_and_reads_a_task_back() -> None:
     assert backend.logs(machine_with("captured\n"), "/repo", handle="3") == "captured\n"
 
 
-def test_an_ssh_host_hands_its_terminal_to_its_own_tool() -> None:
-    """A pueue host is already the machine the work runs on, so nothing is allocated for it."""
-    assert Pueue().interactive(env="serving", command=(), resources=Resources()) == (
-        "mainboard shell serving"
-    )
-    assert Pueue().interactive(env="default", command=("pwd",), resources=Resources()) == (
-        "mainboard run --env default -- pwd"
-    )
-
-
 @pytest.mark.parametrize(
     ("task", "expected"),
     [

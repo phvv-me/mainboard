@@ -92,12 +92,7 @@ def test_a_squeue_row_round_trips_through_the_format_the_command_asks_for(
     rows: Sequence[tuple[str, str, str]],
 ) -> None:
     """The parser reads back exactly the `%i|%j|%T|%P|%M` layout the built command requests."""
-    assert build_squeue_command(me=True)[-1] == "--me"
-    assert build_squeue_command(me=False) == [
-        "squeue",
-        "--noheader",
-        "--format=%i|%j|%T|%P|%M",
-    ]
+    assert build_squeue_command() == ["squeue", "--noheader", "--format=%i|%j|%T|%P|%M", "--me"]
     rendered = "\n".join(f"{i}|{name}|RUNNING|{part}|00:05:00" for i, name, part in rows)
     parsed = parse_squeue_output(f"{rendered}\n\nbad|row\n")
     assert parsed == [

@@ -4,6 +4,9 @@ import pytest
 
 from mainboard.dispatch import HostUnreachable
 from mainboard.dispatch.schedulers import (
+    Local,
+    Pueue,
+    Scheduler,
     exit_reason,
     failure_reason,
     is_quota_refusal,
@@ -14,11 +17,7 @@ from mainboard.dispatch.schedulers import (
     standing,
     verdict_line,
 )
-from mainboard.dispatch.schedulers.base import (
-    log_path,
-    meaningful_lines,
-    workspace_session,
-)
+from mainboard.dispatch.schedulers.base import log_path, meaningful_lines
 from mainboard.dispatch.shared import since
 from mainboard.dispatch.vocabulary import JobState, Resources
 
@@ -41,25 +40,23 @@ def test_login_run_returns_stdout_but_raises_when_the_transport_itself_failed() 
 
 
 def test_a_bare_resource_request_asks_for_one_cpu_node_and_nothing_else() -> None:
-    resources = Resources()
-    assert (resources.nodes, resources.gpus, resources.account, resources.container) == (
-        1,
-        0,
-        "",
-        "",
+    assert Resources() == Resources(
+        nodes=1, gpus=0, account="", container="", walltime=None, queue=None, mem_gb=None
     )
-    assert (resources.walltime, resources.queue, resources.mem_gb) == (None, None, None)
 
 
-def test_a_workspace_session_hands_the_terminal_to_the_hosts_own_tool() -> None:
-    """An ssh host is already the machine the work runs on, so its own tool owns activation."""
+@pytest.mark.parametrize("backend", [Local(), Pueue()], ids=["bare-bash", "pueue"])
+def test_a_host_that_runs_the_work_itself_hands_the_terminal_to_its_own_tool(
+    backend: Scheduler,
+) -> None:
+    """No queue stands between the caller and the machine, so its own tool owns activation."""
     resources = Resources()
-    assert workspace_session(env="serving", command=(), resources=resources) == (
+    assert backend.interactive(env="serving", command=(), resources=resources) == (
         "mainboard shell serving"
     )
-    assert workspace_session(env="default", command=("nvidia-smi", "-L"), resources=resources) == (
-        "mainboard run --env default -- nvidia-smi -L"
-    )
+    assert backend.interactive(
+        env="default", command=("nvidia-smi", "-L"), resources=resources
+    ) == ("mainboard run --env default -- nvidia-smi -L")
 
 
 def test_a_log_is_read_from_the_state_dir_path_the_job_template_writes() -> None:

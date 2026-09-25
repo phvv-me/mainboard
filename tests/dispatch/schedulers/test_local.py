@@ -23,13 +23,3 @@ def test_the_local_backend_runs_the_script_in_the_foreground_with_nothing_to_que
     }
     assert backend.state(remote, "/repo", handle=handle).verdict == "vanished"
     backend.cancel(remote, "/repo", handle=handle)
-
-
-def test_a_bare_bash_host_hands_its_terminal_to_its_own_tool() -> None:
-    """No daemon stands between the caller and the machine, so nothing is allocated for it."""
-    assert Local().interactive(env="default", command=(), resources=Resources()) == (
-        "mainboard shell default"
-    )
-    assert Local().interactive(env="default", command=("pwd",), resources=Resources()) == (
-        "mainboard run --env default -- pwd"
-    )

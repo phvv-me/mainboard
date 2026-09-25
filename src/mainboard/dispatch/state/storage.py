@@ -1,9 +1,7 @@
 """The dispatch state store: one WAL-mode SQLite file (`{STATE_DIR}/db.sqlite`).
 
-SQLite in WAL mode is concurrent-safe by construction: readers never block, writes serialize
-with a busy timeout, and each upsert is atomic. Rows keep their flexible shape as JSON blobs
-(the state, host facts, the run registry, the history log, is all regenerable, so the schema
-stays loose).
+Rows are JSON blobs: host facts, the run registry and the history log are all regenerable, so
+the schema stays loose.
 """
 
 import sqlite3
@@ -21,11 +19,10 @@ CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, data T
 
 
 def connect(path: Path) -> sqlite3.Connection:
-    """Open the state database in WAL autocommit mode, creating the schema on first use.
+    """Open the state database, creating the schema on first use.
 
-    WAL lets concurrent dispatch commands read without blocking and serialize writes safely;
-    `busy_timeout` retries a locked write rather than failing. Autocommit keeps each
-    upsert/insert a single atomic statement.
+    WAL lets concurrent commands read without blocking, `busy_timeout` retries a locked write
+    rather than failing, and autocommit keeps each upsert a single atomic statement.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=10.0, autocommit=True)

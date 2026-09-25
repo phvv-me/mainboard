@@ -1,7 +1,6 @@
 # The `Scheduler` contract every job backend implements, plus the log-reading and failure-triage
-# vocabulary every backend shares. New backends are new classes, never new `if kind == ...`
-# branches. The resource request, the job state and the verdict lifecycle live one level up in
-# `dispatch.vocabulary`, since a provider backend speaks them without being a scheduler at all.
+# vocabulary they share; new backends are new classes, never `if kind == ...` branches. Requests,
+# job states and verdicts live in `dispatch.vocabulary`, since provider backends speak them too.
 
 import re
 import shlex
@@ -20,13 +19,12 @@ if TYPE_CHECKING:
 
 
 def login_run(remote: Machine, body: str) -> str:
-    """Run `body` in a login shell on `remote` and return its stdout.
+    """Run `body` in a login shell on `remote` and return its stdout; every probe goes here.
 
-    The single chokepoint every scheduler probe shares. It captures the ssh exit status so a
-    transport failure (exit 255 with a transport phrase in stderr) raises `HostUnreachable`
-    instead of yielding the empty output a parser reads as a vanished job, which is exactly how a
-    refused ssh session used to end a wait early. A command that genuinely ran and exited non-zero
-    (`qstat` reporting an unknown id) returns its stdout unchanged.
+    A transport failure (exit 255, a transport phrase in stderr) raises `HostUnreachable` rather
+    than yield the empty output a parser reads as a vanished job, which is how a refused ssh
+    session used to end a wait early. A command that ran and exited non-zero (`qstat` on an
+    unknown id) returns its stdout unchanged.
     """
     retcode, out, err = remote["bash"][["-lc", body]].run(retcode=None)
     if is_transport_failure(retcode, err):
@@ -37,25 +35,21 @@ def login_run(remote: Machine, body: str) -> str:
 def within(root: str, command: str) -> str:
     """`command` run from `root`, the one way a backend enters the tree a dispatch pinned it to.
 
-    Every scheduler reached over ssh takes its job's working directory from the directory it was
-    submitted in: PBS exports it as `PBS_O_WORKDIR` and the generated script cds there, sbatch
-    hands it to the job unless told otherwise, and a bare bash host simply is where it stands.
-    So the submitting shell is where a backend says which tree the job runs from, and saying it
-    once here is what keeps the three from drifting apart. pueue is the exception only in
-    spelling, since it takes the same directory as an explicit flag.
-
-    The root handed here is the dispatch's snapshot of the mirror rather than the mirror itself,
-    which is what makes the job's code immutable for as long as it runs.
+    Every ssh-reached scheduler takes the job's working directory from where it was submitted:
+    PBS exports it as `PBS_O_WORKDIR` (the generated script cds there), sbatch hands it to the
+    job, a bare bash host stands there, and pueue takes it as a flag. Staged script paths are
+    workspace-relative and the login home is not the root (a home that happened to be the root
+    hid this; Miyabi's /work root did not). `root` is the dispatch's snapshot of the mirror, which
+    keeps the job's code immutable while it runs.
     """
     return f"cd {shlex.quote(root)} && {command}"
 
 
 @runtime_checkable
 class Scheduler(Protocol):
-    """A pluggable job backend dispatched to generically.
+    """A pluggable job backend, one stateless instance per kind.
 
-    `remote` is an open plumbum `SshMachine` (or `local`); `root` is the workspace path on the
-    host. Implementations are stateless value objects, so one instance per kind is enough.
+    `remote` is an open plumbum `SshMachine` (or `local`); `root` is the host's workspace path.
     """
 
     name: str
@@ -64,16 +58,13 @@ class Scheduler(Protocol):
         """Cancel `handle` on the host."""
 
     def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
-        """What an interactive session runs once the caller's ssh has staged the workspace.
+        """The one command an interactive session runs inside the caller's ssh and staging.
 
-        A queued backend asks its scheduler for an interactive allocation (`qsub -I`, `srun
-        --pty`), while a backend whose host is already the machine the work runs on hands the
-        terminal to that host's own tool. Either way the caller owns the ssh and the staging, so
-        this only ever describes the one command run inside them.
+        A queued backend asks for an interactive allocation (`qsub -I`, `srun --pty`); a host that
+        runs the work itself hands the terminal to its own tool.
 
-        env: the environment the session works in.
-        command: a command to run instead of handing over the terminal, empty for a session.
-        resources: the allocation an interactive job asks its scheduler for.
+        command: run instead of handing over the terminal, empty for a session.
+        resources: the allocation a queued backend asks for.
         """
 
     def logs(self, remote: Machine, root: str, *, handle: str) -> str:
@@ -83,11 +74,9 @@ class Scheduler(Protocol):
         """Post-mortem `handle`: its state, exit code, and a verdict, for reconcile."""
 
     def states(self, remote: Machine, root: str, handles: Sequence[str]) -> dict[str, JobState]:
-        """The state of `handles` (and any other live job) in one batched query, keyed by handle.
+        """`handles` (and any other live job) in one round trip, keyed by handle.
 
-        One round-trip so a whole host's pending runs resolve at once instead of one probe per
-        run. A handle the host no longer remembers is simply absent; the caller falls back to
-        its cached verdict.
+        A handle the host no longer remembers may be absent; the caller falls back to `state`.
         """
 
     def submit(
@@ -105,13 +94,9 @@ class Scheduler(Protocol):
 def workspace_session(*, env: str, command: Sequence[str], resources: Resources) -> str:
     """The interactive line for a host that runs the work itself, with no queue in between.
 
-    The host's own tool owns the activation in both shapes, its interactive `shell` when the
-    terminal is being handed over and `run` for a one-off command, so an interactive session and
-    a dispatched job never disagree about which interpreter they got.
-
-    env: the environment the session works in.
-    command: a command to run instead of handing over the terminal, empty for a session.
-    resources: ignored, since an ssh host allocates nothing and is the machine itself.
+    The host's own tool (`shell`, or `run` for a command) owns the activation, so an interactive
+    session and a dispatched job never disagree about their interpreter. `resources` is ignored:
+    such a host allocates nothing.
     """
     del resources
     tool = Project().name
@@ -121,14 +106,17 @@ def workspace_session(*, env: str, command: Sequence[str], resources: Resources)
 
 
 def log_path(root: str, *, handle: str) -> str:
-    """The captured merged stdout+stderr path a job writes for `handle`.
+    """The merged stdout+stderr a PBS runner and SLURM's `--output` both write for `handle`."""
+    return f"{root}/{state_dir()}/logs/{bare(handle)}.log"
 
-    A PBS job's runner and SLURM's `--output` both write to this same
-    `{STATE_DIR}/logs/<stem>.log` path (the PBS stem drops the `.<server>` suffix `qstat`
-    appends), so a backend can read a job's output straight off the host filesystem.
+
+def bare(handle: str) -> str:
+    """A handle's bare job number: `2435326.opbs` and `2435326` both -> `2435326`.
+
+    `qsub` prints a bare id on some wrappers and `<id>.<server>` elsewhere while `qstat -f` always
+    reports the full id, so every lookup joins on the bare number.
     """
-    stem = handle.split(".", maxsplit=1)[0]
-    return f"{root}/{state_dir()}/logs/{stem}.log"
+    return handle.split(".", maxsplit=1)[0]
 
 
 def read_log(remote: Machine, root: str, *, handle: str, offset: int = 0) -> str:
@@ -166,15 +154,11 @@ _SIGNAL_EXITS = {
 }
 
 
-# What a scheduler says when it refuses a job for the count of jobs already in the queue rather
-# than for anything about the job itself. PBS answers rc=39 with `would exceed group <g>'s limit
-# on resource njobs-g` (measured on Miyabi 2026-09-04, which dropped four jobs of a thirteen job
-# wave), and SLURM refuses the same shape by naming the association or QOS limit it hit. Both are
-# "not now" rather than "no", so a dispatch that meets one is held and asked again.
-#
-# Every marker names a COUNT. A refusal about the request itself, a queue that does not exist, a
-# walltime over the queue's ceiling, an account without permission, is a real rejection and stays
-# one: re-asking would fail identically every twenty minutes forever.
+# A refusal for the count of jobs already queued, not for the job: PBS answers rc=39 with `would
+# exceed group <g>'s limit on resource njobs-g` (Miyabi 2026-09-04 dropped four jobs of a thirteen
+# job wave), SLURM names the association or QOS limit. That is "not now", so the dispatch is held
+# and asked again. Every marker names a COUNT: a bad queue, a walltime over the ceiling or an
+# account without permission is a real rejection, which re-asking would repeat forever.
 _QUOTA_MARKERS = (
     "limit on resource njobs",
     "max_queued",
@@ -187,10 +171,7 @@ _QUOTA_MARKERS = (
 
 
 def is_quota_refusal(reason: str) -> bool:
-    """Whether a scheduler refused this job for how many are already queued, not for what it is.
-
-    reason: the refusal text the backend raised, as the caller received it.
-    """
+    """Whether a scheduler's refusal `reason` is about how many jobs are queued, not this one."""
     low = reason.lower()
     return any(marker in low for marker in _QUOTA_MARKERS)
 
@@ -203,8 +184,7 @@ def exit_reason(exit_code: int | None) -> str | None:
 def failure_reason(log: str, exit_code: int | None = None) -> str:
     """One-line best-effort cause of a failed job, from its captured log and exit code."""
     for pattern in _FAILURE_MARKERS:
-        matches: list[str] = pattern.findall(log)
-        if matches:
+        if matches := pattern.findall(log):
             return matches[-1].strip()[:240]
     if reason := exit_reason(exit_code):
         return reason
@@ -231,7 +211,7 @@ def short_reason(verdict: str, exit_code: int | None) -> str:
         return "cancelled (stopped on purpose, not by the job or the queue)"
     if verdict == vocabulary.VANISHED:
         return "vanished (the scheduler no longer remembers the job)"
-    if (known := exit_reason(exit_code)) is not None:
+    if known := exit_reason(exit_code):
         return known
     if exit_code is not None:
         return f"exited {exit_code}"
@@ -241,16 +221,12 @@ def short_reason(verdict: str, exit_code: int | None) -> str:
 def standing(state: JobState, *, submitted_at: str = "", host: str = "") -> str:
     """Where a job that has printed nothing yet stands, in one line.
 
-    The answer a reader wants when a log is empty, because an empty log has two entirely
-    different causes and no way to tell them apart: the job has not started, or it started and
-    said nothing. So this leads with the verdict and the scheduler's own state word, says how
-    long the job has been waiting, and ends with whatever the backend says about when it will
-    run, which on PBS is the server's estimated start time and otherwise the resource its queue
-    is short of.
+    An empty log means either not started or started and silent, so this gives the verdict, the
+    scheduler's state word, the wait so far and whatever the backend says about when it will run
+    (PBS's estimated start, else the resource its queue is short of).
 
-    state: the job as its backend reports it now, or as the run registry last recorded it.
-    submitted_at: when the run was dispatched, from the durable record rather than the host.
-    host: the alias it was dispatched to.
+    state: as the backend reports it now, or as the run registry last recorded it.
+    submitted_at: the dispatch time, from the durable record rather than the host.
     """
     where = f" on {host}" if host else ""
     parts = [f"{state.handle} is {state.verdict}{where}"]

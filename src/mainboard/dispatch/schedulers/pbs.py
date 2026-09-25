@@ -13,7 +13,7 @@ from ...core.project import Project
 from .. import vocabulary
 from ..shared import state_dir
 from ..vocabulary import JobState, Resources
-from .base import login_run, read_log, within
+from .base import bare, login_run, read_log, within
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -38,17 +38,8 @@ class PbsState(StrEnum):
     WAITING = "W"
 
 
-_WORD_STATE_ALIASES: dict[str, PbsState] = {
-    "RUNNING": PbsState.RUNNING,
-    "QUEUED": PbsState.QUEUED,
-    "WAITING": PbsState.WAITING,
-    "HELD": PbsState.HELD,
-    "EXITING": PbsState.EXITING,
-    "FINISHED": PbsState.FINISHED,
-    "MOVED": PbsState.MOVED,
-    "SUSPENDED": PbsState.SUSPENDED,
-    "BEGUN": PbsState.ARRAY_BEGUN,
-}
+# The full words some servers print instead of the letter: each member's name, `BEGUN` for arrays.
+_WORD_STATE_ALIASES = {state.name.removeprefix("ARRAY_"): state for state in PbsState}
 
 # PBS terminal states: the job has left the run queue.
 _PBS_FINISHED = {PbsState.FINISHED, PbsState.EXITING}
@@ -68,9 +59,8 @@ def parse_job_state(value: str) -> PbsState | str:
 class JobInfo(Model):
     """One `qstat`-parsed PBS job record.
 
-    estimated_start / comment: what the server says about a job it has not started yet, the
-    scheduler's own answer to "when does this run". Both are empty on a server that reports
-    neither, which is the ordinary case for a job already running.
+    estimated_start / comment: the server's answer to "when does this queued job run", empty when
+    it reports neither, the ordinary case for a running job.
     """
 
     job_id: str
@@ -87,11 +77,9 @@ class JobInfo(Model):
 def parse_qstat_full(output: str) -> list[JobInfo]:
     """Parse `qstat -f` output into one record per job.
 
-    qstat wraps any attribute longer than its line width onto a continuation line beginning
-    with a tab, and it breaks mid-token, so a continuation is glued back on with nothing between
-    it and what came before. Without that, the one attribute long enough to wrap is `comment`,
-    which is exactly the attribute saying why a queued job has not started. An attribute with an
-    empty value is read as empty rather than skipped, since the key is what says it was reported.
+    qstat wraps a long attribute (in practice `comment`, the one saying why a queued job has not
+    started) onto tab-led continuation lines broken mid-token, so each is glued back on with
+    nothing between. An empty value is kept as empty, since the key says it was reported.
     """
     jobs: list[JobInfo] = []
     attributes: dict[str, str] = {}
@@ -130,25 +118,14 @@ def _job_info(job_id: str, attributes: dict[str, str]) -> JobInfo:
 
 
 def _instant(stamp: str) -> str:
-    """A  ctime stamp such as  as an ISO-8601 instant.
+    """A qstat ctime stamp (`Thu Sep  4 14:00:00 2026`) as an ISO-8601 instant, else verbatim.
 
-    qstat prints server-local wall clock without a zone, which is the login node's own, so
-    the stamp is read in this process's local zone; anything else is passed through as it is.
+    qstat prints the login node's wall clock without a zone, so it is read in this process's zone.
     """
     try:
         return datetime.strptime(stamp, "%a %b %d %H:%M:%S %Y").astimezone().isoformat()
     except ValueError:
         return stamp
-
-
-def bare(handle: str) -> str:
-    """A PBS handle's bare job number: `2435326.opbs` and `2435326` both -> `2435326`.
-
-    The cache records what `qsub` printed (bare on some wrappers, `<id>.<server>` elsewhere)
-    while `qstat -f` always reports the full id, so every lookup joins on the bare number rather
-    than trusting the two spellings to agree.
-    """
-    return handle.split(".", maxsplit=1)[0]
 
 
 def build_qsub_flags(resources: Resources) -> list[str]:
@@ -171,12 +148,10 @@ class Pbs:
     name = "pbs"
 
     def autopsy(self, remote: Machine, root: str, *, handle: str) -> JobState:
-        """Settle a handle the scheduler no longer remembers from its on-host exit artifact.
+        """Settle a handle the server purged from the exit artifact its runner left on the host.
 
-        A PBS job's runner writes its exit into `{STATE_DIR}/logs/<bare jobid>.exit`, so a job
-        that finished after the server purged its history still reconciles to a real
-        `ok`/`failed` with its exit code. No artifact (a hand-written script, a SIGKILL that left
-        the runner no chance to write it) means the job is genuinely `vanished`.
+        `{STATE_DIR}/logs/<bare id>.exit` still yields a real `ok`/`failed`; no artifact (a
+        hand-written script, a SIGKILL before the write) means the job is genuinely `vanished`.
         """
         artifact = shlex.quote(f"{root}/{state_dir()}/logs/{bare(handle)}.exit")
         out = login_run(remote, f"cat {artifact} 2>/dev/null")
@@ -188,21 +163,17 @@ class Pbs:
                 exit_code=code,
                 verdict="ok" if code == 0 else "failed",
             )
-        return JobState(handle=handle, state=None, exit_code=None, verdict="vanished")
+        return JobState(handle=handle, verdict="vanished")
 
     def cancel(self, remote: Machine, root: str, *, handle: str) -> None:
-        del root
         remote["bash"][["-lc", f"qdel {shlex.quote(handle)}"]](retcode=None)
 
     def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
-        """An interactive PBS allocation, `qsub -I` under the same flags a batch submit renders.
+        """`qsub -I` under the batch flags; `env` is activated inside, beyond `qsub`'s reach.
 
-        PBS hands the terminal a login shell on the node it allocates and takes no command to
-        run there, so a command asked for here is refused rather than quietly run on the login
-        node the allocation was requested from. The environment is likewise activated from
-        inside the session, since nothing this side of `qsub` runs on the allocated node.
+        PBS hands over a login shell on the allocated node and takes no command, so a command is
+        refused rather than quietly run on the login node.
         """
-        del env
         if command:
             raise MissionError(
                 "a PBS interactive session hands over a terminal and runs no command of its "
@@ -218,7 +189,6 @@ class Pbs:
         return found if found is not None else self.autopsy(remote, root, handle=handle)
 
     def states(self, remote: Machine, root: str, handles: Sequence[str]) -> dict[str, JobState]:
-        del root
         if not handles:
             return {}
         found = self.__query(remote, "qstat -f", handles)
@@ -236,12 +206,7 @@ class Pbs:
         resources: Resources,
     ) -> str:
         del args  # PBS scripts are self-contained; qsub takes no free-form positional args.
-        flags = build_qsub_flags(resources)
-        # qsub runs from the tree the dispatch pinned, not the login shell's home: the staged
-        # script path is workspace-relative, and the generated script cds to PBS_O_WORKDIR, which
-        # is wherever qsub was invoked. A host whose home happens to be the root hid this;
-        # Miyabi's /work root did not.
-        command = within(root, shlex.join(["qsub", *flags, script]))
+        command = within(root, shlex.join(["qsub", *build_qsub_flags(resources), script]))
         retcode, out, err = remote["bash"][["-lc", command]].run(retcode=None)
         handle = out.strip().splitlines()[-1] if out.strip() else ""
         if not handle[:1].isdigit():
@@ -294,7 +259,7 @@ def pbs_verdict(state: str | None, exit_code: int | None) -> str:
     """
     if state is None:
         return "vanished"
-    if state not in {member.value for member in _PBS_FINISHED}:
+    if state not in _PBS_FINISHED:
         return "running"
     if exit_code is None:
         return "unknown"

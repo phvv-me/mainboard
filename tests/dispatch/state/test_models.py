@@ -24,13 +24,8 @@ def test_a_sweep_reads_as_changed_exactly_when_it_harvested_a_terminal_job(
 
 
 def test_the_state_package_reexports_the_value_objects_a_reconcile_builds() -> None:
-    assert {
-        "Cache",
-        "RunRecord",
-        "History",
-        "MonitorReport",
-        "ReconcileRow",
-        "connect",
-    } <= set(state.__all__)
+    assert {"Cache", "RunRecord", "History", "MonitorReport", "ReconcileRow", "connect"} <= set(
+        state.__all__
+    )
     row = ReconcileRow(handle="H1", script="job.sh", submitted_at="t0", verdict="ok")
     assert (row.name, row.state, row.exit_code) == ("", None, None)
