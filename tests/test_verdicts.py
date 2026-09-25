@@ -532,6 +532,9 @@ def test_a_failed_row_says_what_it_said_on_the_way_out(board: Board) -> None:
         '  File "run.py", line 1, in <module>\n'
         "    import sqlite3\n"
         "ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found\n"
+        "mainboard-receipts-begin\n"
+        "mainboard-receipt:e30K\n"
+        "mainboard-receipts-end\n"
         "exit=1\n",
         encoding="utf-8",
     )
@@ -539,8 +542,8 @@ def test_a_failed_row_says_what_it_said_on_the_way_out(board: Board) -> None:
     [row] = board.verdicts().of("9").trials
 
     assert row.cause == ("ImportError: /lib64/libstdc++.so.6: version `CXXABI_1.3.15' not found")
-    # The frames above it and the wrapper's own exit stamp are not the cause: one is where and
-    # the other is a column of its own.
+    # The frames above it, the receipts frame below it and the wrapper's own exit stamp are not
+    # the cause: one is where, one is the wrapper's channel and the last is a column of its own.
     assert "File" not in row.cause
     assert row.exit_code is None or "exit=" not in row.cause
 

@@ -4,8 +4,19 @@ import shlex
 import subprocess
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
-from mainboard.dispatch.evidence import RECEIPTS_VAR, framing, receipts_in, staging, unframed
+from mainboard.dispatch.evidence import (
+    RECEIPTS_VAR,
+    framing,
+    printed,
+    receipts_in,
+    staging,
+    unframed,
+)
+
+from ..strategies import TEXT
 
 # One trial receipt long enough that vast's 500-character line limit would cut it in half, which
 # is the whole reason this channel exists.
@@ -92,6 +103,19 @@ def test_a_receipt_that_was_both_written_and_printed_is_still_one_trial():
     """Duplicates collapse, since a harness doing both has still only run the one trial."""
     receipt = json.dumps({"trial_receipt": {"run_id": "once"}})
     assert receipts_in(f"{receipt}\n{block(receipt)}") == (receipt,)
+
+
+@given(before=st.lists(TEXT), after=st.lists(TEXT))
+def test_the_job_s_own_output_survives_with_every_frame_line_taken_out(
+    before: list[str], after: list[str]
+) -> None:
+    """`logs` prints what the job said: whole frames and torn ones go, every other byte stays."""
+    said = "".join(f"{line}\n" for line in before)
+    later = "".join(f"{line}\n" for line in after)
+    torn = "  mainboard-receipts-begin\nmainboard-receipt:QUJD\n"
+    log = f"{said}{block(_RECEIPT)}\n{torn}{later}"
+    assert printed(log) == said + later
+    assert printed(said) == said
 
 
 def test_a_log_with_no_receipts_in_it_harvests_nothing():

@@ -21,6 +21,7 @@ from .delimiter import Delimiter
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .dispatch.dispatcher import Dispatcher
+from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
 from .doctor import Verdict
 from .durable import schedule
@@ -1384,12 +1385,14 @@ def build(root: Path | None = None) -> App:
 
     @app.command
     def logs(handle: str, *, on: str = "") -> int:
-        """Print what a dispatched job actually printed, whether or not its host still exists.
+        """Print only what a dispatched job printed, whether or not its host still exists.
 
         Only the exit code used to survive a run: the output lived on the host or on a rented
         disk that dies with the rental, so a lost terminal lost everything the job said. The
         durable sweep now keeps each settled run's tail beside that run's receipts, and this
-        reads that copy first, falling back to the backend for a run still in flight.
+        reads that copy first, falling back to the backend for a run still in flight. The frame a
+        rented run carries its receipts home in is this tool's and not the job's, so it is left
+        out; `verdict` reads the receipts themselves.
 
         An empty log has two entirely different causes, so a run that printed nothing answers
         with where it stands instead: its verdict, the scheduler's own state word, how long it
@@ -1404,7 +1407,7 @@ def build(root: Path | None = None) -> App:
         on: the host alias narrowing a handle recorded on several hosts.
         """
         workspace = board("local")
-        captured = workspace.verdicts().captured(handle, host=on)
+        captured = printed(workspace.verdicts().captured(handle, host=on))
         if not captured.strip():
             return _unprinted(workspace, handle, host=on)
         # A job that coloured its output for a terminal it never had leaves escape codes in

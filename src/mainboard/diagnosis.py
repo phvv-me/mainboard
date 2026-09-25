@@ -20,6 +20,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .batch.runner import directory
+from .dispatch.evidence import printed
 from .tracking import streamed
 
 if TYPE_CHECKING:
@@ -41,9 +42,10 @@ def cause(log: str) -> str:
     """The one line of `log` that says why the run ended, empty when it says nothing.
 
     The last unindented line that is neither blank nor the wrapper's exit stamp, which is a
-    traceback's exception, a loader's missing symbol, or a scheduler's own kill notice.
+    traceback's exception, a loader's missing symbol, or a scheduler's own kill notice. The
+    receipts frame a rented run closes its log with is the wrapper's too, and never a cause.
     """
-    for line in reversed(log.splitlines()):
+    for line in reversed(printed(log).splitlines()):
         stripped = line.strip()
         if not stripped or line[:1].isspace() or _TRAILER.match(stripped):
             continue
