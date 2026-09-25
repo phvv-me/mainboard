@@ -1,6 +1,6 @@
 import os
-import subprocess
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
 
 from hypothesis import given
@@ -9,6 +9,8 @@ from hypothesis import strategies as st
 from mainboard.center.portable import RULES, Portability
 from mainboard.core.section import Verdict
 from mainboard.git.repo import Repo
+
+from ..git.conftest import Forge
 
 # One command line per rule that fires that rule and no other, the forms scripts really use.
 _SAMPLES = {
@@ -29,15 +31,10 @@ _SAMPLES = {
 }
 
 
-def git(where: Path, *args: str) -> None:
-    """Run git in `where` for the fixture's own setup, failing the test on any error."""
-    subprocess.run(["git", "-C", str(where), *args], check=True, capture_output=True)
-
-
 def tracked(root: Path, files: Mapping[str, str | bytes], name: str = ".") -> Repo:
     """A git repository at `root` tracking `files`, as the tree would hand it to a scan."""
     root.mkdir(parents=True, exist_ok=True)
-    git(root, "init", "-q")
+    Forge.git(root, "init", "-q")
     for relative, content in files.items():
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,7 +42,7 @@ def tracked(root: Path, files: Mapping[str, str | bytes], name: str = ".") -> Re
             path.write_bytes(content)
         else:
             path.write_text(content, encoding="utf-8")
-    git(root, "add", "-A")
+    Forge.git(root, "add", "-A")
     return Repo(root, name=name, owns=lambda owner: True)
 
 
@@ -103,13 +100,9 @@ def test_only_live_command_lines_in_tracked_scripts_of_owned_repos_are_read(
             "huge.sh": kill + "#" * (1 << 20),
         },
     )
-    if hasattr(os, "symlink"):
-        try:
-            os.symlink("run.sh", tmp_path / "work" / "linked.sh")
-        except OSError:
-            pass
-        else:
-            git(tmp_path / "work", "add", "linked.sh")
+    with suppress(OSError):  # a Windows account without Developer Mode cannot link
+        os.symlink("run.sh", tmp_path / "work" / "linked.sh")
+        Forge.git(tmp_path / "work", "add", "linked.sh")
     (tmp_path / "work" / "untracked.sh").write_text(kill, encoding="utf-8")
     lib = tracked(
         tmp_path / "work" / "packages" / "lib",
@@ -117,14 +110,14 @@ def test_only_live_command_lines_in_tracked_scripts_of_owned_repos_are_read(
         name="packages/lib",
     )
 
-    rows = Portability([root, lib], exclude=["frozen/", "packages/lib/vendor/"]).sections()
+    scan = Portability([root, lib], exclude=["frozen/", "packages/lib/vendor/"])
+    rows = scan.sections()
 
     assert [(row.section, row.verdict) for row in rows] == [
         ("portable: pkill/killall", Verdict.WARN)
     ]
     assert rows[0].detail == ("7 uses: .github/workflows/ci.yml:1, run.sh:5, run.sh:6 and 4 more")
-    found = Portability([root, lib], exclude=["frozen/", "packages/lib/vendor/"]).found()
-    assert found == {
+    assert scan.found() == {
         "pkill/killall": [
             ".github/workflows/ci.yml:1",
             "run.sh:5",

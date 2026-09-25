@@ -15,6 +15,7 @@ from pathspec import GitIgnoreSpec
 from patos import FrozenModel
 
 from ..core.section import Section, Verdict
+from ..workstation import abbreviated
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -41,9 +42,6 @@ _SCRIPTS = (
 # Files past this size are data that happens to match a script's name, not a script.
 _LARGEST = 1 << 20
 
-# How many places a row names before it only counts the rest.
-_NAMED = 3
-
 
 class Divergence(FrozenModel):
     """One platform-divergent command form and what replaces it everywhere.
@@ -58,77 +56,56 @@ class Divergence(FrozenModel):
     replacement: str
 
 
-RULES = (
-    Divergence(
-        name="sed -i",
-        pattern=r"\bsed\s+(?:-\w+\s+)*-\w*i\b",
-        replacement="sd (in-place edits with one syntax on every system)",
-    ),
-    Divergence(
-        name="find -printf",
-        pattern=r"\bfind\b[^|;&\n]*\s-printf\b",
-        replacement="fd --format, or rg --files",
-    ),
-    Divergence(
-        name="grep -P",
-        pattern=r"\bgrep\s+(?:-\w+\s+)*-\w*P",
-        replacement="rg -P",
-    ),
-    Divergence(
-        name="timeout",
-        pattern=r"(?:^|[;&|(]|\s)timeout\s+-?\w",
-        replacement="mainboard proc timeout <seconds> -- <command>",
-    ),
-    Divergence(
-        name="xargs -r",
-        pattern=r"\bxargs\s+(?:-\w+\s+)*-\w*r\b",
-        replacement="fd --exec, or a loop in the task's own language",
-    ),
-    Divergence(
-        name="readlink -f",
-        pattern=r"\breadlink\s+-\w*f\b",
-        replacement="realpath from the environment's uutils coreutils",
-    ),
-    Divergence(
-        name="stat -c/-f",
-        pattern=r"\bstat\s+(?:-\w+\s+)*-[cf]\b",
-        replacement="the environment's uutils stat -c (GNU flags), or Python's os.stat",
-    ),
-    Divergence(
-        name="date -d",
-        pattern=r"\bdate\s+(?:-\w+\s+)*-d\b",
-        replacement="the environment's uutils date -d (GNU flags)",
-    ),
-    Divergence(
-        name="pkill/killall",
-        pattern=r"\b(?:pkill|killall)\b",
-        replacement="mainboard proc kill <pid> (the whole process tree)",
-    ),
-    Divergence(
-        name="ps aux",
-        pattern=r"\bps\s+(?:aux|-ef)\b",
-        replacement="procs",
-    ),
-    Divergence(
-        name="jq",
-        pattern=r"(?:^|[|;&(]|\s)jq\s",
-        replacement="yq -p json (go-yq)",
-    ),
-    Divergence(
-        name="flock",
-        pattern=r"(?:^|[;&|(]|\s)flock\s",
-        replacement="a lock taken in Python (filelock), which Windows also honors",
-    ),
-    Divergence(
-        name="nc -z",
-        pattern=r"\bnc\s+(?:-\w+\s+)*-\w*z",
-        replacement="mainboard proc wait --port <host:port>",
-    ),
-    Divergence(
-        name="sleep loop",
-        pattern=r"\bwhile\b[^\n]*;\s*do\s+sleep\b",
-        replacement="mainboard proc wait --file <path> or --port <host:port>",
-    ),
+RULES = tuple(
+    Divergence(name=name, pattern=pattern, replacement=replacement)
+    for name, pattern, replacement in (
+        (
+            "sed -i",
+            r"\bsed\s+(?:-\w+\s+)*-\w*i\b",
+            "sd (in-place edits with one syntax on every system)",
+        ),
+        ("find -printf", r"\bfind\b[^|;&\n]*\s-printf\b", "fd --format, or rg --files"),
+        ("grep -P", r"\bgrep\s+(?:-\w+\s+)*-\w*P", "rg -P"),
+        (
+            "timeout",
+            r"(?:^|[;&|(]|\s)timeout\s+-?\w",
+            "mainboard proc timeout <seconds> -- <command>",
+        ),
+        (
+            "xargs -r",
+            r"\bxargs\s+(?:-\w+\s+)*-\w*r\b",
+            "fd --exec, or a loop in the task's own language",
+        ),
+        (
+            "readlink -f",
+            r"\breadlink\s+-\w*f\b",
+            "realpath from the environment's uutils coreutils",
+        ),
+        (
+            "stat -c/-f",
+            r"\bstat\s+(?:-\w+\s+)*-[cf]\b",
+            "the environment's uutils stat -c (GNU flags), or Python's os.stat",
+        ),
+        ("date -d", r"\bdate\s+(?:-\w+\s+)*-d\b", "the environment's uutils date -d (GNU flags)"),
+        (
+            "pkill/killall",
+            r"\b(?:pkill|killall)\b",
+            "mainboard proc kill <pid> (the whole process tree)",
+        ),
+        ("ps aux", r"\bps\s+(?:aux|-ef)\b", "procs"),
+        ("jq", r"(?:^|[|;&(]|\s)jq\s", "yq -p json (go-yq)"),
+        (
+            "flock",
+            r"(?:^|[;&|(]|\s)flock\s",
+            "a lock taken in Python (filelock), which Windows also honors",
+        ),
+        ("nc -z", r"\bnc\s+(?:-\w+\s+)*-\w*z", "mainboard proc wait --port <host:port>"),
+        (
+            "sleep loop",
+            r"\bwhile\b[^\n]*;\s*do\s+sleep\b",
+            "mainboard proc wait --file <path> or --port <host:port>",
+        ),
+    )
 )
 
 
@@ -151,7 +128,7 @@ class Portability:
             Section(
                 section=f"portable: {rule.name}",
                 verdict=Verdict.WARN,
-                detail=f"{len(places)} uses: {_listed(places)}",
+                detail=f"{len(places)} uses: {abbreviated(places)}",
                 fix=rule.replacement,
             )
             for rule in RULES
@@ -166,47 +143,38 @@ class Portability:
         ]
 
     def found(self) -> dict[str, list[str]]:
-        """Every place each form appears, as `file:line`, keyed by the form's name."""
+        """Every place each form appears, as workspace-relative `file:line`, by the form's name."""
         compiled = [(rule.name, re.compile(rule.pattern)) for rule in RULES]
         places: dict[str, list[str]] = {}
-        for repo, path in self.scripts():
+        for where, path in self.scripts():
             try:
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError, OSError:
                 continue
-            where = path.relative_to(repo.path).as_posix()
-            prefix = "" if repo.name == "." else f"{repo.name}/"
             for number, line in enumerate(text.splitlines(), start=1):
                 if line.lstrip().startswith(("#", "//", "REM ", "::")):
                     continue
                 for name, pattern in compiled:
                     if pattern.search(line):
-                        places.setdefault(name, []).append(f"{prefix}{where}:{number}")
+                        places.setdefault(name, []).append(f"{where}:{number}")
         return places
 
-    def scripts(self) -> list[tuple[Repo, Path]]:
-        """Every tracked script file of every owned repository, small enough to be one."""
-        found: list[tuple[Repo, Path]] = []
+    def scripts(self) -> list[tuple[str, Path]]:
+        """Every tracked script file small enough to be one, by its workspace-relative name."""
+        found: list[tuple[str, Path]] = []
         for repo in self.repos:
-            listed = repo.git.run("ls-files", "-z").stdout.split("\0")
             prefix = "" if repo.name == "." else f"{repo.name}/"
-            for relative in listed:
-                if (
-                    not relative
-                    or self.excluded.match_file(prefix + relative)
-                    or not any(
-                        fnmatch(relative, pattern) or fnmatch(relative.rsplit("/", 1)[-1], pattern)
-                        for pattern in _SCRIPTS
-                    )
-                ):
-                    continue
-                path = repo.path / relative
-                if path.is_file() and not path.is_symlink() and path.stat().st_size <= _LARGEST:
-                    found.append((repo, path))
+            found += [
+                (prefix + relative, path)
+                for relative in repo.git.run("ls-files", "-z").stdout.split("\0")
+                if relative
+                and not self.excluded.match_file(prefix + relative)
+                and any(
+                    fnmatch(relative, pattern) or fnmatch(relative.rsplit("/", 1)[-1], pattern)
+                    for pattern in _SCRIPTS
+                )
+                and (path := repo.path / relative).is_file()
+                and not path.is_symlink()
+                and path.stat().st_size <= _LARGEST
+            ]
         return found
-
-
-def _listed(places: Sequence[str]) -> str:
-    """The first few places, and how many more there are."""
-    rest = len(places) - _NAMED
-    return ", ".join(places[:_NAMED]) + (f" and {rest} more" if rest > 0 else "")

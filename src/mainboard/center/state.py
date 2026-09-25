@@ -97,9 +97,7 @@ def claude_key(path: str) -> str:
 class Destination(FrozenModel):
     """Where the new center keeps things, as the destination agent reported it.
 
-    root: the workspace root, absolute and in that machine's spelling.
-    home: the user's home directory.
-    separator: that machine's path separator.
+    root: the workspace root, absolute and in that machine's spelling, as is `home`.
     system: the platform as `platform.system()` spells it there.
     """
 
@@ -170,10 +168,7 @@ def packed(parcels: Sequence[Parcel]) -> Iterator[bytes]:
 
 
 class SshConfig:
-    """The user's ssh client config, cut to the blocks this workspace's hosts need.
-
-    text: the config file's content.
-    """
+    """The user's ssh client config `text`, cut to the blocks this workspace's hosts need."""
 
     def __init__(self, text: str) -> None:
         self.blocks = self._blocks(text)
@@ -196,8 +191,7 @@ class SshConfig:
                 ):
                     continue
                 kept.append(block)
-                hops = _hops(block) - wanted
-                wanted |= hops
+                wanted |= _hops(block)
                 grew = True
         return [block for block in self.blocks if block in kept]
 
@@ -258,8 +252,7 @@ def _hops(block: Sequence[str]) -> set[str]:
 class Carried:
     """The state this center carries to a destination, and what it leaves behind on purpose.
 
-    root: this workspace's root.
-    manifest: its loaded manifest, which names the environments and the hosts.
+    manifest: the workspace's loaded manifest, which names the environments and the hosts.
     destination: where the new center keeps its root and home.
     home: this machine's home directory.
     """
@@ -279,38 +272,27 @@ class Carried:
             config = SshConfig((folder / "config").read_text(encoding="utf-8"))
         except FileNotFoundError:
             return []
-        aliases = [
-            *self.manifest.profiles(),
-            *Holdings(self.root).read(),
-            _GITHUB,
-        ]
-        blocks = config.needed(aliases)
+        blocks = config.needed([*self.manifest.profiles(), *Holdings(self.root).read(), _GITHUB])
         named = [self._home_path(identity) for identity in config.identities(blocks)] + [
             folder / key for key in _DEFAULT_KEYS
         ]
         keys = [path for path in dict.fromkeys(named) if path is not None and path.is_file()]
-        parcels = [
+        files = [
+            *(
+                pair
+                for key in keys
+                for pair in ((key, True), (key.with_name(f"{key.name}.pub"), False))
+            ),
+            (folder / "known_hosts", False),
+        ]
+        return [
             Parcel(
                 anchor="home",
                 path=".ssh/config",
                 data=SshConfig.rendered(blocks, system=self.destination.system).encode(),
             ),
-            *(
-                parcel
-                for key in keys
-                for parcel in (
-                    self._home(key, secret=True),
-                    *(
-                        [self._home(key.with_name(key.name + ".pub"))]
-                        if key.with_name(key.name + ".pub").is_file()
-                        else []
-                    ),
-                )
-            ),
+            *(self._home(path, secret=secret) for path, secret in files if path.is_file()),
         ]
-        if (folder / "known_hosts").is_file():
-            parcels.append(self._home(folder / "known_hosts"))
-        return parcels
 
     def workspace(self) -> list[Parcel]:
         """The `.env`, the `.mainboard/` registry and ledgers, and every environment's lock."""
@@ -323,8 +305,8 @@ class Carried:
             for path in sorted(out.rglob("*"))
             if path.is_file()
             and not path.is_symlink()
-            and path.relative_to(out).as_posix() != _REGISTRY
-            and not any(fnmatch(path.relative_to(out).as_posix(), rule) for rule in _MACHINE_LOCAL)
+            and (relative := path.relative_to(out).as_posix()) != _REGISTRY
+            and not any(fnmatch(relative, rule) for rule in _MACHINE_LOCAL)
         ]
         registry = out / _REGISTRY
         if registry.is_file():
@@ -354,27 +336,17 @@ class Carried:
         codex = self.home / ".codex"
         memory = claude / "projects" / claude_key(str(self.root)) / "memory"
         rekeyed = f".claude/projects/{claude_key(self.destination.root)}/memory"
+        sources = [
+            *((claude / name, False) for name in (*_CLAUDE, *_CLAUDE_PLUGINS)),
+            *((claude / name, True) for name in _CLAUDE_SECRETS),
+            *((codex / name, False) for name in _CODEX),
+            *((codex / name, True) for name in _CODEX_SECRETS),
+            (self.home / _OPENCODE_CONFIG, False),
+            *((self.home / name, True) for name in _OPENCODE_SECRETS),
+        ]
         parcels = [
             *self._tree(memory, into=rekeyed),
-            *(parcel for name in _CLAUDE for parcel in self._tree(claude / name)),
-            *(parcel for name in _CLAUDE_PLUGINS for parcel in self._tree(claude / name)),
-            *(
-                parcel
-                for name in _CLAUDE_SECRETS
-                for parcel in self._tree(claude / name, secret=True)
-            ),
-            *(parcel for name in _CODEX for parcel in self._tree(codex / name)),
-            *(
-                parcel
-                for name in _CODEX_SECRETS
-                for parcel in self._tree(codex / name, secret=True)
-            ),
-            *self._tree(self.home / _OPENCODE_CONFIG),
-            *(
-                parcel
-                for name in _OPENCODE_SECRETS
-                for parcel in self._tree(self.home / name, secret=True)
-            ),
+            *(parcel for path, secret in sources for parcel in self._tree(path, secret=secret)),
         ]
         if (codex / "config.toml").is_file():
             parcels.append(
@@ -464,9 +436,7 @@ class Carried:
         return [
             Parcel(
                 anchor="home",
-                path=str(PurePosixPath(base, file.relative_to(path).as_posix()))
-                if file != path
-                else base,
+                path=str(PurePosixPath(base, file.relative_to(path).as_posix())),
                 source=file,
                 secret=secret,
             )

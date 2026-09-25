@@ -72,7 +72,6 @@ class Carrier:
 
     host: the ssh alias the machine answers to.
     uv: the uv executable on that machine, as its probe found it.
-    transport: the ssh policy the calls ride.
     """
 
     def __init__(self, host: str, uv: str, transport: SshTransport | None = None) -> None:
@@ -93,15 +92,13 @@ class Carrier:
         shape: type[Answer],
         stream: Iterable[bytes] = (),
     ) -> Answer:
-        """Run `function(**arguments)` of the agent on the machine and answer what it returned.
+        """Run the agent's `function(**arguments)` on the machine, its answer read as `shape`.
 
-        function: the agent function's name.
-        arguments: its keyword arguments, JSON data, carried on stdin and never on the argv.
-        shape: what the answer is read back as.
+        arguments: JSON data, carried on stdin and never on the argv.
         stream: bytes the function reads from stdin after its header.
         """
-        header = {"modules": modules(), "call": function, "arguments": arguments}
-        preamble = f"exec({_LOADER!r})\n{json.dumps(header)}\n".encode()
+        header = json.dumps({"modules": modules(), "call": function, "arguments": arguments})
+        preamble = f"exec({_LOADER!r})\n{header}\n".encode()
         said = self.transport.feed(
             self.argv, self.host, operation=function, chunks=chain([preamble], stream)
         )
