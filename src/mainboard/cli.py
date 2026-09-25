@@ -14,6 +14,7 @@ from . import staleness
 from .batch.spec import BatchSpec, Selection
 from .board import Board
 from .center.migrate import Migration
+from .center.standalone import Standalone
 from .center.verify import Verification
 from .ci import LocalLeg, Matrix, Package
 from .context.resolver import Resolver
@@ -32,7 +33,7 @@ from .holds import Holds
 from .jobs import lanes as lanes_module
 from .lint import Inventory, Linter
 from .listing import Listing
-from .manifest.loading import load, load_plot_config
+from .manifest.loading import composition, load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
 from .probe.system import System
@@ -1543,6 +1544,28 @@ def build(root: Path | None = None) -> App:
         for phrase in show:
             print(manuscript.show(phrase, dpi=dpi).as_posix())
         return 1 if report.problems else 0
+
+    @center.command
+    def members(*names: str, output: Output = _RICH) -> int:
+        """Check that every member works for somebody who clones it alone; exit 1 on a failure.
+
+        A member is a project `[workspace] members` composes into this workspace. Each one is
+        read for what ties it to the monorepo: no installable `pyproject.toml`, no repository
+        of its own, a path in its own files climbing out of it, a task depending on one it does
+        not declare, and an import only the monorepo satisfies, from a sibling member it does
+        not require, a directory on the root's `PYTHONPATH` or, under a `src/` layout, beside
+        the package it installs, each a `fail`. Root-only
+        settings it declares, and root tasks, papers or variables reaching into it, are a
+        `warn`. Then it is cloned alone into a temporary directory, installed by `uv` into an
+        empty environment and every package it installs imported, the one `pass`.
+
+        names: the members to check, by name or path; every member when omitted.
+        fields: a comma-separated projection over section/verdict/detail/fix.
+        """
+        standalone = Standalone(composition(workspace_root() / project.manifest))
+        with progress("checking the members alone"):
+            sections = standalone.sections(names)
+        return _sectioned(sections, output, title="members")
 
     git = App(
         name="git",
