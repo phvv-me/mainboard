@@ -117,6 +117,7 @@ def test_sync_installs_a_missing_crate_against_the_environment_prefix(
         str(rust.prefix),
         "--version",
         ">=14",
+        "--force",
         "ripgrep",
     ]
 
