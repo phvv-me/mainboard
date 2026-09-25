@@ -118,7 +118,7 @@ def test_the_windows_routes_chain_with_semicolons_and_fetch_uv_through_powershel
     assert routes.select("uv-bootstrap").probe == "exit 0"
     assert routes.select("uv-bootstrap").command == (
         "irm https://astral.sh/uv/install.ps1 | iex; "
-        "uv tool install --force --python '>=3.14' --editable packages/tool"
+        "uv tool install --force --reinstall --python '>=3.14' --editable packages/tool"
     )
     assert routes.select("pip").command.startswith("python -m pip install --user")
     assert " && " not in routes.select("uv-bootstrap").command
@@ -243,7 +243,9 @@ def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
     with caplog.at_level("WARNING", logger="mainboard.dispatch"):
         report = setup.run()
     assert dispatcher.mirrored == [("homelab", _ROOT)]
-    assert transport.ran("uv tool install --force --python '>=3.14' --editable packages/mainboard")
+    assert transport.ran(
+        "uv tool install --force --reinstall --python '>=3.14' --editable packages/mainboard"
+    )
     assert transport.ran("mainboard install default --profile homelab")
     assert transport.ran(
         f"Test-Path -LiteralPath '{_ROOT}/.mainboard/envs/default/.pixi/envs/default'"

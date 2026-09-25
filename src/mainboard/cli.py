@@ -683,7 +683,8 @@ def build(root: Path | None = None) -> App:
                 raise
             raise MissionError(
                 "plotting requires the plot extra. From the monorepo root run: "
-                "uv tool install --from './packages/mainboard[wandb,plot]' mainboard --force"
+                "uv tool install --reinstall --python 3.14 "
+                "--from './packages/mainboard[wandb,plot]' mainboard --force"
             ) from fault
         settings = PlotStyle()
         specification = None

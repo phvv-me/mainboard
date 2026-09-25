@@ -197,7 +197,8 @@ def installers(
     fetch_probe, fetch = dialect.uv_bootstrap
     pip_probe, pip = dialect.pip
     python = shlex.quote(metadata(_TOOL)["Requires-Python"])
-    uv = f"uv tool install --force --python {python}"
+    # `--reinstall` because uv reuses a cached build of an unchanged version number.
+    uv = f"uv tool install --force --reinstall --python {python}"
     if vendored:
         quoted = shlex.quote(f"{source}{wanted_extras}")
         editable = f"{uv} --editable {quoted}"

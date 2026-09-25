@@ -576,7 +576,7 @@ any paths inside its query resolve from the caller's current directory.
 Plot the same SELECT with optional Seaborn and Matplotlib:
 
 ```console
-uv tool install --from './packages/mainboard[wandb,plot]' mainboard --force
+uv tool install --reinstall --python 3.14 --from './packages/mainboard[wandb,plot]' mainboard --force
 mainboard plot "SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware" --project reproducibility --x hardware --y runs --kind bar --out /tmp/run-inventory.png --out /tmp/run-inventory.pdf --dpi 300
 ```
 

@@ -161,7 +161,7 @@ def test_the_declared_version_reaches_the_index_command_the_way_a_requirement_sp
         PosixShell(machine_with(), plan(), "/repo"), "packages/tool", vendored=False, floor=floor
     )
     assert routes.select("uv-index").command == (
-        f"uv tool install --force --python '>=3.14' {shlex.quote(wanted)}"
+        f"uv tool install --force --reinstall --python '>=3.14' {shlex.quote(wanted)}"
     )
 
 
