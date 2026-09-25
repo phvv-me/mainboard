@@ -54,6 +54,15 @@ _CONDA_12_8 = (
 _CONDA_12_4 = (
     "conda: https://conda.anaconda.org/conda-forge/noarch/cuda-version-12.4-h3060b56_3.conda"
 )
+_CONDA_13_4 = (
+    "conda: https://conda.anaconda.org/conda-forge/noarch/cuda-version-13.4-hfacf21a_3.conda"
+)
+_CU130 = "pypi: https://download.pytorch.org/whl/torch-2.10.0+cu130-cp314-linux_x86_64.whl"
+
+# gold's GB10 as its census reads it: a unified card sharing 128 GB of system memory.
+_GB10 = Card(
+    name="NVIDIA GB10", driver="580.95.05", capability="12.1", vram_mb=122570, unified=True
+)
 
 # A machine every question passes on: declared platform, a driver above every floor, an Ada
 # card with room for any job here, a roomy disk, every center tool and a case-sensitive disk.
@@ -276,10 +285,22 @@ def test_the_driver_is_judged_against_the_floor_of_the_environment_the_host_runs
         ([_PLAIN], {}, Verdict.PASS, "no CUDA builds locked for this card to run"),
         ([_CU128], {"gpus": ()}, Verdict.PASS, "no CUDA builds locked for this card to run"),
         (
+            [_CU130],
+            {"cuda": "12.8"},
+            Verdict.FAIL,
+            "builds locked for CUDA 13.0 need a CUDA 13 driver, not 12.8",
+        ),
+        (
             [_CU128],
             {"cuda": "12.4"},
-            Verdict.FAIL,
-            "builds locked for CUDA 12.8, a driver supporting 12.4",
+            Verdict.PASS,
+            "CUDA 12.8 builds run on this CUDA 12.4 driver by minor-version compatibility",
+        ),
+        (
+            [_CONDA_13_4],
+            {"cuda": "13.0", "gpus": (_GB10,)},
+            Verdict.PASS,
+            "CUDA 13.4 builds run on this CUDA 13.0 driver by minor-version compatibility",
         ),
         (
             [_CU124],
@@ -310,7 +331,9 @@ def test_the_driver_is_judged_against_the_floor_of_the_environment_the_host_runs
     ids=[
         "nothing built for cuda",
         "no card to run them",
-        "a driver below the builds",
+        "a driver of an older major than the builds",
+        "an older minor of the builds' major",
+        "gold's gb10 on builds a minor newer than its driver",
         "blackwell on builds that carry no kernels for it",
         "a wheel index path spelling",
         "a conda pin with no driver to compare",
@@ -345,8 +368,14 @@ def test_locked_cuda_builds_must_run_on_this_driver_and_carry_kernels_for_this_c
         ),
         ("gold", _FIT.gpus, Verdict.PASS, "1 cards, largest 24 GB, jobs need 16"),
         ("local", _FIT.gpus, Verdict.PASS, "1 cards, largest 24 GB"),
+        (
+            "gold",
+            (_GB10,),
+            Verdict.PASS,
+            "1 cards, largest 120 GB (unified with system memory), jobs need 16",
+        ),
     ],
-    ids=["too few cards", "too little memory", "enough of both", "no declared need"],
+    ids=["too few cards", "too little memory", "enough of both", "no declared need", "unified"],
 )
 def test_the_cards_must_hold_what_the_hosts_jobs_declare_they_need(
     fitness: Fitness, host: str, gpus: tuple[Card, ...], verdict: Verdict, detail: str

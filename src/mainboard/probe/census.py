@@ -26,8 +26,11 @@ _ABSENT = (127, "")
 # The first dotted version number in a tool's answer, `git version 2.51.0` naming `2.51.0`.
 _VERSION = re.compile(r"\d+(?:\.\d+)+")
 
-# The maximum CUDA version the driver supports, as the plain `nvidia-smi` banner prints it.
-_DRIVER_CUDA = re.compile(r"CUDA Version:\s*([0-9.]+)")
+# The driver and the maximum CUDA it supports, as the plain `nvidia-smi` banner prints them:
+# `Driver Version: 580.95.05  CUDA Version: 13.0` until R615 renamed them `KMD Version: 615.71.09
+# CUDA UMD Version: 13.4`, when the `driver_version` query field was deprecated too.
+_DRIVER = re.compile(r"(?:Driver|KMD) Version:\s*(\d+(?:\.\d+)+)")
+_DRIVER_CUDA = re.compile(r"CUDA (?:UMD )?Version:\s*(\d+(?:\.\d+)+)")
 
 # Every tool a report names, with the argv that makes it say its version. `git lfs` is asked
 # through git, since its own binary is only ever reached as a git subcommand on Windows.
@@ -233,29 +236,45 @@ class Census:
         }
 
     def nvidia(self) -> tuple[str, list[Json]]:
-        """The driver's maximum CUDA version and every NVIDIA card, both empty without one."""
+        """The driver's maximum CUDA version and every NVIDIA card, both empty without one.
+
+        A card that reports no memory of its own (a GB10's `[N/A]`) shares the system's, which
+        is then its budget, marked unified.
+        """
         if not self.finder("nvidia-smi"):
             return "", []
         _, banner = self.runner(("nvidia-smi",))
+        driver = _DRIVER.search(banner)
         cuda = _DRIVER_CUDA.search(banner)
         status, listing = self.runner(
             (
                 "nvidia-smi",
-                "--query-gpu=name,driver_version,compute_cap,memory.total",
+                "--query-gpu=name,compute_cap,memory.total",
                 "--format=csv,noheader,nounits",
             )
         )
-        rows = [line.split(",") for line in listing.splitlines() if line.count(",") == 3]
+        rows = [line.split(",") for line in listing.splitlines() if line.count(",") == 2]
         cards: list[Json] = [
             {
                 "name": name.strip(),
-                "driver": driver.strip(),
+                "driver": driver[1] if driver else "",
                 "capability": capability.strip(),
-                "vram_mb": int(memory.strip()) if memory.strip().isdigit() else 0,
+                **self.card_memory(memory.strip()),
             }
-            for name, driver, capability, memory in rows
+            for name, capability, memory in rows
         ]
         return (cuda[1] if cuda else ""), (cards if not status else [])
+
+    @staticmethod
+    def card_memory(memory: str) -> dict[str, Json]:
+        """A card's memory in MiB from its `memory.total`, the system's when it has none."""
+        if memory.isdigit():
+            return {"vram_mb": int(memory)}
+        try:
+            pages = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        except AttributeError, ValueError, OSError:
+            pages = 0
+        return {"vram_mb": pages // 2**20, "unified": True}
 
 
 def main(root: str) -> None:

@@ -12,13 +12,15 @@ class Card(FrozenOpenModel):
 
     name: the marketing name, `NVIDIA GeForce RTX 5080` say.
     capability: the compute capability, `12.0` for Blackwell consumer cards.
-    vram_mb: its memory in MiB.
+    vram_mb: its memory in MiB, the system's for a unified card.
+    unified: whether the card has no memory of its own and shares the system's, as a GB10 does.
     """
 
     name: str
     driver: str = ""
     capability: str = ""
     vram_mb: int = 0
+    unified: bool = False
 
 
 class System(FrozenOpenModel):
@@ -85,6 +87,11 @@ class System(FrozenOpenModel):
     def vram_mb(self) -> int:
         """The largest card's memory in MiB, 0 without a card."""
         return max((card.vram_mb for card in self.gpus), default=0)
+
+    @property
+    def unified(self) -> bool:
+        """Whether a card shares the system's memory rather than holding its own."""
+        return any(card.unified for card in self.gpus)
 
     @property
     def capability(self) -> Version | None:

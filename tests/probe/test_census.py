@@ -24,9 +24,17 @@ _OS_RELEASE = Path("/etc/os-release")
 _BANNER = ("nvidia-smi",)
 _LISTING = (
     "nvidia-smi",
-    "--query-gpu=name,driver_version,compute_cap,memory.total",
+    "--query-gpu=name,compute_cap,memory.total",
     "--format=csv,noheader,nounits",
 )
+
+# The banners' first rows as real drivers print them: R580 on gold's GB10, and R615, which
+# renamed both fields, on pedro-cvlab's RTX 4090 and crimson's two RTX 3090s.
+_R580 = "| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0"
+_R615 = "| NVIDIA-SMI 615.71.09              KMD Version: 615.71.09     CUDA UMD Version: 13.4"
+
+# gold's 128 GB of system memory, in pages of 4 KiB, which its unified GB10 shares.
+_GOLD_PAGES = {"SC_PHYS_PAGES": 31377992, "SC_PAGE_SIZE": 4096}
 
 
 class Shell:
@@ -301,44 +309,66 @@ def test_a_tool_counts_only_when_it_is_on_path_and_answers_with_a_version() -> N
     ("banner", "listing", "cuda", "cards"),
     [
         (
-            "| NVIDIA-SMI 580.82  Driver Version: 580.82  CUDA Version: 13.0 |",
-            (
-                0,
-                "NVIDIA GeForce RTX 5080, 580.82, 12.0, 16303\n"
-                "NVIDIA A100, 580.82, 8.0, [N/A]\n"
-                "a line that is not a row\n",
-            ),
+            _R615,
+            (0, "NVIDIA GeForce RTX 3090, 8.6, 24576\nNVIDIA GeForce RTX 3090, 8.6, 24576\n"),
+            "13.4",
+            [
+                {
+                    "name": "NVIDIA GeForce RTX 3090",
+                    "driver": "615.71.09",
+                    "capability": "8.6",
+                    "vram_mb": 24576,
+                },
+            ]
+            * 2,
+        ),
+        (
+            _R580,
+            (0, "NVIDIA GB10, 12.1, [N/A]\na line that is not a row\n"),
             "13.0",
             [
                 {
-                    "name": "NVIDIA GeForce RTX 5080",
-                    "driver": "580.82",
-                    "capability": "12.0",
-                    "vram_mb": 16303,
-                },
-                {"name": "NVIDIA A100", "driver": "580.82", "capability": "8.0", "vram_mb": 0},
+                    "name": "NVIDIA GB10",
+                    "driver": "580.95.05",
+                    "capability": "12.1",
+                    "vram_mb": 122570,
+                    "unified": True,
+                }
             ],
         ),
         (
             "NVIDIA-SMI has failed because it couldn't communicate with the driver",
-            (9, "NVIDIA GeForce RTX 5080, 580.82, 12.0, 16303\n"),
+            (9, "NVIDIA GeForce RTX 5080, 12.0, 16303\n"),
             "",
             [],
         ),
     ],
-    ids=["a driver with two cards", "a driver that does not answer"],
+    ids=["an r615 driver with two cards", "an r580 driver with a unified card", "no answer"],
 )
 def test_the_driver_names_its_cuda_and_every_card_it_lists(
-    banner: str, listing: tuple[int, str], cuda: str, cards: list[dict[str, str | int]]
+    monkeypatch: pytest.MonkeyPatch,
+    banner: str,
+    listing: tuple[int, str],
+    cuda: str,
+    cards: list[dict[str, str | int]],
 ) -> None:
-    """A memory field the driver cannot read is 0, not a crash, and a failed query lists none.
-
-    A card listing from a query that failed is not trusted, however well formed it looks.
+    """Both banner spellings name the driver and its CUDA, and a card without memory of its
+    own is budgeted the system's, marked unified. A card listing from a query that failed is
+    not trusted, however well formed it looks.
     """
+    monkeypatch.setattr(census.os, "sysconf", _GOLD_PAGES.__getitem__, raising=False)
     machine, _ = census_of(
         "Linux", {_BANNER: (0, banner), _LISTING: listing}, {"nvidia-smi": "/bin/nvidia-smi"}
     )
     assert machine.nvidia() == (cuda, cards)
+
+
+def test_a_unified_card_on_a_system_that_cannot_say_its_memory_holds_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows has no `sysconf`, so a card reporting no memory there is budgeted nothing."""
+    monkeypatch.delattr(census.os, "sysconf", raising=False)
+    assert Census.card_memory("[N/A]") == {"vram_mb": 0, "unified": True}
 
 
 def test_a_machine_without_nvidia_smi_is_never_asked_about_cards() -> None:

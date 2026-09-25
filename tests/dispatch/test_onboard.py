@@ -288,7 +288,9 @@ def test_read_facts_starts_at_the_first_brace_and_refuses_output_carrying_no_sna
 def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The recorded host carries the manifest digest `doctor` tells a diverged host apart by."""
+    """The recorded host carries the manifest digest `doctor` tells a diverged host apart by,
+    and capabilities rooted where the profile put the workspace, not where the probe guessed
+    (pedro-cvlab-jobs recorded `~/projects` over its declared `~/mainboard-managed`)."""
     host = machine_with(rules=_HEALTHY)
     setup, dispatcher = onboarding(host, monkeypatch, digest="deadbeef")
     with caplog.at_level("INFO", logger="mainboard.dispatch"):
@@ -300,6 +302,7 @@ def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
     assert (report.installer, report.tool, report.env) == ("uv", "0.1.0", "default")
     assert report.activate == "/repo/.mainboard/activate.sh"
     assert report.capabilities is not None and report.capabilities.pixi.endswith("/pixi")
+    assert report.capabilities.root == report.root == "/repo"
     assert report.hardware is not None and report.hardware.hostname == "gold-1"
     assert report.onboarded_at and report.digest == "deadbeef"
     assert dispatcher.cache.host("gold").digest == "deadbeef"
@@ -366,7 +369,9 @@ def test_onboarding_discovers_a_root_the_profile_never_declared(
     """The probe already answered where the workspace goes, so nothing asks the host twice."""
     host = machine_with(rules=_HEALTHY)
     setup, dispatcher = onboarding(host, monkeypatch, root="")
-    assert setup.run().root == "/home/me/projects"
+    report = setup.run()
+    assert report.capabilities is not None
+    assert report.root == report.capabilities.root == "/home/me/projects"
     assert dispatcher.mirrored == [("gold", "/home/me/projects")]
     assert not host.ran("ls -d /work")
 
