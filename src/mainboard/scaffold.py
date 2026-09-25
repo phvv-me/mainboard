@@ -1,7 +1,6 @@
-# The generator behind `mainboard new`: one project rendered from a template this workspace
-# declares. copier is the engine and stays the engine, so nothing here renders anything. This
-# module decides which template a name resolves to, where the project lands, what its answers
-# are, and what the workspace still has to do with the task rows a template writes out.
+# The generator behind `mainboard new`. copier renders; this module only decides which template a
+# name resolves to, where the project lands, its answers, and what the workspace still owes the
+# task rows a template writes out.
 
 from typing import TYPE_CHECKING
 
@@ -18,19 +17,16 @@ if TYPE_CHECKING:
 
     from .board import Board
 
-# The tool this workspace answers to, so no message below spells the binary's name.
 _TOOL = Project().name
 
-# The renderer, which ships as a declared Python requirement of this workspace rather than of
-# this tool. mainboard installs environments for a living and reaches a template through one, so
-# the engine is asked for by name through the runner instead of imported.
+# A declared requirement of this workspace, not of this tool, so it is reached by name through
+# the workspace runner instead of imported.
 _COPIER = "copier"
 
-# What a template writes for a monorepo project: the task rows the root manifest has to adopt.
+# The task rows a monorepo project's template writes for the root manifest to adopt.
 _TASKS = f"{_TOOL}.tasks.toml"
 
-# The file that makes a directory a copier template. A template named as a location to fetch is
-# the engine's to resolve, so only one on this disk is checked before the render is paid for.
+# The file that makes a directory a copier template.
 _MARKER = "copier.yml"
 
 
@@ -38,8 +34,7 @@ class Scaffolded(FrozenModel):
     """One rendered project and what the workspace still owes it.
 
     project: the project's slug, the directory name it was rendered under.
-    path: where it was rendered.
-    tasks: the generated task-row snippet, empty for a project that owns its own.
+    tasks: the generated task-row file, empty for a project that owns its own.
     paste: the file and table those rows belong in, empty when there are none.
     snippet: the rows themselves, so a caller reads them without opening the file.
     """
@@ -52,32 +47,24 @@ class Scaffolded(FrozenModel):
 
 
 class Scaffold:
-    """Renders a project from one of the workspace's declared templates, through copier.
+    """Renders a project from one of the manifest's `[templates]`, through copier.
 
-    Which templates exist is the manifest's `[templates]` table, so this verb generates whatever
-    shapes the workspace keeps rather than the one shape this package would otherwise have to
-    know. The answers come from the project name and from what the workspace already declared,
-    which is what turns a questionnaire into one argument. What the render leaves behind is
-    reported rather than acted on: the task rows go to the caller to paste, because the root
-    manifest is a hand-curated file whose task table sits in the middle of it and whose
-    neighbouring `pyproject.toml` needs the same project on its type-checker search path, and
-    half of that edit landing automatically is worse than none of it.
+    The answers come from the project name and what the workspace declared, turning a
+    questionnaire into one argument. The task rows are reported for the caller to paste, not
+    written: the root manifest is hand-curated with its task table mid-file, its neighbouring
+    `pyproject.toml` needs the project on its type-checker path too, and half of that edit
+    landing automatically is worse than none of it.
     """
 
     def __init__(self, board: Board) -> None:
-        """board: the workspace whose templates are rendered and whose runner reaches copier."""
         self.board = board
 
     def chosen(self, template: str) -> Template:
         """The template `template` names, the workspace's first declared one when empty.
 
-        A declared name is looked up first and a declared path second, so spelling out a
-        template's own directory still gets the home and the answers this workspace already
-        decided for it rather than a bare render at the root. Anything else is handed to the
-        engine as written, which is what lets a directory or a git URL be rendered without
-        being declared at all.
-
-        template: the declared name, path or URL the caller asked for.
+        A declared name matches first, then a declared path, so spelling out a template's own
+        directory still gets its declared home and answers. Anything else goes to the engine as
+        written, so an undeclared directory or git URL renders too.
         """
         declared = self.board.manifest.templates
         if not template:
@@ -96,12 +83,8 @@ class Scaffold:
     def copy(self, template: str, destination: Path, answers: Mapping[str, str]) -> None:
         """Run copier over `template` through the workspace runner, refusing on its failure.
 
-        `--defaults` takes the template's own answer for every question these do not settle, so
-        the render is one command rather than a prompt nobody can answer from a script.
-
-        template: where the engine reads the template from.
-        destination: where the project is written.
-        answers: the questions this render settles itself.
+        `--defaults` takes the template's own answer for every question `answers` leaves open,
+        so the render is one command rather than a prompt nobody can answer from a script.
         """
         data = [
             token
@@ -121,14 +104,10 @@ class Scaffold:
     def located(self, template: Template) -> str:
         """Where the engine is pointed for `template`, refusing a local directory that is not one.
 
-        A template to fetch is the engine's to resolve, so only a path on this disk is checked,
-        and checking it is worth the line because a wrong workspace root is the usual reason a
-        declared template is not where it says it is.
-
-        template: the resolved template being rendered.
+        A scheme, a `gh:` prefix or a `.git` suffix is fetched by the engine; only a path on this
+        disk is checked, before the render is paid for, since a wrong workspace root is the
+        usual reason a declared template is not where it says.
         """
-        # A template with a scheme, a `gh:` prefix or a `.git` suffix is fetched by the
-        # engine rather than read off this disk.
         fetched = (
             "://" in template.path
             or template.path.startswith("gh:")
@@ -153,11 +132,10 @@ class Scaffold:
         """Render `name` from a template and report what the render left for the workspace.
 
         name: the project name, which becomes its slug, its package and its task prefix.
-        template: the template to render, a name the manifest declares or any location copier
-            accepts; the workspace's first declared template when empty.
+        template: a declared name or any location copier accepts, else the first declared one.
         description: the one sentence the README and the task rows carry.
         dest: where to render it, under the template's own declared home when empty.
-        answers: further template questions to answer, overriding what the manifest declares.
+        answers: further template answers, overriding what the manifest declares.
         """
         chosen = self.chosen(template)
         slug = name.strip().lower().replace(" ", "-").replace("_", "-")
