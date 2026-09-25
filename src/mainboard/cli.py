@@ -25,6 +25,7 @@ from .doctor import Verdict
 from .durable import schedule
 from .help import Help
 from .jobs import lanes as lanes_module
+from .lint import EditHook, GitHook, Inventory, Linter, Report
 from .listing import Listing
 from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
@@ -931,6 +932,62 @@ def build(root: Path | None = None) -> App:
             title="check",
         )
 
+    lint = App(name="lint", help="Normalize, format and lint workspace files in one pass.")
+    app.command(lint)
+
+    def linter(root: Path) -> Linter:
+        return Linter(root, load(root / project.manifest))
+
+    @lint.default
+    def lint_files(*paths: Path) -> int:
+        """Fix what can be fixed, then check, over the changed files or everything under PATHS.
+
+        With no path the pass reads every file that differs from HEAD or is new, deletions
+        included, so the everyday call costs what the edit did. A path widens it to every file
+        git tracks or would track at or beneath it, so `lint .` at the root reads the whole
+        workspace. The exit is nonzero when a file was rewritten or a check failed, which is
+        the answer a commit hook and a CI job both need.
+
+        paths: files or directories, relative to the working directory.
+        """
+        root = workspace_root()
+        inventory = Inventory(root)
+        files = (
+            inventory.under([path.resolve() for path in paths]) if paths else inventory.changed()
+        )
+        return _linted(linter(root).lint(files), advice="")
+
+    @lint.command(name="commit")
+    def lint_commit() -> int:
+        """Lint exactly what the commit being made records, the pre-commit hook's command."""
+        root = workspace_root()
+        report = linter(root).lint(Inventory(root).staged())
+        return _linted(report, advice="stage the rewritten files and commit again")
+
+    @lint.command(name="edit")
+    def lint_edit() -> None:
+        """Lint the file a Claude Code PostToolUse payload on stdin names.
+
+        Repairs land silently and whatever is left rides back to the agent as hook context.
+        The exit is always zero, so a finding informs the next edit rather than blocking this
+        one, and a file outside every workspace is left alone.
+        """
+        edited = EditHook.model_validate_json(sys.stdin.read()).edited
+        if edited is None:
+            return
+        try:
+            root = project.find_root(edited.parent)
+        except FileNotFoundError:
+            return
+        report = linter(root).lint([edited])
+        if report.failures:
+            print(EditHook.context(report.findings()))
+
+    @lint.command(name="install-hook")
+    def lint_install_hook() -> None:
+        """Make every `git commit` in this workspace run `lint commit` first."""
+        print(GitHook(workspace_root()).install())
+
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
 
@@ -1663,6 +1720,19 @@ def _agreed() -> bool:
     """
     print("dispatch? [y/N] ", end="", file=sys.stderr, flush=True)
     return input().strip().lower() in {"y", "yes"}
+
+
+def _linted(report: Report, *, advice: str) -> int:
+    """Print a lint pass's findings and summary, exiting nonzero unless nothing needed doing.
+
+    advice: what to do once files were rewritten, empty when rerunning is advice enough.
+    """
+    if report.failures:
+        print(report.findings())
+    print(report.summary())
+    if report.rewritten and advice:
+        print(advice)
+    return 0 if report.clean else 1
 
 
 def _exit_on_mission_error(error: MissionError) -> NoReturn:

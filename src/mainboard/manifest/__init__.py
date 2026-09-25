@@ -6,6 +6,7 @@ from .schema.figures.figure import FigureSpec
 from .schema.figures.layer import Layer
 from .schema.figures.panel import Panel
 from .schema.host import HostProfile, Sync
+from .schema.lint import Lint, LintTool
 from .schema.observe import Observe
 from .schema.queue import Defaults, QueuePolicy
 from .schema.root import Manifest
@@ -27,6 +28,8 @@ __all__ = [
     "Panel",
     "Header",
     "HostProfile",
+    "Lint",
+    "LintTool",
     "Manifest",
     "Observe",
     "PlatformScope",

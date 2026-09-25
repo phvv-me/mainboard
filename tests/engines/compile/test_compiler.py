@@ -51,6 +51,10 @@ _EDITS: dict[str, Json] = {
     "hosts": {"miyabi-g": {"kind": "pbs", "defaults": {"interact-queue": "interact-g"}}},
     "admission": {"NVIDIA GB10": {"holders": "record"}},
     "plots": {"paper": {"palette": "deep", "dpi": 600}},
+    "lint": {
+        "exclude": ["vendor/"],
+        "tools": {"ruff": {"run": "ruff check {files}", "files": ["*.py"]}},
+    },
     "figures": {
         "example": {
             "panels": {
