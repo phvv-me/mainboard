@@ -121,5 +121,6 @@ class Rust(Ecosystem):
             )
             if satisfied:
                 continue
-            reinstall = ("--force",) if current is not None else ()
-            self.cargo("install", *self.install_args(spec), *reinstall, name)
+            # A rebuilt prefix can keep a crate's binary after losing cargo's record of it, and
+            # cargo refuses to overwrite a binary it never recorded, so every install forces.
+            self.cargo("install", *self.install_args(spec), "--force", name)
