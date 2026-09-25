@@ -1,3 +1,4 @@
+from stat import S_ISDIR
 from typing import TYPE_CHECKING
 
 from .process import said
@@ -126,8 +127,14 @@ class Intake:
         return set(oversized) - lfs
 
     def _size(self, path: str) -> int:
-        """The bytes `path` puts in history: its own, a symlink's rather than its target's."""
-        return (self.repo.path / path).lstat().st_size
+        """The bytes `path` puts in history: its own, a symlink's rather than its target's.
+
+        A moved submodule is a directory here and a commit id in history, so it weighs nothing.
+        The directory's own size is filesystem bookkeeping (4096 on ext4, a few dozen bytes per
+        entry on APFS) and once withheld every pointer on Linux while macOS committed it.
+        """
+        stat = (self.repo.path / path).lstat()
+        return 0 if S_ISDIR(stat.st_mode) else stat.st_size
 
 
 def _stage(repo: Repo, paths: Sequence[str], *command: str) -> None:

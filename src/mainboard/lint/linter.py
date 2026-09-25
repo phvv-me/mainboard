@@ -150,7 +150,7 @@ class Linter:
         for path in matched:
             if not path.is_file():
                 continue
-            name = str(path.relative_to(owner))
+            name = path.relative_to(owner).as_posix()
             if width + len(name) >= _BATCH:
                 batches.append([])
                 width = 0

@@ -1,12 +1,9 @@
 import os
 import sys
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from mainboard.dispatch.aliases import SshAliases
 from mainboard.dispatch.transport import Endpoint
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # A config somebody wrote by hand, which no alias block may ever disturb.
 _OWN = "Host *\n  ServerAliveInterval 120\n\nHost gold\n  User pedro\n"
@@ -25,7 +22,7 @@ def test_an_alias_goes_first_is_replaced_whole_and_leaves_the_rest_as_it_was(
     text = config.read_text()
     assert text.index("Host other") < text.index("Host box") < text.index("Host *")
     assert "1.2.3.4" not in text
-    assert f"  IdentityFile {os.path.expanduser('~/k')}\n  IdentitiesOnly yes" in text
+    assert f"  IdentityFile {Path('~/k').expanduser().as_posix()}\n  IdentitiesOnly yes" in text
     assert f"UserKnownHostsFile {os.devnull}" in text
     if sys.platform != "win32":
         assert config.stat().st_mode & 0o777 == 0o600

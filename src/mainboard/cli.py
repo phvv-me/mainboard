@@ -935,7 +935,7 @@ def build(root: Path | None = None) -> App:
             report = manuscript.check()
         _report(report, mode=mode_of(json_mode=json, agent=agent))
         for phrase in show:
-            print(manuscript.show(phrase, dpi=dpi))
+            print(manuscript.show(phrase, dpi=dpi).as_posix())
         return 1 if report.problems else 0
 
     lint = App(name="lint")

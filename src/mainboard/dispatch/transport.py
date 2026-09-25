@@ -116,8 +116,13 @@ class Endpoint(FrozenModel):
     @field_validator("identity")
     @classmethod
     def expanded(cls, value: str) -> str:
-        """A key path with `~` resolved, since rsync's own `-e` parser honours no shell at all."""
-        return str(Path(value).expanduser()) if value else value
+        """A key path with `~` resolved and forward slashes, the one spelling every reader takes.
+
+        rsync's own `-e` parser honours no shell and reads a backslash as an escape, and ssh and
+        its config file accept forward slashes on Windows too, so a Windows key path is written
+        `C:/Users/...` rather than in its native spelling.
+        """
+        return Path(value).expanduser().as_posix() if value else value
 
     @property
     def destination(self) -> str:
