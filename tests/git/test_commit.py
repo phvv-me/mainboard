@@ -79,6 +79,20 @@ def test_a_moved_submodule_pointer_is_never_weighed_against_the_ceiling(
     assert _outcomes(steps) == {"packages/lib": Outcome.DONE, ".": Outcome.DONE}
 
 
+def test_a_deletion_already_staged_by_hand_commits_with_the_rest(workspace: Workspace) -> None:
+    """A `git rm` leaves a path neither the index nor the worktree holds, and it still commits."""
+    lib = workspace.lib
+    workspace.git(lib, "rm", "-q", "--", "lib.txt")
+    (lib / "new.txt").write_text("new\n", encoding="utf-8")
+
+    steps = workspace.tree().commit("Drop the old file")
+
+    assert _outcomes(steps) == {"packages/lib": Outcome.DONE, ".": Outcome.DONE}
+    tracked = workspace.git(lib, "ls-files").split()
+    assert "new.txt" in tracked
+    assert "lib.txt" not in tracked
+
+
 def test_a_repository_behind_its_upstream_holds_itself_and_every_parent(
     workspace: Workspace,
 ) -> None:

@@ -68,7 +68,8 @@ class Commit:
             detail = f"{behind} behind {upstream}; pull first"
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
         withheld = Intake(repo, self.tree.policy).withheld(changes)
-        _stage(repo, [change.path for change in changes if change.path not in withheld])
+        pending = [change.path for change in changes if not change.staged]
+        _stage(repo, [path for path in pending if path not in withheld])
         _stage(repo, sorted(withheld), "reset", "-q")
         note = _withheld(withheld)
         if repo.git.ok("diff", "--cached", "--quiet"):
