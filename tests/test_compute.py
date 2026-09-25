@@ -15,6 +15,7 @@ from mainboard.dispatch.backends import Credentials, ProviderBackend, VastBacken
 from mainboard.manifest import HostProfile
 from mainboard.manifest.held import Held
 from mainboard.probe import GpuFact
+from mainboard.probe.system import System
 
 from .dispatch.backends.support import BareBackend, not_found, vast_backend
 from .strategies import PATHS, WORDS
@@ -311,3 +312,24 @@ def test_a_provider_whose_listing_fails_says_so_beside_its_own_row(
     assert standing.access is Access.KEYED
     assert (refused.kind, refused.access) == ("rental", Access.UNREACHABLE)
     assert "404" in refused.detail
+
+
+def test_a_machine_row_carries_every_finding_that_is_not_a_pass(board: Board) -> None:
+    """The survey judges each census the way `facts` does, and says what is wrong in one cell.
+
+    A host onboarded before censuses were recorded has nothing to say rather than a warning,
+    and this machine is judged from its own live facts.
+    """
+    census = System(system="Windows", arch="AMD64", free_bytes=10**12, root="C:/")
+    windows = HostSetup(host="homelab", root="C:/p", hardware=HostFacts(system=census))
+    judged = survey(board).machine("homelab", HostProfile(kind="ssh"), windows)
+    assert judged.issues.startswith("platform: win-64 is not among the declared platforms")
+    older = HostSetup(host="gold", root="/p", hardware=facts("RTX 4090"))
+    assert survey(board).machine(_GOLD, HostProfile(kind="ssh"), older).issues == ""
+    here = Survey(
+        board,
+        facts=lambda: HostFacts(memory_total_bytes=10**9, system=census),
+        reach=lambda host: "",
+        providers=(),
+    ).here()
+    assert "platform:" in here.issues

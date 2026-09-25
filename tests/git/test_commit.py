@@ -66,6 +66,33 @@ def test_an_empty_never_commit_list_withholds_only_by_size(workspace: Workspace)
     assert "evidence/artifacts/out.bin" in workspace.git(workspace.lib, "ls-files")
 
 
+def test_a_moved_submodule_pointer_is_never_weighed_against_the_ceiling(
+    workspace: Workspace,
+) -> None:
+    """A submodule enters its parent's history as a commit id, whatever its directory weighs.
+
+    A directory's own size is filesystem bookkeeping: 4096 bytes on ext4, a few dozen per entry
+    on APFS. A ceiling under it once withheld every pointer on Linux while macOS committed it.
+    """
+    (workspace.lib / "lib.txt").write_text("edited\n", encoding="utf-8")
+    steps = workspace.tree(ceiling_mb=0.00005).commit("Move the pointer")
+    assert _outcomes(steps) == {"packages/lib": Outcome.DONE, ".": Outcome.DONE}
+
+
+def test_a_deletion_already_staged_by_hand_commits_with_the_rest(workspace: Workspace) -> None:
+    """A `git rm` leaves a path neither the index nor the worktree holds, and it still commits."""
+    lib = workspace.lib
+    workspace.git(lib, "rm", "-q", "--", "lib.txt")
+    (lib / "new.txt").write_text("new\n", encoding="utf-8")
+
+    steps = workspace.tree().commit("Drop the old file")
+
+    assert _outcomes(steps) == {"packages/lib": Outcome.DONE, ".": Outcome.DONE}
+    tracked = workspace.git(lib, "ls-files").split()
+    assert "new.txt" in tracked
+    assert "lib.txt" not in tracked
+
+
 def test_a_repository_behind_its_upstream_holds_itself_and_every_parent(
     workspace: Workspace,
 ) -> None:

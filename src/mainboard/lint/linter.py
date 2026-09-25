@@ -6,9 +6,10 @@ from typing import TYPE_CHECKING
 from pathspec import GitIgnoreSpec
 from plumbum import local
 
+from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.provisioner import Provisioner
-from ..manifest.schema.lint import FILES
+from ..manifest.schema.lint import FILES, TEXT
 from . import text
 from .inventory import Attributes, Inventory
 from .owners import Owners
@@ -19,15 +20,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
     from pathlib import Path
 
-    from ..manifest.schema.lint import LintTool
     from ..manifest.schema.root import Manifest
 
 # Characters of file arguments one command carries. Windows refuses a command line past 32767
 # characters, and the same budget everywhere keeps a run's batching identical on every machine.
 _BATCH = 24_000
-
-# The step name the built-in text hygiene reports under.
-_TEXT = "text"
 
 
 class Linter:
@@ -39,13 +36,24 @@ class Linter:
     then every read-only check at once. Each tool runs once per owner of the files it matches,
     inside that owner, under its environment's PATH.
 
+    A check pass writes nothing: the hygiene names what it would repair as findings of its
+    own, and every tool runs its `check` command, all at once since no two of them can race
+    on a file.
+
     root: the workspace root.
     manifest: the workspace manifest, whose `[lint]` table drives the pass.
+    check: leave every file as it is and report what a writing pass would change.
+    only: the steps to run, `text` naming the hygiene, every declared step when empty.
     """
 
-    def __init__(self, root: Path, manifest: Manifest) -> None:
+    def __init__(
+        self, root: Path, manifest: Manifest, *, check: bool = False, only: Sequence[str] = ()
+    ) -> None:
         self.root = root
         self.table = manifest.lint
+        self.check = check
+        self.steps = self._selected(only)
+        self._tools = {name: tool for name, tool in self.table.tools.items() if name in self.steps}
         self.inventory = Inventory(root)
         self.owners = Owners(root, self.table.owners, self.table.markers)
         self._provisioner = Provisioner(root, manifest)
@@ -62,15 +70,15 @@ class Linter:
         """
         files = [path for path in paths if not self._excluded.match_file(self._relative(path))]
         before = {path: _fingerprint(path) for path in files}
-        outcomes = self._hygiene(files)
-        for name, tool in self.table.tools.items():
-            if tool.writes:
-                outcomes.extend(self._parallel(self._invocations(name, tool, files)))
+        outcomes = self._hygiene(files) if TEXT in self.steps else []
+        writers = [] if self.check else [name for name, tool in self._tools.items() if tool.writes]
+        for name in writers:
+            outcomes.extend(self._parallel(self._invocations(name, files)))
         checks = [
             invocation
-            for name, tool in self.table.tools.items()
-            if not tool.writes
-            for invocation in self._invocations(name, tool, files)
+            for name in self._tools
+            if name not in writers
+            for invocation in self._invocations(name, files)
         ]
         outcomes.extend(self._parallel(checks))
         return Report(
@@ -80,6 +88,14 @@ class Linter:
             ),
             failures=tuple(outcome for outcome in outcomes if outcome.failed),
         )
+
+    def _selected(self, only: Sequence[str]) -> list[str]:
+        """The steps `only` names, every step when it names none, refusing an undeclared one."""
+        if unknown := sorted(set(only) - set(self.table.steps)):
+            raise MissionError(
+                f"no lint step {unknown[0]!r}; the steps are {', '.join(self.table.steps)}"
+            )
+        return [step for step in self.table.steps if not only or step in only]
 
     def _hygiene(self, files: Sequence[Path]) -> list[Outcome]:
         """The built-in text repairs over every existing file, one outcome if anything is left."""
@@ -99,7 +115,7 @@ class Linter:
             return []
         return [
             Outcome(
-                step=_TEXT,
+                step=TEXT,
                 owner=".",
                 code=1,
                 seconds=time.monotonic() - started,
@@ -108,15 +124,26 @@ class Linter:
         ]
 
     def _examined(self, path: Path, attributes: Attributes) -> list[str]:
-        """Repair one file's text, then say what is left, a new oversized file included."""
-        problems = text.repair(path, attributes)
+        """Repair one file's text, or name the repair in a check, then say what is left.
+
+        A new file past the size limit is left too, since no repair can shrink it.
+        """
+        examination = text.examined(path, attributes)
+        problems = list(examination.problems)
+        if examination.repaired is not None:
+            if self.check:
+                problems.insert(0, f"needs repair: {', '.join(examination.untidy)}")
+            else:
+                path.write_bytes(examination.repaired)
         size = path.stat().st_size
         if size > self.table.max_kb * 1024 and not self.inventory.tracked(path):
             problems.append(f"is {size // 1024} KB, above the {self.table.max_kb} KB limit")
         return problems
 
-    def _invocations(self, name: str, tool: LintTool, files: Sequence[Path]) -> list[Invocation]:
-        """The commands `tool` runs over `files`, one or more per owner of what it matches."""
+    def _invocations(self, name: str, files: Sequence[Path]) -> list[Invocation]:
+        """The commands tool `name` runs over `files`, one or more per owner of what it matches."""
+        tool = self._tools[name]
+        argv = tool.argv(check=self.check)
         chosen = GitIgnoreSpec.from_lines(tool.files)
         skipped = GitIgnoreSpec.from_lines(tool.exclude)
         owned: dict[Path, list[Path]] = {}
@@ -129,28 +156,30 @@ class Linter:
                 step=name,
                 owner=self._relative(owner),
                 cwd=owner,
-                argv=tuple(self._expanded(tool.argv, batch)),
+                argv=tuple(self._expanded(argv, batch)),
                 env=tool.env,
                 timeout=tool.timeout,
             )
             for owner, matched in sorted(owned.items())
-            for batch in self._batches(tool, owner, matched)
+            for batch in self._batches(argv, owner, matched)
         ]
 
-    def _batches(self, tool: LintTool, owner: Path, matched: Sequence[Path]) -> list[list[str]]:
-        """The file arguments of each command `tool` runs in `owner`.
+    def _batches(
+        self, argv: Sequence[str], owner: Path, matched: Sequence[Path]
+    ) -> list[list[str]]:
+        """The file arguments of each command `argv` runs in `owner`.
 
         A whole-owner check gets one empty batch, and a per-file tool gets none once every file
         it matched there is gone.
         """
-        if not tool.per_file:
+        if FILES not in argv:
             return [[]]
         batches: list[list[str]] = []
         width = _BATCH
         for path in matched:
             if not path.is_file():
                 continue
-            name = str(path.relative_to(owner))
+            name = path.relative_to(owner).as_posix()
             if width + len(name) >= _BATCH:
                 batches.append([])
                 width = 0

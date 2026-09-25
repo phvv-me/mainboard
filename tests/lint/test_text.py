@@ -6,7 +6,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from mainboard.lint.inventory import Attributes
-from mainboard.lint.text import decoded, normalized, problems, repair
+from mainboard.lint.text import Examination, decoded, examined, normalized, problems, untidiness
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,6 +51,15 @@ def test_every_unicode_encoding_a_windows_editor_writes_decodes_to_the_same_text
     assert decoded(text.encode()) == text
 
 
+@given(text=_MESSY, newline=_NEWLINES, encoding=st.sampled_from(["utf-8", "utf-8-sig", "utf-16"]))
+def test_the_untidiness_named_is_empty_exactly_when_normalizing_changes_no_byte(
+    text: str, newline: str, encoding: str
+) -> None:
+    data = text.encode(encoding)
+
+    assert (not untidiness(data, text, newline)) == (normalized(text, newline).encode() == data)
+
+
 def test_binary_is_left_alone_and_a_legacy_code_page_is_refused() -> None:
     assert decoded(b"PK\x03\x04\0\0data") is None
     with pytest.raises(UnicodeDecodeError):
@@ -92,40 +101,45 @@ def test_problems_name_what_only_a_person_can_fix(
 
 
 @pytest.mark.parametrize(
-    ("content", "attributes", "stored", "left"),
+    ("content", "attributes", "untidy", "left"),
     [
-        (b"a  \r\nb\r\n\r\n", Attributes(), b"a\nb\n", []),
-        (b"a\nb", Attributes(newline="\r\n"), b"a\r\nb\r\n", []),
-        ("x = 1\n".encode("utf-16"), Attributes(), b"x = 1\n", []),
-        (b"a  \n", Attributes(binary=True), b"a  \n", []),
-        (b"\0\0 \n", Attributes(), b"\0\0 \n", []),
-        ("café \n".encode("latin-1"), Attributes(), "café \n".encode("latin-1"), ["UTF-8"]),
-        (b"k = [\n", Attributes(), b"k = [\n", ["does not parse"]),
+        (b"a  \r\nb\r\n\r\n", Attributes(), ["line endings", "trailing", "at the end"], []),
+        (b"a\nb", Attributes(newline="\r\n"), ["line endings", "at the end"], []),
+        ("x = 1\n".encode("utf-16"), Attributes(), ["UTF-8"], []),
+        (b"a\n", Attributes(), [], []),
+        (b"a  \n", Attributes(binary=True), [], []),
+        (b"\0\0 \n", Attributes(), [], []),
+        ("caf\u00e9 \n".encode("latin-1"), Attributes(), [], ["UTF-8"]),
+        (b"k = [  \n", Attributes(), ["trailing"], ["does not parse"]),
     ],
     ids=[
         "CRLF and trailing blanks",
         "an eol=crlf file keeps CRLF",
         "UTF-16 becomes UTF-8",
+        "tidy text",
         "a -text file is untouched",
         "binary content is untouched",
         "a legacy code page is refused, not guessed",
         "a syntax error survives the repair",
     ],
 )
-def test_repair_rewrites_only_what_it_can_decide_and_names_the_rest(
-    tmp_path: Path, content: bytes, attributes: Attributes, stored: bytes, left: list[str]
+def test_an_examination_names_the_repair_it_would_make_and_what_is_left_writing_nothing(
+    tmp_path: Path, content: bytes, attributes: Attributes, untidy: list[str], left: list[str]
 ) -> None:
     path = tmp_path / ("data.toml" if b"k = " in content else "notes.txt")
     path.write_bytes(content)
 
-    found = repair(path, attributes)
+    found = examined(path, attributes)
 
-    assert path.read_bytes() == stored
-    assert [any(fragment in line for line in found) for fragment in left] == [True] * len(left)
-    assert len(found) == len(left)
+    assert path.read_bytes() == content
+    assert len(found.untidy) == len(untidy)
+    assert all(part in change for part, change in zip(untidy, found.untidy, strict=True))
+    assert (found.repaired is None) == (not untidy)
+    assert len(found.problems) == len(left)
+    assert all(part in problem for part, problem in zip(left, found.problems, strict=True))
 
 
-def test_repair_never_writes_through_a_symlink(tmp_path: Path) -> None:
+def test_an_examination_never_reads_through_a_symlink(tmp_path: Path) -> None:
     target = tmp_path / "target.txt"
     target.write_bytes(b"a  \n")
     link = tmp_path / "link.txt"
@@ -134,5 +148,4 @@ def test_repair_never_writes_through_a_symlink(tmp_path: Path) -> None:
     except OSError:
         pytest.skip("this account may not create symlinks, as on Windows without developer mode")
 
-    assert repair(link, Attributes()) == []
-    assert target.read_bytes() == b"a  \n"
+    assert examined(link, Attributes()) == Examination()

@@ -4,6 +4,7 @@ import tomllib
 from typing import TYPE_CHECKING
 
 import yaml
+from patos import FrozenModel
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -66,25 +67,61 @@ def problems(name: str, text: str) -> list[str]:
     return found
 
 
-def repair(path: Path, attributes: Attributes) -> list[str]:
-    """Rewrite `path` into normalized UTF-8 where needed and return what is left to fix.
+class Examination(FrozenModel):
+    """What the text hygiene makes of one file.
+
+    repaired: the bytes the file should hold, None when it holds them already or no text step
+        may touch it.
+    untidy: what the repair changes, `trailing whitespace` say, empty exactly when `repaired`
+        is None.
+    problems: what only a person can fix.
+    """
+
+    repaired: bytes | None = None
+    untidy: tuple[str, ...] = ()
+    problems: tuple[str, ...] = ()
+
+
+def examined(path: Path, attributes: Attributes) -> Examination:
+    """Read `path` and say what normalizing it changes and what is left to fix, writing nothing.
 
     path: an existing regular file.
     attributes: what `.gitattributes` says about it.
     """
     if attributes.binary or path.is_symlink():
-        return []
+        return Examination()
     data = path.read_bytes()
     try:
         text = decoded(data)
     except UnicodeDecodeError:
-        return ["is not UTF-8 text; save it as UTF-8"]
+        return Examination(problems=("is not UTF-8 text; save it as UTF-8",))
     if text is None:
-        return []
+        return Examination()
     fixed = normalized(text, attributes.newline)
-    if fixed.encode() != data:
-        path.write_bytes(fixed.encode())
-    return problems(path.name, fixed)
+    untidy = untidiness(data, text, attributes.newline)
+    return Examination(
+        repaired=fixed.encode() if untidy else None,
+        untidy=untidy,
+        problems=tuple(problems(path.name, fixed)),
+    )
+
+
+def untidiness(data: bytes, text: str, newline: str = "\n") -> tuple[str, ...]:
+    """What `normalized` changes in `text`, each a few words, empty when `data` is already it.
+
+    data: the file's bytes.
+    text: `data` decoded.
+    newline: the line ending the file is stored in.
+    """
+    unified = text.replace("\r\n", "\n").replace("\r", "\n")
+    trimmed = "\n".join(line.rstrip(" \t") for line in unified.split("\n"))
+    found = {
+        "an encoding other than plain UTF-8": text.encode() != data,
+        "line endings": unified.replace("\n", newline) != text,
+        "trailing whitespace": trimmed != unified,
+        "blank lines or a missing newline at the end": normalized(trimmed) != trimmed,
+    }
+    return tuple(change for change, present in found.items() if present)
 
 
 def _syntax(name: str, text: str) -> str:

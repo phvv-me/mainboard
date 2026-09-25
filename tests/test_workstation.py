@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from mainboard.workstation import Workstation, refusal_to_link
+from mainboard.workstation import Workstation, install_command, refusal_to_link
 
 from .strategies import WORDS
 
@@ -27,6 +27,11 @@ _SAFE_WRITES = (
     ("git", "config", "--global", "credential.helper", "osxkeychain"),
     ("git", "config", "--global", "core.longpaths", "true"),
 )
+
+
+# The tools Windows and macOS each install with a command of their own; Windows alone also
+# names how its bundled tar arrives.
+_NATIVE = ("git", "git-lfs", "gh", "ssh")
 
 
 class Git:
@@ -161,9 +166,9 @@ def test_a_missing_git_or_git_lfs_is_broken_and_names_this_platforms_installer(
     answers = fit(tmp_path)
     del answers[("git", "lfs", "version")]
     without_lfs, _ = station(tmp_path, system, answers)
-    found = without_lfs.lfs()
-    assert (found.broken, found.fix) == (True, lfs_fix)
-    assert "pointer text" in found.detail
+    lfs = without_lfs.lfs()
+    assert (lfs.broken, lfs.fix) == (True, lfs_fix)
+    assert "pointer text" in lfs.detail
 
 
 @pytest.mark.parametrize(
@@ -370,6 +375,26 @@ def test_the_link_probe_answers_the_os_refusal_or_nothing(
     assert (expected in refusal) and (bool(refusal) is bool(outcome))
     assert [path.name for path in seen] == ["link"]
     assert not seen[0].parent.exists()
+
+
+@given(
+    system=st.sampled_from(["Windows", "Darwin", "Linux"]) | WORDS,
+    package=st.sampled_from([*_NATIVE, "tar"]) | WORDS,
+)
+def test_every_install_is_a_named_command_and_a_distributions_wherever_none_is_known(
+    system: str, package: str
+) -> None:
+    """A fix line always names something to run, and the installer is the platform's own.
+
+    Windows and macOS each have one installer, so a known package there names it; everything
+    else, a Linux distribution or a package this table never heard of, gets the distribution
+    install spelled with that package's name.
+    """
+    distribution = f"sudo apt install {package} (or the {package} package of this distribution)"
+    native = {("Windows", tool) for tool in (*_NATIVE, "tar")} | {
+        ("Darwin", tool) for tool in _NATIVE
+    }
+    assert (install_command(system, package) == distribution) is ((system, package) not in native)
 
 
 def test_the_default_workstation_is_this_machine(tmp_path: Path) -> None:

@@ -48,17 +48,13 @@ def test_changed_files_are_the_edits_the_deletions_and_the_new_files_inside_subm
     ]
 
 
-def test_staged_files_are_what_the_commit_records_and_never_a_submodule_pointer(
-    nested: Repository,
-) -> None:
-    nested.write("kept.txt", "staged\n")
-    nested.write("unstaged.txt", "not staged\n")
-    nested.write("pkgs/sub/inner.py", "x = 3\n")
-    Repository(nested.root / "pkgs" / "sub").commit()
-    nested.git("add", "kept.txt", "pkgs/sub")
-    nested.git("rm", "-q", "gone.txt")
+def test_a_repository_with_no_commit_yet_counts_every_file_as_changed(tmp_path: Path) -> None:
+    fresh = Repository(tmp_path / "fresh")
+    fresh.write("staged.py", "x = 1\n")
+    fresh.write("loose.md", "loose\n")
+    fresh.git("add", "staged.py")
 
-    assert _names(nested, Inventory(nested.root).staged()) == ["gone.txt", "kept.txt"]
+    assert _names(fresh, Inventory(fresh.root).changed()) == ["loose.md", "staged.py"]
 
 
 def test_a_directory_widens_to_every_file_git_tracks_or_would_beneath_it(
@@ -117,7 +113,7 @@ def test_only_a_file_head_already_holds_counts_as_tracked(repository: Repository
 
 
 def test_a_workspace_outside_git_is_refused_with_gits_own_words(tmp_path: Path) -> None:
-    with pytest.raises(MissionError, match="git diff failed"):
+    with pytest.raises(MissionError, match="git ls-files failed"):
         Inventory(tmp_path).changed()
 
 

@@ -54,7 +54,7 @@ _EDITS: dict[str, Json] = {
     "plots": {"paper": {"palette": "deep", "dpi": 600}},
     "lint": {
         "exclude": ["vendor/"],
-        "tools": {"ruff": {"run": "ruff check {files}", "files": ["*.py"]}},
+        "tools": {"ruff": {"check": "ruff check {files}", "files": ["*.py"]}},
     },
     "figures": {
         "example": {

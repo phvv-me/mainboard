@@ -22,15 +22,21 @@ from .durable import Shell, locally
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-# The installs this machine may be missing, keyed by `platform.system()`. A system not named
-# here is read as a Linux distribution, the one family left that has no single installer.
-_GIT_INSTALL = {
-    "Windows": "winget install --id Git.Git -e",
-    "Darwin": "xcode-select --install",
-}
-_LFS_INSTALL = {
-    "Windows": "winget install --id GitHub.GitLFS -e",
-    "Darwin": "brew install git-lfs",
+# The installs a machine may be missing, keyed by package and then by `platform.system()`. A
+# system not named for a package is read as a Linux distribution, the one family left that has
+# no single installer.
+_INSTALLS = {
+    "git": {"Windows": "winget install --id Git.Git -e", "Darwin": "xcode-select --install"},
+    "git-lfs": {
+        "Windows": "winget install --id GitHub.GitLFS -e",
+        "Darwin": "brew install git-lfs",
+    },
+    "gh": {"Windows": "winget install --id GitHub.cli -e", "Darwin": "brew install gh"},
+    "ssh": {
+        "Windows": "Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0",
+        "Darwin": "ssh ships with macOS; restore it with xcode-select --install",
+    },
+    "tar": {"Windows": "tar.exe ships with Windows 10 1803 and later; update Windows"},
 }
 _DISTRIBUTION = "sudo apt install {package} (or the {package} package of this distribution)"
 
@@ -38,11 +44,11 @@ _DISTRIBUTION = "sudo apt install {package} (or the {package} package of this di
 _KEYCHAIN = {"Windows": "manager", "Darwin": "osxkeychain"}
 
 # How the standard helper arrives when it is missing, and what stands in for one on Linux.
-_KEYCHAIN_INSTALL = {"Windows": _GIT_INSTALL["Windows"], "Darwin": "brew install git"}
+_KEYCHAIN_INSTALL = {"Windows": _INSTALLS["git"]["Windows"], "Darwin": "brew install git"}
 _PLAINTEXT_HELPER = "git config --global credential.helper store"
 
 # The one switch that lets an unprivileged account create symbolic links on Windows.
-_DEVELOPER_MODE = (
+DEVELOPER_MODE = (
     "enable Developer Mode: Settings > System > For developers > Developer Mode (or run "
     "`reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock /t REG_DWORD "
     "/f /v AllowDevelopmentWithoutDevLicense /d 1` as administrator)"
@@ -56,6 +62,15 @@ _NAMED = 3
 
 # Why this process cannot create a symbolic link, empty when it can.
 type Linking = Callable[[], str]
+
+
+def install_command(system: str, package: str) -> str:
+    """The command that installs `package` on a `system` machine, a distribution's when unknown.
+
+    system: the platform as `platform.system()` spells it.
+    package: the tool, `git`, `git-lfs`, `gh`, `ssh` or `tar`.
+    """
+    return _INSTALLS.get(package, {}).get(system, _DISTRIBUTION.format(package=package))
 
 
 def refusal_to_link() -> str:
@@ -136,7 +151,7 @@ class Workstation:
                 check="git",
                 broken=True,
                 detail=f"git does not run here: {said.strip()}",
-                fix=self._install(_GIT_INSTALL, "git"),
+                fix=install_command(self.system, "git"),
             )
         return Readiness(check="git", detail=said.strip())
 
@@ -153,7 +168,7 @@ class Workstation:
                 check="git-lfs",
                 broken=True,
                 detail="git-lfs is not installed, so large files check out as pointer text",
-                fix=self._install(_LFS_INSTALL, "git-lfs"),
+                fix=install_command(self.system, "git-lfs"),
             )
         if self._config("--get", "filter.lfs.process"):
             return Readiness(check="git-lfs", detail=f"{said.strip()}, filters installed")
@@ -220,7 +235,7 @@ class Workstation:
                 check="symlinks",
                 broken=True,
                 detail=f"this account cannot create symbolic links: {refusal}",
-                fix=_DEVELOPER_MODE,
+                fix=DEVELOPER_MODE,
             )
         changed = ""
         if self._config("--type=bool", "--get", "core.symlinks") != "true":
@@ -307,7 +322,3 @@ class Workstation:
             for stage, path in entries
             if stage.startswith(_LINK_MODE) and not (self.root / path).is_symlink()
         ]
-
-    def _install(self, known: dict[str, str], package: str) -> str:
-        """The install command for `package` on this platform, a distribution's when unknown."""
-        return known.get(self.system, _DISTRIBUTION.format(package=package))

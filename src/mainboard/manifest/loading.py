@@ -21,7 +21,8 @@ def load(path: Path) -> Manifest:
     rendering pass, then schema
     validation, so a template error and a schema error each name their spot.
     The machines the workspace is holding join `[hosts]` last, so a held alias resolves
-    wherever a declared one does.
+    wherever a declared one does. A manifest without `[workspace]` names a workspace after its
+    directory, so a file holding nothing but `[lint]` is a whole workspace.
 
     path: the workspace manifest file.
     """
@@ -32,6 +33,7 @@ def load(path: Path) -> Manifest:
     except tomllib.TOMLDecodeError as error:
         raise MissionError(f"{path} is not valid TOML: {error}") from None
     rendered = Interpolator(path.parent).rendered(tree)
+    rendered.setdefault("workspace", {"name": path.resolve().parent.name})
     try:
         manifest = Manifest.model_validate(rendered)
     except ValidationError as error:

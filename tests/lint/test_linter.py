@@ -2,14 +2,16 @@ import os
 
 import pytest
 
-from mainboard.lint import Inventory, Report
+from mainboard import MissionError, Project, load
+from mainboard.lint import Inventory, Linter, Report
 from mainboard.lint import linter as linter_module
 from mainboard.lint.process import Outcome
 
 from .conftest import Repository, tool
 
 # Two formatters that both rewrite Python, and two checks that read it: one per file, one over
-# its whole owner. The formatters' order is the declaration's, which the appended words prove.
+# its whole owner. The formatters' order is the declaration's, which the appended words prove,
+# and each one's read-only form fails on a file still missing its word.
 _TOOLS = f"""
 [lint]
 exclude = ["vendor/"]
@@ -17,22 +19,22 @@ owners = ["pkgs/*"]
 max-kb = 1
 
 [lint.tools.first]
-run = "{tool("append first {files}")}"
+check = "{tool("lacks first {files}")}"
+fix = "{tool("append first {files}")}"
 files = ["*.py"]
-writes = true
 
 [lint.tools.second]
-run = "{tool("append second {files}")}"
+check = "{tool("lacks second {files}")}"
+fix = "{tool("append second {files}")}"
 files = ["*.py"]
 exclude = ["pkgs/b/"]
-writes = true
 
 [lint.tools.flag]
-run = "{tool("flag bad {files}")}"
+check = "{tool("flag bad {files}")}"
 files = ["*.py"]
 
 [lint.tools.whole]
-run = "{tool("where {root}")}"
+check = "{tool("where {root}")}"
 files = ["*.toml"]
 """
 
@@ -66,6 +68,45 @@ def test_writers_run_in_declared_order_then_checks_read_their_result_per_owner(
     ] == [("flag", "pkgs/a", "mod.py")]
     assert report.files == 2
     assert not report.clean
+
+
+def test_a_check_writes_nothing_and_fails_with_every_writers_and_the_hygienes_own_words(
+    workspace: Repository,
+) -> None:
+    workspace.write("pkgs/a/mod.py", "x = 'bad'   \r\n")
+    workspace.write("pkgs/b/mod.py", "y = 2\nfirst\n")
+    workspace.write("notes.md", "fine\n")
+    before = {name: (workspace.root / name).read_bytes() for name in ("pkgs/a/mod.py", "notes.md")}
+
+    report = _linter(workspace, check=True).lint(Inventory(workspace.root).changed())
+
+    assert {name: (workspace.root / name).read_bytes() for name in before} == before
+    assert report.rewritten == ()
+    assert sorted(
+        (failure.step, failure.owner, failure.output.strip()) for failure in report.failures
+    ) == [
+        ("first", "pkgs/a", "mod.py"),
+        ("flag", "pkgs/a", "mod.py"),
+        ("second", "pkgs/a", "mod.py"),
+        ("text", ".", "pkgs/a/mod.py: needs repair: line endings, trailing whitespace"),
+    ]
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["writing", "check"])
+def test_only_the_named_steps_run(workspace: Repository, check: bool) -> None:
+    workspace.write("pkgs/a/mod.py", "x = 'bad'   \n")
+
+    report = _linter(workspace, check=check, only=["flag"]).lint(
+        [workspace.root / "pkgs/a/mod.py"]
+    )
+
+    assert [failure.step for failure in report.failures] == ["flag"]
+    assert (workspace.root / "pkgs/a/mod.py").read_text() == "x = 'bad'   \n"
+
+
+def test_a_step_nobody_declared_is_refused_with_the_steps_there_are(workspace: Repository) -> None:
+    with pytest.raises(MissionError, match="no lint step 'ruff'; the steps are text, first"):
+        _linter(workspace, only=["text", "ruff"])
 
 
 def test_a_whole_owner_check_wakes_for_a_deleted_file_and_runs_inside_that_owner(
@@ -144,3 +185,10 @@ def test_the_report_heads_each_finding_with_its_step_owner_and_exit() -> None:
 
     assert report.findings() == "ruff [pkgs/a] exited 1 after 0.2s\nE1"
     assert report.summary() == "lint: 3 files, rewrote 1 (a.py), failed: ruff"
+
+
+def _linter(
+    workspace: Repository, *, check: bool = False, only: list[str] | None = None
+) -> Linter:
+    manifest = load(workspace.root / Project().manifest)
+    return Linter(workspace.root, manifest, check=check, only=only or ())

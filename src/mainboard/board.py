@@ -65,6 +65,7 @@ from .engines.compile.state import SyncState
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
 from .experiments.identity import run_id
+from .fitness import Fitness
 from .git import Tree
 from .jobs.call import Fresh
 from .jobs.closure import Closure
@@ -96,10 +97,12 @@ if TYPE_CHECKING:
     from .batch.receipts import Bus
     from .batch.spec import BatchSpec
     from .context.plan import ExecutionPlan
+    from .core.section import Section
     from .dispatch.schedulers import Scheduler
     from .dispatch.shared import Watcher
     from .dispatch.vocabulary import JobState
     from .manifest.schema.root import Manifest
+    from .probe.system import System
     from .runtime.job import ToolCall
 
 # `route`'s answer for the schedulers reached over ssh, the family whose hosts run the work
@@ -517,9 +520,19 @@ class Board:
         interpreter the host happens to ship.
         """
         if self.local:
-            return HostFacts.collected()
+            return HostFacts.collected(self.root)
         with open_shell(self.plan(container="none"), self.remote_root()) as shell:
             return read_facts(shell.run(facts_command(), activate=True))
+
+    def findings(self, system: System) -> list[Section]:
+        """What this host's software census means for this workspace, one judged row each.
+
+        The judge `compute`, `setup` and `center verify` share, so a driver below the CUDA floor
+        is the same row whichever verb found it.
+
+        system: the host's census, as its facts carry it.
+        """
+        return Fitness(self.root, self.manifest).judge(system, host=self.host)
 
     def occupancy(self) -> Occupancy:
         """Who holds each card of this host right now, local or through the host's own tool.

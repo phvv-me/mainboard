@@ -1,4 +1,4 @@
-# `mainboard paper`: build a declared manuscript and say everything a reviewer would catch
+# `mainboard center paper`: build a declared manuscript and say everything a reviewer would catch
 # before a deadline, in one pass that exits nonzero on any of it. Errors, unresolved references
 # and citations, labels defined twice, overfull boxes, the page count, where each section
 # starts, and whether the section that closes the main text ends inside the venue's limit.

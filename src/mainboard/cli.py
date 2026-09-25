@@ -14,25 +14,29 @@ import mainboard
 from . import staleness
 from .batch.spec import BatchSpec, Selection
 from .board import Board
+from .center.migrate import Migration
+from .center.verify import Verification
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .core.section import Section, Verdict, failed
 from .delimiter import Delimiter
 from .dispatch import vocabulary
 from .dispatch.commandline import joined
 from .dispatch.dispatcher import Dispatcher
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
-from .doctor import Verdict
 from .durable import schedule
 from .help import Help
 from .holds import Holds
 from .jobs import lanes as lanes_module
-from .lint import EditHook, GitHook, Inventory, Linter, Report
+from .lint import Inventory, Linter, Report
 from .listing import Listing
 from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
+from .probe.system import System
+from .proc import Processes
 from .render import diverted, install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
 from .runtime.job import Job
@@ -45,6 +49,7 @@ if TYPE_CHECKING:
     from .batch.estimate import JobEstimate
     from .batch.watch import BatchStatus
     from .deps import Change
+    from .dispatch.onboard import HostSetup
     from .dispatch.state import MonitorReport
     from .git import Step
     from .manifest.held import Held
@@ -360,14 +365,13 @@ def build(root: Path | None = None) -> App:
     def doctor(env: str = "", *, json: bool = False, agent: bool = False, fields: str = "") -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
-        Five questions asked at once and bounded: does the manifest still say something
+        The questions asked at once and bounded: does the manifest still say something
         coherent, is what is installed the environment it describes, what compute answers right
-        now, does the mathematics still hold, and is this workstation's git ready: git itself,
-        git-lfs and its filters, a credential helper for https remotes, and on Windows symlinks
-        and long paths. A safe local git setting is applied in place and reported; an install or
-        an administrator switch is named with its exact command. A section reports the one
-        command that repairs it, and only a genuinely broken workspace fails, so a sleeping host
-        or a provider nobody has a key for is a word rather than a nonzero exit.
+        now, do onboarded hosts still match the manifest, does a periodic pass settle jobs, and
+        does every declared gate still hold. A section reports the one command that repairs it,
+        and only a genuinely broken workspace fails, so a sleeping host or a provider nobody has
+        a key for is a word rather than a nonzero exit. Whether this machine can be the center
+        is `center verify`'s question.
 
         env: the environment to examine, the local profile's own when omitted.
         json: print canonical JSON instead of the default rich table.
@@ -376,13 +380,7 @@ def build(root: Path | None = None) -> App:
         """
         with progress("examining the workspace"):
             sections = board("local").doctor(env).sections()
-        rows(
-            [section.model_dump() for section in sections],
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="doctor",
-        )
-        return 1 if any(section.verdict is Verdict.FAIL for section in sections) else 0
+        return _sectioned(sections, json_mode=json, agent=agent, fields=fields, title="doctor")
 
     @app.command
     def install(env: str = "", *, resolve: bool = False, profile: str = "") -> None:
@@ -445,11 +443,13 @@ def build(root: Path | None = None) -> App:
         agent: bool = False,
         fields: str = "",
     ) -> None:
-        """Onboard a host until it can run jobs, then show what it became.
+        """Onboard a host until it can run jobs, then show what it became and what that means.
 
         The host is provisioned with the environment its declared profile names, so a host that
         runs `serving` is set up for serving without repeating the name here. The lock this
-        workspace solved ships with the mirror and the host installs from it.
+        workspace solved ships with the mirror and the host installs from it. The record is
+        followed by the findings `facts` shows, judged from the software census read back
+        through the new activation.
 
         host: the host alias to set up.
         env: an environment name overriding the host profile's own.
@@ -461,14 +461,10 @@ def build(root: Path | None = None) -> App:
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the setup record's fields.
         """
+        workspace = board(host)
         with progress(f"setting up {host}") as stage:
-            report = board(host).install(env, resolve=resolve, watch=stage, sync_only=sync_only)
-        record(
-            report.model_dump(),
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="setup",
-        )
+            report = workspace.install(env, resolve=resolve, watch=stage, sync_only=sync_only)
+        _onboarded(workspace, report, json_mode=json, agent=agent, fields=fields, title="setup")
 
     @app.command
     def sync(
@@ -491,14 +487,10 @@ def build(root: Path | None = None) -> App:
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the setup record's fields.
         """
+        workspace = board(host)
         with progress(f"syncing {host}") as stage:
-            report = board(host).install(env, resolve=False, watch=stage, sync_only=True)
-        record(
-            report.model_dump(),
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="sync",
-        )
+            report = workspace.install(env, resolve=False, watch=stage, sync_only=True)
+        _onboarded(workspace, report, json_mode=json, agent=agent, fields=fields, title="sync")
 
     @app.command
     def hold(
@@ -804,21 +796,28 @@ def build(root: Path | None = None) -> App:
     def facts(
         on: str = "local", *, json: bool = False, agent: bool = False, fields: str = ""
     ) -> None:
-        """Show the host's probed hardware facts.
+        """Show the host's probed hardware and software facts, then what they mean here.
+
+        The facts are the hardware inventory beside the software census: operating system and
+        version, shells, filesystem case sensitivity, symbolic link and long path support, the
+        git settings a clone inherits, every tool with its version, and the NVIDIA driver, its
+        CUDA, each card's compute capability and memory. The findings table below them judges
+        that machine against this workspace, its platforms, its lock, the CUDA floor and the
+        card memory its profile declares, one row each with the command that repairs it.
+        `--json` prints the facts alone, the wire snapshot one machine answers another with.
 
         on: the host alias to probe, `local` for this machine.
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
+        json: print the facts as canonical JSON instead of the default rich tables.
+        agent: print the compact tabular mode instead of the default rich tables.
         fields: a comma-separated projection over the fact fields.
         """
+        workspace = board(on)
         with progress(f"probing {on}"):
-            payload = board(on).facts().model_dump()
-        record(
-            payload,
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="facts",
-        )
+            found = workspace.facts()
+        mode = mode_of(json_mode=json, agent=agent)
+        record(found.model_dump(), mode=mode, fields=_fields(fields), title="facts")
+        if mode != "json":
+            _judged(workspace.findings(found.system), mode=mode, title=f"findings: {on}")
 
     @app.command
     def gpus(
@@ -910,96 +909,30 @@ def build(root: Path | None = None) -> App:
         record(payload, mode=mode, fields=_fields(fields), title="check")
 
     @app.command
-    def paper(
-        name: str,
-        *,
-        show: tuple[str, ...] = (),
-        dpi: int = 110,
-        json: bool = False,
-        agent: bool = False,
-    ) -> int:
-        """Build a declared manuscript and report everything wrong with it, exiting 1 on any.
-
-        Built with tectonic in the workspace environment, then read back: errors, undefined
-        references and citations, multiply defined labels and overfull boxes with the file and
-        line each comes from, the page count, the page every section starts on, and whether
-        the section `[papers.<name>] ends` names ends by page `limit`.
-
-        name: the `[papers.<name>]` manuscript.
-        show: a phrase from the manuscript, repeatable; the page it appears on is rendered to a
-            PNG beside the build and its path printed.
-        dpi: the resolution a shown page renders at.
-        json: print the whole report as canonical JSON instead of the default rich tables.
-        agent: print the compact tabular mode instead of the default rich tables.
-        """
-        manuscript = board("local").paper(name)
-        with progress(f"building {name}"):
-            report = manuscript.check()
-        _report(report, mode=mode_of(json_mode=json, agent=agent))
-        for phrase in show:
-            print(manuscript.show(phrase, dpi=dpi))
-        return 1 if report.problems else 0
-
-    lint = App(name="lint")
-    app.command(lint)
-
-    def linter(root: Path) -> Linter:
-        return Linter(root, load(root / project.manifest))
-
-    @lint.default
-    def lint_files(*paths: Path) -> int:
+    def lint(*paths: Path, check: bool = False, only: str = "", json: bool = False) -> int:
         """Fix what can be fixed, then check, over the changed files or everything under PATHS.
 
-        With no path the pass reads every file that differs from HEAD or is new, deletions
-        included, so the everyday call costs what the edit did. A path widens it to every file
-        git tracks or would track at or beneath it, so `lint .` at the root reads the whole
-        workspace. The exit is nonzero when a file was rewritten or a check failed, which is
-        the answer a commit hook and a CI job both need.
+        With no path the pass reads every file that differs from HEAD or is new, submodules
+        entered and deletions included, so the everyday call costs what the edit did. A path
+        widens it to every file git tracks or would track at or beneath it, so `lint .` at the
+        root reads the whole workspace. The exit is nonzero when a file was rewritten or a step
+        failed, the one answer a person, an agent, a hook and a CI job all act on.
 
         paths: files or directories, relative to the working directory.
+        check: write nothing: run each tool's read-only `check` command and report what the
+            text hygiene would repair, the mode for CI and for verifying a tree.
+        only: the steps to run, comma-separated tool names with `text` for the built-in
+            hygiene; every step when empty, so `--only ruff-format` is a formatter alone.
+        json: print the report as canonical JSON instead of the findings and a summary line.
         """
         root = workspace_root()
         inventory = Inventory(root)
         files = (
             inventory.under([path.resolve() for path in paths]) if paths else inventory.changed()
         )
-        return _linted(linter(root).lint(files), advice="")
-
-    @lint.command(name="commit")
-    def lint_commit() -> int:
-        """Lint the files the commit being made touches, the pre-commit hook's command.
-
-        The files are read as they stand in the work tree, so a file staged in part is checked
-        whole. A rewrite fails the commit, since what git is about to record is the unrewritten
-        copy in the index.
-        """
-        root = workspace_root()
-        report = linter(root).lint(Inventory(root).staged())
-        return _linted(report, advice="stage the rewritten files and commit again")
-
-    @lint.command(name="edit")
-    def lint_edit() -> None:
-        """Lint the file a Claude Code PostToolUse payload on stdin names.
-
-        Repairs land silently and whatever is left rides back to the agent as hook context.
-        The exit is always zero, so a finding informs the next edit rather than blocking this
-        one, and a file outside every workspace is left alone.
-        """
-        edited = EditHook.model_validate_json(sys.stdin.read()).edited
-        if edited is None:
-            return
-        try:
-            root = project.find_root(edited.parent)
-        except FileNotFoundError:
-            return
-        report = linter(root).lint([edited])
-        if report.failures:
-            print(EditHook.context(report.findings()))
-
-    @lint.command(name="install-hook")
-    def lint_install_hook() -> None:
-        """Make every `git commit` in this workspace run `lint commit` first."""
-        print(GitHook(workspace_root()).install())
+        steps = [step.strip() for step in only.split(",") if step.strip()]
+        linter = Linter(root, load(root / project.manifest), check=check, only=steps)
+        return _linted(linter.lint(files), json_mode=json)
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
@@ -1632,11 +1565,158 @@ def build(root: Path | None = None) -> App:
         if listed.note:
             print(listed.note, file=sys.stderr)
 
+    proc = App(
+        name="proc",
+        help="Kill a process tree, bound a command, wait for a file or port, on every system.",
+    )
+    app.command(proc)
+
+    @proc.command(name="kill")
+    def proc_kill(pids: list[int], *, force: bool = False) -> int:
+        """Stop each process and everything it started, children first, on any system.
+
+        What `pkill -P`, `kill -- -pgid` and `taskkill /T` each do on one system. Exits 1 when a
+        process was already gone, naming it.
+
+        pids: the processes to stop.
+        force: kill at once instead of asking each process to terminate first.
+        """
+        gone = Processes().kill(pids, force=force)
+        for pid in gone:
+            print(f"no process {pid}", file=sys.stderr)
+        return 1 if gone else 0
+
+    @proc.command(name="timeout", version_flags=[])
+    def proc_timeout(seconds: float, *command: str) -> int:
+        """Run a command with a hard limit, stopping its whole tree when the limit passes.
+
+        The portable `timeout`: the command runs with this terminal's stdio and without a shell,
+        and exits with its own status, or 124 when it had to be stopped, as GNU `timeout` does.
+        A tree that ignores the request to stop is killed after a short grace.
+
+        seconds: the hard limit.
+        command: the program and its arguments, from the first token after the limit.
+        """
+        return Processes().timeout(seconds, command)
+
+    @proc.command(name="wait")
+    def proc_wait(
+        *, file: Path | None = None, port: str = "", pid: int = 0, timeout: float = 0.0
+    ) -> int:
+        """Block until a file exists, a port accepts, and a process has exited, whichever named.
+
+        The loop around `sleep`, `test` and `nc` that no Windows shell runs. Exits 0 once every
+        named condition holds and 1 when the timeout passed first.
+
+        file: a path that must exist.
+        port: a `host:port` that must accept a TCP connection.
+        pid: a process that must have exited.
+        timeout: seconds to wait at most, 0 for as long as it takes.
+        """
+        return 0 if Processes().wait(file=file, port=port, pid=pid, seconds=timeout) else 1
+
+    center = App(
+        name="center",
+        help="Manage the monorepo from the one machine that holds it; targets never need these.",
+    )
+    app.command(center)
+
+    @center.command
+    def verify(*, json: bool = False, agent: bool = False, fields: str = "") -> int:
+        """Say whether this machine is ready to be the center, and exit 1 when it is not.
+
+        Every question at once, each row with the one command that repairs it: this machine's
+        git tooling (git, git-lfs and its filters, a credential helper, and on Windows symlinks
+        and long paths, the safe settings applied in place), the machine judged against the
+        workspace the way `facts` judges any host, the `doctor` report, the plan `check`
+        resolves here, a smoke run of Python, torch and CUDA in the default environment,
+        whether every lint tool can start, the repository tree, every agent's configuration
+        (AGENTS.md, CLAUDE.md, the `.claude` and `.codex` links, `.mcp.json`, `opencode.json`),
+        the default environment put on the PATH every agent shell starts from and proven from
+        each shell kind, and the tracked scripts that would behave differently
+        here, each named with its portable replacement.
+
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over section/verdict/detail/fix.
+        """
+        with progress("verifying this center"):
+            sections = Verification(board("local")).sections()
+        return _sectioned(sections, json_mode=json, agent=agent, fields=fields, title="verify")
+
+    @center.command
+    def migrate(
+        destination: str,
+        *,
+        root: str = "",
+        json: bool = False,
+        agent: bool = False,
+        fields: str = "",
+    ) -> int:
+        """Move the center to another machine ssh reaches, Windows, macOS or Linux.
+
+        Probes the destination (operating system, shells, filesystem, links, long paths, disk,
+        git, git-lfs, gh, pixi, the NVIDIA driver and its CUDA) and stops early on a platform
+        the workspace or its lock cannot serve. Then signs gh in with this machine's login,
+        carries the ssh config blocks and keys the host profiles use, clones the monorepo at
+        this HEAD with every owned submodule at its recorded pointer, carries what git does not
+        hold (the `.env`, the `.mainboard/` registry and ledgers and every environment's lock,
+        Claude Code's memory re-keyed to the new workspace path and its project settings,
+        Codex's and opencode's config, credentials and memories), installs this tool and the
+        default environment from the lock this center solved, and ends with the destination
+        running `center verify` on itself. Secrets ride ssh's stdin only and are never printed.
+
+        Every step converges on what is already there, so running it again after an
+        interruption continues, and running it after it finished re-verifies and changes
+        nothing. Exits 1 when any row fails.
+
+        destination: the ssh alias of the machine becoming the center.
+        root: where the workspace goes there, `~/projects` when omitted; an existing directory
+            is used only when it is empty or already this repository.
+        json: print canonical JSON instead of the default rich table.
+        agent: print the compact tabular mode instead of the default rich table.
+        fields: a comma-separated projection over section/verdict/detail/fix.
+        """
+        with progress(f"moving the center to {destination}") as stage:
+            sections = Migration(board("local"), destination, root=root, watch=stage).run()
+        return _sectioned(sections, json_mode=json, agent=agent, fields=fields, title="migrate")
+
+    @center.command
+    def paper(
+        name: str,
+        *,
+        show: tuple[str, ...] = (),
+        dpi: int = 110,
+        json: bool = False,
+        agent: bool = False,
+    ) -> int:
+        """Build a declared manuscript and report everything wrong with it, exiting 1 on any.
+
+        Built with tectonic in the workspace environment, then read back: errors, undefined
+        references and citations, multiply defined labels and overfull boxes with the file and
+        line each comes from, the page count, the page every section starts on, and whether
+        the section `[papers.<name>] ends` names ends by page `limit`.
+
+        name: the `[papers.<name>]` manuscript.
+        show: a phrase from the manuscript, repeatable; the page it appears on is rendered to a
+            PNG beside the build and its path printed.
+        dpi: the resolution a shown page renders at.
+        json: print the whole report as canonical JSON instead of the default rich tables.
+        agent: print the compact tabular mode instead of the default rich tables.
+        """
+        manuscript = board("local").paper(name)
+        with progress(f"building {name}"):
+            report = manuscript.check()
+        _report(report, mode=mode_of(json_mode=json, agent=agent))
+        for phrase in show:
+            print(manuscript.show(phrase, dpi=dpi).as_posix())
+        return 1 if report.problems else 0
+
     git = App(
         name="git",
         help="Operate the workspace repository and its owned submodules as one tree.",
     )
-    app.command(git)
+    center.command(git)
 
     @git.command(name="status")
     def git_status(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
@@ -1750,6 +1830,9 @@ def build(root: Path | None = None) -> App:
 
     return app
 
+
+# The columns every judged report carries, so a clean one still renders its heading.
+_SECTION_ROW = ("section", "verdict", "detail", "fix")
 
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
@@ -1928,16 +2011,60 @@ def _agreed() -> bool:
     return input().strip().lower() in {"y", "yes"}
 
 
-def _linted(report: Report, *, advice: str) -> int:
-    """Print a lint pass's findings and summary, exiting nonzero unless nothing needed doing.
+def _judged(sections: list[Section], *, mode: str | None, title: str) -> None:
+    """Print a machine's findings as a table of their own, under the record they judge."""
+    rows(
+        [section.model_dump() for section in sections], mode=mode, fields=_SECTION_ROW, title=title
+    )
 
-    advice: what to do once files were rewritten, empty when rerunning is advice enough.
+
+def _onboarded(
+    workspace: Board, report: HostSetup, *, json_mode: bool, agent: bool, fields: str, title: str
+) -> None:
+    """Print a setup record, then the findings its read-back census adds up to.
+
+    The JSON mode keeps the record whole and adds the findings under `findings`, so a script
+    reads both from one document.
     """
-    if report.failures:
-        print(report.findings())
-    print(report.summary())
-    if report.rewritten and advice:
-        print(advice)
+    mode = mode_of(json_mode=json_mode, agent=agent)
+    census = report.hardware.system if report.hardware else System()
+    findings = workspace.findings(census)
+    if mode == "json":
+        payload: dict[str, Node] = {
+            **report.model_dump(),
+            "findings": [row.model_dump() for row in findings],
+        }
+        record(payload, mode=mode, fields=_fields(fields), title=title)
+        return
+    record(report.model_dump(), mode=mode, fields=_fields(fields), title=title)
+    _judged(findings, mode=mode, title=f"findings: {report.host}")
+
+
+def _sectioned(
+    sections: list[Section], *, json_mode: bool, agent: bool, fields: str, title: str
+) -> int:
+    """Print a report's rows and answer its exit status: 1 when any row failed."""
+    rows(
+        [section.model_dump() for section in sections],
+        mode=mode_of(json_mode=json_mode, agent=agent),
+        fields=_fields(fields) or _SECTION_ROW,
+        title=title,
+    )
+    return 1 if failed(sections) else 0
+
+
+def _linted(report: Report, *, json_mode: bool) -> int:
+    """Print a lint pass, exiting nonzero unless nothing needed doing.
+
+    The JSON mode prints the report whole, one document a script can read; the default prints
+    each failing step's own words and then the summary line.
+    """
+    if json_mode:
+        record(report.model_dump(mode="json"), mode="json", fields=(), title="lint")
+    else:
+        if report.failures:
+            print(report.findings())
+        print(report.summary())
     return 0 if report.clean else 1
 
 

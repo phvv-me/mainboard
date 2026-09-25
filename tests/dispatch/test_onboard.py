@@ -574,3 +574,12 @@ def test_a_dead_queue_daemon_is_started_once_and_refused_when_it_stays_down(
     monkeypatch.setattr(onboard_module, "pick", lambda profile: object())
     assert setup.run().host
     assert not scheduled.ran("pueue status")
+
+
+@pytest.mark.parametrize("vendored", [True, False], ids=["from the source", "from an index"])
+def test_the_extras_a_center_carries_ride_every_install_route(*, vendored: bool) -> None:
+    """A center's tool plots, so its successor's is installed with the same extras."""
+    shell = PosixShell(machine_with(), plan(), "/repo")
+    routes = installers(shell, "packages/tool", vendored=vendored, extras=["plot", "wandb"])
+    commands = [routes.select(name).command for name in routes.names if name != "present"]
+    assert all("[plot,wandb]" in command for command in commands)

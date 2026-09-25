@@ -17,7 +17,6 @@ from mainboard.engines.compile import Provisioner
 from mainboard.engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER, CommandResult
 from mainboard.engines.compile.state import SyncState
 from mainboard.staleness import Snapshot
-from mainboard.workstation import Readiness, Workstation
 
 from .strategies import WORDS
 
@@ -84,26 +83,6 @@ def sweeping(root: Path) -> Reporting:
         root,
         Settling(installed=True, active=True, root=str(root), detail="the timer sweeps every 20m"),
     )
-
-
-class Examined(Workstation):
-    """A workstation answering with fixed rows, so no report runs this machine's git."""
-
-    def __init__(self, root: Path, rows: Sequence[Readiness] = ()) -> None:
-        super().__init__(root, system="Linux")
-        self.rows = list(rows)
-
-    def examine(self) -> list[Readiness]:
-        return self.rows
-
-
-# The rows a fit Linux workstation answers with, the ones every full report below carries.
-_TOOLING = ("git", "git-lfs", "credentials")
-
-
-def fit(root: Path) -> Examined:
-    """A workstation with git, git-lfs and a credential helper already set up."""
-    return Examined(root, [Readiness(check=check, detail="set up") for check in _TOOLING])
 
 
 class FixedSurvey(Survey):
@@ -334,7 +313,6 @@ def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
         survey=FixedSurvey(board, []),
         probe=answering(0, _SETTLED),
         settler=sweeping(workspace),
-        workstation=fit(workspace),
     )
 
     assert doctor.examined() == ("default", "serving")
@@ -558,7 +536,6 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
             "",
             [
                 "manifest",
-                *_TOOLING,
                 "environment",
                 "environment",
                 "layout",
@@ -574,7 +551,6 @@ def test_a_gate_that_will_not_answer_in_time_is_a_word(workspace: Path) -> None:
             '[workspace]\nname = "bare"\n',
             [
                 "manifest",
-                *_TOOLING,
                 "environment",
                 "layout",
                 "snapshot",
@@ -598,7 +574,6 @@ def test_the_sections_are_the_questions_asked_before_starting_work(
         survey=FixedSurvey(board, []),
         probe=answering(0, _SETTLED),
         settler=sweeping(workspace),
-        workstation=fit(workspace),
     )
     sections = doctor.sections()
     assert [found.section for found in sections] == expected
@@ -627,11 +602,9 @@ def test_the_report_never_hands_the_dispatch_cache_to_a_thread_that_does_not_own
         survey=offline,
         probe=answering(0, _SETTLED),
         settler=sweeping(workspace),
-        workstation=fit(workspace),
     )
-    assert [found.section for found in doctor.sections()][:8] == [
+    assert [found.section for found in doctor.sections()][:5] == [
         "manifest",
-        *_TOOLING,
         "environment",
         "environment",
         "layout",
@@ -810,33 +783,3 @@ def test_the_settling_row_says_whether_an_outcome_survives_this_session(
     found = Doctor(Board(workspace), settler=Reporting(workspace, state)).settling()
     assert found.verdict is verdict
     assert (found.detail, found.fix) == (state.detail, state.fix)
-
-
-@given(
-    rows=st.lists(
-        st.builds(
-            Readiness, check=WORDS, broken=st.booleans(), detail=WORDS, fix=WORDS | st.just("")
-        ),
-        max_size=5,
-    )
-)
-def test_a_tooling_row_fails_only_when_broken_and_warns_only_while_a_fix_is_owed(
-    workspace: Path, rows: list[Readiness]
-) -> None:
-    """A check this report just repaired passes naming what it changed; nothing is left to run.
-
-    Only tooling that stays broken until somebody installs something fails the exit status.
-    """
-    found = Doctor(Board(workspace), workstation=Examined(workspace, rows)).tooling()
-    assert [row.section for row in found] == [row.check for row in rows]
-    assert [(row.detail, row.fix) for row in found] == [(row.detail, row.fix) for row in rows]
-    for section, row in zip(found, rows, strict=True):
-        expected = Verdict.FAIL if row.broken else Verdict.WARN if row.fix else Verdict.PASS
-        assert section.verdict is expected
-
-
-def test_a_report_nobody_handed_a_workstation_examines_this_one(workspace: Path) -> None:
-    """Left alone the report is about the machine it was asked on, over the workspace's repo."""
-    doctor = Doctor(Board(workspace))
-    assert type(doctor.workstation) is Workstation
-    assert doctor.workstation.root == workspace

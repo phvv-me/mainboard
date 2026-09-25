@@ -1,26 +1,24 @@
 # The verdict behind `mainboard doctor`: is this workspace fit to work in right now. Nothing
 # here probes anything of its own. Each section asks the subsystem that already owns the
 # question, the manifest loader, the compile state and the wheel audit, the compute survey, and
-# every verification gate the workspace declares, and the workstation's own git tooling, then
-# turns its answer into one line with the command that repairs it.
+# every verification gate the workspace declares, then turns its answer into one line with the
+# command that repairs it. The center's own tooling is `center verify`'s question, not this one.
 
 from concurrent.futures import ThreadPoolExecutor
-from enum import StrEnum, auto
 from functools import partial
 from shlex import join, split
 from typing import TYPE_CHECKING
 
-from patos import FrozenModel
 from plumbum.commands.processes import ProcessTimedOut
 
 from . import durable, staleness
 from .compute import Access, Survey
 from .core.errors import MissionError
 from .core.project import Project
+from .core.section import Section, Verdict
 from .engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER, EnvironmentAudit
 from .engines.compile.provisioner import Provisioner
 from .engines.compile.state import SyncState
-from .workstation import Readiness, Workstation
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -41,29 +39,6 @@ _USABLE = frozenset({Access.HERE, Access.KEYED})
 # came to: the pipeline nobody ran reads as a gate that passed. These are refused by name, which
 # is the only way a gate can say what it meant and be told it cannot be said here.
 _SHELL_GRAMMAR = frozenset({"&&", "||", "|", ";", ">", ">>", "<", "&", "2>", "2>&1"})
-
-
-class Verdict(StrEnum):
-    """How one section came back: fit, fit with something worth saying, or broken."""
-
-    PASS = auto()
-    WARN = auto()
-    FAIL = auto()
-
-
-class Section(FrozenModel):
-    """One area of the workspace, judged, with the single command that repairs it.
-
-    section: the area reported on.
-    verdict: whether it is fit, worth a word, or broken.
-    detail: the one line behind the verdict.
-    fix: the command that repairs it, empty when nothing needs repairing.
-    """
-
-    section: str
-    verdict: Verdict
-    detail: str
-    fix: str = ""
 
 
 class Doctor:
@@ -87,7 +62,6 @@ class Doctor:
         survey: Survey | None = None,
         probe: Callable[[str, float], tuple[int, str]] | None = None,
         settler: Settler | None = None,
-        workstation: Workstation | None = None,
     ) -> None:
         """board: the workspace being examined.
 
@@ -96,15 +70,12 @@ class Doctor:
         probe: runs a declared gate's command under its deadline and answers with its exit
             status and output, the workspace runner when None.
         settler: the machine's periodic runner, the one this platform offers when None.
-        workstation: this machine's git tooling, probed and repaired in place, this machine's
-            own over the board's root when None.
         """
         self.board = board
         self.env = env
         self.survey = survey or Survey(board)
         self.probe = probe or self.through_runner
         self.settler = settler or durable.settler(board.root)
-        self.workstation = workstation or Workstation(board.root)
 
     def environment(self, env: str = "") -> Section:
         """Whether what is installed answers to the manifest, and still imports.
@@ -402,10 +373,6 @@ class Doctor:
         that reached for the onboarding records from inside the pool would open that connection
         there and leave the interpreter closing it from here at exit. The shared subsystems are
         built here for the same reason, which is also why building them is locked.
-
-        The workstation's tooling rows come right after the manifest, since git and its setup
-        are what every later row's repair is typed into, and they are examined in a worker of
-        their own beside the rest.
         """
         manifest = self.manifest()
         if manifest.verdict is Verdict.FAIL:
@@ -420,10 +387,8 @@ class Doctor:
             partial(self.hosts, setups),
             *(partial(self.gate, name) for name in self.board.manifest.gates),
         ]
-        with ThreadPoolExecutor(max_workers=len(asked) + 1) as pool:
-            tooling = pool.submit(self.tooling)
-            answered = pool.map(lambda question: question(), asked)
-            return [manifest, *tooling.result(), *answered]
+        with ThreadPoolExecutor(max_workers=len(asked)) as pool:
+            return [manifest, *pool.map(lambda question: question(), asked)]
 
     def examined(self) -> tuple[str, ...]:
         """Every environment this report covers: the one it was asked about, or all declared.
@@ -470,31 +435,6 @@ class Doctor:
                 section="snapshot", verdict=Verdict.FAIL, detail=found.detail, fix=join(found.fix)
             )
         return Section(section="snapshot", verdict=Verdict.PASS, detail=found.detail)
-
-    def tooling(self) -> list[Section]:
-        """One row per check this machine's git tooling needs, after its safe repairs ran.
-
-        The checks share one worker of the report's pool and run in order inside it, since
-        several of them may write the same git config. A check still broken fails the report,
-        one that left a command for a person to run is a word, and one that is fit, including
-        one this report just repaired, passes naming what it changed.
-        """
-        return [
-            Section(
-                section=found.check,
-                verdict=Doctor._verdict(found),
-                detail=found.detail,
-                fix=found.fix,
-            )
-            for found in self.workstation.examine()
-        ]
-
-    @staticmethod
-    def _verdict(found: Readiness) -> Verdict:
-        """FAIL for tooling that is broken, WARN for a fix still owed, PASS otherwise."""
-        if found.broken:
-            return Verdict.FAIL
-        return Verdict.WARN if found.fix else Verdict.PASS
 
     def through_runner(self, command: str, timeout: float) -> tuple[int, str]:
         """Run `command` through this workspace's own runner, bounded, and capture what it said.

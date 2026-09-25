@@ -18,9 +18,11 @@ if mode == "append":
     for name in files:
         with open(name, "a", encoding="utf-8") as handle:
             handle.write(word + "\\n")
-elif mode == "flag":
+elif mode in ("flag", "lacks"):
     word, *files = rest
-    flagged = [name for name in files if word in open(name, encoding="utf-8").read()]
+    flagged = [
+        name for name in files if (word in open(name, encoding="utf-8").read()) == (mode == "flag")
+    ]
     print("\\n".join(flagged))
     sys.exit(1 if flagged else 0)
 elif mode == "where":

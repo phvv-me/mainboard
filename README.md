@@ -52,6 +52,17 @@ command descriptions, this README, and Python API docstrings. Results name their
 source locations. The wheel includes the README. API search never imports
 the scanned modules. Broad searches show twenty hits and the full match count.
 
+`facts` pairs the hardware with a software census (operating system and version,
+shells, filesystem case sensitivity, symlink and long-path support, the git
+settings a clone inherits, git, git-lfs, gh, rsync, ssh, tar, uv, pixi,
+tectonic, node, cargo and nvcc versions, the NVIDIA driver with its CUDA, each
+card's compute capability and memory) and judges it against the workspace: a
+platform the manifest or its lock does not cover, a driver below `[system] cuda`,
+locked CUDA builds the driver cannot run or that carry no kernels for the card,
+fewer cards or less memory than the profile's `defaults.gpus` and
+`defaults.vram-gb` declare, too little disk. `setup`, `compute` (its `issues`
+column) and `center verify` print the same findings from the same census.
+
 `compute` answers what there is to run on before anything is dispatched: this
 machine, every declared host with whether it answers and whether it was set up,
 and every provider with whether its credentials are here and what the account
@@ -183,8 +194,8 @@ ends = "Conclusion"     # the section that must end by that page
 ```
 
 ```console
-$ mainboard paper head                        # build, then report and exit 1 on any problem
-$ mainboard paper head --show "Pareto front"  # and render the page carrying that phrase to PNG
+$ mainboard center paper head                        # build, report, exit 1 on any problem
+$ mainboard center paper head --show "Pareto front"  # and render that phrase's page to PNG
 ```
 
 The build is tectonic from the workspace environment. The report names every
@@ -243,11 +254,11 @@ never-commit = ["**/evidence/artifacts/**"]  # the default; git glob pathspecs
 ```
 
 ```console
-$ mainboard git status          # branch or detached, ahead/behind, dirty, published
-$ mainboard git pull            # fast-forward only, submodules follow their pointers
-$ mainboard git commit -m "…"   # submodules first, then the parents' pointers
-$ mainboard git push            # children first, pointers verified, protected main → branch
-$ mainboard git check           # everything a clone or the next push would trip on
+$ mainboard center git status          # branch or detached, ahead/behind, dirty, published
+$ mainboard center git pull            # fast-forward only, submodules follow their pointers
+$ mainboard center git commit -m "…"   # submodules first, then the parents' pointers
+$ mainboard center git push            # children first, pointers verified, protected main → branch
+$ mainboard center git check           # everything a clone or the next push would trip on
 ```
 
 ## One lint pass
@@ -258,23 +269,105 @@ exclude = ["**/datasets/", "**/references/"]   # never read, never rewritten
 owners = ["packages/*", "research/*"]           # beside every dir holding pyproject.toml or .git
 
 [lint.tools.ruff-format]
-run = "ruff format --force-exclude {files}"
+check = "ruff format --check --force-exclude {files}"   # read-only, what --check runs
+fix = "ruff format --force-exclude {files}"             # fix phase, in declaration order
 files = ["*.py", "*.pyi"]
-writes = true                                  # fix phase, in declaration order
 
 [lint.tools.pyrefly]
-run = "pyrefly check"                          # no {files}: checks the whole owner
+check = "pyrefly check"                        # no {files}: checks the whole owner
 files = ["*.py", "*.pyi", "pyproject.toml"]
 ```
 
+```console
+$ mainboard lint                        # what differs from HEAD or is new, submodules too
+$ mainboard lint .                      # everything git tracks or would, beneath here
+$ mainboard lint --check --json         # CI: write nothing, report it all, fail on any of it
+$ mainboard lint src --only ruff-format # one step; `text` names the built-in hygiene
+```
+
 `mainboard lint` repairs text (UTF-8, the newline `.gitattributes` names, no
-trailing blanks, one final newline), runs the writing tools in order, then every
-check at once, each inside the owner of the files it matched and under the
-workspace environment's PATH. With no path it reads what differs from HEAD;
-`mainboard lint .` reads everything. `mainboard lint install-hook` makes every
-commit run `mainboard lint commit` over the staged files, and `mainboard lint
-edit` is the Claude Code PostToolUse hook: it repairs the file an agent just
-wrote and hands whatever is left back as context.
+trailing blanks, one final newline), runs each writing tool's `fix` in order,
+then every `check` at once, each inside the owner of the files it matched and
+under the workspace environment's PATH. `--check` writes nothing: the hygiene
+names what it would repair and every tool runs its read-only `check`, so a tree
+that passes it is one the writing pass would leave alone. A person, an agent, a
+hook and CI all call the same command and read the same exit code. A
+`mainboard.toml` holding only `[lint]` is enough to use it in any git
+repository.
+
+## The center
+
+One machine holds the monorepo, runs this tool and runs the AI agents: the
+center. Every other machine is a target that receives only what a job needs. The
+verbs that manage the monorepo itself live under `center` (`git`, `paper`,
+`verify`, `migrate`), so the top level stays the work that involves targets.
+
+```console
+$ mainboard center verify                      # is this machine ready to be the center
+$ mainboard center migrate pedro-home --root C:/Users/vazva/life   # move it there
+```
+
+`center verify` is one report, each row with the command that repairs it: this
+machine's git tooling (safe git settings applied in place), the machine judged
+against the workspace, the `doctor` report, the plan `check` resolves, a smoke run
+of Python, torch and CUDA in the default environment, whether every lint tool can
+start, the repository tree, every agent's configuration (AGENTS.md, CLAUDE.md,
+`.claude -> .agents`, `.codex/config.toml`, `.mcp.json`, `opencode.json`), and
+the tracked scripts that use a platform-divergent command (`sed -i`,
+`find -printf`, `grep -P`, `timeout`, `xargs -r`, `readlink -f`, `stat -c/-f`,
+`date -d`, `jq`, `flock`...), each named with its portable replacement.
+
+It also puts the default environment's executable directories on the PATH every
+agent shell starts from, and proves it from each shell kind (zsh, bash, sh,
+PowerShell, cmd, Git Bash). Windows prepends them to the user PATH in the
+registry, which cmd, PowerShell and Git Bash all start from. macOS and Linux have
+no such store, so `~/.config/mainboard/path.sh` puts them on PATH and one marked
+line sources it from `~/.zshenv` (every zsh, login or not) and `~/.profile` and
+`~/.bashrc` (bash and sh). A dotfiles manager should adopt that line. A
+PowerShell alias shadowing a tool (`ls`, `cat`, `sort`...) is named with the
+`$PROFILE` line that removes it.
+
+`center migrate <alias>` moves the center to any machine ssh reaches, Windows
+included with no WSL. It refuses to start while an owned HEAD is on no remote,
+puts uv there when missing, runs the same census `facts` uses and stops early on
+a platform the workspace or its lock cannot serve, then:
+
+1. signs `gh` in with this machine's login and makes it git's https credential;
+2. carries the ssh config blocks the declared and held hosts need (with their
+   jump hosts), the keys they name and `known_hosts`, dropping the options the
+   destination's client refuses (`ControlMaster` on Windows, `UseKeychain` off
+   macOS);
+3. clones the monorepo at this HEAD and every owned submodule at its recorded
+   pointer (foreign reference submodules are left to fetch on demand);
+4. carries what git does not hold: the `.env`, `.mainboard/` (the dispatch
+   registry as a consistent SQLite snapshot, ledgers, batches, audits, recovery,
+   source archives, holds) and every environment's compiled lock; Claude Code's
+   memory re-keyed to the new workspace path, its settings, agents, skills,
+   commands and plugin lists, and this workspace's trust and MCP settings in
+   `~/.claude.json`; Codex's config (trusted projects re-keyed), auth, MCP OAuth
+   store, rules, skills, prompts and memories; opencode's config, auth and MCP
+   OAuth store;
+5. installs this tool from the cloned source with the extras installed here, the
+   fleet's pixi, and the default environment from the carried lock, never solving;
+6. runs `center verify` on the destination and folds its rows into the report.
+
+Environment prefixes, the hub pin cache and ignored data stay behind by design.
+Secrets travel only on ssh's stdin, never on a command line, and are never
+printed. Every step converges on what is already there, so re-running continues
+after an interruption and re-verifies after success; a destination file that
+differs is kept once as `<name>.migrate-backup`.
+
+## Portable process chores
+
+Three everyday operations have no binary that behaves the same everywhere, so
+they are verbs:
+
+```console
+$ mainboard proc timeout 600 pytest -x          # exit 124 when stopped, like GNU timeout
+$ mainboard proc kill 4242                       # the process and everything it started
+$ mainboard proc wait --port localhost:8000 --timeout 60
+$ mainboard proc wait --file results/done.json --pid 4242
+```
 
 ## What it replaces
 

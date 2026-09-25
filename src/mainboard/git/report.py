@@ -2,7 +2,7 @@ from enum import StrEnum, auto
 
 from patos import FrozenModel
 
-from ..doctor import Verdict
+from ..core.section import Verdict
 
 
 class Outcome(StrEnum):

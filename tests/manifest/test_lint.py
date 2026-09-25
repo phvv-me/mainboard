@@ -5,24 +5,30 @@ from mainboard.manifest import Lint, LintTool
 
 
 @pytest.mark.parametrize(
-    ("run", "refusal"),
-    [("", "needs a command"), ("ruff check 'unclosed", "No closing quotation")],
-    ids=["an empty command", "quoting that never closes"],
+    ("check", "fix", "refusal"),
+    [
+        ("", "", "needs a command that checks"),
+        ("ruff check 'unclosed", "", "No closing quotation"),
+        ("ruff check", "ruff check --fix 'unclosed", "No closing quotation"),
+    ],
+    ids=["an empty check", "a check whose quoting never closes", "a fix that never closes"],
 )
-def test_a_tool_command_that_cannot_split_is_refused_at_load(run: str, refusal: str) -> None:
-    with pytest.raises(ValidationError, match=refusal):
-        LintTool(run=run, files=("*.py",))
-
-
-@pytest.mark.parametrize(
-    ("run", "per_file"),
-    [("ruff check {files}", True), ("pyrefly check", False), ("vale '{files}.md'", False)],
-    ids=["the files placeholder", "a whole-owner check", "a placeholder inside a word"],
-)
-def test_only_a_whole_files_word_makes_a_tool_read_its_matched_files(
-    run: str, per_file: bool
+def test_a_tool_command_that_cannot_split_is_refused_at_load(
+    check: str, fix: str, refusal: str
 ) -> None:
-    assert LintTool(run=run, files=("*",)).per_file is per_file
+    with pytest.raises(ValidationError, match=refusal):
+        LintTool(check=check, fix=fix, files=("*.py",))
+
+
+def test_a_writer_fixes_unless_the_pass_is_a_check_and_a_checker_always_checks() -> None:
+    writer = LintTool(check="ruff format --check {files}", fix="ruff format {files}", files=("*",))
+    checker = LintTool(check="pyrefly check", fix="  ", files=("*",))
+
+    assert writer.writes and not checker.writes
+    assert checker.fix == ""
+    assert writer.argv(check=False) == ["ruff", "format", "{files}"]
+    assert writer.argv(check=True) == ["ruff", "format", "--check", "{files}"]
+    assert checker.argv(check=False) == checker.argv(check=True) == ["pyrefly", "check"]
 
 
 def test_the_table_reads_its_kebab_case_keys_and_keeps_the_declared_tool_order() -> None:
@@ -30,12 +36,22 @@ def test_the_table_reads_its_kebab_case_keys_and_keeps_the_declared_tool_order()
         {
             "max-kb": 5,
             "tools": {
-                "format": {"run": "ruff format {files}", "files": ["*.py"], "writes": True},
-                "check": {"run": "ruff check {files}", "files": ["*.py"]},
+                "format": {
+                    "check": "ruff format --check {files}",
+                    "fix": "ruff format {files}",
+                    "files": ["*.py"],
+                },
+                "check": {"check": "ruff check {files}", "files": ["*.py"]},
             },
         }
     )
 
     assert table.max_kb == 5
     assert list(table.tools) == ["format", "check"]
+    assert table.steps == ["text", "format", "check"]
     assert table.markers == ("pyproject.toml", ".git")
+
+
+def test_no_tool_may_take_the_name_of_the_built_in_hygiene() -> None:
+    with pytest.raises(ValidationError, match="built-in text hygiene"):
+        Lint.model_validate({"tools": {"text": {"check": "vale {files}", "files": ["*.md"]}}})

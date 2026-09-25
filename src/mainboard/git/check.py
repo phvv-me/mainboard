@@ -1,7 +1,7 @@
 from functools import cached_property
 from typing import TYPE_CHECKING
 
-from ..doctor import Verdict
+from ..core.section import Verdict
 from .report import Finding
 
 if TYPE_CHECKING:

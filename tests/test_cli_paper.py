@@ -67,7 +67,7 @@ def test_paper_prints_the_check_and_exits_on_whether_anything_is_wrong(
     manuscript = Checked(report)
     monkeypatch.setattr(Board, "paper", lambda self, name: manuscript)
     with pytest.raises(SystemExit, match=f"^{code}$"):
-        build(depot)(["paper", "head", *flags, "--show", "Pareto", "--show", "Table 2"])
+        build(depot)(["center", "paper", "head", *flags, "--show", "Pareto", "--show", "Table 2"])
     out = capsys.readouterr().out
     assert manuscript.shown == [("Pareto", 110), ("Table 2", 110)]
     assert out.rstrip().endswith("/p/build/head-page2.png")

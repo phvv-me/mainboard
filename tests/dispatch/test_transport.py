@@ -580,3 +580,59 @@ def test_an_unbound_policy_names_the_alias_and_a_bound_one_spells_the_port_scp_w
     ported = Endpoint(address="1.2.3.4", port=2222)
     assert ported.options[:2] == ("-p", "2222")
     assert ported.scp_options[:2] == ("-P", "2222")
+
+
+# A child that copies its stdin to its stdout a block at a time, so it writes while it reads.
+_ECHO = "import shutil, sys; shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)"
+
+
+@pytest.mark.parametrize(
+    ("script", "raised", "said"),
+    [
+        (_ECHO, None, ""),
+        ("import sys; sys.stdin.read(); sys.exit('remote tar: refused')", RuntimeError, "refused"),
+        (
+            "import sys; sys.stdin.read(); sys.stderr.write('Connection closed by host'); "
+            "sys.exit(255)",
+            HostUnreachable,
+            "Connection closed",
+        ),
+    ],
+)
+def test_feed_streams_chunks_while_draining_output_and_types_every_other_ending(
+    script: str, raised: type[Exception] | None, said: str
+) -> None:
+    """Megabytes both ways never stall, a command failure is an error, a dropped link unreachable.
+
+    The child answers as it reads, so a feed that wrote everything before reading anything would
+    fill both pipes and hang; the answer comes back whole instead.
+    """
+    chunks = [bytes([ord("a") + index]) * (1 << 20) + b"\n" for index in range(8)]
+    command = (sys.executable, "-c", script)
+    if raised is None:
+        answer = SshTransport().feed(command, "local", operation="place", chunks=iter(chunks))
+        assert answer == b"".join(chunks).decode()
+    else:
+        with pytest.raises(raised, match=f"ssh place to 'local' failed: .*{said}"):
+            SshTransport().feed(command, "local", operation="place", chunks=iter(chunks))
+
+
+def test_feed_reports_a_host_unreachable_when_ssh_cannot_even_start(tmp_path: Path) -> None:
+    """A missing ssh is a machine this one cannot reach, not a command that answered."""
+    with pytest.raises(HostUnreachable, match="could not start"):
+        SshTransport().feed(
+            (str(tmp_path / "absent-ssh"),), "gold", operation="where", chunks=[b"x"]
+        )
+
+
+@pytest.mark.xfail(
+    sys.platform == "win32",
+    raises=OSError,
+    strict=False,
+    reason="a write to a pipe its reader closed raises EINVAL on Windows, not BrokenPipeError",
+)
+def test_feed_tolerates_a_child_that_stops_reading_and_answers_what_it_said() -> None:
+    """A remote end that exits early answers with its own status, not with a broken pipe here."""
+    command = (sys.executable, "-c", "import sys; sys.stdout.write('early'); sys.exit(0)")
+    chunks = (b"x" * (1 << 20) for _ in range(32))
+    assert SshTransport().feed(command, "local", operation="place", chunks=chunks) == "early"

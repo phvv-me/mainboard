@@ -8,17 +8,20 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from enum import StrEnum, auto
-from functools import partial
+from functools import cached_property, partial
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 from pydantic import Field
 
 from .core.errors import MissionError
+from .core.section import Verdict
 from .dispatch.backends.base import Account, Credentials, Inventory, ProviderBackend, route
 from .dispatch.transport import HostUnreachable, SshTransport
+from .fitness import Fitness
 from .manifest.held import Holdings
 from .probe.snapshot import HostFacts
+from .probe.system import System
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -77,6 +80,8 @@ class ComputePath(FrozenModel):
     credit_usd: the balance the provider reports, None where it exposes none.
     observed_at: UTC completion time of this survey observation, not a readiness lease.
     cached_at: onboarding time of retained host facts; empty means their age is unknown.
+    issues: every finding about the machine that is not a pass, `section: detail` joined, the
+        same judge `facts` and `setup` print, empty for a fit machine or one with no census.
     """
 
     name: str
@@ -87,6 +92,7 @@ class ComputePath(FrozenModel):
     credit_usd: float | None = None
     observed_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     cached_at: str = ""
+    issues: str = ""
 
 
 def summary(facts: HostFacts) -> str:
@@ -139,18 +145,18 @@ class Survey:
         self,
         board: Board,
         *,
-        facts: Callable[[], HostFacts] = HostFacts.collected,
+        facts: Callable[[], HostFacts] | None = None,
         reach: Callable[[str], str] = reachable,
         providers: Sequence[ProviderBackend] | None = None,
     ) -> None:
         """board: the workspace whose declared hosts and onboarding records the survey reads.
 
-        facts: probes this machine's hardware.
+        facts: probes this machine's hardware and software, over the workspace root when None.
         reach: answers why a host cannot be reached, empty when it can.
         providers: the provider backends to ask, every registered one when None.
         """
         self.board = board
-        self.facts = facts
+        self.facts = facts or partial(HostFacts.collected, board.root)
         self.reach = reach
         self.providers = (
             [backend() for backend in ProviderBackend.implementations()]
@@ -159,12 +165,33 @@ class Survey:
         )
 
     def here(self) -> ComputePath:
-        """This machine, from its own probed facts."""
+        """This machine, from its own probed facts, with what they mean for this workspace."""
+        found = self.facts()
         return ComputePath(
             name="local",
             kind="local",
             access=Access.HERE,
-            detail=f"{summary(self.facts())}; live hardware, GPU availability not checked",
+            detail=f"{summary(found)}; live hardware, GPU availability not checked",
+            issues=self.issues(found.system, "local"),
+        )
+
+    @cached_property
+    def fitness(self) -> Fitness:
+        """The judge every machine row shares, so the lock is read once per survey."""
+        return Fitness(self.board.root, self.board.manifest)
+
+    def issues(self, system: System, host: str) -> str:
+        """Every finding about `host` that is not a pass, one `section: detail` each.
+
+        system: the host's census, empty for a host onboarded before censuses were recorded,
+            which then has nothing to say rather than a warning per row of the table.
+        host: the alias whose profile the census is judged against.
+        """
+        if not system.surveyed:
+            return ""
+        judged = self.fitness.judge(system, host=host)
+        return "; ".join(
+            f"{row.section}: {row.detail}" for row in judged if row.verdict is not Verdict.PASS
         )
 
     def machine(self, alias: str, profile: HostProfile, setup: HostSetup | None) -> ComputePath:
@@ -202,12 +229,14 @@ class Survey:
             detail = (
                 f"{cached}; {endpoint}job readiness and GPU availability not checked; {action}"
             )
+        census = setup.hardware.system if setup is not None and setup.hardware else System()
         return ComputePath(
             name=alias,
             kind=profile.kind,
             access=access,
             detail=detail,
             cached_at=cached_at,
+            issues=self.issues(census, alias),
         )
 
     def onboarded(self) -> dict[str, HostSetup]:

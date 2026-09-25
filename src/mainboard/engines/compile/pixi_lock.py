@@ -39,6 +39,10 @@ _MAPPING = "    packages:"
 _INDENT = "      "
 _KEY = re.compile(rf"{_INDENT}(\S+):")
 
+# One package a platform key lists, `- conda: <url>` or `- pypi: <url>`, at the key's own margin.
+# Anything indented deeper, such as the `extras:` a PyPI entry carries, continues that entry.
+_LOCATION = re.compile(rf"{_INDENT}- [a-z]+: (\S+)")
+
 # A line that closes the platform roster: a key of its own at the left margin, which neither a
 # sequence entry (`- name: ...`, written flush at that same margin) nor a comment is.
 _TOP_LEVEL = re.compile(r"[A-Za-z_]")
@@ -163,3 +167,29 @@ def _ordered(body: Sequence[str], header: re.Pattern[str], naming: Mapping[str, 
             blocks[-1][1].append(line)
     blocks.sort(key=itemgetter(0))
     return [line for _, block in blocks for line in block]
+
+
+def packages(lock: str) -> dict[str, list[str]]:
+    """Every package location the lock installs, keyed by the subdirectory it lands on.
+
+    The question a machine finding asks of a lock: does it hold anything at all for this
+    machine's platform, and what were those builds compiled against. A labelled platform is read
+    back to the subdirectory it solves for, so `win-64-system` answers as `win-64`.
+
+    lock: the lock file's text.
+    """
+    lines = lock.splitlines()
+    subdirs = {label: subdir for label, subdir, _ in _entries(lines)}
+    found: dict[str, list[str]] = {}
+    for start, stop in _mappings(lines):
+        label = ""
+        for line in lines[start:stop]:
+            named = _KEY.fullmatch(line)
+            if named:
+                label = named[1]
+                found.setdefault(subdirs.get(label, label), [])
+                continue
+            location = _LOCATION.fullmatch(line)
+            if label and location:
+                found[subdirs.get(label, label)].append(location[1])
+    return found

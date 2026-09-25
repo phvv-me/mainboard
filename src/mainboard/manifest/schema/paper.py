@@ -2,7 +2,7 @@ from ...core.base import Declared
 
 
 class Paper(Declared):
-    """One manuscript `mainboard paper` builds and checks, in place of a hand-written build task.
+    """One manuscript `center paper` builds and checks, in place of a hand-written build task.
 
     A venue's page rule is two numbers the build can check on every pass: how many pages the
     main text may take, and which section closes it. Declaring both here is what turns "count
