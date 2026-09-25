@@ -1,42 +1,23 @@
-# THE PLUGIN, WHICH IS HOOKS AND TWO FIXTURES AND DELIBERATELY NOTHING ELSE.
+# The plugin: hooks and fixtures, and deliberately nothing else.
 #
-# Registered the ordinary way, `pytest_plugins = ["mainboard.trials.pytest_plugin"]` in a rootdir
-# conftest, and inert until that conftest also implements `pytest_trials_declaration`. Everything
-# below reads the declaration and nothing below knows a single one of the consumer's words.
+# Registered with `pytest_plugins = ["mainboard.trials.pytest_plugin"]` in a rootdir conftest and
+# inert until that conftest implements `pytest_trials_declaration`. Not a `pytest11` entry point:
+# that would put `--paid` and `--rerun` into every pytest session on the machine and import before
+# pytest-cov starts, reading the subsystem as uncovered. There is no second event system; pytest's
+# hook ordering and setup, call and teardown phases are the lifecycle.
 #
-# NOT A `pytest11` ENTRY POINT, on purpose. An always-loaded plugin would put `--paid` and
-# `--rerun` into every pytest session on a machine this tool is installed beside, and it would be
-# imported before pytest-cov starts its engine, which makes the whole subsystem read as uncovered
-# however thoroughly it is tested. One line in the conftest that already implements the hook buys
-# both back.
+# Completeness is data-level, not a workflow engine: a lane declares its keys by being collected,
+# and a complete lane skips naming the run that satisfied it unless `--rerun`. There is no DAG,
+# since a lane needing another's output is a promotion a person makes. Coverage is asked at the
+# declared coordinate, because a key names neither machine nor subject: a lane satisfied on one
+# card read complete on the next, which would have published one card's rows four times.
 #
-# THERE IS NO SECOND EVENT SYSTEM HERE. pytest already defines hook ordering, hook exception
-# policy and where each hook sits relative to setup, call and teardown, so a lifecycle of our own
-# invention on top of it would be a worse copy of all three. Cross-cutting concerns are hookimpls
-# and fixtures, which is what they already are.
+# The exit code says whether the instrument worked (see `vocabulary`): a trial that settled nothing
+# fails, and so does a session ending with a tracked flag off its baseline.
 #
-# THE COMPLETENESS CHECK IS DATA-LEVEL AND NOT A WORKFLOW ENGINE. A lane declares the keys it
-# would run BY BEING COLLECTED, so the parametrize decorator is the declaration and nothing is
-# retyped. A complete lane skips with the run that satisfied it named, unless `--rerun` says
-# otherwise. There is no DAG, no scheduler and no edge between lanes, because a lane needing
-# another lane's output is a promotion done by a person.
-#
-# COVERAGE IS ASKED AT THE DECLARED COORDINATE, which is what a key alone can never answer. A key
-# is a parametrize id and names neither machine nor subject, so a lane satisfied on one card read
-# complete on the next and skipped without measuring anything, which is how a cross-architecture
-# campaign would have published one card's rows four times. A two-model campaign has the same hole
-# one axis over. Both are the same fix, and it is configuration rather than code.
-#
-# THE EXIT CODE SAYS WHETHER THE INSTRUMENT WORKED AND NOTHING ELSE. Whatever word a trial settles
-# on, it exits zero, so a dead hypothesis is a result and nobody learns to ignore a red line. A
-# trial that settled no receipt at all fails, because that is the instrument breaking. A session
-# that ends with a tracked flag off its baseline fails too, for the same reason one layer up.
-#
-# EVERY NAME A HOOK OR A FIXTURE ANNOTATES IS IMPORTED AT RUNTIME, deliberately, because pluggy
-# and pytest both read these signatures when they register them and a deferred annotation is a
-# `NameError` at plugin load. Only `Declaration` stays deferred, since it appears in a local
-# annotation that is never evaluated, and importing it would pull a dataframe engine into every
-# pytest session on a machine this tool is installed beside.
+# Every name a hook or fixture annotates is imported at runtime, since pluggy and pytest read these
+# signatures at registration. Only `Declaration` stays deferred, in a never-evaluated local
+# annotation, because importing it pulls a dataframe engine into every pytest session.
 
 import sys
 from collections.abc import Generator, Iterator, Mapping, Sequence
@@ -64,13 +45,11 @@ if TYPE_CHECKING:
 # The run this session is working under, minted once and read by every hook and fixture below.
 SESSION = pytest.StashKey[Session]()
 
-# Whether one item's call phase itself passed, which the settled-nothing check reads at teardown
-# so a trial that already failed on its own is never reported failing twice.
+# Whether one item's call phase passed, so a trial that already failed is never failed twice.
 PASSED = pytest.StashKey[bool]()
 
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
-    """Teach pytest the one hook a consumer implements to declare its trials."""
     pluginmanager.add_hookspecs(hookspecs)
 
 
@@ -86,8 +65,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     """Open the run, register the declared markers and hold the collection order still.
 
-    A trial set is ORDER SENSITIVE: a lane leaves the card warm, a cache built and an allocator
-    fragmented, and a shuffled suite measures a different machine every run.
+    A trial set is order sensitive: a lane leaves the card warm, a cache built and an allocator
+    fragmented, so a shuffled suite measures a different machine every run.
     """
     found: Declaration | None = config.hook.pytest_trials_declaration()
     if found is None:
@@ -122,14 +101,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 def _warmed(items: Sequence[pytest.Item]) -> None:
-    """Import the driver of every adaptive lane kind this session collected, before any trial runs.
+    """Import the driver of every adaptive lane kind collected, before any trial runs.
 
-    NOT AN OPTIMISATION. A package imported for the first time INSIDE a running test leaves that
-    test's frame reachable for the rest of the process, the frame holds the fixture values pytest
-    passed it, and for a claim those are a loaded checkpoint, so the residency check reports a card
-    that never came back and refuses a run that released everything it owned. Importing here puts
-    that cost on a collection frame that nobody measures. It also turns a missing driver into a
-    refusal at collection rather than one in the middle of a measurement.
+    NOT AN OPTIMISATION. A package first imported inside a running test leaves that test's frame,
+    and so its fixture values (a claim's loaded checkpoint), reachable for the rest of the process,
+    and `Stage` then refuses a run that released everything it owned; that cost 1.33 GB and an
+    afternoon to find. It also turns a missing driver into a refusal at collection.
     """
     for kind in DRIVERS:
         if any(kind in item.keywords for item in items):
@@ -146,11 +123,7 @@ def _unrunnable(session: Session, items: Sequence[pytest.Item], *, paid: bool) -
 
 
 def _surveyed(session: Session, items: Sequence[pytest.Item]) -> tuple[LaneStatus, ...]:
-    """Every collected lane's completeness at its own cell, in claim then lane order.
-
-    A lane declares the keys it would run BY BEING COLLECTED, so the parametrize decorator is the
-    declaration and nothing about the grid is retyped anywhere.
-    """
+    """Every collected lane's completeness at its own cell, in claim then lane order."""
     grids: dict[tuple[str, str, tuple[tuple[str, str], ...]], set[str]] = {}
     cells: dict[tuple[tuple[str, str], ...], Cell] = {}
     for item in items:
@@ -172,22 +145,16 @@ def _satisfied(session: Session, items: Sequence[pytest.Item]) -> None:
         for status in session.lanes
         if status.state == "complete"
     }
+    axes = session.declared.universe.axes
     for item in items:
-        axes = session.declared.universe.axes
         where = (lane_of(item)[0], session.cell(params_of(item, axes)).key)
         if where in complete:
-            taken = complete[where]
-            item.add_marker(
-                pytest.mark.skip(reason=f"complete, run {taken} took it; --rerun to force")
-            )
+            reason = f"complete, run {complete[where]} took it; --rerun to force"
+            item.add_marker(pytest.mark.skip(reason=reason))
 
 
 def pytest_report_collectionfinish(config: pytest.Config) -> list[str]:
-    """One line per lane before anything runs, so a session opens by saying what it already has.
-
-    The heading NAMES THE MACHINE, because coverage is scoped to it and a `complete` that did not
-    say which one satisfied it is the line that would let a campaign skip three architectures.
-    """
+    """One line per lane before anything runs, under a heading naming the machine they cover."""
     session = config.stash.get(SESSION, None)
     if session is None or not session.lanes:
         return []
@@ -208,15 +175,10 @@ def pytest_runtest_makereport(
 def pytest_report_teststatus(
     report: pytest.TestReport, config: pytest.Config
 ) -> tuple[str, str, tuple[str, dict[str, bool]]] | None:
-    """Print the consumer's own word for a settled trial rather than a green PASSED saying less.
+    """Print the consumer's own word for a settled trial, leaving the exit code untouched.
 
-    The exit code is untouched, so a dead hypothesis still exits zero and only a trial that could
-    not be taken at all exits nonzero.
-
-    THE LAST WORD IS THE ONE PRINTED, because a trial may settle several rows. A search lane
-    narrates one row per ask-tell iteration and then settles the study, so reading the first word
-    would print how its opening point scored and hide the outcome the whole budget was spent to
-    reach. A lane that settles once is unaffected, since its first word is also its last.
+    The LAST word settled is printed: a search lane narrates a row per iteration before settling
+    the study, and its first word would hide the outcome the budget was spent to reach.
     """
     session = config.stash.get(SESSION, None)
     if session is None or report.when != "call" or not report.passed:
@@ -233,12 +195,10 @@ def pytest_report_teststatus(
 def pytest_terminal_summary(
     terminalreporter: pytest.TerminalReporter, config: pytest.Config
 ) -> None:
-    """Read the three owed lints over every store this run wrote, and print what they found.
+    """Print what the lints found over every store this run wrote.
 
-    AFTER the session rather than during it, because each one is a question about a whole store
-    across every run it has ever held and no single trial can answer it. Printed and never fatal:
-    the exit code is about the apparatus, and a gate that could not have failed is a finding a
-    person acts on rather than a broken instrument.
+    After the session, because each lint asks about a whole store across its runs; never fatal,
+    because a gate that could not have failed is a finding, not a broken instrument.
     """
     run = config.stash.get(SESSION, None)
     if run is None or not run.writers:
@@ -257,7 +217,7 @@ def pytest_terminal_summary(
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:
-    """Compact every store this run wrote, then refuse a run that left a tracked flag moved."""
+    """Close the run, failing the session on whatever refusal the close returns."""
     run = session.config.stash.get(SESSION, None)
     if run is None:
         return
@@ -281,21 +241,16 @@ def _declared(config: pytest.Config) -> Session:
 
 @pytest.fixture(scope="session")
 def run(request: pytest.FixtureRequest) -> str:
-    """This session's identity, which NAMES ITS OWN DIRECTORY of receipt fragments."""
+    """This session's identity, which names its own directory of receipt fragments."""
     return _declared(request.config).run
 
 
 @pytest.fixture(autouse=True)
 def held_flags(request: pytest.FixtureRequest) -> Iterator[dict[str, JsonValue]]:
-    """Hold every tracked knob around this trial, writing each one back on the way out.
+    """Hold every tracked knob around this trial and yield the baseline.
 
-    Autouse because a lane that had to remember to ask for isolation would one day forget, and
-    forgetting is the whole defect: a knob one lane moved and left moved is measured by every
-    lane collected after it, and both readings look perfectly reasonable. Yields the baseline,
-    so a lane deliberately sweeping both sides of a knob can say what it started from.
-
-    A session that declared no trials gets an empty hold, since this fixture runs in every
-    pytest session the tool is installed beside and has nothing to say to most of them.
+    Autouse because a lane that had to remember isolation would one day forget. A session that
+    declared no trials gets an empty hold.
     """
     session = request.config.stash.get(SESSION, None)
     if session is None:
@@ -307,12 +262,10 @@ def held_flags(request: pytest.FixtureRequest) -> Iterator[dict[str, JsonValue]]
 
 @pytest.fixture
 def trial(request: pytest.FixtureRequest, held_flags: Mapping[str, JsonValue]) -> Iterator[Trial]:
-    """This trial's evidence line, derived from the claim folder, the node id, the host and git.
+    """This trial's evidence line, derived from the claim folder, the node id and the host.
 
-    Depending on the hold is the whole of the ordering guarantee: the flags are taken before this
-    fixture is built and released after it is torn down, so the receipt is COMMITTED WHILE THE
-    STATE IS STILL HELD and a restore that itself fails cannot destroy the evidence of the trial
-    that just ran.
+    Depending on the hold orders it: the receipt is committed while the flags are still held, so
+    a restore that fails cannot destroy the evidence of the trial that just ran.
     """
     written = _declared(request.config).trial(request.node)
     yield written
@@ -342,7 +295,6 @@ def log(trial: Trial, request: pytest.FixtureRequest) -> Iterator[Log]:
 def stage(request: pytest.FixtureRequest, trial: Trial) -> Stage:
     """What this claim loads once, dropped the moment collection leaves the claim.
 
-    Depends on the evidence line because that is what opens the claim, so a holding made here can
-    never land in the previous claim's stage.
+    Depends on `trial`, which opens the claim, so a holding never lands in the previous claim's.
     """
     return _declared(request.config).staged

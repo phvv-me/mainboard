@@ -1,37 +1,22 @@
-# ONE RUN AND ONE TRIAL, WHICH IS EVERYTHING THE HOOKS IN `pytest_plugin` STAND ON.
+# One run and one trial, which is everything the hooks in `pytest_plugin` stand on.
 #
-# A `Session` is the run: its identity, the provenance stamped on every row it writes, the store
-# each claim's receipts land in, and the baseline of every tracked flag. A `Trial` is one row of
-# it, and the whole of what a lane touches.
+# A `Session` is the run: its identity, the provenance on every row, each claim's store and the
+# baseline of every tracked flag. A `Trial` is one row, the whole of what a lane touches. A lane
+# supplies measurements only; who ran, on what card, at which source and under which claim are
+# derived, because a fact a test has to retype is a fact it will eventually retype wrong.
 #
-# A LANE SUPPLIES MEASUREMENTS AND NOTHING ELSE. Who ran, on what card, at which commit, under
-# which trial of which claim is already here, because every one of those is derivable and a fact a
-# test has to retype is a fact a test will eventually retype wrong.
+# `session_<flag>` is what a flag read when the run opened; `<flag>` beside it is the live value
+# when the trial settled. A review found 24 of 40 rows of one claim carrying a policy their reading
+# was not taken under, because only the session value existed. A lane measuring under two policies
+# in one trial carries the observed policy beside each reading inside `measured`.
 #
-# AND THE FLAG COLUMN SAYS WHICH QUESTION IT ANSWERS. `session_<flag>` is what the flag read when
-# the run opened and is a fact about the SESSION. It is not a fact about the reading, since a lane
-# that moves a flag has readings on both sides of it, so `<flag>` beside it is the LIVE value read
-# at the instant the trial settled. A review of the reference found 24 of 40 rows of one claim
-# carrying a policy their own reading was not taken under, purely because only the session-level
-# value existed. A lane measuring under two policies in one trial cannot be answered by one column
-# either way and carries the policy observed beside each reading inside `measured`.
-#
-# A RUN IS IDENTIFIED BY 128 BITS AND ORDERED BY A COORDINATE IT WRITES DOWN. The identity used to
-# be a second-resolution timestamp and eight hex characters, which is 32 bits of collision room
-# under a name every reader also SORTED by, so two runs inside one second were ordered by their
-# random suffix and a `newest` was whichever tail happened to sort higher. Those are two jobs and
-# they are now two facts: `run` is a uuid7 under a readable timestamp and is IDENTITY, while
-# `opened_at_ns` is the creation coordinate every recency question is answered from.
-#
-# AND `case_id` IS THE FIELD THAT USED TO LIE. It held the last component of the pytest node id
-# under the name `run_id`, beside a `run` column that already held the actual run, so a reader
-# joining receipts on `run_id` joined them on the test case. The value was always right and the
-# name was always wrong; the column is now spelled for what it holds, and the full node id stays
-# in `trial` where it always was.
+# `case_id` is the last component of the node id. It was once named `run_id` beside a `run` column
+# holding the actual run, so joins on it joined on the test case; the full node id is in `trial`.
 
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from time import time_ns
 from typing import TYPE_CHECKING
@@ -39,13 +24,13 @@ from uuid import uuid7
 
 from pydantic import JsonValue
 
-from ..dispatch.provenance import Row, Status, registered
+from ..dispatch.provenance import registered
 from .artifacts import Artifact, Artifacts
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import ADMISSIBILITY, LEDGER, OPENED, PARTIAL
 from .flags import moved, reading
 from .lease import CardLease
-from .provenance import Admissibility, Preflight, digested
+from .provenance import Admissibility, Preflight, digested, parsed
 from .stage import Stage
 from .vocabulary import Outcome
 
@@ -57,24 +42,18 @@ if TYPE_CHECKING:
     from .declaration import Declaration
     from .ledger import TrialReceipts
 
-# The report property a settled word rides to the terminal on. `user_properties` is pytest's own
-# typed channel from an item to its report, which is exactly this trip, so nothing here has to
-# hang an attribute off a report object and hope every consumer of it tolerates the extra field.
+# The report property a settled word rides to the terminal on, through pytest's own typed channel
+# from an item to its report.
 WORD = "mainboard_trials_word"
 
 
 def params_of(item: pytest.Item, axes: Sequence[str] = ()) -> dict[str, JsonValue]:
     """A trial's own coordinates as text, empty for a lane that takes no grid and no marker.
 
-    Text because a receipt column has to be comparable across runs and a parametrize value is
-    whatever object the grid held, which may not survive a round trip through parquet at all.
-
-    A DECLARED AXIS A LANE NAMES BY MARKER IS A COORDINATE TOO. `@pytest.mark.phase("2")` on a
-    lane puts `phase` beside its parametrize values, so a registration's phase rides on the
-    receipt and on the completeness cell without being retyped into every id, and a second
+    Text because a parametrize value may not survive a parquet round trip. A declared axis a lane
+    names by marker (`@pytest.mark.phase("2")`) is a coordinate too, so a registration's second
     phase of the same grid is a second cell rather than a re-run of the first.
 
-    item: the collected trial.
     axes: the declared coverage axes a marker of the same name may answer.
     """
     drawn = getattr(item, "callspec", None)
@@ -97,14 +76,10 @@ def lane_of(item: pytest.Item) -> tuple[str, str]:
 class Session:
     """One run of a declared universe: its identity, its provenance and its open stores.
 
-    THE IDENTITY IS TWO FACTS AND THEY ARE NOT INTERCHANGEABLE. `run` names this run and nothing
-    else: a uuid7 under the readable timestamp its partition directory is found by, 128 bits where
-    there used to be 32, still lexically time-ordered because a uuid7 opens with its own
-    millisecond. `opened` is the creation COORDINATE, in nanoseconds, and is what every recency
-    question is answered from, because inferring an order from a name that ends in random hex is
-    inferring it from the random hex.
-
-    declared: what the consumer stated about its trials.
+    `run` is IDENTITY: a uuid7 under a readable timestamp, 128 bits where a second-resolution
+    stamp and eight hex characters once gave 32, still lexically time-ordered. `opened` is the
+    creation coordinate in nanoseconds and answers every recency question, since ordering on a name
+    ending in random hex orders on the hex.
     """
 
     def __init__(self, declared: Declaration) -> None:
@@ -134,22 +109,19 @@ class Session:
         return str(self.common.get("card", ""))
 
     def claim(self) -> None:
-        """Take this run's exclusive hold on its card, refusing to measure beside a live holder.
+        """Take this run's exclusive hold on its card; a no-op on a host with no card.
 
-        A no-op off a host with no card, since there is nothing here to contend over. Collection
-        is what decides whether to call this at all, since a pure-theory run that touched no
-        `gpu`-marked lane never needed the card and must never be blocked by whoever holds it.
+        Collection decides whether to call this, so a run touching no `gpu` lane is never blocked.
         """
         if self.card:
             self.leased = CardLease.acquire(self.declared.universe.root)
 
     @property
     def heading(self) -> str:
-        """The line a session opens with, naming the machine and the tree its rows are scoped to.
+        """The line a session opens with, naming the machine and whether its rows are evidence.
 
-        A run on a tree nobody can identify SAYS SO HERE, in the same line that names the card,
-        because the rows it is about to write will not count toward any claim and a person who
-        learns that from a coverage table three days later has already spent the card time.
+        An inadmissible tree says so here, before the card time is spent, not in a coverage table
+        three days later.
         """
         named = str(self.common.get("card_name", "")) or "no card"
         where = f"{named}{f' ({self.card})' if self.card else ''}"
@@ -161,14 +133,9 @@ class Session:
     def cell(self, params: Mapping[str, JsonValue]) -> Cell:
         """Where a trial sits on the declared axes, and why each axis reads what it does.
 
-        An axis is read off the trial's own parameters when it names one and off the run's probed
-        provenance otherwise, which is one rule covering both kinds: `model` comes from a
-        parametrize grid and `card` from the machine, and neither is special-cased anywhere. The
-        outcome rides beside the value, taken from the probe that produced it where there was one
-        and `unasked` where nothing was ever asked, so an axis a lane simply does not use never
-        looks like a machine nobody could identify.
-
-        params: the trial's own parametrize values.
+        An axis reads the trial's own parameter when it names one, else the run's probed
+        provenance, with that probe's outcome; `unasked` where nothing asked, so an axis a lane
+        does not use never looks like an unidentifiable machine.
         """
         values, probing = {}, {}
         for axis in self.declared.universe.axes:
@@ -179,33 +146,16 @@ class Session:
         return Cell(values=values, probing=probing)
 
     def close(self) -> str:
-        """Release the claim and card, remint each ledger, then say what must fail.
+        """Release the claim and card, remint each ledger, then return what must fail.
 
-        Receipt fragments remain immutable so concurrent fetches never observe a rewritten part.
-        The card lease releases
-        before anything can raise below it, since a run that measured a card must give it back
-        whether or not its own flags ended clean.
+        The last claim's residue is returned, not raised: when `Stage.drop` escaped from
+        `pytest_sessionfinish`, the lease stayed held, nothing was reminted and pytest never
+        printed the failures behind it (on 2026-08-31 a GH200 wave read "did not release" over
+        twelve hidden `ZeroDivisionError`s). The lease releases before anything else can raise.
 
-        THE LAST CLAIM'S RESIDUE IS RETURNED, NOT RAISED. `Stage.drop` refuses a claim that kept
-        card memory, and when that refusal escaped from here it escaped from
-        `pytest_sessionfinish`: the lease stayed held, no store compacted, no ledger was reminted,
-        and pytest never printed the failures that had caused the residue in the first place, so
-        on 2026-08-31 a whole GH200 wave read as "did not release" with the twelve real
-        `ZeroDivisionError`s behind it invisible. The refusal is a line of the session's verdict
-        like a moved flag is, and everything below it still happens.
-
-        THE LEDGER IS REMINTED HERE SO IT IS NEVER OLDER THAN THE STORE IT SITS IN, BUT ONLY WHEN
-        THIS RUN COVERS EVERY LANE THE STORE HAS EVER KNOWN. `latest.jsonl` is the one file in a
-        receipts directory a person can open, and nothing wrote it after the store became parquet,
-        so four universes of one workspace were found on 2026-08-29 handing a reader a generation
-        their own coverage rule had superseded. Reminting unconditionally traded that defect for a
-        second one: a run that only recollected some of a claim's lanes would remint the ledger
-        from its own rows alone and every lane it did not touch would vanish from the one file a
-        person reads, though the store underneath still held it. A partial run still lands as its
-        own run and is still admissible evidence; it is written out beside the ledger instead of
-        replacing it, so nothing this session measured goes unseen and nothing it did not measure
-        is reported missing. `Dataset.retire` carries the ledger on its own path, which between it
-        and this is every way the current view can move.
+        A store's `latest.jsonl` is reminted only when this run covers every lane the store has
+        known (`Dataset.full`); a partial run lands beside it as `partial-<run>.jsonl`. Receipt
+        fragments stay immutable, so a concurrent fetch never sees a rewritten part.
         """
         refusals = []
         try:
@@ -247,20 +197,19 @@ class Session:
         self.staged = Stage(node, resident=self.declared.resident)
 
     def trial(self, item: pytest.Item) -> Trial:
-        """The evidence line for one collected trial, the claim it belongs to now open.
+        """The evidence line for one collected trial, its claim entered first.
 
-        Entering the claim here rather than in a fixture of its own is what makes the residency
-        scope real: every lane that measures asks for its evidence line, so no claim can start
-        without the previous one's holdings having been dropped first.
+        Every measuring lane asks for its evidence line, so no claim starts before the previous
+        one's holdings are dropped.
         """
         self.enter(self.declared.universe.node_of(Path(str(item.path))))
         return Trial(item, self)
 
     def manifest(self, path: Path) -> Artifact | None:
-        """Preserve one run manifest per node, using the dispatch's existing source listing.
+        """One run manifest per node of an `experiments` universe, from the dispatch's listing.
 
-        Research Log trials require their adjacent captured node.md in that listing.
-        No experiment maintains another source list or computes a second source seal.
+        The adjacent `node.md` registration must be in the captured listing; no experiment keeps
+        another source list or computes a second source seal.
         """
         universe = self.declared.universe
         if universe.root.name != "experiments":
@@ -272,17 +221,11 @@ class Session:
         if not source.digest or not source.closure:
             raise RuntimeError("research logging requires a captured Mainboard source bundle")
         registration = path.parent / "node.md"
-        relative = registration.relative_to(Path.cwd()).as_posix()
-        listing = Path(source.closure).read_text(encoding="utf-8")
-        sources = [
-            Row(path=p, blob=b, status=Status(s))
-            for p, b, s in (line.split("\t") for line in listing.splitlines())
-        ]
+        sources = parsed(Path(source.closure).read_text(encoding="utf-8"))
         registered(registration, sources, root=Path.cwd())
-        directory = universe.dataset(node).root.parent / "artifacts" / self.run
         manifest = {
             "run": self.run,
-            "registration": relative,
+            "registration": registration.relative_to(Path.cwd()).as_posix(),
             "source": source.model_dump(mode="json", exclude={"closure"}),
             "files": [row.model_dump(mode="json") for row in sources],
             "environment": self.taken.versions,
@@ -293,21 +236,19 @@ class Session:
             "arithmetic": self.baseline,
             "opened_at_ns": self.opened,
         }
-        reference = Artifacts(self.declared.tree, directory).write(
+        directory = universe.dataset(node).root.parent / "artifacts" / self.run
+        self.manifests[node] = Artifacts(self.declared.tree, directory).write(
             json.dumps(manifest).encode(),
             media_type="application/json",
             schema_name="mainboard.run.v1",
         )
-        self.manifests[node] = reference
-        return reference
+        return self.manifests[node]
 
     def writer(self, node: str) -> TrialReceipts:
         """One claim's append-only store for this run, opened on first use.
 
-        The claim's own registered rows are digested HERE rather than per trial, because
-        `baselines/` is a fact about the claim and every receipt of it is scored against the same
-        directory. A gate is only pre-registered if the rows it reads existed before the reading,
-        and this is what lets a reader check that instead of taking it on trust.
+        The claim's `baselines/` digest is taken here, once, since every receipt of the claim is
+        scored against the same directory.
         """
         if node not in self.writers:
             self.writers[node] = self.declared.universe.dataset(node).writer(
@@ -323,13 +264,10 @@ class Session:
 
 
 class Trial:
-    """One trial's evidence line: derived identity, host and commit, plus what the lane measured.
+    """One trial's evidence line: derived identity, host and source, plus what the lane measured.
 
-    A lane settles ONCE, with one of its workspace's declared words and its readings. A trial that
-    settles nothing settles `failed` at teardown, so a broken instrument leaves a row rather than
-    a hole, and the trial itself fails because a silent instrument is not a result.
-
-    item: the running test. session: the run this row belongs to.
+    A lane settles with one of its workspace's declared words and its readings. One that settles
+    nothing settles `failed` at teardown, leaving a row rather than a hole, and the trial fails.
     """
 
     def __init__(self, item: pytest.Item, session: Session) -> None:
@@ -341,36 +279,19 @@ class Trial:
         self.artifacts: dict[str, JsonValue] = {}
 
     def __getattr__(self, name: str) -> Callable[..., None]:
-        """One declared word as a method, so a lane calls `trial.validated(...)` and reads well.
-
-        The words are the consumer's, so the methods are too, and there is no table of them here
-        to fall out of step with the vocabulary. An undeclared word refuses at the attribute
-        rather than settling a row nothing can read.
-
-        name: the word being reached for.
-        """
+        """One declared word as a method, `trial.validated(...)`; an undeclared one refuses."""
         words = self.session.declared.words
         if name not in words:
             raise AttributeError(
                 f"{name!r} is not a declared settle word; declared: {words.names}"
             )
-
-        def settle(reason: str = "", **measured: JsonValue) -> None:
-            self.settle(name, reason=reason, **measured)
-
-        return settle
+        return partial(self.settle, name)
 
     def gate(self, registration: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
-        """Take the committed row this trial is scored against, digesting it on the way through.
+        """Hand back the committed row this trial is scored against, digesting it on the way.
 
-        A LANE READS ITS GATE AND THE RECEIPT NEVER SAW IT. A claim registers an interval, a lane
-        selects the row holding it and settles on whether today's reading falls inside, and the
-        row that decided the verdict left no trace on the row that recorded it, so a reader could
-        not tell a pre-registered gate from one edited into agreement afterwards. Reading the
-        registration THROUGH here is what closes that: the digest rides on the receipt as
-        `gate_digest` and the lane retypes nothing, since the row itself comes straight back.
-
-        registration: the committed baseline row the verdict is taken against.
+        The digest rides on the receipt as `gate_digest`, so a reader can tell a pre-registered
+        gate from one edited into agreement afterwards.
         """
         self.gated = digested(dict(registration))
         return registration
@@ -383,15 +304,11 @@ class Trial:
         measured: Mapping[str, JsonValue],
         outcome: Outcome,
     ) -> None:
-        """Write this trial's one fragment and tell the terminal which word to print for it.
+        """Write this trial's fragment and tell the terminal which word to print for it.
 
-        Every tracked flag is read HERE rather than carried from the session baseline, so a lane
-        that moved one names what was actually in force when it settled, and a value that differs
-        from the baseline records this trial as the first suspect for the end-of-run check.
-
-        ADMISSIBILITY IS PER ROW BECAUSE TRACKEDNESS IS PER LANE. A clean tree can still collect a
-        lane nobody committed, and that row names a commit which does not contain the test that
-        produced it, so the run-wide answer alone would call it evidence.
+        Tracked flags are read here, so the row names what was in force when it settled and a
+        drifted value records this trial as the first suspect. Admissibility is per row because a
+        verified tree can still collect a lane outside the captured source.
         """
         params = params_of(self.item, self.session.declared.universe.axes)
         path = Path(str(self.item.path))
@@ -422,10 +339,6 @@ class Trial:
             }
         )
 
-    def settle(self, word: str, *, reason: str = "", **measured: JsonValue) -> None:
-        """Commit this trial under one of the declared words, with whatever it read.
-
-        word: a word the consumer's own vocabulary declares.
-        reason: one line saying what happened. measured: the readings behind it.
-        """
+    def settle(self, word: str, reason: str = "", **measured: JsonValue) -> None:
+        """Commit this trial under a declared word, with one line of reason and its readings."""
         self.record(word, reason=reason, measured=measured, outcome=Outcome.PASSED)

@@ -13,8 +13,6 @@ def workspace(tmp_path: Path, table: str = "") -> Path:
 
 
 class Device:
-    """A probed card stand-in: a name, a utilization reading and the processes holding it."""
-
     def __init__(self, label: str, holders: tuple[int, ...] = (), gpu_pct: int = 3) -> None:
         self.label = label
         self.holders = holders

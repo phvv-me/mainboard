@@ -22,12 +22,11 @@ if TYPE_CHECKING:
     from pydantic import JsonValue
 
 # What a claim's registered rows live under, one directory per node, and what counts as a source
-# file when the universe root is digested. Both are named here because the digest is taken here.
+# file when the universe root is digested.
 BASELINES, SOURCES = "baselines", "*.py"
 
-# How many bytes every digest here is. Sixteen is a fingerprint a person can read in a receipt
-# column and compare by eye, and it is a DIGEST rather than an identity: it accelerates the
-# question of whether two trees are the same and never settles it.
+# Every digest's width in bytes: a fingerprint a person can compare by eye in a receipt column. It
+# accelerates the question whether two trees are the same and never settles it.
 WIDTH = 16
 
 
@@ -46,6 +45,14 @@ class Admissibility(StrEnum):
     UNRECORDED = auto()
 
 
+def parsed(manifest: str) -> list[Row]:
+    """The rows of a source listing, one `path<TAB>blob<TAB>status` line each."""
+    return [
+        Row(path=path, blob=blob, status=Status(status))
+        for path, blob, status in (line.split("\t") for line in manifest.splitlines())
+    ]
+
+
 def _built(name: str) -> bool:
     """Whether one relative path is build output rather than source a digest should read."""
     return any(part.startswith(".") or part == "__pycache__" for part in name.split("/"))
@@ -54,11 +61,9 @@ def _built(name: str) -> bool:
 def digest_of(directory: Path, pattern: str = "*") -> str:
     """One digest over every file under `directory` matching `pattern`, in relative-path order.
 
-    The relative path is folded in beside the bytes, so a file that MOVED changes the digest as
-    surely as a file that changed. Caches and dot-directories are skipped because they are build
-    output rather than source and would digest the same tree differently on two machines. Empty
-    for a directory that does not exist or holds nothing, which says `there is no such thing`
-    rather than handing back the digest of nothing at all.
+    The relative path is folded in beside the bytes, so a moved file changes the digest too.
+    Caches and dot-directories are skipped as build output that would digest one tree two ways on
+    two machines. Empty for a missing or empty directory, rather than the digest of nothing.
     """
     if not directory.is_dir():
         return ""
@@ -75,10 +80,9 @@ def digest_of(directory: Path, pattern: str = "*") -> str:
 
 
 def digested(payload: JsonValue) -> str:
-    """One registration row's digest, over its canonical JSON so key order cannot move it.
+    """One registration row's digest, over canonical JSON so key order cannot move it.
 
-    This is what a lane's GATE rides on the receipt as: the exact committed row a verdict was
-    scored against, fingerprinted where it is read rather than described in prose afterwards.
+    A lane's gate rides on the receipt as this: the exact row a verdict was scored against.
     """
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return blake2b(canonical.encode(), digest_size=WIDTH).hexdigest()
@@ -117,10 +121,7 @@ def source(repo: Path) -> Source:
         manifest = closure.read_text(encoding="utf-8")
         if not expected or sha256(manifest.encode()).hexdigest() != expected:
             raise RuntimeError("source listing does not match the declared content digest")
-        rows = [
-            Row(path=p, blob=b, status=Status(s))
-            for p, b, s in (line.split("\t") for line in manifest.splitlines())
-        ]
+        rows = parsed(manifest)
         verified, _ = tree.seal(
             [row.path for row in rows],
             built=[row.path for row in rows if row.status is Status.BUILT],
@@ -131,8 +132,7 @@ def source(repo: Path) -> Source:
     tree = SourceTree(repo)
     captured, rows = tree.seal(tree.kept("."))
     manifest = listing(rows)
-    archive = tree.archive(manifest)
-    closure = archive.with_suffix(".tsv")
+    closure = tree.archive(manifest).with_suffix(".tsv")
     closure.write_text(manifest, encoding="utf-8")
     return Source(digest=captured.digest, closure=str(closure), root=tree.root)
 
@@ -140,9 +140,8 @@ def source(repo: Path) -> Source:
 def installed(name: str) -> str:
     """The installed version behind one logical package name, or `absent`.
 
-    A platform may publish the same import from a differently named distribution, as
-    `triton-windows` does for the `triton` package. The import-to-distribution index keeps the
-    receipt schema platform-independent without hard-coding either platform's spelling.
+    A platform may ship the import under another distribution name (`triton-windows` for
+    `triton`), so the import-to-distribution index keeps the receipt schema platform-independent.
     """
     try:
         return version(name)
@@ -160,19 +159,15 @@ class Card(FrozenModel):
     """The device a reading was taken on, and whether the probe actually found one.
 
     id: the device UUID, the coverage identity, falling back to the name where none is exposed.
-    name: the human name, which is a display column and never an identity.
-    driver: the HOST DRIVER version the reading ran under, `610.57.04` shaped.
+    name: the human name, a display column and never an identity.
+    driver: the HOST DRIVER version, `610.57.04` shaped. It once held `cudaDriverGetVersion()`,
+        the maximum CUDA a driver supports, so a generation of receipts stamped `13.3` and no
+        driver at all, as three reviews found separately on 2026-08-29 (`fprev_recovery` 7c,
+        `recovery_cost` 7d, `accuracy_selection` 6e).
     runtime: the compute runtime version beside it, `13.3` shaped, the CUDA one on an NVIDIA host.
     capability: the architecture key a kernel dispatches on.
     probed: `found`, `absent` on a host that carries no device, `failed` when the probe broke.
     detail: what the probe said when it broke, empty otherwise.
-
-    THE TWO VERSION FIELDS ARE TWO FACTS AND THE RECEIPT USED TO CARRY ONE OF THEM TWICE. `driver`
-    held `cudaDriverGetVersion()`, the maximum CUDA a driver supports, under a name that promised
-    the driver, so a generation of receipts stamped `13.3` on a host whose driver is `610.57.04`
-    and carried no driver version at all. Three independent reviews on 2026-08-29
-    (`fprev_recovery` 7c, `recovery_cost` 7d, `accuracy_selection` 6e) found it separately, which
-    is what a field whose name and content disagree costs.
     """
 
     id: str = ""
@@ -187,10 +182,8 @@ class Card(FrozenModel):
 def card_of(machine: Machine) -> Card:
     """The first visible device, an empty card where there is none, and why either way.
 
-    A probe is a whole vendor stack behind one attribute, so the set of ways it can fail is not
-    ours to enumerate. What matters is that a broken one is REPORTED rather than mistaken for an
-    absent device or allowed to take the session down, so the receipt says the machine is unknown
-    and a reader can act on that.
+    A probe is a whole vendor stack whose failures are not ours to enumerate, so any failure is
+    reported as `failed` rather than mistaken for an absent device or taking the session down.
     """
     try:
         cards = machine.gpus
@@ -226,8 +219,7 @@ class Preflight:
         self.digest = self.source.digest
         manifest = Path(self.source.closure).read_text(encoding="utf-8")
         self.captured = {
-            (self.source.root / p).resolve(): b
-            for p, b, _ in (line.split("\t") for line in manifest.splitlines())
+            (self.source.root / row.path).resolve(): row.blob for row in parsed(manifest)
         }
         self.card = card_of(machine or Machine())
         self.versions: dict[str, JsonValue] = {name: installed(name) for name in probed}
@@ -258,16 +250,13 @@ class Preflight:
     def admits(self, lane: Path) -> Admissibility:
         """Whether the lane's current bytes belong to the captured source."""
         expected = self.captured.get(lane.resolve())
-        if expected is None:
-            return Admissibility.UNRECORDED
-        return Admissibility.ADMISSIBLE if blob_of(lane) == expected else Admissibility.UNRECORDED
+        admitted = expected is not None and blob_of(lane) == expected
+        return Admissibility.ADMISSIBLE if admitted else Admissibility.UNRECORDED
 
     def baselines(self, node: str) -> str:
-        """The digest of one claim's registered rows, empty where the claim registers none.
+        """The digest of one claim's registered `baselines/` rows, empty where it registers none.
 
-        A gate is only pre-registered if the rows it reads existed before the reading did, so the
-        whole `baselines/` directory rides on every receipt of the claim that owns it.
-
-        node: which claim to digest, the universe root itself for a flat universe.
+        A gate is pre-registered only if the rows it reads existed before the reading, so the
+        digest rides on every receipt of the claim.
         """
         return digest_of(self.root / node / BASELINES)

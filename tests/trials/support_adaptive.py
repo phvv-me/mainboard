@@ -1,25 +1,17 @@
-# THE TWO DRIVERS, STOOD IN FOR, because what is under test here is the lane and not the library.
-#
-# hypothesis's shrinker and optuna's sampler are somebody else's tested code, and a suite that
-# drove the real ones would be asserting their behaviour while paying for their install. What this
-# package owes a reader is that `Hunt` spends the budget it was given, counts what it drew, keeps
-# the LAST witness a shrink produced and settles the consumer's own words with it, and that `Study`
-# asks, evaluates, tells and writes one row per iteration before settling on its worst point. Both
-# of those are statements about the SEAM, so the seam is what is doubled: two modules answering the
-# exact calls `adversarial` and `search` make, and nothing else.
-#
-# THEY ARE INSTALLED BY NAME INTO `sys.modules`, which is the same door `adaptive.driver` opens, so
-# the import path under test is the real one and only what comes back through it is ours.
+# Stand-ins for hypothesis and optuna: what is under test is the seam (`Hunt` spends its budget
+# and keeps the last shrunk witness; `Study` asks, evaluates, tells and writes one row per
+# iteration), not the libraries. They answer exactly the calls `adversarial` and `search` make and
+# are installed by name into `sys.modules`, the door `adaptive.driver` opens, so the import path
+# under test is the real one.
 
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 
 class Draws:
-    """A fake `@given`, drawing from plain sequences and shrinking toward each one's first value.
+    """A fake `@given` drawing from plain sequences and shrinking toward each one's first value.
 
-    The budget arrives from the fake `settings` and the seed from the fake `seed`, exactly as the
-    real decorators supply them, so the wrapper reads what the code under test actually set.
+    Budget and seed arrive from the fake `settings` and `seed`, as the real decorators supply them.
     """
 
     def __init__(self, function: Any, strategies: dict[str, list[Any]]) -> None:
@@ -30,14 +22,12 @@ class Draws:
         self.drawn: list[dict[str, Any]] = []
 
     def draw(self, index: int) -> dict[str, Any]:
-        """One example, cycling each strategy's own values so a run is a function of the seed."""
         return {
             name: values[(self.seed + index) % len(values)]
             for name, values in self.strategies.items()
         }
 
     def __call__(self) -> None:
-        """Spend the budget, then shrink a failure toward the front of every strategy."""
         for index in range(self.budget):
             example = self.draw(index)
             self.drawn.append(example)
@@ -47,7 +37,6 @@ class Draws:
                 raise self.shrink() from None
 
     def shrink(self) -> Exception:
-        """Re-run from the front and hand back the smallest example that still raised."""
         smallest: Exception | None = None
         for index in range(self.budget):
             try:
@@ -100,7 +89,6 @@ class Cycle:
         self.told: list[tuple[Any, float]] = []
 
     def ask(self) -> Any:
-        """One trial whose `suggest_categorical` walks the declared values by its own index."""
         index = self.asked
         self.asked += 1
         return SimpleNamespace(
@@ -109,7 +97,6 @@ class Cycle:
         )
 
     def tell(self, trial: Any, loss: float) -> None:
-        """Record the score, which is the whole of what a sampler is given back."""
         self.told.append((trial.number, loss))
 
 

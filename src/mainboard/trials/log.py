@@ -41,10 +41,11 @@ class Log:
         self.trial = trial
         session = trial.session
         universe = session.declared.universe
-        manifest = session.manifest(Path(str(trial.item.path)))
+        path = Path(str(trial.item.path))
+        manifest = session.manifest(path)
         if manifest is not None:
             trial.artifacts["run"] = manifest.model_dump(mode="json")
-        node = universe.node_of(Path(str(trial.item.path)))
+        node = universe.node_of(path)
         key = hashlib.sha256(trial.item.nodeid.encode()).hexdigest()
         directory = universe.dataset(node).root.parent / "artifacts" / session.run / key
         self.artifacts = Artifacts(session.declared.tree, directory)
@@ -186,9 +187,8 @@ class Log:
                 yield profiler
             completed = True
         finally:
-            result = profiler.result()
             self.model(
-                result,
+                profiler.result(),
                 name=name or self._name("profile"),
                 schema_name="mainboard.Profile",
             )

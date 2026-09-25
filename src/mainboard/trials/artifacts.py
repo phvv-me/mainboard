@@ -78,8 +78,11 @@ class Artifacts:
         directory = directory.absolute()
         boundary = boundary.absolute()
         directory.relative_to(boundary)
-        roots = [directory, *directory.parents]
-        roots = [root for root in reversed(roots) if root.is_relative_to(boundary)]
+        roots = [
+            root
+            for root in reversed([directory, *directory.parents])
+            if root.is_relative_to(boundary)
+        ]
         for line in receipts:
             payload = json.loads(line)["trial_receipt"]
             for value in payload.get("artifacts", {}).values():

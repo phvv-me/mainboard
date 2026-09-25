@@ -49,9 +49,8 @@ class Configured:
         self.registered.append(line)
 
 
-# A consumer's whole conftest: one hook returning one declaration. Everything the reference
-# scaffolding spelled out by hand, the markers, the coverage rule, the provenance probe and the
-# arithmetic pin, is derived from these four statements.
+# A consumer's whole conftest: one hook returning one declaration, from which the markers, the
+# coverage rule, the provenance probe and the pin are all derived.
 CONFTEST = """
 from pathlib import Path
 
@@ -180,7 +179,6 @@ def test_a_law_is_hunted(trial):
 
 @pytest.fixture
 def universe(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> pytest.Pytester:
-    """A consumer workspace with one claim, its provenance fixed so no test touches silicon."""
     monkeypatch.setattr(session_module, "Preflight", Taken)
     pytester.makeconftest(CONFTEST)
     pytester.makepyfile(**{"alpha/test_law": LANES})
@@ -188,12 +186,8 @@ def universe(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> pyte
 
 
 def ran(pytester: pytest.Pytester, *args: str) -> pytest.RunResult:
-    """One inner session, with the one warning running pytest inside pytest always raises.
-
-    The outer module imports the plugin to drive its hooks directly, so the inner run finds it
-    already imported and says it can no longer rewrite its assertions, which is true and is about
-    this suite rather than about anything under test.
-    """
+    """One inner session, ignoring the assertion-rewrite warning it raises because this module
+    already imported the plugin to drive its hooks directly."""
     return pytester.runpytest_inprocess(
         "-p",
         "no:cacheprovider",
@@ -206,12 +200,8 @@ def ran(pytester: pytest.Pytester, *args: str) -> pytest.RunResult:
 def test_a_collected_adaptive_lane_has_its_driver_imported_before_any_trial_runs(
     universe: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A package first imported inside a running test leaves that test's frame reachable.
-
-    The frame holds the fixture values pytest passed it, which for a claim is a loaded
-    checkpoint, so the residency check reports a card that never came back and refuses a run that
-    released everything it owned. Collection is where that import belongs.
-    """
+    """A package first imported inside a running test keeps that frame, and so its loaded
+    checkpoint, reachable, and the residency check would refuse the run."""
     warmed: list[str] = []
     monkeypatch.setattr(pytest_plugin, "driver", warmed.append)
     universe.makepyfile(**{"alpha/test_hunt": HUNT})
@@ -220,19 +210,16 @@ def test_a_collected_adaptive_lane_has_its_driver_imported_before_any_trial_runs
     assert warmed == ["adversarial"]
 
 
-def store(pytester: pytest.Pytester, node: str = "alpha") -> Dataset:
-    """The claim's receipt store as a reader outside the run sees it."""
-    return Dataset(Path(pytester.path) / node / "evidence" / "receipts", axes=("card", "model"))
+def store(pytester: pytest.Pytester, axes: tuple[str, ...] = ("card", "model")) -> Dataset:
+    """The `alpha` claim's receipt store as a reader outside the run sees it."""
+    return Dataset(Path(pytester.path) / "alpha" / "evidence" / "receipts", axes=axes)
 
 
 def test_a_session_with_no_declaration_stays_completely_inert(
     pytester: pytest.Pytester,
 ) -> None:
-    """The plugin loads with pytest itself, so most sessions must never notice it at all.
-
-    The one thing it does say is why, since a lane asking for an evidence line in a workspace
-    that declared none has made a mistake nobody else can diagnose for it.
-    """
+    """The plugin loads with pytest itself; it speaks only to a lane asking for evidence in a
+    workspace that declared none."""
     pytester.makeconftest('pytest_plugins = ["mainboard.trials.pytest_plugin"]')
     pytester.makepyfile(
         plain="def test_ordinary():\n    assert True\n",
@@ -249,11 +236,8 @@ def test_a_session_with_no_declaration_stays_completely_inert(
 def test_a_declared_run_settles_its_own_words_and_leaves_immutable_parts(
     universe: pytest.Pytester,
 ) -> None:
-    """A dead hypothesis exits zero, so the colour is the whole difference between the words.
-
-    Nobody learns to ignore a red line that only ever meant a prediction died, which is why the
-    exit code is about the instrument and the word is about the claim.
-    """
+    """A dead hypothesis exits zero: the exit code is about the instrument, the word about the
+    claim."""
     run = ran(universe, "--paid")
     assert run.ret == 0
     run.stdout.fnmatch_lines(
@@ -282,11 +266,8 @@ def test_a_declared_run_settles_its_own_words_and_leaves_immutable_parts(
 def test_a_lane_that_moves_a_tracked_knob_never_reaches_the_lane_collected_after_it(
     universe: pytest.Pytester,
 ) -> None:
-    """The pin leak closed at the acquisition end rather than only at the audit end.
-
-    A knob one lane moved and left moved is measured by every lane after it, and both readings
-    look perfectly reasonable, which is why detection alone was never the fix.
-    """
+    """A knob one lane left moved is measured by every lane after it and both readings look
+    reasonable, so the leak is closed at acquisition, not only audited."""
     run = ran(universe, "--paid")
     assert run.ret == 0
     rows = {str(row["case_id"]): row for row in store(universe).rows()}
@@ -299,11 +280,8 @@ def test_a_lane_that_moves_a_tracked_knob_never_reaches_the_lane_collected_after
 def test_a_run_that_ends_with_a_knob_off_baseline_is_refused_and_names_the_leaker(
     universe: pytest.Pytester,
 ) -> None:
-    """Refusal over warning, because a warning in a scroll-back is not a gate.
-
-    The move here is made by a session fixture, which is exactly the shape `held` cannot wrap:
-    it is not inside any one trial, so the audit at close is what has to catch it.
-    """
+    """A session fixture's move is outside any trial, so `held` cannot wrap it and the audit at
+    close refuses; a warning in a scroll-back is not a gate."""
     universe.makepyfile(**{"alpha/test_leaks": LEAKS})
     run = ran(universe, "alpha/test_leaks.py")
     assert run.ret == pytest.ExitCode.TESTS_FAILED
@@ -319,11 +297,7 @@ def test_a_run_that_ends_with_a_knob_off_baseline_is_refused_and_names_the_leake
 def test_a_complete_lane_skips_with_the_run_that_satisfied_it_named(
     universe: pytest.Pytester,
 ) -> None:
-    """A lane declares its keys by being collected, so nothing about the grid is retyped.
-
-    Coverage is asked per card and per subject, so a key alone, which names neither, could never
-    have answered this question at all.
-    """
+    """A lane declares its keys by being collected; coverage is asked per card and subject."""
     assert ran(universe, "--paid").ret == 0
     again = ran(universe, "--paid")
     assert again.parseoutcomes() == {"skipped": 6}
@@ -337,7 +311,6 @@ def test_a_complete_lane_skips_with_the_run_that_satisfied_it_named(
 def test_a_host_with_no_card_and_a_wallet_nobody_opened_both_skip(
     universe: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A machine cannot measure a device it does not have, and nothing spends money unasked."""
     monkeypatch.setattr(
         session_module,
         "Preflight",
@@ -360,7 +333,6 @@ def test_a_host_with_no_card_and_a_wallet_nobody_opened_both_skip(
 def test_a_run_touching_no_gpu_marked_lane_never_takes_the_card_lease(
     universe: pytest.Pytester,
 ) -> None:
-    """A session that never asked for the card must never be the one that locks it."""
     universe.makepyfile(**{"beta/test_law": "def test_reads(trial):\n    trial.validated('x')\n"})
     assert ran(universe, "beta/test_law.py").ret == 0
     assert not (Path(universe.path) / lease_module.filename()).exists()
@@ -369,7 +341,6 @@ def test_a_run_touching_no_gpu_marked_lane_never_takes_the_card_lease(
 def test_a_run_refuses_to_measure_beside_a_live_holder_of_the_card(
     universe: pytest.Pytester,
 ) -> None:
-    """The race `clean_card` never noticed: a second campaign beside a live one refuses."""
     lock = Path(universe.path) / lease_module.filename()
     lock.write_text(f"{os.getpid()} {time.time()}", encoding="utf-8")
     refused = ran(universe, "--paid")
@@ -381,7 +352,6 @@ def test_a_run_refuses_to_measure_beside_a_live_holder_of_the_card(
 def test_a_stale_card_lease_is_reclaimed_rather_than_wedging_every_run_after_it(
     universe: pytest.Pytester,
 ) -> None:
-    """A crashed session's lease must not outlive it and block every session after it."""
     lock = Path(universe.path) / lease_module.filename()
     lock.write_text(f"{2**31 - 1} {time.time()}", encoding="utf-8")
     assert ran(universe, "--paid").ret == 0
@@ -391,7 +361,6 @@ def test_a_stale_card_lease_is_reclaimed_rather_than_wedging_every_run_after_it(
 def test_collection_does_not_take_or_change_an_existing_gpu_lease(
     universe: pytest.Pytester,
 ) -> None:
-    """Inspecting GPU trial identities must work while another run holds the card."""
     lock = Path(universe.path) / lease_module.filename()
     held = f"{os.getpid()} {time.time()}"
     lock.write_text(held, encoding="utf-8")
@@ -404,11 +373,8 @@ def test_collection_does_not_take_or_change_an_existing_gpu_lease(
 def test_a_trial_that_measured_nothing_fails_and_still_leaves_a_row(
     universe: pytest.Pytester,
 ) -> None:
-    """A broken instrument is the one outcome that must never be silent.
-
-    A trial that raised has already reported itself, so it writes its row and is not failed
-    twice; a trial that passed while settling nothing is the case only this check can see.
-    """
+    """A trial that raised writes its row and is not failed twice; one that passed while
+    settling nothing is what only this check can see."""
     universe.makepyfile(**{"alpha/test_quiet": QUIET})
     run = ran(universe, "alpha/test_quiet.py")
     assert run.ret == pytest.ExitCode.TESTS_FAILED
@@ -423,11 +389,8 @@ def test_a_trial_that_measured_nothing_fails_and_still_leaves_a_row(
 def test_a_logged_lane_settles_through_its_trial_and_the_run_prints_what_the_lints_found(
     universe: pytest.Pytester,
 ) -> None:
-    """A residue that is 0.0 on every row moved nothing, and the summary names the lane to open.
-
-    Printed rather than fatal, since the exit code is about the instrument and a gate that could
-    not have failed is a finding a person acts on.
-    """
+    """A residue 0.0 on every row moved nothing; the finding is printed, not fatal, since the
+    exit code is about the instrument."""
     universe.makepyfile(**{"alpha/test_logged": LOGGED})
     run = ran(universe, "alpha/test_logged.py")
     assert run.ret == 0
@@ -445,11 +408,7 @@ def test_a_logged_lane_settles_through_its_trial_and_the_run_prints_what_the_lin
 def test_a_claim_holds_its_measure_once_work_and_the_run_names_itself(
     universe: pytest.Pytester,
 ) -> None:
-    """The stage is what a session-scoped fixture should have been, scoped to one claim.
-
-    The run id is the same string for every trial of a session, because it is the directory the
-    fragments land in and a second one would split a run in two.
-    """
+    """The run id is one string per session, since it is the directory the fragments land in."""
     universe.makepyfile(**{"alpha/test_stage": STAGED})
     assert ran(universe, "alpha/test_stage.py").ret == 0
     rows = {str(row["case_id"]): row for row in store(universe).rows()}
@@ -461,7 +420,6 @@ def test_a_claim_holds_its_measure_once_work_and_the_run_names_itself(
 def test_collection_registers_markers_without_opening_an_acquisition_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A plan must not snapshot an evidence tree or probe hardware to list its cases."""
 
     def refuse_session(declared: Declaration) -> Never:
         raise AssertionError("collection opened an acquisition session")
@@ -480,13 +438,9 @@ def test_collection_registers_markers_without_opening_an_acquisition_session(
 def test_a_shuffling_plugin_is_held_still_and_the_declared_markers_are_registered(
     tmp_path: Path, probed: None
 ) -> None:
-    """A trial set is order sensitive: a lane leaves the card warm and the allocator fragmented.
-
-    A shuffled suite therefore measures a different machine every run, so the guard is set the
-    moment such a plugin is present rather than the day somebody debugs the result. Driven
-    against a stand-in config because the guard has to fire whatever order the real plugin
-    happened to register in, which is a fact about this hook and not about that plugin.
-    """
+    """A lane leaves the card warm and the allocator fragmented, so a shuffled suite measures a
+    different machine each run. A stand-in config makes the guard fire whatever order the real
+    plugin registered in."""
     config = Configured(declaration(tmp_path), plugins=("randomly",))
     pytest_plugin.pytest_configure(cast("pytest.Config", config))
     assert config.option.randomly_reorganize is False
@@ -500,8 +454,6 @@ def test_a_shuffling_plugin_is_held_still_and_the_declared_markers_are_registere
     ]
     assert config.stash[pytest_plugin.SESSION].run
 
-    # A suite nothing shuffles still opens its run, and the guard is not invented on a config
-    # that carries no such option to hold.
     unshuffled = Configured(declaration(tmp_path))
     pytest_plugin.pytest_configure(cast("pytest.Config", unshuffled))
     assert not hasattr(unshuffled.option, "randomly_reorganize")
@@ -530,21 +482,15 @@ def test_law_holds(trial, model):
 def test_a_marked_axis_is_a_coordinate_and_a_new_phase_is_a_new_cell(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`@pytest.mark.phase` answers the declared `phase` axis like a parametrize value would.
-
-    The receipt names the phase, the completeness question is asked at it, and the same grid
-    marked with another phase is not satisfied by the first one's data, so a registration's
-    later phase never needs `--rerun` and never pools with the earlier one.
-    """
+    """A later phase of the same grid is not satisfied by the first one's data, so it never
+    needs `--rerun` and never pools with the earlier one."""
     monkeypatch.setattr(session_module, "Preflight", Taken)
     pytester.makeconftest(PHASED_CONFTEST)
     pytester.makepyfile(**{"alpha/test_law": PHASED})
 
     assert ran(pytester, "alpha/test_law.py").ret == 0
-    receipts = Dataset(
-        Path(pytester.path) / "alpha" / "evidence" / "receipts", axes=("card", "model", "phase")
-    )
-    assert [row["phase"] for row in receipts.rows()] == ["2"]
+    phased = ("card", "model", "phase")
+    assert [row["phase"] for row in store(pytester, phased).rows()] == ["2"]
 
     again = ran(pytester, "alpha/test_law.py")
     again.stdout.fnmatch_lines(["*complete*test_law_holds on GPU-1111, qwen, 2*"])
@@ -554,7 +500,4 @@ def test_a_marked_axis_is_a_coordinate_and_a_new_phase_is_a_new_cell(
     pytester.makepyfile(**{"alpha/test_law": PHASED.replace('phase("2")', 'phase("later")')})
     third = ran(pytester, "alpha/test_law.py")
     assert third.ret == 0
-    afresh = Dataset(
-        Path(pytester.path) / "alpha" / "evidence" / "receipts", axes=("card", "model", "phase")
-    )
-    assert sorted(afresh.passing(every=True)["phase"].to_list()) == ["2", "later"]
+    assert sorted(store(pytester, phased).passing(every=True)["phase"].to_list()) == ["2", "later"]

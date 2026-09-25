@@ -43,9 +43,7 @@ class ParquetArtifacts:
                     .sort("ordinal")
                     .collect()
                 )
-                if rows.is_empty():
-                    continue
-                if path.relative_to(parent).as_posix() not in rows["paths"][0]:
+                if rows.is_empty() or path.relative_to(parent).as_posix() not in rows["paths"][0]:
                     continue
                 if rows["ordinal"].to_list() != list(range(rows.height)):
                     raise ValueError(f"incomplete archived artifact: {path}")

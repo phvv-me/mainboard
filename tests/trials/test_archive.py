@@ -11,6 +11,10 @@ from mainboard.trials.archive import ArtifactChunk, ParquetArtifacts
 from mainboard.trials.artifacts import Artifact, Artifacts
 
 
+def _written(root: Path, data: bytes = b"evidence") -> Artifact:
+    return Artifacts(root, root / "run").write(data, media_type="application/octet-stream")
+
+
 def test_archive_deduplicates_and_bounds_shards_without_changing_receipts(tmp_path: Path) -> None:
     payload = random.Random(42).randbytes(1500000)
     references = [
@@ -37,9 +41,7 @@ def test_archive_deduplicates_and_bounds_shards_without_changing_receipts(tmp_pa
 
 
 def test_archive_checks_bytes_and_chunk_order(tmp_path: Path) -> None:
-    reference = Artifacts(tmp_path, tmp_path / "run").write(
-        b"evidence", media_type="application/octet-stream"
-    )
+    reference = _written(tmp_path)
     source = tmp_path / reference.path
     archive = ParquetArtifacts(tmp_path)
     archive.pack([source])
@@ -55,9 +57,7 @@ def test_archive_checks_bytes_and_chunk_order(tmp_path: Path) -> None:
 
 
 def test_archive_rejects_changed_content_addresses_and_external_paths(tmp_path: Path) -> None:
-    reference = Artifacts(tmp_path, tmp_path / "run").write(
-        b"evidence", media_type="application/octet-stream"
-    )
+    reference = _written(tmp_path)
     source = tmp_path / reference.path
     source.write_bytes(b"modified")
     archive = ParquetArtifacts(tmp_path)
@@ -69,14 +69,9 @@ def test_archive_rejects_changed_content_addresses_and_external_paths(tmp_path: 
 
 
 def test_a_bucket_sharing_only_a_prefix_is_passed_over_up_to_the_boundary(tmp_path: Path) -> None:
-    """A bucket holds every digest of one prefix, so finding it is not finding the bytes.
-
-    The boundary is the filesystem root, the widest one a caller can declare, so the search
-    climbs through every ancestor and still refuses rather than running off the top.
-    """
-    reference = Artifacts(tmp_path, tmp_path / "run").write(
-        b"evidence", media_type="application/octet-stream"
-    )
+    """Finding a digest's prefix bucket is not finding its bytes; with the filesystem root as the
+    boundary the search climbs every ancestor and still refuses rather than running off the top."""
+    reference = _written(tmp_path)
     ParquetArtifacts(tmp_path).pack([tmp_path / reference.path])
     sibling = reference.sha256[:2] + "f" * 62
     with pytest.raises(FileNotFoundError):
@@ -87,9 +82,7 @@ def test_a_bucket_sharing_only_a_prefix_is_passed_over_up_to_the_boundary(tmp_pa
 
 def test_an_object_that_fills_a_shard_exactly_leaves_no_empty_shard_behind(tmp_path: Path) -> None:
     payload = random.Random(7).randbytes(8 * 65536)
-    reference = Artifacts(tmp_path, tmp_path / "run").write(
-        payload, media_type="application/octet-stream"
-    )
+    reference = _written(tmp_path, payload)
     source = tmp_path / reference.path
     archive = ParquetArtifacts(tmp_path)
     archive.pack([source])
