@@ -37,6 +37,21 @@ def test_load_renders_and_validates_the_full_fixture(loaded: Manifest) -> None:
     assert loaded.profile("miyabi-g").defaults.mem_gb == "min(100, attempt * 50)"
 
 
+def test_a_manifest_without_a_workspace_table_names_its_workspace_after_its_directory(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "tidy"
+    root.mkdir()
+    (root / Project().manifest).write_text(
+        '[lint.tools.ruff]\ncheck = "ruff check {files}"\nfiles = ["*.py"]\n', encoding="utf-8"
+    )
+
+    loaded = load(root / Project().manifest)
+
+    assert loaded.workspace.name == "tidy"
+    assert list(loaded.lint.tools) == ["ruff"]
+
+
 @pytest.mark.parametrize(
     ("body", "match"),
     [
