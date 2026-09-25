@@ -21,8 +21,8 @@ from urllib.request import Request
 
 from ...core.errors import MissionError
 from ...costs.imports import from_vast
+from ...runtime.job import walltime_seconds
 from ..evidence import framing, staging
-from ..jobs.spec import walltime_seconds
 from ..lease import Lease
 from ..rentals import LANDING_SECONDS, Identity, Rental, identity, reachable, seeded, waiting
 from ..shared import logger

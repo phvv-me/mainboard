@@ -7,17 +7,17 @@
 # mint any declared service by name.
 from . import wandb as wandb_sink
 from .base import Tracker, credential, is_batched, mirrored, sink, streamed
-from .sampler import Sampler, attesting_line, host_env, sampling_line
+from .sampler import Sampler, attesting, host_env, sampling
 
 __all__ = [
     "Sampler",
     "Tracker",
-    "attesting_line",
+    "attesting",
     "is_batched",
     "credential",
     "host_env",
     "mirrored",
-    "sampling_line",
+    "sampling",
     "sink",
     "streamed",
     "wandb_sink",

@@ -45,8 +45,8 @@ class HostProfile(Declared):
         Quote an absolute interpreter path as that shell requires.
 
     `vars` are read by this machine's backends (an hpc-ai API key, a rental's
-    parameters) and never leave it; `exports` are written into every job script
-    the host runs, `export KEY=VALUE` before the command, which is where a fact
+    parameters) and never leave it; `exports` are set for every job the host
+    runs, after its environment is entered and before the command, which is where a fact
     about the host's world lives, such as `HF_HUB_OFFLINE = "1"` on a cluster
     whose compute nodes must never ask the Hub for a gated checkpoint the shared
     cache already holds.

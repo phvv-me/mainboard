@@ -17,7 +17,7 @@ from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
 
 from .backends.support import BareBackend
-from .support import RecordingMachine, machine_with, plan
+from .support import RecordingMachine, machine_with, plan, recorded
 
 # The machine a rental hands over, and the resources every landing below runs under.
 _ENDPOINT = Endpoint(address="ssh5.vast.ai", port=41022, user="root", identity="/keys/id")
@@ -144,8 +144,8 @@ def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would
 ) -> None:
     """A rented box has no queue, and must not: its entrypoint owns the log and the meter.
 
-    What it is handed is the staging every other host gets around the ordinary bash job script,
-    so a rented run's receipts, its walltime cap and its source stamp are the ones gold produces.
+    What it is handed is the staging every other host gets around the ordinary job script, so a
+    rented run's receipts, its walltime cap and its source stamp are the ones gold produces.
 
     The script is named by the absolute path the mirror carried it to, and the assertion below
     is that those are the same path: a launch naming anything the transfer did not deliver is the
@@ -158,12 +158,10 @@ def test_the_waiting_entrypoint_is_handed_the_same_staged_line_an_ssh_host_would
     (root, (script,), _) = dispatcher.mirrored[0]
     assert written.startswith(f"cd {root}/{SOURCES}/")
     snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
-    assert written.endswith(f"bash {snapshot}/.mainboard-jobs/{Path(script).name}\n")
+    assert written.endswith(f"sh {snapshot}/.mainboard-jobs/{Path(script).name}\n")
     assert "export PATH=" in written
-    body = (dispatcher.root / script).read_text(encoding="utf-8")
-    assert "timeout --kill-after=30s 1800" in body
-    assert "bash -c 'python train.py'" in body
-    assert "MAINBOARD_RECEIPTS" in body and "mainboard-receipts-begin" in body
+    job = recorded((dispatcher.root / script).read_text(encoding="utf-8"))
+    assert (job.command, job.walltime, job.logs) == ("python train.py", "00:30:00", "")
 
 
 def test_a_rented_job_carries_the_complete_source_seal(
@@ -174,9 +172,9 @@ def test_a_rented_job_carries_the_complete_source_seal(
     source = Source(identity="abc1234", key="abc1234-5678", commit="a" * 40, digest="b" * 64)
     shipment = Shipment.of_command("python train.py", source=source, imports=())
     script = landed.script(shipment, root="/root/projects", listing="")
-    body = (dispatcher.root / script).read_text(encoding="utf-8")
-    assert f"MAINBOARD_SOURCE_COMMIT={source.commit}" in body
-    assert f"MAINBOARD_SOURCE_DIGEST={source.digest}" in body
+    job = recorded((dispatcher.root / script).read_text(encoding="utf-8"))
+    assert job.variables["MAINBOARD_SOURCE_COMMIT"] == source.commit
+    assert job.variables["MAINBOARD_SOURCE_DIGEST"] == source.digest
 
 
 def test_rental_results_link_to_the_live_root_that_fetch_reads(

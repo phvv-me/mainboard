@@ -1,4 +1,5 @@
 import base64
+import shlex
 import shutil
 import sys
 from collections.abc import Sequence
@@ -13,6 +14,7 @@ from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Container, HostProfile
+from mainboard.runtime.job import Job
 
 # A pin is a Linux host's job, rsync under an flock, and a machine without either (macOS ships
 # no flock) cannot stand in for that host.
@@ -327,6 +329,12 @@ def plan(**overrides: FieldValue) -> ExecutionPlan:
     }
     fields.update(overrides)
     return ExecutionPlan.model_validate(fields)
+
+
+def recorded(script: str) -> Job:
+    """The job record a rendered job script hands the host's tool on its last line."""
+    handover = script.rstrip("\n").splitlines()[-1]
+    return Job.model_validate_json(shlex.split(handover)[-1])
 
 
 def cache() -> Cache:

@@ -24,6 +24,7 @@ from ..core.project import Project
 from ..engines.compile.generated import GeneratedFiles
 from ..engines.compile.vendor import vendor_root
 from ..manifest.loading import load
+from ..runtime.job import ToolCall
 from . import vocabulary
 from .allocation import Allocation
 from .collection.collector import Collector
@@ -68,19 +69,18 @@ _GLOB_ESCAPES: dict[str, str | int | None] = {
 }
 
 
-def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") -> str:
-    """The line that builds the immutable environment `pinned` activates, empty when it has none.
+def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") -> ToolCall | None:
+    """The call that builds the immutable environment `pinned` activates, None when it has none.
 
-    One spelling for the two places that need it: the dispatch runs it after pinning, so a wave
-    finds its environment already built, and the job runs it again on the node, so a job whose
-    prefix was pruned or never finished builds it rather than dying in a half-installed one. It
-    is idempotent by construction, so the second call through the ninth cost a stat.
+    One call for the two places that need it: the dispatch runs it after pinning, so a wave
+    finds its environment already built, and the job's runner runs it again on the node, so a job
+    whose prefix was pruned or never finished builds it rather than dying in a half-installed
+    one. It is idempotent by construction, so the second call through the ninth cost a stat.
 
     It runs from the mirror, because that is where a host keeps its built environments, while
     the artifact it builds from is the snapshot's own hardlinked copy: the description a job
-    activates and the environment it gets are then the same content by construction. It runs in
-    a subshell, so the directory it changes into never becomes the job's own: a relative path in
-    the command would otherwise name the mirror's mutable code under the snapshot's provenance.
+    activates and the environment it gets are then the same content by construction. Only the
+    call runs there, so a relative path in the command still names the snapshot's frozen code.
 
     The digest the dispatch pinned rides along, so the host builds the environment this job will
     actually activate or says which two addresses it reached and which two pixis reached them.
@@ -97,14 +97,10 @@ def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") 
         leaves the host to build whatever it reads.
     """
     if plan.containerized:
-        return ""
+        return None
     artifact = f"{pinned}/{Project().out_dir}/envs/{plan.env}"
-    expect = f" --expect {shlex.quote(prefix.rpartition('/')[2])}" if prefix else ""
-    build = (
-        f"{_TOOL} provide {shlex.quote(plan.env)} "
-        f"--source {shlex.quote(artifact)}{expect} >/dev/null"
-    )
-    return f"( cd {shlex.quote(root)} && {build} )"
+    expect = ("--expect", prefix.rpartition("/")[2]) if prefix else ()
+    return ToolCall(args=("provide", plan.env, "--source", artifact, *expect), cwd=root)
 
 
 # How a finished verdict maps to a process exit code: 0 ok, 1 failed, 2 still running, 3
@@ -560,8 +556,8 @@ class Dispatcher:
         name: str = "",
         node: str = "",
         gpu_in_select: bool = True,
-        sampler: str = "",
-        attestation: str = "",
+        sampler: ToolCall | None = None,
+        attestation: ToolCall | None = None,
         containerize: Callable[[list[str]], list[str]] | None = None,
         watch: Watcher | None = None,
         prefix: str = "",
@@ -569,9 +565,9 @@ class Dispatcher:
     ) -> Handle:
         """Render `shipment` into a job script for `plan`'s host and dispatch it.
 
-        Renders a PBS or bash job script (whichever `plan.profile.kind` calls for), wraps the
-        command in the container runtime when `plan.containerized`, submits it, and returns a
-        `Handle`.
+        Renders the job script, with a `#PBS` header when `plan.profile.kind` calls for one,
+        wraps the command in the container runtime when `plan.containerized`, submits it, and
+        returns a `Handle`.
 
         The script activates and runs from the snapshot of the mirror this dispatch pins, not
         from the mirror itself, so a later dispatch of a different tree cannot change the code
@@ -587,10 +583,10 @@ class Dispatcher:
         fetch: a results path recorded on the handle, pulled back by `fetch`.
         node: the ledger slug this run serves, recorded on the run and its receipts.
         gpu_in_select: whether a PBS GPU request belongs in the `select=` chunk.
-        sampler: a shell line the script runs beside the command, empty for none. Opaque here
-            on purpose, since what a host watches about itself is not the dispatcher's decision.
-        attestation: a shell line the script runs in the foreground before the command, empty for
-            none, recording what the machine looked like as the work started.
+        sampler: the call the job makes beside its command, None for none. Decided by the
+            caller, since what a host watches about itself is not the dispatcher's decision.
+        attestation: the call the job makes in the foreground before its command, None for none,
+            recording what the machine looked like as the work started.
         containerize: builds the container runtime argv around `["bash", "-c", cmd]`; required
             when `plan.containerized`.
         watch: announces the building of the host's environment, the one stage of a dispatch
@@ -603,14 +599,14 @@ class Dispatcher:
             taken over. See `_raise_required_sync_failure`'s neighbours for why a group under
             the generated tree has to be named to travel at all.
         """
-        container_command = ""
+        container: tuple[str, ...] = ()
         if plan.containerized:
             if containerize is None:
                 raise LookupError(
                     f"plan for host {plan.host!r} is containerized but no container argv "
                     "builder was given"
                 )
-            container_command = shlex.join(containerize(["bash", "-c", shipment.command]))
+            container = tuple(containerize(["bash", "-c", shipment.command]))
         pinned = self.pinned(root, source=shipment.source)
         listing = self.stage_listing(shipment)
         spec = JobSpec(
@@ -623,7 +619,7 @@ class Dispatcher:
             gpus=resources.gpus,
             account=resources.account,
             mem_gb=resources.mem_gb,
-            container_command=container_command,
+            container=container,
             prefix=prefix,
             pythonpath=":".join(f"{pinned}/{place}".rstrip("/") for place in shipment.imports),
             provide=providing(plan, root=root, pinned=pinned, prefix=prefix),
@@ -995,9 +991,10 @@ class Dispatcher:
         watch: receives a successful build announcement.
         prefix: the expected environment address.
         """
-        command = providing(plan, root=root, pinned=pinned, prefix=prefix)
-        if not command:
+        call = providing(plan, root=root, pinned=pinned, prefix=prefix)
+        if call is None:
             return
+        command = f"{shlex.join([_TOOL, *call.args])} >/dev/null"
         retcode, _, err = remote["bash"][
             ["-lc", wrap(plan, root, command=command, activate=False)]
         ].run(retcode=None)

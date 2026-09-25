@@ -9,8 +9,10 @@
 # for in full. A paid run that produces no evidence is the worst outcome the tool can reach, worse
 # than one that fails loudly, because nothing about it says the evidence is missing.
 #
-# So a provider run writes its receipts to a file the way an ssh job does, and the wrapper frames
-# that file back through the one channel a rental is guaranteed to have. The frame is base64 in
+# So a run writes its receipts to a file, and whatever started it frames that file back through the
+# one channel a rental is guaranteed to have. Where the tool is installed that is the job runner,
+# in Python (`framed`); a prebuilt container that carries no tool gets the same frame from a shell
+# pipeline instead (`staging` and `framing`). The frame is base64 in
 # fixed-width chunks, each on its own marked line: base64 because a receipt's own quoting has to
 # survive a shell and a log viewer intact, and fixed-width because a chunk is only safe if it is
 # narrower than the cut. A block is bounded by its own begin and end lines, and the last complete
@@ -71,9 +73,9 @@ def framing() -> str:
     end of it, which makes the block unreadable and silently loses every receipt in it. Feeding
     the newline in before the fold is what keeps the last chunk a line of its own.
 
-    So is the `|| true`. A job script runs under `set -euo pipefail`, and a failing command in an
-    `if` body is not exempt from that, so an image missing one of these six tools would take the
-    whole script down here, before the line that reports the command's own exit code. Evidence
+    So is the `|| true`. A caller running this under `set -euo pipefail` is not exempted inside
+    an `if` body, so an image missing one of these six tools would take the whole script down
+    here, before the line that reports the command's own exit code. Evidence
     is worth a great deal and never worth changing the outcome it is evidence of, so the pipeline
     absorbs its own failure and the block simply does not arrive.
 
@@ -87,6 +89,17 @@ def framing() -> str:
         f'{{ base64 < {file} | tr -d "\\n"; echo; }} | fold -w {_CHUNK_WIDTH} '
         f"| sed 's/^/{_CHUNK_MARKER}/' || true; echo {_END}; fi"
     )
+
+
+def framed(receipts: bytes) -> str:
+    """`receipts` framed exactly as `framing` frames a file, for a runner that holds the bytes.
+
+    receipts: the receipts file's contents, never empty, since a run that wrote nothing frames
+        nothing.
+    """
+    payload = base64.b64encode(receipts).decode("ascii")
+    chunks = [payload[at : at + _CHUNK_WIDTH] for at in range(0, len(payload), _CHUNK_WIDTH)]
+    return "\n".join([_BEGIN, *(f"{_CHUNK_MARKER}{chunk}" for chunk in chunks), _END]) + "\n"
 
 
 def unframed(log: str) -> str:

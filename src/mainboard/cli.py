@@ -32,6 +32,8 @@ from .probe.occupancy import rows as occupancy_rows
 from .probe.stress import rows as stress_rows
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
+from .runtime.job import Job
+from .runtime.runner import Runner
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1302,6 +1304,20 @@ def build(root: Path | None = None) -> App:
             print(built)
             return
         record({"prefix": str(built)}, mode="json", fields=(), title="prefix")
+
+    @app.command(name="job", show=False)
+    def job_(record: str) -> int:
+        """Run a dispatched job from its record, which every generated job script hands over.
+
+        The job's command, the tree it runs from, the environment it enters, what it exports and
+        how long it may take were all decided where it was dispatched and written down as one
+        record. This carries the record out the same way on every host: build and enter the
+        environment, run the command under its walltime, frame its receipts back and answer its
+        exit status.
+
+        record: the job record as JSON, exactly as the dispatch rendered it.
+        """
+        return Runner(Job.model_validate_json(record)).run()
 
     @app.command
     def attest(stream: str, *, job: str = "") -> None:
