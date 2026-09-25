@@ -101,10 +101,6 @@ _RESOURCES = {
             ("install", "local", ("serving",), {"resolve": True, "profile": "gold"}),
         ),
         (
-            ["install", "--on", "gold"],
-            ("install", "gold", ("",), {"resolve": False, "profile": ""}),
-        ),
-        (
             ["setup", "gold", "--env", "serving"],
             ("install", "gold", ("serving",), {"resolve": False, "sync_only": False}),
         ),
@@ -117,9 +113,8 @@ _RESOURCES = {
             ("install", "gold", ("serving",), {"resolve": False, "sync_only": True}),
         ),
         (["shell", "--env", "serving"], ("shell", "local", ("serving",), {})),
-        (["serve", "vserve", "--on", "gold"], ("serve", "gold", ("vserve",), {})),
         (
-            ["interact", "--on", "gold", "--queue", "interact-g", "--", "pwd"],
+            ["shell", "--on", "gold", "--queue", "interact-g", "--", "pwd"],
             (
                 "interact",
                 "gold",
@@ -147,10 +142,6 @@ _RESOURCES = {
             ("attest", "local", ("smoke-1",), {"job": "gold-1"}),
         ),
         (
-            ["stress", "gold", "--n", "1024", "--repetitions", "2"],
-            ("stress", "gold", (), {"n": 1024, "repetitions": 2}),
-        ),
-        (
             ["provide", "serving", "--source", "compiled", "--expect", "d41d"],
             ("provide", "local", ("serving", "compiled", "d41d"), {}),
         ),
@@ -173,13 +164,11 @@ _RESOURCES = {
         "new",
         "doctor",
         "install here",
-        "install on a host",
         "setup",
         "setup sync-only",
         "sync",
         "shell",
-        "serve",
-        "interact",
+        "shell on a host",
         "compute",
         "monitor",
         "facts",
@@ -190,7 +179,6 @@ _RESOURCES = {
         "logs",
         "attest",
         "attest a named job",
-        "stress",
         "provide",
         "collect from the profile's root",
     ],
@@ -559,11 +547,11 @@ def test_self_update_runs_the_fix_only_when_the_snapshot_is_stale(
     ],
     ids=["as json", "as the default rich table", "as the compact record"],
 )
-def test_the_plan_verb_prints_the_resolved_plan(
+def test_check_on_a_host_prints_the_plan_it_resolves_to(
     depot: Path, capsys: pytest.CaptureFixture[str], flags: list[str], fragments: tuple[str, ...]
 ) -> None:
     with pytest.raises(SystemExit, match="0"):
-        build(depot)(["plan", _MIYABI_G, *flags])
+        build(depot)(["check", "--on", _MIYABI_G, *flags])
     out = capsys.readouterr().out
     if not fragments:
         plan = json.loads(out)
@@ -589,6 +577,19 @@ def test_the_check_verb_lists_what_the_manifest_declares(
     surface = json.loads(capsys.readouterr().out)
     assert set(surface) == fields
     assert surface["workspace"] == "lab"
+
+
+def test_check_refuses_plan_overrides_without_a_host(depot: Path) -> None:
+    with pytest.raises(MissionError, match="pass --on too"):
+        build(depot)(["check", "--env", "serving"])
+
+
+def test_a_shell_here_refuses_what_only_a_hosts_shell_takes(
+    depot: Path, relayed: list[Relayed]
+) -> None:
+    with pytest.raises(MissionError, match="belong to a host's shell"):
+        build(depot)(["shell", "--keep"])
+    assert relayed == []
 
 
 def test_the_mode_flags_refuse_each_other_before_anything_is_probed(
@@ -763,7 +764,7 @@ def test_a_machine_readable_verb_leaves_stdout_to_its_document_alone(
     ("argv", "code", "fragment"),
     [
         (["mainboard", "check"], "0", "lab"),
-        (["mainboard", "plan", "gold", "--env", "ghost"], "1", "declared environments"),
+        (["mainboard", "check", "--on", "gold", "--env", "ghost"], "1", "declared environments"),
     ],
     ids=["a clean verb from a directory below the root", "a refusal printed without a traceback"],
 )
@@ -838,26 +839,6 @@ def test_provide_prints_the_bare_prefix_unless_json_was_asked_for(
         assert json.loads(out) == {"prefix": str(Path("/envs/lab-4f2a"))}
         return
     assert out == f"{shown}\n"
-
-
-@pytest.mark.parametrize("json_mode", [True, False], ids=["the report json", "the compact record"])
-def test_stress_prints_the_whole_report_or_one_row_per_precision_and_link(
-    depot: Path, relayed: Sequence[Relayed], capsys: pytest.CaptureFixture[str], json_mode: bool
-) -> None:
-    """The JSON is what a remote read parses back, so it carries every field; the table rounds
-    and names why a precision was skipped rather than printing its zero bare."""
-    with pytest.raises(SystemExit, match="^0$"):
-        build(depot)(["stress", "--json" if json_mode else "--agent"])
-    out = capsys.readouterr().out
-    if json_mode:
-        report = json.loads(out)
-        assert (report["device"], report["datasheet_fp32_tflops"]) == ("GH200", 66.93)
-        assert [rate["precision"] for rate in report["rates"]] == ["bf16", "fp8"]
-        return
-    assert all(
-        fragment in out
-        for fragment in ("GH200", "66.9", "BF16", "687.3", "no FP8 kernels", "412.1")
-    )
 
 
 # One busy card on this machine, and the first line of why gold could not be read, which is all

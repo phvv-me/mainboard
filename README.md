@@ -136,7 +136,7 @@ fleet-db4af53f
 $ mainboard batch run fleet.toml --only "sweep-*"    # the jobs that are ready, the rest recorded skipped
 fleet-db4af53f
 $ mainboard batch wait fleet-db4af53f             # block until every job settles, exit its verdict
-$ mainboard interact --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
+$ mainboard shell --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
 ```
 
 `prepare` measures compressed changes from the host's workspace mirror, plus
@@ -509,7 +509,4 @@ provider or container configuration. The provider router, `board.on("auto")`,
 scoring hosts by fit,
 price, and time to result across private clusters and commercial GPU clouds,
 is under active development.
-
-`[engines.*]` and `serve` currently stage a declared command in a container on an
-owned host. They reuse `run`'s container command construction. Provider-hosted
-serving and automatic host selection remain under development.
+Automatic host selection remains under development.

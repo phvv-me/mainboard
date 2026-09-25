@@ -34,10 +34,9 @@ from mainboard.engines import Docker
 from mainboard.engines.compile import Provisioner
 from mainboard.engines.compile.prefixes import digest_of
 from mainboard.engines.compile.state import SyncState
-from mainboard.manifest import Container, Engine, Header, Manifest
+from mainboard.manifest import Container, Manifest
 from mainboard.monitor import Monitor
 from mainboard.probe.occupancy import Occupancy
-from mainboard.probe.stress import StressReport
 from mainboard.scaffold import Scaffold
 
 from .dispatch.backends.support import BareBackend
@@ -817,37 +816,6 @@ def test_a_stale_lock_is_refused_before_the_mirror_leaves_for_a_host(
     assert reached == ["onboarding"]
 
 
-_SERVING = Manifest(
-    workspace=Header(name="serving-lab"),
-    containers={"ngc": Container(image="nvcr.io/nvidia/pytorch:25.06-py3")},
-    engines={"vserve": Engine(command="vllm serve --model m", container="ngc")},
-)
-
-
-def test_serve_renders_the_named_engine_through_run(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`serve` is `run` sourced from a declared engine instead of from the terminal."""
-    monkeypatch.setattr(Board, "manifest", property(lambda self: _SERVING))
-    seen: dict[str, str] = {}
-
-    def fake_run(self: Board, command: str, *, env: str = "", container: str = "") -> int:
-        seen.update(command=command, env=env, container=container)
-        return 0
-
-    monkeypatch.setattr(Board, "run", fake_run)
-    assert board.serve("vserve") == 0
-    assert seen == {"command": "vllm serve --model m", "env": "default", "container": "ngc"}
-
-
-def test_serve_refuses_an_undeclared_engine_naming_what_is_declared(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(Board, "manifest", property(lambda self: _SERVING))
-    with pytest.raises(MissionError, match=r"declared engines are \['vserve'\]"):
-        board.serve("ghost")
-
-
 @pytest.mark.parametrize("environment", ["default", "serving"])
 def test_shell_replaces_this_process_with_its_frozen_pixi_shard(
     installed: Board, environment: str
@@ -1507,33 +1475,6 @@ def test_a_board_reads_who_holds_each_card_here_or_off_the_last_line_its_tool_pr
     assert bound.occupancy().hostname == "fake-remote"
     with pytest.raises(MissionError, match="no occupancy in the probe output"):
         bound.occupancy()
-
-
-def test_a_stress_probe_is_read_off_its_own_report_wherever_the_card_is(
-    lab: Lab, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Here through this workspace's tool, on an ssh host through that host's own.
-
-    Whatever the probe printed before its report is not the report, and a probe that printed
-    none is refused rather than read as a card with no rates.
-    """
-    report = StressReport(device="GH200").model_dump_json()
-    monkeypatch.setattr("mainboard.board.localhost", FakeConnection(f"warming up\n{report}"))
-    monkeypatch.setattr(
-        "mainboard.dispatch.shells.connection",
-        lambda host, ssh=None: FakeConnection("the card fell off the bus\n"),
-    )
-    board = Board(lab.root)
-    assert board.stress(n=64, repetitions=1).device == "GH200"
-    with pytest.raises(MissionError, match="no stress report in the probe output"):
-        board.on(_GOLD).stress()
-
-
-def test_a_scheduler_host_is_refused_a_stress_probe_its_login_node_has_no_card_for(
-    board: Board,
-) -> None:
-    with pytest.raises(MissionError, match="scheduler host with no card on its login node"):
-        board.on(_MIYABI_G).stress()
 
 
 @pytest.mark.parametrize(

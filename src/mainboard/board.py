@@ -43,7 +43,6 @@ from .dispatch.onboard import (
     facts_command,
     gpus_command,
     read_facts,
-    stress_command,
 )
 from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
@@ -73,7 +72,6 @@ from .monitor import Monitor
 from .nodes import evidence_of
 from .probe.occupancy import Occupancy
 from .probe.snapshot import HostFacts
-from .probe.stress import StressReport
 from .scaffold import Scaffold
 from .tracking import (
     Sampler,
@@ -521,26 +519,6 @@ class Board:
         if not line:
             raise MissionError(f"no occupancy in the probe output: {text.strip()[-240:]}")
         return Occupancy.model_validate_json(line)
-
-    def stress(self, *, n: int = 8192, repetitions: int = 5) -> StressReport:
-        """One device's measured rates and link bandwidths, local or through the host's tool.
-
-        A remote host answers with its own installed tool, like `facts`; a scheduler host has
-        no card on its login node and is refused with the job to submit instead.
-        """
-        if self.local:
-            probe = shlex.split(stress_command(n=n, repetitions=repetitions))
-            command = localhost[Project().name]["run", "--", *probe]
-            return StressReport.model_validate_json(_report_json(command()))
-        plan = self.plan(container="none")
-        if plan.profile.kind in {"pbs", "slurm"}:
-            raise MissionError(
-                f"{self.host} is a scheduler host with no card on its login node; submit "
-                f"packages/{Project().name}/src/{Project().name}/probe/stress.py::app instead"
-            )
-        with open_shell(plan, self.remote_root()) as shell:
-            text = shell.run(stress_command(n=n, repetitions=repetitions), activate=True)
-        return StressReport.model_validate_json(_report_json(text))
 
     @property
     def floor(self) -> str:
@@ -1256,24 +1234,6 @@ class Board:
         """The project generator, rendering the workspace's own templates through copier."""
         return Scaffold(self)
 
-    def serve(self, name: str) -> int:
-        """Run a declared engine's command through its container, returning its exit code.
-
-        The same staging `run` gives any command, over one this workspace already named:
-        `[engines.<name>]`'s command, inside the container it declares. No image is built here,
-        only the launcher `run` already knows how to build for any container, so the container's
-        own image must already exist.
-
-        name: the `[engines.<name>]` table to serve.
-        """
-        try:
-            engine = self.manifest.engines[name]
-        except KeyError:
-            raise MissionError(
-                f"no engine {name!r}; declared engines are {sorted(self.manifest.engines)}"
-            ) from None
-        return self.run(engine.command, env=engine.env, container=engine.container)
-
     def shell(
         self,
         env: str = "",
@@ -1305,7 +1265,7 @@ class Board:
         if not self.local:
             raise MissionError(
                 f"a shell runs on this machine only. Run "
-                f"`{self.project.name} interact --on {self.host}` for a session there."
+                f"`{self.project.name} shell --on {self.host}` for a session there."
             )
         plan = self.plan(env=env, container="none")
         pixi = Provisioner(self.root, self.manifest).pixi_for(plan.env)
@@ -1541,11 +1501,3 @@ class Board:
         batch_id: the batch to watch.
         """
         return Watch(self, batch_id, bus=self.receipts(batch_id))
-
-
-def _report_json(text: str) -> str:
-    """The report JSON at the end of a probe's captured output, whatever preceded it."""
-    start = text.rfind('{"schema_version"')
-    if start < 0:
-        raise MissionError(f"no stress report in the probe output: {text.strip()[-240:]}")
-    return text[start:]

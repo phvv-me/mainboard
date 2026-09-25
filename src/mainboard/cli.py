@@ -29,7 +29,6 @@ from .listing import Listing
 from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
-from .probe.stress import rows as stress_rows
 from .render import install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
 
@@ -387,73 +386,54 @@ def build(root: Path | None = None) -> App:
         return 1 if any(section.verdict is Verdict.FAIL for section in sections) else 0
 
     @app.command
-    def install(
-        env: str = "", *, on: str = "local", resolve: bool = False, profile: str = ""
-    ) -> None:
-        """Compile the manifest and install the environment, here or on a host.
+    def install(env: str = "", *, resolve: bool = False, profile: str = "") -> None:
+        """Compile the manifest and install the environment on this machine.
 
-        Targeting a host alias runs the whole onboarding there: mirror the workspace, install
-        the tool from that mirror, provision the environment, and probe what the host became.
+        Another machine is onboarded with `setup`, which ends by running this verb there.
 
-        env: the environment name, the target's declared profile choice when omitted.
-        on: the host alias to install on, `local` for this machine.
+        env: the environment name, this machine's declared profile choice when omitted.
         resolve: allow a fresh dependency solve when the lock is stale.
         profile: the declared host profile describing this machine, so the generated activation
-            carries that host's modules; used when a host installs its own environment.
+            carries that host's modules; what `setup` passes when a host installs its own.
         """
-        with progress(f"installing {env} on {on}") as stage:
-            board(on).install(env, resolve=resolve, profile=profile, watch=stage)
-
-    @app.command
-    def shell(env: str = "") -> NoReturn:
-        """Open an interactive shell with this workspace's environment already activated.
-
-        The daily way in, and the one verb that works from a terminal where nothing is
-        activated yet. This process becomes the shell, so quitting it returns to the terminal
-        that asked.
-
-        env: the environment name, the profile's declared choice when omitted.
-        """
-        board("local").shell(env)
-
-    @app.command
-    def serve(name: str, *, on: str = "local") -> int:
-        """Run a declared engine's serve command through its container, exiting with its code.
-
-        Renders the same staged line `run` builds for any command, sourced from
-        `[engines.<name>]` instead of the terminal: its command, inside the container it
-        declares. No image is built here, the container's own image must already exist.
-
-        name: the `[engines.<name>]` table to serve.
-        on: the host alias to serve on, `local` for this machine.
-        """
-        return board(on).serve(name)
+        with progress(f"installing {env or 'the environment'}") as stage:
+            board("local").install(env, resolve=resolve, profile=profile, watch=stage)
 
     @app.command(version_flags=[])
-    def interact(
+    def shell(
         *command: str,
-        on: str,
+        on: str = "local",
         env: str = "",
         queue: str = "",
         walltime: str = "",
         keep: bool = False,
     ) -> NoReturn:
-        """Open an interactive session on a host, inside its mirrored workspace.
+        """Open an interactive shell in this workspace's environment, here or on a host.
 
-        `shell` for a machine that is not this one. This process becomes the ssh, so quitting
-        the session returns to the terminal that asked. A queued host is asked for an
-        interactive allocation first, so the terminal lands on a compute node rather than on the
-        login node the request was made from.
+        The daily way in, and the one verb that works from a terminal where nothing is
+        activated yet. This process becomes the shell, so quitting it returns to the terminal
+        that asked. On a host the shell opens inside its mirrored workspace, and a queued host
+        is asked for an interactive allocation first, so the terminal lands on a compute node
+        rather than on the login node the request was made from.
 
-        command: a command to run instead of handing over the terminal, everything after `--`.
-        on: the host alias the session opens on.
-        env: an environment name overriding the profile's choice.
-        queue: the queue the allocation targets, the profile's declared choice when omitted.
-        walltime: the session's wall-clock limit, the profile's declared choice when omitted.
-        keep: hold the session in tmux on the far side so a dropped terminal leaves the
-            allocation up, and reattach to one already held.
+        command: on a host, a command to run instead of handing over the terminal, everything
+            after `--`.
+        on: the host alias the shell opens on, `local` for this machine.
+        env: the environment name, the profile's declared choice when omitted.
+        queue: on a queued host, the queue the allocation targets, the profile's when omitted.
+        walltime: on a queued host, the session's wall-clock limit, the profile's when omitted.
+        keep: on a host, hold the session in tmux on the far side so a dropped terminal leaves
+            the allocation up, and reattach to one already held.
         """
-        board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
+        if on != "local":
+            board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
+        elif command or queue or walltime or keep:
+            raise MissionError(
+                "a command, a queue, a walltime and --keep belong to a host's shell; run a "
+                f"command here with `{project.name} run -- <command>`"
+            )
+        else:
+            board("local").shell(env)
 
     @app.command
     def setup(
@@ -519,25 +499,6 @@ def build(root: Path | None = None) -> App:
             mode=mode_of(json_mode=json, agent=agent),
             fields=_fields(fields),
             title="sync",
-        )
-
-    @app.command
-    def hosts(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
-        """List the hosts already set up, newest first, from the dispatch state.
-
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over host/root/env/installer/tool/onboarded_at.
-        """
-        payloads = [
-            setup.model_dump(include=set(_HOSTS_COLUMNS))
-            for setup in board("local").dispatcher.cache.hosts()
-        ]
-        rows(
-            payloads,
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="hosts",
         )
 
     @app.command
@@ -844,79 +805,34 @@ def build(root: Path | None = None) -> App:
         rows(listed, mode=mode_of(json_mode=False, agent=agent), fields=(), title="gpus")
 
     @app.command
-    def stress(
-        on: str = "local",
+    def check(
         *,
-        json: bool = False,
-        agent: bool = False,
-        n: int = 8192,
-        repetitions: int = 5,
-    ) -> None:
-        """Measure a card's achieved rates per precision and its copy bandwidths.
-
-        on: the host alias to measure, `local` for this machine.
-        json: print the report JSON instead of the table.
-        agent: print the compact tabular mode instead of the default rich table.
-        n: the square GEMM side timed at every precision (FP64 runs at half).
-        repetitions: timed calls per measurement, whose median is kept.
-        """
-        with progress(f"stressing {on}"):
-            report = board(on).stress(n=n, repetitions=repetitions)
-        if json:
-            print(report.model_dump_json())
-            return
-        record(
-            {
-                "device": report.device,
-                "capability": report.capability,
-                "sm_count": report.sm_count,
-                "datasheet_fp32_tflops": round(report.datasheet_fp32_tflops, 1),
-                "rows": tuple(stress_rows(report)),
-            },
-            mode=mode_of(json_mode=False, agent=agent),
-            fields=(),
-            title="stress",
-        )
-
-    @app.command
-    def plan(
-        host: str = "local",
-        *,
+        on: str = "",
         env: str = "",
         container: str = "",
         json: bool = False,
         agent: bool = False,
         fields: str = "",
     ) -> None:
-        """Show the resolved execution plan for a host.
+        """Validate the workspace manifest, showing what it declares or what a host resolves to.
 
-        host: the host alias, `local` for this machine.
-        env: an environment name overriding the profile's choice.
-        container: a container name overriding the profile's, `none` for bare.
+        on: a host alias, `local` for this machine, to show the execution plan it resolves to
+            instead of the manifest's declarations.
+        env: with `--on`, an environment name overriding the profile's choice.
+        container: with `--on`, a container name overriding the profile's, `none` for bare.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over the plan fields.
+        fields: a comma-separated projection over the declared or planned fields.
         """
         base = workspace_root()
         manifest = load(base / project.manifest)
-        resolved = Resolver(manifest).plan(host, env=env, container=container)
-        record(
-            resolved.model_dump(),
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="plan",
-        )
-
-    @app.command
-    def check(*, json: bool = False, agent: bool = False, fields: str = "") -> None:
-        """Validate the workspace manifest, showing what it declares.
-
-        json: print canonical JSON instead of the default rich table.
-        agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over the declared fields.
-        """
-        base = workspace_root()
-        manifest = load(base / project.manifest)
+        mode = mode_of(json_mode=json, agent=agent)
+        if on:
+            resolved = Resolver(manifest).plan(on, env=env, container=container)
+            record(resolved.model_dump(), mode=mode, fields=_fields(fields), title="plan")
+            return
+        if env or container:
+            raise MissionError("--env and --container override a host's plan; pass --on too")
         payload: dict[str, Node] = {
             "workspace": manifest.workspace.name,
             "environments": tuple(sorted(manifest.envs)),
@@ -924,12 +840,7 @@ def build(root: Path | None = None) -> App:
             "hosts": tuple(sorted(manifest.profiles())),
             "tasks": tuple(sorted(manifest.tasks)),
         }
-        record(
-            payload,
-            mode=mode_of(json_mode=json, agent=agent),
-            fields=_fields(fields),
-            title="check",
-        )
+        record(payload, mode=mode, fields=_fields(fields), title="check")
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
     app.command(batch)
@@ -1277,7 +1188,7 @@ def build(root: Path | None = None) -> App:
             batch_id, timeout=timeout, interval=interval, json=json, agent=agent, fields=fields
         )
 
-    @app.command
+    @app.command(show=False)
     def provide(env: str = "", *, source: str = "", expect: str = "", json: bool = False) -> None:
         """Build the immutable environment a dispatched job activates, and print where it is.
 
@@ -1303,7 +1214,7 @@ def build(root: Path | None = None) -> App:
             return
         record({"prefix": str(built)}, mode="json", fields=(), title="prefix")
 
-    @app.command
+    @app.command(show=False)
     def attest(stream: str, *, job: str = "") -> None:
         """Record what this machine looks like right now into a stream's receipts, once.
 
@@ -1321,7 +1232,7 @@ def build(root: Path | None = None) -> App:
         """
         board("local").attest(stream, job=job or stream)
 
-    @app.command
+    @app.command(show=False)
     def sample(
         stream: str,
         *,
@@ -1526,7 +1437,6 @@ def build(root: Path | None = None) -> App:
 
 # The columns a sweep's change table always carries, so an empty pass still renders its heading.
 _CHANGE_COLUMNS = ("host", "handle", "outcome", "detail")
-_HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
 
 # The columns the job listing always carries, so a cache nobody has dispatched from still renders
 # its heading, and so a settled row's empty live columns line up under the live rows' own.

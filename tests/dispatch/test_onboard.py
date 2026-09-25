@@ -15,7 +15,6 @@ from mainboard.dispatch.onboard import (
     installers,
     read_facts,
     satisfied_by,
-    stress_command,
 )
 from mainboard.dispatch.shells import PosixShell
 from mainboard.dispatch.state import Cache
@@ -493,10 +492,6 @@ def test_sync_only_resolves_the_plan_from_the_capabilities_the_setup_recorded(
 
 
 def test_the_probe_commands_run_the_environments_python_and_the_hosts_own_tool() -> None:
-    """The stress probe needs the environment's framework, which the tool's own install lacks."""
-    assert stress_command(n=4096, repetitions=3) == (
-        "python -m mainboard.probe.stress --n 4096 --repetitions 3"
-    )
     assert gpus_command() == "mainboard gpus --json"
 
 

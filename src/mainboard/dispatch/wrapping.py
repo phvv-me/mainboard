@@ -173,11 +173,14 @@ def missing(plan: ExecutionPlan, prefix: str) -> str:
     prefix: the environment prefix that turned out not to exist.
     """
     tool = Project().name
-    where = "" if plan.host == "local" else f" on {plan.host}"
-    remote = "" if plan.host == "local" else f" --on {plan.host}"
+    if plan.host == "local":
+        return (
+            f"{tool} found no {plan.env} environment at {prefix}. "
+            f"Run `{tool} install {plan.env}` to provision it."
+        )
     return (
-        f"{tool} found no {plan.env} environment at {prefix}{where}. "
-        f"Run `{tool} install {plan.env}{remote}` to provision it."
+        f"{tool} found no {plan.env} environment at {prefix} on {plan.host}. "
+        f"Run `{tool} setup {plan.host} --env {plan.env}` to provision it."
     )
 
 

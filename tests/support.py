@@ -11,7 +11,6 @@ from mainboard.dispatch.dispatcher import Dispatcher
 from mainboard.dispatch.state import MonitorReport
 from mainboard.doctor import Doctor, Section
 from mainboard.monitor import Monitor
-from mainboard.probe.stress import StressReport
 from mainboard.scaffold import Scaffold, Scaffolded
 
 # What a stand-in is handed, what it hands back, and what one recorded call looks like. The
@@ -29,7 +28,6 @@ type Answer = (
     | MonitorReport
     | Scaffolded
     | SimpleNamespace
-    | StressReport
     | list[Change]
     | list[ComputePath]
     | list[Section]

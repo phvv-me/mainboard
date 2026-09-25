@@ -5,7 +5,6 @@ from pydantic import model_validator
 from ...core.errors import MissionError
 from .admission import Admission
 from .container import Container
-from .engine import Engine
 from .environment import Env, Task
 from .figures.figure import FigureSpec
 from .gate import Gate
@@ -33,8 +32,6 @@ class Manifest(Scope):
     `[gates.*]` names the commands `doctor` asks for a verdict, `[templates.*]`
     names the project templates `new` renders, and `[tracking]` names where a
     batch's receipts are mirrored beyond this workspace's own files.
-    `[engines.*]` names a command `serve` stages through one of `[containers.*]`,
-    the manifest side of the containerize seam `run` already builds argv through.
     `[plots.*]` names palette, theme, and output settings for result charts.
     `[admission.<card>]` says how idle a named card must be before a trial measures on it.
 
@@ -51,8 +48,7 @@ class Manifest(Scope):
     # The tables no compile reads, the exact complement of what `PixiManifest.from_manifest`
     # and the second stage translate. `[gates]` is what `doctor` asks, `[templates]` is what
     # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
-    # `[hosts]` are how a job reaches a machine, `[engines]` is what `serve` stages through one
-    # of those containers, `[plots]` is how results are drawn, and `[vars]`
+    # `[hosts]` are how a job reaches a machine, `[plots]` is how results are drawn, and `[vars]`
     # has already been folded into every string that quotes it by the time a manifest
     # validates, so a var a compiled table really uses moves the digest through that table's own
     # rendered value. None of them reaches a generated file, so editing one must not make every
@@ -63,7 +59,6 @@ class Manifest(Scope):
         {
             "admission",
             "containers",
-            "engines",
             "figures",
             "gates",
             "hosts",
@@ -88,7 +83,6 @@ class Manifest(Scope):
     containers: dict[str, Container] = {}
     hosts: dict[str, HostProfile] = {}
     admission: dict[str, Admission] = {}
-    engines: dict[str, Engine] = {}
     plots: dict[str, PlotStyle] = {}
     figures: dict[str, FigureSpec] = {}
 
@@ -123,14 +117,12 @@ class Manifest(Scope):
 
     @model_validator(mode="after")
     def names_resolve(self) -> Manifest:
-        """Reserved env names stay free, and every host or engine names a table that exists."""
+        """Reserved env names stay free, and every host names a table that exists."""
         taken = _RESERVED_ENVS & self.envs.keys()
         if taken:
             raise ValueError(f"reserved environment names declared: {sorted(taken)}")
         for alias, profile in self.profiles().items():
             self._resolves(f"host {alias!r}", profile.container, profile.env)
-        for name, engine in self.engines.items():
-            self._resolves(f"engine {name!r}", engine.container, engine.env)
         return self
 
     def _resolves(self, subject: str, container: str, env: str) -> None:

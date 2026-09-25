@@ -302,15 +302,3 @@ def test_the_jobs_verb_tables_what_it_listed(
         build(depot)(["jobs", *flags])
     out = capsys.readouterr().out
     assert all(fragment in out for fragment in expected)
-
-
-def test_the_hosts_verb_lists_the_recorded_onboardings(
-    depot: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    Cache().save_host(onboarded())
-    with pytest.raises(SystemExit, match="0"):
-        build(depot)(["hosts", "--json"])
-    [payload] = json.loads(capsys.readouterr().out)
-    assert payload["host"] == "gold"
-    assert payload["installer"] == "uv"
-    assert payload["onboarded_at"]

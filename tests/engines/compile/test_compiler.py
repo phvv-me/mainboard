@@ -47,7 +47,6 @@ _EDITS: dict[str, Json] = {
     "templates": {"lib": "templates/lib"},
     "tracking": {"project": "lab", "interval": 30},
     "containers": {"cuda": {"image": "docker://nvidia/cuda"}},
-    "engines": {"vserve": {"command": "true"}},
     "hosts": {"miyabi-g": {"kind": "pbs", "defaults": {"interact-queue": "interact-g"}}},
     "admission": {"NVIDIA GB10": {"holders": "record"}},
     "plots": {"paper": {"palette": "deep", "dpi": 600}},
