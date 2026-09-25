@@ -9,6 +9,7 @@ from .engine import Engine
 from .environment import Env, Task
 from .figures.figure import FigureSpec
 from .gate import Gate
+from .git import GitPolicy
 from .host import HostProfile
 from .plot import PlotStyle
 from .scope import PlatformScope, Scope
@@ -37,6 +38,8 @@ class Manifest(Scope):
     the manifest side of the containerize seam `run` already builds argv through.
     `[plots.*]` names palette, theme, and output settings for result charts.
     `[admission.<card>]` says how idle a named card must be before a trial measures on it.
+    `[git]` says whose repositories in the submodule tree `git` may write, and what never
+    enters a commit.
 
     `[env]` sets a variable to a string and clears one with `false`. Clearing
     is not the same as setting an empty string, which is what the table could
@@ -52,13 +55,14 @@ class Manifest(Scope):
     # and the second stage translate. `[gates]` is what `doctor` asks, `[templates]` is what
     # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
     # `[hosts]` are how a job reaches a machine, `[engines]` is what `serve` stages through one
-    # of those containers, `[plots]` is how results are drawn, and `[vars]`
-    # has already been folded into every string that quotes it by the time a manifest
-    # validates, so a var a compiled table really uses moves the digest through that table's own
-    # rendered value. None of them reaches a generated file, so editing one must not make every
-    # installed environment stale. The classification is proved table by table against the
-    # compiler's own output in `tests/engines/compile/test_compiler.py`, so a table added to
-    # the schema is refused until somebody decides which side of this line it sits on.
+    # of those containers, `[plots]` is how results are drawn, `[git]` is how the repository
+    # tree is committed and pushed, and `[vars]` has already been folded into every string that
+    # quotes it by the time a manifest validates, so a var a compiled table really uses moves
+    # the digest through that table's own rendered value. None of them reaches a generated
+    # file, so editing one must not make every installed environment stale. The classification
+    # is proved table by table against the compiler's own output in
+    # `tests/engines/compile/test_compiler.py`, so a table added to the schema is refused until
+    # somebody decides which side of this line it sits on.
     uncompiled: ClassVar[frozenset[str]] = frozenset(
         {
             "admission",
@@ -66,6 +70,7 @@ class Manifest(Scope):
             "engines",
             "figures",
             "gates",
+            "git",
             "hosts",
             "plots",
             "templates",
@@ -91,6 +96,7 @@ class Manifest(Scope):
     engines: dict[str, Engine] = {}
     plots: dict[str, PlotStyle] = {}
     figures: dict[str, FigureSpec] = {}
+    git: GitPolicy = GitPolicy()
 
     @model_validator(mode="after")
     def env_values_set_or_clear(self) -> Manifest:
