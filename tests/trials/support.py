@@ -14,6 +14,7 @@ from mainboard.trials import (
     Vocabulary,
     Word,
 )
+from mainboard.trials.provenance import Source, card_of
 
 # The provenance a hermetic run stamps, standing in for a probe of real silicon so a receipt
 # written under test carries the same shape on any machine that runs the suite.
@@ -43,6 +44,7 @@ class Taken:
 
     stamped: the provenance every receipt of the run carries, the fixed probe when omitted.
     admissibility: what this tree is worth, admissible unless a test is about the other answer.
+    source: the captured source bundle, none when omitted, which a research log refuses.
     """
 
     def __init__(
@@ -53,11 +55,15 @@ class Taken:
         probed: Sequence[str] = (),
         stamped: Mapping[str, JsonValue] | None = None,
         admissibility: Admissibility = Admissibility.ADMISSIBLE,
+        source: Source | None = None,
     ) -> None:
         self.root = root
         self.repo = repo
         self.stamped = dict(stamped or PROBED)
         self.admissibility = admissibility
+        self.source = source or Source(digest="", closure="", root=repo)
+        self.versions: dict[str, JsonValue] = {"polars": "1.0"}
+        self.card = card_of(Machine((Card(),)))
 
     @property
     def stamp(self) -> dict[str, JsonValue]:

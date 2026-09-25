@@ -87,12 +87,9 @@ class Artifacts:
                     continue
                 reference = Artifact.model_validate(value)
                 relative = reference.relative
-                root = next(
-                    (root for root in roots if (root / relative).is_relative_to(directory)),
-                    None,
-                )
-                if root is None:
-                    raise ValueError(f"artifact is outside the declared fetch: {relative}")
+                # The fetch directory is always a root and a validated reference never climbs
+                # out of it, so some root always matches; the outermost one is the project.
+                root = next(root for root in roots if (root / relative).is_relative_to(directory))
                 if not (root / relative).resolve().is_relative_to(directory.resolve()):
                     raise ValueError(f"artifact link leaves the declared fetch: {relative}")
                 reference.read(root)

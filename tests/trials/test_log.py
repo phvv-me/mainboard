@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 
@@ -11,10 +12,10 @@ import pytest
 from mainboard import span
 from mainboard.profile import Feature, Profile
 from mainboard.profile.profiler import Collection
-from mainboard.trials import Artifact, Declaration, Log, Session
+from mainboard.trials import Artifact, Declaration, Log, Session, digested
 from mainboard.trials.artifacts import Artifacts
 
-from .support import Item
+from .support import Item, declaration
 
 
 @pytest.mark.parametrize("fault", ["missing", "changed", "escape", "other-project"])
@@ -35,6 +36,23 @@ def test_fetched_artifacts_require_the_declared_bytes_inside_the_selected_projec
         directory = tmp_path / "research/two/datasets/node"
     line = json.dumps({"trial_receipt": {"artifacts": {"value": reference.model_dump()}}})
     with pytest.raises((ValueError, OSError)):
+        Artifacts.verify([line], directory=directory, boundary=tmp_path)
+
+
+def test_fetched_artifacts_skip_plain_entries_and_refuse_a_link_out_of_the_fetch(
+    tmp_path: Path,
+) -> None:
+    """A path that names bytes inside the fetch is not enough when a link carries it elsewhere."""
+    directory = tmp_path / "datasets/node"
+    directory.mkdir(parents=True)
+    (tmp_path / "secret").write_bytes(b"data")
+    (directory / "escape").symlink_to(tmp_path / "secret")
+    reference = Artifact(
+        path="datasets/node/escape", sha256=hashlib.sha256(b"data").hexdigest(), size=4
+    )
+    artifacts = {"events": "datasets/node/events", "value": reference.model_dump()}
+    line = json.dumps({"trial_receipt": {"artifacts": artifacts}})
+    with pytest.raises(ValueError, match="link leaves the declared fetch"):
         Artifacts.verify([line], directory=directory, boundary=tmp_path)
 
 
@@ -78,6 +96,93 @@ def test_tables_are_parquet_and_refs_reject_changed_or_escaping_inputs(
     log.close(passed=False)
 
 
+def test_log_reads_its_gate_through_the_trial_and_refuses_words_nobody_declared(
+    session: Session, tmp_path: Path
+) -> None:
+    """The facade is not a second outcome system, so it settles only the workspace's own words."""
+    log = Log(session.trial(Item("alpha/t.py::gate", tmp_path / "alpha/t.py")))
+    registration = {"law_low": 0.9}
+    assert log.gate(registration) is registration
+    assert log.trial.gated == digested(registration)
+    with pytest.raises(AttributeError, match="proved"):
+        log.proved("a word this workspace never declared")
+    with pytest.raises(ValueError, match="undeclared verdict"):
+        log.settle("proved")
+    assert not log.trial.settled
+    log.close(passed=False)
+
+
+def test_a_research_log_carries_its_claim_run_manifest_and_names_its_project(
+    research: Path, tmp_path: Path
+) -> None:
+    session = Session(declaration(research, repo=tmp_path))
+    log = Log(session.trial(Item("alpha/test_law.py::holds", research / "alpha/test_law.py")))
+    assert log.trial.artifacts["run"] == session.manifests["alpha"].model_dump(mode="json")
+    assert log.context["project"] == tmp_path.name
+    log.close(passed=True)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "media_type"),
+    [(".PNG", "image/png"), (".jpeg", "image/jpeg"), (".svg", "image/svg+xml")],
+)
+def test_an_image_is_typed_by_its_suffix_and_named_when_left_unnamed(
+    session: Session, tmp_path: Path, suffix: str, media_type: str
+) -> None:
+    rendered = tmp_path / f"figure{suffix}"
+    rendered.write_bytes(b"rendered")
+    log = Log(session.trial(Item("alpha/t.py::image", tmp_path / "alpha/t.py")))
+    reference = log.image(rendered)
+    assert reference.media_type == media_type
+    assert reference.read(tmp_path) == b"rendered"
+    assert log.trial.artifacts["image-1"] == reference.model_dump()
+    log.close(passed=True)
+
+
+def test_tables_gather_each_verified_parquet_artifact_beside_the_receipt_it_came_from(
+    session: Session, tmp_path: Path
+) -> None:
+    """Every producer's rows come back together, each carrying the provenance of its receipt."""
+    store = session.declared.universe.dataset("alpha")
+    assert store.tables(tmp_path, schema_name="test.ratio.v1").is_empty()
+    store.writer("run-0", {"node": "alpha"}).write({"lane": "old", "outcome": "passed"})
+    log = Log(session.trial(Item("alpha/t.py::tables", tmp_path / "alpha/t.py")))
+    log.table([{"ratio": 1.5}], name="ratios", schema_name="test.ratio.v1")
+    log.table([{"other": 1}], schema_name="test.other.v1")
+    log.validated("the law held", ratio=1.5)
+    log.close(passed=True)
+
+    frame = store.tables(tmp_path, schema_name="test.ratio.v1")
+    assert frame["ratio"].to_list() == [1.5]
+    provenance = json.loads(frame["_trial"][0])
+    assert provenance["artifact_name"] == "ratios" and provenance["run"] == session.run
+    assert "measured" not in provenance and "artifacts" not in provenance
+    assert store.tables(tmp_path, schema_name="test.ratio.v1", run="run-0").is_empty()
+
+
+@pytest.mark.parametrize(
+    ("attach", "refusal"),
+    [
+        (lambda log: log.artifact(b"rows", schema_name="test.rows.v1"), "non-Parquet"),
+        (
+            lambda log: log.table(pl.DataFrame({"_trial": [0]}), schema_name="test.rows.v1"),
+            "reserved _trial",
+        ),
+    ],
+    ids=["bytes", "forged-provenance"],
+)
+def test_tables_refuse_an_artifact_that_is_not_a_plain_parquet_table(
+    session: Session, tmp_path: Path, attach: Callable[[Log], Artifact], refusal: str
+) -> None:
+    log = Log(session.trial(Item("alpha/t.py::tables", tmp_path / "alpha/t.py")))
+    attach(log)
+    log.validated("the law held")
+    log.close(passed=True)
+    store = session.declared.universe.dataset("alpha")
+    with pytest.raises(ValueError, match=refusal):
+        store.tables(tmp_path, schema_name="test.rows.v1")
+
+
 def test_declared_inputs_are_hash_checked_and_recorded(
     declared: Declaration, probed: None, tmp_path: Path
 ) -> None:
@@ -86,12 +191,23 @@ def test_declared_inputs_are_hash_checked_and_recorded(
     pinned = Artifact(
         path="input.bin", sha256=hashlib.sha256(content).hexdigest(), size=len(content)
     )
-    session = Session(declared.model_copy(update={"inputs": {"predecessor": pinned}}))
+    table = BytesIO()
+    pl.DataFrame({"ratio": [1.5]}).write_parquet(table)
+    (tmp_path / "ratios.parquet").write_bytes(table.getvalue())
+    ratios = Artifact(
+        path="ratios.parquet",
+        sha256=hashlib.sha256(table.getvalue()).hexdigest(),
+        size=len(table.getvalue()),
+        media_type="application/vnd.apache.parquet",
+    )
+    inputs = {"predecessor": pinned, "ratios": ratios}
+    session = Session(declared.model_copy(update={"inputs": inputs}))
     log = Log(session.trial(Item("alpha/t.py::read", tmp_path / "alpha/t.py")))
     assert log.read("predecessor") == content
     with pytest.raises(KeyError):
         log.read("latest")
     assert log.spool.frames_from(0)[-1].payload["data"]["sha256"] == pinned.sha256
+    assert log.read_table("ratios").to_dicts() == [{"ratio": 1.5}]
     log.close(passed=True)
 
 

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from mainboard.dispatch.provenance import Row, Status, blob_of, listing
 from mainboard.trials import (
     OPENED,
     Admissibility,
@@ -21,7 +20,6 @@ from mainboard.trials import (
 )
 from mainboard.trials import lease as lease_module
 from mainboard.trials import session as session_module
-from mainboard.trials.provenance import Source
 from mainboard.trials.session import WORD, lane_of, params_of
 
 from .support import PROBED, Item, Taken, cell, declaration
@@ -29,24 +27,42 @@ from .test_declaring import knob
 
 
 def test_runtime_manifest_still_refuses_registration_changed_after_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probed: None
+    research: Path,
 ) -> None:
-    root = tmp_path / "experiments"
-    node = root / "alpha/node.md"
-    node.parent.mkdir(parents=True)
-    node.write_text("committed registration\n")
-    monkeypatch.chdir(tmp_path)
-    closure = tmp_path / "closure.tsv"
-    closure.write_text(
-        listing([Row(path="experiments/alpha/node.md", blob=blob_of(node), status=Status.CLEAN)])
-    )
-    source = Source(digest="a" * 64, closure=str(closure), root=tmp_path)
-    monkeypatch.setattr(Taken, "source", property(lambda self: source), raising=False)
-    session = Session(declaration(root))
-    node.write_text("changed after dispatch\n")
+    session = Session(declaration(research))
+    (research / "alpha/node.md").write_text("changed after dispatch\n")
     with pytest.raises(RuntimeError, match="changed after Mainboard prepared"):
-        session.manifest(node.parent / "test_law.py")
+        session.manifest(research / "alpha/test_law.py")
     assert not session.manifests
+
+
+def test_a_research_run_refuses_to_log_without_a_captured_source_bundle(
+    tmp_path: Path, probed: None
+) -> None:
+    """A manifest names the bytes that ran, so a run that captured none has nothing to name."""
+    root = tmp_path / "experiments"
+    (root / "alpha").mkdir(parents=True)
+    session = Session(declaration(root, repo=tmp_path))
+    with pytest.raises(RuntimeError, match="captured Mainboard source bundle"):
+        session.manifest(root / "alpha/test_law.py")
+
+
+def test_a_research_run_writes_one_manifest_per_claim_from_its_captured_source(
+    research: Path, tmp_path: Path
+) -> None:
+    """Every lane of a claim shares the manifest its first lane wrote, rather than one each."""
+    session = Session(declaration(research, repo=tmp_path))
+    written = session.manifest(research / "alpha/test_law.py")
+    assert written is not None
+    assert session.manifest(research / "alpha/test_other.py") is written
+    assert written.schema_name == "mainboard.run.v1"
+    manifest = json.loads(written.read(tmp_path))
+    assert manifest["run"] == session.run and manifest["opened_at_ns"] == session.opened
+    assert manifest["registration"] == "experiments/alpha/node.md"
+    assert [row["path"] for row in manifest["files"]] == ["experiments/alpha/node.md"]
+    assert "closure" not in manifest["source"] and manifest["source"]["digest"] == "a" * 64
+    assert manifest["hardware"]["id"] == "GPU-1111"
+    assert manifest["environment"] == {"polars": "1.0"}
 
 
 def test_a_run_derives_every_field_a_lane_would_otherwise_have_to_retype(

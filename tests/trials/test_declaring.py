@@ -209,6 +209,7 @@ def test_nested_trial_projects_verify_the_dispatch_workspace(
     taken = Preflight(experiments, project, machine=Machine())
     assert taken.source.root == tmp_path.resolve()
     assert taken.digest == captured.digest
+    assert taken.admissibility is Admissibility.ADMISSIBLE
     assert taken.admits(lane) is Admissibility.ADMISSIBLE
     with pytest.raises(RuntimeError, match="outside the captured"):
         source(tmp_path.parent)

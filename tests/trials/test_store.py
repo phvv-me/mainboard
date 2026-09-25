@@ -421,6 +421,25 @@ def test_a_universe_finds_a_claim_off_the_file_tree_and_answers_flat_as_one_stor
     assert flat.nodes == ("",)
 
 
+@pytest.mark.parametrize(
+    ("root", "datasets", "storage"),
+    [
+        ("experiments", None, "datasets/experiments"),
+        ("experiments", "mounted", "mounted"),
+        ("claims", None, "claims"),
+    ],
+)
+def test_a_universe_stores_evidence_where_declared_or_beside_an_experiments_tree(
+    tmp_path: Path, root: str, datasets: str | None, storage: str
+) -> None:
+    """Receipts of an `experiments` tree live in its `datasets` sibling unless a mount is named."""
+    universe = Universe(
+        root=tmp_path / root, datasets=tmp_path / datasets if datasets is not None else None
+    )
+    assert universe.storage_root == tmp_path / storage
+    assert universe.dataset("alpha").root == tmp_path / storage / "alpha/evidence/receipts"
+
+
 def test_a_receipts_store_is_scored_one_run_at_a_time_rather_than_as_one_flat_stream(
     board: Board, tmp_path: Path
 ) -> None:

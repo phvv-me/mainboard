@@ -157,6 +157,17 @@ def test_second(trial, stage, run):
 """
 
 
+LOGGED = """
+import pytest
+
+
+@pytest.mark.parametrize("model", ["qwen", "llama"])
+def test_law_cancels(log, model):
+    log.info("measuring {}", model)
+    log.validated("the residue vanished", residue=0.0)
+"""
+
+
 HUNT = """
 import pytest
 
@@ -407,6 +418,28 @@ def test_a_trial_that_measured_nothing_fails_and_still_leaves_a_row(
     assert set(rows) == {"test_settles_nothing", "test_breaks"}
     assert all(row["outcome"] == "failed" for row in rows.values())
     assert all(not row["verdict"] for row in rows.values())
+
+
+def test_a_logged_lane_settles_through_its_trial_and_the_run_prints_what_the_lints_found(
+    universe: pytest.Pytester,
+) -> None:
+    """A residue that is 0.0 on every row moved nothing, and the summary names the lane to open.
+
+    Printed rather than fatal, since the exit code is about the instrument and a gate that could
+    not have failed is a finding a person acts on.
+    """
+    universe.makepyfile(**{"alpha/test_logged": LOGGED})
+    run = ran(universe, "alpha/test_logged.py")
+    assert run.ret == 0
+    run.stdout.fnmatch_lines(
+        [
+            "*trials lints, 1 finding(s)*",
+            "*alpha/test_logged.py::test_law_cancels [[]identity[]] `residue` is 0.0*",
+        ]
+    )
+    rows = store(universe).rows()
+    assert {str(row["verdict"]) for row in rows} == {"validated"}
+    assert all("events" in row["artifacts"] for row in rows)
 
 
 def test_a_claim_holds_its_measure_once_work_and_the_run_names_itself(
