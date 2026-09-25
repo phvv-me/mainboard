@@ -13,10 +13,9 @@ from contextvars import ContextVar
 from types import CodeType, FunctionType, ModuleType, TracebackType
 from typing import TypeAlias
 
-# The one place profiling reaches the probe package: a session that wants device evidence
-# and was handed no device finds the host's own. `probe.units.gpu` is the narrowest entry
-# (it imports nothing from here, and `GPU.all` loads the vendor providers itself), so the
-# `probe.gating` -> `profile.bottleneck` direction cannot close into a cycle.
+# The one place profiling reaches the probe package, to discover the host's devices. The narrow
+# `probe.units.gpu` imports nothing from here, so `probe.gating` -> `profile.bottleneck` cannot
+# close into a cycle.
 from ..probe.units.gpu import GPU
 from . import annotate
 from .models import ProcessReading, RegionStat, RegionSummary
@@ -39,14 +38,11 @@ logger = logging.getLogger(__name__)
 class Profiler:
     """Collect selected evidence through one bounded profiling session.
 
-    `span` annotations stay dormant until this context is active. `features` controls
-    what may be collected while the resulting `Profile` contains only evidence that
-    was actually observed.
+    `span` annotations stay dormant until this context is active. `features` controls what may
+    be collected; the resulting `Profile` holds only evidence actually observed.
     """
 
-    # `TypeAlias`, not PEP 695 `type` (ruff's suggestion), since a `type` statement wraps
-    # `Feature` in a `TypeAliasType` that does not forward attribute access, breaking
-    # `Profiler.Feature.SPANS` at runtime.
+    # Not a PEP 695 `type`, whose `TypeAliasType` would not forward `Profiler.Feature.SPANS`.
     Feature: TypeAlias = Feature  # noqa: UP040  reason=type statement would not forward attribute access since=2026-08-16
     Activity = NativeActivity
 
@@ -61,8 +57,6 @@ class Profiler:
         max_spans: int = 100_000,
         auto: Sequence[str] = (),
     ) -> None:
-        # A flat façade over the model, the way the CLI is a flat façade over the collection
-        # policy: loose keywords for a one-liner caller, one object for a study to pass around.
         self.collection = Collection(
             features=features,
             activities=activities,
@@ -94,9 +88,7 @@ class Profiler:
             raise RuntimeError("a Profiler instance cannot be entered twice")
         wanted = self.collection.features
         if wanted & (self.Feature.DEVICE | self.Feature.ACTIVITY):
-            # Correct behaviour is not an opt-in and a tool does not re-ask for what it already
-            # holds, so a session that wants device evidence and was handed no probe discovers
-            # the host's own cards rather than collecting nothing.
+            # Handed no probe, discover the host's own cards rather than collecting nothing.
             self.gpus = self.gpus or GPU.all()
             self.gpu = self._selected()
         if self.gpu is None and self._demands_activity():
@@ -156,11 +148,10 @@ class Profiler:
     ) -> tuple[Answer, Profile]:
         """Run once inside a synchronized, single-context native activity window.
 
-        Reuse the active activity owner or open one. Nested windows are views of
-        its records, never new subscribers or additions to its physical totals.
-        All CUDA streams in the caller's current context are synchronized.
-        This API requires serialized CUDA issuing from one host thread; it does
-        not claim attribution of unrelated concurrent CUDA work.
+        Reuses the active activity owner or opens one; nested windows are views of its records,
+        never new subscribers or additions to its physical totals. All CUDA streams in the
+        current context are synchronized, and CUDA must be issued serially from one host
+        thread: unrelated concurrent CUDA work is not attributed.
         """
         if not activities or activities & ~NativeActivity.DEFAULT:
             raise ValueError("synchronized windows currently support kernels and memory copies")
@@ -199,10 +190,8 @@ class Profiler:
             raise RuntimeError(f"native activity window lost {loss_after - loss_before} records")
         kernels = tuple(self.collector.kernels(since=since, until=until))
         memcpys = tuple(self.collector.memcpys(since=since, until=until))
-        if not activities & NativeActivity.KERNEL:
-            kernels = ()
-        if not activities & NativeActivity.MEMCPY:
-            memcpys = ()
+        kernels = kernels if activities & NativeActivity.KERNEL else ()
+        memcpys = memcpys if activities & NativeActivity.MEMCPY else ()
         observed = bool(kernels or memcpys)
         name = getattr(work, "__qualname__", type(work).__qualname__)
         return answer, Profile(
@@ -230,32 +219,27 @@ class Profiler:
     @staticmethod
     def owned_codes(module: ModuleType) -> tuple[CodeType, ...]:
         """Return function code owned by one module, including its class methods."""
-        functions = (
+        owned = [
             value
             for value in vars(module).values()
-            if isinstance(value, FunctionType) and value.__module__ == module.__name__
-        )
-        classes = (
-            value
-            for value in vars(module).values()
-            if isinstance(value, type) and value.__module__ == module.__name__
-        )
-        methods = (
+            if isinstance(value, FunctionType | type) and value.__module__ == module.__name__
+        ]
+        functions = [value for value in owned if isinstance(value, FunctionType)]
+        methods = [
             member
-            for cls in classes
+            for cls in owned
+            if isinstance(cls, type)
             for member in vars(cls).values()
             if isinstance(member, FunctionType)
-        )
+        ]
         return tuple(function.__code__ for function in (*functions, *methods))
 
     @classmethod
     def under(cls, collection: Collection, *, gpus: Sequence[DeviceProbe] = ()) -> Profiler:
-        """Build a profiler from one collection policy.
+        """Build a profiler from one collection policy, for a caller that holds one already.
 
-        The constructor takes the six collection choices flat because that is what a caller
-        writing one line wants. Anything holding a policy already, a study most of all, should
-        hand over the value rather than unpack it into six arguments and risk unpacking it
-        differently next time.
+        The constructor takes the choices flat for a one-line caller; a study hands the value
+        over rather than risk unpacking it differently next time.
         """
         return cls(
             gpus=gpus,
@@ -277,11 +261,9 @@ class Profiler:
         return self.result().bottlenecks(top)
 
     def _demands_activity(self) -> bool:
-        """Whether this session asked for GPU activity specifically rather than by default.
+        """Whether this session named ACTIVITY, which a GPU-less host cannot serve.
 
-        Under `DEFAULT` the caller asked for everything worth having and a host without a
-        GPU should still profile its Python; asking for `ACTIVITY` by name on such a host
-        is a request that cannot be served, and serving it silently is the bug.
+        Under DEFAULT such a host should still profile its Python.
         """
         wanted = self.collection.features
         return bool(wanted & self.Feature.ACTIVITY) and wanted != self.Feature.DEFAULT
@@ -350,11 +332,6 @@ class Profiler:
                     wall_ns=wall_ns,
                 )
             )
-
-    @staticmethod
-    def _skipped_snapshot() -> None:
-        """Log one failed device snapshot as a warning and stand for its absent reading."""
-        logger.warning("device sampler skipped a failed snapshot", exc_info=True)
 
     def report(self) -> str:
         """Render the current result as plain text."""
@@ -430,7 +407,8 @@ class Profiler:
         try:
             raw = gpu.snapshot(name=name)
         except OSError, RuntimeError:
-            return self._skipped_snapshot()
+            logger.warning("device sampler skipped a failed snapshot", exc_info=True)
+            return None
         process = next((item for item in raw.processes if item.pid == os.getpid()), None)
         if process is None:
             return None

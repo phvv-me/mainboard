@@ -8,12 +8,7 @@ from mainboard.profile.providers import apple_tracer
 def test_the_signpost_backend_pairs_intervals_and_needs_darwin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Push and pop keep a (name, token) stack, and `start` closes the interval it opened.
-
-    Popping an empty stack is ignored, and the backend is unavailable both without the
-    `os_signpost` package and on any platform other than Darwin, since Instruments is the
-    only thing that reads these signposts.
-    """
+    """An empty pop is ignored, and the backend needs both `os_signpost` and Darwin."""
     calls: list[tuple[str, str]] = []
 
     class FakeSignposter:

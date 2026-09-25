@@ -25,9 +25,8 @@ class ReturnedValue(Protocol):
 def tracer(*, present: frozenset[str] = frozenset()) -> Tracer:
     """Detect and cache the native annotation and activity backend.
 
-    present: hardware vendors actually on this host (`DeviceProbe.vendor` values), read
-        once by the first caller; only that first call's `present` decides the cached
-        backend, since detection then never repeats for the life of the process.
+    present: vendors on this host (`DeviceProbe.vendor` values). Only the first call's value
+        counts, since detection never repeats for the life of the process.
     """
     global _tracer
     if _tracer is None:
@@ -76,10 +75,7 @@ def on_unwind(code: CodeType, offset: int, exc: BaseException) -> None:
 
 
 def enable_auto(codes: Iterable[CodeType]) -> None:
-    """Enable PEP 669 events only on explicit code objects.
-
-    Local events avoid a Python predicate callback on every function in the process.
-    """
+    """Enable PEP 669 events only on `codes`, sparing every other function a callback."""
     global _codes
     _codes = tuple(dict.fromkeys(codes))
     monitor = sys.monitoring

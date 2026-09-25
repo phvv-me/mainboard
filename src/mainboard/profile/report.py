@@ -1,21 +1,18 @@
 # One-call bottleneck reporting: run a callable, say where the GPU time went.
 
-from collections import defaultdict
 from collections.abc import Sequence
 from enum import Enum
 
 from patos import FrozenModel
 
 from .result import DeviceEvidence, Profile
-from .trace import Activity, KernelTrace, MemcpyTrace, busy_ns
+from .trace import Activity, BottleneckReport, HotKernel, KernelTrace
 
 
 class Bound(Enum):
     """Whether the dominant work is limited by memory traffic or compute throughput.
 
-    ``MEMORY`` when copies dominate the GPU time or the memory controller is the busier
-    unit; ``COMPUTE`` when kernel math dominates; ``UNKNOWN`` when there was nothing to
-    classify (no kernels, no copies, no utilization signal).
+    UNKNOWN when there was nothing to classify: no kernels, no copies, no utilization signal.
     """
 
     MEMORY = "memory"
@@ -26,11 +23,9 @@ class Bound(Enum):
 class KernelStat(FrozenModel):
     """One kernel name's aggregate over the run: its share and representative shape.
 
-    The shape fields come from the last-seen launch of this name (kernels of one name
-    share a launch config), so the report can show occupancy/registers/shared without a
-    per-call row explosion. ``occupancy_pct`` is a launch-shape proxy: threads-per-block
-    over the hardware max (1024), since the base CUPTI activity record carries the launch
-    config but not achieved occupancy.
+    The shape fields come from the last-seen launch of the name, since launches of one name
+    share a config. occupancy_pct: threads per block over the hardware max of 1024, a proxy,
+    since the CUPTI activity record carries the launch config but not achieved occupancy.
     """
 
     name: str
@@ -51,17 +46,16 @@ class ProfileReport(FrozenModel):
     """Structured bottleneck verdict for one profiled callable.
 
     dominant_kernel/dominant_share_pct: the hottest kernel and its slice of kernel time.
-    bound: the memory-vs-compute verdict (:class:`Bound`). total_kernel_ns/total_memcpy_ns:
-    summed WORK time per class, one entry per traced record, which counts concurrent and nested
-    device work once each rather than once. device_busy_ns: the CLOCK time the device spent on
-    either, the union of both interval sets, and the only one of the three a share against a wall
-    time may divide. achieved_bandwidth_gbps/peak_bandwidth_gbps: copy bandwidth
-    measured against the device peak (the memory-bound signal). peak_memory_bytes/
-    avg_memory_bytes: the device-memory high-water mark and mean over the sampled run — the
-    answer to "how much HBM did this kernel need". kernels: the per-kernel breakdown,
-    hottest first. unavailable: activity-kind labels the device could not trace.
-    device_evidence: whether device evidence was asked for and came back, so an empty
-    verdict never reads like a real one.
+    total_kernel_ns/total_memcpy_ns/device_busy_ns: summed WORK time per class and the CLOCK
+        time busy with either, as on `BottleneckReport`.
+    achieved_bandwidth_gbps/peak_bandwidth_gbps: copy bandwidth against the device peak, the
+        memory-bound signal.
+    peak_memory_bytes/avg_memory_bytes: the sampled device-memory high-water mark and mean,
+        how much HBM the work needed.
+    kernels: the per-kernel breakdown, hottest first.
+    unavailable: activity-kind labels the device could not trace.
+    device_evidence: whether device evidence was asked for and came back, so an empty verdict
+        never reads like a real one.
     """
 
     device: str = ""
@@ -98,20 +92,19 @@ class ProfileReport(FrozenModel):
         supported: int | None = None,
         requested: int | None = None,
     ) -> ProfileReport:
-        """Distill a :class:`Profile` into a bottleneck verdict.
+        """Distill a `Profile` into a bottleneck verdict.
 
-        peak_bandwidth_gbps: device peak, to score copy bandwidth (0 disables the score).
-        supported/requested: the :class:`Activity` kinds the device offered and the run
-        asked for; their difference becomes ``unavailable`` so a partial trace is visible.
+        peak_bandwidth_gbps: device peak to score copy bandwidth against, 0 disables the score.
+        supported/requested: the `Activity` values the device offered and the run asked for;
+            their difference becomes `unavailable`, so a partial trace is visible.
         """
-        kernels = cls._kernels(profile.kernels)
-        total_kernel = sum(k.duration_ns for k in profile.kernels)
-        total_memcpy = sum(m.duration_ns for m in profile.memcpys)
-        memcpy_bytes = sum(m.bytes_moved for m in profile.memcpys)
-        achieved = cls._copy_bandwidth_gbps(profile.memcpys)
-        denom = total_kernel + total_memcpy or 1
+        split = BottleneckReport.from_traces(
+            (), profile.kernels, profile.memcpys, top=len(profile.kernels)
+        )
+        kernels = cls._kernels(profile.kernels, split.hot_kernels)
         mem_util, gpu_util = cls._utilization(profile)
         peak_memory, avg_memory = cls._memory(profile)
+        copy_ns = split.total_memcpy_ns
         return cls(
             device=profile.device,
             device_evidence=profile.device_evidence,
@@ -119,23 +112,19 @@ class ProfileReport(FrozenModel):
             dominant_kernel=kernels[0].name if kernels else "",
             dominant_share_pct=kernels[0].share_pct if kernels else 0.0,
             bound=cls._classify(
-                kernel_ns=total_kernel,
-                memcpy_ns=total_memcpy,
+                kernel_ns=split.total_kernel_ns,
+                memcpy_ns=copy_ns,
                 mem_util=mem_util,
                 gpu_util=gpu_util,
             ),
-            total_kernel_ns=total_kernel,
-            total_memcpy_ns=total_memcpy,
-            total_memcpy_bytes=memcpy_bytes,
-            device_busy_ns=busy_ns(
-                [
-                    *((span.start_ns, span.end_ns) for span in profile.kernels),
-                    *((span.start_ns, span.end_ns) for span in profile.memcpys),
-                ]
-            ),
-            compute_pct=100.0 * total_kernel / denom,
-            memcpy_pct=100.0 * total_memcpy / denom,
-            achieved_bandwidth_gbps=achieved,
+            total_kernel_ns=split.total_kernel_ns,
+            total_memcpy_ns=copy_ns,
+            total_memcpy_bytes=split.total_memcpy_bytes,
+            device_busy_ns=split.device_busy_ns,
+            compute_pct=split.compute_pct,
+            memcpy_pct=split.memcpy_pct,
+            # Bytes per nanosecond equals GB/s.
+            achieved_bandwidth_gbps=split.total_memcpy_bytes / copy_ns if copy_ns > 0 else 0.0,
             peak_bandwidth_gbps=peak_bandwidth_gbps,
             peak_memory_bytes=peak_memory,
             avg_memory_bytes=avg_memory,
@@ -163,12 +152,7 @@ class ProfileReport(FrozenModel):
 
     @staticmethod
     def _classify(*, kernel_ns: int, memcpy_ns: int, mem_util: float, gpu_util: float) -> Bound:
-        """Memory- vs compute-bound from the copy/compute time split and util signal.
-
-        Copies dominating the GPU time, or the memory controller out-busying the SMs, says
-        memory-bound; the reverse says compute-bound. With neither time nor a util signal
-        there is nothing to judge, so the verdict is ``UNKNOWN``.
-        """
+        """Memory- or compute-bound by the copy/kernel time split, else by utilization."""
         if kernel_ns or memcpy_ns:
             return Bound.MEMORY if memcpy_ns >= kernel_ns else Bound.COMPUTE
         if mem_util or gpu_util:
@@ -176,53 +160,35 @@ class ProfileReport(FrozenModel):
         return Bound.UNKNOWN
 
     @staticmethod
-    def _copy_bandwidth_gbps(memcpys: Sequence[MemcpyTrace]) -> float:
-        """Achieved copy bandwidth: total bytes over total copy time (GB/s), 0 if no copy."""
-        nanos = sum(m.duration_ns for m in memcpys)
-        if nanos <= 0:
-            return 0.0
-        return sum(m.bytes_moved for m in memcpys) / nanos  # bytes per nanosecond equals GB/s
-
-    @staticmethod
-    def _kernels(kernels: Sequence[KernelTrace]) -> tuple[KernelStat, ...]:
-        """Collapse kernel traces into per-name stats, hottest total time first."""
-        order: list[str] = []
-        shape: dict[str, KernelTrace] = {}
-        counts: defaultdict[str, int] = defaultdict(int)
-        nanos: defaultdict[str, int] = defaultdict(int)
-        for kernel in kernels:
-            if kernel.name not in shape:
-                order.append(kernel.name)
-            shape[kernel.name] = kernel
-            counts[kernel.name] += 1
-            nanos[kernel.name] += kernel.duration_ns
-        total = sum(nanos.values()) or 1
-        stats = [
+    def _kernels(
+        kernels: Sequence[KernelTrace], hottest: Sequence[HotKernel]
+    ) -> tuple[KernelStat, ...]:
+        """Attach each hot kernel name's last-seen launch shape."""
+        shape = {kernel.name: kernel for kernel in kernels}
+        return tuple(
             KernelStat(
-                name=name,
-                calls=counts[name],
-                total_ns=nanos[name],
-                avg_ns=nanos[name] / counts[name],
-                share_pct=100.0 * nanos[name] / total,
-                grid=shape[name].grid,
-                block=shape[name].block,
-                threads_per_block=shape[name].threads_per_block,
-                occupancy_pct=shape[name].occupancy_pct,
-                registers=shape[name].registers,
-                static_shared_mem=shape[name].static_shared_mem,
-                dynamic_shared_mem=shape[name].dynamic_shared_mem,
+                name=hot.name,
+                calls=hot.calls,
+                total_ns=hot.total_ns,
+                avg_ns=hot.avg_ns,
+                share_pct=hot.share_pct,
+                grid=shape[hot.name].grid,
+                block=shape[hot.name].block,
+                threads_per_block=shape[hot.name].threads_per_block,
+                occupancy_pct=shape[hot.name].occupancy_pct,
+                registers=shape[hot.name].registers,
+                static_shared_mem=shape[hot.name].static_shared_mem,
+                dynamic_shared_mem=shape[hot.name].dynamic_shared_mem,
             )
-            for name in order
-        ]
-        return tuple(sorted(stats, key=lambda k: k.total_ns, reverse=True))
+            for hot in hottest
+        )
 
     @staticmethod
     def _memory(profile: Profile) -> tuple[int, int]:
-        """Device-memory (peak high-water mark, mean) in bytes over the sampled regions.
+        """Device-memory (peak single sample, mean across regions) in bytes.
 
-        Peak is the largest single sample (the footprint the kernel needs to fit), mean is
-        averaged across regions. Zero when nothing was sampled — e.g. a kernel that finished
-        between two sampler ticks, where the deep kernel trace remains the reliable signal.
+        Zero when nothing was sampled, e.g. a kernel that finished between two sampler ticks,
+        where the deep kernel trace remains the reliable signal.
         """
         summaries = profile.summaries
         if not summaries:
@@ -233,7 +199,6 @@ class ProfileReport(FrozenModel):
 
     @staticmethod
     def _unavailable(*, supported: int | None, requested: int | None) -> tuple[str, ...]:
-        """Labels for the requested activity kinds the device could not trace."""
         if supported is None or requested is None:
             return ()
         missing = Activity(requested) & ~Activity(supported)
@@ -250,7 +215,7 @@ class ProfileReport(FrozenModel):
         return memory, compute
 
     def _notes(self) -> str:
-        """Trailing notes: peak memory, copy bandwidth vs peak, and any untraced kinds."""
+        """Trailing notes: missing device evidence, peak memory, bandwidth, untraced kinds."""
         notes = []
         if self.device_evidence is DeviceEvidence.ABSENT:
             notes.append("no device evidence collected: asked for it and observed none")

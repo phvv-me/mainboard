@@ -1,6 +1,3 @@
-# `profile_stages` and `StageProfile`, which benchmark a set of named steps and optionally
-# trace them in one pass.
-
 from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -31,12 +28,10 @@ if TYPE_CHECKING:
 
 
 def _profile_with_region() -> Profile:
-    """A `Profile` carrying one region, built without a GPU for the traced branches."""
     return Profile(device="fake", summaries=(RegionSummary(name="r", wall_ms=1.0),))
 
 
 def test_profile_stages_benchmarks_each_case_without_requesting_a_trace() -> None:
-    """Each named stage becomes one sample; an unrequested trace stays absent."""
     calls = {"a": 0, "b": 0}
 
     def bump(key: str) -> None:
@@ -53,7 +48,6 @@ def test_profile_stages_benchmarks_each_case_without_requesting_a_trace() -> Non
 def test_a_requested_trace_without_a_visible_gpu_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Stage tracing obeys the same required-activity contract as a bare profiler."""
     monkeypatch.setattr(GPU, "all", staticmethod(lambda: ()))
     with pytest.raises(RuntimeError, match="GPU activity collection was requested"):
         profile_stages({"a": lambda: None}, trace=True, iters=1, warmup=0)
@@ -71,10 +65,6 @@ def test_a_visible_gpu_without_an_activity_collector_is_not_a_trace(
 def test_the_timing_table_lists_every_stage_or_says_there_were_none(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The result stringifies into a readable per-stage table, and `show` prints it.
-
-    A profile with no stages at all says so rather than emitting a blank table.
-    """
     result = profile_stages({"step": lambda: None}, iters=2, warmup=0)
     text = str(result)
     assert "stage" in text and "step" in text and "mean" in text
@@ -86,7 +76,6 @@ def test_the_timing_table_lists_every_stage_or_says_there_were_none(
 def test_a_traced_stage_profile_appends_the_deep_report(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """With a trace present, the rendering appends the region and trace reports."""
     result = StageProfile(
         samples=(BenchSample(label="r", samples=(1.0,)),), profile=_profile_with_region()
     )
@@ -97,11 +86,7 @@ def test_a_traced_stage_profile_appends_the_deep_report(
 
 
 class _StubProfiler:
-    """No-op stand-in for the CUPTI `Profiler` so the trace orchestration is testable.
-
-    Records the `Activity` kinds it was opened with and returns a fixed `Profile`,
-    standing in for the GPU-only backend that cannot run without CUDA.
-    """
+    """A CUDA-free `Profiler` recording what it was opened with."""
 
     Feature = RealProfiler.Feature
     opened_with: Activity | None = None
@@ -137,11 +122,6 @@ class _StubProfiler:
 def test_profile_stages_runs_one_trace_pass_when_a_gpu_is_present(
     monkeypatch: pytest.MonkeyPatch, trace: bool | Activity, opened_with: Activity, barrier: bool
 ) -> None:
-    """With a GPU and `trace`, every stage is bracketed and run inside one trace pass.
-
-    `trace=True` asks for every kind the device offers, and a `sync` barrier, when given,
-    drains each region before the next one opens.
-    """
     monkeypatch.setattr(stages, "Profiler", _StubProfiler)
     ran: list[str] = []
     synced: list[int] = []

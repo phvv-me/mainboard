@@ -29,13 +29,11 @@ class MeteredMachine(Protocol):
 
 
 class Meter:
-    """Times a region and tracks peak host and GPU memory across samples.
+    """Times a region and tracks peak host and GPU memory, in gibibytes, across samples.
 
-    Memory is sampled from `machine` at enter, at every explicit `sample()`, and at
-    exit; peaks are the maximum used bytes over all samples. No background thread is
-    used: callers drive sampling. `machine` is any object satisfying `MeteredMachine`
-    (mainboard.probe is not a dependency of profiling, so a caller passes its own
-    `Machine()` or a stand-in).
+    Memory is sampled at enter, at every explicit `sample()`, and at exit; no background
+    thread runs. mainboard.probe is not a dependency of profiling, so the caller passes its
+    own `Machine()` or a stand-in.
     """
 
     def __init__(self, machine: MeteredMachine) -> None:
@@ -61,22 +59,19 @@ class Meter:
 
     @property
     def host_delta_gb(self) -> float:
-        """Host memory growth from the first to the last sample, in gibibytes."""
-        if not self.host_used_gb:
-            return 0.0
-        return self.host_used_gb[-1] - self.host_used_gb[0]
+        """Host memory growth from the first to the last sample."""
+        return self.host_used_gb[-1] - self.host_used_gb[0] if self.host_used_gb else 0.0
 
     @property
     def peak_gpu_gb(self) -> float:
-        """Highest total GPU memory in use across samples, in gibibytes."""
+        """Highest total GPU memory in use across samples."""
         return max(self.gpu_used_gb, default=0.0)
 
     @property
     def peak_host_gb(self) -> float:
-        """Highest host memory in use across samples, in gibibytes."""
         return max(self.host_used_gb, default=0.0)
 
     def sample(self) -> None:
-        """Capture one host and GPU memory reading from the live machine."""
+        """Capture one host and one summed GPU memory reading from the live machine."""
         self.host_used_gb.append(self.machine.host.memory.used_gb)
         self.gpu_used_gb.append(sum(gpu.memory.used_gb for gpu in self.machine.gpus))

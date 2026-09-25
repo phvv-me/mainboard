@@ -8,11 +8,7 @@ from mainboard.profile.providers import amd_tracer
 def test_the_roctx_backend_tracks_a_range_id_stack_and_needs_the_library(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ROCTx push/pop keep a range-id stack, and `start` hands back that range's own closer.
-
-    Popping an empty stack is ignored rather than an error, and with ROCTx missing the
-    backend reports itself unavailable and its markers degrade to no-ops.
-    """
+    """An empty pop is ignored, and without ROCTx the backend is unavailable and a no-op."""
     events: list[tuple[str, str | int]] = []
     fake = types.SimpleNamespace(
         rangeStart=lambda name: events.append(("start", name)) or len(events),

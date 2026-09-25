@@ -15,11 +15,8 @@ from .support import RecordingSession
 def test_dormant_annotations_call_through_without_reading_a_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With no profiler owning the process an annotation performs no collection at all.
-
-    The clock is the cheapest thing the active path touches, so a stubbed-out
-    `perf_counter_ns` is what proves the dormant path never enters it.
-    """
+    """The clock is the cheapest thing the active path touches, so a failing clock proves the
+    dormant path never enters it."""
 
     def fail() -> int:
         raise AssertionError("clock read")
@@ -46,7 +43,6 @@ def test_dormant_annotations_call_through_without_reading_a_clock(
 
 
 def test_dormant_async_annotations_call_through() -> None:
-    """A coroutine and an async generator both pass straight through with no session."""
 
     @span("worker")
     async def work(value: int) -> int:
@@ -65,7 +61,6 @@ def test_dormant_async_annotations_call_through() -> None:
 
 
 def test_one_profiler_collects_nested_context_and_decorator_spans() -> None:
-    """All annotation forms feed one profile with dotted nesting paths."""
 
     @span("child")
     def work() -> None:
@@ -81,7 +76,6 @@ def test_one_profiler_collects_nested_context_and_decorator_spans() -> None:
 
 
 def test_exception_still_closes_the_span() -> None:
-    """A span left by an exception is closed and recorded, not leaked open."""
     profiler = Profiler(features=Profiler.Feature.SPANS)
     with profiler, pytest.raises(ValueError, match="boom"), span("risky"):
         raise ValueError("boom")
@@ -89,12 +83,8 @@ def test_exception_still_closes_the_span() -> None:
 
 
 def test_the_active_span_slot_admits_exactly_one_owner() -> None:
-    """One process routes spans to one profiler, and a stale owner cannot clear the slot.
-
-    A second profiler is refused rather than silently stealing the spans of the first, and
-    the refused instance never comes up active. Closing a token nobody opened, or exiting a
-    span that never entered, are both no-ops rather than errors.
-    """
+    """A stale owner cannot clear the slot; finishing nothing or exiting an unentered span is a
+    no-op."""
     first = Profiler(features=Profiler.Feature.SPANS)
     second = Profiler(features=Profiler.Feature.SPANS)
     with first, pytest.raises(RuntimeError, match="only one"):
@@ -112,7 +102,6 @@ def test_the_active_span_slot_admits_exactly_one_owner() -> None:
 
 
 def test_span_buffer_is_bounded_and_reports_drops() -> None:
-    """Past `max_spans` the oldest measurements are dropped and counted, never grown into."""
     with Profiler(features=Profiler.Feature.SPANS, max_spans=2) as profiler:
         for name in ("one", "two", "three"):
             with span(name):
@@ -124,7 +113,6 @@ def test_span_buffer_is_bounded_and_reports_drops() -> None:
 
 
 def test_concurrent_threads_close_their_exact_tokens() -> None:
-    """Eight threads opening the same name each close their own token, not a neighbour's."""
     ready = threading.Barrier(8)
 
     @span("worker")
@@ -144,11 +132,7 @@ def test_concurrent_threads_close_their_exact_tokens() -> None:
 
 
 def test_async_tasks_keep_independent_nesting_paths() -> None:
-    """Twenty concurrent tasks each nest under their own parent, never under a sibling's.
-
-    A bare decorator names its span from the function's qualified name, so an unnamed
-    coroutine still lands in the profile under something readable.
-    """
+    """A bare decorator names its span from the function's qualified name."""
 
     @span("worker")
     async def work(value: int) -> int:
@@ -176,7 +160,6 @@ def test_async_tasks_keep_independent_nesting_paths() -> None:
 
 
 def test_automatic_async_spans_keep_independent_task_stacks() -> None:
-    """Auto-annotated coroutines never nest inside whichever task happened to run first."""
 
     async def automatic(value: int) -> int:
         await asyncio.sleep(0)
@@ -196,12 +179,8 @@ def test_automatic_async_spans_keep_independent_task_stacks() -> None:
 
 
 def test_generator_spans_cover_consumption_not_creation() -> None:
-    """A generator's span opens at the first item, not when the generator object is built.
-
-    Timing only the creation is the silent zero-length-span bug CPython fixed for its own
-    decorators, so the proof is that nothing is entered until consumption starts. A bare
-    decorator on a generator takes the same path under its qualified name.
-    """
+    """Timing only the creation is the zero-length-span bug CPython fixed for its own
+    decorators."""
     session = RecordingSession()
 
     @span("gen")

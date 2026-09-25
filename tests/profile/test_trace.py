@@ -60,12 +60,10 @@ class FakeMemcpyActivity:
 def test_activity_labels_a_named_flag_by_name_and_anything_else_generically(
     kinds: Activity, label: str
 ) -> None:
-    """A flag with a name labels by it, and a combination that has none reads `activity`."""
     assert kinds.label == label
 
 
 def test_a_cupti_kernel_record_becomes_a_typed_trace() -> None:
-    """The launch shape is read straight off the snake_case activity attributes."""
     trace = KernelTrace.from_activity(FakeKernelActivity(name="k", start=0, end=1000))
     assert trace.grid == "8x1x1"
     assert trace.block == "128x2x1"
@@ -100,16 +98,11 @@ def test_a_cupti_memcpy_record_maps_its_direction_and_yields_a_bandwidth(
 def test_threads_per_block_degrades_to_the_dimensions_it_can_parse(
     block: str, threads: int
 ) -> None:
-    """A malformed block string still yields a product rather than raising on a bad dim."""
     assert KernelTrace(block=block).threads_per_block == threads
     assert ActivityRecord(start_ns=10, end_ns=60).duration_ns == 50
 
 
 def test_the_deep_report_splits_compute_from_copy_and_ranks_the_hot_spots() -> None:
-    """GPU time divides into compute and copy, and both rankings lead with the hottest.
-
-    An empty profile yields zero totals and empty rankings rather than dividing by zero.
-    """
     report = traced_profile().trace_report()
     assert isinstance(report, BottleneckReport)
     assert report.compute_pct > report.memcpy_pct
@@ -149,22 +142,13 @@ def test_the_deep_report_splits_compute_from_copy_and_ranks_the_hot_spots() -> N
 def test_device_busy_time_is_a_union_and_never_a_sum(
     spans: tuple[tuple[int, int], ...], busy: int
 ) -> None:
-    """Does the busy clock count concurrent and nested device work once rather than twice?
-
-    Summing durations answers how much WORK the device did and is not a time, which is why a
-    share against wall may only divide the union.
-    """
+    """Summed durations measure work, not time, so a share against wall divides the union."""
     assert busy_ns(spans) == busy
 
 
 def test_the_summed_work_time_can_exceed_the_clock_and_the_report_carries_both() -> None:
-    """Does a report that traced overlapping device work say so rather than double count it?
-
-    This is `recovery_cost`'s 2026-08-29 finding in the reproducibility workspace, where a
-    summed device time read 1.9 to 2.1 times the CUDA-event ground truth at TEN launches and was
-    diagnosed as an artefact of several thousand. Two kernels and a copy that overlap here sum to
-    250 ns of work inside a 130 ns window, so the sum is the larger by construction at any count.
-    """
+    """`recovery_cost`'s 2026-08-29 finding: a summed device time read 1.9-2.1x the CUDA-event
+    ground truth at ten launches. Overlap makes the sum larger at any count."""
     profile = Profile(
         kernels=(kernel("a", 100, start_ns=0), kernel("b", 100, start_ns=30)),
         memcpys=(MemcpyTrace(start_ns=80, end_ns=130, bytes_moved=1024),),
@@ -192,21 +176,14 @@ def test_the_summed_work_time_can_exceed_the_clock_and_the_report_carries_both()
 def test_a_kernel_is_attributed_to_the_narrowest_window_that_contains_it(
     windows: tuple[RegionWindow, ...], attributed: str
 ) -> None:
-    """Nested regions share the outer's window, so the tightest enclosing one wins.
-
-    A kernel inside no window at all is labeled rather than dropped, so unattributed GPU
-    time stays visible instead of silently blank.
-    """
+    """A kernel in no window is labeled rather than dropped, so unattributed time stays visible."""
     profile = Profile(windows=windows, kernels=(kernel("k", 50, start_ns=150),))
     assert profile.trace_report().hot_regions[0].name == attributed
 
 
 def test_the_base_collector_and_callback_session_are_safe_noops() -> None:
-    """Without a vendor backend both contexts open, collect nothing, and close cleanly.
-
-    A synchronized window is the one thing the base refuses: it has no device to name and no
-    delivered-record cursor, and an empty window would read as a region that ran no GPU work.
-    """
+    """The base refuses only a synchronized window, which would read as a region that ran no
+    GPU work."""
     with TraceCollector() as collector:
         collector.flush()
         collector.reset()

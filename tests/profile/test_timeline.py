@@ -14,7 +14,7 @@ _WINDOWS = st.lists(
 
 
 def _timeline(windows: Sequence[tuple[int, int]], *, min_gap_ns: int = 100) -> DeviceTimeline:
-    """Build a timeline from (start, duration) pairs, half of them read as copies."""
+    """A timeline from (start, duration) pairs, every odd one a copy."""
     kernels = [
         KernelTrace(name=f"k{i}", start_ns=start, end_ns=start + duration)
         for i, (start, duration) in enumerate(windows)
@@ -28,8 +28,7 @@ def _timeline(windows: Sequence[tuple[int, int]], *, min_gap_ns: int = 100) -> D
     return DeviceTimeline.from_traces(kernels, memcpys, min_gap_ns=min_gap_ns, top_gaps=3)
 
 
-# The pinned examples below carry the branches, so the random budget only needs to add breadth
-# and is trimmed from the shared default.
+# The pinned examples carry the branches, so the random budget only adds breadth.
 @settings(max_examples=15)
 @given(windows=_WINDOWS)
 @example(windows=[])  # nothing observed at all
@@ -41,12 +40,7 @@ def _timeline(windows: Sequence[tuple[int, int]], *, min_gap_ns: int = 100) -> D
 def test_the_timeline_partitions_its_span_into_busy_and_idle(
     windows: list[tuple[int, int]],
 ) -> None:
-    """Busy and idle always add back up to the span, and no gap ever ends before it starts.
-
-    Overlapping activity is counted once rather than summed, so busy can never exceed the
-    span and occupancy stays a percentage. Gaps come back longest first, bounded by
-    `top_gaps`, and every listed one is at least `min_gap_ns` wide.
-    """
+    """Overlapping activity counts once, so busy never exceeds the span."""
     timeline = _timeline(windows)
     observed = [pair for pair in windows if pair[1] > 0]
 
@@ -72,7 +66,6 @@ def test_the_timeline_partitions_its_span_into_busy_and_idle(
 
 
 def test_gaps_are_listed_longest_first_with_the_activities_around_them() -> None:
-    """A listed gap names what ended the busy run before it and what starts the next one."""
     windows = [(0, 100), (1_100, 100), (1_300, 100), (3_400, 100)]
     timeline = DeviceTimeline.from_traces(
         [
@@ -87,7 +80,6 @@ def test_gaps_are_listed_longest_first_with_the_activities_around_them() -> None
 
 
 def test_the_timeline_renders_its_metrics_and_its_gaps() -> None:
-    """The table lists occupancy and each idle window, and `str` is the one-line summary."""
     timeline = _timeline([(0, 100), (200, 100)], min_gap_ns=50)
     text = render(timeline)
     assert "device timeline" in text

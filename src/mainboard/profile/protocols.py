@@ -1,6 +1,5 @@
-# Structural contracts profiling reads through, so it never names a vendor backend. The
-# `Profiler` reaches the probe package's own vendor-neutral registry to discover a host's
-# devices; nothing here, and nothing that reads a finished `Profile`, knows a backend exists.
+# Structural contracts profiling reads through, so nothing here or reading a finished `Profile`
+# names a vendor backend.
 
 from typing import TYPE_CHECKING, Protocol
 
@@ -13,12 +12,10 @@ type TraceEvent = dict[str, Json]
 
 
 class TimedActivity(Protocol):
-    """Any timed CUPTI record: its kind and device-clock window.
+    """The fields every CUPTI record carries: the runtime `kind` and device-clock window.
 
-    CUPTI buffers yield one opaque record family discriminated at runtime by `kind`; this
-    is the field set every record carries. The kind-specific fields below extend it, and
-    the collector dispatches on `kind` before reading them. `name`/`cbid`/`correlation_id`
-    are absent on some kinds, so the collector still reads those defensively with `getattr`.
+    `name`/`cbid`/`correlation_id` are absent on some kinds, so collectors read them with
+    `getattr`.
     """
 
     kind: int
@@ -48,12 +45,10 @@ class MemcpyActivity(TimedActivity, Protocol):
 
 
 class RawActivity(KernelActivity, MemcpyActivity, Protocol):
-    """The opaque CUPTI record as the buffer hands it over, before kind dispatch.
+    """The opaque CUPTI record before kind dispatch, statically exposing every field.
 
-    CUPTI yields one C struct family, so a single record statically exposes every field;
-    only the subset valid for its runtime `kind` is meaningful. Typing the buffer as this
-    superset lets the collector pass a record to the kind-specific reader without a cast,
-    and the reader takes only the fields its kind defines.
+    Only the subset valid for its runtime `kind` is meaningful; the superset lets a record
+    reach its kind-specific reader without a cast.
     """
 
 
@@ -139,10 +134,9 @@ class DeviceSnapshot(Protocol):
 class DeviceProbe(Protocol):
     """The device-sampling surface profiling needs, independent of the probe backend.
 
-    vendor: hardware vendor string (`nvidia`, `amd`, `apple`, ...), matched against a
-        `Tracer`'s own `vendor` to pick the native annotation backend.
+    vendor: `nvidia`, `amd`, `apple`, ..., matched against `Tracer.vendor`.
     label: human-readable device name, used when no reading was ever taken.
-    arch_key: stable per-architecture dispatch key (`sm_90`, ...), for `arch_config`.
+    arch_key: stable per-architecture key (`sm_90`, ...) for `arch_config`.
     peak_bandwidth_gbs: theoretical peak memory bandwidth, 0 when unknown.
     """
 

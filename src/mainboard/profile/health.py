@@ -1,5 +1,3 @@
-# Turn a trial's raw hardware metrics into one actionable verdict.
-
 from patos import FrozenModel
 
 from .meter import Meter
@@ -9,11 +7,11 @@ from .protocols import DeviceProbe, DeviceSnapshot
 class Diagnosis(FrozenModel):
     """One-line hardware verdict for a metered trial.
 
-    near_oom: peak GPU memory came within ``headroom_pct`` of device capacity.
-    gpu_underutilized: GPU compute utilization stayed below ``util_floor`` while running.
-    host_offload: host memory grew sharply or extra processes shared the GPU.
+    near_oom: peak GPU memory came within `headroom_pct` of device capacity.
+    gpu_underutilized: compute utilization at or below `util_floor` percent.
+    host_offload: host memory grew by `host_growth_gb` or more, or other processes shared the GPU.
     throttled: a non-benign thermal/power throttle was active.
-    reason: the dominant flag rendered human-readable, or ``healthy`` when none fired.
+    reason: the most severe flag rendered, or `healthy` when none fired.
     """
 
     near_oom: bool = False
@@ -32,16 +30,10 @@ class Diagnosis(FrozenModel):
         util_floor: int = 25,
         host_growth_gb: float = 4.0,
     ) -> Diagnosis:
-        """Diagnose a finished trial against a live device, in one call.
+        """Diagnose a closed `meter` against a snapshot of the live `gpu` and its capacity.
 
-        The framework path: snapshot `gpu` and read its capacity straight from it, so a
-        caller hands over only the closed ``meter`` and the device to read. With no GPU
-        present (`gpu` is ``None`` on a CPU-only host) every memory and utilization flag
-        is off, so the verdict is ``healthy``.
-
-        meter: the closed :class:`Meter` from the trial's ``with`` block.
-        gpu: the device to snapshot and read capacity from, or ``None`` on a CPU-only host
-            (`mainboard.probe` is not a dependency of profiling, so the caller resolves it).
+        gpu: None on a CPU-only host, which reads healthy (mainboard.probe is not a dependency
+            of profiling, so the caller resolves the device).
         """
         if gpu is None:
             return cls()
@@ -65,15 +57,9 @@ class Diagnosis(FrozenModel):
         util_floor: int = 25,
         host_growth_gb: float = 4.0,
     ) -> Diagnosis:
-        """Diagnose a finished trial from its meter and a final device snapshot.
+        """Diagnose a closed `meter` from a device snapshot taken near the trial.
 
-        meter: the closed :class:`Meter`, read for ``peak_gpu_gb`` and ``host_delta_gb``.
-        gpu: a device snapshot taken near the trial, for utilization, thermal, and shared
-            processes.
-        capacity_gb: total device memory in gibibytes, the denominator for near-OOM.
-        headroom_pct: how close to capacity peak GPU memory must come to flag near-OOM.
-        util_floor: compute utilization at or below this percent flags underutilization.
-        host_growth_gb: host memory growth at or above this flags an offload.
+        capacity_gb: total device memory, the near-OOM denominator (0 reads as none used).
         """
         used_pct = 100.0 * meter.peak_gpu_gb / capacity_gb if capacity_gb else 0.0
         near_oom = used_pct >= 100.0 - headroom_pct
@@ -83,7 +69,7 @@ class Diagnosis(FrozenModel):
         host_offload = meter.host_delta_gb >= host_growth_gb or contended
         throttled = gpu.thermal.is_throttling
         # Severity order: an imminent OOM kill outranks a throttle, which outranks contention
-        # or offload thrash, which outranks an idle GPU. With no flag the trial reads healthy.
+        # or offload thrash, which outranks an idle GPU.
         renderings = [
             (
                 near_oom,

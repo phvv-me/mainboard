@@ -7,17 +7,34 @@ from typing import TYPE_CHECKING
 
 from .protocols import Json, TraceEvent
 
-# `.result` imports this module (for `write_trace`), so `Profile` stays a type-only,
-# quoted reference here to avoid a circular import.
+# `.result` imports this module, so `Profile` stays type-only here.
 if TYPE_CHECKING:
     from .result import Profile
 
 _NS_PER_US = 1000.0
 _REGIONS, _KERNELS, _MEMCPYS, _ACTIVITIES = 1, 2, 3, 4
+_TRACKS = {
+    _REGIONS: "regions",
+    _KERNELS: "GPU kernels",
+    _MEMCPYS: "GPU memcpy",
+    _ACTIVITIES: "CUDA API & activity",
+}
 
 
 def _meta(name: str, tid: int, label: str) -> TraceEvent:
     return {"ph": "M", "name": name, "pid": 0, "tid": tid, "args": {"name": label}}
+
+
+def _span(name: str, tid: int, ts: float, dur: float, args: dict[str, Json]) -> TraceEvent:
+    """One complete event, `ts` and `dur` in microseconds."""
+    return {"ph": "X", "name": name, "pid": 0, "tid": tid, "ts": ts, "dur": dur, "args": args}
+
+
+def _timed(
+    name: str, tid: int, start_ns: int, dur_ns: int, args: dict[str, Json] | None = None
+) -> TraceEvent:
+    """One complete event from nanoseconds already relative to the timeline origin."""
+    return _span(name, tid, start_ns / _NS_PER_US, dur_ns / _NS_PER_US, args or {})
 
 
 def _origin_ns(profile: Profile) -> int:
@@ -25,97 +42,54 @@ def _origin_ns(profile: Profile) -> int:
     starts = [w.start_ns for w in profile.windows]
     starts += [k.start_ns for k in profile.kernels] + [m.start_ns for m in profile.memcpys]
     starts += [a.start_ns for a in profile.activities]
-    return min(starts) if starts else 0
-
-
-def _span(
-    name: str, *, tid: int, start_ns: int, dur_ns: int, origin: int, args: dict[str, Json]
-) -> TraceEvent:
-    return {
-        "ph": "X",
-        "name": name,
-        "pid": 0,
-        "tid": tid,
-        "ts": (start_ns - origin) / _NS_PER_US,
-        "dur": dur_ns / _NS_PER_US,
-        "args": args,
-    }
+    return min(starts, default=0)
 
 
 def write_trace(profile: Profile, path: str | PathLike[str]) -> None:
-    """Write ``profile`` as a Chrome/Perfetto trace JSON to ``path``."""
-    events: list[TraceEvent] = [
-        {
-            "ph": "M",
-            "name": "process_name",
-            "pid": 0,
-            "tid": 0,
-            "args": {"name": profile.device or "mainboard"},
-        },
-        _meta("thread_name", _REGIONS, "regions"),
-        _meta("thread_name", _KERNELS, "GPU kernels"),
-        _meta("thread_name", _MEMCPYS, "GPU memcpy"),
-        _meta("thread_name", _ACTIVITIES, "CUDA API & activity"),
-    ]
+    """Write `profile` as a Chrome/Perfetto trace JSON to `path`."""
     origin = _origin_ns(profile)
-    for window in profile.windows:
-        events.append(
-            _span(
-                window.name,
-                tid=_REGIONS,
-                start_ns=window.start_ns,
-                dur_ns=window.end_ns - window.start_ns,
-                origin=origin,
-                args={},
+    events = [
+        _meta("process_name", 0, profile.device or "mainboard"),
+        *(_meta("thread_name", tid, label) for tid, label in _TRACKS.items()),
+        *(
+            _timed(w.name, _REGIONS, w.start_ns - origin, w.end_ns - w.start_ns)
+            for w in profile.windows
+        ),
+        *(
+            _timed(
+                k.name,
+                _KERNELS,
+                k.start_ns - origin,
+                k.duration_ns,
+                {"grid": k.grid, "block": k.block, "registers": k.registers},
             )
-        )
-    for kernel in profile.kernels:
-        events.append(
-            _span(
-                kernel.name,
-                tid=_KERNELS,
-                start_ns=kernel.start_ns,
-                dur_ns=kernel.duration_ns,
-                origin=origin,
-                args={"grid": kernel.grid, "block": kernel.block, "registers": kernel.registers},
+            for k in profile.kernels
+        ),
+        *(
+            _timed(
+                m.kind,
+                _MEMCPYS,
+                m.start_ns - origin,
+                m.duration_ns,
+                {"bytes": m.bytes_moved, "GB/s": round(m.bandwidth_gbps, 1)},
             )
-        )
-    for memcpy in profile.memcpys:
-        events.append(
-            _span(
-                memcpy.kind,
-                tid=_MEMCPYS,
-                start_ns=memcpy.start_ns,
-                dur_ns=memcpy.duration_ns,
-                origin=origin,
-                args={"bytes": memcpy.bytes_moved, "GB/s": round(memcpy.bandwidth_gbps, 1)},
+            for m in profile.memcpys
+        ),
+        *(
+            _timed(
+                a.name,
+                _ACTIVITIES,
+                a.start_ns - origin,
+                a.duration_ns,
+                {"kind": a.kind, "correlation": a.correlation_id},
             )
-        )
-    for activity in profile.activities:
-        events.append(
-            _span(
-                activity.name,
-                tid=_ACTIVITIES,
-                start_ns=activity.start_ns,
-                dur_ns=activity.duration_ns,
-                origin=origin,
-                args={"kind": activity.kind, "correlation": activity.correlation_id},
-            )
-        )
+            for a in profile.activities
+        ),
+    ]
     if not profile.windows:  # untraced: lay regions out sequentially by wall time
         clock = 0.0
         for summary in profile.summaries:
-            events.append(
-                {
-                    "ph": "X",
-                    "name": summary.name,
-                    "pid": 0,
-                    "tid": _REGIONS,
-                    "ts": clock,
-                    "dur": summary.wall_ms * _NS_PER_US,
-                    "args": {},
-                }
-            )
+            events.append(_span(summary.name, _REGIONS, clock, summary.wall_ms * _NS_PER_US, {}))
             clock += summary.wall_ms * _NS_PER_US
     Path(path).write_text(
         json.dumps({"traceEvents": events, "displayTimeUnit": "ns"}), encoding="utf-8"

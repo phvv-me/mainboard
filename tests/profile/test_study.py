@@ -15,7 +15,7 @@ from .support import one_process_gpu
 
 
 class Shape(FrozenModel):
-    """A stand-in for whatever a domain varies, which the study never needs to understand."""
+    """Whatever a domain varies, which the study never needs to understand."""
 
     size: int
 
@@ -24,17 +24,12 @@ class Shape(FrozenModel):
         return f"size{self.size}"
 
 
-# Every example opens a profiler session per point, the most expensive body in this slice, so
-# the budget is trimmed from the shared default.
+# Every example opens a profiler session per point, so the example budget stays small.
 @settings(max_examples=10)
 @given(sizes=st.lists(st.integers(min_value=0, max_value=99), min_size=1, max_size=3, unique=True))
 def test_every_point_keeps_its_conditions_beside_its_measurement(sizes: Sequence[int]) -> None:
-    """A number whose input specification is not attached is hard to reproduce.
-
-    The policy and the devices are stated once for the whole sweep, so two points cannot
-    silently differ in how they were measured, and a point that produced no evidence at
-    all still comes back as a row that says so.
-    """
+    """Policy and devices are stated once per sweep, so two points cannot silently differ in
+    how they were measured; a point without evidence still comes back as a row saying so."""
     points = [Shape(size=size) for size in sizes]
     assert all(isinstance(point, Point) for point in points)
     gpu = one_process_gpu()
@@ -71,7 +66,6 @@ def test_work_that_raises_after_collecting_evidence_still_fails(warm: bool) -> N
 
 
 def test_evidence_is_not_a_failure_or_scientific_verdict() -> None:
-    """A successful instrument can return evidence without settling any hypothesis."""
     study = Study.over([Shape(size=1)], collection=Collection(features=Feature.SPANS))
 
     def work(point: Shape) -> None:
@@ -82,12 +76,8 @@ def test_evidence_is_not_a_failure_or_scientific_verdict() -> None:
 
 
 def test_the_sweep_warms_before_it_measures() -> None:
-    """Whatever a target compiles on its first call must not be charged to the first point.
-
-    Left off, the first row of a GPU sweep read 4630 ms against its neighbours' 2.5, which
-    is a property of the harness masquerading as a property of that point. A bare `Study()`
-    warms too, since it carries the same default policy.
-    """
+    """First-call compilation must not be charged to the first point: left off, a GPU sweep's
+    first row read 4630 ms against its neighbours' 2.5."""
     calls: list[str] = []
     points = (Shape(size=1), Shape(size=2))
     Study(points=points).run(lambda point: calls.append(point.label))

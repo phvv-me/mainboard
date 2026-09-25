@@ -9,7 +9,6 @@ from .support import FakeGPU, FakeMemory, FakeProcess, FakeSnapshot, FakeThermal
 
 
 def meter_with(*, peak_gpu_gb: float = 0.0, host_delta_gb: float = 0.0) -> Meter:
-    """A closed-style meter with the two readings the diagnosis reads, set directly."""
     gauge = Meter.__new__(Meter)
     gauge.host_used_gb = [0.0, host_delta_gb]
     gauge.gpu_used_gb = [peak_gpu_gb]
@@ -24,7 +23,6 @@ def snapshot(
     throttle_names: tuple[str, ...] = (),
     processes: tuple[FakeProcess, ...] = (),
 ) -> FakeSnapshot:
-    """A synthetic snapshot exposing the utilization, thermal, and processes fields."""
     return FakeSnapshot(
         utilization=FakeUtilization(gpu_pct=gpu_pct),
         thermal=FakeThermal(is_throttling=is_throttling, throttle_names=throttle_names),
@@ -98,11 +96,7 @@ def test_the_dominant_flag_decides_the_one_line_reason(
     flags: str,
     reason: str,
 ) -> None:
-    """Severity orders the verdict, near-OOM first, then a throttle, then thrash, then idle.
-
-    A device that reports no capacity never divides by it, so it reads as healthy rather
-    than crashing, and a throttle that never fired leaves the flag clear.
-    """
+    """Severity orders the reason: near-OOM, then a throttle, then thrash, then idle."""
     verdict = Diagnosis.of(
         meter_with(peak_gpu_gb=peak_gpu_gb, host_delta_gb=host_delta_gb),
         reading,
@@ -114,8 +108,7 @@ def test_the_dominant_flag_decides_the_one_line_reason(
     assert verdict.reason == reason
 
 
-# Four bounded numeric axes are a small space, so a trimmed budget covers them and keeps the
-# suite's wall time where it was.
+# Four bounded numeric axes are a small space, so a trimmed budget covers them.
 @settings(max_examples=15)
 @given(
     peak_gpu_gb=st.floats(min_value=0.0, max_value=80.0, allow_nan=False, allow_infinity=False),
@@ -126,11 +119,8 @@ def test_the_dominant_flag_decides_the_one_line_reason(
 def test_the_flags_move_only_one_way_with_the_readings_that_drive_them(
     peak_gpu_gb: float, extra_gb: float, gpu_pct: int, rise_pct: int
 ) -> None:
-    """More memory never clears near-OOM, and more compute never flags an idle GPU.
-
-    The verdict reads `healthy` exactly when no flag fired, so the one line and the flags
-    can never disagree about whether the trial was clean.
-    """
+    """More memory never clears near-OOM, more compute never flags idle, and `healthy` means
+    exactly that no flag fired."""
     reading = snapshot(gpu_pct=gpu_pct)
     verdict = Diagnosis.of(meter_with(peak_gpu_gb=peak_gpu_gb), reading, capacity_gb=80.0)
     fuller = Diagnosis.of(
@@ -148,7 +138,6 @@ def test_the_flags_move_only_one_way_with_the_readings_that_drive_them(
 
 
 def test_diagnose_reads_capacity_off_the_live_device_or_calls_a_cpu_host_healthy() -> None:
-    """`diagnose` snapshots the device itself, and with no device every flag stays off."""
     gpu = FakeGPU(memory=FakeMemory(total_gb=80.0), reading=snapshot(gpu_pct=95))
     live = Diagnosis.diagnose(meter_with(peak_gpu_gb=79.0), gpu)
     assert live.near_oom

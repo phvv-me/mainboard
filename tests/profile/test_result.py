@@ -19,7 +19,6 @@ from .support import traced_profile
 
 
 def test_the_profile_verbs_read_their_reports_off_the_evidence_it_holds() -> None:
-    """`efficiency`, `timeline`, `stats` and `bottlenecks` are thin verbs over the traces."""
     profile = traced_profile()
     assert {row.name for row in profile.efficiency(sm_count=2).rows} == {"gemm", "relu"}
     assert profile.efficiency(sm_count=2).sm_count == 2
@@ -30,11 +29,7 @@ def test_the_profile_verbs_read_their_reports_off_the_evidence_it_holds() -> Non
 
 
 def test_a_diff_matches_regions_by_name_and_survives_a_round_trip(tmp_path: Path) -> None:
-    """Regions are matched by name and ranked by absolute change, and a profile reloads.
-
-    A region present in only one of the two profiles has no speedup to report rather than
-    a division by zero, and the host and device labels of both sides travel with the diff.
-    """
+    """A region in only one profile has no speedup rather than a division by zero."""
     base = Profile(host="a", device="cuda:0", summaries=(RegionSummary(name="r", wall_ms=2.0),))
     current = Profile(
         host="b",
@@ -91,7 +86,6 @@ def test_a_diff_matches_regions_by_name_and_survives_a_round_trip(tmp_path: Path
 def test_the_report_carries_only_the_evidence_sections_it_has(
     profile: Profile, present: Sequence[str], absent: Sequence[str]
 ) -> None:
-    """A section appears only when its evidence does, and an empty run says so plainly."""
     text = profile.report()
     assert str(profile) == text
     assert all(fragment in text for fragment in present)
@@ -99,8 +93,7 @@ def test_the_report_carries_only_the_evidence_sections_it_has(
     assert Profile._region_text([]) == "No regions recorded."
 
 
-# Two region names over a short list is a small space, so a trimmed budget covers it and keeps
-# the suite's wall time where it was.
+# Two region names over a short list is a small space, so a trimmed budget covers it.
 @settings(max_examples=15)
 @given(
     regions=st.lists(
@@ -114,7 +107,6 @@ def test_the_report_carries_only_the_evidence_sections_it_has(
 def test_per_name_stats_collapse_every_call_of_a_region_into_one_row(
     regions: Sequence[tuple[str, float]],
 ) -> None:
-    """A region called many times is one row with its call count, not one row per call."""
     summaries = [RegionSummary(name=name, wall_ms=wall) for name, wall in regions]
     stats = RegionStat.aggregate(summaries)
 
@@ -131,7 +123,6 @@ def test_per_name_stats_collapse_every_call_of_a_region_into_one_row(
 
 
 def test_the_perfetto_export_lays_one_track_out_per_activity_class(tmp_path: Path) -> None:
-    """`Profile.perfetto` writes loadable Chrome trace JSON with all four tracks."""
     path = tmp_path / "trace.json"
     traced_profile().perfetto(path)
     events = json.loads(path.read_text())["traceEvents"]
@@ -140,11 +131,7 @@ def test_the_perfetto_export_lays_one_track_out_per_activity_class(tmp_path: Pat
 
 
 def test_the_perfetto_export_lays_untraced_regions_out_sequentially(tmp_path: Path) -> None:
-    """Without device windows, regions are placed one after another by wall time.
-
-    A profile with nothing in it at all still writes a valid, event-less trace rather than
-    failing to find an origin timestamp.
-    """
+    """An empty profile still writes a valid trace rather than failing to find an origin."""
     profile = Profile(
         summaries=(RegionSummary(name="a", wall_ms=1.0), RegionSummary(name="b", wall_ms=2.0))
     )

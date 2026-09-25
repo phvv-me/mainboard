@@ -18,14 +18,12 @@ from .support import kernel
 
 
 def _report(profile: Profile, *, peak_bandwidth_gbps: float = 0.0) -> ProfileReport:
-    """The bottleneck verdict for one profile, over a single iteration."""
     return ProfileReport.from_profile(
         profile, iterations=1, peak_bandwidth_gbps=peak_bandwidth_gbps
     )
 
 
 def _sampled(*, util_pct: float, memory_util_pct: float) -> Profile:
-    """A profile carrying one sampled region's utilization and nothing traced."""
     return Profile(
         summaries=(
             RegionSummary(
@@ -64,11 +62,6 @@ def _sampled(*, util_pct: float, memory_util_pct: float) -> Profile:
 def test_the_bound_verdict_follows_the_time_split_then_the_utilization_signal(
     profile: Profile, bound: Bound
 ) -> None:
-    """Copies out-timing kernels reads memory-bound, and with no time at all util decides.
-
-    With neither a traced duration nor a sampled utilization there is nothing to judge, so
-    the verdict is UNKNOWN and the report says no kernels were traced.
-    """
     report = _report(profile)
     assert report.bound is bound
     if bound is Bound.UNKNOWN:
@@ -76,17 +69,12 @@ def test_the_bound_verdict_follows_the_time_split_then_the_utilization_signal(
         assert "No kernels traced" in report.report()
 
 
-# A short list of durations is a small space, so a trimmed budget covers it and keeps the
-# suite's wall time where it was.
+# A short list of durations is a small space, so a trimmed budget covers it.
 @settings(max_examples=15)
 @given(durations=st.lists(st.integers(min_value=1, max_value=10_000), min_size=1, max_size=8))
 @example(durations=[100, 100, 500])  # two calls of one name against a hotter single call
 def test_kernel_shares_partition_the_kernel_time_hottest_first(durations: Sequence[int]) -> None:
-    """Per-kernel shares always add back up to 100% and rank the hottest name first.
-
-    Repeated launches of one name collapse into a single row carrying the call count and
-    the summed time, which is what makes the dominant kernel the dominant *name*.
-    """
+    """Repeated launches of one name collapse into one row, so the dominant kernel is a name."""
     kernels = tuple(kernel(f"k{index % 2}", ns) for index, ns in enumerate(durations))
     report = _report(Profile(kernels=kernels))
     totals = [stat.total_ns for stat in report.kernels]
@@ -101,7 +89,6 @@ def test_kernel_shares_partition_the_kernel_time_hottest_first(durations: Sequen
 
 
 def test_kernel_stat_carries_launch_shape() -> None:
-    """Occupancy proxy, registers, and the static/dynamic shared split are reported."""
     profile = Profile(
         kernels=(
             kernel(
@@ -130,7 +117,6 @@ def test_kernel_stat_carries_launch_shape() -> None:
 def test_copy_bandwidth_is_bytes_over_copy_time_scored_against_peak(
     end_ns: int, achieved_gbps: float
 ) -> None:
-    """Achieved copy bandwidth is shown against the device peak, never divided by zero."""
     profile = Profile(memcpys=(MemcpyTrace(end_ns=end_ns, bytes_moved=2000),))
     report = _report(profile, peak_bandwidth_gbps=10.0)
     assert report.achieved_bandwidth_gbps == achieved_gbps
@@ -138,22 +124,16 @@ def test_copy_bandwidth_is_bytes_over_copy_time_scored_against_peak(
 
 
 def test_the_verdict_admits_when_the_device_half_of_it_is_empty() -> None:
-    """A bottleneck verdict built from a device-less run says so instead of reading as `cpu`.
-
-    `device cpu | unknown-bound` is what a real CPU-only run looks like and what a run that
-    silently attached to no device looked like, so the verdict carries the difference.
-    """
+    """A device-less run says so, since `device cpu | unknown-bound` also reads as a real
+    CPU-only run."""
     profile = Profile(device_evidence=DeviceEvidence.ABSENT)
     assert "no device evidence collected" in _report(profile).report()
     assert "no device evidence collected" not in _report(Profile()).report()
 
 
 def test_sampled_memory_becomes_the_high_water_mark_and_the_mean() -> None:
-    """The report surfaces the largest sampled footprint, and says nothing when none was taken.
-
-    A kernel that finished between two sampler ticks reports zero rather than a note, since
-    the deep kernel trace stays the reliable signal there.
-    """
+    """A kernel that finished between sampler ticks reports zero rather than a note, since the
+    kernel trace stays the reliable signal there."""
     profile = Profile(
         summaries=(
             RegionSummary(name="r", wall_ms=1.0, peak_memory_bytes=300, avg_memory_bytes=200),
@@ -172,11 +152,6 @@ def test_sampled_memory_becomes_the_high_water_mark_and_the_mean() -> None:
 
 
 def test_the_rendered_report_names_the_device_and_any_untraced_kinds() -> None:
-    """`str` is the plain-text verdict, and kinds the device could not trace are listed.
-
-    Without a support/request pair there is nothing to mark unavailable, and an empty
-    device name renders as `cpu` rather than as a blank.
-    """
     named = _report(Profile(device="dev", kernels=(kernel("k", 100),)))
     assert str(named) == named.report()
     assert "dev" in str(named)

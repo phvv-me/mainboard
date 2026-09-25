@@ -11,11 +11,7 @@ from mainboard.profile import Tracer, annotate
 def test_the_backend_is_detected_once_with_the_vendors_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`present` reaches `Tracer.detect` unchanged and the instance is cached from then on.
-
-    Only the first caller's `present` decides the backend, since detection never repeats
-    for the life of the process, and `callbacks()` reads through the same cached instance.
-    """
+    """Only the first caller's `present` decides the backend; `callbacks()` reads the cache."""
     seen: list[frozenset[str]] = []
 
     def detect(cls: type[Tracer], *, present: frozenset[str] = frozenset()) -> Tracer:
@@ -31,7 +27,6 @@ def test_the_backend_is_detected_once_with_the_vendors_present(
 
 
 def test_enable_auto_instruments_matching_calls() -> None:
-    """Runtime auto-annotation installs local events for selected code only."""
     calls: list[str] = []
 
     def target() -> int:
@@ -49,7 +44,6 @@ def test_enable_auto_instruments_matching_calls() -> None:
 
 
 def test_module_codes_finds_owned_code_and_nothing_else(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Auto-annotation covers a module's own functions, never the ones it imported."""
     empty = types.ModuleType("mainboard_fake_module")
     monkeypatch.setitem(sys.modules, empty.__name__, empty)
     assert Profiler.module_codes((empty.__name__,)) == set()
@@ -71,11 +65,6 @@ def test_module_codes_finds_owned_code_and_nothing_else(monkeypatch: pytest.Monk
 def test_monitor_hooks_balance_return_unwind_and_empty_stack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every close pairs with an open and never pops past the bottom of the stack.
-
-    An unwind of code that was never selected closes nothing, and a return against an
-    already empty stack is ignored.
-    """
     selected = (lambda: None).__code__
     other = (lambda: 1).__code__
     monkeypatch.setattr(annotate, "_codes", (selected,))
@@ -92,7 +81,6 @@ def test_monitor_hooks_balance_return_unwind_and_empty_stack(
 
 
 def test_monitor_stack_is_thread_local() -> None:
-    """A thread that never opened a span starts from its own empty stack."""
     seen: list[int] = []
     thread = threading.Thread(target=lambda: seen.append(len(annotate.frames())))
     thread.start()
