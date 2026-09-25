@@ -34,7 +34,7 @@ from .shared import HandleId, Watcher, announce, db_file, logger, now, state_pat
 from .shipment import Shipment
 from .snapshots import CLOSURE, Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
-from .sync import ALWAYS_EXCLUDE, CARD_LEASES, GitignoreFilter, SyncLock, patterns
+from .sync import CARD_LEASES, GitignoreFilter, SyncLock, denied, patterns
 from .transport import SshTransport
 from .vocabulary import JobState, Request, Resources
 from .wrapping import connection, wrap
@@ -315,8 +315,7 @@ class Dispatcher:
 
         hidden: declared output paths, literal, which only ever travel down.
         """
-        excluded = [*ALWAYS_EXCLUDE, *plan.profile.sync.exclude, *CARD_LEASES]
-        return self.sync.scope(roots, deny=patterns(excluded, paths=hidden))
+        return self.sync.scope(roots, deny=denied(plan.profile.sync.exclude, paths=hidden))
 
     def mirror(
         self,

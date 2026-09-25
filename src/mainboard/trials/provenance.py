@@ -130,7 +130,7 @@ def source(repo: Path) -> Source:
             raise RuntimeError("source bytes differ from the captured bundle")
         return Source(digest=expected, closure=str(closure), root=tree.root, mirrored=True)
     tree = SourceTree(repo)
-    captured, rows = tree.seal(tree.kept("."))
+    captured, rows = tree.seal(tree.sources())
     manifest = listing(rows)
     closure = tree.archive(manifest).with_suffix(".tsv")
     closure.write_text(manifest, encoding="utf-8")

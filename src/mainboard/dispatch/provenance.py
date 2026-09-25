@@ -2,9 +2,10 @@
 
 import hashlib
 import re
+import shutil
+import time
 from enum import StrEnum, auto
 from pathlib import Path, PurePosixPath
-from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -12,6 +13,8 @@ from patos import FrozenModel
 
 from ..core.errors import MissionError
 from ..core.project import Project
+from ..manifest.loading import load
+from ..manifest.schema.workspace import DATA
 from .sync import GitignoreFilter
 
 if TYPE_CHECKING:
@@ -19,6 +22,9 @@ if TYPE_CHECKING:
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _ARCHIVE_LISTING = ".mainboard-source-listing.tsv"
+# How old a partial archive, or a temporary folder an older release archived in, must be before
+# it counts as left by a killed process rather than one still writing.
+_STALE_SECONDS = 86_400
 
 
 class Status(StrEnum):
@@ -88,7 +94,19 @@ class SourceTree:
 
     def kept(self, directory: str) -> list[str]:
         """Files under an explicit source root, honoring optional ignore files and secrets."""
-        return self.filter.files(directory)
+        return self.filter.files([directory])
+
+    def sources(self) -> list[str]:
+        """The workspace's source: every file a host could be sent, less its `[workspace] data`.
+
+        A dataset a trial reads is pinned through `needs` or `resources`, never archived as
+        source; a host mirror still ships whatever its own sync include names.
+        """
+        manifest = self.root / Project().manifest
+        data = load(manifest).workspace.data if manifest.is_file() else DATA
+        return self.filter.files(
+            sorted(entry.name for entry in self.root.iterdir()), excluded=data
+        )
 
     def seal(self, files: Sequence[str], *, built: Sequence[str] = ()) -> tuple[Source, list[Row]]:
         """Identify exactly these files as they stand on disk, including newly created files."""
@@ -118,7 +136,11 @@ class SourceTree:
         return Source(identity=f"sha256:{digest}", key=f"sha256-{digest}", digest=digest), rows
 
     def archive(self, manifest: str) -> Path:
-        """Keep retrievable source bytes locally before dispatch, not merely their hashes."""
+        """Keep retrievable source bytes locally before dispatch, not merely their hashes.
+
+        The zip is written as `<digest>.zip.partial` and renamed whole, so a killed archival
+        leaves one partial its retry truncates, and archiving sweeps what is a day stale.
+        """
         digest = hashlib.sha256(manifest.encode()).hexdigest()
         target = self.root / Project().out_dir / "source-archives" / f"{digest}.zip"
         rows = [
@@ -126,6 +148,7 @@ class SourceTree:
             for p, b, s in (line.split("\t") for line in manifest.splitlines())
         ]
         target.parent.mkdir(parents=True, exist_ok=True)
+        _swept(target.parent)
         if target.exists():
             with ZipFile(target) as archive:
                 if archive.read(_ARCHIVE_LISTING).decode() != manifest or any(
@@ -133,14 +156,21 @@ class SourceTree:
                 ):
                     raise MissionError(f"source archive verification failed: {target}")
             return target
-        with TemporaryDirectory(prefix="source-", dir=target.parent) as temporary:
-            pending = Path(temporary) / "source.zip"
-            with ZipFile(pending, "w", compression=ZIP_DEFLATED) as archive:
-                archive.writestr(_ARCHIVE_LISTING, manifest)
-                for row in rows:
-                    payload = (self.root / row.path).read_bytes()
-                    if hashlib.sha256(payload).hexdigest() != row.blob:
-                        raise MissionError(f"{row.path} changed before source archival")
-                    archive.writestr(row.path, payload)
-            pending.replace(target)
+        pending = target.with_name(f"{target.name}.partial")
+        with ZipFile(pending, "w", compression=ZIP_DEFLATED) as archive:
+            archive.writestr(_ARCHIVE_LISTING, manifest)
+            for row in rows:
+                payload = (self.root / row.path).read_bytes()
+                if hashlib.sha256(payload).hexdigest() != row.blob:
+                    raise MissionError(f"{row.path} changed before source archival")
+                archive.writestr(row.path, payload)
+        pending.replace(target)
         return target
+
+
+def _swept(folder: Path) -> None:
+    """Remove the partial archives and temporary folders killed archivals left a day ago."""
+    stale = time.time() - _STALE_SECONDS
+    for leftover in [*folder.glob("*.partial"), *folder.glob("source-*")]:
+        if leftover.stat().st_mtime < stale:
+            shutil.rmtree(leftover) if leftover.is_dir() else leftover.unlink()

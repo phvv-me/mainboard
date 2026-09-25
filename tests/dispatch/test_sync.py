@@ -178,7 +178,7 @@ def test_the_files_a_repository_would_ship_count_a_link_that_leads_to_a_file(
         (tmp_path / "src/folder").symlink_to("..", target_is_directory=True)
     except OSError as fault:
         pytest.skip(f"this account cannot create symlinks: {fault}")
-    assert GitignoreFilter(tmp_path).files("src") == ["src/alias.py", "src/run.py"]
+    assert GitignoreFilter(tmp_path).files(["src"]) == ["src/alias.py", "src/run.py"]
 
 
 @needs_git
@@ -231,7 +231,7 @@ def test_a_submodule_ships_its_tracked_build_sources_under_a_parent_that_ignores
         "packages/mcmr/src/graph/build/fresh.rs",
     )
     assert ignores.tracked(["elsewhere"]).files == ()
-    assert list(ignores.files("packages")) == list(ignores.tracked(["packages"]).files)
+    assert list(ignores.files(["packages"])) == list(ignores.tracked(["packages"]).files)
     assert (
         "vendor/clone/build/keep.rs"
         not in ignores.tracked(roots, deny=patterns(["vendor/"])).files
