@@ -1,17 +1,11 @@
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
 from mainboard.dispatch import HostUnreachable, SshTransport
 from mainboard.dispatch import wrapping as wrapping_module
-from mainboard.dispatch.wrapping import (
-    absent,
-    activation,
-    activation_stage,
-    argv,
-    connection,
-    wrap,
-)
+from mainboard.dispatch.wrapping import absent, activation, activation_stage, connection, wrap
 from mainboard.manifest import Container, HostProfile
 
 from .support import plan
@@ -20,14 +14,6 @@ from .support import plan
 # imported so a new bin dir demands a deliberate test update, not silent inherited coverage.
 _USER_BINS = ("$HOME/.local/bin", "$HOME/.pixi/bin", "$HOME/.cargo/bin")
 _CONTAINER = Container(image="nvcr.io/nvidia/pytorch:25.06-py3")
-
-
-class _FakeMachine:
-    """The only parts of an `SshMachine` that `_open` reaches for, its PATH and its cwd."""
-
-    def __init__(self) -> None:
-        self.env = type("Env", (), {"path": []})()
-        self.cwd = PurePosixPath("/home/user")
 
 
 def test_wrap_stages_cd_then_path_then_modules_before_the_environment() -> None:
@@ -41,10 +27,7 @@ def test_wrap_stages_cd_then_path_then_modules_before_the_environment() -> None:
     moduled = wrap(
         plan(profile=HostProfile(modules={"cuda": "13.0", "gcc": ""})), "/repo", command="run"
     )
-    assert "module purge" in moduled
-    assert "module load cuda/13.0" in moduled
-    assert "module load gcc" in moduled
-    assert "module load gcc/" not in moduled
+    assert "module purge && module load cuda/13.0 && module load gcc &&" in moduled
 
 
 def test_wrap_without_activation_stops_at_the_footing_an_unprovisioned_host_offers() -> None:
@@ -116,19 +99,13 @@ def test_an_unfinished_prefix_refuses_by_naming_the_one_command_that_rebuilds_it
     assert "`mainboard provide serving` rebuilds exactly it" in refusal
 
 
-@pytest.mark.parametrize(("login", "flag"), [(True, "-lc"), (False, "-c")])
-def test_argv_wraps_the_staged_line_in_a_login_or_a_plain_bash(login: bool, flag: str) -> None:
-    built = argv(plan(), "/repo", command="run", login=login)
-    assert built[:2] == ["bash", flag]
-    assert built[2] == wrap(plan(), "/repo", command="run")
-
-
 def test_open_warms_the_host_before_plumbum_and_prepends_the_user_install_dirs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The warm-up rides a robust one-shot channel so an expired ControlMaster relogs there."""
     warmed: list[str] = []
-    machine = _FakeMachine()
+    # The only parts of an `SshMachine` that `_open` reaches for, its PATH and its cwd.
+    machine = SimpleNamespace(env=SimpleNamespace(path=[]), cwd=PurePosixPath("/home/user"))
     monkeypatch.setattr(SshTransport, "warm", lambda self, host: warmed.append(host))
     monkeypatch.setattr(SshTransport, "machine", lambda self, host: machine)
     assert wrapping_module._open("gold", SshTransport()) is machine  # ruff:ignore[private-member-access]  reason=unit-tests the module-private connection opener since=2026-08-16

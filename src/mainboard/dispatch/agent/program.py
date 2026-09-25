@@ -1,11 +1,10 @@
 """The standard-library agent both ends of a transfer run.
 
-The center imports this module to walk and hash its own workspace, and sends this very source to
-a target over SSH, where any Python from 3.9 on runs it with nothing installed: the target
-reports what it holds, takes what changed as one tar stream, prunes what the center's rules say
-to prune, and pins snapshots under a kernel file lock. Nothing here imports beyond the standard
-library or uses syntax newer than 3.9, since the interpreter on the far side is whatever the
-machine shipped with.
+The center imports this module to walk and hash its own workspace, and sends this very source over
+SSH to a target, which reports what it holds, takes what changed as one tar stream, prunes what the
+center's rules say to prune, and pins snapshots under a kernel file lock. Nothing here imports
+beyond the standard library or uses syntax newer than 3.9, since the far side runs whatever Python
+the machine shipped with, nothing installed.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from contextlib import contextmanager
 from typing import IO, TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     Json = str | int | bool | None | Sequence["Json"] | Mapping[str, "Json"]
 
@@ -50,8 +49,7 @@ _UNREADABLE = (OSError, ValueError)
 
 
 class RulesSpec(TypedDict):
-    """One `Rules` as it crosses the wire: compiled patterns per base, literal paths, and the
-    bases where a repository of its own begins."""
+    """One `Rules` as it crosses the wire."""
 
     patterns: dict[str, list[tuple[str, bool]]]
     paths: list[str]
@@ -77,7 +75,7 @@ class SurveySpec(TypedDict):
 
 
 class ReceiveSpec(TypedDict):
-    """What a target is told to change before and while the tar stream arrives.
+    """What a target changes before and while the tar stream arrives.
 
     files: each file the stream carries, as `[mtime_ns, executable]`, executable None when the
         center has no mode bits to give.
@@ -133,13 +131,11 @@ class Refusal(Exception):
 
 
 def unsafe(relative: str) -> bool:
-    """Whether `relative` fails to name a path strictly below a root on this OS.
+    """Whether `relative`, forward slashes only, fails to name a path strictly below a root.
 
-    Forward slashes only. On Windows a backslash or a colon inside a name would climb out of the
-    root or name a drive or a stream, so neither is part of a name there.
+    On Windows a backslash or a colon would climb out of the root or name a drive or a stream.
     """
-    parts = relative.split("/")
-    return any(part in ("", ".", "..") for part in parts) or (
+    return any(part in ("", ".", "..") for part in relative.split("/")) or (
         WINDOWS and any(mark in relative for mark in "\\:")
     )
 
@@ -165,28 +161,28 @@ def digest(path: str) -> str:
     return hashed.hexdigest()
 
 
+def _ancestors(path: str) -> list[str]:
+    """Every directory above `path`, outermost first, the root left out."""
+    parts = path.split("/")
+    return ["/".join(parts[:depth]) for depth in range(1, len(parts))]
+
+
 def containers(sources: Sequence[str]) -> list[str]:
     """Every directory a mirrored snapshot creates to hold `sources`, the tree root included.
 
-    A snapshot fills each of these with links back to the mirror for whatever it did not copy,
-    which is how a job reaches the environment, the dispatch state and the data directories
-    beside its own source without any of them being copied.
+    A snapshot fills each with links back to the mirror for whatever it did not copy, which is how
+    a job reaches the environment, the dispatch state and the data beside its source uncopied.
     """
-    found = {"."}
-    for source in sources:
-        parts = source.split("/")[:-1]
-        found.update("/".join(parts[: depth + 1]) for depth in range(len(parts)))
-    return sorted(found)
+    return sorted({".", *(folder for source in sources for folder in _ancestors(source))})
 
 
 class Digests:
     """File digests remembered by each file's stamp, so an unchanged file is read once.
 
     The stamp is the size, the inode and both nanosecond times. A write moves the change time,
-    which no tool can set back, so a file rewritten to the same size under a restored
-    modification time still reads as changed, and one whose stamp stands still holds the bytes it
-    was hashed with. That is what lets both ends of a mirror compare contents without rereading
-    a tree that did not change.
+    which no tool can set back, so a file rewritten to the same size under a restored mtime still
+    reads as changed, and one whose stamp stands still holds the bytes it was hashed with. That
+    lets both ends of a mirror compare contents without rereading a tree that did not change.
 
     path: the JSON file the memory lives in, created on the first save.
     """
@@ -201,7 +197,7 @@ class Digests:
         self.seen: set[str] = set()
 
     def of(self, path: str, *, key: str) -> str:
-        """`path`'s SHA-256, read off the memory while its stamp stands."""
+        """`path`'s SHA-256, off the memory while its stamp stands."""
         stamp = _stamp(os.stat(path))
         self.seen.add(key)
         remembered = self.held.get(key)
@@ -232,7 +228,7 @@ class Digests:
 
 
 def _stamp(status: os.stat_result) -> list[int | str]:
-    """What a file's digest is remembered by: its size, inode and both nanosecond times."""
+    """What a file's digest is remembered by."""
     return [status.st_size, status.st_ino, status.st_mtime_ns, status.st_ctime_ns]
 
 
@@ -246,12 +242,10 @@ class Rules:
     ignore files and never to a parent's. A literal path matches itself and everything beneath
     it, which is how a results path holding glob characters still names exactly one tree.
 
-    Each directory's patterns are joined into one expression, last pattern first, so a single
-    match finds the pattern that decides; a root ignore file of a hundred lines then costs one
-    match per path rather than a hundred.
+    Each directory's patterns are joined into one expression, last pattern first, so one match
+    finds the deciding pattern and a hundred-line ignore file costs one match per path.
 
     patterns: base directory, "" for the root, to its ordered `(regex, verdict)` pairs.
-    paths: literal workspace-relative paths.
     repositories: the bases where a repository of its own begins.
     discover: answers a base not yet known, its pairs and whether a repository begins there,
         which is how the center reads each ignore file the first time a walk reaches its
@@ -281,11 +275,7 @@ class Rules:
     def spec(self) -> RulesSpec:
         """This rule set as it crosses the wire, every base read so far included."""
         return {
-            "patterns": {
-                base: [(regex, verdict) for regex, verdict in rows]
-                for base, rows in self.patterns.items()
-                if rows
-            },
+            "patterns": {base: list(rows) for base, rows in self.patterns.items() if rows},
             "paths": list(self.paths),
             "repositories": sorted(self.repositories),
         }
@@ -328,8 +318,10 @@ class Rules:
             f"(?P<r{index}>{_NAMED.sub('(?:', regex)})"
             for index, (regex, _) in reversed(list(enumerate(rows)))
         ]
-        joined = re.compile("|".join(alternatives)) if alternatives else None
-        self.joined[base] = (joined, [verdict for _, verdict in rows])
+        self.joined[base] = (
+            re.compile("|".join(alternatives)) if alternatives else None,
+            [verdict for _, verdict in rows],
+        )
 
 
 class Scope:
@@ -342,7 +334,6 @@ class Scope:
     front, since a target pruning the same tree walks by nothing else.
 
     roots: workspace-relative starting points, each a file or a directory.
-    ignore: the ignore files' rules.
     deny: the rules that exclude whatever else says, the denylist and the host's excludes.
     keep: files the ignore rules never exclude.
     follow: walk through links as if they were what they point at, which only the center does,
@@ -367,14 +358,10 @@ class Scope:
         self.deny = deny or Rules()
         self.follow = follow
         self.listed = None if listed is None else self.__allowed(listed)
-        for folder in _folders(self.listed or ()):
+        for folder in {"", *(folder for path in self.listed or () for folder in _ancestors(path))}:
             self.ignore.read(folder)
         self.keep = set(keep)
-        self.holding = {
-            "/".join(parts[:depth])
-            for parts in (path.split("/") for path in self.keep)
-            for depth in range(1, len(parts))
-        }
+        self.holding = {folder for path in self.keep for folder in _ancestors(path)}
 
     @classmethod
     def of(cls, spec: ScopeSpec) -> Scope:
@@ -411,28 +398,16 @@ class Scope:
         denied: dict[str, bool] = {"": False}
         allowed = []
         for path in listed:
-            parts = path.split("/")
-            claimed = False
-            for depth in range(1, len(parts)):
-                folder = "/".join(parts[:depth])
+            parent = ""
+            for folder in _ancestors(path):
                 if folder not in denied:
-                    parent = "/".join(parts[: depth - 1])
                     denied[folder] = denied[parent] or self.deny.matches(folder, directory=True)
-                claimed = denied[folder]
-                if claimed:
+                parent = folder
+                if denied[folder]:
                     break
-            if not claimed and not self.deny.matches(path, directory=False):
+            if not denied[parent] and not self.deny.matches(path, directory=False):
                 allowed.append(path)
         return allowed
-
-
-def _folders(paths: Iterable[str]) -> set[str]:
-    """Every directory holding one of `paths`, the root included."""
-    found = {""}
-    for path in paths:
-        parts = path.split("/")
-        found.update("/".join(parts[:depth]) for depth in range(1, len(parts)))
-    return found
 
 
 class Entry:
@@ -465,7 +440,7 @@ class Entry:
 
     @classmethod
     def stated(cls, path: str, status: os.stat_result) -> Entry:
-        """The file entry a stat of `path` describes."""
+        """The file entry a stat describes."""
         executable = None if WINDOWS else bool(status.st_mode & stat.S_IXUSR)
         return cls(path, FILE, status.st_size, status.st_mtime_ns, executable)
 
@@ -493,13 +468,11 @@ def walk(root: str, scope: Scope) -> Iterator[Entry]:
 def _stated(root: str, scope: Scope, listed: Sequence[str]) -> Iterator[Entry]:
     made: set[str] = set()
     for path in listed:
-        parts = path.split("/")
-        folders = ["/".join(parts[:depth]) for depth in range(1, len(parts))]
         try:
             status = os.lstat(native(root, path))
         except OSError:
             continue
-        for folder in folders:
+        for folder in _ancestors(path):
             if folder not in made and any(
                 folder == top or folder.startswith(top + "/") for top in scope.roots
             ):
@@ -594,8 +567,8 @@ class Emitter:
 def survey(spec: SurveySpec, emit: Emitter) -> None:
     """Describe what this end holds: its capabilities first, then every scoped and named entry.
 
-    The root and its state directory are made on the way, since a fresh machine holds neither
-    and this is the first thing a mirror asks of it.
+    The root and its state directory are made on the way, since a fresh machine holds neither and
+    this is the first thing a mirror asks of it.
     """
     root = spec["root"]
     state = native(root, spec["state"])
@@ -667,11 +640,11 @@ def _prune(root: str, paths: Sequence[str]) -> tuple[list[str], list[str]]:
             else:
                 os.remove(path)
         except FileNotFoundError:
-            continue
+            pass
         except OSError:
             kept.append(relative)
-            continue
-        deleted.append(relative)
+        else:
+            deleted.append(relative)
     return deleted, kept
 
 
@@ -729,7 +702,8 @@ def _remove(path: str) -> None:
 
 
 def _relink(source: str, path: str) -> None:
-    """Point a link at `path` to `source`, replacing a link already there."""
+    """Point a link at `path` to `source`, its parent made and a link already there replaced."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.islink(path):
         os.remove(path)
     os.symlink(source, path)
@@ -836,16 +810,12 @@ class Sealed:
 
     def link(self, root: str, snap: str) -> None:
         """Check each pin and need on the mirror and link it into the tree."""
-        for pin in self.pins:
-            if not os.path.exists(native(root, pin)):
-                raise Refusal(f"the need {pin} is not on the mirror")
-        if self.pins and not os.path.exists(native(snap, self.staging)):
-            os.makedirs(os.path.dirname(native(snap, self.staging)), exist_ok=True)
-            _relink(native(root, self.staging), native(snap, self.staging))
-        for need in self.needs:
+        for need in (*self.pins, *self.needs):
             if not os.path.exists(native(root, need)):
                 raise Refusal(f"the need {need} is not on the mirror")
-            os.makedirs(os.path.dirname(native(snap, need)), exist_ok=True)
+        if self.pins and not os.path.exists(native(snap, self.staging)):
+            _relink(native(root, self.staging), native(snap, self.staging))
+        for need in self.needs:
             _relink(native(root, need), native(snap, need))
 
     def __rows(self, frozen: str) -> Iterator[tuple[str, str]]:
@@ -999,9 +969,7 @@ class Snapshot:
             handle, pending = tempfile.mkstemp(prefix=".pending.", dir=wrappers)
             os.close(handle)
             try:
-                source = native(self.root, checked(staged))
-                shutil.copyfile(source, pending)
-                shutil.copymode(source, pending)
+                shutil.copy(native(self.root, checked(staged)), pending)
                 if digest(pending) != expected:
                     raise Refusal("wrapper digest mismatch")
                 os.replace(pending, frozen)
@@ -1017,8 +985,7 @@ class Snapshot:
 def run(stdin: IO[bytes], stdout: IO[bytes], stderr: IO[str]) -> int:
     """Carry out the one request `stdin` holds, answering records on `stdout`; the exit status.
 
-    A refusal is one `mainboard:` line on `stderr` and status 3; anything else escapes as the
-    traceback it is.
+    A refusal is one `mainboard:` line on `stderr` and status 3; anything else escapes as itself.
     """
     request: Request = json.loads(stdin.readline())
     emit = Emitter(stdout)
