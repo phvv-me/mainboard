@@ -10,9 +10,6 @@ if TYPE_CHECKING:
 
 _MEGABYTE = 1 << 20
 
-# `git ls-tree -l` answers `mode type object size` before the tab; a blob is a file.
-_BLOB = "blob"
-
 
 class Check:
     """Every way the tree could fail somebody cloning it, or the next push, found at once.
@@ -47,7 +44,6 @@ class Check:
 
     @cached_property
     def lfs_installed(self) -> bool:
-        """Whether git-lfs answers on this machine."""
         return self.tree.root.git.ok("lfs", "version")
 
     def _findings(self, repo: Repo) -> list[Finding]:
@@ -92,10 +88,9 @@ class Check:
         recorded = repo.pointers()
         published = bool(repo.homes(repo.head()))
         for child in repo.children:
-            commit = recorded.get(repo.relative(child), "")
-            short = commit[:7]
-            if not commit:
+            if not (commit := recorded.get(repo.relative(child), "")):
                 continue
+            short = commit[:7]
             if not child.initialized:
                 detail = f"{child.name} is not checked out, so {short} is unverified"
                 findings.append(_warn(repo, "pointer", detail))
@@ -122,6 +117,7 @@ class Check:
         """Every file in HEAD over the ceiling, which a GitHub push refuses past 100 MB."""
         ceiling = self.tree.policy.ceiling_bytes
         listing = repo.git.out("ls-tree", "-r", "-l", "-z", "HEAD")
+        # Each entry is `mode type object size`, a tab, then the path; a blob is a file.
         entries = (entry.partition("\t") for entry in listing.split("\0") if entry)
         return [
             _fail(
@@ -132,7 +128,7 @@ class Check:
             )
             for meta, _, path in entries
             for _, kind, _, size in [meta.split()]
-            if kind == _BLOB and int(size) > ceiling
+            if kind == "blob" and int(size) > ceiling
         ]
 
     def _lfs(self, repo: Repo) -> list[Finding]:

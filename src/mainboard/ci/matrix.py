@@ -29,8 +29,6 @@ class PackageMirror:
     platform, with the host's excludes kept and the scope narrowed to the package. Nothing there
     is protected, since that root holds only this package and what its gate built from it, which
     git ignores and a mirror therefore never prunes.
-
-    dispatcher: the workspace's dispatch core.
     """
 
     def __init__(self, dispatcher: Dispatcher) -> None:
@@ -55,11 +53,7 @@ class Matrix:
 
     @classmethod
     def planned(cls, package: Package, board: Board) -> Matrix:
-        """This machine plus every `[ci]` host of a supported family this machine is not.
-
-        package: the package whose gate runs.
-        board: the workspace the package lives in, which declares the hosts.
-        """
+        """This machine plus every `[ci]` host of `board` of a supported family this one is not."""
         if not package.root.is_relative_to(board.root):
             raise MissionError(f"{package.root} is outside the workspace at {board.root}")
         relative = package.root.relative_to(board.root).as_posix()
@@ -81,9 +75,7 @@ class Matrix:
 
     def run(self) -> list[Result]:
         """Every leg's results, the legs run at once and reported in their declared order."""
+        gate = self.package.definition
         with ThreadPoolExecutor(max_workers=len(self.legs)) as pool:
-            settled = list(pool.map(self._leg, self.legs))
+            settled = list(pool.map(lambda leg: list(leg.run(gate.on(leg.family))), self.legs))
         return [result for results in settled for result in results]
-
-    def _leg(self, leg: Leg) -> list[Result]:
-        return list(leg.run(self.package.definition.on(leg.family)))

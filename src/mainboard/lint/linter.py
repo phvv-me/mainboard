@@ -40,7 +40,6 @@ class Linter:
     own, and every tool runs its `check` command, all at once since no two of them can race
     on a file.
 
-    root: the workspace root.
     manifest: the workspace manifest, whose `[lint]` table drives the pass.
     check: leave every file as it is and report what a writing pass would change.
     only: the steps to run, `text` naming the hygiene, every declared step when empty.
@@ -113,15 +112,8 @@ class Linter:
             ]
         if not lines:
             return []
-        return [
-            Outcome(
-                step=TEXT,
-                owner=".",
-                code=1,
-                seconds=time.monotonic() - started,
-                output="\n".join(lines),
-            )
-        ]
+        seconds = time.monotonic() - started
+        return [Outcome(step=TEXT, owner=".", code=1, seconds=seconds, output="\n".join(lines))]
 
     def _examined(self, path: Path, attributes: Attributes) -> list[str]:
         """Repair one file's text, or name the repair in a check, then say what is left.
@@ -200,12 +192,7 @@ class Linter:
             with self._provisioner.activated(env):
                 self._environments[env] = local.env.getdict()
         with ThreadPoolExecutor() as pool:
-            return list(
-                pool.map(
-                    lambda invocation: invocation.run(self._environments[invocation.env]),
-                    invocations,
-                )
-            )
+            return list(pool.map(lambda job: job.run(self._environments[job.env]), invocations))
 
     def _relative(self, path: Path) -> str:
         return path.relative_to(self.root).as_posix()

@@ -35,47 +35,36 @@ class Push:
 
     def run(self) -> list[Step]:
         """Push bottom-up, holding every parent of a submodule that did not get there."""
-        steps: list[Step] = []
-        stuck: set[str] = set()
-        for repo in reversed(self.tree.owned()):
-            blocked = [child.name for child in repo.children if child.name in stuck]
-            step = (
-                Step(repo=repo.name, outcome=Outcome.HELD, detail=f"{blocked[0]} did not push")
-                if blocked
-                else self._pushed(repo)
-            )
-            if not step.outcome.settled:
-                stuck.add(repo.name)
-            steps.append(step)
-        return steps
+        return self.tree.upward("push", _pushed)
 
-    def _pushed(self, repo: Repo) -> Step:
-        """Push one repository's branch, or say why it stayed."""
-        branch = repo.branch()
-        head = repo.head()
-        if not branch:
-            if homes := repo.homes(head):
-                detail = f"detached at {repo.short(head)}, already on {homes[0]}"
-                return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
-            detail = f"detached at {repo.short(head)}, which no remote branch holds; commit first"
-            return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
-        if missing := _unserved(repo):
-            detail = f"records {missing}, which its remote does not hold"
-            return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
-        upstream = repo.upstream()
-        ahead, behind = repo.counts(upstream)
-        target = upstream.removeprefix(f"{REMOTE}/") if upstream else branch
-        fallback = f"{_FALLBACK}/{target}"
-        if upstream and not ahead:
-            detail = f"{branch} level with {upstream}"
+
+def _pushed(repo: Repo) -> Step:
+    """Push one repository's branch, or say why it stayed."""
+    branch = repo.branch()
+    head = repo.head()
+    if not branch:
+        if homes := repo.homes(head):
+            detail = f"detached at {repo.short(head)}, already on {homes[0]}"
             return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
-        if behind:
-            detail = f"diverged from {upstream}: {ahead} ahead, {behind} behind; pull first"
-            return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
-        if f"{REMOTE}/{fallback}" in repo.homes(head):
-            detail = f"{target} is protected; {repo.short(head)} waits on {fallback}"
-            return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
-        return _delivered(repo, branch, target, tracked=bool(upstream))
+        detail = f"detached at {repo.short(head)}, which no remote branch holds; commit first"
+        return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
+    if missing := _unserved(repo):
+        detail = f"records {missing}, which its remote does not hold"
+        return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
+    upstream = repo.upstream()
+    ahead, behind = repo.counts(upstream)
+    target = upstream.removeprefix(f"{REMOTE}/") if upstream else branch
+    fallback = f"{_FALLBACK}/{target}"
+    if upstream and not ahead:
+        detail = f"{branch} level with {upstream}"
+        return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
+    if behind:
+        detail = f"diverged from {upstream}: {ahead} ahead, {behind} behind; pull first"
+        return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
+    if f"{REMOTE}/{fallback}" in repo.homes(head):
+        detail = f"{target} is protected; {repo.short(head)} waits on {fallback}"
+        return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
+    return _delivered(repo, branch, target, tracked=bool(upstream))
 
 
 def _delivered(repo: Repo, branch: str, target: str, *, tracked: bool) -> Step:

@@ -6,14 +6,14 @@ from .commit import Commit
 from .pull import Pull
 from .push import Push
 from .repo import Repo
-from .report import RepoState
+from .report import Outcome, RepoState, Step
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
     from ..manifest.schema.git import GitPolicy
-    from .report import Finding, Step
+    from .report import Finding
 
 # How many repositories talk to their remotes at once. A fetch is mostly waiting, so the tree's
 # thirty remotes answer in the time a handful take, without opening thirty connections at once.
@@ -31,7 +31,6 @@ class Tree:
     so a foreign repository's own submodules are its own business.
 
     root: the workspace root, the top of a git working tree.
-    policy: the workspace's `[git]` table.
     """
 
     def __init__(self, root: Path, policy: GitPolicy) -> None:
@@ -52,10 +51,7 @@ class Tree:
         return Pull(self).run()
 
     def commit(self, message: str) -> list[Step]:
-        """Commit every dirty owned repository, submodules before the pointers to them.
-
-        message: the commit message every repository's commit carries.
-        """
+        """Commit every dirty owned repository, submodules before the pointers to them."""
         return Commit(self, message).run()
 
     def push(self) -> list[Step]:
@@ -67,10 +63,9 @@ class Tree:
         return Check(self).run()
 
     def fetch(self, repos: Sequence[Repo]) -> dict[str, str]:
-        """Fetch every repository in `repos` at once, returning git's complaint for each failure.
+        """Fetch `repos` at once, returning git's complaint for each failure.
 
-        repos: the repositories to refresh, owned or not; a fetch writes only remote-tracking
-            refs, so reading a foreign remote leaves its checkout exactly as it was.
+        A fetch writes only remote-tracking refs, so a foreign checkout is left as it was.
         """
         with ThreadPoolExecutor(max_workers=_FETCHERS) as pool:
             complaints = list(pool.map(Repo.fetch, repos))
@@ -79,6 +74,25 @@ class Tree:
             for repo, complaint in zip(repos, complaints, strict=True)
             if complaint
         }
+
+    def upward(self, verb: str, act: Callable[[Repo], Step]) -> list[Step]:
+        """`act` on every owned repository bottom-up, holding each parent of one that did not.
+
+        verb: what the held step says the submodule did not do.
+        """
+        steps: list[Step] = []
+        stuck: set[str] = set()
+        for repo in reversed(self.owned()):
+            blocked = [child.name for child in repo.children if child.name in stuck]
+            step = (
+                Step(repo=repo.name, outcome=Outcome.HELD, detail=f"{blocked[0]} did not {verb}")
+                if blocked
+                else act(repo)
+            )
+            if not step.outcome.settled:
+                stuck.add(repo.name)
+            steps.append(step)
+        return steps
 
     def _owns(self, owner: str) -> bool:
         return self.policy.owns(owner, self.root.owner)

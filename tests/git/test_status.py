@@ -15,7 +15,9 @@ _NAME = st.from_regex(r"[A-Za-z0-9][A-Za-z0-9._-]{0,20}", fullmatch=True)
 
 
 @given(owner=_NAME, name=_NAME)
-def test_every_remote_spelling_names_the_same_owner(owner: str, name: str) -> None:
+def test_every_remote_spelling_names_the_same_owner_and_one_without_an_owner_names_nobody(
+    owner: str, name: str
+) -> None:
     """https, scp-like ssh, ssh URLs and local paths on either platform all agree."""
     spellings = [
         f"https://github.com/{owner}/{name}.git",
@@ -25,10 +27,7 @@ def test_every_remote_spelling_names_the_same_owner(owner: str, name: str) -> No
         f"C:\\remotes\\{owner}\\{name}.git",
     ]
     assert {owner_of(url) for url in spellings} == {owner}
-
-
-def test_a_url_with_no_owner_segment_names_nobody() -> None:
-    assert owner_of("") == owner_of("lonely.git") == ""
+    assert owner_of("") == owner_of(f"{name}.git") == ""
 
 
 @given(owner=_NAME, other=_NAME, name=_NAME)
@@ -97,11 +96,16 @@ def test_status_counts_what_the_next_commit_would_take(workspace: Workspace) -> 
     assert (lib.changed, lib.untracked) == (1, 1)
 
 
-def test_a_branch_tracking_nothing_counts_against_nothing(workspace: Workspace) -> None:
+def test_a_head_with_nothing_to_track_counts_against_nothing(workspace: Workspace) -> None:
+    """A branch tracking no upstream, then a detached HEAD whose trunk the remote lacks."""
     workspace.git(workspace.lib, "switch", "-q", "-c", "feature")
     lib = workspace.tree().status()[1]
     assert (lib.branch, lib.upstream, lib.ahead, lib.behind) == ("feature", "", 0, 0)
     assert lib.published == "origin/main"
+    workspace.git(workspace.lib, "switch", "-q", "--detach")
+    workspace.git(workspace.lib, "update-ref", "-d", "refs/remotes/origin/main")
+    lib = workspace.tree().status()[1]
+    assert (lib.upstream, lib.published) == ("", "")
 
 
 def test_the_trunk_is_declared_then_the_remote_head_then_main(workspace: Workspace) -> None:
@@ -114,14 +118,6 @@ def test_the_trunk_is_declared_then_the_remote_head_then_main(workspace: Workspa
     assert ref.trunk() == "trunk"
     workspace.git(workspace.ref, "remote", "set-head", "origin", "-d")
     assert ref.trunk() == "main"
-
-
-def test_a_detached_head_with_no_remote_trunk_counts_against_nothing(
-    workspace: Workspace,
-) -> None:
-    workspace.git(workspace.lib, "update-ref", "-d", "refs/remotes/origin/main")
-    lib = workspace.tree().status()[1]
-    assert (lib.upstream, lib.published) == ("", "")
 
 
 def test_a_repository_with_no_origin_is_owned_by_nobody(tmp_path: Path) -> None:

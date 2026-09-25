@@ -140,12 +140,10 @@ def test_a_package_that_never_arrived_runs_nothing(ssh: Ssh) -> None:
     assert ssh.calls == []
 
 
-def test_a_host_of_unknown_platform_cannot_be_a_leg() -> None:
+def test_a_leg_needs_its_hosts_platform_and_rides_the_default_ssh_policy_unless_given_one() -> (
+    None
+):
     with pytest.raises(MissionError, match=r"declare \[hosts.gpu\] platform"):
         RemoteLeg(plan("gpu", ""), "p", ship=_shipped([]))
-
-
-def test_a_remote_leg_uses_the_default_ssh_policy_when_given_none() -> None:
     leg = RemoteLeg(plan("gpu", "osx-arm64"), "p", ship=_shipped([]))
-    assert leg.family == "osx"
-    assert leg.ssh == SshTransport()
+    assert (leg.family, leg.ssh) == ("osx", SshTransport())

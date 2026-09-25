@@ -1,3 +1,7 @@
+from collections.abc import Callable
+
+import pytest
+
 from mainboard.git import Outcome, Step
 
 from .conftest import FOREIGN, OWNED, Workspace
@@ -6,16 +10,19 @@ from .conftest import FOREIGN, OWNED, Workspace
 def _advance(workspace: Workspace) -> Workspace:
     """Another machine moves the library and the reference forward and records both pointers."""
     colleague = workspace.colleague()
-    colleague.git(colleague.lib, "switch", "-q", "main")
-    colleague.forge.commit(colleague.lib, "theirs", {"lib.txt": "theirs\n"})
-    colleague.git(colleague.lib, "push", "-q", "origin", "main")
-    seed = workspace.forge.seed(FOREIGN, "ref")
-    upstream = workspace.forge.commit(seed, "upstream", {"ref.txt": "upstream\n"})
-    workspace.git(seed, "push", "-q", "origin", "main")
+    colleague.forge.publish(colleague.lib, {"lib.txt": "theirs\n"})
+    upstream = workspace.forge.publish(workspace.forge.seed(FOREIGN, "ref"), {"ref.txt": "up\n"})
     colleague.git(colleague.ref, "fetch", "-q", "origin")
     colleague.git(colleague.ref, "checkout", "-q", "--detach", upstream)
-    colleague.forge.commit(colleague.path, "Move both pointers", {})
-    colleague.git(colleague.path, "push", "-q", "origin", "main")
+    colleague.forge.publish(colleague.path, {})
+    return colleague
+
+
+def _advance_on_main(workspace: Workspace) -> Workspace:
+    """Another machine moves the library forward while this one sits on its `main`."""
+    colleague = workspace.colleague()
+    colleague.forge.publish(colleague.lib, {"lib.txt": "theirs\n"})
+    workspace.git(workspace.lib, "switch", "-q", "main")
     return colleague
 
 
@@ -95,22 +102,17 @@ def test_a_remote_that_does_not_answer_fails_its_repository(workspace: Workspace
     assert lib.outcome is Outcome.FAILED
 
 
-def test_a_follow_that_would_overwrite_local_changes_is_held(workspace: Workspace) -> None:
-    _advance(workspace)
-    (workspace.lib / "lib.txt").write_text("my uncommitted edit\n", encoding="utf-8")
-
-    lib = workspace.tree().pull()[1]
-
-    assert lib.outcome is Outcome.HELD
-    assert (workspace.lib / "lib.txt").read_text(encoding="utf-8") == "my uncommitted edit\n"
-
-
-def test_a_fast_forward_that_would_overwrite_local_changes_is_held(workspace: Workspace) -> None:
-    colleague = workspace.colleague()
-    colleague.git(colleague.lib, "switch", "-q", "main")
-    colleague.forge.commit(colleague.lib, "theirs", {"lib.txt": "theirs\n"})
-    colleague.git(colleague.lib, "push", "-q", "origin", "main")
-    workspace.git(workspace.lib, "switch", "-q", "main")
+@pytest.mark.parametrize(
+    "advance",
+    [
+        pytest.param(_advance, id="following the parent's new pointer"),
+        pytest.param(_advance_on_main, id="fast-forwarding the branch"),
+    ],
+)
+def test_a_move_that_would_overwrite_local_changes_is_held(
+    workspace: Workspace, advance: Callable[[Workspace], Workspace]
+) -> None:
+    advance(workspace)
     (workspace.lib / "lib.txt").write_text("my uncommitted edit\n", encoding="utf-8")
 
     lib = workspace.tree().pull()[1]
@@ -171,8 +173,7 @@ def test_a_branch_sitting_on_the_old_pointer_fast_forwards_to_the_new_one(
 def test_a_pointer_its_remote_cannot_serve_fails_the_checkout(workspace: Workspace) -> None:
     colleague = workspace.colleague()
     colleague.forge.commit(colleague.ref, "never pushed", {"x.txt": "x\n"})
-    colleague.forge.commit(colleague.path, "Record it", {})
-    colleague.git(colleague.path, "push", "-q", "origin", "main")
+    colleague.forge.publish(colleague.path, {})
 
     ref = workspace.tree().pull()[-1]
 

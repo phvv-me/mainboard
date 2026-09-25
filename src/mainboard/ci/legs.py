@@ -69,8 +69,6 @@ class Result(FrozenModel):
 
     leg: `local`, or the host alias the leg ran on.
     os: the leg's family.
-    step: the step's name.
-    verdict: how it ended.
     seconds: wall time, as this machine measured it.
     output: everything the step printed, stdout and stderr together.
     """
@@ -97,20 +95,13 @@ class Result(FrozenModel):
 
     def row(self) -> dict[str, str | float]:
         """The table row, output left to the transcript that already printed it."""
-        return {
-            "leg": self.leg,
-            "os": self.os,
-            "step": self.step,
-            "verdict": self.verdict,
-            "seconds": round(self.seconds, 1),
-        }
+        return self.model_dump(exclude={"seconds", "output"}) | {"seconds": round(self.seconds, 1)}
 
 
 class Leg(ABC):
     """The gate on one machine, stopping at the first step that fails.
 
     name: what the report calls the leg.
-    family: the machine's operating-system family.
     """
 
     def __init__(self, name: str, family: Family) -> None:

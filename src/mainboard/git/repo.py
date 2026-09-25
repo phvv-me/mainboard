@@ -65,11 +65,7 @@ def owner_of(url: str) -> str:
 
 
 def resolved(url: str, base: str) -> str:
-    """A submodule URL made absolute: a `./` or `../` one is relative to its parent's remote.
-
-    url: the URL `.gitmodules` declares.
-    base: the parent repository's own remote URL.
-    """
+    """A `.gitmodules` URL made absolute, a `./` or `../` one against the parent remote `base`."""
     if not url.startswith(("./", "../")):
         return url
     return posixpath.normpath(posixpath.join(base, url))
@@ -82,7 +78,6 @@ class Repo:
     commits or pulls changes the answer halfway through. Only what cannot change during a verb is
     cached: the remote URL, the owner and the submodule entries `.gitmodules` declares.
 
-    path: the working tree.
     name: the workspace-relative path, `.` for the root.
     declared: the URL the parent's `.gitmodules` declares, empty for the root.
     branch: the branch the parent's `.gitmodules` says this submodule follows, empty when none.
@@ -265,7 +260,7 @@ class Repo:
             commit,
             f"refs/remotes/{REMOTE}/",
         )
-        return [line for line in found.stdout.split() if line] if found.succeeded else []
+        return found.stdout.split() if found.succeeded else []
 
     def pointers(self) -> dict[str, str]:
         """The commit HEAD records for every submodule path, keyed by that path."""

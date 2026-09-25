@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from shlex import quote
 
@@ -37,10 +38,7 @@ _HEADER = '[workspace]\nname = "lint"\n'
 
 
 class Repository:
-    """A throwaway git work tree holding a workspace manifest and the stand-in tool.
-
-    root: the work tree, which is also the workspace root.
-    """
+    """A throwaway git work tree and workspace root, holding a manifest and the stand-in tool."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -49,17 +47,9 @@ class Repository:
 
     def git(self, *arguments: str) -> str:
         """Run git in the work tree, as an author whose identity no global config supplies."""
+        identity = ("-c", "user.name=lint", "-c", "user.email=lint@example.com")
         return subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.root),
-                "-c",
-                "user.name=lint",
-                "-c",
-                "user.email=lint@example.com",
-                *arguments,
-            ],
+            ["git", "-C", str(self.root), *identity, *arguments],
             check=True,
             capture_output=True,
             text=True,
@@ -81,8 +71,8 @@ class Repository:
         self.write("tool.py", _TOOL)
         self.write(Project().manifest, f"{_HEADER}\n{lint}")
 
-    def linter(self) -> Linter:
-        return Linter(self.root, load(self.root / Project().manifest))
+    def linter(self, *, check: bool = False, only: Sequence[str] = ()) -> Linter:
+        return Linter(self.root, load(self.root / Project().manifest), check=check, only=only)
 
 
 def tool(arguments: str) -> str:

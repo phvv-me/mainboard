@@ -14,9 +14,6 @@ if TYPE_CHECKING:
 # How many withheld paths a step names before it only counts the rest.
 _NAMED = 3
 
-# `git check-attr -z` answers in path, attribute, value triples.
-_TRIPLE = 3
-
 
 class Commit:
     """Commit every dirty owned repository, submodules first so each parent records their commits.
@@ -40,19 +37,7 @@ class Commit:
 
     def run(self) -> list[Step]:
         """Commit bottom-up, holding every parent of a submodule that did not get there."""
-        steps: list[Step] = []
-        stuck: set[str] = set()
-        for repo in reversed(self.tree.owned()):
-            blocked = [child.name for child in repo.children if child.name in stuck]
-            step = (
-                Step(repo=repo.name, outcome=Outcome.HELD, detail=f"{blocked[0]} did not commit")
-                if blocked
-                else self._committed(repo)
-            )
-            if not step.outcome.settled:
-                stuck.add(repo.name)
-            steps.append(step)
-        return steps
+        return self.tree.upward("commit", self._committed)
 
     def _committed(self, repo: Repo) -> Step:
         """Commit one repository's changes, or say why it was left alone."""
@@ -68,8 +53,7 @@ class Commit:
             detail = f"{behind} behind {upstream}; pull first"
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
         withheld = Intake(repo, self.tree.policy).withheld(changes)
-        pending = [change.path for change in changes if not change.staged]
-        _stage(repo, [path for path in pending if path not in withheld])
+        _stage(repo, [c.path for c in changes if not c.staged and c.path not in withheld])
         _stage(repo, sorted(withheld), "reset", "-q")
         note = _withheld(withheld)
         if repo.git.ok("diff", "--cached", "--quiet"):
@@ -82,11 +66,7 @@ class Commit:
 
 
 class Intake:
-    """Which of a repository's changed paths `[git]` keeps out of a commit.
-
-    repo: the repository the paths belong to.
-    policy: the workspace's `[git]` table.
-    """
+    """Which of a repository's changed paths `[git]` keeps out of a commit."""
 
     def __init__(self, repo: Repo, policy: GitPolicy) -> None:
         self.repo = repo
@@ -123,16 +103,17 @@ class Intake:
         if not oversized:
             return set()
         listing = self.repo.git.out("check-attr", "-z", "filter", "--", *oversized).split("\0")
-        triples = zip(*[iter(listing)] * _TRIPLE, strict=False)
+        # `git check-attr -z` answers in path, attribute, value triples.
+        triples = zip(*[iter(listing)] * 3, strict=False)
         lfs = {path for path, _, value in triples if value == "lfs"}
         return set(oversized) - lfs
 
     def _size(self, path: str) -> int:
         """The bytes `path` puts in history: its own, a symlink's rather than its target's.
 
-        A moved submodule is a directory here and a commit id in history, so it weighs nothing.
-        The directory's own size is filesystem bookkeeping (4096 on ext4, a few dozen bytes per
-        entry on APFS) and once withheld every pointer on Linux while macOS committed it.
+        A moved submodule is a directory here and a commit id in history, so it weighs nothing. A
+        directory's size is filesystem bookkeeping (4096 on ext4, a few dozen bytes per entry on
+        APFS), which once withheld every pointer on Linux while macOS committed it.
         """
         stat = (self.repo.path / path).lstat()
         return 0 if S_ISDIR(stat.st_mode) else stat.st_size

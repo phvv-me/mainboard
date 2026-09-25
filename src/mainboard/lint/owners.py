@@ -14,7 +14,6 @@ class Owners:
     so a package nested inside a research project is its own owner rather than its parent's.
     A file under no owner at all belongs to the workspace root.
 
-    root: the workspace root.
     patterns: glob patterns of owner directories, relative to the root.
     markers: file names that make the directory holding them an owner.
     """

@@ -29,8 +29,6 @@ class Inventory:
 
     Submodules are entered rather than skipped, since each one is a project of the monorepo
     whose files the owner scan checks, and git reports a submodule as one opaque path.
-
-    root: the workspace root, inside a git work tree.
     """
 
     def __init__(self, root: Path) -> None:
@@ -44,10 +42,7 @@ class Inventory:
         return sorted(set(self._changed(self.root)))
 
     def under(self, paths: Sequence[Path]) -> list[Path]:
-        """Every file at or beneath `paths` that git tracks or would track.
-
-        paths: absolute files or directories inside the root, each of which must exist.
-        """
+        """Every file git tracks or would track at or beneath the absolute, existing `paths`."""
         found: set[Path] = set()
         for path in paths:
             if not path.is_relative_to(self.root):
@@ -58,10 +53,7 @@ class Inventory:
         return sorted(found)
 
     def attributes(self, files: Sequence[Path]) -> dict[Path, Attributes]:
-        """The `text` and `eol` attributes of `files`, read in one batched query.
-
-        files: absolute paths beneath the root.
-        """
+        """The `text` and `eol` attributes of absolute `files`, read in one batched query."""
         names = [path.relative_to(self.root).as_posix() for path in files]
         fields = self._names(
             self.root, "check-attr", "-z", "--stdin", "text", "eol", stdin="\0".join(names)

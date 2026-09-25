@@ -1,6 +1,6 @@
 from mainboard.git import Outcome, Step
 
-from .conftest import Workspace
+from .conftest import Workspace, install
 
 # The fixture ceiling is 0.001 MB, 1048 bytes, so a file one byte past it is oversized.
 _HEAVY = b"x" * 1049
@@ -97,9 +97,7 @@ def test_a_repository_behind_its_upstream_holds_itself_and_every_parent(
     workspace: Workspace,
 ) -> None:
     colleague = workspace.colleague()
-    colleague.git(colleague.lib, "switch", "-q", "main")
-    colleague.forge.commit(colleague.lib, "theirs", {"theirs.txt": "theirs\n"})
-    colleague.git(colleague.lib, "push", "-q", "origin", "main")
+    colleague.forge.publish(colleague.lib, {"theirs.txt": "theirs\n"})
     workspace.git(workspace.lib, "fetch", "-q", "origin")
     (workspace.lib / "mine.txt").write_text("mine\n", encoding="utf-8")
     (workspace.path / "root.txt").write_text("root\n", encoding="utf-8")
@@ -132,9 +130,7 @@ def test_a_detached_head_off_its_trunk_is_held_rather_than_committed_nowhere(
 def test_a_detached_head_diverged_from_the_remote_trunk_is_held(workspace: Workspace) -> None:
     lib = workspace.lib
     colleague = workspace.colleague()
-    colleague.git(colleague.lib, "switch", "-q", "main")
-    colleague.forge.commit(colleague.lib, "theirs", {"theirs.txt": "theirs\n"})
-    colleague.git(colleague.lib, "push", "-q", "origin", "main")
+    colleague.forge.publish(colleague.lib, {"theirs.txt": "theirs\n"})
     workspace.git(lib, "branch", "-q", "-D", "main")
     workspace.forge.commit(lib, "mine", {"mine.txt": "mine\n"})
     workspace.git(lib, "fetch", "-q", "origin")
@@ -158,10 +154,9 @@ def test_a_detached_head_with_no_trunk_anywhere_gets_one_made_for_it(
 
 
 def test_a_hook_that_refuses_the_commit_fails_the_repository(workspace: Workspace) -> None:
-    hooks = workspace.path / ".git" / "hooks"
-    hook = hooks / "pre-commit"
-    hook.write_text("#!/bin/sh\necho 'lint says no' >&2\nexit 1\n", encoding="utf-8", newline="\n")
-    hook.chmod(0o755)
+    install(
+        workspace.path / ".git/hooks/pre-commit", "#!/bin/sh\necho 'lint says no' >&2\nexit 1\n"
+    )
     (workspace.path / "root.txt").write_text("root\n", encoding="utf-8")
 
     steps = workspace.tree().commit("Refused")

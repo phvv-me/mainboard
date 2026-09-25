@@ -55,7 +55,8 @@ class Pull:
             return Step(repo=repo.name, outcome=Outcome.FAILED, detail=complaint)
         notes: list[str] = []
         if follow and follow != repo.head():
-            moved = repo.git.run(*_forward(repo, follow))
+            verb = ("merge", "--ff-only") if repo.branch() else ("checkout", "--detach")
+            moved = repo.git.run(*verb, "-q", follow)
             if not moved.succeeded:
                 return Step(repo=repo.name, outcome=Outcome.HELD, detail=said(moved))
             notes.append(f"followed the parent to {repo.short(follow)}")
@@ -102,13 +103,6 @@ class Pull:
         return self._submodule(parent, child, "moved to")
 
 
-def _forward(repo: Repo, commit: str) -> tuple[str, ...]:
-    """The git call that moves `repo` to `commit`: a fast-forward on a branch, else a checkout."""
-    if repo.branch():
-        return ("merge", "--ff-only", "-q", commit)
-    return ("checkout", "-q", "--detach", commit)
-
-
 def _attached(repo: Repo) -> str:
     """Put a detached HEAD back on its trunk, moving forward onto it when the trunk is ahead.
 
@@ -119,10 +113,5 @@ def _attached(repo: Repo) -> str:
         return trunk
     trunk = repo.trunk()
     local = f"refs/heads/{trunk}"
-    if (
-        repo.exists(local)
-        and repo.ancestor("HEAD", local)
-        and repo.git.ok("checkout", "-q", trunk)
-    ):
-        return trunk
-    return ""
+    forward = repo.exists(local) and repo.ancestor("HEAD", local)
+    return trunk if forward and repo.git.ok("checkout", "-q", trunk) else ""

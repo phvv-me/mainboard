@@ -28,7 +28,6 @@ class Step(FrozenModel):
     """One repository's line in a pull, commit or push.
 
     repo: the repository's workspace-relative path, `.` for the root.
-    outcome: what happened to it.
     detail: the commit, the branch or git's own words behind the outcome.
     """
 
@@ -45,8 +44,6 @@ class RepoState(FrozenModel):
     branch: the checked-out branch, `detached` when HEAD is on no branch.
     head: the short commit HEAD is on.
     upstream: the remote branch counted against, a detached HEAD's trunk on the remote.
-    ahead: commits HEAD has that the upstream does not.
-    behind: commits the upstream has that HEAD does not.
     changed: tracked paths changed, staged or not, a moved submodule pointer included.
     untracked: files git does not track yet. Neither count includes a `never-commit` path, so
         both say what the next commit would take.

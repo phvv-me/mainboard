@@ -9,7 +9,6 @@ def git(repository: Path, *arguments: str, stdin: str = "") -> subprocess.Comple
     """One git command run in `repository`, bytes in and out so no locale reads a path.
 
     repository: any directory inside the work tree the command addresses.
-    arguments: the git subcommand and its arguments.
     stdin: what the command reads, for the `--stdin` queries.
     """
     return subprocess.run(

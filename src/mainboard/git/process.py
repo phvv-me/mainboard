@@ -14,17 +14,11 @@ from ..engines.compile.backend.result import CommandResult
 # order a pointer needs, and git's own recursion would fetch, check out or push the foreign ones
 # too, and fail a parent's fetch over a submodule remote that cannot serve one pointer.
 _QUIET = (
-    "-c",
     "core.safecrlf=false",
-    "-c",
     "color.ui=never",
-    "-c",
     "core.pager=cat",
-    "-c",
     "submodule.recurse=false",
-    "-c",
     "fetch.recurseSubmodules=false",
-    "-c",
     "push.recurseSubmodules=no",
 )
 
@@ -47,10 +41,7 @@ _GITHUB_HELPER = "credential.https://github.com.helper"
 
 
 class Git:
-    """Git run in one working tree, captured and never prompting.
-
-    path: the working tree every call runs in.
-    """
+    """Git run in one working tree, captured and never prompting."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -58,11 +49,11 @@ class Git:
     def run(self, *args: str, stdin: str = "", network: bool = False) -> CommandResult:
         """Run `git args` here, whatever it exits with.
 
-        args: the git subcommand and its arguments.
         stdin: text fed to the command, for a `--pathspec-from-file=-`.
         network: bound the call and offer the `gh` credential, for a fetch, push or clone.
         """
-        argv = [_executable(), "-C", str(self.path), *_QUIET]
+        argv = [_executable(), "-C", str(self.path)]
+        argv += [word for setting in _QUIET for word in ("-c", setting)]
         if network:
             argv.extend(_credential())
         try:
@@ -114,15 +105,13 @@ def said(result: CommandResult) -> str:
 @cache
 def _executable() -> str:
     """The git on PATH, refused by name when there is none."""
-    found = shutil.which("git")
-    if found is None:
+    if (found := shutil.which("git")) is None:
         raise MissionError("git is not on PATH; install it before operating the repository tree")
     return found
 
 
 def _credential() -> tuple[str, ...]:
     """The `gh` credential helper appended for a GitHub call, nothing when `gh` is absent."""
-    found = shutil.which("gh")
-    if found is None:
+    if (found := shutil.which("gh")) is None:
         return ()
     return ("-c", f'{_GITHUB_HELPER}=!"{Path(found).as_posix()}" auth git-credential')
