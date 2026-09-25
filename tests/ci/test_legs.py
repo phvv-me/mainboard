@@ -33,7 +33,8 @@ def test_a_local_leg_stops_at_the_first_failure_and_names_what_it_never_ran(
         ("fail", Verdict.FAILED),
         ("after", Verdict.NOT_RUN),
     ]
-    assert results[0].output.split() == [str(package.root.resolve()), "None"]
+    where, venv = results[0].output.split()
+    assert (Path(where).resolve(), venv) == (package.root.resolve(), "None")
     assert results[1].transcript.startswith(f"local [{leg.family}] fail: failed in ")
     assert results[1].transcript.endswith("broken")
     assert results[2].transcript == ""

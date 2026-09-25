@@ -546,7 +546,7 @@ def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liven
         "-p",
         "41022",
         "-i",
-        str(Path("/keys/id")),
+        "/keys/id",
         "-o",
         "IdentitiesOnly=yes",
         "-o",
@@ -556,7 +556,7 @@ def test_a_policy_bound_to_a_rental_carries_where_that_machine_is_past_the_liven
         "-o",
         "LogLevel=ERROR",
     )
-    key = shlex.join(("-i", str(Path("/keys/id"))))
+    key = shlex.join(("-i", "/keys/id"))
     assert "-p 41022" in policy.rsync_shell and key in policy.rsync_shell
     assert Path(Endpoint(address="a", identity="~/.ssh/id").identity).is_absolute()
 

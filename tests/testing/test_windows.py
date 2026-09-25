@@ -4,7 +4,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 
 import pytest
 
@@ -114,7 +114,7 @@ def test_a_live_temporary_file_is_held_and_a_link_needs_a_privilege(tmp_path: Pa
 def test_a_rendered_spelling_is_read_back_only_where_the_system_reads_it() -> None:
     spelling = Spelling()
     windows = spelling.text(PurePath.__str__)
-    absolute, relative = PurePath("/w/pkg"), PurePath("pkg/one.py")
+    absolute, relative = PurePosixPath("/w/pkg"), PurePosixPath("pkg/one.py")
 
     assert windows(absolute) == "\\w\\pkg"
     assert windows(relative) == "pkg\\one.py"

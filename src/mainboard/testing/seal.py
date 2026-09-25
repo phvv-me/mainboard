@@ -8,6 +8,11 @@
 # that leaves loopback, and whatever it refuses fails the test even when the code under test
 # swallowed the refusal.
 #
+# The same seal keeps this machine's own git configuration out: a developer's signing key, hooks
+# template, default branch or LFS filter never reaches a test, and a runner's never does either,
+# so a git fixture behaves the same on every machine, and one that leaned on a global identity
+# fails here first rather than on a fresh runner.
+#
 # Two layers, because a remote tool is reached two ways. Python's own spawns all funnel through
 # `Popen._execute_child`, whichever module imported `Popen` and however it spelled the command,
 # so wrapping that one method sees plumbum's ssh sessions and a bare `subprocess.run` alike. A
@@ -126,7 +131,14 @@ class Seal:
             stand_in = directory / tool
             stand_in.write_text(_STAND_IN, encoding="utf-8", newline="\n")
             stand_in.chmod(0o755)
-        return cls(directory)
+        sealed = cls(directory)
+        sealed.gitconfig.write_text("", encoding="utf-8")
+        return sealed
+
+    @property
+    def gitconfig(self) -> Path:
+        """The empty git configuration every test reads in place of this machine's own."""
+        return self.stand_ins / "gitconfig"
 
     @property
     def log(self) -> Path:
@@ -136,8 +148,12 @@ class Seal:
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Refuse remote spawns and connections for as long as `monkeypatch` holds."""
         self.log.write_text("", encoding="utf-8")
-        monkeypatch.setenv(_LOG_VAR, str(self.log))
-        monkeypatch.setenv("PATH", os.pathsep.join([str(self.stand_ins), os.environ["PATH"]]))
+        monkeypatch.setenv(_LOG_VAR, os.fspath(self.log))
+        monkeypatch.setenv(
+            "PATH", os.pathsep.join([os.fspath(self.stand_ins), os.environ["PATH"]])
+        )
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.fspath(self.gitconfig))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
         spawn = getattr(subprocess.Popen, SPAWN)
         monkeypatch.setattr(subprocess.Popen, SPAWN, self._spawning(spawn))
         for name in ("connect", "connect_ex"):

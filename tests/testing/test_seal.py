@@ -78,12 +78,12 @@ def test_a_connection_off_this_machine_is_refused_and_loopback_still_connects(
     seal.attempts.clear()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the stand-ins are POSIX shell scripts")
 def test_a_tool_that_starts_ssh_itself_meets_a_stand_in_that_logs_it(seal: Seal) -> None:
     """rsync's `-e` and git over ssh never pass back through Python, so PATH catches them."""
-    done = subprocess.run(
-        [shutil.which("sh") or "sh", "-c", "ssh gold uptime"], capture_output=True, text=True
-    )
+    shell = shutil.which("sh")
+    if shell is None or sys.platform == "win32":
+        pytest.skip("the stand-ins are POSIX shell scripts, and this machine runs none")
+    done = subprocess.run([shell, "-c", "ssh gold uptime"], capture_output=True, text=True)
     assert done.returncode == 255
     assert "sealed" in done.stderr
     assert seal.breaches() == ["spawned ssh gold uptime"]
@@ -112,3 +112,14 @@ def test_a_test_that_swallowed_the_refusal_still_fails(pytester: pytest.Pytester
     result = pytester.runpytest("-p", "no:cacheprovider", "-o", "addopts=")
     result.assert_outcomes(passed=1, errors=1)
     result.stdout.fnmatch_lines(["*the test reached another machine: spawned scp*"])
+
+
+def test_this_machines_git_configuration_never_reaches_a_test(sealed: Seal) -> None:
+    """A signing key or hooks template, a developer's or a runner's, would skew git fixtures."""
+    assert Path(os.environ["GIT_CONFIG_GLOBAL"]) == sealed.gitconfig
+    assert sealed.gitconfig.read_text(encoding="utf-8") == ""
+    assert os.environ["GIT_CONFIG_NOSYSTEM"] == "1"
+    listed = subprocess.run(
+        ["git", "config", "--global", "--list"], capture_output=True, text=True
+    )
+    assert listed.stdout == ""

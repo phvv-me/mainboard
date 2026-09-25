@@ -401,7 +401,7 @@ def test_a_rental_is_created_waiting_for_a_landing_and_read_back_off_its_ssh_lin
     )
     assert rental.handle == "notebook-42"
     assert rental.endpoint.destination == "ubuntu@gpu.hpc-ai.com"
-    assert (rental.endpoint.port, rental.endpoint.identity) == (30022, str(key))
+    assert (rental.endpoint.port, rental.endpoint.identity) == (30022, key.as_posix())
 
 
 def test_an_instance_that_publishes_no_ssh_endpoint_is_terminated_and_names_the_console_keys(

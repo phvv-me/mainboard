@@ -56,9 +56,18 @@ POSIX_TOOLS = frozenset(
 )
 
 # Where the interpreter's own code and every installed distribution live. A frame from any of
-# them keeps the real spelling, since that is the machinery that has to go on working.
+# them keeps the real spelling, since that is the machinery that has to go on working. Each is
+# taken as sysconfig names it, as its links resolve, and as the loaded standard library itself
+# reports it, because a uv-managed interpreter is reached through a link that names another
+# directory than the one its code objects were compiled from.
+_DECLARED = [sysconfig.get_path(key) for key in ("stdlib", "platstdlib", "purelib", "platlib")]
 _SYSTEM = tuple(
-    {sysconfig.get_path(key) for key in ("stdlib", "platstdlib", "purelib", "platlib")}
+    {
+        *_DECLARED,
+        *(os.path.realpath(path) for path in _DECLARED),
+        os.path.dirname(os.__file__),
+        os.path.dirname(posixpath.__file__),
+    }
 )
 
 
@@ -68,7 +77,9 @@ def first_party(filename: str) -> bool:
 
     filename: a code object's `co_filename`.
     """
-    return not filename.startswith(("<", *_SYSTEM))
+    return not filename.startswith(("<", *_SYSTEM)) and not os.path.realpath(filename).startswith(
+        _SYSTEM
+    )
 
 
 class Spelling:

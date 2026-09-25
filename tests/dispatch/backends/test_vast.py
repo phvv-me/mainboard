@@ -825,7 +825,7 @@ def test_a_rental_is_created_waiting_for_a_landing_rather_than_running_the_comma
     assert attach == {"ssh_key": "ssh-ed25519 AAAA me@here"}
     assert rental.handle == "4242"
     assert rental.endpoint.destination == "root@ssh5.vast.ai"
-    assert (rental.endpoint.port, rental.endpoint.identity) == (41022, str(key))
+    assert (rental.endpoint.port, rental.endpoint.identity) == (41022, key.as_posix())
 
 
 def test_a_create_refused_as_no_such_ask_re_picks_the_next_offer_on_the_page(
