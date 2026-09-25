@@ -90,6 +90,12 @@ class FakeCupti:
     def get_callback_name(self, _domain: int, cbid: int) -> str:
         return f"cb_{cbid}"
 
+    def get_context_id(self, context: int) -> int:
+        return 2
+
+    def get_device_id(self, context: int) -> int:
+        return 1
+
     def get_timestamp(self) -> int:
         return 123
 

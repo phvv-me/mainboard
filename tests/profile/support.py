@@ -31,6 +31,22 @@ class FakeActivityKind:
     MEMORY_POOL = 512
 
 
+class RecordingSession:
+    """A `SpanSession` stand-in that records every name opened and every wall time closed."""
+
+    def __init__(self) -> None:
+        self.entered: list[str] = []
+        self.walls: list[int] = []
+
+    def enter(self, name: str) -> int:
+        self.entered.append(name)
+        return len(self.entered)
+
+    def exit(self, token: int, *, wall_ns: int) -> None:
+        del token
+        self.walls.append(wall_ns)
+
+
 class FakeUtilization:
     """A `DeviceUtilization`-shaped stand-in with fixed compute/memory percentages."""
 

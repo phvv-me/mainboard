@@ -130,6 +130,23 @@ def test_a_scope_collects_every_local_path_requirement_across_its_ecosystems(
     assert set(scope.path_deps()) == set(names)
 
 
+def test_a_scope_answers_a_requirement_from_conda_first_then_each_ecosystem() -> None:
+    """Whoever asks for a package does not care which table it arrives through."""
+    scope = Scope.model_validate(
+        {
+            "deps": {"python": "3.14.*"},
+            "nodejs": {"deps": {"left-pad": "*"}},
+            "python": {"deps": {"python": ">=3", "torch": ">=2.9"}},
+        }
+    )
+    found = {name: scope.requirement(name) for name in ("python", "torch", "absent")}
+    assert {name: spec and spec.version for name, spec in found.items()} == {
+        "python": "3.14.*",
+        "torch": ">=2.9",
+        "absent": None,
+    }
+
+
 def test_the_environment_roster_answers_by_name_and_refuses_a_stranger() -> None:
     """`default` is always there because pixi always has it, and everything else is declared."""
     manifest = Manifest(workspace=Header(name="lab"), envs={"serving": Env()})

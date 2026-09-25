@@ -1,4 +1,13 @@
-from mainboard.probe.stress import Precision, Stress, StressReport, rows
+import runpy
+import sys
+import time
+
+import pytest
+
+from mainboard.probe import GPU, NvidiaGPU
+from mainboard.probe.stress import Precision, Stress, StressReport, TorchKernels, rows
+
+from .support import FakeNvidiaApis, FakeTorch
 
 
 class FakeKernels:
@@ -58,3 +67,72 @@ def test_rows_and_round_trip() -> None:
     listed = rows(report)
     assert [row["measure"] for row in listed][:2] == ["FP64", "FP32"]
     assert [row["unit"] for row in listed][-3:] == ["GB/s"] * 3
+
+
+@pytest.mark.parametrize(
+    ("index", "clock_khz"), [(0, 2_520_000), (1, 0)], ids=["probed", "unprobed"]
+)
+def test_torch_kernels_describe_the_card_with_the_probed_peak_clock(
+    index: int,
+    clock_khz: int,
+    fake_torch: FakeTorch,
+    nvidia_host: FakeNvidiaApis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The datasheet clock comes from the host probe, and a device it did not find has none."""
+    monkeypatch.setattr(GPU, "all", staticmethod(lambda: (NvidiaGPU(index=0),)))
+    kernels = TorchKernels(index)
+    assert fake_torch.cuda.current == f"cuda:{index}"
+    assert kernels.describe() == ("NVIDIA GeForce RTX 4090", (8, 9), 128, clock_khz)
+
+
+def test_torch_kernels_reach_each_precisions_own_library_routine(fake_torch: FakeTorch) -> None:
+    """TF32 is FP32 with the tensor-core switch on, FP8 is scaled into BF16, INT8 is integer.
+
+    Every copy moves between the right ends, and the host side of a transfer is asynchronous.
+    """
+    kernels = TorchKernels()
+    for precision in Precision:
+        kernels.gemm(precision, 4)()
+    for path in ("device_to_device", "host_to_device", "device_to_host"):
+        kernels.copy(path, 1)()
+    kernels.synchronize()
+    assert fake_torch.calls == [
+        ("matmul", "float64", False),
+        ("matmul", "float32", False),
+        ("matmul", "float32", True),
+        ("matmul", "float16", True),
+        ("matmul", "bfloat16", True),
+        ("_scaled_mm", "float8_e4m3fn", "bfloat16"),
+        ("_int_mm", "int8"),
+        ("copy", "cuda:0", "cuda:0", False),
+        ("copy", "cpu", "cuda:0", True),
+        ("copy", "cuda:0", "cpu", True),
+    ]
+    assert fake_torch.cuda.synchronized == 1
+
+
+# Running the imported module again as `__main__` is the point, and the entry reads `sys.argv`.
+@pytest.mark.filterwarnings("ignore:'mainboard.probe.stress' found in sys.modules:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:Cyclopts application invoked without tokens:UserWarning")
+def test_the_module_entry_prints_the_report_a_dispatched_probe_reads_back(
+    fake_torch: FakeTorch,
+    nvidia_host: FakeNvidiaApis,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`python -m mainboard.probe.stress` measures the named device and prints one JSON line."""
+    ticks = iter(range(10_000))
+    monkeypatch.setattr(time, "perf_counter", lambda: next(ticks) * 1e-3)
+    monkeypatch.setattr(GPU, "all", staticmethod(lambda: (NvidiaGPU(index=0),)))
+    monkeypatch.setattr(sys, "argv", ["stress", "--n", "64", "--repetitions", "1"])
+    with pytest.raises(SystemExit, match="^0$"):
+        runpy.run_module("mainboard.probe.stress", run_name="__main__", alter_sys=True)
+    report = StressReport.model_validate_json(capsys.readouterr().out)
+    assert (report.device, report.capability, report.clock_khz) == (
+        "NVIDIA GeForce RTX 4090",
+        "8.9",
+        2_520_000,
+    )
+    assert all(rate.supported for rate in report.rates)
+    assert report.rates[0].n == 32

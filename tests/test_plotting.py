@@ -56,6 +56,51 @@ def test_bars_require_explicit_sql_aggregation(tmp_path: Path) -> None:
         plotting.Plot(frame).save(tmp_path / "refused.png", x="x", y="y", kind="bar")
 
 
+@pytest.mark.parametrize(
+    ("names", "dpi", "kind", "message"),
+    [
+        ((), None, "scatter", "output path and a positive DPI"),
+        (("plot.png",), 0, "scatter", "output path and a positive DPI"),
+        (("plot.png", "plot.png"), None, "scatter", "must be distinct"),
+        (("plot.png",), None, "pie", "scatter, line, or bar"),
+    ],
+    ids=["no_output", "zero_dpi", "repeated_output", "unknown_kind"],
+)
+def test_a_malformed_request_is_refused_before_anything_is_written(
+    tmp_path: Path, names: tuple[str, ...], dpi: int | None, kind: str, message: str
+) -> None:
+    frame = pl.DataFrame({"x": [1], "y": [2.0]})
+    paths = [tmp_path / name for name in names]
+    with pytest.raises(ValueError, match=message):
+        plotting.Plot(frame).save(*paths, x="x", y="y", kind=kind, dpi=dpi)
+    assert not list(tmp_path.iterdir())
+    assert not plotting.plt.get_fignums()
+
+
+def test_explicit_style_colors_paint_every_hue_level_and_refuse_a_missing_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A named color is an identity, so a level without one is an error, not a palette slot."""
+    seen = []
+
+    def inspect_colors(canvas, paths) -> None:
+        seen.extend(
+            plotting.mpl.colors.to_hex(color)
+            for color in canvas.axes[0].collections[0].get_facecolors()
+        )
+
+    frame = pl.DataFrame({"x": [1, 2], "y": [2.0, 3.0], "engine": ["ours", "baseline"]})
+    style = PlotStyle(colors={"baseline": "#aa2222", "ours": "#7755aa"})
+    picture = plotting.Plot(frame, style)
+    monkeypatch.setattr(picture, "_publish", inspect_colors)
+    picture.save(tmp_path / "named.png", x="x", y="y", hue="engine")
+    assert seen == ["#7755aa", "#aa2222"]
+    partial = plotting.Plot(frame, PlotStyle(colors={"ours": "#7755aa"}))
+    with pytest.raises(ValueError, match=r"no explicit colors for \['baseline'\]"):
+        partial.save(tmp_path / "refused.png", x="x", y="y", hue="engine")
+    assert not plotting.plt.get_fignums()
+
+
 def test_bad_output_formats_leave_no_partial_render(tmp_path: Path) -> None:
     frame = pl.DataFrame({"x": [1], "y": [2.0]})
     with pytest.raises(ValueError, match="unsupported plot extension"):

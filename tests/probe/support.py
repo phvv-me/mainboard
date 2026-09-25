@@ -1,3 +1,4 @@
+from types import ModuleType, SimpleNamespace
 from typing import NoReturn, Protocol
 
 from mainboard.probe.providers.nvidia.gpu import visible_devices
@@ -114,8 +115,9 @@ class FakeUtilizationReading:
 
 
 class FakeClockType:
-    """Mimic `nvmlClockType_t`, read only for the memory-clock domain."""
+    """Mimic `nvmlClockType_t` for the SM and memory clock domains, numbered like NVML."""
 
+    CLOCK_SM = 1
     CLOCK_MEM = 2
 
 
@@ -214,7 +216,8 @@ class FakeNvml:
         return f"handle:{uuid.decode()}"
 
     def device_get_max_clock_info(self, handle: str, clock: int) -> int:
-        return 10501
+        # A 4090's boost SM clock and its memory clock, both in MHz as NVML answers them.
+        return 2520 if clock == FakeClockType.CLOCK_SM else 10501
 
     def device_get_memory_bus_width(self, handle: str) -> int:
         return 384
@@ -295,3 +298,107 @@ class InstallNvidiaStack(Protocol):
     def __call__(
         self, *, device_count: int = 2, has_cuda_core: bool = True, coherent: bool = False
     ) -> FakeNvidiaApis: ...
+
+
+class FakeTensor:
+    """A tensor that remembers its dtype and where it lives, and logs every copy into it."""
+
+    def __init__(self, torch: FakeTorch, dtype: str, device: str) -> None:
+        self.torch = torch
+        self.dtype = dtype
+        self.device = device
+
+    def contiguous(self) -> FakeTensor:
+        return self
+
+    def copy_(self, source: FakeTensor, non_blocking: bool = False) -> FakeTensor:
+        self.torch.calls.append(("copy", source.device, self.device, non_blocking))
+        return self
+
+    def t(self) -> FakeTensor:
+        return self
+
+    def to(self, dtype: str) -> FakeTensor:
+        return FakeTensor(self.torch, dtype, self.device)
+
+
+class FakeTorchCuda:
+    """`torch.cuda` for one RTX 4090, counting the synchronizations a timing pays."""
+
+    def __init__(self) -> None:
+        self.current = ""
+        self.synchronized = 0
+
+    def get_device_properties(self, index: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            name="NVIDIA GeForce RTX 4090", major=8, minor=9, multi_processor_count=128
+        )
+
+    def set_device(self, device: str) -> None:
+        self.current = device
+
+    def synchronize(self, device: str) -> None:
+        self.synchronized += 1
+
+
+class FakeTorch(ModuleType):
+    """The slice of PyTorch the stress probe drives, logging each library call it makes.
+
+    Dtypes are their names, a device is `kind:index`, and every GEMM or copy appends one
+    entry to `calls`, so a test reads which library routine each precision reached.
+    """
+
+    float8_e4m3fn = "float8_e4m3fn"
+    bfloat16 = "bfloat16"
+    float16 = "float16"
+    float32 = "float32"
+    float64 = "float64"
+    int8 = "int8"
+    uint8 = "uint8"
+
+    def __init__(self) -> None:
+        super().__init__("torch")
+        self.calls: list[tuple[str | bool, ...]] = []
+        self.cuda = FakeTorchCuda()
+        self.backends = SimpleNamespace(
+            cuda=SimpleNamespace(matmul=SimpleNamespace(allow_tf32=False))
+        )
+
+    def device(self, kind: str, index: int) -> str:
+        return f"{kind}:{index}"
+
+    def empty(
+        self, count: int, *, dtype: str, device: str = "cpu", pin_memory: bool = False
+    ) -> FakeTensor:
+        return FakeTensor(self, dtype, device)
+
+    def empty_like(self, tensor: FakeTensor) -> FakeTensor:
+        return FakeTensor(self, tensor.dtype, tensor.device)
+
+    def matmul(self, left: FakeTensor, right: FakeTensor) -> None:
+        self.calls.append(("matmul", left.dtype, self.backends.cuda.matmul.allow_tf32))
+
+    def ones(self, shape: tuple[int, ...], *, device: str) -> FakeTensor:
+        return FakeTensor(self, self.float32, device)
+
+    def randint(
+        self, low: int, high: int, shape: tuple[int, int], *, device: str, dtype: str
+    ) -> FakeTensor:
+        return FakeTensor(self, dtype, device)
+
+    def randn(self, *shape: int, device: str, dtype: str = float32) -> FakeTensor:
+        return FakeTensor(self, dtype, device)
+
+    def _int_mm(self, left: FakeTensor, right: FakeTensor) -> None:
+        self.calls.append(("_int_mm", left.dtype))
+
+    def _scaled_mm(
+        self,
+        left: FakeTensor,
+        right: FakeTensor,
+        *,
+        scale_a: FakeTensor,
+        scale_b: FakeTensor,
+        out_dtype: str,
+    ) -> None:
+        self.calls.append(("_scaled_mm", left.dtype, out_dtype))

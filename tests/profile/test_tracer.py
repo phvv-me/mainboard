@@ -1,6 +1,6 @@
 import pytest
 
-from mainboard.profile import Activity, CallbackSession, Tracer, Vendor
+from mainboard.profile import Activity, CallbackSession, TraceCollector, Tracer, Vendor
 
 
 class SupportingTracer(Tracer):
@@ -18,7 +18,10 @@ class FullTracer(Tracer):
 
 
 def test_tracer_base_is_an_unavailable_noop() -> None:
-    """The base tracer annotates nothing, supports nothing, and is never available."""
+    """The base tracer annotates nothing, supports nothing, and is never available.
+
+    Opening kinds a subclass has already resolved hands back the no-op base collector.
+    """
     tracer = Tracer()
     assert Tracer.is_available() is False
     tracer.push("x")
@@ -30,6 +33,7 @@ def test_tracer_base_is_an_unavailable_noop() -> None:
     with pytest.raises(ValueError, match="no activity collector available"):
         tracer.collect()
     assert isinstance(tracer.callbacks(), CallbackSession)
+    assert type(tracer.open(Activity.KERNEL)) is TraceCollector
 
 
 @pytest.mark.parametrize(

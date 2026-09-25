@@ -1,17 +1,14 @@
 """Capture barriers and loss accounting, without CUDA initialization."""
 
 import types
-from typing import TYPE_CHECKING
 
 import pytest
 
 from mainboard.profile import Activity
 from mainboard.profile.providers import nvidia_tracer as nv
 
+from .test_nvidia_tracer import FakeCupti
 from .test_nvidia_tracer import fake_cupti as fake_cupti
-
-if TYPE_CHECKING:
-    from .test_nvidia_tracer import FakeCupti
 
 
 def test_device_sync_requires_the_runtime_binding(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -20,6 +17,85 @@ def test_device_sync_requires_the_runtime_binding(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(nv, "cuda_runtime", None)
     with pytest.raises(RuntimeError, match="runtime binding is required"):
         nv._sync()
+
+
+@pytest.mark.parametrize(
+    "failure", [None, ImportError, OSError], ids=["loads", "absent", "broken"]
+)
+def test_the_runtime_binding_is_imported_once_on_first_use(
+    monkeypatch: pytest.MonkeyPatch, failure: type[Exception] | None
+) -> None:
+    """A missing or broken CUDA library answers no binding, and neither outcome is retried."""
+    binding = types.SimpleNamespace()
+    imports: list[str] = []
+
+    def load(name: str) -> types.SimpleNamespace:
+        imports.append(name)
+        if failure is not None:
+            raise failure(name)
+        return binding
+
+    monkeypatch.setattr(nv, "_runtime_loaded", False)
+    monkeypatch.setattr(nv, "cuda_runtime", None)
+    monkeypatch.setattr(nv, "import_module", load)
+    expected = binding if failure is None else None
+    assert nv._runtime() is expected
+    assert nv._runtime() is expected
+    assert imports == ["cuda.bindings.runtime"]
+
+
+def install_scope(
+    monkeypatch: pytest.MonkeyPatch, device: tuple[int, int] | None, context: tuple[int, int]
+) -> None:
+    """Answer the current device through the runtime and the current context through the driver.
+
+    device: `cudaGetDevice`'s status and ordinal, or None for a host without the runtime.
+    context: `cuCtxGetCurrent`'s status and context handle.
+    """
+    runtime = None if device is None else types.SimpleNamespace(cudaGetDevice=lambda: device)
+    driver = types.SimpleNamespace(cuCtxGetCurrent=lambda: context)
+    monkeypatch.setattr(nv, "_runtime_loaded", True)
+    monkeypatch.setattr(nv, "cuda_runtime", runtime)
+    monkeypatch.setattr(nv, "cupti", FakeCupti())
+    monkeypatch.setattr(nv, "import_module", {"cuda.bindings.driver": driver}.__getitem__)
+
+
+def test_the_window_scope_is_the_visible_ordinal_and_the_cupti_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_scope(monkeypatch, device=(0, 3), context=(0, 0xC0))
+    assert nv.CuptiCollector._scope() == (3, 1, 2)
+
+
+@pytest.mark.parametrize(
+    ("device", "context", "message"),
+    [
+        (None, (0, 0xC0), "CUDA runtime is required"),
+        ((100, 0), (0, 0xC0), "cudaGetDevice failed with CUDA status 100"),
+        ((0, 3), (201, 0xC0), "cuCtxGetCurrent failed"),
+        ((0, 3), (0, 0), "returned no context"),
+    ],
+    ids=["no_runtime", "no_device", "driver_refuses", "no_context"],
+)
+def test_the_window_scope_is_never_substituted_when_unidentified(
+    monkeypatch: pytest.MonkeyPatch,
+    device: tuple[int, int] | None,
+    context: tuple[int, int],
+    message: str,
+) -> None:
+    """Without a real device and context a window cannot tell its own work from anyone else's."""
+    install_scope(monkeypatch, device, context)
+    with pytest.raises(RuntimeError, match=message):
+        nv.CuptiCollector._scope()
+
+
+def test_an_idle_collector_has_no_window_cursor_and_no_device() -> None:
+    """Before it starts, a collector has neither delivered records nor a captured context."""
+    collector = nv.CuptiCollector(Activity.KERNEL)
+    with pytest.raises(RuntimeError, match="running collector"):
+        collector.checkpoint(Activity.KERNEL)
+    with pytest.raises(RuntimeError, match="no current CUDA context"):
+        _ = collector.device_index
 
 
 @pytest.mark.parametrize("status", [0, 1, 999])

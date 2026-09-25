@@ -5,13 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from mainboard.probe import GPU
 from mainboard.profile import Activity, Profiler
 from mainboard.profile.providers.nvidia import tracer
-from mainboard.profile.providers.nvidia.tracer import CuptiCollector, RawKernel
+from mainboard.profile.providers.nvidia.tracer import CuptiCollector, RawGeneric, RawKernel
 from mainboard.profile.result import DeviceEvidence
-from mainboard.profile.spans import activate, deactivate
+from mainboard.profile.spans import activate, active, deactivate
 
-from .support import FakeActivityKind
+from .support import FakeActivityKind, FakeGPU, RecordingSession
 
 
 @pytest.fixture
@@ -205,3 +206,69 @@ def test_changed_context_refuses_before_synchronization(
     monkeypatch.setattr(collector, "_scope", lambda: (1, 55, 99))
     with pytest.raises(RuntimeError, match="issuing thread or CUDA context"):
         CuptiCollector.flush(collector)
+
+
+@pytest.mark.parametrize("activities", [Activity(0), Activity.RUNTIME], ids=["none", "runtime"])
+def test_a_window_collects_only_kernels_and_copies(activities: Activity) -> None:
+    """Asking for nothing, or for a kind a window cannot bound, is refused before any owner."""
+    with pytest.raises(ValueError, match="kernels and memory copies"):
+        Profiler.capture(lambda: pytest.fail("must not execute"), activities=activities)
+
+
+def test_a_span_owner_that_is_not_a_profiler_cannot_open_a_window() -> None:
+    """A bare span session has no native collector, so a window never borrows its slot."""
+    session = RecordingSession()
+    activate(session)
+    try:
+        with pytest.raises(RuntimeError, match="cannot provide native activity windows"):
+            Profiler.capture(lambda: pytest.fail("must not execute"))
+    finally:
+        deactivate(session)
+
+
+def test_without_an_owner_a_window_opens_its_own_session_and_closes_it(
+    one_gpu: FakeGPU, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The window owns the session it opened, so a backend without windows leaves none behind."""
+    monkeypatch.setattr(GPU, "all", staticmethod(lambda: (one_gpu,)))
+    with pytest.raises(RuntimeError, match="no synchronized CUDA device"):
+        Profiler.capture(lambda: pytest.fail("must not execute"))
+    assert active() is None
+
+
+def test_a_collector_on_another_device_refuses_before_work(owner: Profiler) -> None:
+    """The collector's current device, not the declared policy, decides whose work is seen."""
+    collector = owner.collector
+    assert isinstance(collector, CuptiCollector)
+    collector.scope = (1, 1, 2)
+    with pytest.raises(RuntimeError, match="differs from the actual current CUDA device"):
+        Profiler.capture(lambda: pytest.fail("must not execute"))
+
+
+def test_a_copy_only_window_leaves_out_the_kernels_it_saw(owner: Profiler) -> None:
+    _, view = Profiler.capture(lambda: append(owner, "unwanted"), activities=Activity.MEMCPY)
+    assert view.kernels == ()
+    assert view.device_evidence is DeviceEvidence.ABSENT
+
+
+def test_api_records_in_a_window_carry_no_context_and_are_not_refused(owner: Profiler) -> None:
+    """A runtime API record has no device or stream, so the scope check passes over it."""
+    collector = owner.collector
+    assert isinstance(collector, CuptiCollector)
+
+    def launch() -> None:
+        collector.append(
+            RawGeneric(
+                kind_id=FakeActivityKind.RUNTIME,
+                kind="runtime",
+                name="cudaLaunchKernel",
+                cbid=None,
+                start_ns=5,
+                end_ns=8,
+                correlation_id=1,
+            )
+        )
+        append(owner, "launched")
+
+    _, view = Profiler.capture(launch)
+    assert [kernel.name for kernel in view.kernels] == ["launched"]

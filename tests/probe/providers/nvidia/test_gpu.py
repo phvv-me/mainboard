@@ -266,6 +266,21 @@ def test_peak_bandwidth_is_the_bus_width_times_the_doubled_memory_clock(
     assert NvidiaGPU(index=0).peak_bandwidth_gbs == pytest.approx(peak_gbs)
 
 
+@pytest.mark.parametrize(
+    ("refuse", "peak_khz"), [(False, 2_520_000), (True, 0)], ids=["nvml_answers", "nvml_refuses"]
+)
+def test_the_peak_sm_clock_is_the_nvml_maximum_in_kilohertz(
+    refuse: bool,
+    peak_khz: int,
+    nvidia_host: FakeNvidiaApis,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The datasheet peak a stress probe compares against, zero rather than a guess if refused."""
+    if refuse:
+        monkeypatch.setattr(nvidia_host.nvml, "device_get_max_clock_info", raise_unsupported)
+    assert NvidiaGPU(index=0).peak_clock_khz == peak_khz
+
+
 def test_a_snapshot_gathers_every_sensor_the_device_answers(nvidia_host: FakeNvidiaApis) -> None:
     """One reading carries identity, region, power, temperature, utilization and processes."""
     reading = NvidiaGPU(index=0).snapshot(name="matmul")
@@ -474,4 +489,7 @@ def test_the_system_device_follows_the_cuda_mask_by_bus_id(
     assert device.pci_bus_id == "0000:01:00.0"
     assert device.system_device.index == 1
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert NvidiaGPU(index=0).system_device.index == 0
+    # A bus id the system layer does not enumerate falls back to its own index.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
     assert NvidiaGPU(index=0).system_device.index == 0

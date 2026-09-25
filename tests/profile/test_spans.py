@@ -9,21 +9,7 @@ import pytest
 from mainboard import Profiler, span
 from mainboard.profile import Profile, annotate, spans
 
-
-class RecordingSession:
-    """A `SpanSession` stand-in that records every name opened and every wall time closed."""
-
-    def __init__(self) -> None:
-        self.entered: list[str] = []
-        self.walls: list[int] = []
-
-    def enter(self, name: str) -> int:
-        self.entered.append(name)
-        return len(self.entered)
-
-    def exit(self, token: int, *, wall_ns: int) -> None:
-        del token
-        self.walls.append(wall_ns)
+from .support import RecordingSession
 
 
 def test_dormant_annotations_call_through_without_reading_a_clock(

@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pytest
 
-from mainboard.plots.marks import bars
+from mainboard.plots.marks import Orientation, RoundedBar, bars
 from mainboard.plots.native import (
     apply_style,
     contrasting_text,
@@ -50,6 +50,24 @@ def test_native_figure_bundle_preserves_layout(tmp_path: Path) -> None:
         assert [bar.position for bar in drawn] == [0, 1]
     finally:
         plt.close(canvas)
+
+
+def test_a_bar_without_a_finite_end_is_hidden_while_its_series_draws() -> None:
+    """A missing measurement leaves a gap in the series rather than a bar of arbitrary length."""
+    canvas, axis = subplots(3.25)
+    try:
+        drawn = bars(axis, [0, 1], [1.0, float("nan")], thickness=0.6, color="#745399")
+        canvas.canvas.draw()
+        assert [bar.get_visible() for bar in drawn] == [True, False]
+    finally:
+        plt.close(canvas)
+
+
+def test_a_bar_takes_its_shape_only_from_an_axes() -> None:
+    """Points become pixels only through an axes transform, so a loose bar has no shape."""
+    bar = RoundedBar(Orientation.VERTICAL, 0.0, 1.0, 0.0, 0.6, color="#745399")
+    with pytest.raises(RuntimeError, match="add it to one first"):
+        bar.reshape()
 
 
 @pytest.mark.parametrize("fill, expected", [("#000000", "#ffffff"), ("#ffffff", "#222222")])

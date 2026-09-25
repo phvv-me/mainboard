@@ -1,3 +1,4 @@
+import sys
 from collections.abc import Iterator
 
 import pytest
@@ -9,7 +10,7 @@ from mainboard.probe.providers.apple import gpu as apple_gpu_mod
 from mainboard.probe.providers.apple import npu as apple_npu_mod
 from mainboard.probe.providers.nvidia import apis as nvidia_apis_module
 
-from .support import FakeNvidiaApis, InstallNvidiaStack
+from .support import FakeNvidiaApis, FakeTorch, InstallNvidiaStack
 
 
 def reset_nvidia_cache() -> None:
@@ -108,3 +109,11 @@ def install_nvidia_stack(monkeypatch: pytest.MonkeyPatch) -> InstallNvidiaStack:
 def nvidia_host(install_nvidia_stack: InstallNvidiaStack) -> FakeNvidiaApis:
     """The default fake stack, two discrete devices with the optional `cuda.core` layer."""
     return install_nvidia_stack()
+
+
+@pytest.fixture
+def fake_torch(monkeypatch: pytest.MonkeyPatch) -> FakeTorch:
+    """Stand PyTorch in for the stress probe, which imports it only once a measurement runs."""
+    torch = FakeTorch()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    return torch

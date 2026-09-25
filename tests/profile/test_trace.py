@@ -202,10 +202,18 @@ def test_a_kernel_is_attributed_to_the_narrowest_window_that_contains_it(
 
 
 def test_the_base_collector_and_callback_session_are_safe_noops() -> None:
-    """Without a vendor backend both contexts open, collect nothing, and close cleanly."""
+    """Without a vendor backend both contexts open, collect nothing, and close cleanly.
+
+    A synchronized window is the one thing the base refuses: it has no device to name and no
+    delivered-record cursor, and an empty window would read as a region that ran no GPU work.
+    """
     with TraceCollector() as collector:
         collector.flush()
         collector.reset()
+    with pytest.raises(RuntimeError, match="unavailable on this backend"):
+        collector.checkpoint(Activity.KERNEL)
+    with pytest.raises(RuntimeError, match="no synchronized CUDA device"):
+        _ = collector.device_index
     assert collector.kernels() == []
     assert collector.memcpys() == []
     assert collector.activities() == []
