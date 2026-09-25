@@ -22,9 +22,10 @@ def test_a_tool_command_that_cannot_split_is_refused_at_load(
 
 def test_a_writer_fixes_unless_the_pass_is_a_check_and_a_checker_always_checks() -> None:
     writer = LintTool(check="ruff format --check {files}", fix="ruff format {files}", files=("*",))
-    checker = LintTool(check="pyrefly check", files=("*",))
+    checker = LintTool(check="pyrefly check", fix="  ", files=("*",))
 
     assert writer.writes and not checker.writes
+    assert checker.fix == ""
     assert writer.argv(check=False) == ["ruff", "format", "{files}"]
     assert writer.argv(check=True) == ["ruff", "format", "--check", "{files}"]
     assert checker.argv(check=False) == checker.argv(check=True) == ["pyrefly", "check"]

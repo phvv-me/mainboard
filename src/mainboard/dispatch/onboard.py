@@ -206,7 +206,12 @@ def installed_pixi(shell: HostShell) -> str:
 
 
 def installers(
-    shell: HostShell, source: str = _SOURCE, *, vendored: bool = True, floor: str = ""
+    shell: HostShell,
+    source: str = _SOURCE,
+    *,
+    vendored: bool = True,
+    floor: str = "",
+    extras: Sequence[str] = (),
 ) -> Strategy[Installer]:
     """The ordered install routes for `shell`'s host, best first.
 
@@ -225,15 +230,17 @@ def installers(
     source: the tool's source directory inside the synced workspace.
     vendored: whether that source is actually on the machine.
     floor: the version the workspace declares for the tool, read from its own manifest.
+    extras: the tool's optional extras to install with it, what a center carries for `plot`.
     """
     strategy: Strategy[Installer] = Strategy(f"{_TOOL} installer")
+    wanted_extras = f"[{','.join(extras)}]" if extras else ""
     dialect = shell.dialect
     fetch_probe, fetch = dialect.uv_bootstrap
     pip_probe, pip = dialect.pip
     python = shlex.quote(metadata(_TOOL)["Requires-Python"])
     uv = f"uv tool install --force --python {python}"
     if vendored:
-        quoted = shlex.quote(source)
+        quoted = shlex.quote(f"{source}{wanted_extras}")
         editable = f"{uv} --editable {quoted}"
         strategy.register("uv", Installer(shell, probe=dialect.has("uv"), command=editable))
         strategy.register(
@@ -247,7 +254,7 @@ def installers(
             ),
         )
         return strategy
-    wanted = shlex.quote(f"{_TOOL}{specifier(floor)}")
+    wanted = shlex.quote(f"{_TOOL}{wanted_extras}{specifier(floor)}")
     indexed = f"{uv} {wanted}"
     strategy.register("present", Existing(shell, floor=floor))
     strategy.register("uv-index", Installer(shell, probe=dialect.has("uv"), command=indexed))
@@ -275,12 +282,21 @@ class Bootstrap:
     resolve: let the machine run its own dependency solve instead of installing the shipped lock.
     floor: the version the workspace declares for the tool, used only when the workspace vendors
         no source and the tool therefore comes from an index.
+    extras: the tool's optional extras to install with it.
     """
 
-    def __init__(self, shell: HostShell, *, resolve: bool = False, floor: str = "") -> None:
+    def __init__(
+        self,
+        shell: HostShell,
+        *,
+        resolve: bool = False,
+        floor: str = "",
+        extras: Sequence[str] = (),
+    ) -> None:
         self.shell = shell
         self.resolve = resolve
         self.floor = floor
+        self.extras = tuple(extras)
 
     @property
     def env(self) -> str:
@@ -300,7 +316,7 @@ class Bootstrap:
         """
         host = self.shell.plan.host
         vendored = self.shell.ok(self.shell.dialect.is_directory(_SOURCE))
-        routes = installers(self.shell, vendored=vendored, floor=self.floor)
+        routes = installers(self.shell, vendored=vendored, floor=self.floor, extras=self.extras)
         try:
             resolution = routes.cascade()
         except StrategyError as refused:

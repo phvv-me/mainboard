@@ -55,9 +55,8 @@ class LintTool(Declared):
     @field_validator("fix")
     @classmethod
     def fixes(cls, fix: str) -> str:
-        """Refuse a fix whose quoting never closes, at load rather than use."""
-        split(fix)
-        return fix
+        """Refuse a fix whose quoting never closes and read a blank one as none, at load."""
+        return fix if split(fix) else ""
 
     @property
     def writes(self) -> bool:

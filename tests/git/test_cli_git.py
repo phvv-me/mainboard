@@ -10,7 +10,7 @@ from .conftest import Workspace
 def _run(workspace: Workspace, capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str]:
     """Run one `git` verb through the CLI, answering its exit code and what it printed."""
     with pytest.raises(SystemExit) as exited:
-        build(workspace.path)(["git", *argv])
+        build(workspace.path)(["center", "git", *argv])
     return int(exited.value.code or 0), capsys.readouterr().out
 
 

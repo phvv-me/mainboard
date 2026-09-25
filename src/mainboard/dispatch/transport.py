@@ -8,6 +8,8 @@
 import os
 import shlex
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp/rsync options), not untrusted input since=2026-08-17
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, suppress
 from math import ceil
 from pathlib import Path
@@ -290,6 +292,51 @@ class SshTransport(FrozenModel):
             )
         if returncode == 0:
             return stdout or ""
+        self.__check(returncode, stderr, host=host, operation=operation)
+        raise RuntimeError(f"ssh {operation} to {host!r} failed: {_detail(stderr, returncode)}")
+
+    def feed(
+        self, command: tuple[str, ...], host: str, *, operation: str, chunks: Iterable[bytes]
+    ) -> str:
+        """Run one ssh process fed `chunks` on its stdin, answering what it printed.
+
+        The path for more than fits in memory at once, a tree of receipts streamed as one tar,
+        and for what must never ride an argv, since a secret in stdin is in no process listing.
+        Output is drained on its own threads while the input is written, so neither side of the
+        pipe can fill and stall the other. SSH keepalives bound the liveness, not a wall clock:
+        a transfer runs as long as bytes keep moving.
+
+        command: the full argv, `ssh` first.
+        host: the alias or destination, named in every failure.
+        operation: what the command is for, named in every failure.
+        chunks: the bytes to write, in order; stdin closes after the last.
+        """
+        try:
+            process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh argv built from typed fields, not untrusted input since=2026-09-25
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise HostUnreachable(
+                f"ssh {operation} to {host!r} could not start: {error}"
+            ) from error
+        assert process.stdin is not None and process.stdout is not None
+        assert process.stderr is not None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            out = pool.submit(process.stdout.read)
+            err = pool.submit(process.stderr.read)
+            with suppress(BrokenPipeError):
+                for chunk in chunks:
+                    process.stdin.write(chunk)
+            with suppress(BrokenPipeError):
+                process.stdin.close()
+            stdout, stderr = _decoded(out.result()), _decoded(err.result())
+        returncode = process.wait()
+        if returncode == 0:
+            return stdout
         self.__check(returncode, stderr, host=host, operation=operation)
         raise RuntimeError(f"ssh {operation} to {host!r} failed: {_detail(stderr, returncode)}")
 
