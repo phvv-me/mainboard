@@ -331,3 +331,14 @@ def test_a_package_reads_every_dependency_list_and_skips_what_is_not_a_project(
             "pytest": frozenset(),
         },
     )
+
+
+def test_a_composed_host_still_inherits_what_it_left_unset(tmp_path: Path) -> None:
+    """Composition keeps what the root declared, so `[hosts.defaults]` still fills the rest."""
+    _write(
+        tmp_path / _MANIFEST,
+        '[workspace]\nname = "life"\nmembers = ["lib"]\n'
+        '[hosts.defaults.sync]\ninclude = ["lib"]\n[hosts.box]\nkind = "ssh"\n',
+    )
+    _write(tmp_path / "lib" / "pyproject.toml", _pyproject("lib"))
+    assert load(tmp_path / _MANIFEST).profile("box").sync.include == ["lib"]

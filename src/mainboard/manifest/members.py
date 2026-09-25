@@ -166,7 +166,9 @@ class Composition:
         if not self.members:
             return self.manifest
         top, dev, overlays = self._requirements()
-        body = self.manifest.model_dump(mode="python", round_trip=True)
+        # Only what the root declared, so a profile still inherits `[hosts.defaults]` for every
+        # field it left unset.
+        body = self.manifest.model_dump(mode="python", round_trip=True, exclude_unset=True)
         body.update(top.model_dump(mode="python", round_trip=True))
         body["workspace"] = self.manifest.workspace
         body["dev"] = dev

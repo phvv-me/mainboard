@@ -218,3 +218,15 @@ def test_a_lease_is_replaced_in_place_and_a_host_forgotten_by_alias() -> None:
     store.drop_host("box")
     store.drop_host("never-set-up")
     assert store.hosts() == []
+
+
+def test_a_setup_an_older_mainboard_recorded_reads_as_never_set_up() -> None:
+    """A record whose schema moved on asks for `setup` again instead of failing every command."""
+    state = cache()
+    state.connection.execute(
+        "INSERT INTO hosts (alias, facts, probed_at) VALUES (?, ?, ?)",
+        ("gold", '{"host": "gold", "retired": true}', now()),
+    )
+    with pytest.raises(LookupError, match="older mainboard"):
+        state.host("gold")
+    assert state.hosts() == []

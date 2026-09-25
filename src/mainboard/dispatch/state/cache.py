@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from filelock import FileLock
 from patos import FrozenModel
+from pydantic import ValidationError
 
 from ...core.errors import MissionError
 from .. import vocabulary
@@ -138,14 +139,19 @@ class Cache:
         ).fetchone()
         if row is None:
             raise LookupError(f"host {alias!r} has never been set up; run `setup {alias}`")
-        return HostSetup.model_validate_json(row["facts"])
+        try:
+            return HostSetup.model_validate_json(row["facts"])
+        except ValidationError:
+            raise LookupError(
+                f"host {alias!r} was set up by an older mainboard; run `setup {alias}`"
+            ) from None
 
     def hosts(self) -> list[HostSetup]:
         """Every onboarded host, most recently set up first."""
         rows = self.connection.execute(
             "SELECT facts FROM hosts ORDER BY probed_at DESC"
         ).fetchall()
-        return [HostSetup.model_validate_json(row["facts"]) for row in rows]
+        return [setup for row in rows if (setup := _current(row["facts"])) is not None]
 
     def mark_synced(self, alias: str) -> None:
         """Stamp `alias`'s mirror watermark, which a later transfer set measures its delta from.
@@ -396,3 +402,11 @@ def _identity(run: RunRecord) -> tuple[str, str, str]:
 
 def _unregistered(run: RunRecord) -> LookupError:
     return LookupError(f"no registered run {run.handle!r} on {run.target!r}")
+
+
+def _current(facts: str) -> HostSetup | None:
+    """A recorded setup, None when an older mainboard wrote it and `setup` must record it anew."""
+    try:
+        return HostSetup.model_validate_json(facts)
+    except ValidationError:
+        return None
