@@ -209,6 +209,32 @@ $ mainboard git push            # children first, pointers verified, protected m
 $ mainboard git check           # everything a clone or the next push would trip on
 ```
 
+## One lint pass
+
+```toml
+[lint]
+exclude = ["**/datasets/", "**/references/"]   # never read, never rewritten
+owners = ["packages/*", "research/*"]           # beside every dir holding pyproject.toml or .git
+
+[lint.tools.ruff-format]
+run = "ruff format --force-exclude {files}"
+files = ["*.py", "*.pyi"]
+writes = true                                  # fix phase, in declaration order
+
+[lint.tools.pyrefly]
+run = "pyrefly check"                          # no {files}: checks the whole owner
+files = ["*.py", "*.pyi", "pyproject.toml"]
+```
+
+`mainboard lint` repairs text (UTF-8, the newline `.gitattributes` names, no
+trailing blanks, one final newline), runs the writing tools in order, then every
+check at once, each inside the owner of the files it matched and under the
+workspace environment's PATH. With no path it reads what differs from HEAD;
+`mainboard lint .` reads everything. `mainboard lint install-hook` makes every
+commit run `mainboard lint commit` over the staged files, and `mainboard lint
+edit` is the Claude Code PostToolUse hook: it repairs the file an agent just
+wrote and hands whatever is left back as context.
+
 ## What it replaces
 
 - environment managers that cannot name a host
@@ -216,6 +242,7 @@ $ mainboard git check           # everything a clone or the next push would trip
 - container workflows that rebuild an image per dependency change
 - profilers that stop at one process on one machine
 - the prose wiki page about your cluster's queue limits
+- a pre-commit config, an editor hook and a CI job that each lint a different way
 
 Under the facade: pixi-powered multi-ecosystem environments (conda plus PyPI
 and friends) that provision inside off-the-shelf containers via bind-mounted

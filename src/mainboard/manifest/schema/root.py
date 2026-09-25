@@ -11,6 +11,7 @@ from .figures.figure import FigureSpec
 from .gate import Gate
 from .git import GitPolicy
 from .host import HostProfile
+from .lint import Lint
 from .plot import PlotStyle
 from .scope import PlatformScope, Scope
 from .template import Template
@@ -40,6 +41,8 @@ class Manifest(Scope):
     `[admission.<card>]` says how idle a named card must be before a trial measures on it.
     `[git]` says whose repositories in the submodule tree `git` may write, and what never
     enters a commit.
+    `[lint]` names what `lint` leaves alone, which directories own their files, and the
+    formatters and linters it runs over them.
 
     `[env]` sets a variable to a string and clears one with `false`. Clearing
     is not the same as setting an empty string, which is what the table could
@@ -56,11 +59,11 @@ class Manifest(Scope):
     # `new` renders, `[tracking]` is where a batch's receipts are mirrored, `[containers]` and
     # `[hosts]` are how a job reaches a machine, `[engines]` is what `serve` stages through one
     # of those containers, `[plots]` is how results are drawn, `[git]` is how the repository
-    # tree is committed and pushed, and `[vars]` has already been folded into every string that
-    # quotes it by the time a manifest validates, so a var a compiled table really uses moves
-    # the digest through that table's own rendered value. None of them reaches a generated
-    # file, so editing one must not make every installed environment stale. The classification
-    # is proved table by table against the compiler's own output in
+    # tree is committed and pushed, `[lint]` is what `lint` runs, and `[vars]` has already been
+    # folded into every string that quotes it by the time a manifest validates, so a var a
+    # compiled table really uses moves the digest through that table's own rendered value. None
+    # of them reaches a generated file, so editing one must not make every installed environment
+    # stale. The classification is proved table by table against the compiler's own output in
     # `tests/engines/compile/test_compiler.py`, so a table added to the schema is refused until
     # somebody decides which side of this line it sits on.
     uncompiled: ClassVar[frozenset[str]] = frozenset(
@@ -72,6 +75,7 @@ class Manifest(Scope):
             "gates",
             "git",
             "hosts",
+            "lint",
             "plots",
             "templates",
             "tracking",
@@ -97,6 +101,7 @@ class Manifest(Scope):
     plots: dict[str, PlotStyle] = {}
     figures: dict[str, FigureSpec] = {}
     git: GitPolicy = GitPolicy()
+    lint: Lint = Lint()
 
     @model_validator(mode="after")
     def env_values_set_or_clear(self) -> Manifest:
@@ -129,7 +134,7 @@ class Manifest(Scope):
 
     @model_validator(mode="after")
     def names_resolve(self) -> Manifest:
-        """Reserved env names stay free, and every host or engine names a table that exists."""
+        """Reserved env names stay free, and every host, engine or lint tool names a real table."""
         taken = _RESERVED_ENVS & self.envs.keys()
         if taken:
             raise ValueError(f"reserved environment names declared: {sorted(taken)}")
@@ -137,6 +142,8 @@ class Manifest(Scope):
             self._resolves(f"host {alias!r}", profile.container, profile.env)
         for name, engine in self.engines.items():
             self._resolves(f"engine {name!r}", engine.container, engine.env)
+        for name, tool in self.lint.tools.items():
+            self._resolves(f"lint tool {name!r}", "", tool.env)
         return self
 
     def _resolves(self, subject: str, container: str, env: str) -> None:

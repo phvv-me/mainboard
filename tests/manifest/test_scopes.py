@@ -8,6 +8,8 @@ from mainboard.manifest import (
     Env,
     Header,
     HostProfile,
+    Lint,
+    LintTool,
     PlatformScope,
     Scope,
     Spec,
@@ -170,11 +172,19 @@ def test_the_environment_roster_answers_by_name_and_refuses_a_stranger() -> None
             {"engines": {"vserve": Engine(command="true", env="ghost")}},
             "names environment 'ghost'",
         ),
+        (
+            {
+                "lint": Lint(
+                    tools={"ruff": LintTool(run="ruff check", files=("*.py",), env="ghost")}
+                )
+            },
+            "lint tool 'ruff' names environment 'ghost'",
+        ),
     ],
 )
 def test_a_manifest_refuses_a_name_that_points_at_no_table(
-    tables: dict[str, dict[str, Env | HostProfile | Engine]], match: str
+    tables: dict[str, dict[str, Env | HostProfile | Engine] | Lint], match: str
 ) -> None:
-    """A host or engine naming a container or environment that is not there fails at load."""
+    """A host, engine or lint tool naming a missing container or environment fails at load."""
     with pytest.raises(ValueError, match=match):
         Manifest(workspace=Header(name="lab"), **tables)
