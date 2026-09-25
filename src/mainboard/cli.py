@@ -353,11 +353,14 @@ def build(root: Path | None = None) -> App:
     def doctor(env: str = "", *, json: bool = False, agent: bool = False, fields: str = "") -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
-        Four questions asked at once and bounded: does the manifest still say something
+        Five questions asked at once and bounded: does the manifest still say something
         coherent, is what is installed the environment it describes, what compute answers right
-        now, and does the mathematics still hold. A section reports the one command that
-        repairs it, and only a genuinely broken workspace fails, so a sleeping host or a
-        provider nobody has a key for is a word rather than a nonzero exit.
+        now, does the mathematics still hold, and is this workstation's git ready: git itself,
+        git-lfs and its filters, a credential helper for https remotes, and on Windows symlinks
+        and long paths. A safe local git setting is applied in place and reported; an install or
+        an administrator switch is named with its exact command. A section reports the one
+        command that repairs it, and only a genuinely broken workspace fails, so a sleeping host
+        or a provider nobody has a key for is a word rather than a nonzero exit.
 
         env: the environment to examine, the local profile's own when omitted.
         json: print canonical JSON instead of the default rich table.
