@@ -47,6 +47,12 @@ class Change(NamedTuple):
         """Whether the change removes the path, in the index or in the worktree."""
         return _DELETED in self.code
 
+    @property
+    def staged(self) -> bool:
+        """Whether the index already holds the whole change, as `git rm` leaves it."""
+        # Git refuses such a path as a pathspec to `add`: neither index nor worktree holds it.
+        return self.code == f"{_DELETED} "
+
 
 def owner_of(url: str) -> str:
     """The owner a remote URL names: the path segment above the repository itself.
