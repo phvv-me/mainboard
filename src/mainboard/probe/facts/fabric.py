@@ -8,10 +8,7 @@ _INFINIBAND_ROOT = Path("/sys/class/infiniband")
 
 
 def _read_field(path: Path) -> str:
-    """Return stripped sysfs text, or an empty string when the file is absent or unreadable.
-
-    path: sysfs file to read, e.g. a port's `state` or `rate` file.
-    """
+    """Stripped sysfs text, or an empty string when the file is absent or unreadable."""
     with suppress(OSError):
         return path.read_text(encoding="utf-8").strip()
     return ""
@@ -20,8 +17,8 @@ def _read_field(path: Path) -> str:
 class FabricPort(FrozenModel):
     """One InfiniBand or RoCE fabric port.
 
-    device: the HCA device name, e.g. `mlx5_0`.
-    port: the 1-based port number on the device.
+    device: the HCA name, e.g. `mlx5_0`.
+    port: the 1-based port number.
     state: raw link state, e.g. `4: ACTIVE`.
     rate: raw link rate, e.g. `400 Gb/sec (4X NDR)`.
     link_layer: the fabric technology, `InfiniBand` or `Ethernet` (RoCE).
@@ -37,10 +34,8 @@ class FabricPort(FrozenModel):
 def _device_order(device_dir: Path) -> tuple[str | int, ...]:
     """A sort key reading a device name's digits as numbers, so `mlx5_2` precedes `mlx5_10`.
 
-    Splitting on digit runs alternates text and number, and the split always starts with text,
-    so two names compare field by field with matching kinds throughout.
-
-    device_dir: the HCA device directory being ordered.
+    A split on digit runs always starts with text and alternates, so two keys compare field by
+    field with matching kinds throughout.
     """
     return tuple(
         int(part) if part.isdigit() else part for part in re.split(r"(\d+)", device_dir.name)

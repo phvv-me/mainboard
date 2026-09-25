@@ -4,11 +4,7 @@ from ..profile.bottleneck import gpu_busy as device_busy
 from .machine import Machine
 
 
-def gpu_busy(
-    *,
-    util_threshold: int = 10,
-    memory_threshold_pct: float = 90.0,
-) -> bool:
+def gpu_busy(*, util_threshold: int = 10, memory_threshold_pct: float = 90.0) -> bool:
     """Return whether the first visible GPU is currently busy."""
     gpus = Machine().gpus
     return device_busy(
@@ -26,15 +22,15 @@ def wait_for_idle(
     util_threshold: int = 10,
     memory_threshold_pct: float = 90.0,
 ) -> bool:
-    """Wait until the first visible GPU remains idle for the requested duration."""
+    """Wait until the first visible GPU stays idle for `idle_duration` seconds, False at timeout.
+
+    Any busy reading restarts the idle window.
+    """
     deadline = time.monotonic() + timeout
     idle_since: float | None = None
     while True:
         now = time.monotonic()
-        if not gpu_busy(
-            util_threshold=util_threshold,
-            memory_threshold_pct=memory_threshold_pct,
-        ):
+        if not gpu_busy(util_threshold=util_threshold, memory_threshold_pct=memory_threshold_pct):
             idle_since = now if idle_since is None else idle_since
             if now - idle_since >= idle_duration:
                 return True

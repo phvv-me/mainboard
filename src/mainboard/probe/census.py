@@ -1,10 +1,9 @@
 """Standard-library machine census, run here and sent to a remote Python over SSH stdin.
 
 The one place a machine's operating system, shells, filesystem, git settings, tools and NVIDIA
-driver are read. `facts` runs it in-process on whatever machine answers, and `center migrate`
-sends this same file to a destination that has no Mainboard yet, so what a machine is found to
-be never depends on which verb asked. It imports nothing outside the standard library for that
-reason, and every answer is plain JSON data.
+driver are read. `facts` runs it in-process and `center migrate` sends this same file to a
+destination with no Mainboard yet, so what a machine is found to be never depends on which verb
+asked. Hence it imports only the standard library, and every answer is plain JSON data.
 """
 
 import json
@@ -18,15 +17,11 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-# How long one version or driver query may take. A tool that hangs on `--version` is a tool
-# that does not answer, which is what an absent one says too.
+# How long one version or driver query may take; a tool that hangs answers as an absent one.
 _SECONDS = 20.0
 
 # What a query that could not start or did not finish answers, the shape of a missing command.
 _ABSENT = (127, "")
-
-# The faults a query is allowed to end in: the program is not there, or it did not answer.
-_FAULTS = (OSError, subprocess.SubprocessError)
 
 # The first dotted version number in a tool's answer, `git version 2.51.0` naming `2.51.0`.
 _VERSION = re.compile(r"\d+(?:\.\d+)+")
@@ -81,10 +76,7 @@ type Finder = Callable[[str], str | None]
 
 
 def run(command: Sequence[str]) -> tuple[int, str]:
-    """Run `command` under a deadline, its stdout and stderr joined, answering rather than raising.
-
-    command: the program and its arguments.
-    """
+    """Run `command` under a deadline, stdout and stderr joined, answering rather than raising."""
     try:
         done = subprocess.run(
             list(command),
@@ -95,7 +87,7 @@ def run(command: Sequence[str]) -> tuple[int, str]:
             timeout=_SECONDS,
             check=False,
         )
-    except _FAULTS:
+    except OSError, subprocess.SubprocessError:
         return _ABSENT
     return done.returncode, done.stdout + done.stderr
 
@@ -233,15 +225,12 @@ class Census:
 
     def tools(self) -> dict[str, str]:
         """Every tool that answers with a version, keyed by name; a silent one is left out."""
-        found: dict[str, str] = {}
-        for name, argv in TOOLS.items():
-            if not self.finder(argv[0]):
-                continue
-            status, said = self.runner(argv)
-            number = _VERSION.search(said)
-            if not status and number:
-                found[name] = number[0]
-        return found
+        said = {name: self.runner(argv) for name, argv in TOOLS.items() if self.finder(argv[0])}
+        return {
+            name: number[0]
+            for name, (status, text) in said.items()
+            if not status and (number := _VERSION.search(text))
+        }
 
     def nvidia(self) -> tuple[str, list[Json]]:
         """The driver's maximum CUDA version and every NVIDIA card, both empty without one."""

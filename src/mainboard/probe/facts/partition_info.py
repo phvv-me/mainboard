@@ -10,7 +10,6 @@ class DiskUsage(Protocol):
 
     @property
     def free(self) -> int: ...
-
     @property
     def total(self) -> int: ...
     @property
@@ -20,9 +19,6 @@ class DiskUsage(Protocol):
 class PartitionInfo(FrozenModel):
     """One mounted filesystem partition.
 
-    device: block device path, e.g. `/dev/nvme0n1p1`.
-    mountpoint: filesystem mount path, e.g. `/`.
-    fstype: filesystem type, e.g. `ext4`.
     opts: raw mount options string from psutil, e.g. `rw,relatime`.
     """
 
@@ -61,7 +57,7 @@ class PartitionInfo(FrozenModel):
         """Disk usage from `statvfs`, or None if the mount is inaccessible."""
         try:
             return psutil.disk_usage(self.mountpoint)
-        except PermissionError, OSError:
+        except OSError:
             return None
 
     @property
@@ -76,10 +72,8 @@ class PartitionInfo(FrozenModel):
 
     @property
     def utilization_pct(self) -> float:
-        """Percentage of total capacity currently used."""
-        if self.total_bytes == 0:
-            return 0.0
-        return self.used_bytes / self.total_bytes * 100
+        """Percentage of total capacity currently used, 0 when the total is unknown."""
+        return self.used_bytes / self.total_bytes * 100 if self.total_bytes else 0.0
 
     @classmethod
     def all(cls) -> tuple[PartitionInfo, ...]:

@@ -2,12 +2,10 @@ from plumbum import CommandNotFound, local
 
 
 def sysctl(name: str) -> str:
-    """Read a macOS `sysctl` value by name, stripped.
+    """A macOS `sysctl` value, e.g. `machdep.cpu.brand_string`, stripped.
 
-    Returns an empty string when `sysctl` is missing or the key is unreadable, so
-    callers can probe Darwin-only keys without guarding the platform first.
-
-    name: sysctl key, e.g. `machdep.cpu.brand_string`.
+    Empty when `sysctl` is missing or the key unreadable, so callers probe Darwin-only keys
+    without guarding the platform first.
     """
     try:
         return local["sysctl"]["-n", name]().strip()

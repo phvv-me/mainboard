@@ -46,5 +46,4 @@ __all__ = [
     "Unit",
     "UnitKind",
     "Vendor",
-    "NvidiaGPU",
 ]

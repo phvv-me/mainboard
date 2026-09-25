@@ -5,12 +5,9 @@ from plumbum import local
 
 @cache
 def run(*command: str) -> str:
-    """Run a command once and return its stdout.
+    """The stdout of `command`, e.g. `("clang", "--version")`.
 
-    Results are cached by argv, so repeated identity probes (e.g. `--version`)
-    execute the underlying process a single time.
-
-    command: program name followed by its arguments, e.g. `("clang", "--version")`.
+    Cached by argv, so repeated identity probes run the process once.
     """
     program, *args = command
     return local[program](*args)

@@ -5,9 +5,7 @@ from patos import FrozenModel
 class Memory(FrozenModel):
     """Memory usage for a host, unit, or memory region.
 
-    total_bytes: total capacity.
-    used_bytes: currently used bytes when known.
-    free_bytes: currently free bytes when known.
+    used_bytes, free_bytes: 0 when unknown.
     scope: region name, e.g. `system`, `vram`, `unified`.
     unified: whether CPU and accelerator share the memory pool.
     source: provider that produced the value.
@@ -30,9 +28,7 @@ class Memory(FrozenModel):
     @property
     def percent_used(self) -> float:
         """Percentage of total memory currently used, or 0 when total is 0."""
-        if self.total_bytes == 0:
-            return 0.0
-        return self.used_bytes / self.total_bytes * 100
+        return self.used_bytes / self.total_bytes * 100 if self.total_bytes else 0.0
 
     @property
     def total_gb(self) -> float:
@@ -46,17 +42,13 @@ class Memory(FrozenModel):
 
     @classmethod
     def system(cls, scope: str = "system", *, unified: bool = False) -> Memory:
-        """Live system RAM usage sampled from psutil.
-
-        scope: region name to record, e.g. `system` or `unified`.
-        unified: whether CPU and accelerators share this pool.
-        """
-        virtual_memory = psutil.virtual_memory()
+        """Live system RAM usage sampled from psutil, free being what is available."""
+        ram = psutil.virtual_memory()
         return cls(
             scope=scope,
-            total_bytes=virtual_memory.total,
-            used_bytes=virtual_memory.used,
-            free_bytes=virtual_memory.available,
+            total_bytes=ram.total,
+            used_bytes=ram.used,
+            free_bytes=ram.available,
             unified=unified,
             source="psutil",
         )

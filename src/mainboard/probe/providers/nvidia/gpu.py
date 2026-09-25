@@ -2,6 +2,7 @@ import logging
 import os
 from contextlib import suppress
 from functools import cached_property
+from itertools import takewhile
 
 from ...enums import Vendor
 from ...facts.memory import Memory
@@ -31,19 +32,17 @@ def _bus_key(bus_id: str) -> str:
 def visible_devices() -> list[str] | None:
     """The entries of `CUDA_VISIBLE_DEVICES`, or None when the mask is unset.
 
-    CUDA reads the list up to its first entry that names no device, so the list is cut there
-    the same way; an empty mask hides every device.
+    CUDA reads the list up to its first entry that names no device (an index or a `GPU-`/`MIG-`
+    UUID), so the list is cut there the same way; an empty mask hides every device.
     """
-    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if mask is None:
+    if (mask := os.environ.get("CUDA_VISIBLE_DEVICES")) is None:
         return None
-    entries = [entry.strip() for entry in mask.split(",")]
-    kept: list[str] = []
-    for entry in entries:
-        if not entry or not (entry.startswith(("GPU-", "MIG-")) or entry.lstrip("-").isdigit()):
-            break
-        kept.append(entry)
-    return kept
+    return list(
+        takewhile(
+            lambda entry: entry.startswith(("GPU-", "MIG-")) or entry.lstrip("-").isdigit(),
+            (entry.strip() for entry in mask.split(",")),
+        )
+    )
 
 
 class NvidiaGPU(GPU):
@@ -74,37 +73,27 @@ class NvidiaGPU(GPU):
     def coherent(self) -> bool:
         """Whether this GPU shares a cache-coherent memory pool with the host.
 
-        Probed rather than guessed, and on three attributes, not two: a driver with
-        heterogeneous memory management makes a discrete card report
-        `cudaDevAttrPageableMemoryAccess` and `cudaDevAttrConcurrentManagedAccess`
-        too (the RTX 4090 on the open kernel modules did, and was budgeted as a
-        Grace Hopper for a week), while `cudaDevAttrHostNativeAtomicSupported` holds
-        only where host RAM is a peer of HBM over a coherent fabric (GH200, GB10). A
-        binding that lacks the attribute query degrades to False rather than raising.
+        Probed on three attributes, not two: a driver with heterogeneous memory management
+        makes a discrete card report `cudaDevAttrPageableMemoryAccess` and
+        `cudaDevAttrConcurrentManagedAccess` too (the RTX 4090 on the open kernel modules did,
+        and was budgeted as a Grace Hopper for a week), while
+        `cudaDevAttrHostNativeAtomicSupported` holds only where host RAM is a peer of HBM over
+        a coherent fabric (GH200, GB10). A binding lacking the query degrades to False.
         """
-        runtime = self.apis.runtime
-        if runtime is None:
+        if (runtime := self.apis.runtime) is None:
             return False
         with suppress(*self.apis.nvml_errors, AttributeError):
             attrs = runtime.cudaDeviceAttr
+            answers = [
+                runtime.cudaDeviceGetAttribute(attr, self.index)
+                for attr in (
+                    attrs.cudaDevAttrPageableMemoryAccess,
+                    attrs.cudaDevAttrConcurrentManagedAccess,
+                    attrs.cudaDevAttrHostNativeAtomicSupported,
+                )
+            ]
             success = runtime.cudaError_t.cudaSuccess
-            err_p, pageable = runtime.cudaDeviceGetAttribute(
-                attrs.cudaDevAttrPageableMemoryAccess, self.index
-            )
-            err_m, managed = runtime.cudaDeviceGetAttribute(
-                attrs.cudaDevAttrConcurrentManagedAccess, self.index
-            )
-            err_a, atomics = runtime.cudaDeviceGetAttribute(
-                attrs.cudaDevAttrHostNativeAtomicSupported, self.index
-            )
-            return (
-                err_p == success
-                and err_m == success
-                and err_a == success
-                and bool(pageable)
-                and bool(managed)
-                and bool(atomics)
-            )
+            return all(err == success and bool(value) for err, value in answers)
         return False
 
     @cached_property
@@ -127,8 +116,7 @@ class NvidiaGPU(GPU):
     @cached_property
     def runtime_version(self) -> tuple[int, int] | None:
         """The CUDA runtime version this process links, e.g. `(13, 3)`."""
-        runtime = self.apis.runtime
-        if runtime is None:
+        if (runtime := self.apis.runtime) is None:
             return None
         _, raw = runtime.cudaRuntimeGetVersion()
         return (raw // 1000, (raw % 1000) // 10)
@@ -144,12 +132,7 @@ class NvidiaGPU(GPU):
         else:
             handle = self.__nvml_handle(nvml)
             bus_id = text(nvml.device_get_pci_info_v3(handle).bus_id)
-        logger.debug(
-            "GPU %s: %s (%s)",
-            self.index,
-            nvml.device_get_name(handle),
-            bus_id,
-        )
+        logger.debug("GPU %s: %s (%s)", self.index, nvml.device_get_name(handle), bus_id)
         return handle
 
     @cached_property
@@ -161,41 +144,29 @@ class NvidiaGPU(GPU):
 
     @property
     def memory(self) -> Memory:
-        """CUDA-visible GPU memory allocation state.
+        """CUDA-visible GPU memory: `cuda.core.system`, then NVML, then `cudaMemGetInfo`.
 
-        A three-tier fallback, `cuda.core.system` when it loaded, NVML next, and the
-        CUDA Runtime's `cudaMemGetInfo` as the last resort when NVML memory is
-        unsupported. On GH200 and other coherent platforms this reflects HBM-resident
-        allocations (the discrete-device counter) and carries `unified=True`, the
-        probed signal that host RAM is a peer pool. Managed memory paged into Grace
-        LPDDR is not counted here, matching `nvidia-smi`.
+        On GH200 and other coherent platforms this counts HBM-resident allocations (the
+        discrete-device counter) and carries `unified=True`, the probed signal that host RAM is
+        a peer pool. Managed memory paged into Grace LPDDR is not counted, matching `nvidia-smi`.
         """
-        unified = self.coherent
-        if self.apis.has_cuda_core:
-            try:
-                memory = self.system_device.memory_info
-            except self.system_api.NotSupportedError:
-                return self.runtime_memory()
-            return Memory(
-                scope="vram",
-                total_bytes=memory.total,
-                used_bytes=memory.used,
-                free_bytes=memory.free,
-                unified=unified,
-                source="cuda-core-system",
-            )
-        return self.nvml_memory()
+        if not self.apis.has_cuda_core:
+            return self.nvml_memory()
+        try:
+            memory = self.system_device.memory_info
+        except self.system_api.NotSupportedError:
+            return self.runtime_memory()
+        return self._vram("cuda-core-system", memory.total, memory.used, memory.free)
 
     def __nvml_handle(self, nvml: Nvml) -> NvmlHandle:
         """The NVML handle of this visible index under the same mask CUDA applies.
 
         Without a runtime to remap for it, NVML enumerates every physical device, so the
-        visible index is read through `CUDA_VISIBLE_DEVICES` first: an entry naming a physical
-        index or a `GPU-`/`MIG-` UUID. A job pinned to the idle second card of a shared box
-        was judged by the first card's load before this, and its idle gate refused it.
+        visible index is read through `CUDA_VISIBLE_DEVICES` first. A job pinned to the idle
+        second card of a shared box was judged by the first card's load before this, and its
+        idle gate refused it.
         """
-        visible = visible_devices()
-        if visible is None:
+        if (visible := visible_devices()) is None:
             return nvml.device_get_handle_by_index_v2(self.index)
         entry = visible[self.index]
         if entry.startswith(("GPU-", "MIG-")):
@@ -206,11 +177,10 @@ class NvidiaGPU(GPU):
     def pci_bus_id(self) -> str:
         """PCI bus ID of the visible device, honoring `CUDA_VISIBLE_DEVICES`.
 
-        Prefer the CUDA Runtime so visible-device remapping is preserved. A pure-NVML
-        Windows stack reads the same identity from the physical handle instead.
+        The CUDA Runtime preserves visible-device remapping; a pure-NVML Windows stack reads
+        the same identity from the physical handle instead.
         """
-        runtime = self.apis.runtime
-        if runtime is None:
+        if (runtime := self.apis.runtime) is None:
             return text(self.apis.nvml.device_get_pci_info_v3(self.handle).bus_id)
         err, raw = runtime.cudaDeviceGetPCIBusId(64, self.index)
         if err != runtime.cudaError_t.cudaSuccess:
@@ -229,9 +199,8 @@ class NvidiaGPU(GPU):
     def peak_bandwidth_gbs(self) -> float:
         """Theoretical peak memory bandwidth in GB/s, 0.0 when NVML will not report it.
 
-        The bus width times the maximum memory clock, doubled because the memories move
-        data on both clock edges. That reproduces the vendor headline figure exactly, 1008
-        GB/s for a 4090's 384-bit bus at 10501 MHz.
+        The bus width times the maximum memory clock, doubled because the memories move data
+        on both clock edges: exactly the vendor's 1008 GB/s for a 4090's 384-bit bus at 10501 MHz.
         """
         with suppress(*self.apis.nvml_errors):
             nvml = self.apis.nvml
@@ -251,10 +220,9 @@ class NvidiaGPU(GPU):
     def system_device(self) -> SystemDevice:
         """Stable `cuda.core.system.Device` instance for NVML-backed data.
 
-        Only reached behind `has_cuda_core`, so the optional module is present here. The system
-        layer enumerates physical devices and ignores `CUDA_VISIBLE_DEVICES`, so the device is
-        picked by the PCI bus id the runtime resolves for this visible index; a job pinned to
-        the idle second card of a shared box read the first card's load before this.
+        The system layer enumerates physical devices and ignores `CUDA_VISIBLE_DEVICES`, so the
+        device is picked by the PCI bus id the runtime resolves for this visible index; a job
+        pinned to the idle second card of a shared box read the first card's load before this.
         """
         bus_id = _bus_key(self.pci_bus_id)
         for candidate in self.system_api.Device.get_all_devices():
@@ -283,7 +251,7 @@ class NvidiaGPU(GPU):
 
     @classmethod
     def all(cls) -> tuple[NvidiaGPU, ...]:
-        """Return all CUDA-visible devices ordered by visible index."""
+        """All CUDA-visible devices ordered by visible index."""
         if not cls.is_available():
             return ()
         return tuple(cls(index=i) for i in range(cls.device_count()))
@@ -305,27 +273,19 @@ class NvidiaGPU(GPU):
         """Whether CUDA reports at least one NVIDIA device."""
         try:
             api = apis.nvidia_apis()
-        except ModuleNotFoundError, ImportError, OSError, RuntimeError:
+        except ImportError, OSError, RuntimeError:
             return False
+        faults: tuple[type[Exception], ...] = (*api.nvml_errors, OSError, RuntimeError)
         try:
             return cls.device_count() > 0
-        except api.nvml_errors:
-            return False
-        except OSError, RuntimeError:
+        except faults:
             return False
 
     def nvml_memory(self) -> Memory:
         """Current memory state from NVML when `cuda.core` is unavailable."""
         with suppress(*self.apis.nvml_errors):
             memory = self.apis.nvml.device_get_memory_info_v2(self.handle)
-            return Memory(
-                scope="vram",
-                total_bytes=memory.total,
-                used_bytes=memory.used,
-                free_bytes=memory.free,
-                unified=self.coherent,
-                source="nvml",
-            )
+            return self._vram("nvml", memory.total, memory.used, memory.free)
         return self.runtime_memory()
 
     def power_w(self) -> float:
@@ -356,9 +316,8 @@ class NvidiaGPU(GPU):
         return ()
 
     def runtime_memory(self) -> Memory:
-        """Current memory state from CUDA Runtime when NVML memory is unsupported."""
-        runtime = self.apis.runtime
-        if runtime is None:
+        """Current memory state from CUDA Runtime, the last resort when NVML memory refuses."""
+        if (runtime := self.apis.runtime) is None:
             raise RuntimeError("CUDA Runtime is unavailable and NVML refused its memory reading")
         err, current = runtime.cudaGetDevice()
         if err != runtime.cudaError_t.cudaSuccess:
@@ -370,14 +329,7 @@ class NvidiaGPU(GPU):
             runtime.cudaSetDevice(current)
         if err != runtime.cudaError_t.cudaSuccess:
             raise RuntimeError(f"cudaMemGetInfo({self.index}) failed: {err}")
-        return Memory(
-            scope="vram",
-            total_bytes=total_bytes,
-            used_bytes=total_bytes - free_bytes,
-            free_bytes=free_bytes,
-            unified=self.coherent,
-            source="cuda-runtime",
-        )
+        return self._vram("cuda-runtime", total_bytes, total_bytes - free_bytes, free_bytes)
 
     def snapshot(self, name: str = "") -> Telemetry:
         """Point-in-time NVML reading of this device's sensors, tagged with region `name`.
@@ -398,8 +350,9 @@ class NvidiaGPU(GPU):
         """Die temperature in degrees Celsius, 0 when NVML will not report it."""
         nvml = self.apis.nvml
         with suppress(*self.apis.nvml_errors):
-            sensor = nvml.TemperatureSensors.TEMPERATURE_GPU
-            return nvml.device_get_temperature_v(self.handle, sensor)
+            return nvml.device_get_temperature_v(
+                self.handle, nvml.TemperatureSensors.TEMPERATURE_GPU
+            )
         return 0
 
     def throttles(self) -> tuple[str, ...]:
@@ -422,3 +375,14 @@ class NvidiaGPU(GPU):
             }
             return tuple(label for label, bit in slowdowns.items() if active & bit)
         return ()
+
+    def _vram(self, source: str, total: int, used: int, free: int) -> Memory:
+        """A device memory reading from `source`, flagged unified on a coherent pool."""
+        return Memory(
+            scope="vram",
+            total_bytes=total,
+            used_bytes=used,
+            free_bytes=free,
+            unified=self.coherent,
+            source=source,
+        )

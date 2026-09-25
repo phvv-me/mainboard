@@ -13,13 +13,7 @@ _SYS_PLACEHOLDER = frozenset({"unknown", "not specified", "none", "n/a"})
 
 
 def _read_sys(path: Path) -> str | None:
-    """Return stripped sysfs text, or None if absent or a placeholder value.
-
-    Tolerates missing or unreadable pseudo-files so callers can probe
-    Linux-only sysfs entries without guarding their existence first.
-
-    path: sysfs file to read, e.g. `SYS_BLOCK / "nvme0n1" / "size"`.
-    """
+    """Stripped sysfs text, or None when the pseudo-file is absent, unreadable or a placeholder."""
     with suppress(OSError):
         value = path.read_text(encoding="utf-8").strip()
         return value if value and value.lower() not in _SYS_PLACEHOLDER else None
@@ -27,11 +21,10 @@ def _read_sys(path: Path) -> str | None:
 
 
 def capacity_bytes(device_dir: Path) -> int:
-    """One block device's capacity in bytes from its sysfs `size` file, 0 when it cannot be read.
+    """A block device's capacity in bytes from its sysfs `size` file (512-byte sectors).
 
-    sysfs reports capacity in 512-byte sectors. A pseudo-file that is missing, empty, or holds
-    something no kernel wrote (a placeholder, a truncated read) is no capacity rather than a
-    crash, which is the same tolerance every other reader here already promises.
+    A file that is missing, empty, or holds something no kernel wrote (a placeholder, a torn
+    read) is 0 rather than a crash.
 
     device_dir: the device's own directory, e.g. `SYS_BLOCK / "nvme0n1"`.
     """
@@ -43,10 +36,7 @@ def capacity_bytes(device_dir: Path) -> int:
 
 
 class DriveInfo(FrozenModel):
-    """One physical block device detected in `SYS_BLOCK`.
-
-    name: kernel device name, e.g. `nvme0n1`.
-    """
+    """One physical block device in `SYS_BLOCK`, by kernel name, e.g. `nvme0n1`."""
 
     name: str
 
@@ -57,7 +47,7 @@ class DriveInfo(FrozenModel):
 
     @cached_property
     def kind(self) -> DiskKind:
-        """Drive technology, NVMe, SSD, HDD, or Unknown."""
+        """NVMe by name, else HDD or SSD by the rotational flag, Unknown without one."""
         if self.name.startswith("nvme"):
             return DiskKind.NVME
         rotational = _read_sys(SYS_BLOCK / self.name / "queue" / "rotational")
@@ -67,7 +57,7 @@ class DriveInfo(FrozenModel):
 
     @cached_property
     def model(self) -> str | None:
-        """Drive model string from sysfs, or None if unavailable."""
+        """Drive model string, or None if unavailable."""
         return _read_sys(SYS_BLOCK / self.name / "device" / "model")
 
     @cached_property
@@ -81,12 +71,12 @@ class DriveInfo(FrozenModel):
 
     @cached_property
     def serial(self) -> str | None:
-        """Serial number from sysfs, or None if unavailable."""
+        """Serial number, or None if unavailable."""
         return _read_sys(SYS_BLOCK / self.name / "device" / "serial")
 
     @cached_property
     def size_bytes(self) -> int:
-        """Total device capacity in bytes, 0 when sysfs reports none this reader can use."""
+        """Total device capacity in bytes, 0 when sysfs reports none usable."""
         return capacity_bytes(SYS_BLOCK / self.name)
 
     @property

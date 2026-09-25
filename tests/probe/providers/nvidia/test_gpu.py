@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import NoReturn, Protocol
 
 import pytest
@@ -61,11 +62,8 @@ def unimportable_bindings(install: InstallNvidiaStack, monkeypatch: pytest.Monke
 def test_a_visible_device_reports_the_same_identity_through_either_layer(
     has_cuda_core: bool, source: str, install_nvidia_stack: InstallNvidiaStack
 ) -> None:
-    """Both API stacks answer the same identity, capability and capacity.
-
-    Identity, capability and capacity read the same whether the optional `cuda.core` layer
-    loaded or the provider fell back to `cuda.bindings` (runtime plus NVML) alone.
-    """
+    """Identity, capability and capacity read the same whether the optional `cuda.core` layer
+    loaded or the provider fell back to `cuda.bindings` (runtime plus NVML) alone."""
     apis = install_nvidia_stack(has_cuda_core=has_cuda_core)
     assert apis.has_cuda_core is has_cuda_core
     assert NvidiaGPU.is_available() is True
@@ -84,12 +82,12 @@ def test_a_visible_device_reports_the_same_identity_through_either_layer(
     assert gpu.runtime_version == (13, 1)
     assert gpu.pci_bus_id == "0000:00:00.0"
     memory = gpu.memory
-    assert (memory.total_bytes, memory.used_bytes, memory.free_bytes) == (
+    assert (memory.total_bytes, memory.used_bytes, memory.free_bytes, memory.source) == (
         24 * _GIB,
         6 * _GIB,
         18 * _GIB,
+        source,
     )
-    assert memory.source == source
     assert gpu.coherent is False  # a discrete card reports neither coherence attribute
     assert memory.unified is False
 
@@ -111,29 +109,49 @@ def test_a_pure_nvml_windows_stack_reports_the_device_without_cuda_extensions(
     assert gpu.memory.source == "nvml"
 
 
-@pytest.mark.parametrize("has_cuda_core", [True, False], ids=["cuda-core", "nvml"])
-def test_a_coherent_grace_hopper_pool_flags_its_memory_as_unified(
-    has_cuda_core: bool, install_nvidia_stack: InstallNvidiaStack
-) -> None:
-    """Coherent-fabric devices carry the unified flag through every tier.
+def absent_attribute_query(attr: int, index: int) -> NoReturn:
+    raise AttributeError("module 'cuda.bindings.runtime' has no cudaDeviceGetAttribute")
 
-    A device reporting both pageable and concurrent-managed access sits on a coherent fabric
-    where host RAM is a peer NUMA node of HBM, and the flag flows through either memory tier.
+
+@pytest.mark.parametrize(
+    ("shape", "query", "coherent"),
+    [
+        pytest.param({"coherent": True}, None, True, id="grace-hopper-cuda-core"),
+        pytest.param(
+            {"coherent": True, "has_cuda_core": False}, None, True, id="grace-hopper-nvml"
+        ),
+        pytest.param({"hmm": True}, None, False, id="discrete-card-under-hmm"),
+        pytest.param({}, absent_attribute_query, False, id="binding-without-the-query"),
+    ],
+)
+def test_only_a_coherent_fabric_flags_device_memory_as_unified(
+    shape: dict[str, bool],
+    query: Callable[[int, int], NoReturn] | None,
+    coherent: bool,
+    install_nvidia_stack: InstallNvidiaStack,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Coherence needs host-native atomics on top of pageable and managed access.
+
+    A device reporting all three sits on a coherent fabric where host RAM is a peer NUMA node
+    of HBM, and the flag flows through either memory tier. Pageable and managed access alone
+    are what a driver with HMM gives a discrete card: the RTX 4090 on the open kernel modules
+    reported both and was budgeted as a Grace Hopper for a week. An older binding with no
+    `cudaDeviceGetAttribute` answers not-coherent, never a crash.
     """
-    install_nvidia_stack(has_cuda_core=has_cuda_core, coherent=True)
+    apis = install_nvidia_stack(**shape)
+    if query:
+        monkeypatch.setattr(apis.runtime, "cudaDeviceGetAttribute", query)
     gpu = NvidiaGPU(index=0)
-    assert gpu.coherent is True
-    assert gpu.memory.unified is True
+    assert gpu.coherent is coherent
+    assert gpu.memory.unified is coherent
 
 
 def test_a_driver_version_nvml_will_not_answer_reads_empty_rather_than_the_cuda_one(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Does a refused driver query leave the field empty instead of borrowing the CUDA version?
-
-    The two are different facts and the receipt stamped one under the other's name for a whole
-    generation, so an unanswerable driver is silence and never the number that reads like it.
-    """
+    """The two are different facts and a receipt stamped one under the other's name for a whole
+    generation, so an unanswerable driver is silence, never the number that reads like it."""
 
     def absent() -> NoReturn:
         raise AttributeError("module 'cuda.bindings.nvml' has no system_get_driver_version")
@@ -144,48 +162,17 @@ def test_a_driver_version_nvml_will_not_answer_reads_empty_rather_than_the_cuda_
     assert gpu.runtime_version == (13, 1)
 
 
-def test_a_discrete_card_under_heterogeneous_memory_management_is_not_coherent(
-    install_nvidia_stack,
-) -> None:
-    """Pageable and managed access alone are what a driver with HMM gives a discrete card.
-
-    The RTX 4090 on the open kernel modules reported both and was budgeted as a Grace
-    Hopper for a week; host-native atomics are the flag only a coherent fabric raises.
-    """
-    install_nvidia_stack(hmm=True)
-    gpu = NvidiaGPU(index=0)
-    assert gpu.coherent is False
+_REFUSING_TIERS = [
+    pytest.param(sensorless_cuda_core, id="cuda-core-sensorless"),
+    pytest.param(unsupported_nvml_memory, id="nvml-unsupported"),
+]
 
 
-def test_a_binding_without_the_attribute_query_degrades_to_not_coherent(
-    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An older binding with no `cudaDeviceGetAttribute` answers not-coherent, never a crash."""
-
-    def absent(attr: int, index: int) -> NoReturn:
-        raise AttributeError("module 'cuda.bindings.runtime' has no cudaDeviceGetAttribute")
-
-    monkeypatch.setattr(nvidia_host.runtime, "cudaDeviceGetAttribute", absent)
-    gpu = NvidiaGPU(index=0)
-    assert gpu.coherent is False
-    assert gpu.memory.unified is False
-
-
-@pytest.mark.parametrize(
-    "setup",
-    [
-        pytest.param(sensorless_cuda_core, id="cuda-core-sensorless"),
-        pytest.param(unsupported_nvml_memory, id="nvml-unsupported"),
-    ],
-)
+@pytest.mark.parametrize("setup", _REFUSING_TIERS)
 def test_the_memory_ladder_ends_at_the_cuda_runtime_reading(
     setup: Setup, install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`cudaMemGetInfo` is the memory reading of last resort.
-
-    Whichever tier refuses first, its free/total pair becomes the reading, with the current
-    device restored around the query.
-    """
+    """`cudaMemGetInfo` is the memory reading of last resort, whichever tier refuses first."""
     setup(install_nvidia_stack, monkeypatch)
     memory = NvidiaGPU(index=0).memory
     assert memory.source == "cuda-runtime"
@@ -199,11 +186,8 @@ def test_the_memory_ladder_ends_at_the_cuda_runtime_reading(
 def test_a_failing_runtime_memory_query_raises_rather_than_reporting_zero_capacity(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The last tier surfaces its failure instead of zeroing the reading.
-
-    It has nothing to fall back on, and a host with no current device to restore still runs
-    the query.
-    """
+    """The last tier has nothing to fall back on, so it raises instead of zeroing the reading;
+    a host with no current device to restore still runs the query."""
     monkeypatch.setattr(nvidia_host.runtime, "cudaGetDevice", lambda: (99, 0))
     monkeypatch.setattr(nvidia_host.runtime, "cudaMemGetInfo", lambda: (99, 0, 0))
     monkeypatch.setattr(NvidiaGPU, "system_device", FakeSensorlessDevice())
@@ -246,39 +230,28 @@ def test_utilization_takes_the_first_layer_that_answers(
 
 
 @pytest.mark.parametrize(
-    ("refuse", "peak_gbs"),
-    [(False, 1008.096), (True, 0.0)],
-    ids=["bus_width_times_the_doubled_memory_clock", "nvml_refuses"],
+    ("refuse", "peak_gbs", "peak_khz"),
+    [(False, 1008.096, 2_520_000), (True, 0.0, 0)],
+    ids=["nvml_answers", "nvml_refuses"],
 )
-def test_peak_bandwidth_is_the_bus_width_times_the_doubled_memory_clock(
+def test_the_peaks_are_computed_from_the_nvml_maxima(
     refuse: bool,
     peak_gbs: float,
-    nvidia_host: FakeNvidiaApis,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The vendor headline figure, computed rather than looked up in a table of cards.
-
-    A 384-bit bus at 10501 MHz is a 4090's 1008 GB/s, and a device whose clock query is
-    unsupported scores nothing rather than reporting a fabricated peak.
-    """
-    if refuse:
-        monkeypatch.setattr(nvidia_host.nvml, "device_get_max_clock_info", raise_unsupported)
-    assert NvidiaGPU(index=0).peak_bandwidth_gbs == pytest.approx(peak_gbs)
-
-
-@pytest.mark.parametrize(
-    ("refuse", "peak_khz"), [(False, 2_520_000), (True, 0)], ids=["nvml_answers", "nvml_refuses"]
-)
-def test_the_peak_sm_clock_is_the_nvml_maximum_in_kilohertz(
-    refuse: bool,
     peak_khz: int,
     nvidia_host: FakeNvidiaApis,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The datasheet peak a stress probe compares against, zero rather than a guess if refused."""
+    """The vendor headline figures, computed rather than looked up in a table of cards.
+
+    A 384-bit bus at a doubled 10501 MHz is a 4090's 1008 GB/s, and the SM clock, the datasheet
+    peak a stress probe compares against, is in kHz. A device whose clock query is unsupported
+    scores zero rather than a fabricated peak.
+    """
     if refuse:
         monkeypatch.setattr(nvidia_host.nvml, "device_get_max_clock_info", raise_unsupported)
-    assert NvidiaGPU(index=0).peak_clock_khz == peak_khz
+    gpu = NvidiaGPU(index=0)
+    assert gpu.peak_bandwidth_gbs == pytest.approx(peak_gbs)
+    assert gpu.peak_clock_khz == peak_khz
 
 
 def test_a_snapshot_gathers_every_sensor_the_device_answers(nvidia_host: FakeNvidiaApis) -> None:
@@ -326,11 +299,8 @@ def test_each_sensor_degrades_on_its_own_rather_than_sinking_the_reading(
 def test_only_the_real_slowdowns_count_as_throttling(
     nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An idle device is not a throttled one, so the benign bits never reach the reading.
-
-    NVML answers with one mask covering both, and every idle GPU sets a bit in it, so
-    reading the mask as a boolean would report a healthy device as held back.
-    """
+    """NVML answers with one mask covering benign and real slowdowns, and every idle GPU sets a
+    bit in it, so the benign bits never reach the reading."""
     reasons = nvidia_host.nvml.ClocksEventReasons
     assert NvidiaGPU(index=0).snapshot().thermal.is_throttling is False  # only the idle bit
 
@@ -392,14 +362,13 @@ def test_a_failed_device_count_degrades_to_no_available_device(
     assert NvidiaGPU.all() == ()
 
 
-def test_nvml_memory_refusal_without_a_runtime_surfaces_the_missing_last_resort(
-    install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("setup", _REFUSING_TIERS)
+def test_a_refused_memory_reading_without_a_runtime_names_the_missing_last_resort(
+    setup: Setup, install_nvidia_stack: InstallNvidiaStack, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An NVML-only stack cannot fabricate capacity when its sole sensor refuses."""
-    apis = install_nvidia_stack(has_cuda_core=False)
-    monkeypatch.setattr(apis, "runtime", None)
-    monkeypatch.setattr(apis.nvml, "device_get_memory_info_v2", raise_unsupported)
-
+    """A stack without the CUDA Runtime cannot fabricate capacity when its sensor refuses."""
+    setup(install_nvidia_stack, monkeypatch)
+    monkeypatch.setattr(nvidia_apis_module.nvidia_apis(), "runtime", None)
     with pytest.raises(RuntimeError, match="CUDA Runtime is unavailable"):
         _ = NvidiaGPU(index=0).memory
 
@@ -407,11 +376,8 @@ def test_nvml_memory_refusal_without_a_runtime_surfaces_the_missing_last_resort(
 def test_a_base_install_without_the_cuda_extra_degrades_at_the_import_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A machine without the CUDA extra still probes clean.
-
-    The real `NvidiaApis` constructor runs here and fails to import `cuda.bindings.runtime`,
-    so the whole fan-out through `GPU.all` and `Machine` has to survive the missing extra.
-    """
+    """The real `NvidiaApis` constructor fails to import the bindings here, and the whole
+    fan-out through `GPU.all` and `Machine` survives the missing extra."""
 
     def absent(name: str) -> NoReturn:
         raise ModuleNotFoundError(f"No module named {name!r}")
@@ -421,28 +387,6 @@ def test_a_base_install_without_the_cuda_extra_degrades_at_the_import_seam(
     assert NvidiaGPU.is_available() is False
     assert all(gpu.vendor is not Vendor.NVIDIA for gpu in GPU.all())
     assert all(gpu.vendor is not Vendor.NVIDIA for gpu in Machine().gpus)
-
-
-@pytest.mark.parametrize("failure", ["nvml", "os"], ids=["nvml-refuses", "driver-missing"])
-def test_a_device_count_that_fails_reads_as_no_device(
-    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch, failure: str
-) -> None:
-    error = nvidia_host.nvml_errors[0]() if failure == "nvml" else OSError("no driver")
-
-    def refusing(cls: type[NvidiaGPU]) -> int:
-        raise error
-
-    monkeypatch.setattr(NvidiaGPU, "device_count", classmethod(refusing))
-    assert NvidiaGPU.is_available() is False
-
-
-def test_memory_without_nvml_or_a_runtime_says_which_tier_it_lacks(
-    nvidia_host: FakeNvidiaApis, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(nvidia_host, "runtime", None)
-    monkeypatch.setattr(NvidiaGPU, "system_device", FakeSensorlessDevice())
-    with pytest.raises(RuntimeError, match="CUDA Runtime is unavailable"):
-        _ = NvidiaGPU(index=0).memory
 
 
 @pytest.mark.parametrize(
@@ -462,11 +406,8 @@ def test_the_nvml_fallback_honors_the_cuda_mask(
     count: int,
     handle: str | None,
 ) -> None:
-    """Without a runtime to remap for it, the visible index is read through the mask.
-
-    A job pinned to the idle second card of a shared box was judged by the first card's load
-    before this, and its idle gate refused it.
-    """
+    """Without a runtime to remap for it, the visible index is read through the mask, so a job
+    pinned to the idle second card of a shared box is not judged by the first card's load."""
     apis = install_nvidia_stack(has_cuda_core=False)
     apis.runtime = None
     if mask is None:
