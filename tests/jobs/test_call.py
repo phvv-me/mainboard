@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING
 import pytest
 from cyclopts import App
 
+from mainboard.dispatch.evidence import RECEIPTS_VAR
 from mainboard.dispatch.provenance import listing
 from mainboard.dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
 from mainboard.jobs import call
+from mainboard.jobs.beacon import Progress
 from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
 
@@ -215,14 +217,26 @@ def _overrun(process: FakePopen) -> None:
         pytest.param((None, 0, 0), 124, ["a"], id="a-cell-past-its-timeout-is-killed"),
     ],
 )
+@pytest.mark.parametrize("dispatched", [False, True], ids=["at-a-terminal", "dispatched"])
 def test_a_fresh_group_runs_every_cell_as_its_own_process_until_one_fails(
-    outcomes: tuple[int | None, ...], code: int, ran: list[str], fp: FakeProcess
+    outcomes: tuple[int | None, ...],
+    code: int,
+    ran: list[str],
+    dispatched: bool,
+    fp: FakeProcess,
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A timed cell inherits nothing from the one before it, and a broken card stops the lane.
 
     A cell that never answers is the one outcome with no exit code of its own, so the child
-    stands in for it by overrunning the deadline the runner handed `subprocess.run`.
+    stands in for it by overrunning the deadline the runner handed `subprocess.run`. In a
+    dispatched job the lane is one session to its waiter: every cell declared up front, a cell
+    killed at its timeout reported failed, and the session ended on the lane's own exit code.
     """
+    monkeypatch.delenv(RECEIPTS_VAR, raising=False)
+    if dispatched:
+        monkeypatch.setenv(RECEIPTS_VAR, "/tmp/receipts")
     for identity, returncode in zip("abc", outcomes, strict=True):
         cell = [sys.executable, "-m", "mainboard.jobs.call", f"lane.py::test[{identity}]"]
         if returncode is None:
@@ -234,3 +248,10 @@ def test_a_fresh_group_runs_every_cell_as_its_own_process_until_one_fails(
 
     assert call.main(["lane.py::test", "--", *fresh]) == code
     assert [list(command)[3] for command in fp.calls] == [f"lane.py::test[{cell}]" for cell in ran]
+    read = Progress.read(capfd.readouterr().out)
+    if not dispatched:
+        assert read == Progress()
+        return
+    assert (read.total, read.session) == (3, code)
+    killed = code == 124
+    assert read.cells == ((("lane.py::test[a]", "failed"),) if killed else ())

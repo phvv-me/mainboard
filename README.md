@@ -25,18 +25,19 @@ job.pull()
 The same surface as a CLI:
 
 ```console
-$ mainboard run --on gold -- nvidia-smi -L
+$ mainboard run --on gold nvidia-smi -L   # everything from the command on is its own
 GPU 0: NVIDIA GB10 (UUID: GPU-6a5c...)
 $ mainboard facts --on gold | head -4
 {
   "schema_version": 1,
   "hostname": "gold",
   "cpu_name": "10x Arm Cortex-A725 + 10x Arm Cortex-X925",
-$ mainboard submit --on miyabi-g --attempt 2 -- python -m experiments.run
+$ mainboard submit --on miyabi-g --attempt 2 python -m experiments.run
 2231259
 $ mainboard monitor --json          # one durable pass, what a cron runs
 {"running": 1, "finished": [], "failed": [], "unreachable_hosts": [], "changed": false}
-$ mainboard jobs                    # every live job as its own queue sees it right now
+$ mainboard jobs                    # every live job as its queue sees it, cells, silence, GPU%
+$ mainboard wait 2231259            # cells and a heartbeat on stderr; exit 4 on a stalled job
 $ mainboard compute --agent         # every path this workspace can run on
 name      kind      access       detail                 usd_hr  credit_usd
 local     local     here         1x RTX 4090, 135 GB RAM

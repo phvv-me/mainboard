@@ -24,6 +24,8 @@ import base64
 import re
 import string
 
+from ..jobs.beacon import unbeaconed
+
 # The variable a run reads to learn where to write its receipts, and the file it names. A rented
 # machine keeps no workspace, so the path is under `/tmp` rather than derived from a root that
 # does not exist there. The shell's own pid is in the name because a cluster node runs several
@@ -119,7 +121,8 @@ def printed(log: str) -> str:
 
     The frame is this wrapper's channel and not the job's output: a reader of the log wants what
     the command said, and the receipts it carried are read through `verdict` and the receipts
-    files instead. Every frame line goes, a torn block's included, and nothing else is touched.
+    files instead. Every frame line goes, a torn block's included, and so does every progress
+    marker the runner wrote for a waiter, which `wait` and `jobs` read instead.
 
     log: the run's captured output, as its backend handed it over.
     """
@@ -128,7 +131,7 @@ def printed(log: str) -> str:
         for line in log.splitlines(keepends=True)
         if line.strip() not in (_BEGIN, _END) and not line.lstrip().startswith(_CHUNK_MARKER)
     ]
-    return "".join(kept)
+    return unbeaconed("".join(kept))
 
 
 # What the trials plugin prints for a cell whose data a previous run already took, as the

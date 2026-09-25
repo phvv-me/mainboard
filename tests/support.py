@@ -8,7 +8,7 @@ from mainboard.compute import Survey
 from mainboard.deps import Change, Dependencies
 from mainboard.dispatch import HostSetup
 from mainboard.dispatch.dispatcher import Dispatcher
-from mainboard.dispatch.state import MonitorReport
+from mainboard.dispatch.state import MonitorReport, RunRecord
 from mainboard.doctor import Doctor, Section
 from mainboard.monitor import Monitor
 from mainboard.probe.stress import StressReport
@@ -184,3 +184,28 @@ def plain() -> int:
     lab.write("research/other/experiments/node/run.py", "def main() -> None:\n    pass\n")
     lab.write("data/corpus/a.txt", "corpus\n")
     return lab
+
+
+def run(handle: str, *, target: str = "gold", kind: str = "ssh") -> RunRecord:
+    """One running dispatched job, as the dispatch cache holds it."""
+    return RunRecord(
+        handle=handle,
+        target=target,
+        kind=kind,
+        script="job.sh",
+        args="",
+        git_sha="abc",
+        dirty=0,
+        submitted_at="2026-09-25T00:00:00+00:00",
+        verdict="running",
+    )
+
+
+class Clock:
+    """Wall-clock seconds a test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
+        return self.now

@@ -11,7 +11,7 @@ import pytest
 
 from mainboard import Board, ComputePath, MissionError, Project, Survey
 from mainboard.batch import JobEstimate
-from mainboard.cli import build, main
+from mainboard.cli import _said, build, main
 from mainboard.dispatch.shared import db_file
 from mainboard.dispatch.state import Cache, MonitorReport, RunRecord
 from mainboard.dispatch.vocabulary import JobState
@@ -45,6 +45,10 @@ _RESOURCES = {
     "env": "",
     "container": "",
 }
+
+# What `wait` translates its flags into by default: the dispatch poll, the stall threshold, and
+# the stderr line printer the cells and the heartbeat go through.
+_WAITED = {"host": "", "timeout": 3600.0, "interval": 5.0, "stall": 1200.0, "say": _said}
 
 
 @pytest.mark.parametrize(
@@ -131,11 +135,11 @@ _RESOURCES = {
         (["facts", "gold"], ("facts", "gold", (), {})),
         (
             ["wait", "4242", "--timeout", "60"],
-            ("wait", "", ("4242",), {"host": "", "timeout": 60.0, "interval": 5.0}),
+            ("wait", "", ("4242",), {**_WAITED, "timeout": 60.0}),
         ),
         (
-            ["batch", "wait", "smoke-1", "--timeout", "60"],
-            ("wait", "", ("smoke-1",), {"host": "", "timeout": 60.0, "interval": 5.0}),
+            ["batch", "wait", "smoke-1", "--timeout", "60", "--stall", "0"],
+            ("wait", "", ("smoke-1",), {**_WAITED, "timeout": 60.0, "stall": 0.0}),
         ),
         (["verdict", "smoke-1"], ("of", "", ("smoke-1",), {"host": "", "run": ""})),
         (["cancel", "4242", "--on", "gold"], ("cancel", "", ("4242",), {"host": "gold"})),
@@ -225,6 +229,24 @@ def test_a_verdict_with_no_rows_says_why_on_stderr_rather_than_printing_a_bare_h
         build(depot)(["verdict", "s", "--json"])
     printed = capsys.readouterr()
     assert note in printed.err and note not in printed.out
+
+
+def test_a_wait_streams_its_lines_to_stderr_and_exits_4_on_a_stalled_job(
+    depot: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Cells and heartbeats go where a `--json` reader never looks, and a stall says why."""
+
+    def waited(self: Verdicts, handle: str, **options: Callable[[str], None]) -> StreamVerdict:
+        options["say"]("heartbeat: 1 running, 2/3 cells, 0 failed")
+        return StreamVerdict(stream=handle, trials=(), stalled="8 on gold printed nothing")
+
+    monkeypatch.setattr(Verdicts, "wait", waited)
+    with pytest.raises(SystemExit, match="4"):
+        build(depot)(["wait", "8", "--json"])
+    printed = capsys.readouterr()
+    assert json.loads(printed.out) == []
+    assert "heartbeat: 1 running, 2/3 cells" in printed.err
+    assert "stalled: 8 on gold printed nothing" in printed.err
 
 
 @pytest.mark.parametrize(
@@ -1059,6 +1081,6 @@ def test_lanes_run_runs_local_groups_in_place_and_submits_each_group_to_every_ot
         ("run", "local", (line("b-1"),), {}),
         ("submit", "gold", (" ".join(line("a-1", "a-2")),), {"name": "lanes-gold-a", **submitted}),
         ("submit", "gold", (" ".join(line("b-1")),), {"name": "lanes-gold-b", **submitted}),
-        *([("wait", "", ("4242",), {"host": "gold"})] * (2 if wait else 0)),
+        *([("wait", "", ("4242",), {"host": "gold", "say": _said})] * (2 if wait else 0)),
     ]
     assert "local exit 0" in capsys.readouterr().out

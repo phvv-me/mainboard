@@ -14,7 +14,9 @@ from patos import FrozenModel
 
 from .diagnosis import reason
 from .dispatch import vocabulary
+from .jobs.beacon import Progress
 from .monitor import Sweep
+from .pulse import Pulses
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
     from .board import Board
     from .dispatch.state import RunRecord
     from .dispatch.vocabulary import JobState
+    from .pulse import Pulse
 
 
 # The verdicts whose row is worth a reason. A cancel is a decision somebody made and a skip is a
@@ -43,6 +46,12 @@ class JobRow(FrozenModel):
     submitted_at: when the run was dispatched.
     cause: why a settled run failed, its own last meaningful output line. Empty for a live run,
         which has printed nothing home yet, and for one that ended clean.
+    cells: a running test job's cells landed out of its total, `3/12`, with how many failed
+        after it when any did; empty where its log reports none.
+    quiet_s: seconds since a running job's output last grew, empty until a look has seen it
+        twice, since one look cannot tell silence from a job that just printed.
+    gpu_pct: the busiest card on the host a running job runs on, empty where that is not one
+        cheap command away, a cluster's login node or a rented machine.
     """
 
     state: str
@@ -53,6 +62,9 @@ class JobRow(FrozenModel):
     starts: str = ""
     submitted_at: str
     cause: str = ""
+    cells: str = ""
+    quiet_s: int | None = None
+    gpu_pct: int | None = None
 
 
 class Listed(FrozenModel):
@@ -78,36 +90,52 @@ class Listing:
     nothing else: those rows fall back to what the cache remembers and the note names the host.
     """
 
-    def __init__(self, board: Board, *, limit: int) -> None:
+    def __init__(self, board: Board, *, limit: int, pulses: Pulses | None = None) -> None:
         """board: the workspace whose cache holds the runs and whose hosts answer for them.
 
         limit: how many settled runs to show behind the live ones.
+        pulses: the look at running jobs' output and cards, the workspace's own when None.
         """
         self.board = board
         self.limit = limit
         self.cache = board.dispatcher.cache
+        self.pulses = pulses or Pulses(board)
 
     def taken(self) -> Listed:
         """The listing as it stands: every live run resolved now, then the settled tail."""
         live = self.cache.live()
         resolved = Sweep(self.board, live)
+        running = [
+            record
+            for record in live
+            if (state := resolved.states.get(record))
+            and state.verdict == vocabulary.RUNNING
+            and state.stage != vocabulary.QUEUED
+        ]
+        pulses = self.pulses.taken(running)
         rows = [
-            *(self.flying(record, resolved.states.get(record)) for record in live),
+            *(
+                self.flying(record, resolved.states.get(record), pulses.get(record))
+                for record in live
+            ),
             *(self.landed(record) for record in self.cache.settled(self.limit)),
         ]
         return Listed(rows=tuple(rows), note=self.note(shown=len(rows), quiet=resolved.down))
 
     @staticmethod
-    def flying(record: RunRecord, state: JobState | None) -> JobRow:
+    def flying(record: RunRecord, state: JobState | None, pulse: Pulse | None) -> JobRow:
         """One live run's row, from what its host just said or from the cache when it went quiet.
 
         The state column is the lifecycle's own live word, `queued`, `running`, or `finished`
         for a job whose queue is done with it and whose sweep has not settled it yet, since those
         are the distinctions a person is reading this table for. A backend that maps neither
         stage onto the lifecycle leaves its own raw word (`Queued` in a pueue status), and a host
-        that answered nothing leaves the cache's memory of it.
+        that answered nothing leaves the cache's memory of it. A running job carries its pulse:
+        cells landed, how long its output has been quiet, and its host's busiest card.
         """
         live = state.phase if state else ""
+        progress = pulse.progress if pulse else Progress()
+        failed = f" ({progress.failed} failed)" if progress.failed else ""
         return JobRow(
             state=live or record.state or vocabulary.UNKNOWN,
             host=record.target,
@@ -116,6 +144,9 @@ class Listing:
             since=(state.since if state else "") or record.submitted_at,
             starts=state.estimated_start if state else "",
             submitted_at=record.submitted_at,
+            cells=f"{progress.counted}{failed}",
+            quiet_s=pulse.quiet_s if pulse else None,
+            gpu_pct=pulse.gpu_pct if pulse else None,
         )
 
     def landed(self, record: RunRecord) -> JobRow:

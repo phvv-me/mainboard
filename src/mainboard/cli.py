@@ -32,8 +32,9 @@ from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
 from .probe.stress import rows as stress_rows
-from .render import install_traceback, mode_of, plain, progress, record, rows, totals
+from .render import diverted, install_traceback, mode_of, plain, progress, record, rows, totals
 from .results import Results
+from .vigil import STALL_SECONDS
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1043,7 +1044,7 @@ def build(root: Path | None = None) -> App:
             if identity.startswith("local exit"):
                 continue
             with progress(f"waiting on {identity} ({host}, {name})"):
-                settled = board("local").verdicts().wait(identity, host=host)
+                settled = board("local").verdicts().wait(identity, host=host, say=_said)
             exit_code = exit_code or settled.code
         return exit_code
 
@@ -1246,6 +1247,7 @@ def build(root: Path | None = None) -> App:
         *,
         timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
+        stall: float = STALL_SECONDS,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -1253,20 +1255,29 @@ def build(root: Path | None = None) -> App:
         """Block until every job of a batch settles, print the batch's verdict, exit its code.
 
         The same durable sweep `wait` runs on one handle, over the whole batch: results are
-        pulled back and rentals released as each job lands, and the answer is read off the
-        batch's receipts, 0 when every job settled clean, 1 on any failure, 2 at the timeout
-        with work still in flight.
+        pulled back and rentals released as each job lands, cells and a heartbeat stream to
+        stderr, and the answer is read off the batch's receipts, 0 when every job settled
+        clean, 1 on any failure, 2 at the timeout with work still in flight, 4 when a job
+        stalled.
 
         batch_id: the batch to wait on, as `run` printed it.
         timeout: give up after this many seconds, exiting 2 with jobs still in flight, an hour
             unless said otherwise; 0 waits as long as it takes.
         interval: seconds between sweeps, the dispatch default when 0.
+        stall: seconds a running job may print nothing on an idle card before the wait stops
+            and exits 4; 0 never calls a job stalled.
         json: print the verdict as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
         return wait(
-            batch_id, timeout=timeout, interval=interval, json=json, agent=agent, fields=fields
+            batch_id,
+            timeout=timeout,
+            interval=interval,
+            stall=stall,
+            json=json,
+            agent=agent,
+            fields=fields,
         )
 
     @app.command
@@ -1351,6 +1362,7 @@ def build(root: Path | None = None) -> App:
         on: str = "",
         timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
+        stall: float = STALL_SECONDS,
         json: bool = False,
         agent: bool = False,
         fields: str = "",
@@ -1362,17 +1374,26 @@ def build(root: Path | None = None) -> App:
         loses nothing. What prints at the end is read back off the on-disk receipts rather than
         remembered from the loop, which is what makes this the sanctioned completion check.
 
+        While it blocks, stderr carries each test cell's outcome as it lands and a heartbeat:
+        cells done, failures, how long since the output last grew, and the busiest card where
+        that is cheap to read. A job whose pytest session ended while its process lingers is
+        settled on the session's own outcome, and a running job silent past `--stall` on an idle
+        card ends the wait with exit 4 rather than holding it to the timeout.
+
         handle: the job to wait on, as `submit` printed it, or a batch id as `batch run`
             printed it, which waits for every job of the batch.
         on: the host alias narrowing a handle recorded on several hosts.
         timeout: give up after this many seconds, exiting 2 with the job still in flight, an
             hour unless said otherwise; 0 waits as long as it takes.
         interval: seconds between polls, the dispatch default when 0.
+        stall: seconds a running job may print nothing on an idle card before the wait stops
+            and exits 4; 0 never calls a job stalled.
         json: print the outcome as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
         fields: a comma-separated projection over the verdict columns.
         """
-        with progress(f"waiting on {handle}"):
+        print(f"waiting on {handle}", file=sys.stderr, flush=True)
+        with diverted():
             settled = (
                 board("local")
                 .verdicts()
@@ -1381,6 +1402,8 @@ def build(root: Path | None = None) -> App:
                     host=on,
                     timeout=timeout,
                     interval=interval or vocabulary.POLL_SECONDS,
+                    stall=stall,
+                    say=_said,
                 )
             )
         _settled(settled, json_mode=json, agent=agent, fields=fields)
@@ -1495,14 +1518,17 @@ def build(root: Path | None = None) -> App:
         A live job is never left out and never answered from memory. Each host is asked once
         about every run it still owes an answer on, one `qstat`, one `squeue`, one `pueue
         status`, so a wave of thirty five says which of them are running and which are queued
-        behind them, since when, and where the scheduler estimates a start. The limit bounds only
+        behind them, since when, and where the scheduler estimates a start. A running job also
+        shows its test cells landed out of its total, the seconds since its output last grew, and
+        the busiest card on its host where that is one cheap command away. The limit bounds only
         the settled tail, and a listing that had to leave anything out says so on stderr rather
         than stopping quietly at twenty rows.
 
         limit: how many settled runs to show behind the live ones, newest first.
         json: print canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
-        fields: a comma-separated projection over state/host/name/handle/since/starts/cause.
+        fields: a comma-separated projection over the row's columns, cells/quiet_s/gpu_pct
+            among them.
         """
         with progress("asking every host about its live jobs"):
             listed = Listing(board("local"), limit=limit).taken()
@@ -1524,7 +1550,19 @@ _HOSTS_COLUMNS = ("host", "root", "env", "installer", "tool", "onboarded_at")
 
 # The columns the job listing always carries, so a cache nobody has dispatched from still renders
 # its heading, and so a settled row's empty live columns line up under the live rows' own.
-_JOB_COLUMNS = ("state", "host", "name", "handle", "since", "starts", "submitted_at", "cause")
+_JOB_COLUMNS = (
+    "state",
+    "host",
+    "name",
+    "handle",
+    "cells",
+    "quiet_s",
+    "gpu_pct",
+    "since",
+    "starts",
+    "submitted_at",
+    "cause",
+)
 
 # The columns each batch table carries, named here so an empty batch still renders its heading and
 # so the totals row is summed over the same shape the rows are printed in.
@@ -1647,6 +1685,13 @@ def _settled(settled: StreamVerdict, *, json_mode: bool, agent: bool, fields: st
     )
     if settled.note:
         print(settled.note, file=sys.stderr)
+    if settled.stalled:
+        print(f"stalled: {settled.stalled}", file=sys.stderr)
+
+
+def _said(line: str) -> None:
+    """One line a wait says while it blocks, on stderr and at once."""
+    print(line, file=sys.stderr, flush=True)
 
 
 def _agreed() -> bool:
