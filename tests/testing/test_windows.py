@@ -65,6 +65,8 @@ def test_a_marked_test_reads_paths_and_tools_as_windows_would(tmp_path: Path) ->
     assert f"{target.relative_to(tmp_path)}" == "pkg\\one.py"
     assert os.fspath(target).replace("\\", "/") == target.as_posix()
     assert Path(spelled) == target
+    with open(spelled, encoding="utf-8") as handle:
+        assert handle.read() == "x = 1\n"
     done = subprocess.run(
         [
             sys.executable,

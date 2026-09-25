@@ -15,9 +15,9 @@
 # backslashes when first-party code asks for it, exactly as Windows would, while the interpreter's
 # own machinery (`os.fspath`, pathlib itself) keeps the real spelling. Windows' own system calls
 # read a backslash path as the same file and this machine's do not, so a rendered spelling is read
-# back where the system reads it: parsed into a path again, or handed to a process as its working
-# directory, its environment or an absolute path in its argv. What stays different is exactly
-# what differs on Windows: the text itself.
+# back where the system reads it: parsed into a path again, opened, or handed to a process as its
+# working directory, its environment or an absolute path in its argv. What stays different is
+# exactly what differs on Windows: the text itself.
 #
 # THE FILES. Two file-system rules POSIX never enforces broke code only on Windows: a
 # `NamedTemporaryFile` cannot be opened again by name while it is still open, and a symlink needs
@@ -157,10 +157,12 @@ class Spelling:
 class Sharing:
     """Windows' rules for the files a test opens: no second open of a live temporary file.
 
+    spelling: the rendered paths an opened name is read back through first.
     live: every open `NamedTemporaryFile` that deletes itself, by the name it can be reached at.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, spelling: Spelling) -> None:
+        self.spelling = spelling
         self.live: dict[str, IO[bytes] | IO[str]] = {}
 
     def temporary[**Made, File: (IO[bytes], IO[str])](
@@ -179,9 +181,11 @@ class Sharing:
     def opening[**Rest, Opened](
         self, opener: Callable[Concatenate[OpenTarget, Rest], Opened]
     ) -> Callable[Concatenate[OpenTarget, Rest], Opened]:
-        """`open`, refusing a live temporary file as Windows' sharing violation does."""
+        """`open` of a rendered name reaching its file, and refusing a live temporary one."""
 
         def opened(file: OpenTarget, *args: Rest.args, **named: Rest.kwargs) -> Opened:
+            if isinstance(file, str):
+                file = self.spelling.real(file)
             held = None if isinstance(file, int) else self.live.get(os.fsdecode(file))
             if held is not None and not held.closed:
                 raise PermissionError(
@@ -217,7 +221,7 @@ class WindowsLike:
         monkeypatch.setattr(PurePath, "__init__", spelling.parsing(PurePath.__init__))
         spawn = getattr(subprocess.Popen, SPAWN)
         monkeypatch.setattr(subprocess.Popen, SPAWN, spelling.spawning(spawn))
-        sharing = Sharing()
+        sharing = Sharing(spelling)
         monkeypatch.setattr(
             tempfile, "NamedTemporaryFile", sharing.temporary(tempfile.NamedTemporaryFile)
         )

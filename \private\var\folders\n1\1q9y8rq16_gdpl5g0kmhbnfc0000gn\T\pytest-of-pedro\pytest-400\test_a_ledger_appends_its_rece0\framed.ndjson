@@ -1,2 +1,0 @@
-{"trial_receipt": {"node": "alpha", "run_id": "one", "outcome": "passed"}}
-{"trial_receipt": {"node": "alpha", "run_id": "two", "outcome": "failed"}}

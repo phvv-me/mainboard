@@ -1,3 +1,0 @@
-{"trial_receipt": {"run": "run-1", "node": "alpha", "lane": "l", "key": "a", "outcome": "passed", "measured": {"n": 1}}}
-{"trial_receipt": {"run": "run-1", "node": "alpha", "lane": "l", "key": "b", "outcome": "passed", "measured": {}}}
-{"trial_receipt": {"run": "run-1", "node": "alpha", "lane": "l", "key": "c", "outcome": "passed", "measured": {}}}
