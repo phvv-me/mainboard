@@ -644,6 +644,14 @@ def test_submit_refuses_a_broken_environment_and_names_the_host_a_scheduler_reje
     )
     with pytest.raises(SystemExit, match="environment on 'gold' is broken: ModuleNotFoundError"):
         dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
+    # A host whose tool predates the job runner would queue the job and lose it at start.
+    monkeypatch.setattr(
+        dispatch_module,
+        "connection",
+        lambda host: machine_with(rules=[("job --help", 1, 'Error: Unknown command "job"')]),
+    )
+    with pytest.raises(SystemExit, match=r"cannot run a job .*`mainboard setup gold`"):
+        dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
 
 
 def test_await_many_polls_every_handle_until_terminal_and_persists_what_it_learned(

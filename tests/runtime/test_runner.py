@@ -240,8 +240,10 @@ def test_the_calls_around_the_command_run_this_tool_with_their_own_credentials(
         sampler=ToolCall(args=(str(tmp_path / "sampled"),), credentials=str(credentials)),
     )
     assert ran.run() == 0
-    assert (tmp_path / "provided").read_text(encoding="utf-8") == f" {mirror}"
-    assert (tmp_path / "attested").read_text(encoding="utf-8") == f"secret {tmp_path}"
+    token, _, where = (tmp_path / "provided").read_text(encoding="utf-8").partition(" ")
+    assert (token, Path(where).resolve()) == ("", mirror.resolve())
+    token, _, where = (tmp_path / "attested").read_text(encoding="utf-8").partition(" ")
+    assert (token, Path(where).resolve()) == ("secret", tmp_path.resolve())
     assert "could not build" not in capfd.readouterr().out
 
 
@@ -290,6 +292,12 @@ def test_the_cli_hands_a_record_to_the_runner_and_exits_with_its_status(
     record = job(tmp_path, python("raise SystemExit(5)")).model_dump_json()
     with pytest.raises(SystemExit) as ended:
         build(tmp_path)(["job", record])
+    assert ended.value.code == 5
+    # A queue that names the script instead, as Windows' does, hands over the same record.
+    script = tmp_path / "job.sh"
+    script.write_text(f"#!/bin/sh\nexec mainboard job {shlex.quote(record)}\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as ended:
+        build(tmp_path)(["job", str(script)])
     assert ended.value.code == 5
 
 
