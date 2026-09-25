@@ -162,10 +162,11 @@ class WindowsTask:
         """
         if not self.arguments:
             return {}, tuple(argv)
+        trailing: tuple[str, ...] = ()
         try:
             separator = argv.index("--")
         except ValueError:
-            values, trailing = tuple(argv), ()
+            values = tuple(argv)
         else:
             values, trailing = tuple(argv[:separator]), tuple(argv[separator + 1 :])
         if len(values) != len(self.arguments):

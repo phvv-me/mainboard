@@ -79,6 +79,9 @@ mainboard = "mainboard.cli:main"
 # gate runs belongs here, including the linters, since a checkout of this repository is all CI
 # gets and nothing outside it supplies them.
 dev = [
+    # The plotting layer is an extra for consumers but part of the source both type checkers and
+    # the coverage gate read, so the gate installs it the way a plotting workspace would.
+    "mainboard[plot]",
     "hypothesis>=6.100",
     "mypy>=1.11",
     "pyrefly>=1",
@@ -87,6 +90,7 @@ dev = [
     "pytest-subprocess>=1.5",
     "ruff>=0.15",
     "types-psutil>=7.2.2.20260130",
+    "types-seaborn>=0.13.2",
 ]
 
 # The contextual lane reads a hosted model, so it names one rather than inheriting the default

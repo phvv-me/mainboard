@@ -568,9 +568,7 @@ def test_provision_installs_the_second_stage_after_pixi(
 ) -> None:
     """Every second-stage manager ships as a conda package, so pixi has to land first."""
     npm = stub_binary("npm")
-    provisioner = Provisioner(
-        tmp_path, manifest_from(f'{_BARE}[nodejs.deps]\nprettier = ">=3"\n')
-    )
+    provisioner = Provisioner(tmp_path, manifest_from(f'{_BARE}[nodejs.deps]\nprettier = ">=3"\n'))
     _solvable(provisioner)
     for _ in range(3):
         fp.register([fp.any()], stdout="environment ready\n")

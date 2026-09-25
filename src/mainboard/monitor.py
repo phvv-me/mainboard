@@ -399,7 +399,7 @@ class Monitor:
                 continue
             try:
                 backend = route(record.kind)
-                if backend == _QUEUED:
+                if backend == "ssh-family":
                     continue
                 current = self.cache.run(record.handle, record.target)
             except (MissionError, OSError, ValueError, LookupError, SQLiteError) as fault:

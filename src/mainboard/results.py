@@ -3,7 +3,7 @@
 import json
 import os
 import sqlite3
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from contextlib import closing
 from datetime import UTC
 from io import BytesIO
@@ -70,7 +70,7 @@ class Results:
         SQL text and UTF-8 file Paths use the same query contract as `query`.
         """
         frame = self.query(sql, project=project)
-        writers = {
+        writers: dict[str, Callable[[Path], None]] = {
             ".csv": frame.write_csv,
             ".parquet": frame.write_parquet,
             ".json": frame.write_json,

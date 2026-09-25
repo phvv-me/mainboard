@@ -121,7 +121,7 @@ def holder(pid: int, used_bytes: int) -> Holder:
         return Holder(pid=pid, used_bytes=used_bytes)
 
 
-def rows(host: str, occupancy: Occupancy) -> list[dict[str, str | int | bool]]:
+def rows(host: str, occupancy: Occupancy) -> list[dict[str, str | int | float | bool]]:
     """The occupancy as one row per card, for tables."""
     return [
         {

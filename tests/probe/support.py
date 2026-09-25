@@ -264,7 +264,12 @@ class FakeNvidiaApis:
     """
 
     def __init__(
-        self, device_count: int = 2, *, has_cuda_core: bool = True, coherent: bool = False, hmm: bool = False
+        self,
+        device_count: int = 2,
+        *,
+        has_cuda_core: bool = True,
+        coherent: bool = False,
+        hmm: bool = False,
     ) -> None:
         self.runtime = FakeRuntime(device_count, coherent=coherent, hmm=hmm)
         self.system = FakeSystem() if has_cuda_core else None

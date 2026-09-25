@@ -16,6 +16,7 @@ that carries no accelerator stack and refuses by naming what is missing.
 from __future__ import annotations
 
 from enum import StrEnum, auto
+from importlib import import_module
 from statistics import median
 from time import perf_counter
 from typing import TYPE_CHECKING, Protocol
@@ -131,12 +132,10 @@ class TorchKernels:
     """The stress operations through PyTorch, imported when first used."""
 
     def __init__(self, device_index: int = 0) -> None:
-        import torch
-
-        self.torch = torch
-        self.device = torch.device("cuda", device_index)
+        self.torch = import_module("torch")
+        self.device = self.torch.device("cuda", device_index)
         self.index = device_index
-        torch.cuda.set_device(self.device)
+        self.torch.cuda.set_device(self.device)
 
     def describe(self) -> tuple[str, tuple[int, int], int, int]:
         from .machine import Machine

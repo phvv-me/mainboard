@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from matplotlib.artist import Artist
     from matplotlib.figure import SubFigure
+    from matplotlib.image import AxesImage
     from matplotlib.legend import Legend
 
     from ..manifest import Layer, Panel
@@ -211,11 +212,12 @@ class PanelPlot(Plot):
         logarithmic = bool(kws.pop("log", False))
         colormap = mpl.colormaps[str(kws.pop("cmap", "Purples"))]
         values = np.ma.masked_invalid(grid)
-        low = float(kws.pop("vmin", values.min()))
-        high = float(kws.pop("vmax", values.max()))
+        low = float(cast("float", kws.pop("vmin", values.min())))
+        high = float(cast("float", kws.pop("vmax", values.max())))
         norm = LogNorm(low, high) if logarithmic else Normalize(low, high)
         axis = target.subplots()
-        mesh = axis.imshow(values, cmap=colormap, norm=norm, aspect="auto", origin="lower", **kws)
+        image = cast("Callable[..., AxesImage]", axis.imshow)
+        mesh = image(values, cmap=colormap, norm=norm, aspect="auto", origin="lower", **kws)
         axis.set_xticks(range(len(xs)), [fmt.format(value) for value in xs])
         axis.set_yticks(range(len(ys)), [fmt.format(value) for value in ys])
         axis.grid(False)
@@ -271,8 +273,8 @@ class PanelPlot(Plot):
         alone = bool(marks & self._mapped().keys()) and not (marks & panel.variables.keys())
         if secondary and (isinstance(panel.legend, dict) or marks & self._mapped().keys()):
             colors = self._color_lines(tables) if panel.key != "marks" else {}
-            marks = secondary if panel.key != "colors" else {}
-            combined = (colors | marks) if alone else secondary
+            shapes = secondary if panel.key != "colors" else {}
+            combined = (colors | shapes) if alone else secondary
             local = cast("Callable[..., Legend]", target.axes[0].legend)
             local(
                 list(combined.values()),

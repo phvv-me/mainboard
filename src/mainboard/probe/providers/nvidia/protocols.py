@@ -30,11 +30,13 @@ class DeviceAttr(Protocol):
     `cudaDevAttrPageableMemoryAccess` is set when the GPU can read host pageable memory
     directly, and `cudaDevAttrConcurrentManagedAccess` when CPU and GPU may touch managed
     pages concurrently. Both true is the Grace-Hopper / GB10 coherent-pool signature, where
-    host RAM is a peer NUMA node of HBM rather than a PCIe copy away.
+    host RAM is a peer NUMA node of HBM rather than a PCIe copy away, and
+    `cudaDevAttrHostNativeAtomicSupported` says device atomics on that host memory are native.
     """
 
     cudaDevAttrPageableMemoryAccess: int
     cudaDevAttrConcurrentManagedAccess: int
+    cudaDevAttrHostNativeAtomicSupported: int
 
 
 class CudaRuntime(Protocol):
@@ -62,8 +64,9 @@ class CudaRuntime(Protocol):
 
 
 class ClockDomain(Protocol):
-    """The `nvmlClockType_t` enum, read only for the memory-clock domain."""
+    """The `nvmlClockType_t` enum, read for the SM and memory clock domains."""
 
+    CLOCK_SM: int
     CLOCK_MEM: int
 
 

@@ -57,6 +57,16 @@ _TOOL = Project().name
 # generated tree the vendored copy lives in.
 _VENDOR_EXCLUDE = ("__pycache__/", "*.pyc", ".git", ".pixi/", ".venv/")
 
+# The rsync glob metacharacters a literal output path escapes, so a real filename holding one
+# protects exactly itself rather than every path the pattern would match.
+_GLOB_ESCAPES: dict[str, str | int | None] = {
+    "\\": "\\\\",
+    "*": "\\*",
+    "?": "\\?",
+    "[": "\\[",
+    "]": "\\]",
+}
+
 
 def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") -> str:
     """The line that builds the immutable environment `pinned` activates, empty when it has none.
@@ -937,11 +947,7 @@ class Dispatcher:
                     f"explicit input overlaps declared output {relative!r}; "
                     "bind the selected data under a separate immutable input path"
                 )
-            escaped.append(
-                relative.translate(
-                    str.maketrans({"\\": "\\\\", "*": "\\*", "?": "\\?", "[": "\\[", "]": "\\]"})
-                )
-            )
+            escaped.append(relative.translate(str.maketrans(_GLOB_ESCAPES)))
         return [pattern for path in escaped for pattern in (f"/{path}", f"/{path}/***")]
 
     def _stage(self, name: str, content: bytes) -> str:

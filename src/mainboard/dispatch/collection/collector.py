@@ -30,7 +30,7 @@ class KnownDigests:
         self.path = path
         try:
             self.held: dict[str, list[int | str]] = json.loads(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
+        except FileNotFoundError, json.JSONDecodeError:
             self.held = {}
 
     def of(self, file: Path, *, key: str) -> str:

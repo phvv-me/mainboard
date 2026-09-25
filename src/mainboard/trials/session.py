@@ -78,7 +78,9 @@ def params_of(item: pytest.Item, axes: Sequence[str] = ()) -> dict[str, JsonValu
     axes: the declared coverage axes a marker of the same name may answer.
     """
     drawn = getattr(item, "callspec", None)
-    values = {name: str(value) for name, value in getattr(drawn, "params", {}).items()}
+    values: dict[str, JsonValue] = {
+        name: str(value) for name, value in getattr(drawn, "params", {}).items()
+    }
     for axis in axes:
         marker = item.get_closest_marker(axis)
         if axis not in values and marker is not None and marker.args:

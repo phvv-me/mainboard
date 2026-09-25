@@ -408,7 +408,7 @@ class CuptiCollector(TraceCollector):
         known to enable; an error would be a real bug, not an unsupported device.
         """
         api = _cupti()
-        enabled = []
+        enabled: list[int] = []
         with ExitStack() as rollback:
             rollback.callback(_disable, enabled)
             for flag, enum_name in _CUPTI_KIND.items():

@@ -229,9 +229,9 @@ def self_installed(
     """
     parents = rerooted("", generated_dir=generated_dir)
     declared = [
-        spec["path"]
+        path
         for spec in _editable_specs(tomlkit.parse(manifest).unwrap())
-        if isinstance(spec.get("path"), str)
+        if isinstance(path := spec.get("path"), str)
     ]
     inside = [path for path in declared if path == parents or path.startswith(f"{parents}/")]
     return list(dict.fromkeys(path.removeprefix(parents).lstrip("/") for path in inside))

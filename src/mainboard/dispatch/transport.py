@@ -349,7 +349,12 @@ class SshTransport(FrozenModel):
         process.wait()
 
     def __raise_after_terminating(
-        self, process: subprocess.Popen[str], *, host: str, operation: str, cause: Exception
+        self,
+        process: subprocess.Popen[str],
+        *,
+        host: str,
+        operation: str,
+        cause: subprocess.TimeoutExpired,
     ) -> NoReturn:
         """Kill `process`'s group, then translate its `communicate()` timeout for the caller."""
         self.terminate(process)

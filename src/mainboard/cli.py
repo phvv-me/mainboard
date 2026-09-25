@@ -812,7 +812,7 @@ def build(root: Path | None = None) -> App:
         manifest = load(base / project.manifest)
         remote = [alias for alias, profile in manifest.hosts.items() if profile.kind == "ssh"]
         names = ["local", *remote] if every else [on]
-        listed: list[dict[str, str | int | bool]] = []
+        listed: list[dict[str, str | int | float | bool]] = []
         readings: dict[str, JsonValue] = {}
         for name in names:
             try:
@@ -871,7 +871,7 @@ def build(root: Path | None = None) -> App:
                 "capability": report.capability,
                 "sm_count": report.sm_count,
                 "datasheet_fp32_tflops": round(report.datasheet_fp32_tflops, 1),
-                "rows": list(stress_rows(report)),
+                "rows": tuple(stress_rows(report)),
             },
             mode=mode_of(json_mode=False, agent=agent),
             fields=(),

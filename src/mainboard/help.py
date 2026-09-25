@@ -43,7 +43,8 @@ class Help:
         if not path.is_file():
             path = self.package.parent.parent / "README.md"
         lines = path.read_text(encoding="utf-8").splitlines()
-        heading, start, paragraph, fence = path.name, 1, [], ""
+        paragraph: list[str] = []
+        heading, start, fence = path.name, 1, ""
         for number, line in enumerate([*lines, ""], start=1):
             marker = line.lstrip()[:3]
             fence_line = marker in ("```", "~~~")
