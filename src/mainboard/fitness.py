@@ -166,13 +166,19 @@ class Fitness:
         return _row("driver", Verdict.PASS, f"driver CUDA {found} meets the floor {floor}")
 
     def builds(self, system: System, environment: str) -> Section:
-        """Whether the locked CUDA builds run on this driver and carry kernels for this card."""
+        """Whether the locked CUDA builds run on this driver and carry kernels for this card.
+
+        CUDA's minor-version compatibility runs a build on any driver of its major version, the
+        rule conda's `cuda-version X.Y` states as `__cuda >=X`, so only a newer major fails.
+        """
         built = self._built(system.platform, environment)
         if built is None or not system.gpus:
             return _row("cuda-builds", Verdict.PASS, "no CUDA builds locked for this card to run")
         driver = system.driver_cuda
-        if driver is not None and driver < built:
-            detail = f"builds locked for CUDA {built}, a driver supporting {driver}"
+        if driver is not None and driver.major < built.major:
+            detail = (
+                f"builds locked for CUDA {built} need a CUDA {built.major} driver, not {driver}"
+            )
             return _row("cuda-builds", Verdict.FAIL, detail, _DRIVERS)
         capability = system.capability
         needed = next(
@@ -188,9 +194,13 @@ class Fitness:
                 f"raise the CUDA of the locked builds, then mainboard install {environment} "
                 "--resolve",
             )
-        return _row(
-            "cuda-builds", Verdict.PASS, f"CUDA {built} builds run on this driver and card"
-        )
+        detail = f"CUDA {built} builds run on this driver and card"
+        if driver is not None and driver < built:
+            detail = (
+                f"CUDA {built} builds run on this CUDA {driver} driver by minor-version "
+                "compatibility"
+            )
+        return _row("cuda-builds", Verdict.PASS, detail)
 
     def memory(self, system: System, profile: HostProfile) -> Section:
         """Whether the cards hold what the profile declares a job there needs."""
@@ -203,7 +213,10 @@ class Fitness:
         if need and have < need:
             detail = f"jobs here need {need} GB of card memory, the largest card holds {have:.0f}"
             return _row("memory", Verdict.FAIL, detail)
-        detail = f"{cards} cards, largest {have:.0f} GB" + (f", jobs need {need}" if need else "")
+        unified = " (unified with system memory)" if system.unified else ""
+        detail = f"{cards} cards, largest {have:.0f} GB{unified}" + (
+            f", jobs need {need}" if need else ""
+        )
         return _row("memory", Verdict.PASS, detail)
 
     def disk(self, system: System, role: Role) -> Section:
