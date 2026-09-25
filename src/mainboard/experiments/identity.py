@@ -1,6 +1,5 @@
 # The two content-hash identities a study is built from: `run_id` per trial config, `study_id`
-# above the whole trial set. Neither writes anything, both are pure functions of their inputs, so
-# the same config or config space always resolves to the same id, on this host or any other.
+# above the whole trial set. Both are pure, so the same input resolves to the same id on any host.
 
 import hashlib
 import json
@@ -10,50 +9,40 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
+def _sha256(mapping: Mapping[str, object]) -> str:
+    """The hex sha256 of `mapping`'s canonical JSON, whose sorted keys ignore declaration order."""
+    return hashlib.sha256(
+        json.dumps(dict(mapping), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def run_id(config: Mapping[str, object]) -> str:
-    """The dedup key for one trial's config: sha256 of its canonical JSON, first 16 hex chars.
+    """The dedup key for one trial's JSON-native config: its canonical sha256, first 16 hex chars.
 
-    Byte-for-byte compatible with `research/common/experiments/experiment.py`'s
-    `Experiment.run_id` (same `json.dumps(config, sort_keys=True, separators=(",", ":"))` input,
-    same `hashlib.sha256(...).hexdigest()[:16]`), so a run dispatched through mainboard resolves
-    to the same id an in-process research run would give the same config.
-
-    config: the trial's JSON-native field mapping.
+    Byte-for-byte `research/common/experiments/experiment.py`'s `Experiment.run_id`, so a run
+    dispatched through mainboard resolves to the id an in-process research run gives.
     """
-    canonical = json.dumps(dict(config), sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    return _sha256(config)[:16]
 
 
 def study_label(study: str, *, trial: str = "") -> str:
     """The dispatch label a study's trials carry, the join key a report reads back.
 
-    Dispatch keeps it as free text and never parses it, so this function and `labelled_study`
-    are the only two places the `study:` shape is spelled out.
-
-    study: the study id owning the trial.
-    trial: an optional suffix distinguishing trials within one study by name.
+    Dispatch keeps it as free text and never parses it; this function and `labelled_study` are
+    the only places the `study:<id>[/<trial>]` shape is spelled out.
     """
     return f"study:{study}/{trial}" if trial else f"study:{study}"
 
 
 def labelled_study(label: str) -> str:
-    """The study id inside a dispatch `label`, empty when the label names no study.
-
-    label: a dispatched run's free-text name, `study:<id>` or `study:<id>/<trial>` for a trial.
-    """
+    """The study id inside a dispatch `label`, empty when the label names no study."""
     if not label.startswith("study:"):
         return ""
     return label.removeprefix("study:").split("/", maxsplit=1)[0]
 
 
 def labelled_trial(label: str) -> str:
-    """The trial name inside a dispatch `label`, empty when the label names no trial.
-
-    The companion `labelled_study` reads, so a reporting join keys on the study and a per-trial
-    record keys on the trial without either one re-parsing the label shape.
-
-    label: a dispatched run's free-text name.
-    """
+    """The trial name inside a dispatch `label`, empty when the label names no trial."""
     if not labelled_study(label):
         return ""
     return label.removeprefix("study:").partition("/")[2]
@@ -62,21 +51,15 @@ def labelled_trial(label: str) -> str:
 def study_id(
     *, experiment: str, config_space: Mapping[str, object], source_digest: str
 ) -> tuple[str, str]:
-    """SHA-256 over the experiment, sorted configuration space and source digest.
+    """`(id, slug)`: a 12-hex SHA-256 over the experiment, config space and source digest, and
+    `f"{experiment}-{id[:6]}"` for filenames and logs.
 
-    Two calls with the same experiment, config space, and source digest always resolve to the same
-    id, so re-running the same study (even from a fresh process, even on a different host)
-    joins the same ledger instead of minting a duplicate one. Returns `(id, slug)`, the 12-hex
-    id plus a human-readable slug (`f"{experiment}-{id[:6]}"`) fit for filenames and logs.
+    Re-running the same study, even from a fresh process on another host, joins the same ledger
+    instead of minting a duplicate.
 
-    experiment: the registered experiment name the study runs.
-    config_space: the study's config space (its searched fields and domains), hashed with
-        sorted keys so field declaration order never changes the id.
+    config_space: the searched fields and their domains.
     source_digest: the content digest of the captured source bundle.
     """
-    space_digest = hashlib.sha256(
-        json.dumps(dict(config_space), sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    payload = f"{experiment}:{space_digest}:{source_digest}"
+    payload = f"{experiment}:{_sha256(config_space)}:{source_digest}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:12]
     return digest, f"{experiment}-{digest[:6]}"

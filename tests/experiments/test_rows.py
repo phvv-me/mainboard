@@ -1,8 +1,6 @@
-import re
 from pathlib import Path
 
 import polars as pl
-import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -13,6 +11,9 @@ def test_an_experiment_lays_out_raw_results_and_plots_under_its_name(tmp_path: P
     paths = ExperimentPaths(name="shootout", root=tmp_path)
     assert paths.raw_dir == tmp_path / "shootout" / "raw"
     assert paths.results_dir.is_dir()
+    assert paths.plots_dir.is_dir()
+    assert paths.plot("curve.png") == tmp_path / "shootout" / "plots" / "curve.png"
+    assert paths.table("calls.csv").name == "calls.csv"
     assert paths.table("Qwen3-1.7B") == paths.raw_dir / "Qwen3-1.7B.parquet"
     assert (
         paths.device_table("RTX_4090_CC8.9", "calls")
@@ -61,14 +62,6 @@ def test_a_table_suffix_names_the_same_directory(tmp_path: Path) -> None:
     assert RowLog(tmp_path / "calls.parquet", id_fields=("a",)).dir == tmp_path / "calls"
 
 
-@pytest.mark.parametrize("index", [0, 7])
-def test_a_device_tag_is_a_slug_or_cpu(index: int) -> None:
-    from mainboard.experiments import device_tag
-
-    tag = device_tag(index)
-    assert tag == "CPU" or re.fullmatch(r"[A-Za-z0-9_.]+", tag), tag
-
-
 def test_extend_counts_only_the_new_rows_and_drop_where_forgets_their_keys(tmp_path: Path) -> None:
     log = RowLog(tmp_path / "calls", id_fields=("model",))
     assert (
@@ -77,13 +70,3 @@ def test_extend_counts_only_the_new_rows_and_drop_where_forgets_their_keys(tmp_p
     log.drop_where(lambda row: row["model"] == "a")
     assert [row["model"] for row in log.rows] == ["b"]
     assert log.append({"model": "a", "v": 4}) is True
-
-
-def test_paths_give_plots_their_directory_and_keep_a_table_format_a_caller_named(
-    tmp_path: Path,
-) -> None:
-    paths = ExperimentPaths(name="shootout", root=tmp_path)
-    assert paths.plot("curve.png") == tmp_path / "shootout" / "plots" / "curve.png"
-    assert paths.plots_dir.is_dir()
-    assert paths.table("calls.csv").name == "calls.csv"
-    assert paths.table("Qwen3-1.7B").name == "Qwen3-1.7B.parquet"

@@ -1,6 +1,5 @@
-# The many-jobs surface over `Board`. A single trial is already `Board.on(host).submit(...)`;
-# a study fans that out over many `(host, command)` pairs at once, labels each with its study,
-# and remembers enough to resubmit a failure without the caller re-deriving anything.
+# The many-jobs surface over `Board`: a study fans `Board.on(host).submit(...)` out over many
+# `(host, command)` pairs, labels each with its study, and remembers enough to resubmit a failure.
 
 from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict
@@ -25,11 +24,8 @@ if TYPE_CHECKING:
 
 
 class ResourceOverrides(TypedDict, total=False):
-    """The `Board.submit` resource keywords `Fleet.submit_all` may override per study.
-
-    Everything `Board.submit` accepts besides `name` (which `Fleet` itself fixes to the
-    study's label) and the command (which `submit_all` takes per trial, not per study).
-    """
+    """The `Board.submit` keywords a study may override, all but `name` (`Fleet` fixes it to
+    the study's label) and the per-trial command."""
 
     queue: str
     walltime: str
@@ -43,12 +39,8 @@ class ResourceOverrides(TypedDict, total=False):
 
 
 class Dispatched(FrozenModel):
-    """One fleet-tracked trial: the command that produced it and the study that owns it.
-
-    host: the alias it was dispatched to.
-    command: the command it ran, re-issuable verbatim on resubmit.
-    study_id: the owning study's id, the ledger a resolved verdict is recorded into.
-    """
+    """One fleet-tracked trial: its host alias, its command (re-issued verbatim on resubmit),
+    and its owning study."""
 
     host: str
     command: str
@@ -58,11 +50,10 @@ class Dispatched(FrozenModel):
 class Fleet:
     """Submit, track, and resubmit a study's many trials over one `Board`.
 
-    Retains an in-memory map from each dispatched `Handle` back to its `Dispatched` origin, the
-    bookkeeping `resubmit` needs since a bare scheduler handle carries neither a host nor a
-    command to re-issue. The durable record lives in each study's `StudyLedger`; this map only
-    spans one `Fleet` instance's lifetime, so a caller drives one fleet for a study's whole life
-    (submit, wait, resubmit) rather than rebuilding one per call.
+    Maps each dispatched `Handle` back to its `Dispatched` origin, since a bare scheduler handle
+    carries neither a host nor a command to re-issue. The map lives only as long as this
+    instance (the durable record is each study's `StudyLedger`), so drive one fleet for a
+    study's whole life: submit, wait, resubmit.
     """
 
     def __init__(self, board: Board) -> None:
@@ -71,23 +62,17 @@ class Fleet:
 
     @classmethod
     def overview(cls, board_root: Path, cache: Cache) -> list[StudySummary]:
-        """Every study found under `board_root`, each summary joined against `cache`.
+        """Every study under `board_root`, each summary joined against the dispatch `cache`.
 
-        A classmethod rather than an instance method, since listing every study needs no bound
-        host, only the same `(board_root, cache)` shape `reporting.overview` reads directly;
-        `Fleet` carries it so a `Board`-level surface needs no import beyond `Fleet` itself.
-
-        board_root: the workspace root a study's `StudyLedger` files live under.
-        cache: the dispatch run registry each summary's counts are joined against.
+        A classmethod since listing studies needs no bound host.
         """
-        ledgers_root = board_root / Project().out_dir / "studies"
-        return reporting.overview(cache, ledgers_root)
+        return reporting.overview(cache, board_root / Project().out_dir / "studies")
 
     def owner(self, handle: Handle) -> str:
-        """The study id owning `handle`, empty when the handle belongs to no study.
+        """The study id owning `handle`, empty when it belongs to no study.
 
-        Prefers this fleet's own record of what it dispatched and falls back to the dispatch
-        label the run registry kept, which survives the process that submitted it.
+        Prefers this fleet's own record, then the dispatch label the run registry kept, which
+        survives the submitting process.
         """
         origin = self._origins.get(handle)
         if origin is not None:
@@ -98,50 +83,33 @@ class Fleet:
         return ""
 
     def progress(self, study: Study) -> Progress:
-        """`study`'s live trial counts, dispatch's resolved verdicts merged over the ledger.
-
-        Delegates to `reporting.study_progress`, joining `study`'s own `StudyLedger` against
-        this board's shared dispatch `Cache`, so a caller reads one study's up-to-date shape
-        without assembling the join itself.
-        """
+        """`study`'s live trial counts, dispatch's resolved verdicts merged over its ledger."""
         ledger = StudyLedger(self.board.root, study.study_id)
         return reporting.study_progress(self.board.dispatcher.cache, ledger, study)
 
     def resubmit(
         self, study: Study, failed_handles: Sequence[Handle], *, attempt: int
     ) -> list[Run]:
-        """Re-dispatch each of `failed_handles`'s original commands at `attempt`.
+        """Re-dispatch each failed handle's original command to its original host at `attempt`.
 
         `Board.submit` evaluates an expression-valued resource default against `attempt`, so a
-        retry escalates (a bigger memory ceiling, say) instead of failing the same ceiling
-        twice.
+        retry escalates (a bigger memory ceiling, say) instead of failing the same one twice.
 
-        failed_handles: handles this same `Fleet` instance submitted, each re-dispatched to its
-            original host with its original command.
+        failed_handles: handles this same `Fleet` instance submitted.
         """
         ledger = StudyLedger(self.board.root, study.study_id)
-        jobs: list[Run] = []
-        for handle in failed_handles:
-            origin = self._origins.pop(handle)
-            job = self.board.on(origin.host).submit(
-                origin.command, name=study_label(study.study_id), attempt=attempt
-            )
-            self._origins[job.handle] = Dispatched(
-                host=origin.host, command=origin.command, study_id=study.study_id
-            )
-            ledger.submitted(job.handle.id, host=origin.host)
-            jobs.append(job)
-        return jobs
+        origins = (self._origins.pop(handle) for handle in failed_handles)
+        return [
+            self._dispatch(ledger, study, origin.host, origin.command, attempt=attempt)
+            for origin in origins
+        ]
 
     def settle(self, verdicts: Mapping[Handle, Verdict]) -> None:
         """Record each resolved verdict in the ledger of the study that owns its handle.
 
-        A handle this fleet never submitted settles too, since the owning study is recoverable
-        from the durable dispatch label the trial carries. That is what lets a fresh process
-        close out a study it did not start, rebuilding each job with `Board.job` and settling
-        it here, instead of the verdicts living only in the process that submitted them.
-
-        verdicts: the terminal outcomes to record, keyed by handle.
+        A handle this fleet never submitted settles too, its study recovered from the durable
+        dispatch label, so a fresh process can close out a study it did not start (rebuilding
+        each job with `Board.job`).
         """
         for handle, verdict in verdicts.items():
             study_id = self.owner(handle)
@@ -159,38 +127,40 @@ class Fleet:
         study: Study,
         **resource_overrides: Unpack[ResourceOverrides],
     ) -> list[Run]:
-        """Dispatch every `(host, command)` pair as one of `study`'s trials.
+        """Dispatch every `(host alias, shell command)` pair as one of `study`'s trials.
 
-        Each job carries `study_label(study.study_id)` as its name, the label a later reader
-        joins against dispatch's own run cache, and its dispatch is recorded as a `submitted` event
-        in the study's `StudyLedger`. The ledger's first touch also records a `created` event
-        carrying `study.name`, so a later `overview` can read a human label back without the
-        caller having to keep the original `Study` around.
+        Each job is named `study_label(study.study_id)`, the key a report joins against
+        dispatch's run cache, and ledgered as `submitted`. The ledger's first touch records a
+        `created` event carrying `study.name`, so `overview` can show a human label later.
 
-        commands: the trials to launch, each a `(host alias, shell command)` pair.
-        resource_overrides: forwarded to `Board.submit` for every trial (`queue`, `mem_gb`, ...).
+        resource_overrides: forwarded to `Board.submit` for every trial.
         """
         ledger = StudyLedger(self.board.root, study.study_id)
         if not ledger.path.is_file():
             ledger.created(study)
-        jobs: list[Run] = []
-        for host, command in commands:
-            job = self.board.on(host).submit(
-                command, name=study_label(study.study_id), **resource_overrides
-            )
-            self._origins[job.handle] = Dispatched(
-                host=host, command=command, study_id=study.study_id
-            )
-            ledger.submitted(job.handle.id, host=host)
-            jobs.append(job)
-        return jobs
+        return [
+            self._dispatch(ledger, study, host, command, **resource_overrides)
+            for host, command in commands
+        ]
 
     def wait_all(self, jobs: Sequence[Run]) -> dict[Handle, Verdict]:
-        """Block until every job in `jobs` is terminal, recording each verdict in its ledger.
+        """Block until every job is terminal, recording each verdict in its ledger.
 
-        Delegates the actual polling to `Dispatcher.await_many`; no loop of its own, so the
-        cadence a durable monitor sweep owns stays entirely outside this surface.
+        Polling is `Dispatcher.await_many`'s, so the cadence stays outside this surface.
         """
         verdicts = self.board.dispatcher.await_many([job.handle for job in jobs])
         self.settle(verdicts)
         return verdicts
+
+    def _dispatch(
+        self,
+        ledger: StudyLedger,
+        study: Study,
+        host: str,
+        command: str,
+        **overrides: Unpack[ResourceOverrides],
+    ) -> Run:
+        job = self.board.on(host).submit(command, name=study_label(study.study_id), **overrides)
+        self._origins[job.handle] = Dispatched(host=host, command=command, study_id=study.study_id)
+        ledger.submitted(job.handle.id, host=host)
+        return job

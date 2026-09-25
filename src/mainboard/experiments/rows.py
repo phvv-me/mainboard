@@ -37,11 +37,15 @@ class RowLog:
         writer = _slug(f"{socket.gethostname()}-{os.getpid()}")
         self.part = self.dir / f"part-{writer}.parquet"
         self.rows: list[dict] = self._read(self.part)
-        self._keys: set[tuple[str, ...]] = {self._key(row) for row in self._load_all()}
+        self._keys: set[tuple[str, ...]] = {
+            self._key(row)
+            for part in sorted(self.dir.glob("part-*.parquet"))
+            for row in self._read(part)
+        }
 
     def has(self, **ids: object) -> bool:
         """Whether a row with this identity already exists in any part."""
-        return tuple(str(ids[field]) for field in self.id_fields) in self._keys
+        return self._key(ids) in self._keys
 
     def append(self, row: Mapping[str, object]) -> bool:
         """Append one row unless its identity is already recorded; return whether it was taken."""
@@ -83,9 +87,3 @@ class RowLog:
         if not file.exists():
             return []
         return pl.read_parquet(file).to_dicts()
-
-    def _load_all(self) -> list[dict]:
-        rows: list[dict] = []
-        for part in sorted(self.dir.glob("part-*.parquet")):
-            rows += self._read(part)
-        return rows

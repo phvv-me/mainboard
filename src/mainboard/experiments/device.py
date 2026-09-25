@@ -34,22 +34,18 @@ def _shorten(label: str) -> str:
 
 @functools.cache
 def device_tag(index: int = 0) -> str:
-    """`{short_name}_CC{major}.{minor}` for the GPU at `index`, its bare short name for an
-    accelerator with no CUDA architecture (an Apple GPU), or `CPU` without one.
-
-    index: accelerator ordinal as the probe lists it.
+    """`{short_name}_CC{major}.{minor}` for the GPU at `index` as the probe lists it, the bare
+    short name for an accelerator with no CUDA architecture (an Apple GPU), or `CPU` without one.
     """
     gpus = Machine().gpus
     if index >= len(gpus):
         return "CPU"
-    gpu = gpus[index]
-    architecture = getattr(gpu, "cuda_architecture", None)
-    if architecture is None:
-        return _shorten(gpu.label)
-    return f"{_shorten(gpu.label)}_CC{architecture.major}.{architecture.minor}"
+    tag = _shorten(gpus[index].label)
+    architecture = getattr(gpus[index], "cuda_architecture", None)
+    return tag if architecture is None else f"{tag}_CC{architecture.major}.{architecture.minor}"
 
 
 def device_name(index: int = 0) -> str:
-    """Return the probe's full product name for the GPU at `index`, or `cpu` without one."""
+    """The probe's full product name for the GPU at `index`, or `cpu` without one."""
     gpus = Machine().gpus
     return gpus[index].label if index < len(gpus) else "cpu"
