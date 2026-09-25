@@ -1,17 +1,14 @@
 # The anti-fabrication read behind `mainboard verdict` and the block behind `mainboard wait`.
-# Everything printed here is derived from on-disk receipts and the durable run registry, never
-# from a dashboard, a digest or anything a live session remembered. A notification says a job
-# probably ended; this module is where its outcome is actually read.
+# Everything printed here comes from on-disk receipts and the durable run registry, never from a
+# dashboard, a digest or a live session's memory: a notification says a job probably ended, this
+# module reads its outcome.
 #
-# Three targets resolve to one settled view. A receipts file is read line by line, accepting
-# both shapes the workspace writes, the batch `Event` envelope and the printed `trial_receipt`
-# line, so a study's events stream and a harness's own receipts file answer through one verb. A
-# stream id reads the workspace's own `events.ndjson` for that stream. A handle resolves through
-# the run registry to the stream its dispatch was tracked under, and the registry row itself is
-# the floor the receipts overlay, so a run whose workspace tracks nothing still answers. That
-# floor is under every target rather than only under a handle: a row the receipts left in flight
-# is re-read from the registry, which is where the unattended sweep records an outcome nobody
-# was watching for.
+# Three targets resolve to one settled view. A receipts file is read line by line in both shapes
+# the workspace writes, the batch `Event` envelope and the printed `trial_receipt` line. A stream
+# id reads that stream's `events.ndjson`. A handle resolves through the run registry to the stream
+# its dispatch was tracked under. Under every target the registry row is the floor: a row the
+# receipts left in flight is re-read from the registry, where the unattended sweep records an
+# outcome nobody was watching for, and a run whose workspace tracks nothing still answers.
 
 import json
 from time import monotonic, sleep
@@ -42,25 +39,21 @@ if TYPE_CHECKING:
     from .board import Board
     from .dispatch.state import RunRecord
 
-# The key a printed trial receipt line carries its payload under, the shape any experiment
-# harness may write; spelled here rather than imported so reading a receipt never drags the lab
-# machinery in.
+# The key a printed trial receipt carries its payload under, spelled here rather than imported so
+# reading a receipt never drags the lab machinery in.
 _RECEIPT = "trial_receipt"
 
-# How a settled word maps to a process exit code, the same table `Verdict.code` answers from:
-# 0 ok, 1 failed, 2 still running or legitimately waiting, 3 vanished or unknown. A cancel exits
-# 1 because a completion check must never call a stopped run complete, however deliberate the
-# stop was; the word in the row is what says it was a decision rather than a crash. A skip exits
-# 0 for the opposite reason: nothing was ever dispatched, so there is no run to be incomplete,
-# which is the same reading the batch's own closing count already takes of it.
-# The code a stream answers while any of its rows is still running or legitimately waiting,
-# named once because a waiter loops on exactly this answer.
+# The code while any row is still running or legitimately waiting, the answer a waiter loops on.
 _IN_FLIGHT = 2
-# The code a wait answers when a job it blocked on went silent on an idle card, distinct from a
-# timeout so a script can tell a job still working from one that stopped doing anything.
+# A wait whose job went silent on an idle card, distinct from a timeout's 2 so a script can tell
+# a job still working from one that stopped doing anything.
 STALLED = 4
 # How long a cancel waits for the settlement claim another process holds before it refuses.
 SETTLEMENT_SECONDS = 120.0
+# Settled word to exit code: 0 ok, 1 failed, 2 in flight, 3 vanished or unknown. A cancel exits 1
+# because a completion check must never call a stopped run complete, however deliberate the stop;
+# a skip exits 0 because nothing was dispatched, so no run is incomplete. A quota hold is 2: the
+# sweep still offers it, which keeps a batch of thirteen from reading as a finished nine.
 _EXITS = {
     vocabulary.OK: 0,
     "passed": 0,
@@ -69,9 +62,6 @@ _EXITS = {
     vocabulary.TIMEOUT: 1,
     vocabulary.CANCELLED: 1,
     vocabulary.RUNNING: 2,
-    # A dispatch a target's quota is holding has not run, has not failed, and is not settled: the
-    # sweep is still offering it. A completion check must wait for it exactly as it waits for a
-    # queued job, which is what keeps a batch of thirteen from reading as a finished nine.
     vocabulary.HELD: 2,
     vocabulary.SKIPPED: 0,
     "blocked": 2,
@@ -80,36 +70,29 @@ _EXITS = {
     vocabulary.PREPARED: 2,
     vocabulary.SUBMITTING: 2,
 }
+_INCOMPLETE = "evidence settlement is incomplete"
 
 
 class TrialVerdict(FrozenModel):
-    """One trial or job as its receipts left it.
+    """One trial or job as its receipts left it; every text field is empty when unknown.
 
-    job: the trial's name inside its stream, or a trial receipt's run id.
+    job: the trial's name inside its stream, or a trial receipt's case id.
     handle: the scheduler or provider handle, empty for an in-process trial.
-    target: the alias it ran on, empty when the receipt never named one.
-    node: the ledger slug the run serves, empty when none was declared.
-    state: the scheduler's own word, empty when nothing reported one.
-    verdict: the settled word, `running` while nothing terminal is on file.
-    settled: the word a trial receipt's own vocabulary settled on, empty when it named none.
-        Separate from `verdict` because only `verdict` is what an exit code is derived from: a
-        harness may settle `refuted` or `abandoned` on a reading that was taken perfectly well,
-        and a completion check must read that as the success it is.
-    exit_code: the process exit status, when a receipt recorded one.
+    node: the ledger slug the run serves.
+    state: the scheduler's own word.
+    verdict: the settled word the exit code derives from, `running` while nothing is terminal.
+    settled: the word a trial receipt's own vocabulary settled on. Kept apart from `verdict`
+        because a harness may settle `refuted` or `abandoned` on a reading taken perfectly well,
+        which a completion check must read as the success it is.
     detail: where results landed, why it failed, or a trial receipt's own reason.
-    gates: the gate sweep summarized, empty when the receipts carry none.
-    producer: the harness that stamped a trial receipt, empty for event streams.
-    contended: what the machine was already doing when this run started, empty when it attested
-        an idle node and empty when nothing attested at all. A cell here is the difference
-        between a measurement and a measurement taken while another job held the GPU.
-    cause: why a failed run failed, its own last meaningful output line, empty for a run that
-        did not fail and for one whose output never came home. `detail` says a job failed and
-        with what status; this says what it said on the way out.
-    commit: the commit the dispatching tree was at, so a row measured on a mirror with no
-        history still names one. Empty for a run this workspace did not dispatch.
-    digest: the content digest of that tree, which is what a run seals against where there is no
-        git to ask: the mirror carries the bytes and not the history, so the claim a preflight
-        can still make is that these bytes are the ones the dispatch shipped.
+    gates: the gate sweep summarized.
+    producer: the harness that stamped a trial receipt.
+    contended: what the machine was already doing when this run started, empty for an idle node
+        or no attestation; it tells a measurement from one taken while another job held the GPU.
+    cause: a failed run's own last meaningful output line, where `detail` only says it failed.
+    commit: the commit the dispatching tree was at, named even for a mirror with no history.
+    digest: the content digest of that tree, what a run seals against where there is no git: the
+        mirror carries the bytes and not the history.
     """
 
     job: str
@@ -138,11 +121,10 @@ class TrialVerdict(FrozenModel):
 class StreamVerdict(FrozenModel):
     """The settled truth of one stream, every trial's row and what they add up to.
 
-    stream: the stream these rows were read from.
     trials: one row per trial or job, in first-seen order.
-    note: why there are no rows, empty whenever there are. An empty table is the one answer a
-        reader cannot act on, because nothing about it says whether the run has not started,
-        the evidence went somewhere else, or the harness wrote a shape this verb does not read.
+    note: why there are no rows, empty whenever there are. A bare empty table cannot say whether
+        the run has not started, the evidence went elsewhere, or the harness wrote a shape this
+        verb does not read.
     stalled: why a wait stopped on a job that went silent on an idle card, empty otherwise.
     """
 
@@ -153,12 +135,9 @@ class StreamVerdict(FrozenModel):
 
     @property
     def code(self) -> int:
-        """The one exit status a completion check branches on.
+        """The exit status: failure, then stall, then in flight, then vanished; 0 only all clean.
 
-        A failure anywhere outranks everything, then a wait that found a job stalled, then
-        anything still in flight, then a trial that vanished, and only a stream whose every row
-        settled clean exits zero. An empty stream is unknown rather than clean, since receipts
-        that do not exist prove nothing.
+        An empty stream is 3, since receipts that do not exist prove nothing.
         """
         codes = {trial.code for trial in self.trials}
         if 1 in codes:
@@ -176,52 +155,41 @@ class Verdicts:
     """The receipts-derived outcomes of a workspace's runs, read fresh on every ask."""
 
     def __init__(self, board: Board) -> None:
-        """board: the workspace whose receipts, run registry and sweep this reads."""
         self.board = board
 
     def cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
         """Cancel under the same claim as automatic settlement, preserving cleanup failures.
 
-        The claim is waited for and not forever. A sweep, or a dispatch still landing on the very
-        rental being cancelled, holds it for minutes, and a cancel that waited without a bound
-        sat in a sleep loop for seven minutes on 2026-09-21 while the instance it was asked to
-        end was already gone.
+        The claim wait is bounded: a sweep or a dispatch still landing holds it for minutes, and
+        an unbounded cancel slept seven minutes on 2026-09-21 on an instance already gone.
         """
-        claim = self.board.dispatcher.cache.settlement
         try:
-            claim.acquire(timeout=SETTLEMENT_SECONDS)
+            claim = self.board.dispatcher.cache.settlement.acquire(timeout=SETTLEMENT_SECONDS)
         except Timeout:
             raise MissionError(
                 f"another mainboard process has held settlement for {SETTLEMENT_SECONDS:g}s, a "
                 "sweep or a dispatch still landing; nothing was cancelled, ask again when it ends"
             ) from None
-        try:
+        with claim:
             return self._stop(handle, host=host)
-        finally:
-            claim.release()
 
     def conclude(self, handle: str, *, host: str = "", session: int) -> StreamVerdict:
         """Settle a run whose pytest session ended while its process did not, on the session.
 
-        The outcome is already written, the process is only failing to exit, and until it does
-        it holds an allocation and reads `running`. So it is stopped the way a cancel stops it,
-        evidence first, and settled `ok` or `failed` on the session's own exit status rather than
-        `cancelled`, since nothing about the work was cut short.
+        The outcome is written and the process only fails to exit while holding an allocation, so
+        it is stopped the way a cancel stops it, evidence first, and settled `ok` or `failed` on
+        the session's exit status rather than `cancelled`. Under another process's claim it is
+        left for the next look.
 
-        handle: the lingering run.
-        host: the alias narrowing a handle recorded on several hosts.
         session: the pytest session's exit status, as its beacon reported it.
         """
-        claim = self.board.dispatcher.cache.settlement
         try:
-            claim.acquire(timeout=SETTLEMENT_SECONDS)
+            claim = self.board.dispatcher.cache.settlement.acquire(timeout=SETTLEMENT_SECONDS)
         except Timeout:
             return self.handled(handle, host=host)
         ended = vocabulary.OK if session == 0 else vocabulary.FAILED
-        try:
+        with claim:
             return self._stop(handle, host=host, ended=ended, exit_code=session)
-        finally:
-            claim.release()
 
     def _stop(
         self,
@@ -233,13 +201,13 @@ class Verdicts:
     ) -> StreamVerdict:
         """Preserve available evidence, stop the run, and advance the cursor only after release.
 
-        Explicit cancellation may discard incomplete work, but records that loss rather than
-        calling the evidence complete. A held dispatch has no machine to contact.
+        A cancel may discard incomplete work but records that loss rather than calling the
+        evidence complete. A held dispatch has no machine to contact.
 
-        ended: the verdict a run still in flight settles on, `cancelled` unless it is being
-            concluded on a session that already ended.
+        ended: the verdict a run still in flight settles on.
         exit_code: the exit status that verdict carries, the recorded one when None.
         """
+        cache = self.board.dispatcher.cache
         record = self.record(handle, host=host)
         if record.verdict == vocabulary.SUBMITTING:
             raise MissionError(
@@ -249,7 +217,6 @@ class Verdicts:
         if record.verdict in vocabulary.TERMINAL and record.reported == record.verdict:
             return self.handled(handle, host=host)
         if record.verdict == vocabulary.PREPARED:
-            cache = self.board.dispatcher.cache
             try:
                 cache.leave_prepared(record, vocabulary.CANCELLED)
             except ValueError as changed:
@@ -259,9 +226,7 @@ class Verdicts:
                 ) from changed
             return self.handled(handle, host=host)
         if record.verdict == vocabulary.HELD:
-            # Nothing ever took this one, so there is nothing to kill and no backend to ask.
-            # What exists is the request, and cancelling it is the sweep never offering it again.
-            cache = self.board.dispatcher.cache
+            # Nothing ever took it, so cancelling is the sweep never offering the request again.
             cache.report(
                 cache.resolve(record, vocabulary.CANCELLED, None, vocabulary.CANCELLED),
                 vocabulary.CANCELLED,
@@ -272,8 +237,7 @@ class Verdicts:
         receipts: tuple[str, ...] = ()
         try:
             receipts = monitor.capture(record, run)
-            pulled = monitor.pull(run)
-            monitor.verify(record, run, pulled, receipts)
+            monitor.verify(record, run, monitor.pull(run), receipts)
         except (MissionError, OSError, ValueError) as fault:
             monitor.evidence(record, receipts, status="unverified", detail=f"cancelled: {fault}")
         else:
@@ -286,26 +250,21 @@ class Verdicts:
         code = record.exit_code if exit_code is None else exit_code
         word = vocabulary.CANCELLED if ended == vocabulary.CANCELLED else vocabulary.FINISHED
         state = JobState(handle=record.handle, state=word, exit_code=code, verdict=verdict)
-        stored = self.board.dispatcher.cache.resolve(record, state.state, code, verdict)
+        stored = cache.resolve(record, word, code, verdict)
         run.kill()
         if monitor.release(run):
-            if self.board.dispatcher.cache.run(handle, record.target).evidence == "copied":
+            if cache.run(handle, record.target).evidence == "copied":
                 monitor.evidence(record, receipts, status="verified")
             monitor.track(record, state, detail=stopped(ended, code))
-            self.board.dispatcher.cache.report(stored, verdict)
+            cache.report(stored, verdict)
         return self.handled(handle, host=host)
 
     def captured(self, handle: str, *, host: str = "") -> str:
         """`handle`'s output: the tail a settle brought home, else whatever the backend still has.
 
-        The stored copy is preferred because it is the one that still exists. A settled run's log
-        lives under the host's state dir, which a cleanup eventually takes, or on a rented disk
-        that was destroyed the moment the rental ended, so the live read is the fallback and not
-        the other way round. A run that ended before this workspace knew to capture anything, and
-        whose host is still up, therefore still answers.
-
-        handle: the dispatched run to read.
-        host: the alias narrowing a handle recorded on several hosts.
+        The stored copy wins because it is the one that still exists: a settled run's log lives
+        under a state dir a cleanup takes, or on a rented disk destroyed with the rental. The live
+        read still answers for a run that ended before this workspace captured anything.
         """
         record = self.record(handle, host=host)
         stream, _ = streamed(record.name or "", handle=record.handle)
@@ -315,12 +274,7 @@ class Verdicts:
         return self.board.job(record.handle, host=record.target).transcript()
 
     def handled(self, handle: str, *, host: str = "") -> StreamVerdict:
-        """The settled truth of one dispatched run, its registry row under its receipts.
-
-        The registry row is durable dispatch state and always exists for a real handle, so a
-        workspace that tracks nothing still gets an answer, and the receipts overlay it with
-        whatever richer truth they hold.
-        """
+        """The settled truth of one dispatched run, its registry row under its receipts."""
         try:
             record = self.board.dispatcher.cache.run(handle, host or None)
         except LookupError as missing:
@@ -332,19 +286,12 @@ class Verdicts:
         stream_file = under / "events.ndjson"
         history = Receipts(stream_file).replay() if stream_file.is_file() else []
         events = self.__events(history, record)
-        recorded = eventful(events)
-        mine = [trial for trial in recorded if trial.handle == record.handle]
+        mine = tuple(trial for trial in eventful(events) if trial.handle == record.handle)
         cases = {
-            (str(case[0]), str(case[1]))
-            for event in events
-            if event.topic == Topic.EVIDENCE
-            for group in [event.data.get("trials")]
-            if isinstance(group, list)
-            for case in group
-            if isinstance(case, list) and len(case) == 2
+            case for event in events if event.topic == Topic.EVIDENCE for case in _cases(event)
         }
         harvested = tuple(trial for trial in harvest(under) if (trial.run, trial.job) in cases)
-        floor = self.swept(tuple(mine)) or (self.__floor(record, job=job),)
+        floor = self.swept(mine) or (self.__floor(record, job=job),)
         return StreamVerdict(stream=stream, trials=qualified((*floor, *harvested), events))
 
     @staticmethod
@@ -368,12 +315,11 @@ class Verdicts:
         ]
 
     def of(self, target: str, *, host: str = "", run: str = "") -> StreamVerdict:
-        """The settled truth of `target`, a receipts store, a file, a stream, or a handle.
+        """The settled truth of `target`: a receipts store, file, stream, or handle, in that order.
 
-        target: what to read, tried in that order.
         host: the alias narrowing a handle recorded on several hosts.
-        run: which run of a receipts store to score, its newest when empty. Meaningless for the
-            other three targets, which carry one run's evidence by construction.
+        run: which run of a receipts store to score, its newest when empty; the other targets
+            carry one run's evidence by construction.
         """
         path = self.board.dispatcher.local(target)
         stored = self.stored(path, stream=target, run=run)
@@ -387,13 +333,12 @@ class Verdicts:
         if stream_file.is_file() or (under / "receipts.ndjson").is_file():
             events = Receipts(stream_file).replay()
             recorded = eventful(events)
+            seen = {(trial.target, trial.handle) for trial in recorded}
             missing = tuple(
                 self.__floor(record, job=job)
                 for record in self.board.dispatcher.cache.tracked()
                 for stream, job in [streamed(record.name or "", handle=record.handle)]
-                if stream == target
-                and (record.target, record.handle)
-                not in {(trial.target, trial.handle) for trial in recorded}
+                if stream == target and (record.target, record.handle) not in seen
             )
             found = (*self.swept(recorded), *missing, *harvest(under))
             return StreamVerdict(
@@ -409,20 +354,15 @@ class Verdicts:
             raise MissionError(f"nothing to wait on: {missing}") from None
 
     def stored(self, path: Path, *, stream: str, run: str) -> StreamVerdict | None:
-        """One receipts STORE scored a run at a time, None when `path` holds no store at all.
+        """One run of the receipts store at `path` scored, None when `path` holds no store.
 
-        A store holds every run a harness ever took, so reading them as one flat stream lets a
-        lane that broke in one campaign condemn a clean re-run months later, with no flag able to
-        dig it out. The newest run answers by default and `--run` names an older one.
+        A store holds every run a harness ever took, so read flat a lane broken in one campaign
+        would condemn a clean re-run months later. The newest run answers unless `run` names one.
+        The reader is imported here because its dataframe engine costs a fifth of a second and
+        this module is on every command's path.
 
-        The reader is imported here rather than at the top of this module because it carries a
-        dataframe engine costing a fifth of a second to import, and this module is on the path of
-        every command this tool runs. It is the charge-on-touch rule the package facade already
-        states, spent on the one branch that needs the engine.
-
-        path: the directory to read, the partition root or the evidence directory above it.
+        path: the partition root or the evidence directory above it.
         stream: what the caller asked for, which the heading names.
-        run: which run to score, the newest when empty.
         """
         from .trials.dataset import Dataset
 
@@ -439,35 +379,22 @@ class Verdicts:
         return StreamVerdict(stream=f"{stream} run {chosen}", trials=trials, note=note)
 
     def swept(self, trials: tuple[TrialVerdict, ...]) -> tuple[TrialVerdict, ...]:
-        """`trials` joined onto the durable run registry: their provenance, and any in-flight
-        outcome the registry has already settled.
+        """`trials` joined onto the run registry: their provenance, and any in-flight outcome.
 
-        A batch's own watch is the only thing that publishes a batched job's settled line, and
-        the unattended sweep deliberately writes none, so the two can never double each other.
-        Kill the session holding that watch and the sweep still does everything else: it probes
-        the job, pulls its log home beside the stream, and memoizes the terminal verdict in the
-        registry. Nothing tells the stream. So this verb read thirteen finished miyabi-g jobs as
-        running, with their thirteen pulled logs sitting in the same directory it was reading
-        (gigatoken-shootout rep92, 2026-09-04), and would have gone on saying it until a watch
-        nobody was going to start again said otherwise.
-
-        The registry row is that outcome written down, which is the same floor `handled` already
-        answers a receiptless run from, so it is joined on here too. Only onto rows the receipts
-        left in flight: a settled line carries a detail and an exit code the registry has no
-        column for, and it was written by the pass that read the same probe.
-
-        trials: the stream's own rows, in the order they will be reported.
+        A batched job's settled line is published only by its batch's watch; the unattended sweep
+        probes, pulls the log home and memoizes the verdict in the registry but tells no stream.
+        Reading the stream alone showed thirteen finished miyabi-g jobs as running beside their
+        thirteen pulled logs (gigatoken-shootout rep92, 2026-09-04).
         """
         return tuple(self.__registered(trial) if trial.handle else trial for trial in trials)
 
     def __registered(self, trial: TrialVerdict) -> TrialVerdict:
         """`trial` under its registry row: its provenance always, its outcome while it flies.
 
-        The provenance is joined onto every dispatched row, settled ones included, because what
-        a row was measured from does not stop being true when the job ends and a mirror carries
-        no history to read it from later. The outcome is joined only where the receipts left the
-        row in flight, since a settled line carries a detail and an exit code this registry has
-        no column for and was written by the pass that read the same probe.
+        Provenance joins settled rows too, since what a row was measured from stays true after
+        the job ends and a mirror has no history to read it from later. The outcome joins only
+        rows the receipts left in flight: a settled line carries a detail and exit code the
+        registry has no column for, written by the pass that read the same probe.
         """
         try:
             record = self.board.dispatcher.cache.run(trial.handle, trial.target or None)
@@ -485,19 +412,17 @@ class Verdicts:
         joined = trial.model_copy(
             update={"commit": record.commit, "digest": record.digest, **outcome}
         )
-        joined = delivery(joined, record)
-        if joined.code != 1:
-            return joined
-        return joined.model_copy(update={"cause": self.why(record)})
+        return self.__explained(delivery(joined, record), record)
 
     def __floor(self, record: RunRecord, *, job: str) -> TrialVerdict:
         """`record`'s own row, the answer for a run whose stream holds no receipts at all."""
-        alone = registered(record, job=job)
-        return alone if alone.code != 1 else alone.model_copy(update={"cause": self.why(record)})
+        return self.__explained(registered(record, job=job), record)
 
-    def why(self, record: RunRecord) -> str:
-        """Why `record` failed, off the log the sweep brought home; empty when it brought none."""
-        return reason(self.board, record)
+    def __explained(self, trial: TrialVerdict, record: RunRecord) -> TrialVerdict:
+        """A failed `trial` with its cause read off the log the sweep brought home."""
+        if trial.code != 1:
+            return trial
+        return trial.model_copy(update={"cause": reason(self.board, record)})
 
     def wait(
         self,
@@ -512,31 +437,26 @@ class Verdicts:
     ) -> StreamVerdict:
         """Block until `handle` settles, sweeping the same durable path the monitor cron runs.
 
-        Every pass is one `Monitor.once`, so waiting here pulls results back, releases rentals
-        and writes receipts through the same path as an unattended sweep. Interruption stops
-        this waiter, not the submitted job or provider billing. The answer's code is the
-        normalized receipt outcome, not the original process exit status. A batch id waits for
-        every job of the batch and answers with the batch's verdict.
+        Every pass is one `Monitor.once`, so waiting pulls results, releases rentals and writes
+        receipts like an unattended sweep. Interruption stops this waiter, not the job or its
+        billing. The answer's code is the normalized receipt outcome, not the process exit status.
+        Between passes a vigil says each cell as it lands plus a heartbeat, settles a job whose
+        pytest session ended while its process lingers, and stops with `STALLED` on a job silent
+        past `stall` on an idle card.
 
-        Between passes a vigil looks at the jobs still running: it says each cell as it lands
-        and a heartbeat, settles a job whose pytest session ended while its process lingers, and
-        stops the wait with `STALLED` on a job silent past `stall` on an idle card.
-
-        handle: the dispatched run to wait on, or a batch id as `batch run` printed it.
-        host: the alias narrowing a handle recorded on several hosts.
-        timeout: give up after this many wall seconds, 0 to wait as long as it takes; the
-            answer then reports the run still in flight and exits 2.
+        handle: the dispatched run, or a batch id as `batch run` printed it, which waits for
+            every job of the batch and answers with the batch's verdict.
+        timeout: wall seconds before giving up with the run reported in flight (exit 2), 0 never.
         interval: seconds between sweeps.
         stall: seconds of silence on an idle card that stop the wait, 0 never.
-        say: where the cells and the heartbeat go, the debug log by default.
-        poll: the sleeper between sweeps, injectable for tests.
+        say: where the cells and the heartbeat go.
         """
         deadline = monotonic() + timeout if timeout else None
         monitor = self.board.monitor()
         stream = (directory(self.board, handle) / "events.ndjson").is_file()
         vigil = Vigil(Pulses(self.board), stall=stall, say=say)
-        # What already settled is answered off its receipts before any pass runs, since a pass
-        # settles the whole workspace and a caller re-reading a finished batch owes it nothing.
+        # What already settled answers before any pass runs, since a pass settles the whole
+        # workspace and a caller re-reading a finished batch owes it nothing.
         while (settled := self.__settled(handle, host=host, stream=stream)) is None:
             if deadline is not None and monotonic() >= deadline:
                 return self.__standing(handle, host=host, stream=stream)
@@ -574,8 +494,7 @@ class Verdicts:
     def __settled(self, handle: str, *, host: str, stream: bool) -> StreamVerdict | None:
         """`handle`'s final answer, None while any of it is still in flight.
 
-        A batch settles when every job's row has, which is what its stream verdict already adds
-        up, so a batch is asked that rather than a record it has none of.
+        A batch has no record of its own and settles when its stream verdict does.
         """
         if stream:
             answered = self.of(handle)
@@ -595,14 +514,10 @@ def stopped(ended: str, exit_code: int | None) -> str:
 def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
     """Every job's settled row out of one stream's event envelopes.
 
-    The cursor logic is `latest` per topic per job, the same read every resumed pass uses, so a
-    re-dispatched job answers with its newest run, and a job that was refused or is being held
-    on a target's quota still has a row rather than vanishing from the stream it was declared in.
-    Which of those three the row settles on is decided by the clock alone, in `_joined`.
-
-    A job nothing was ever dispatched for answers from its skip instead, which is the one row
-    shape a target never spoke about. Every job the stream mentions therefore has a row, and a
-    `--only` wave's unselected jobs stop being invisible to the verb that reports the batch.
+    The cursor is `latest` per topic per job, the read every resumed pass uses, so a re-dispatched
+    job answers with its newest run and a refused or quota-held job still has a row; `_joined`
+    decides between those by the clock alone. A job never dispatched answers from its skip, so a
+    `--only` wave's unselected jobs stay visible to the verb that reports the batch.
     """
     recorded = list(events)
     targets: dict[str, set[str]] = {}
@@ -638,17 +553,9 @@ def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:
 def unreadable(path: Path, trials: tuple[TrialVerdict, ...]) -> str:
     """Why `path` yielded no rows, empty when it yielded some.
 
-    A silent empty table reads as a failure, and it is usually not one: the run may not have
-    started, or the harness may be writing a shape nobody told this verb about. Saying which
-    costs one line and saves the reader from guessing at an outcome, which is the exact
-    fabrication this whole module exists to prevent.
-
-    The two shapes are named rather than the tools that write them. This verb reads a contract,
-    not a producer, so a harness earns the same reading by printing the same line and nothing
-    here has to learn what that harness is called.
-
-    path: the file that was read.
-    trials: what reading it produced.
+    A silent empty table reads as a failure and usually is not one, and guessing at it is the
+    fabrication this module exists to prevent. The two shapes are named rather than the tools
+    that write them: this verb reads a contract, so any harness printing one of them is read.
     """
     if trials:
         return ""
@@ -665,9 +572,7 @@ def unreadable(path: Path, trials: tuple[TrialVerdict, ...]) -> str:
 def harvest(under: Path) -> tuple[TrialVerdict, ...]:
     """The trial receipts a settle brought home for `under`'s stream, empty when it brought none.
 
-    A run's own receipts land in their own file rather than in the stream's event log, because
-    the two are different shapes and the log is read as envelopes. Keeping them apart is what
-    lets a settle append a trial without any reader of the event stream having to tolerate a
+    They live in their own file, not the event log, so no reader of the envelopes ever meets a
     line it was never promised.
     """
     path = under / "receipts.ndjson"
@@ -678,63 +583,57 @@ def qualified(
     trials: tuple[TrialVerdict, ...], events: Iterable[Event]
 ) -> tuple[TrialVerdict, ...]:
     """Overlay append-only delivery corrections; leave original computation receipts intact."""
-    statuses: dict[tuple[str, str, str], Event] = {}
-    for event in sorted(events, key=lambda event: event.at):
-        if event.topic == Topic.EVIDENCE:
-            identity = (
-                str(event.data.get("handle", "")),
-                str(event.data.get("target", "")),
-                str(event.data.get("submitted_at", "")),
-            )
-            statuses[identity] = event
-    updates: dict[tuple[str, str], Event] = {}
-    handles: dict[tuple[str, str], Event] = {}
-    for event in statuses.values():
-        cases = event.data.get("trials", [])
-        handles[(str(event.data.get("target", "")), str(event.data.get("handle", "")))] = event
-        if isinstance(cases, list):
-            updates.update(
-                {
-                    (str(case[0]), str(case[1])): event
-                    for case in cases
-                    if isinstance(case, list) and len(case) == 2
-                }
-            )
-    result: list[TrialVerdict] = []
-    for trial in trials:
-        status = (
+    statuses = {
+        (
+            str(event.data.get("handle", "")),
+            str(event.data.get("target", "")),
+            str(event.data.get("submitted_at", "")),
+        ): event
+        for event in sorted(events, key=lambda event: event.at)
+        if event.topic == Topic.EVIDENCE
+    }
+    handles = {
+        (str(event.data.get("target", "")), str(event.data.get("handle", ""))): event
+        for event in statuses.values()
+    }
+    cases = {case: event for event in statuses.values() for case in _cases(event)}
+    return tuple(
+        _corrected(
+            trial,
             handles.get((trial.target, trial.handle))
             or handles.get(("", trial.handle))
-            or updates.get((trial.run, trial.job))
+            or cases.get((trial.run, trial.job)),
         )
-        if status is None or status.data.get("status") in {"verified", "not_started"}:
-            result.append(trial)
-            continue
-        word = "unverified" if status.data.get("status") == "unverified" else "blocked"
-        result.append(
-            trial.model_copy(
-                update={
-                    "verdict": word,
-                    "detail": str(
-                        status.data.get("detail") or "evidence settlement is incomplete"
-                    ),
-                }
-            )
-        )
-    return tuple(result)
+        for trial in trials
+    )
+
+
+def _corrected(trial: TrialVerdict, status: Event | None) -> TrialVerdict:
+    """`trial` under its newest delivery status, withheld unless that status is benign."""
+    if status is None or status.data.get("status") in {"verified", "not_started"}:
+        return trial
+    word = "unverified" if status.data.get("status") == "unverified" else "blocked"
+    detail = str(status.data.get("detail") or _INCOMPLETE)
+    return trial.model_copy(update={"verdict": word, "detail": detail})
+
+
+def _cases(event: Event) -> list[tuple[str, str]]:
+    """The (run, case) pairs an evidence line names, skipping any entry torn out of shape."""
+    group = event.data.get("trials")
+    if not isinstance(group, list):
+        return []
+    return [
+        (str(case[0]), str(case[1])) for case in group if isinstance(case, list) and len(case) == 2
+    ]
 
 
 def lined(path: Path) -> tuple[TrialVerdict, ...]:
     """Every row a receipts file holds, whichever of the two written shapes each line is.
 
-    An `Event` line joins its stream's per-job cursor; a `trial_receipt` line is one trial,
-    whole. A line that is neither readable JSON nor either shape is skipped rather than fatal,
-    the same tolerance the receipts replay itself extends to a torn log. That promise used to
-    hold for a torn line and break for a whole one: any JSON object without a `trial_receipt`
-    key was handed straight to `Event`, so a file of some other tool's evidence answered this
-    verb with a pydantic traceback rather than with the empty table the caller could then be
-    told about. A well-formed line of a shape this verb does not read is exactly as skippable
-    as a truncated one.
+    An `Event` line joins its stream's per-job cursor; a `trial_receipt` line is one whole trial.
+    A line that is neither is skipped, torn or whole, the tolerance the receipts replay extends to
+    a torn log: another tool's well-formed evidence once reached `Event` and answered with a
+    pydantic traceback instead of the empty table the caller could be told about.
     """
     events: list[Event] = []
     trials: list[TrialVerdict] = []
@@ -760,17 +659,13 @@ def lined(path: Path) -> tuple[TrialVerdict, ...]:
 
 
 def receipted(payload: JsonValue) -> TrialVerdict:
-    """One printed `trial_receipt` payload as a settled row.
+    """One printed `trial_receipt` payload as a settled row, every field read leniently.
 
-    The contract names `case_id`, `outcome`, `producer`, `node` and `gates` as optional fields
-    and any harness may add its own, so everything is read leniently and an absent field is an
-    empty cell rather than a refusal.
-
-    `run_id` IS READ ONLY WHERE `case_id` IS ABSENT, and that is the whole of the compatibility.
-    The trials harness spelled the test case `run_id` beside a `run` column already holding the
-    run, so the name promised a join nobody could make; a dispatched job printing its own receipt
-    still names its job there and is still read. A row carrying both is a new row and its
-    `case_id` is what this reads, so the old meaning never enters a new join.
+    The contract makes `case_id`, `outcome`, `producer`, `node` and `gates` optional and lets a
+    harness add its own, so an absent field is an empty cell and a non-mapping an empty row.
+    `run_id` is read ONLY where `case_id` is absent: the trials harness spelled the test case
+    `run_id` beside a `run` column holding the run, so a row carrying both is a new row and the
+    old meaning never enters a new join.
     """
     data = payload if isinstance(payload, dict) else {}
     return TrialVerdict(
@@ -820,12 +715,11 @@ def delivery(trial: TrialVerdict, record: RunRecord) -> TrialVerdict:
     """Fail closed on the cache checkpoint even if its next event was never published."""
     if record.evidence not in {"pending", "copied", "unverified"}:
         return trial
+    unverified = record.evidence == "unverified"
     return trial.model_copy(
         update={
-            "verdict": "unverified" if record.evidence == "unverified" else "blocked",
-            "detail": "evidence is unverified"
-            if record.evidence == "unverified"
-            else "evidence settlement is incomplete",
+            "verdict": "unverified" if unverified else "blocked",
+            "detail": "evidence is unverified" if unverified else _INCOMPLETE,
         }
     )
 
@@ -833,12 +727,8 @@ def delivery(trial: TrialVerdict, record: RunRecord) -> TrialVerdict:
 def contention(attestation: Event | None) -> str:
     """What a job's attestation says it started under, empty for an idle node or no attestation.
 
-    Only the unwelcome half is rendered, since a clean measurement's whole point is that there is
-    nothing to say about it, and a column full of the word `idle` would bury the one row that
-    matters. The busy figure rides along so a reader can weigh it rather than take the flag's
-    word for it.
-
-    attestation: the run's `job.attested` line, None when nothing attested.
+    Only the unwelcome half is rendered, so a column of `idle` never buries the row that matters,
+    and the busy figure rides along so a reader can weigh it.
     """
     if attestation is None or attestation.data.get("idle"):
         return ""
@@ -846,22 +736,13 @@ def contention(attestation: Event | None) -> str:
 
 
 def _unselected(job: str, skip: Event) -> TrialVerdict:
-    """One job a run was told to leave out, as the row that is already over.
+    """One job a wave was told to leave out, as a row that is already over.
 
-    A skip is not a fourth answer to an offer, it is the statement that no offer was made in
-    this wave, so it never outranks a dispatch however much newer it is. The nine jobs this
-    workspace ran at 13:43 and left out of an `--only` wave at 18:43 (2026-09-04) are nine runs
-    that happened, not nine that unhappened, and a rule ranking the skip by its clock alone
-    would have thrown their outcomes away. So the skip decides a row exactly when nothing was
-    ever dispatched for the job.
-
-    Shown rather than dropped, because a plan worked through in waves is read against the plan
-    and a reader has to see which jobs were not asked for rather than wonder where they went.
-    Terminal from the start, because nothing that was never dispatched can move, so a completion
-    check neither waits on it nor counts it as a failure.
-
-    job: the job's name inside the stream.
-    skip: its newest `job.skipped` line.
+    A skip says no offer was made in this wave, so it decides a row only when nothing was ever
+    dispatched for the job: nine jobs run at 13:43 and left out of an 18:43 `--only` wave
+    (2026-09-04) are runs that happened, which ranking the skip by its clock would have thrown
+    away. It is shown so a plan worked in waves reads against the plan, and terminal because
+    nothing never dispatched can move, so a completion check neither waits on it nor fails it.
     """
     return TrialVerdict(
         job=job,
@@ -882,64 +763,45 @@ def _joined(
 ) -> TrialVerdict:
     """One job's row, folded from the newest answer about it and its latest line per topic.
 
-    Taken, turned away, and kept waiting on a quota are three answers to the same offer, so the
-    newest of the three is the one that stands and none of them outranks the others by being a
-    particular topic. That ranking is the shared `OFFERED` cursor's, so a re-dispatch supersedes
-    an earlier refusal here and in the live watch alike: four jobs miyabi-g's `njobs-g` limit
-    turned away at 13:43 went out at 18:43 (2026-09-04), and reading the refusal because it was
-    a refusal buried the run five hours younger than it. A refusal recorded after a submission
-    is terminal for the same reason, in the target's own words.
-
-    Past the answer, a settled line wins the verdict and a state line stands in while the job
-    flies. A job submitted again after settling compares handles, so a stale settlement never
-    silences the run of it that is still going. An attestation is carried onto every row the run
-    has, since what the machine was doing at the start is as true of the finished measurement as
-    it was of the running one.
+    Taken, refused and held on a quota answer the same offer, so the newest stands whatever its
+    topic, the shared `OFFERED` cursor's ranking: four jobs miyabi-g's `njobs-g` limit refused at
+    13:43 went out at 18:43 (2026-09-04), and reading the refusal for being a refusal buried the
+    younger run. A refusal after a submission is terminal, in the target's words. Past the answer
+    a settled line wins the verdict and a state line stands in while the job flies; both must
+    match the submission, so a stale settlement never silences a re-dispatched run. An
+    attestation rides on every row, true of the finished measurement as of the running one.
     """
-    contended = contention(attestation)
     target = str(answer.data.get("target", ""))
-    if answer.topic is Topic.HELD:
+    if answer.topic in (Topic.HELD, Topic.REFUSED):
+        held = answer.topic is Topic.HELD
         return TrialVerdict(
             job=job,
             target=target,
-            state=vocabulary.HELD,
-            verdict=vocabulary.HELD,
+            state=vocabulary.HELD if held else "",
+            verdict=vocabulary.HELD if held else "refused",
             detail=str(answer.data.get("reason", "")),
         )
-    if answer.topic is Topic.REFUSED:
-        return TrialVerdict(
-            job=job,
-            target=target,
-            verdict="refused",
-            detail=str(answer.data.get("reason", "")),
-        )
-    handle = str(answer.data.get("handle", ""))
-    node = str(answer.data.get("node", ""))
     state = _matching(state, answer)
     ended = _matching(ended, answer)
-    current = str(state.data.get("state", "")) if state else ""
-    verdict = str(state.data.get("verdict", "")) if state else ""
-    if ended is not None:
-        code = ended.data.get("exit_code")
-        return TrialVerdict(
-            job=job,
-            handle=handle,
-            target=target,
-            node=node,
-            state=current,
-            verdict=str(ended.data.get("verdict", "")),
-            exit_code=code if isinstance(code, int) else None,
-            detail=str(ended.data.get("detail", "")),
-            contended=contended,
-        )
-    return TrialVerdict(
+    flying = str(state.data.get("verdict", "")) if state else ""
+    row = TrialVerdict(
         job=job,
-        handle=handle,
+        handle=str(answer.data.get("handle", "")),
         target=target,
-        node=node,
-        state=current,
-        verdict=verdict or vocabulary.RUNNING,
-        contended=contended,
+        node=str(answer.data.get("node", "")),
+        state=str(state.data.get("state", "")) if state else "",
+        verdict=flying or vocabulary.RUNNING,
+        contended=contention(attestation),
+    )
+    if ended is None:
+        return row
+    code = ended.data.get("exit_code")
+    return row.model_copy(
+        update={
+            "verdict": str(ended.data.get("verdict", "")),
+            "exit_code": code if isinstance(code, int) else None,
+            "detail": str(ended.data.get("detail", "")),
+        }
     )
 
 
