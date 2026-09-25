@@ -1,17 +1,8 @@
-# The declaring vocabulary for an experiment: the config-domain markers, the four unified
-# gates, a counterbalanced lane, the per-trial context, and the two ways to declare an
-# `Experiment` (a decorated function or a hand-written subclass). Supporting machinery
-# (`GateVerdict`, `space_of`, `orders`/`validates`, `runnable`, the trial outcome types) stays
-# reachable through its own submodule for a driver that needs it, kept out of this headline
-# surface so the vocabulary a study author writes against stays exactly this list.
-#
-# What a trial says to the outside world is one line. Every outcome renders itself through
-# `TrialOutcome.receipt()` as a single JSON object under `board_surface.RECEIPT`, carrying the
-# trial's content-addressed `run_id`, its outcome word, the harness that stamped it, every
-# declared gate's verdict, and whatever the outcome kind itself holds. A driver prints it;
-# nothing here does. That line is the whole contract with anything watching a study's output,
-# which is how a proof-bookkeeping tool turns a verified claim's run into evidence naming the
-# trial behind it without importing this package.
+# The vocabulary a study author declares an experiment with: config-domain markers, the four
+# gates, a counterbalanced lane, the per-trial context, and a decorated function or hand-written
+# `Experiment` subclass. Driver machinery (`GateVerdict`, `space_of`, `orders`/`validates`,
+# `runnable`, the trial outcomes) stays in its own submodule, off this headline surface. What a
+# trial tells the outside world is its one `board_surface.RECEIPT` line.
 
 from .board_surface import experiment
 from .domains import Choices, Fixed, FloatRange, IntRange

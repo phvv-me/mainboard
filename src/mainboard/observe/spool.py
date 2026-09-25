@@ -1,7 +1,6 @@
 # The node-side half of live observability: append frames to a job's own directory, roll and
-# compress a segment once it grows past a threshold, and publish a small heartbeat a poll
-# channel can cat. Everything here is stdlib only, since this is the code a bare remote host
-# runs with no guarantee any dependency beyond Python itself is installed.
+# compress a segment past a threshold, and publish a heartbeat a poll channel can cat. Stdlib
+# only, since a bare remote host runs it with nothing beyond Python guaranteed.
 
 import json
 from compression import zstd
@@ -52,10 +51,7 @@ class Spool:
         self.close()
 
     def append(self, frame: Frame) -> Frame:
-        """Write `frame` at the current stream position and roll the segment if it grew enough.
-
-        frame: the event to record; its `offset` is overwritten with the true write position.
-        """
+        """Write `frame`, its `offset` set to the true write position, rolling a grown segment."""
         stamped = frame.model_copy(update={"offset": self.offset})
         body = encode(stamped).encode()
         self.handle.write(body)
@@ -66,28 +62,19 @@ class Spool:
         return stamped
 
     def close(self) -> None:
-        """Release the live segment's file handle."""
         self.handle.close()
 
     def frames_from(self, offset: int) -> list[Frame]:
-        """Every frame at or after the global `offset`, spanning archived and live segments.
-
-        offset: the resume checkpoint a previous fetch or heartbeat reported.
-        """
-        chunks: list[bytes] = []
-        for start, end, path, compressed in self.__segments():
-            if end <= offset:
-                continue
-            raw = path.read_bytes()
-            data = zstd.decompress(raw) if compressed else raw
-            chunks.append(data[max(0, offset - start) :])
+        """Every frame at or after the global `offset`, spanning archived and live segments."""
+        chunks = [
+            _contents(path, compressed=compressed)[max(0, offset - start) :]
+            for start, end, path, compressed in self.__segments()
+            if end > offset
+        ]
         return parse_tail(b"".join(chunks).decode())
 
     def heartbeat(self, state: str) -> None:
-        """Atomically publish `status.json`, the small summary a poll channel cats.
-
-        state: a free-form label for the job's current lifecycle stage (`running`, `ended`).
-        """
+        """Atomically publish `status.json` for a poll channel; `state` is `running` or `ended`."""
         payload = {
             "state": state,
             "offset": self.offset,
@@ -106,12 +93,12 @@ class Spool:
             return None
 
     def __archives(self) -> list[tuple[int, int, Path, bool]]:
-        """Every already-rolled, compressed segment, oldest first, from its own filename."""
-        entries = []
-        for path in sorted(self.dir.glob("*.ndjson.zst")):
-            start, end = (int(part) for part in path.name.removesuffix(".ndjson.zst").split("-"))
-            entries.append((start, end, path, True))
-        return entries
+        """Every rolled, compressed segment, oldest first, its span read from its filename."""
+        spans = [
+            (path, path.name.removesuffix(".ndjson.zst").split("-"))
+            for path in sorted(self.dir.glob("*.ndjson.zst"))
+        ]
+        return [(int(start), int(end), path, True) for path, (start, end) in spans]
 
     def __live_path(self) -> Path:
         return self.dir / _LIVE_NAME
@@ -148,6 +135,11 @@ class Spool:
         return [*archives, (base, base + live.stat().st_size, live, False)]
 
 
+def _contents(path: Path, *, compressed: bool) -> bytes:
+    raw = path.read_bytes()
+    return zstd.decompress(raw) if compressed else raw
+
+
 def follow(
     spool: Spool,
     offset: int,
@@ -157,9 +149,8 @@ def follow(
 ) -> Iterator[Frame]:
     """Replay `spool` from `offset`, then keep tailing until the job's `ended` frame lands.
 
-    offset: the checkpoint to replay from, typically the caller's last-seen position.
     interval: real seconds paused between polls of a still-running job.
-    sleeper: overrides the pacing for a hermetic test; unset means sleep for real.
+    sleeper: overrides the pacing for a hermetic test.
     """
     cursor = offset
     while True:

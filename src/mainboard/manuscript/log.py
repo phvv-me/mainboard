@@ -1,12 +1,10 @@
-# What a TeX log says went wrong, read the way a person scrolling it would: every error, every
-# reference and citation LaTeX could not resolve, every label defined twice, and every overfull
-# box, each pinned to the source file and line it came from.
+# What a TeX log says went wrong: every error, unresolved reference and citation, label defined
+# twice and overfull box, each pinned to the source file and line it came from.
 #
-# The log never says which file a line belongs to. It prints `(` and a path when TeX opens a
-# file and `)` when it closes one, interleaved with everything else, so the file a warning
-# belongs to is whatever sits on top of that stack when the warning prints. A parenthesis that
-# opens no file, `(12.3pt too wide)` say, is pushed and popped as an anonymous entry so the
-# stack stays balanced around it.
+# The log never says which file a line belongs to. It prints `(path` when TeX opens a file and
+# `)` when it closes one, so a warning belongs to whatever tops that stack when it prints. A
+# parenthesis opening no file, `(12.3pt too wide)` say, is pushed and popped as an anonymous
+# entry so the stack stays balanced.
 
 import re
 from enum import StrEnum, auto
@@ -15,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from patos import FrozenModel
 
 # TeX breaks every log line at this many characters, so a line exactly this long continues on
-# the next one and has to be joined back before a path or a warning can be read off it.
+# the next one.
 _WRAP = 79
 
 # A parenthesis and the path it opens, when it opens one. Engines name a file with or without
@@ -57,7 +55,6 @@ class Kind(StrEnum):
 class Problem(FrozenModel):
     """One thing the build found wrong, and where to go and fix it.
 
-    kind: what sort of problem it is.
     where: `file:line` inside the manuscript directory, empty when TeX named no place.
     detail: the name, the amount or the message the log gave.
     """
@@ -70,7 +67,6 @@ class Problem(FrozenModel):
 class TexLog:
     """One TeX log, read into the problems it reports.
 
-    text: the whole log as the engine wrote it.
     directory: the manuscript directory the engine ran in, which file paths are shown under.
     """
 
@@ -83,27 +79,21 @@ class TexLog:
     def problems(self) -> list[Problem]:
         """Every problem the log reports, in the order it reports them, each named once."""
         found: list[Problem] = []
-        pending: str | None = None
-        pending_file = ""
+        pending: Problem | None = None
         for line in self.lines:
-            if pending is not None and (numbered := _ERROR_LINE.match(line)):
+            if pending and (numbered := _ERROR_LINE.match(line)):
                 found.append(
-                    Problem(
-                        kind=Kind.ERROR,
-                        where=f"{pending_file}:{numbered['line']}",
-                        detail=pending,
-                    )
+                    pending.model_copy(update={"where": f"{pending.where}:{numbered[1]}"})
                 )
                 pending = None
-                continue
-            if error := _ERROR.match(line):
-                if pending is not None:
-                    found.append(Problem(kind=Kind.ERROR, where=pending_file, detail=pending))
-                pending, pending_file = error["detail"].strip(), self.current
-                continue
-            found.extend(self._warnings(line))
-        if pending is not None:
-            found.append(Problem(kind=Kind.ERROR, where=pending_file, detail=pending))
+            elif error := _ERROR.match(line):
+                found.extend([pending] if pending else [])
+                pending = Problem(
+                    kind=Kind.ERROR, where=self.current, detail=error["detail"].strip()
+                )
+            else:
+                found.extend(self._warnings(line))
+        found.extend([pending] if pending else [])
         return list(dict.fromkeys(found))
 
     @property

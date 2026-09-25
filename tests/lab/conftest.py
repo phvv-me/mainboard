@@ -11,9 +11,5 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def context(tmp_path: Path) -> Run:
-    """The per-trial context a gate check, a measure call and an artifact write are handed.
-
-    Carries a scratch `artifact_dir` under the test's own tmp path, so nothing here ever
-    reaches the project cache a real trial would write into.
-    """
+    """A trial context whose `artifact_dir` is the test's tmp path, never the project cache."""
     return Run(model_id="gpt2", config=DeclaredExperiment(), artifact_dir=tmp_path)

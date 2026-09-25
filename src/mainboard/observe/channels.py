@@ -48,9 +48,8 @@ class Channel(Protocol):
 class PollChannel:
     """Fetches new frames with two batched round-trips: `cat status.json` then `tail -c +N`.
 
-    Only ever sees the live segment, so a caller far enough behind to have fallen past a roll
-    resyncs from the live segment's own start; the durable store is what never loses history,
-    a shell-only poll is deliberately just a cheap live tail.
+    Deliberately just a cheap live tail: a caller fallen behind a roll resyncs from the live
+    segment's start, and the durable store is what never loses history.
     """
 
     def __init__(self, root: str, runner: PollRunner) -> None:
@@ -103,10 +102,7 @@ class Channels:
         self.last_resolution: Resolution[Channel] | None = None
 
     def resolve(self, channel: str) -> Channel:
-        """The channel implementation for `channel`, cascading `ssh-poll` then `stream` on `auto`.
-
-        channel: an `Observe.channel` value, a registered name or `auto`.
-        """
+        """The channel an `Observe.channel` names, cascading `ssh-poll` then `stream` on `auto`."""
         if channel == _AUTO:
             self.last_resolution = self.strategy.cascade()
             return cast("Channel", self.last_resolution.implementation)
@@ -114,11 +110,7 @@ class Channels:
 
 
 def cached(shared: Shared[str, Machine], execute: Callable[[Machine, str], str]) -> PollRunner:
-    """A `PollRunner` reusing one connection per host via `shared`, run through `execute`.
-
-    shared: caches one live connection per host, closing it once every holder releases it.
-    execute: runs one command over an already-open connection and returns its stdout.
-    """
+    """A `PollRunner` running `execute` over the one connection per host `shared` caches."""
 
     def run(host: str, *, command: str) -> str:
         with shared.acquire(host) as machine:
@@ -130,11 +122,7 @@ def cached(shared: Shared[str, Machine], execute: Callable[[Machine, str], str])
 def cached_stream(
     shared: Shared[str, Machine], execute: Callable[[Machine, str], Iterator[str]]
 ) -> StreamRunner:
-    """A `StreamRunner` reusing one connection per host via `shared`, run through `execute`.
-
-    shared: caches one live connection per host, closing it once every holder releases it.
-    execute: execs one long-lived command over an already-open connection, yielding its lines.
-    """
+    """A `StreamRunner` running `execute` over the one connection per host `shared` caches."""
 
     def run(host: str, *, command: str) -> Iterator[str]:
         with shared.acquire(host) as machine:

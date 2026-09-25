@@ -1,7 +1,6 @@
-# Durable job history: one WAL-mode SQLite file, mirroring the JSON-blob-row pattern
-# `dispatch/state/storage.py` already uses. `patos.sql` (SQLModel) needs its `sql` extra
-# (sqlalchemy, sqlmodel) that mainboard does not declare as a dependency, so this is the
-# stdlib `sqlite3` fallback the task explicitly allows; see the report for why.
+# Durable job history: one WAL-mode SQLite file of JSON-blob rows, the pattern
+# `dispatch/state/storage.py` uses. Stdlib `sqlite3`, since `patos.sql` needs a `sql` extra
+# (sqlalchemy, sqlmodel) mainboard does not declare.
 
 import sqlite3
 from typing import TYPE_CHECKING
@@ -60,14 +59,10 @@ class Store:
         self.close()
 
     def close(self) -> None:
-        """Release the underlying SQLite connection."""
         self.connection.close()
 
     def ingest(self, frames: Sequence[Frame]) -> None:
-        """Durably record `frames`, ignoring any offset already stored for its job.
-
-        frames: a batch just fetched, in any order.
-        """
+        """Durably record `frames` in any order, ignoring any offset already stored for its job."""
         for frame in frames:
             self.connection.execute(
                 "INSERT OR IGNORE INTO events (job, offset, data) VALUES (?, ?, ?)",
@@ -85,7 +80,6 @@ class Store:
 
     @staticmethod
     def __connect(path: Path) -> sqlite3.Connection:
-        """Open the observe history database in WAL autocommit mode, creating its schema."""
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path, timeout=10.0, autocommit=True)
         connection.row_factory = sqlite3.Row

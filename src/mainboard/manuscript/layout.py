@@ -1,13 +1,11 @@
-# Where a built manuscript's sections landed on the page, read from the three files a build
-# leaves beside its PDF: the `.aux` for the page count and each section's first page, the
-# sources for which lines belong to a section, and SyncTeX for the page each of those lines was
-# typeset on.
+# Where a built manuscript's sections landed on the page, read from the `.aux` (page count and
+# each section's first page), the sources (which lines belong to a section) and SyncTeX (the page
+# each line was typeset on).
 #
-# The first page of a section is cheap and exact, since LaTeX writes it into the table of
-# contents. The last page is the one a venue's rule is about and nothing writes it down. The
-# next section's first page does not settle it either, because two sections share a page more
-# often than not, so the answer is the last page SyncTeX places any line of the section on,
-# floats included, which is exactly what a reviewer counting pages would count.
+# A section's first page is exact in the table of contents. Its last page, the one a venue's rule
+# is about, is written nowhere, and the next section's start does not settle it since two
+# sections usually share a page, so it is the last page SyncTeX places any line of the section on,
+# floats included, exactly what a reviewer counting pages would count.
 
 import gzip
 import re
@@ -33,11 +31,10 @@ _RECORD = re.compile(r"^[\[(hvxkg$](?P<tag>\d+),(?P<line>\d+)")
 
 
 class Section(FrozenModel):
-    """One top-level section and the page it starts on.
+    """One top-level section and the page its heading was typeset on.
 
-    number: the section's number as typeset, `3` or `A`, empty for an unnumbered one.
-    title: the section's title with its TeX markup stripped.
-    page: the page its heading was typeset on.
+    number: as typeset, `3` or `A`, empty for an unnumbered one.
+    title: with its TeX markup stripped.
     """
 
     number: str = ""
@@ -46,22 +43,19 @@ class Section(FrozenModel):
 
 
 class Aux:
-    """The page count and the section starts a build wrote into its `.aux` file.
-
-    text: the `.aux` file's contents.
-    """
+    """The page count and the section starts a build wrote into its `.aux` file."""
 
     def __init__(self, text: str) -> None:
         self.text = text
 
     @property
     def pages(self) -> int:
-        """The page count LaTeX recorded at the end of the document, 0 when it recorded none."""
+        """The page count LaTeX recorded, 0 when it recorded none."""
         found = _PAGES.search(self.text)
         return int(found["pages"]) if found else 0
 
     def sections(self) -> list[Section]:
-        """Every top-level section in reading order, with the page its heading starts on."""
+        """Every top-level section in reading order."""
         listed: list[Section] = []
         for line in self.text.splitlines():
             if not line.startswith(_CONTENTS):
@@ -81,8 +75,7 @@ class Aux:
 class SyncTex:
     """Which source lines were typeset on which page, from a build's `.synctex.gz`.
 
-    text: the decompressed SyncTeX file.
-    directory: the manuscript directory, which relative input paths resolve against.
+    directory: the manuscript directory relative input paths resolve against.
     """
 
     def __init__(self, text: str, *, directory: Path) -> None:
@@ -102,7 +95,7 @@ class SyncTex:
 
     @classmethod
     def read(cls, path: Path, *, directory: Path) -> SyncTex:
-        """The SyncTeX file at `path`, gzipped as a build writes it."""
+        """The gzipped SyncTeX file a build writes at `path`."""
         return cls(gzip.decompress(path.read_bytes()).decode("utf-8"), directory=directory)
 
     def last_page(self, lines: set[tuple[Path, int]]) -> int:
@@ -111,21 +104,16 @@ class SyncTex:
 
 
 class Source:
-    """A manuscript's source lines in reading order, `\\input` and `\\include` followed.
-
-    main: the root `.tex` file.
-    """
+    """The source lines of the root `.tex` file `main` in reading order, `\\input` and
+    `\\include` followed."""
 
     def __init__(self, main: Path) -> None:
         self.directory = main.resolve().parent
         self.lines = self._read(main.resolve())
 
     def span(self, title: str) -> set[tuple[Path, int]]:
-        """Every source line of the section titled `title`, empty when none is.
-
-        A section runs from its own heading to the next top-level heading, the appendix switch,
-        the bibliography or an unnumbered heading, whichever comes first.
-        """
+        """Every source line of the section titled `title` up to the next `_BOUNDARY`, empty when
+        no section has that title."""
         wanted = plain(title).casefold()
         start = next(
             (

@@ -25,11 +25,7 @@ _PASSED_GATE = {"status": "passed", "reason": ""}
 
 @dataclass(frozen=True, slots=True)
 class FixedGate(Gate):
-    """A gate answering a predetermined verdict, so the sweep around it is what gets measured.
-
-    outcome: the status this gate always reports.
-    reason: the explanation it carries alongside.
-    """
+    """A gate answering a predetermined verdict, so the sweep around it is what gets measured."""
 
     outcome: GateStatus
     reason: str = ""
