@@ -42,11 +42,7 @@ _MONEY = st.floats(min_value=0.0, max_value=1e5, allow_nan=False, allow_infinity
 
 
 class Blocking:
-    """A workspace locator that holds the merge open until a test lets it finish.
-
-    Standing in for `Project` is what makes the critical section observable, since a thread can
-    only be caught inside `load` while `load` is still busy.
-    """
+    """A `Project` stand-in holding the merge open until the test lets it finish."""
 
     def __init__(self, root: Path, reading: Event, may_finish: Event) -> None:
         self.root = root
@@ -63,12 +59,10 @@ class Blocking:
 def test_the_workspace_env_defines_only_what_the_environment_lacks_and_is_read_once(
     unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A file read as data, with comments, blanks and junk skipped and quotes taken off.
+    """A file read as data: comments, blanks and junk skipped, quotes off, the environment wins.
 
-    The one rule that matters beyond parsing is that the environment wins, so a key someone
-    exported deliberately is never replaced by a line in a file they may have forgotten. The
-    second load proves the merge happens once however many backends ask, which is what keeps a
-    rewritten file from overwriting a value a provider is already holding.
+    The second load proves the merge happens once, so a rewritten file never overwrites a value a
+    provider already holds.
     """
     monkeypatch.chdir(workspace)
     (workspace / ".env").write_text(
@@ -107,10 +101,8 @@ def test_neither_a_workspace_without_an_env_file_nor_a_machine_outside_one_defin
 def test_a_second_backend_asking_at_once_waits_for_the_whole_merge(
     unsealed: None, workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A compute survey probes every provider at once, from a pool this loader does not own.
-
-    A flag flipped before the file was read would let the second provider look its key up while
-    the first is still merging, and report a paid account as unkeyed for no reason but timing.
+    """A compute survey probes every provider at once, so a flag flipped before the read would
+    report a paid account unkeyed for no reason but timing.
     """
     monkeypatch.chdir(workspace)
     monkeypatch.delenv("VAST_API_KEY", raising=False)
@@ -153,7 +145,7 @@ def test_a_providers_own_reader_finds_what_only_the_workspace_env_declares(
     workspace: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Each refusal tells someone to write that file, so reading it is ours and not their chore."""
+    """Each refusal tells someone to write that file, so each reader reads it."""
     monkeypatch.chdir(workspace)
     monkeypatch.delenv(variable, raising=False)
     (workspace / ".env").write_text(f"{variable}={declared}\n")
@@ -188,11 +180,7 @@ def test_route_raises_a_mission_error_naming_known_kinds_for_an_unregistered_kin
 
 
 def test_every_backend_carries_the_job_lifecycle_and_nothing_it_cannot_honor() -> None:
-    """The capability map, asserted as a table so a new backend's shape is one line to read.
-
-    Every contract is an optional half a backend opts into, so the lifecycle root carries none of
-    them and a caller finds the real ones by `isinstance` instead of calling and being refused.
-    """
+    """The capability map as a table, the lifecycle root carrying none of the contracts."""
     contracts = (Account, Delivery, LogSource, Market)
     assert all(issubclass(contract, Capability) for contract in contracts)
     assert not any(issubclass(ProviderBackend, contract) for contract in contracts)
@@ -237,7 +225,7 @@ def test_a_refusal_carries_the_backends_own_advice_or_a_plain_statement_of_the_g
 def test_the_audited_url_open_is_what_every_rest_backend_takes_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One seam reaches urllib, under the package's own deadline since urllib itself has none."""
+    """One seam reaches urllib, under the package's own deadline."""
     assert VastBackend().transport is http_transport
     assert HpcAiBackend().transport is http_transport
     assert VastBackend().sleeper is sleep
@@ -255,19 +243,14 @@ def test_the_audited_url_open_is_what_every_rest_backend_takes_by_default(
     assert 0 < deadline < 60
 
 
-# Ten rather than the profile's thirty, because the whole rule is one `round` call and building
-# a validated model is the most expensive thing this file does under coverage. The two figures
-# below are the live ones the rule was written for, so they run whatever the sample draws.
+# Ten examples, since the rule is one `round` call and a validated model is this file's costliest
+# build under coverage; the two live figures the rule was written for always run.
 @settings(max_examples=10)
 @given(figure=_MONEY)
 @example(figure=99.99680725539)
 @example(figure=0.285925925926)
 def test_standing_quotes_money_at_the_precision_money_has(figure: float) -> None:
-    """Money keeps the precision money has.
-
-    Four places rather than two, so two real hourly rates never read as the same price, and a
-    figure the provider publishes none of stays absent rather than becoming a zero.
-    """
+    """Four places, so two real hourly rates never read alike, and an absent figure stays None."""
     priced = Standing(keyed=True, credit_usd=figure, usd_hr=None)
     assert priced.credit_usd == pytest.approx(figure, abs=1e-4)
     assert priced.credit_usd == round(priced.credit_usd, 4)
@@ -278,7 +261,7 @@ def test_standing_quotes_money_at_the_precision_money_has(figure: float) -> None
 @example(cap=0.0)
 @example(cap=5.0)
 def test_admit_refuses_a_submission_nobody_capped(cap: float) -> None:
-    """Every provider bills someone, so an uncapped submit is refused before any network call."""
+    """An uncapped submit is refused before any network call."""
     refuses = pytest.raises(MissionError, match="max-usd") if not cap else nullcontext()
     with refuses:
         BareBackend().admit(plan(), Resources(max_usd=cap))
@@ -299,33 +282,26 @@ def test_admit_refuses_a_submission_nobody_capped(cap: float) -> None:
 def test_image_cuda_reads_the_toolchain_a_reference_names(
     reference: str, named: float | None
 ) -> None:
-    """Every image spelling this house actually rents, plus the two that name no CUDA at all."""
+    """Every image spelling this house rents, plus two that name no CUDA at all."""
     assert image_cuda(reference) == named
 
 
-def test_admit_refuses_an_image_below_the_house_cuda_floor() -> None:
-    """A tag naming a retired toolchain is refused by name, with both versions in the line.
-
-    The rented machine is the one place nothing else can catch this: the provider takes the rent,
-    fails to start a container its driver cannot load, destroys it, and bills for the boot.
-    """
-    stale = plan(container=Container(image="nvidia/cuda:12.4.1-devel-ubuntu22.04"))
-    with pytest.raises(MissionError) as refused_at:
-        BareBackend().admit(stale, Resources(max_usd=5.0))
-    refusal = str(refused_at.value)
-    assert "12.4" in refusal, "the version the image names"
-    assert str(ProviderBackend.CUDA_FLOOR) in refusal, "and the floor it failed"
-
-
 @pytest.mark.parametrize(
-    "reference",
-    ["vastai/base-image:cuda-13.3.1-auto", "nvcr.io/nvidia/pytorch:25.06-py3"],
-    ids=["at-the-floor", "naming-no-cuda-at-all"],
+    ("reference", "refused"),
+    [
+        pytest.param("nvidia/cuda:12.4.1-devel-ubuntu22.04", True, id="below-the-floor"),
+        pytest.param("vastai/base-image:cuda-13.3.1-auto", False, id="at-the-floor"),
+        pytest.param("nvcr.io/nvidia/pytorch:25.06-py3", False, id="naming-no-cuda-at-all"),
+    ],
 )
-def test_admit_admits_an_image_it_cannot_prove_too_old(reference: str) -> None:
-    """The floor refuses what it can prove wrong and never what it merely cannot read.
+def test_admit_refuses_an_image_only_when_it_can_prove_it_below_the_cuda_floor(
+    reference: str, refused: bool
+) -> None:
+    """A retired toolchain is refused naming both versions; an unreadable tag is never refused.
 
-    A reference is all anyone has before the rental, so an NGC calendar tag would otherwise be
-    refused on no evidence at all while a CPU job was refused for carrying no CUDA.
+    A provider takes the rent, fails to start a container its driver cannot load, and bills for
+    the boot, while an NGC calendar tag or a CPU job carries no evidence either way.
     """
-    BareBackend().admit(plan(container=Container(image=reference)), Resources(max_usd=5.0))
+    floor = f"names CUDA 12.4, below this house's CUDA {ProviderBackend.CUDA_FLOOR} floor"
+    with pytest.raises(MissionError, match=floor) if refused else nullcontext():
+        BareBackend().admit(plan(container=Container(image=reference)), Resources(max_usd=5.0))

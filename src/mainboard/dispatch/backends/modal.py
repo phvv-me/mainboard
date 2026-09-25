@@ -1,26 +1,22 @@
 # `ModalBackend` runs a command inside a Modal Sandbox. `modal` is an optional extra, so every
 # call goes through the lazy `_modal` accessor instead of a module-level import.
 #
-# Modal exposes no account balance, and that was established by reading its wire contract rather
-# than its docs (surveyed 2026-08-19 against modal 1.5.4). The shipped `modal_proto` descriptor
-# carries one service of 239 methods over 620 messages, and not one message anywhere in it has a
-# field named for a credit, a balance, a remaining amount or a prepaid pot. The only account-side
-# reads are `WorkspaceBillingSummary` (per-cycle `metered_cost`, `billed_cost` and an
-# `adjustments` map whose `Credits` entry is credit *applied* in that cycle, never credit left)
-# and `EnvironmentList`/`EnvironmentGetBudget`, which carry a spend *cap* rather than a balance.
-# There is no REST surface to fall back on either, since every path under api.modal.com answers
-# `application/grpc` whatever it is sent, and modal.com/api/* is a flat 404.
+# Modal exposes no account balance, established from its wire contract rather than its docs
+# (surveyed 2026-08-19, modal 1.5.4): the shipped `modal_proto` descriptor has one service of 239
+# methods over 620 messages, and no field anywhere names a credit, balance, remaining amount or
+# prepaid pot. The only account reads are `WorkspaceBillingSummary` (per-cycle `metered_cost`,
+# `billed_cost`, and an `adjustments` map whose `Credits` entry is credit *applied* that cycle,
+# never credit left) and `EnvironmentList`/`EnvironmentGetBudget`, a spend *cap*. There is no REST
+# fallback: every path under api.modal.com answers `application/grpc`, and modal.com/api/* is 404.
 #
-# So the row asks in order of how much Modal itself vouches for the figure. A workspace that set
-# a cycle budget has the closest thing Modal keeps to a balance, and `modal.environments.
-# list_environments` carries the same four budget fields `EnvironmentGetBudget` answers
-# (`cycle_budget_dollars`, `effective_cycle_spend_limit`, `current_cycle_usage`,
-# `spend_limit_reached`) for one cheap call that needs no environment id, so that is the read
-# taken. A workspace without the team feature refuses it with `PermissionDeniedError`, and one
-# that simply never set a budget answers zero (verified live 2026-08-19), so both fall through
-# rather than costing a row. Failing that, the row derives a balance from a credit the workspace
-# declares once in `MODAL_CREDIT_USD` minus what Modal says the current cycle has metered, and
-# the note says out loud that the figure is derived rather than reported.
+# So the row asks in order of how much Modal vouches for the figure. First a cycle budget, the
+# closest thing to a balance: `modal.environments.list_environments` carries the four budget
+# fields of `EnvironmentGetBudget` (`cycle_budget_dollars`, `effective_cycle_spend_limit`,
+# `current_cycle_usage`, `spend_limit_reached`) in one call needing no environment id. A workspace
+# without the team feature refuses it with `PermissionDeniedError` and one that never set a budget
+# answers zero (verified live 2026-08-19); both fall through. Then a balance derived from the
+# credit declared once in `MODAL_CREDIT_USD` less this cycle's metered cost, the note saying it is
+# derived rather than reported.
 
 import os
 from contextlib import suppress
@@ -48,10 +44,9 @@ if TYPE_CHECKING:
     from ..allocation import Allocation
     from ..vocabulary import Resources
 
-# The Modal app every sandbox is created under; sandboxes are one-shot jobs, so a single shared
-# app is enough (Modal itself scopes billing and the dashboard view by app, not by sandbox).
+# One shared app for every one-shot sandbox (Modal scopes billing and the dashboard by app).
 _APP_NAME = "mainboard"
-# Where the workspace declares the prepaid credit Modal itself will not report.
+# Where the workspace declares the prepaid credit Modal will not report.
 _CREDIT_VAR = "MODAL_CREDIT_USD"
 
 
@@ -68,27 +63,19 @@ def _modal() -> ModuleType:
 
 
 def cycle_month(start: datetime) -> str:
-    """`start` as its billing-cycle month, pinned to UTC explicitly.
+    """`start` as its billing-cycle month in UTC, a naive stamp read as UTC.
 
-    Modal's cycle boundary is a UTC fact, and a naive stamp formatted as-is would name whatever
-    month this machine's local clock happens to sit in near the boundary. A naive stamp is
-    therefore read as UTC and an aware one is converted, so the month never depends on where
-    the command was typed.
-
-    start: the cycle's opening instant as the SDK hands it over, naive or aware.
+    Modal's cycle boundary is a UTC fact, so the month never depends on the local clock.
     """
     pinned = start if start.tzinfo else start.replace(tzinfo=UTC)
     return pinned.astimezone(UTC).strftime("%Y-%m")
 
 
 def declared_credit() -> float:
-    """The credit `MODAL_CREDIT_USD` declares for this workspace, 0.0 when it declares none.
+    """The credit `MODAL_CREDIT_USD` declares, 0.0 when none; Modal never says what is left.
 
-    Modal reports what a cycle has cost and never what the account has left, so the starting
-    figure has to come from the person who bought the credit. It is a plain number rather than a
-    secret, and it lives beside the provider keys in the workspace `.env` because that is the one
-    file every provider's account-side settings already share, which is also why the file is
-    merged into the environment here before the lookup.
+    Not a secret, but it lives beside the provider keys in the workspace `.env`, the one file
+    every provider's account settings share.
     """
     Credentials().load()
     declared = os.environ.get(_CREDIT_VAR, "")
@@ -103,14 +90,11 @@ def declared_credit() -> float:
 
 
 class ModalBackend(ProviderBackend, Account, LogSource):
-    """Run a command in a fresh Modal Sandbox and treat the sandbox's own lifetime as the job's.
+    """Run a command in a fresh Modal Sandbox, the sandbox's lifetime being the job's.
 
-    Stateless: every call reconnects to the sandbox by id (`modal.Sandbox.from_id`), so one
-    instance serves every handle with no session to carry between calls.
-
-    A sandbox keeps its stdout, so logs are real here, but nothing it writes to disk outlives it
-    unless a Volume was mounted at create time, which is why `Delivery` is declared in `lacks`
-    rather than implemented.
+    Stateless: every call reconnects by id (`modal.Sandbox.from_id`). A sandbox keeps its
+    stdout, so logs are real, but its disk dies with it unless a Volume was mounted at create
+    time, hence `Delivery` in `lacks`.
     """
 
     name = "modal"
@@ -122,13 +106,9 @@ class ModalBackend(ProviderBackend, Account, LogSource):
 
     @staticmethod
     def budgeted(modal: ModuleType) -> Standing | None:
-        """The cycle budget less what this cycle has used, None when the workspace keeps none.
+        """The cycle budget less this cycle's usage, None when no budget answers.
 
-        The closest thing Modal holds to a balance, so it is asked first. The default environment
-        is preferred since that is where a sandbox lands when nothing names another. A workspace
-        that never set a budget answers zero and one without the team feature refuses the read
-        outright, and neither is a fault worth printing, so both come back None for the caller to
-        fall through on.
+        The default environment comes first, where a sandbox lands when nothing names another.
 
         modal: the imported `modal` module, already known to carry credentials.
         """
@@ -151,13 +131,10 @@ class ModalBackend(ProviderBackend, Account, LogSource):
     def derived(modal: ModuleType) -> Standing:
         """The declared credit less this cycle's metered spend, or whatever step is missing.
 
-        The one account read Modal offers is `Workspace.billing.summary`, whose `metered_cost` is
-        the cost this workspace has run up in the calendar-month cycle it names, before any credit
-        or discount is applied against it. Subtracting that from the declared credit is arithmetic
-        we do, not a balance Modal blessed, so the note carries both figures and the cycle they
-        belong to, and a workspace that declares nothing still gets the spend rather than a blank.
-        Every Modal fault (a rate-limited summary is the common one) stays a note on a keyed row,
-        since a throttled read says nothing about whether the provider is usable.
+        `Workspace.billing.summary().metered_cost` is the calendar-month cycle's cost before any
+        credit or discount. The note carries both figures and the cycle, and a workspace that
+        declares nothing still gets the spend. A Modal fault (commonly a rate-limited summary)
+        stays a note on a keyed row, since a throttled read says nothing about usability.
 
         modal: the imported `modal` module, already known to carry credentials.
         """
@@ -179,11 +156,7 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         )
 
     def cancel(self, handle: str) -> None:
-        """Terminate the sandbox, tolerating one Modal has already forgotten.
-
-        Every run the durable sweep settles is cancelled, and the same run can be settled twice,
-        so a sandbox that is no longer addressable is the state this asks for rather than a fault.
-        """
+        """Terminate the sandbox, tolerating one Modal has already forgotten."""
         modal = _modal()
         with suppress(modal.exception.NotFoundError):
             modal.Sandbox.from_id(handle).terminate()
@@ -192,17 +165,12 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         return str(_modal().Sandbox.from_id(handle).stdout.read())
 
     def standing(self) -> Standing:
-        """What the workspace can still spend, by whichever of two routes can answer for it.
+        """What the workspace can still spend: its cycle budget, else the derived balance.
 
-        The token pair is what `modal.Client` itself checks before its first call, resolved from
-        `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or the active profile in `~/.modal.toml`, so an
-        unauthenticated machine costs no round trip. Past that the preference is for the figure
-        Modal itself keeps, a cycle budget, falling back on the one this workspace declares and
-        we do the arithmetic for.
-
-        The workspace `.env` is merged in before the SDK is imported at all, since Modal reads
-        that pair out of the environment as its own module loads and would never see a token
-        this workspace declared but nothing had exported yet.
+        The token pair is what `modal.Client` checks before its first call (from
+        `MODAL_TOKEN_ID`/`MODAL_TOKEN_SECRET` or the active `~/.modal.toml` profile), so an
+        unauthenticated machine costs no round trip. The `.env` is merged before the SDK is
+        imported, since Modal reads that pair from the environment as its module loads.
         """
         Credentials().load()
         try:
@@ -215,8 +183,7 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         return self.budgeted(modal) or self.derived(modal)
 
     def state(self, handle: str) -> JobState:
-        sandbox = _modal().Sandbox.from_id(handle)
-        exit_code = sandbox.poll()
+        exit_code = _modal().Sandbox.from_id(handle).poll()
         verdict = "running" if exit_code is None else ("ok" if exit_code == 0 else "failed")
         return JobState(handle=handle, exit_code=exit_code, verdict=verdict)
 
@@ -239,11 +206,9 @@ class ModalBackend(ProviderBackend, Account, LogSource):
         }
         if resources.walltime:
             kwargs["timeout"] = walltime_seconds(resources.walltime)
-        # The command IS the sandbox entrypoint, so the sandbox lifetime, exit code,
-        # and stdout are the job's own; a detached exec would leave the sandbox idling
-        # as running forever with empty logs (found by the first live submit). The command's
-        # status is captured and re-raised as the entrypoint's, so framing the receipts back
-        # after it costs the sandbox none of its own exit code.
+        # The command IS the sandbox entrypoint, so its lifetime, exit code and stdout are the
+        # job's; a detached exec left the sandbox running forever with empty logs (the first live
+        # submit). Its status is re-raised after the receipts are framed back.
         script = f"{staging()}\n{command}\nstatus=$?\n{framing()}\nexit $status"
         allocation.begin()
         sandbox = modal.Sandbox.create("bash", "-c", script, **kwargs)

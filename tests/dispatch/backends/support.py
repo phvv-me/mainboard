@@ -31,9 +31,8 @@ type Reply = dict | str | HTTPError
 class BareBackend(ProviderBackend):
     """A backend with the job lifecycle and not one capability beyond it.
 
-    The shape every discovery site has to handle. It declares where its logs would live and says
-    nothing at all about delivery, so this one double covers both halves of `refusal`, the advice
-    a backend wrote for itself and the plain statement of a gap it never described.
+    It advises where its logs would live and says nothing about delivery, covering both halves
+    of `refusal`.
     """
 
     name = "bare"
@@ -57,15 +56,12 @@ class BareBackend(ProviderBackend):
 def hpc_ai_backend(
     *, transport: Transport, spot: bool = False, naps: Naps | None = None
 ) -> HpcAiBackend:
-    """An `HpcAiBackend` for tests, with fixed non-secret credentials and an injected transport."""
+    """An `HpcAiBackend` over an injected transport, its polls never really sleeping."""
     return HpcAiBackend(spot=spot, transport=transport, sleeper=naps or Naps())
 
 
 def plan(**overrides: PlanField) -> ExecutionPlan:
-    """An `ExecutionPlan` for provider-backend tests, defaulting to a bare, uncontainerized host.
-
-    overrides: `ExecutionPlan` fields to override (`profile`, `container`, ...).
-    """
+    """An `ExecutionPlan` for a bare, uncontainerized provider host, with fields overridden."""
     fields: dict[str, PlanField] = {
         "host": "provider-host",
         "profile": HostProfile(kind="modal", root="/repo", sync={"include": ["src"]}),
@@ -78,9 +74,9 @@ def plan(**overrides: PlanField) -> ExecutionPlan:
 class FakeTransport:
     """A `Transport` double: records every `Request` and replays queued replies in order.
 
-    A queued dict answers as a JSON body, a queued string answers as that raw text (the shape an
-    uploaded log has), and a queued `HTTPError` is raised rather than returned, which is how
-    urllib reports a 404 to its caller.
+    A dict answers as a JSON body, a string as raw text (an uploaded log), and an `HTTPError` is
+    raised, as urllib reports a 404. Once the queue is empty a DELETE is confirmed and anything
+    else answers `{}`.
     """
 
     def __init__(self, *responses: Reply) -> None:
@@ -89,13 +85,8 @@ class FakeTransport:
 
     def __call__(self, request: Request) -> SimpleNamespace:
         self.calls.append(request)
-        reply = (
-            self.responses.pop(0)
-            if self.responses
-            else {"success": True}
-            if request.get_method() == "DELETE"
-            else {}
-        )
+        default = {"success": True} if request.get_method() == "DELETE" else {}
+        reply = self.responses.pop(0) if self.responses else default
         if isinstance(reply, HTTPError):
             raise reply
         body = reply.encode() if isinstance(reply, str) else json.dumps(reply).encode()
@@ -103,21 +94,17 @@ class FakeTransport:
 
     @property
     def bodies(self) -> list[dict]:
-        """The JSON body of every recorded request that carried one, in the order they went out.
-
-        A signed storage fetch carries no body at all, so it is left out rather than read as an
-        empty one, which keeps the list lined up with the API calls a backend really made.
-        """
+        """The JSON body of every request that carried one; a bodiless storage fetch is skipped."""
         return [json.loads(call.data) for call in self.calls if call.data]
 
     @property
     def urls(self) -> list[str]:
-        """The full url of every recorded request, in the order the backend asked for them."""
+        """The full url of every recorded request, in order."""
         return [call.full_url for call in self.calls]
 
 
 def refused(status: int, url: str = "https://console.vast.ai/api/v0/instances/7/") -> HTTPError:
-    """The fault urllib raises for `status`, queued on the fake transport as a provider refusal."""
+    """The fault urllib raises for `status`, queued as a provider refusal."""
     return HTTPError(url, status, "Refused", Message(), None)
 
 
@@ -127,12 +114,7 @@ def not_found(url: str = "https://console.vast.ai/api/v0/instances/7/") -> HTTPE
 
 
 def vast_backend(*responses: Reply, spot: bool = False, naps: Naps | None = None) -> VastBackend:
-    """A `VastBackend` over a queued-response transport, its log poll never really sleeping.
-
-    responses: the replies the transport hands back, one per call, in order.
-    spot: whether the backend rents interruptible capacity and prices by the bid floor.
-    naps: the sleeper to record the log poll's waits on, a fresh silent one when none is given.
-    """
+    """A `VastBackend` replaying `responses` one per call, its polls never really sleeping."""
     return VastBackend(spot=spot, transport=FakeTransport(*responses), sleeper=naps or Naps())
 
 
@@ -152,14 +134,9 @@ class FakeSandbox:
         self.kwargs = kwargs
         self.object_id = f"sb-{len(registry)}"
         self.terminated = False
-        self.exec_calls: list[tuple[str, ...]] = []
         self.poll_result: int | None = None
         self.stdout = SimpleNamespace(read=lambda: "sandbox output")
         registry[self.object_id] = self
-
-    def exec(self, *argv: str) -> SimpleNamespace:
-        self.exec_calls.append(argv)
-        return SimpleNamespace()
 
     def poll(self) -> int | None:
         return self.poll_result
@@ -169,18 +146,16 @@ class FakeSandbox:
 
 
 class ModalFault(Exception):
-    """A `modal.exception.Error` stand-in, the root every fault the real SDK raises inherits."""
+    """A `modal.exception.Error` stand-in, the root of every real SDK fault."""
 
 
 class ModalMissing(ModalFault):
-    """A `modal.exception.NotFoundError` stand-in, what `Sandbox.from_id` raises for a gone id."""
+    """A `modal.exception.NotFoundError` stand-in, raised by `Sandbox.from_id` for a gone id."""
 
 
 class FakeBilling:
-    """A `Workspace.billing` double: one summary a test can reshape, or one fault it can queue.
-
-    The summary mirrors only what `standing` reads of the real dataclass, a `Decimal` metered cost
-    and the cycle start it belongs to, since those two are what the derived balance is built from.
+    """A `Workspace.billing` double: a reshapeable summary (a `Decimal` metered cost and its
+    cycle start, all `standing` reads), or a queued fault.
     """
 
     def __init__(self) -> None:
@@ -196,10 +171,9 @@ class FakeBilling:
 
 
 class FakeEnvironments:
-    """A `modal.environments` double: one environment list a test reshapes, or a fault it queues.
+    """A `modal.environments` double: a reshapeable list, or a queued fault.
 
-    Each item mirrors only the budget fields `standing` reads off a real `EnvironmentListItem`.
-    The default answers a zero budget, which is what a workspace that never set one really says.
+    The default answers a zero budget, as a workspace that never set one really does.
     """
 
     def __init__(self) -> None:
@@ -215,20 +189,18 @@ class FakeEnvironments:
 def environment(
     name: str, *, default: bool = False, budget: float = 0.0, used: float = 0.0
 ) -> SimpleNamespace:
-    """One `EnvironmentListItem` double, named, budgeted, and used to whatever a test needs."""
+    """One `EnvironmentListItem` double carrying the budget fields `standing` reads."""
     return SimpleNamespace(
         name=name, default=default, cycle_budget_dollars=budget, current_cycle_usage=used
     )
 
 
 class FakeModal(SimpleNamespace):
-    """A fully faked `modal` module: only the surface `ModalBackend` actually calls.
+    """A fake `modal` module, only the surface `ModalBackend` calls.
 
-    `config.config` mirrors the real module's settings mapping, which is where the SDK itself
-    looks for the token pair before its first call, and a test blanks an entry to stand for a
-    machine nobody ran `modal token new` on. `environments.list_environments` and
-    `Workspace.from_context().billing` are the two account reads the SDK offers, reachable here
-    through the same `environments` and `billing` the test holds.
+    `config.config` holds the token pair the SDK checks first; a test blanks one to stand for a
+    machine nobody ran `modal token new` on. `environments` and `billing` are the two account
+    reads, held by the test.
     """
 
     def __init__(self) -> None:
@@ -256,11 +228,7 @@ class FakeModal(SimpleNamespace):
         )
 
     def sandbox(self, handle: str) -> FakeSandbox:
-        """The sandbox `handle` names, refusing an id this workspace never created.
-
-        The real `Sandbox.from_id` raises `NotFoundError` for a sandbox Modal has forgotten,
-        which is exactly what a second cancel of the same run walks into.
-        """
+        """The sandbox `handle` names, raising `NotFoundError` like the real one for a gone id."""
         try:
             return self.sandboxes[handle]
         except KeyError:
