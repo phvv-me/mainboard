@@ -3,7 +3,9 @@
 import json
 import os
 import sqlite3
+from collections.abc import Collection
 from contextlib import closing
+from datetime import UTC
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,8 +22,15 @@ from .trials.artifacts import Artifact
 class Results:
     """Read the files we already collect; no server writes into a shared DuckDB file."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, experiment: str = "") -> None:
+        if experiment and (
+            experiment in {".", ".."}
+            or Path(experiment).name != experiment
+            or any(c in experiment for c in "*?[]")
+        ):
+            raise ValueError("experiment must name one experiment directory")
         self.root = root.resolve()
+        self.experiment = experiment
 
     def query(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> pl.DataFrame:
         """Query a fresh local snapshot of runs, trials, events, artifacts, and dispatch jobs.
@@ -33,17 +42,19 @@ class Results:
         Network refresh belongs to Mainboard monitor, not to an implicit SQL side effect.
         Jobs separate the last backend_state from the command verdict. The settled flag
         reads the monitor's completion cursor, not current provider liveness.
+        Event recorded_at values are UTC timestamps without a timezone annotation; local
+        queries never install extensions or need ICU to interpret event offsets.
         """
         if isinstance(sql, Path):
             try:
                 sql = sql.expanduser().read_text(encoding="utf-8")
             except UnicodeError as fault:
                 raise ValueError(f"SQL file {sql} must contain UTF-8 text: {fault}") from fault
-        with duckdb.connect(config={"TimeZone": "UTC"}) as connection:
+        with duckdb.connect(config={"autoinstall_known_extensions": False}) as connection:
             statements = connection.extract_statements(sql)
             if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
                 raise ValueError("results queries must be one SELECT statement")
-            self._views(connection, project)
+            self._views(connection, project, sql)
             result = connection.execute(sql)
             return pl.DataFrame(
                 result.fetchall(),
@@ -78,12 +89,20 @@ class Results:
             os.link(temporary, path)
         return path
 
-    def table(self, schema: str, *, project: str = "") -> pl.DataFrame:
+    def table(
+        self, schema: str, *, project: str = "", runs: Collection[str] | None = None
+    ) -> pl.DataFrame:
         """Read verified Parquet tables from collected storage, never a source host's path.
 
         Original repository and machine metadata remain in the _trial provenance column.
+        runs: select run identities before reading their artifacts; None selects all runs.
+            An empty collection selects none. Selected artifacts still require valid bytes.
         """
         artifacts = self.query("SELECT * FROM artifacts", project=project)
+        if runs is not None:
+            artifacts = artifacts.filter(
+                pl.col("context").str.json_path_match("$.run").is_in(list(runs))
+            )
         frames = []
         for row in artifacts.iter_rows(named=True):
             reference = Artifact.model_validate_json(row["reference"])
@@ -116,8 +135,51 @@ class Results:
             candidates.append(own)
         return [path for path in candidates if not project or path.parents[1].name == project]
 
-    def _views(self, connection: duckdb.DuckDBPyConnection, project: str) -> None:
-        roots = self._projects(project)
+    def _views(self, connection: duckdb.DuckDBPyConnection, project: str, sql: str) -> None:
+        """Load only the collected sources the SELECT depends on."""
+        dependencies: dict[str, set[str]] = {
+            "runs": {"trials", "events"},
+            "metrics": {"events"},
+            "artifacts": {"trials", "events"},
+            "trials": set(),
+            "events": set(),
+            "jobs": set(),
+        }
+        try:
+            requested = {name.casefold() for name in connection.get_table_names(sql)}
+        except duckdb.BinderException:
+            # DuckDB cannot discover some joins before their column schemas exist.
+            # Build the catalog in that case and let execution report real SQL errors.
+            requested = set(dependencies)
+        needed = requested & dependencies.keys()
+        needed |= set().union(*(dependencies[name] for name in tuple(needed)))
+        roots = self._projects(project) if needed - {"jobs"} else []
+        if "trials" in needed:
+            self._trials(connection, roots)
+        if "events" in needed:
+            self._events(connection, roots)
+        if "runs" in needed:
+            connection.execute("""
+                CREATE VIEW runs AS SELECT DISTINCT project,
+                    data->>'run' AS run, data->>'host' AS host,
+                    data->>'card_name' AS hardware, data->>'commit' AS commit
+                    FROM events WHERE topic = 'started'
+                    UNION SELECT DISTINCT project, run, host, card_name AS hardware, commit
+                    FROM trials;
+            """)
+        if "metrics" in needed:
+            connection.execute("""
+                CREATE VIEW metrics AS SELECT e.project, s.data->>'run' AS run,
+                    e.trial, e.recorded_at, e.metadata, e.data
+                FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
+                WHERE e.topic = 'metrics' AND s.topic = 'started';
+            """)
+        if "artifacts" in needed:
+            self._artifacts(connection, roots)
+        if "jobs" in needed:
+            self._jobs(connection)
+
+    def _trials(self, connection: duckdb.DuckDBPyConnection, roots: list[Path]) -> None:
         # Explicit file inventory per query is the snapshot. Temporary rsync/Parquet files
         # never match; a later query sees newly published immutable fragments automatically.
         connection.execute(
@@ -127,7 +189,12 @@ class Results:
         )
         inventories = ["SELECT * FROM _receipt_schema"]
         for root in roots:
-            parts = [str(path) for path in root.glob("*/evidence/receipts/run=*/part-*.parquet")]
+            parts = [
+                str(path)
+                for path in root.glob(
+                    f"{self.experiment or '*'}/evidence/receipts/run=*/part-*.parquet"
+                )
+            ]
             if parts:
                 name = f"_trials_{len(inventories)}"
                 connection.sql(
@@ -141,16 +208,21 @@ class Results:
             + " UNION ALL BY NAME ".join(inventories)
             + ")"
         )
+
+    def _events(self, connection: duckdb.DuckDBPyConnection, roots: list[Path]) -> None:
         events: dict[tuple[str, str, int], str] = {}
         for root in roots:
             owner = root.parents[1]
-            for path in sorted(root.glob("*/evidence/artifacts/*/*/events/*.ndjson*")):
+            for path in sorted(
+                root.glob(f"{self.experiment or '*'}/evidence/artifacts/*/*/events/*.ndjson*")
+            ):
                 for frame in FrameFile(path).frames():
                     record = json.dumps(
                         {
                             "project": owner.name,
                             "root": str(owner),
                             **frame.model_dump(mode="json"),
+                            "at": frame.at.astimezone(UTC).replace(tzinfo=None).isoformat(),
                         },
                         sort_keys=True,
                     )
@@ -165,7 +237,7 @@ class Results:
             CREATE TABLE events AS SELECT DISTINCT
                 row->>'project' AS project, row->>'root' AS root,
                 row->>'job' AS stream, (row->>'offset')::UBIGINT AS offset,
-                (row->>'at')::TIMESTAMPTZ AS recorded_at,
+                (row->>'at')::TIMESTAMP AS recorded_at,
                 row->'payload'->>'trial' AS trial,
                 row->'payload'->>'topic' AS topic,
                 row->'payload'->'metadata' AS metadata,
@@ -174,13 +246,10 @@ class Results:
         """,
             [list(events.values())],
         )
+
+    @staticmethod
+    def _artifacts(connection: duckdb.DuckDBPyConnection, roots: list[Path]) -> None:
         connection.execute("""
-            CREATE VIEW runs AS SELECT DISTINCT project,
-                data->>'run' AS run, data->>'host' AS host,
-                data->>'card_name' AS hardware, data->>'commit' AS commit
-                FROM events WHERE topic = 'started'
-                UNION SELECT DISTINCT project, run, host, card_name AS hardware, commit
-                FROM trials;
             CREATE VIEW emitted_artifacts AS SELECT DISTINCT e.project, e.stream,
                 e.root AS root,
                 json_merge_patch(s.data, json_object('verdict',
@@ -193,13 +262,16 @@ class Results:
             LEFT JOIN trials t ON t.project = s.project AND t.run = (s.data->>'run')
                 AND t.trial = s.trial
             WHERE e.topic = 'artifact' AND s.topic = 'started';
-            CREATE VIEW metrics AS SELECT e.project, s.data->>'run' AS run,
-                e.trial, e.recorded_at, e.metadata, e.data
-            FROM events e JOIN events s ON e.stream = s.stream AND e.project = s.project
-            WHERE e.topic = 'metrics' AND s.topic = 'started';
         """)
         # Final receipts own artifact references even when a live event stream was interrupted.
         # Preserve surviving events verbatim; this fallback does not invent their lost times.
+        # An artifact's provenance does not contain its siblings' references. Replicating the
+        # full artifact index into every row made a wide trial consume quadratic memory.
+        connection.execute("""
+            CREATE VIEW receipt_contexts AS SELECT project, run, trial,
+                json_merge_patch(to_json(t), json_object('params', t.params::JSON)) AS context
+            FROM (SELECT * EXCLUDE (artifacts) FROM trials) t;
+        """)
         connection.execute(
             """
             CREATE TABLE receipt_artifacts AS SELECT DISTINCT
@@ -207,9 +279,10 @@ class Results:
                 regexp_extract(t.artifacts::JSON->>'events',
                     'artifacts/([^/]+/[^/]+)/events$', 1) AS stream,
                 p.row->>'root' AS root,
-                json_merge_patch(to_json(t), json_object('params', t.params::JSON)) AS context,
+                c.context AS context,
                 a.key AS name, a.value AS reference
-            FROM trials t, json_each(t.artifacts::JSON) a,
+            FROM trials t JOIN receipt_contexts c USING (project, run, trial),
+                json_each(t.artifacts::JSON) a,
                 unnest(?::JSON[]) AS p(row)
             WHERE t.project = (p.row->>'project')
                 AND json_type(a.value) = 'OBJECT'
@@ -232,6 +305,8 @@ class Results:
                     AND (e.reference->>'path') = (r.reference->>'path')
             );
         """)
+
+    def _jobs(self, connection: duckdb.DuckDBPyConnection) -> None:
         jobs = []
         path = db_file(self.root)
         if path.is_file():

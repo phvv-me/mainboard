@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Literal
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.style as mplstyle
-import paleta
 import polars as pl
 import seaborn as sns
 
@@ -50,13 +49,10 @@ class Plot:
             raise ValueError("plot y column must be numeric")
         if kind == "bar" and data.n_unique([x, *([hue] if hue else [])]) != data.height:
             raise ValueError("bar groups repeat; aggregate each x/hue group in SQL first")
-        paleta.register()
         with mplstyle.context([self.style.theme, self.style.rc]), ExitStack() as cleanup:
             mpl.rcParams["savefig.dpi"] = dpi
-            canvas, axis = paleta.figure()
+            canvas, axis = plt.subplots(figsize=self.style.figsize, layout="constrained")
             cleanup.callback(plt.close, canvas)
-            if self.style.figsize is not None:
-                canvas.set_size_inches(self.style.figsize)
             self._draw(axis, data, x=x, y=y, hue=hue, kind=kind)
             if hue:
                 sns.move_legend(axis, "upper left", bbox_to_anchor=(1, 1), borderaxespad=0)
@@ -170,7 +166,8 @@ class Plot:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 directory = staging.enter_context(TemporaryDirectory(dir=path.parent))
                 temporary.append(Path(directory) / path.name)
-            paleta.save(canvas, *temporary)
+            for path in temporary:
+                canvas.savefig(path)
             for source, target in zip(temporary, paths, strict=True):
                 with source.open("rb+") as complete:
                     os.fsync(complete.fileno())

@@ -17,6 +17,7 @@ import json
 from time import monotonic, sleep
 from typing import TYPE_CHECKING
 
+from filelock import Timeout
 from patos import FrozenModel
 from pydantic import ValidationError
 
@@ -53,6 +54,8 @@ _RECEIPT = "trial_receipt"
 # The code a stream answers while any of its rows is still running or legitimately waiting,
 # named once because a waiter loops on exactly this answer.
 _IN_FLIGHT = 2
+# How long a cancel waits for the settlement claim another process holds before it refuses.
+SETTLEMENT_SECONDS = 120.0
 _EXITS = {
     vocabulary.OK: 0,
     "passed": 0,
@@ -167,9 +170,25 @@ class Verdicts:
         self.board = board
 
     def cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
-        """Cancel under the same claim as automatic settlement, preserving cleanup failures."""
-        with self.board.dispatcher.cache.settlement:
+        """Cancel under the same claim as automatic settlement, preserving cleanup failures.
+
+        The claim is waited for and not forever. A sweep, or a dispatch still landing on the very
+        rental being cancelled, holds it for minutes, and a cancel that waited without a bound
+        sat in a sleep loop for seven minutes on 2026-09-21 while the instance it was asked to
+        end was already gone.
+        """
+        claim = self.board.dispatcher.cache.settlement
+        try:
+            claim.acquire(timeout=SETTLEMENT_SECONDS)
+        except Timeout:
+            raise MissionError(
+                f"another mainboard process has held settlement for {SETTLEMENT_SECONDS:g}s, a "
+                "sweep or a dispatch still landing; nothing was cancelled, ask again when it ends"
+            ) from None
+        try:
             return self._cancel(handle, host=host)
+        finally:
+            claim.release()
 
     def _cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
         """Preserve available evidence, cancel, and advance the cursor only after release.
@@ -463,19 +482,28 @@ class Verdicts:
         deadline = monotonic() + timeout if timeout else None
         monitor = self.board.monitor()
         stream = (directory(self.board, handle) / "events.ndjson").is_file()
-        while True:
-            monitor.once()
-            if stream:
-                # A batch settles when every job's row has, which is what its stream verdict
-                # already adds up, so the loop asks that rather than a record it has none of.
-                settled = self.of(handle)
-                if settled.code != _IN_FLIGHT:
-                    return settled
-            elif self.record(handle, host=host).reported in vocabulary.TERMINAL:
-                return self.handled(handle, host=host)
+        # What already settled is answered off its receipts before any pass runs, since a pass
+        # settles the whole workspace and a caller re-reading a finished batch owes it nothing.
+        while (settled := self.__settled(handle, host=host, stream=stream)) is None:
             if deadline is not None and monotonic() >= deadline:
                 return self.of(handle) if stream else self.handled(handle, host=host)
-            poll(interval)
+            monitor.once()
+            if self.__settled(handle, host=host, stream=stream) is None:
+                poll(interval)
+        return settled
+
+    def __settled(self, handle: str, *, host: str, stream: bool) -> StreamVerdict | None:
+        """`handle`'s final answer, None while any of it is still in flight.
+
+        A batch settles when every job's row has, which is what its stream verdict already adds
+        up, so a batch is asked that rather than a record it has none of.
+        """
+        if stream:
+            answered = self.of(handle)
+            return None if answered.code == _IN_FLIGHT else answered
+        if self.record(handle, host=host).reported in vocabulary.TERMINAL:
+            return self.handled(handle, host=host)
+        return None
 
 
 def eventful(events: Iterable[Event]) -> tuple[TrialVerdict, ...]:

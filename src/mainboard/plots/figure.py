@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, cast
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.style as mplstyle
-import paleta
 import polars as pl
 
 from .panel import PanelPlot
@@ -43,7 +42,6 @@ class FigurePlot(Plot):
             name: query(panel.file if panel.file is not None else panel.sql)
             for name, panel in specification.panels.items()
         }
-        paleta.register()
         with mplstyle.context([self.style.theme, self.style.rc]), ExitStack() as cleanup:
             mpl.rcParams["savefig.dpi"] = dpi or self.style.dpi
             create = cast("Callable[..., Figure]", plt.figure)

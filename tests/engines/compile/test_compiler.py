@@ -6,6 +6,7 @@ import pytest
 import tomlkit
 
 from mainboard import MissionError, Project
+from mainboard.core.host import current_platform
 from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles
 from mainboard.engines.compile.pixi_manifest import PixiManifest
@@ -38,7 +39,7 @@ _EDITS: dict[str, Json] = {
     "system": {"archspec": "x86_64_v3"},
     "env": {"PYTHONPATH": "src"},
     "deps": {"ripgrep": "*"},
-    "on": {"linux-64": {"deps": {"ripgrep": "*"}}},
+    "on": {current_platform(): {"deps": {"ripgrep": "*"}}},
     "dev": {"deps": {"ruff": "*"}},
     "envs": {"serving": {"deps": {"vllm": "*"}}},
     "tasks": {"build": "make"},
@@ -49,7 +50,7 @@ _EDITS: dict[str, Json] = {
     "engines": {"vserve": {"command": "true"}},
     "hosts": {"miyabi-g": {"kind": "pbs", "defaults": {"interact-queue": "interact-g"}}},
     "admission": {"NVIDIA GB10": {"holders": "record"}},
-    "plots": {"paper": {"palette": "paleta-meta", "dpi": 600}},
+    "plots": {"paper": {"palette": "deep", "dpi": 600}},
     "figures": {
         "example": {
             "panels": {

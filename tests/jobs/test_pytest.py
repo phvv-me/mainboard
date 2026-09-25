@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from mainboard import MissionError
-from mainboard.dispatch.provenance import Repositories, listing
+from mainboard.dispatch.provenance import SourceTree, listing
 from mainboard.dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
 from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
@@ -104,7 +104,6 @@ def pytest_lab(tmp_path: Path) -> Lab:
     """A committed workspace whose test tree needs its conftest, helper and config shipped."""
     lab = Lab(tmp_path / "projects")
     lab.root.mkdir(parents=True)
-    lab.git("init")
     lab.write("mainboard.toml", "")
     lab.write("tests/__init__.py", "")
     lab.write("tests/helpers.py", _HELPERS)
@@ -116,7 +115,6 @@ def pytest_lab(tmp_path: Path) -> Lab:
     lab.write("tests/test_stray.py", "STRAY = 1\n")
     lab.write("templates/t.j2", "t\n")
     lab.write("pytest.ini", "[pytest]\ntestpaths = tests\n")
-    lab.commit("a test tree")
     return lab
 
 
@@ -130,7 +128,7 @@ def sealed(lab: Lab, spelling: str, *args: str) -> subprocess.CompletedProcess[s
         distributions=(),
         environment=lab.root / Lab.ENVIRONMENT,
     )
-    _, rows = Repositories(lab.root).seal(closure.owner, closure.files, built=closure.built)
+    _, rows = SourceTree(lab.root).seal(closure.files, built=closure.built)
     written = lab.root / ".mainboard/closure.tsv"
     written.parent.mkdir(exist_ok=True)
     written.write_text(listing(rows), encoding="utf-8")
@@ -231,7 +229,6 @@ def test_namespace_node_keeps_relative_imports_and_its_project_identity(pytest_l
         "research/study/experiments/node/test_probe.py",
         "from .experiment import VALUE\n\ndef test_probe():\n    assert VALUE == 7\n",
     )
-    pytest_lab.commit("a namespace experiment")
     spelling = "research/study/experiments/node/test_probe.py::test_probe"
     closure = closure_of(pytest_lab, spelling)
     assert "research/study/experiments/other/helper.py" in closure.files
@@ -257,7 +254,6 @@ def test_the_closure_carries_the_harness_the_walk_cannot_see(pytest_lab: Lab) ->
 def test_the_config_and_conftests_are_found_without_importing_anything(pytest_lab: Lab) -> None:
     """A conftest whose import dies at import time still closes: discovery reads syntax only."""
     pytest_lab.write("tests/conftest.py", "raise SystemExit('conftest ran')\n")
-    pytest_lab.commit("a conftest nothing may run")
     closure = closure_of(pytest_lab, "tests/jobs/test_sample.py::test_runs[2]")
     assert "tests/conftest.py" in closure.files
     assert "pytest.ini" in closure.files
@@ -266,7 +262,6 @@ def test_the_config_and_conftests_are_found_without_importing_anything(pytest_la
 def test_a_dynamic_plugins_value_is_refused_rather_than_guessed(pytest_lab: Lab) -> None:
     """A `pytest_plugins` needing execution names nothing a dispatch can see, so it is refused."""
     pytest_lab.write("tests/conftest.py", "pytest_plugins = tuple(available())\n")
-    pytest_lab.commit("plugins behind a call")
     with pytest.raises(MissionError, match="literal"):
         closure_of(pytest_lab, "tests/jobs/test_sample.py::test_runs[2]")
 
@@ -275,7 +270,6 @@ def test_a_literal_plugins_list_joins_the_closure(pytest_lab: Lab) -> None:
     """A module a conftest names in `pytest_plugins` ships, though nothing imports it."""
     pytest_lab.write("tests/plugins.py", "PLUGIN = 1\n")
     pytest_lab.write("tests/conftest.py", "pytest_plugins = ['tests.plugins']\n")
-    pytest_lab.commit("a literal plugin")
     closure = closure_of(pytest_lab, "tests/jobs/test_sample.py::test_runs[2]")
     assert "tests/plugins.py" in closure.files
 
@@ -318,8 +312,6 @@ def test_early_imports_cannot_bypass_the_boundary(
             "tests/conftest.py",
             "import importlib\nimportlib.import_module('tests.test_' + 'stray')\n",
         )
-    if source in {"config", "conftest"}:
-        pytest_lab.commit("early import route")
     done = sealed(pytest_lab, "tests/jobs/test_sample.py::test_runs[2]")
     assert done.returncode != 0
     assert "first-party code outside this job's closure" in done.stdout + done.stderr

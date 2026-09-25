@@ -323,35 +323,21 @@ def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
     assert Doctor(Board(workspace), env="serving").examined() == ("serving",)
 
 
-@pytest.mark.parametrize(
-    ("dirty", "verdict", "fix"),
-    [
-        pytest.param(False, Verdict.FAIL, "exec --spec", id="a-clean-tree-names-the-reinstall"),
-        pytest.param(
-            True, Verdict.WARN, "commit or stash", id="a-dirty-tree-names-what-comes-first"
-        ),
-    ],
-)
-def test_the_snapshot_row_never_tells_anyone_to_install_a_half_finished_tree(
-    workspace: Path, monkeypatch: pytest.MonkeyPatch, verdict: Verdict, fix: str, *, dirty: bool
+def test_snapshot_refresh_is_independent_of_version_control(
+    workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A reinstall installs the source as it stands, which a tree with uncommitted work is not."""
     monkeypatch.setattr(
         "mainboard.doctor.staleness.check",
         lambda: Snapshot(
             installed=True,
             stale=True,
-            dirty=dirty,
-            detail="the source at /repo is newer than this installed snapshot",
+            detail="source bytes changed",
             fix=("exec", "--spec", "uv=0.12.7", "uv", "tool", "install", "mainboard"),
         ),
     )
-
     found = Doctor(Board(workspace)).snapshot()
-
-    assert found.verdict is verdict
-    assert fix in found.fix
-    assert ("uncommitted work" in found.detail) is dirty
+    assert found.verdict is Verdict.FAIL and "exec --spec" in found.fix
 
 
 def test_a_gate_that_declares_shell_grammar_is_refused_rather_than_run_as_arguments(

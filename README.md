@@ -10,7 +10,7 @@ tracks, probes, and profiles across all of them.
 ```python
 from mainboard import Board
 
-board = Board()  # finds mainboard.toml like git finds a repo
+board = Board()  # finds the nearest mainboard.toml
 board.run("python train.py")  # here, in the activated environment
 board.on("gold").run("nvidia-smi")  # any ssh box, same call
 job = board.on("miyabi-g").submit(  # a PBS cluster, inside an NGC container,
@@ -308,7 +308,7 @@ Mainboard's remote result mounts and after fetching.
 
 ```console
 mainboard monitor --json
-mainboard collect research/reproducibility/datasets/experiments/architecture_error_census --on homelab
+mainboard collect research/reproducibility/datasets/experiments/architecture_error_census --on pedro-home
 mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
 mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
 mainboard query "SELECT server, handle, backend_state, verdict, evidence, settled FROM jobs"
@@ -353,10 +353,10 @@ Keep reusable SELECT statements in UTF-8 `.sql` files. `--file` replaces the SQL
 argument, while Python callers pass a `Path` to `Results.query`. The SQL file and
 any paths inside its query resolve from the caller's current directory.
 
-Plot the same SELECT with the optional Seaborn/paleta integration:
+Plot the same SELECT with optional Seaborn and Matplotlib:
 
 ```console
-uv tool install --from './packages/mainboard[wandb,plot]' --with ./packages/paleta mainboard --force
+uv tool install --from './packages/mainboard[wandb,plot]' mainboard --force
 mainboard plot "SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware" --project reproducibility --x hardware --y runs --kind bar --out /tmp/run-inventory.png --out /tmp/run-inventory.pdf --dpi 300
 ```
 
@@ -365,20 +365,21 @@ For measurements, filter the experiment, input regime, and hardware explicitly i
 `scatter` shows individual rows; `line` retains SQL order without estimating a mean or
 adding error bars. `bar` requires one row per x/hue group, so aggregate in SQL first.
 `--hue` identifies a categorical series column in SQL appearance order. Its legend
-sits outside the data axes. `--title` labels the scope. Paleta supplies native
-palette/theme names without copying their definitions.
+sits outside the data axes. `--title` labels the scope. Native plotting settings
+live in the workspace manifest and project style files, with no palette package.
 Output extensions select Matplotlib formats and DPI controls raster resolution.
 Null/nonfinite plotted values and existing output files are refused, not silently dropped
 or overwritten. Tables with bespoke plots can use Seaborn directly on
 `Results(root).query(sql).to_dict(as_series=False)` or verified `Results(root).table(...)` data.
 
-Name additional styles in `mainboard.toml` and select one with `--style paper`:
+Define shared styles in `mainboard.toml`. `paper` is the default when declared;
+select another named style with `--style`:
 
 ```toml
 [plots.paper]
-palette = "paleta-shiho" # also paleta-shiho-dark, paleta-meta, paleta-meta-dark
-theme = "paleta-shiho"   # a native Matplotlib style name
-figsize = [3.25, 2.1]    # inches; omitted keeps paleta's text-column size
+palette = ["#745399", "#b7282e", "#1e50a2", "#f8b500"] # or a Seaborn palette name
+theme = "default"       # a native Matplotlib style name
+figsize = [3.25, 2.1]    # inches; omitted uses the native theme's size
 dpi = 300
 
 [plots.paper.rc]
@@ -386,24 +387,23 @@ dpi = 300
 "font.family" = "sans-serif"
 ```
 
-Palettes use Seaborn's existing names, including built-ins such as `deep`.
+Palettes use explicit color lists or Seaborn's names, such as `deep`.
 The renderer takes colors in palette order and refuses excess categories.
 Group the tail into Other or use separate panels. `rc` contains native Matplotlib
 settings, not a second styling language. `--dpi` overrides the style's resolution.
 Changing styles does not rebuild an environment.
 
 For a reusable composition, keep its style and figure together in `plots.toml`.
-This explicit configuration does not select an environment or change path resolution.
+This file overlays the workspace styles without selecting an environment or changing
+path resolution. Settings and semantic maps merge by key; lists and scalars replace.
+Unspecified project fields retain the shared values.
 
 ```toml
 [workspace]
 name = "project-figures"
 
 [plots.paper]
-theme = "paleta-shiho"
-palette = "paleta-shiho"
 figsize = [3.25, 2.1]
-dpi = 300
 
 [figures.inventory]
 style = "paper"
@@ -452,8 +452,15 @@ settles. Missing artifact bytes remain an error, not a silently complete table.
 Acquisition dependencies still use explicit pinned `log.read_table(...)` inputs.
 
 Research `log` trials preserve one manifest per node/run from Mainboard's existing
-transferred-file listing, including the adjacent committed `node.md`, environment,
-inputs, and hardware. Commit the registration and code before running. The pilot
+transferred-file listing, including the adjacent captured `node.md`, environment,
+inputs, and hardware. No repository, Git executable, clean worktree, commit, or push
+is required. Newly written and modified files are ordinary source. Mainboard hashes
+their actual bytes with SHA-256, preserves a content-addressed source ZIP under
+`.mainboard/source-archives/`, and verifies the listing and bytes before acquisition.
+An edit after capture requires a new bundle, not a commit. Optional `.gitignore`
+files control discovery without invoking Git; secrets and output protections remain.
+Historical Git metadata and inadmissible receipts are retained as historical data,
+not relabeled by this policy change. The pilot
 experiments no longer maintain a second source-file list or a hash of another seal.
 Artifact checksums remain useful for verifying transferred bytes. Historical
 registrations and receipts remain valid records of their original instruments.

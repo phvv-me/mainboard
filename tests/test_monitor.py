@@ -310,6 +310,29 @@ def test_a_finished_job_reports_only_the_results_it_could_actually_bring_back(
         assert board.dispatcher.cache.run("3").reported == "ok"
 
 
+def test_a_host_that_went_quiet_mid_harvest_is_contacted_once_per_pass(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three settled runs owed by one dead host cost one connect timeout, not six."""
+    for handle in ("4", "5", "6"):
+        seed(handle, fetch_path="results/run")
+    probing(board, monkeypatch, finishing())
+    contacts: list[str] = []
+
+    def unreachable(handle: Handle, **kw: SshTransport | None) -> None:
+        contacts.append(handle.id)
+        raise HostUnreachable("ssh collect to 'miyabi-g' failed: connection timed out")
+
+    monkeypatch.setattr(board.dispatcher, "fetch", unreachable)
+    monkeypatch.setattr(Job, "transcript", lambda self: contacts.append(self.handle.id) or "")
+    report = board.monitor().once()
+    assert len(contacts) == 1
+    assert len(report.failed) == 3
+    assert all("went quiet" in item.reason for item in report.failed)
+    board.monitor().once()
+    assert len(contacts) == 2  # the next pass asks again, once
+
+
 def test_a_failed_job_carries_a_network_free_reason(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -634,6 +657,16 @@ def test_failed_release_retries_without_refetching_destroyed_evidence(
     assert calls == ["32", "32"]
 
 
+def test_a_cancel_refuses_instead_of_waiting_forever_on_a_held_settlement_claim(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed("37")
+    monkeypatch.setattr("mainboard.verdicts.SETTLEMENT_SECONDS", 0.05)
+    held = FileLock(board.dispatcher.cache.path.with_suffix(".settlement.lock"))
+    with held, pytest.raises(MissionError, match="held settlement"):
+        board.verdicts().cancel("37")
+
+
 def test_competing_monitor_does_not_read_a_stale_settlement_cursor(
     board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -663,6 +696,27 @@ def test_a_native_job_without_any_captured_receipt_cannot_settle_an_empty_transf
     monkeypatch.setattr(Job, "release", lambda job: pytest.fail("evidence was not delivered"))
     report = board.monitor().once()
     assert not report.finished and "no captured receipt" in report.failed[0].reason
+
+
+def test_a_native_job_that_failed_before_its_first_receipt_settles_as_failed(
+    board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a run claiming success owes a receipt, so a crash is settled once, not every pass."""
+    record = seed("36", fetch_path="research/project/datasets/node")
+    board.dispatcher.cache.record(
+        record.model_copy(
+            update={"script": "research/project/experiments/node/test_law.py::test_law"}
+        )
+    )
+    probing(board, monkeypatch, finishing("failed", 1))
+    pulls: list[str] = []
+    monkeypatch.setattr(board.dispatcher, "fetch", lambda handle, **kw: pulls.append(handle.id))
+    monkeypatch.setattr(Job, "transcript", lambda job: "FileNotFoundError: mlp.pt")
+    report = board.monitor().once()
+    assert "no captured receipt" not in report.failed[0].reason
+    assert board.dispatcher.cache.run("36").reported == "failed"
+    board.monitor().once()
+    assert pulls == ["36"]
 
 
 def test_a_native_job_whose_every_cell_was_already_covered_settles_without_a_receipt(
@@ -708,7 +762,6 @@ def test_queued_native_submission_cannot_verify_an_empty_transfer(
     file = "research/project with spaces/experiments/node/test_law.py"
     lab.write(file, "def test_law():\n    raise RuntimeError('must not execute')\n")
     lab.write("research/project with spaces/experiments/node/node.md", "# Software control\n")
-    lab.commit()
     board = Board(lab.root)
     dispatcher = board.dispatcher
     scheduler = RecordingScheduler()

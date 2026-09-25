@@ -2,13 +2,13 @@
 
 import os
 from io import BytesIO, TextIOWrapper
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
 import pytest
 
-from mainboard.dispatch.collection.collector import Collector
-from mainboard.dispatch.collection.pack import pack
+from mainboard.dispatch.collection.collector import Collector, KnownDigests
+from mainboard.dispatch.collection.pack import _paths, pack
 
 
 def test_collection_retries_and_conflicts(tmp_path: Path) -> None:
@@ -27,6 +27,70 @@ def test_collection_retries_and_conflicts(tmp_path: Path) -> None:
         collector.merge(archive, path="data")
     assert (root / "data/one").read_bytes() == b"original"
     assert not (root / "data/two").exists()
+
+
+def test_incremental_collection_skips_equal_bytes_but_keeps_conflicts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local, remote = tmp_path / "local", tmp_path / "remote"
+    for root in (local, remote):
+        (root / "data").mkdir(parents=True)
+        (root / "data/equal").write_bytes(b"already collected")
+        (root / "data/changed").write_bytes(b"original")
+    (remote / "data/changed").write_bytes(b"conflict")
+    (remote / "data/new").write_bytes(b"new evidence")
+    events = remote / "data/events"
+    events.mkdir()
+    event = b'{"offset":0,"payload":"progress"}\n'
+    (events / "live.ndjson").write_bytes(event)
+    collector = Collector(local)
+    known = collector._known(PurePosixPath("data"))
+    stream = BytesIO()
+    stdout = TextIOWrapper(stream, encoding="utf-8")
+    with monkeypatch.context() as changed:
+        changed.setattr("sys.stdout", stdout)
+        pack(str(remote), relative="data", known=known)
+    with ZipFile(stream) as archive:
+        assert "data/equal" not in archive.namelist()
+        assert archive.read("data/changed") == b"conflict"
+        assert archive.read("data/new") == b"new evidence"
+        assert any("collected-" in name for name in archive.namelist())
+    transfer = tmp_path / "transfer.zip"
+    transfer.write_bytes(stream.getvalue())
+    with pytest.raises(ValueError, match="conflicting"):
+        collector.merge(transfer, path="data")
+    assert (local / "data/changed").read_bytes() == b"original"
+    assert not (local / "data/new").exists()
+
+
+def test_a_published_file_is_hashed_once_until_its_stamp_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = tmp_path / "data/object"
+    evidence.parent.mkdir()
+    evidence.write_bytes(b"published")
+    collector = Collector(tmp_path)
+    first = collector._known(PurePosixPath("data"))
+    reads: list[Path] = []
+    opened = Path.open
+
+    def counted(self: Path, *args: str, **options: str):
+        reads.append(self)
+        return opened(self, *args, **options)
+
+    monkeypatch.setattr(Path, "open", counted)
+    assert collector._known(PurePosixPath("data")) == first
+    assert evidence not in reads
+    evidence.write_bytes(b"rewritten elsewhere")
+    os.utime(evidence, ns=(1, 1))
+    assert collector._known(PurePosixPath("data")) != first
+    assert evidence in reads
+
+
+def test_a_torn_digest_memory_is_rebuilt(tmp_path: Path) -> None:
+    memory = tmp_path / "digests.json"
+    memory.write_text("{", encoding="utf-8")
+    assert KnownDigests(memory).held == {}
 
 
 @pytest.mark.parametrize(
@@ -87,3 +151,18 @@ def test_pack_refuses_linked_directories(tmp_path: Path, monkeypatch: pytest.Mon
         changed.setattr("sys.stdout", stdout)
         with pytest.raises(ValueError, match="non-regular"):
             pack(str(tmp_path), relative="data")
+
+
+def test_pack_excludes_unpublished_objects_before_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    objects = tmp_path / "data/objects"
+    objects.mkdir(parents=True)
+    published = objects / ("a" * 64)
+    published.write_bytes(b"published")
+    vanished = [objects / "tmpabcdefgh", objects / "pending.tmp"]
+    monkeypatch.setattr(
+        "mainboard.dispatch.collection.pack._entries",
+        lambda selected: iter([*vanished, published]),
+    )
+    assert list(_paths(tmp_path, "data")) == [published]

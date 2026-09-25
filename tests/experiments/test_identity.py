@@ -27,20 +27,27 @@ def test_a_trial_identity_is_the_canonical_json_sha256_prefix_whatever_the_key_o
     assert identity != run_id({**config, "EXTRA": 1})
 
 
-@given(experiment=WORDS, space=_SPACE, git_sha=WORDS)
-def test_a_study_identity_moves_with_its_experiment_config_space_or_git_sha(
-    *, experiment: str, space: dict[str, int | str | bool], git_sha: str
+@given(experiment=WORDS, space=_SPACE, source_digest=WORDS)
+def test_a_study_identity_moves_with_its_experiment_config_space_or_source_digest(
+    *, experiment: str, space: dict[str, int | str | bool], source_digest: str
 ) -> None:
-    identity, slug = study_id(experiment=experiment, config_space=space, git_sha=git_sha)
+    identity, slug = study_id(
+        experiment=experiment, config_space=space, source_digest=source_digest
+    )
     assert len(identity) == 12
     assert set(identity) <= set("0123456789abcdef")
     assert slug == f"{experiment}-{identity[:6]}"
     reordered = dict(reversed(list(space.items())))
-    assert study_id(experiment=experiment, config_space=reordered, git_sha=git_sha)[0] == identity
+    assert (
+        study_id(experiment=experiment, config_space=reordered, source_digest=source_digest)[0]
+        == identity
+    )
     moved = {
-        study_id(experiment=f"{experiment}X", config_space=space, git_sha=git_sha)[0],
-        study_id(experiment=experiment, config_space={**space, "EXTRA": 1}, git_sha=git_sha)[0],
-        study_id(experiment=experiment, config_space=space, git_sha=f"{git_sha}X")[0],
+        study_id(experiment=f"{experiment}X", config_space=space, source_digest=source_digest)[0],
+        study_id(
+            experiment=experiment, config_space={**space, "EXTRA": 1}, source_digest=source_digest
+        )[0],
+        study_id(experiment=experiment, config_space=space, source_digest=f"{source_digest}X")[0],
     }
     assert identity not in moved
 

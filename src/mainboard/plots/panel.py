@@ -91,6 +91,13 @@ class PanelPlot(Plot):
             axis.set(**panel.axis)
             ticks = cast("Callable[..., None]", axis.tick_params)
             ticks(**panel.ticks)
+            # Matplotlib turns a tick label about its centre, which walks a slanted label off
+            # the tick it names. Anchoring the corner keeps each one under its own category.
+            rotation = panel.ticks.get("labelrotation")
+            if isinstance(rotation, (int, float)) and rotation % 180:
+                for label in axis.get_xticklabels():
+                    label.set_horizontalalignment("right" if rotation % 360 < 180 else "left")
+                    label.set_rotation_mode("anchor")
             # Explicit ticks name every label the author wants; a log axis adds none between.
             if "xticks" in panel.axis:
                 axis.xaxis.set_minor_formatter(NullFormatter())
@@ -254,24 +261,41 @@ class PanelPlot(Plot):
         }
         for owner in (target, parent):
             owner.legends[:] = [legend for legend in owner.legends if legend not in created]
+        if panel.legend is False:
+            return {}
         secondary = self._secondary(native)
-        if secondary and (
-            panel.legend is not None
-            or any(key in panel.variables for key in ("marker", "linestyle", "fill"))
-        ):
+        marks = {"marker", "linestyle", "fill"}
+        # A mark only one layer carries has no key of its own, so the panel draws the whole
+        # key itself, colors first and marks under them. A mark the panel carries keeps the
+        # split it already had: marks here, colors in the figure's shared key.
+        alone = bool(marks & self._mapped().keys()) and not (marks & panel.variables.keys())
+        if secondary and (isinstance(panel.legend, dict) or marks & self._mapped().keys()):
+            colors = self._color_lines(tables) if panel.key != "marks" else {}
+            marks = secondary if panel.key != "colors" else {}
+            combined = (colors | marks) if alone else secondary
             local = cast("Callable[..., Legend]", target.axes[0].legend)
             local(
-                list(secondary.values()),
-                [self.style.labels.get(label, label) for label in secondary],
+                list(combined.values()),
+                [self.style.labels.get(label, label) for label in combined],
                 **(
-                    panel.legend if panel.legend is not None else {"loc": "best", "frameon": False}
+                    panel.legend
+                    if isinstance(panel.legend, dict)
+                    else {"loc": "best", "frameon": False}
                 ),
             )
-        elif panel.legend is not None and native:
+            if alone:
+                return {}
+        elif isinstance(panel.legend, dict) and native:
+            # Seaborn hands back whichever artist drew each level last, so a reference line
+            # layered over the series lends the key its own grey dash and the key stops
+            # naming colors. Entries that are color values are redrawn in their own color;
+            # anything else, a reference line among them, keeps the artist it came from.
+            colored = self._color_lines(tables)
+            entries = {label: colored.get(label, handle) for label, handle in native.items()}
             local = cast("Callable[..., Legend]", target.axes[0].legend)
             local(
-                list(native.values()),
-                [self.style.labels.get(label, label) for label in native],
+                list(entries.values()),
+                [self.style.labels.get(label, label) for label in entries],
                 **panel.legend,
             )
             return {}
@@ -301,6 +325,9 @@ class PanelPlot(Plot):
                 drawing = drawing.scale(**{variable: so.Nominal(order=list(order))})
         if not self.style.colors:
             drawing = drawing.scale(color=so.Nominal(values=self.style.palette))
+        if panel.label:
+            label = cast("Callable[..., so.Plot]", drawing.label)
+            drawing = label(**panel.label)
         if panel.facet:
             facet = cast("Callable[..., so.Plot]", drawing.facet)
             drawing = facet(**panel.facet)
@@ -309,21 +336,28 @@ class PanelPlot(Plot):
             drawing = share(**panel.share)
         return drawing
 
+    def _mapped(self) -> dict[str, str]:
+        """Every variable the panel binds, whether on the panel or on one of its layers."""
+        mapped = dict(self.panel.variables)
+        for layer in self.panel.layers:
+            mapped |= layer.variables
+        return mapped
+
     def _secondary(self, native: dict[str, Artist]) -> dict[str, Artist]:
         """Draw observed batch/line/fill keys independently of engine colors."""
-        panel, frame = self.panel, self.frame
+        frame, mapped = self.frame, self._mapped()
         if not self.style.colors:
             return native
         # A native secondary key retains batch markers/fill while colors remain shared.
         secondary = {
             label: handle
             for label, handle in native.items()
-            if label not in self.style.colors and label not in panel.variables.values()
+            if label not in self.style.colors and label not in mapped.values()
         }
         proxy = cast("Callable[..., Line2D]", Line2D)
-        variables = {"marker", "linestyle", "fill"} & panel.variables.keys()
+        variables = {"marker", "linestyle", "fill"} & mapped.keys()
         for variable in sorted(variables):
-            for value in frame[panel.variables[variable]].unique(maintain_order=True):
+            for value in frame[mapped[variable]].unique(maintain_order=True):
                 label = str(value)
                 marker = self.style.markers.get(label, "o")
                 linestyle = self.style.linestyles.get(label, "none")
@@ -339,16 +373,31 @@ class PanelPlot(Plot):
                 )
         return secondary
 
-    def _shared(self, tables: list[pl.DataFrame]) -> dict[str, Artist]:
-        """Build one engine key from the explicit colors actually present in layers."""
+    def _present(self, tables: list[pl.DataFrame]) -> set[str]:
+        """The color values the panel's layers actually draw."""
         present: set[str] = set()
         for layer, selected in zip(self.panel.layers, tables, strict=True):
             variables = self.panel.variables | layer.variables
             if "color" in variables:
                 present.update(selected[variables["color"]].cast(pl.String).unique())
+        return present
+
+    def _shared(self, tables: list[pl.DataFrame]) -> dict[str, Artist]:
+        """Build one engine key from the explicit colors actually present in layers."""
+        present = self._present(tables)
         proxy = cast("Callable[..., Line2D]", Line2D)
         return {
             name: proxy([], [], color=color, **self.style.legend_marker)
+            for name, color in self.style.colors.items()
+            if name in present
+        }
+
+    def _color_lines(self, tables: list[pl.DataFrame]) -> dict[str, Artist]:
+        """The same colors drawn as lines, for a key whose other half is marks."""
+        present = self._present(tables)
+        proxy = cast("Callable[..., Line2D]", Line2D)
+        return {
+            name: proxy([], [], color=color)
             for name, color in self.style.colors.items()
             if name in present
         }

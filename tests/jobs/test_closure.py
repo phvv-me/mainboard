@@ -56,7 +56,6 @@ def test_the_closure_is_the_node_what_it_imports_and_what_it_declared_and_nothin
     assert closure.first_party == ("core", "experiments", "sub")
     assert closure.needs == ("data/corpus",)
     assert closure.fetch == "research/camp/experiments/node/evidence"
-    assert closure.owner is not None and Path(closure.owner.path) == lab.root
     # An ignored file inside the node never ships; a module reached by import does, ignored or
     # not, since the job runs it.
     lab.write("research/camp/experiments/node/__pycache__/run.cpython-314.pyc", "")
@@ -246,15 +245,15 @@ def test_needs_join_the_declared_ones_and_may_never_sit_over_shipped_code(lab: L
         closure_of(lab, needs=("/data",))
 
 
-def test_a_node_under_no_repository_cannot_say_what_it_keeps(lab: Lab, tmp_path: Path) -> None:
+def test_a_node_needs_no_repository_to_capture_its_source(lab: Lab, tmp_path: Path) -> None:
     loose = tmp_path / "loose"
     (loose / "node").mkdir(parents=True)
     (loose / "node" / "run.py").write_text("def main() -> None:\n    pass\n", encoding="utf-8")
     (loose / "mainboard.toml").write_text("", encoding="utf-8")
     target = Target.spelled(["node/run.py"], loose)
     assert target is not None
-    with pytest.raises(MissionError, match="under no git repository"):
-        Closure.of(target, root=loose, distributions=(), environment=loose / _ENVIRONMENT)
+    closure = Closure.of(target, root=loose, distributions=(), environment=loose / _ENVIRONMENT)
+    assert "node/run.py" in closure.files
 
 
 def _closure_with_ext(lab: Lab, *, environment: Path) -> Closure:

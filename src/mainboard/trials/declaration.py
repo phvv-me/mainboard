@@ -42,7 +42,8 @@ class Declaration(FrozenModel):
         nobody else's business.
     flags: the process-global values a lane may move, recorded on every receipt and refused at
         the end of a run if any is left off its baseline.
-    repo: the working tree whose commit stamps every receipt, the universe root when unset.
+    repo: the local source root to capture, the universe root when unset. A dispatched
+        closure names its own workspace root independently of this nested project.
     markers: the marker table registered for this session.
     resident: reads the bytes a claim's holdings currently occupy, so leaving a claim can be
         checked rather than assumed. Unset skips the check and the holdings still drop on time.
@@ -59,5 +60,5 @@ class Declaration(FrozenModel):
 
     @property
     def tree(self) -> Path:
-        """The working tree a receipt's commit is probed from."""
+        """The local source root to capture when no dispatched closure is supplied."""
         return self.repo or self.universe.root

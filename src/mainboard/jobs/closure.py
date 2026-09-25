@@ -56,7 +56,7 @@ from patos import FrozenModel
 
 from ..core.errors import MissionError
 from ..core.project import Project
-from ..dispatch.provenance import Repositories, Repository
+from ..dispatch.provenance import SourceTree
 from ..engines.compile.backend.repair import recorded_extensions
 from .pins import Pin, split
 from .target import Target, dotted, home_of, parsed
@@ -191,7 +191,6 @@ class Closure(FrozenModel):
     """
 
     target: Target
-    owner: Repository | None
     files: tuple[str, ...]
     roots: tuple[str, ...]
     first_party: tuple[str, ...] = ()
@@ -220,7 +219,7 @@ class Closure(FrozenModel):
             answer where a distribution's compiled half was installed.
         needs: data paths declared at dispatch time, joining the ones the file declares.
         """
-        repositories = Repositories(root)
+        sources = SourceTree(root)
         config = cls.__pytest_config(target, root) if target.test else ""
         boundary = root / config if config else None
         home_path = home_of(root / target.file, root=root)
@@ -243,7 +242,7 @@ class Closure(FrozenModel):
                 for plugin in plugins:
                     reached.extend(walker.resolve(plugin))
         declared = target.declaration(root)
-        files = set(repositories.kept(target.node))
+        files = set(sources.kept(target.node))
         built: set[str] = set()
         deferred: set[str] = set()
         decided: dict[str, tuple[bool, tuple[str, ...]]] = {}
@@ -258,11 +257,11 @@ class Closure(FrozenModel):
             if outside:
                 deferred.add(PurePosixPath(package).name)
             else:
-                files.update(repositories.kept(package))
+                files.update(sources.kept(package))
                 built.update(extensions)
         files.update(built)
         for resource in declared.resources:
-            files.update(cls.__pinned(resource, root, repositories))
+            files.update(cls.__pinned(resource, root, sources))
         files.add(Project().manifest)
         if config:
             files.add(config)
@@ -273,7 +272,6 @@ class Closure(FrozenModel):
         roster = tuple(dict.fromkeys(places))
         return cls(
             target=target,
-            owner=repositories.owning(root / target.node),
             files=tuple(sorted(files)),
             roots=tuple(
                 place
@@ -292,13 +290,13 @@ class Closure(FrozenModel):
         )
 
     @staticmethod
-    def __pinned(resource: str, root: Path, repositories: Repositories) -> list[str]:
+    def __pinned(resource: str, root: Path, sources: SourceTree) -> list[str]:
         """The files a declared resource pins: itself, or everything kept under it."""
         posix = PurePosixPath(resource)
         if posix.is_absolute() or ".." in posix.parts:
             raise MissionError(f"a resource must be a workspace-relative path, not {resource!r}")
         if (root / resource).is_dir():
-            return repositories.kept(resource)
+            return sources.kept(resource)
         if (root / resource).is_file():
             return [posix.as_posix()]
         raise MissionError(f"the declared resource {resource!r} is not in the workspace")

@@ -451,19 +451,9 @@ class Doctor:
         the workspace rather than inside it. A checkout running its own source has nothing to
         be stale against and passes with that word.
 
-        A stale snapshot whose source carries uncommitted work is a warning rather than a
-        breakage, and it names no reinstall: running one would install the tree as it stands,
-        half-finished edits and another agent's work in progress included. What has to happen
-        first is the fix it names instead.
+        Refresh uses the current source files, independent of version-control state.
         """
         found = staleness.check()
-        if found.stale and found.dirty:
-            return Section(
-                section="snapshot",
-                verdict=Verdict.WARN,
-                detail=f"{found.detail}, and that tree has uncommitted work",
-                fix="commit or stash that tree, then self-update",
-            )
         if found.stale:
             return Section(
                 section="snapshot", verdict=Verdict.FAIL, detail=found.detail, fix=join(found.fix)

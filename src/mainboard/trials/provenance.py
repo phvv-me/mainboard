@@ -1,78 +1,23 @@
-# WHERE A READING WAS TAKEN, PROBED ONCE AND STAMPED ON EVERY RECEIPT OF A RUN.
-#
-# Everything here is DERIVED. A fact a test has to retype is a fact a test will eventually retype
-# wrong, and two harnesses that each spell their own provenance produce two receipts that cannot
-# be compared on the axis that matters most, so this is the one probe and the one shape.
-#
-# A COMMIT NAMES A TREE AND A DIRTY COMMIT NAMES NOTHING. The generation of receipts before this
-# one carried a SHORT hash and a dirty boolean, and a review on 2026-08-29 read a whole program's
-# evidence off them: every claimed row said `d38692f` and `worktree_dirty: true`, so two different
-# trees, hours and edits apart, wrote receipts that are the same string. The claim behind them
-# could not be reconstructed from anything the receipt held. What closes that is not a longer hash
-# but three facts instead of one: the FULL commit, the COMMITTED TREE it resolves to, and a digest
-# of the source files ACTUALLY ON DISK, untracked ones included, since untracked files are exactly
-# where two dirty trees at one commit differ.
-#
-# AND A TREE NOBODY CAN IDENTIFY IS INADMISSIBLE RATHER THAN FORBIDDEN. Refusing to collect on a
-# dirty tree would make the tool useless for the work it is most used for, which is trying
-# something and looking at the number. So a run on a moving tree still runs, still writes, and
-# still prints, and every row it writes SAYS SO in a typed field a coverage or verdict query
-# filters on. Scratch work stays possible and stops counting as evidence, which is the whole of
-# the rule: a claim needs a clean tree, an experiment does not.
-#
-# THE CARD IS IDENTIFIED BY ITS UUID AND NOT BY ITS NAME. A name is a model number: two identical
-# 4090s in one box answer `NVIDIA GeForce RTX 4090` to the same question, so a lane satisfied on
-# the first would read complete on the second and publish one card's rows twice. The UUID is the
-# device's identity and is what `card` carries, which makes it the coverage axis; the name rides
-# beside it in `card_name` because a table has to print something a reader recognises. A provider
-# that exposes no UUID falls back to the name, which is the old behaviour and still better than an
-# empty coordinate every card would share.
-#
-# A HOST WITH NO DEVICE IS A HOST, NOT AN ERROR. The reference this was lifted from refuses to
-# stamp a receipt where `nvidia-smi` is absent, which is right for a lab whose every claim reads a
-# GPU and wrong for a subsystem that also serves a pure-theory run and this tool's own CI. An
-# absent card is recorded as the empty card and the refusal is left to whoever actually needs one.
-#
-# BUT AN ABSENT CARD AND A BROKEN PROBE ARE NOT THE SAME EMPTY STRING. One says this run measured
-# no device and the other says nobody knows what it measured, and a coverage question that cannot
-# tell them apart will hand a theory host's cell to a machine whose probe simply fell over. So the
-# outcome is recorded beside the value, and a probe that raises is caught HERE and reported rather
-# than taking a whole session down, the same translation `mainboard.lab.gates.Gate.evaluate`
-# already makes for a precondition check that breaks.
-#
-# A MIRROR HAS THE SOURCE AND NOT THE HISTORY. A dispatch rsyncs the working tree onto a host and
-# the repository stays behind, so `git rev-parse` on a remote card answers nothing and every
-# receipt a dispatched job writes could name no commit. The dispatcher declares the tree instead:
-# `MAINBOARD_SOURCE` spelled as `git describe --always --dirty` spells it, the whole commit in
-# `MAINBOARD_SOURCE_COMMIT`, the digest of the shipped bytes in `MAINBOARD_SOURCE_DIGEST` and the
-# listing of what shipped in `MAINBOARD_CLOSURE`, and a row written under them says `mirrored` so
-# a declared commit is never read as a probed one. Refusing outright would say no remote host may
-# ever take a reading, which is the wrong answer to a cross-architecture question. A dispatcher
-# declaring `-dirty` lands inadmissible for the same reason a local dirty tree does.
-#
-# A DECLARATION WINS OVER A PROBE. A job run through the runner on this workstation stands in a
-# repository git can answer for, but the answer it gives is the whole tree's, submodule dirt and
-# all, while the declaration was scoped to exactly the files the job ships. So a declared source
-# is what the receipt carries wherever one was made, and git fills in what only it knows.
+"""Capture the exact source and machine before acquisition, without version control."""
 
 import json
 import os
 import platform
 from enum import StrEnum, auto
-from hashlib import blake2b
+from hashlib import blake2b, sha256
 from importlib.metadata import PackageNotFoundError, packages_distributions, version
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..dispatch.provenance import DIRTY
-from ..dispatch.shared import CLOSURE_VAR, COMMIT_VAR, DIGEST_VAR, SOURCE_VAR, git
+from ..dispatch.provenance import Row, SourceTree, Status, blob_of, listing
+from ..dispatch.shared import CLOSURE_VAR, DIGEST_VAR
 from ..probe.machine import Machine
 from .coverage import Probed
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
-    from pathlib import Path
+    from collections.abc import Sequence
 
     from pydantic import JsonValue
 
@@ -89,9 +34,9 @@ WIDTH = 16
 class Admissibility(StrEnum):
     """Whether one row's producing tree can be identified, which is what makes it evidence.
 
-    ADMISSIBLE: the tree was clean and the lane's own file was committed in it.
-    DIRTY: the tree carried uncommitted changes, so two runs at this commit are two trees.
-    UNTRACKED: the lane's file is in no commit, so the named commit does not contain the test.
+    ADMISSIBLE: the lane belongs to the verified content snapshot.
+    DIRTY: historical rejection label, preserved when reading old receipts.
+    UNTRACKED: historical rejection label, preserved when reading old receipts.
     UNRECORDED: the row was written before this field existed and can prove none of the above.
     """
 
@@ -140,59 +85,56 @@ def digested(payload: JsonValue) -> str:
 
 
 class Source(FrozenModel):
-    """Which tree took a reading, named by its history and pinned by its bytes.
+    """The verified content snapshot used for a reading.
 
-    commit: the FULL commit id, never the short one. A short hash is a display convenience that
-        stopped being one the day a program's whole evidence base named the same seven characters.
-    tree: the committed tree object the commit resolves to, empty on a mirror with no repository.
-    digest: the digest of the bytes the dispatch shipped, every file the closure names hashed
-        as it stood on disk, which is the only identity a dirty tree or a mirror has.
-    dirty: whether what the job ran on differed from the commit it names.
-    mirrored: whether the commit was declared by a dispatcher rather than probed from a repo.
-    closure: the listing of what the job ran on, one `path blob status` row per shipped file,
-        where the dispatch wrote it; empty for a run that shipped no closure.
+    closure: path to the authenticated listing, relative to the workspace when local.
+    mirrored: whether a dispatcher supplied the snapshot.
+    root: the workspace against which listing paths resolve, not a nested trial project.
     """
 
-    commit: str
-    tree: str = ""
-    digest: str = ""
-    dirty: bool = False
+    digest: str
+    closure: str
+    root: Path
     mirrored: bool = False
-    closure: str = ""
 
     @property
     def admissibility(self) -> Admissibility:
-        """Whether readings taken from this tree are evidence or scratch work."""
-        return Admissibility.DIRTY if self.dirty else Admissibility.ADMISSIBLE
-
-
-def source(repo: Path, *, read: Callable[..., str] = git) -> Source:
-    """The commit, the committed tree, the cleanliness and the mirror flag of one working tree.
-
-    repo: the working tree the reading was taken from.
-    read: the git reader, the local `git` by default and a stand-in under test.
-    """
-    head = read("-C", str(repo), "rev-parse", "HEAD")
-    declared = os.environ.get(SOURCE_VAR, "")
-    if not head and not declared:
-        raise RuntimeError(
-            f"{repo} is not a git working tree and {SOURCE_VAR} is unset, so this reading could "
-            f"name no source; a dispatched job sets {SOURCE_VAR} to the dispatcher's own "
-            "`git describe --always --dirty`"
+        """Only captured and verified bytes qualify as identified source."""
+        return (
+            Admissibility.ADMISSIBLE if self.digest and self.closure else Admissibility.UNRECORDED
         )
-    tree = read("-C", str(repo), "rev-parse", "HEAD^{tree}") if head else ""
-    if not declared:
-        return Source(
-            commit=head, tree=tree, dirty=bool(read("-C", str(repo), "status", "--porcelain"))
+
+
+def source(repo: Path) -> Source:
+    """Verify a dispatched snapshot or preserve a local source bundle before acquisition."""
+    declared = os.environ.get(CLOSURE_VAR, "")
+    expected = os.environ.get(DIGEST_VAR, "")
+    if declared:
+        closure = Path(declared).resolve()
+        tree = SourceTree(closure.parent)
+        if not repo.resolve().is_relative_to(tree.root):
+            raise RuntimeError("trial project is outside the captured source workspace")
+        manifest = closure.read_text(encoding="utf-8")
+        if not expected or sha256(manifest.encode()).hexdigest() != expected:
+            raise RuntimeError("source listing does not match the declared content digest")
+        rows = [
+            Row(path=p, blob=b, status=Status(s))
+            for p, b, s in (line.split("\t") for line in manifest.splitlines())
+        ]
+        verified, _ = tree.seal(
+            [row.path for row in rows],
+            built=[row.path for row in rows if row.status is Status.BUILT],
         )
-    return Source(
-        commit=os.environ.get(COMMIT_VAR, "") or declared.removesuffix(DIRTY),
-        tree=tree,
-        digest=os.environ.get(DIGEST_VAR, ""),
-        dirty=declared.endswith(DIRTY),
-        mirrored=not head,
-        closure=os.environ.get(CLOSURE_VAR, ""),
-    )
+        if verified.digest != expected:
+            raise RuntimeError("source bytes differ from the captured bundle")
+        return Source(digest=expected, closure=str(closure), root=tree.root, mirrored=True)
+    tree = SourceTree(repo)
+    captured, rows = tree.seal(tree.kept("."))
+    manifest = listing(rows)
+    archive = tree.archive(manifest)
+    closure = archive.with_suffix(".tsv")
+    closure.write_text(manifest, encoding="utf-8")
+    return Source(digest=captured.digest, closure=str(closure), root=tree.root)
 
 
 def installed(name: str) -> str:
@@ -269,19 +211,7 @@ def card_of(machine: Machine) -> Card:
 
 
 class Preflight:
-    """Everything known about the producing tree and machine BEFORE a single trial is collected.
-
-    Taken once, at the top of a run, because that is the only moment at which the answer is about
-    the state the run is ABOUT TO measure from rather than the state a lane has already moved. It
-    is also what makes admissibility cheap: the tracked set is read once and every lane after that
-    is a membership test rather than another `git` process.
-
-    root: the universe root whose source files are digested and whose lanes are checked.
-    repo: the working tree the commit, the tree and the tracked set are read from.
-    probed: the distributions whose version can move a reading here.
-    machine: the probed machine, this host's when omitted.
-    read: the git reader, the local `git` by default and a stand-in under test.
-    """
+    """Capture the source once, then check lane membership and bytes before each trial."""
 
     def __init__(
         self,
@@ -290,23 +220,15 @@ class Preflight:
         *,
         probed: Sequence[str] = (),
         machine: Machine | None = None,
-        read: Callable[..., str] = git,
     ) -> None:
         self.root = root
-        self.source = source(repo, read=read)
-        self.digest = self.source.digest or digest_of(root, SOURCES)
-        listed = (
-            ""
-            if self.source.mirrored
-            else read("-C", str(repo), "ls-files", "-z", "--", str(root))
-        )
-        # None rather than an empty set, because a mirror carries no history to ask and an
-        # unanswerable question must not read as the answer `nothing here is tracked`.
-        self.tracked = (
-            None
-            if self.source.mirrored
-            else frozenset((repo / name).resolve() for name in listed.split("\0") if name)
-        )
+        self.source = source(repo)
+        self.digest = self.source.digest
+        manifest = Path(self.source.closure).read_text(encoding="utf-8")
+        self.captured = {
+            (self.source.root / p).resolve(): b
+            for p, b, _ in (line.split("\t") for line in manifest.splitlines())
+        }
         self.card = card_of(machine or Machine())
         self.versions: dict[str, JsonValue] = {name: installed(name) for name in probed}
 
@@ -327,29 +249,18 @@ class Preflight:
             "driver": self.card.driver,
             "runtime": self.card.runtime,
             "capability": self.card.capability,
-            "commit": self.source.commit,
-            "tree": self.source.tree,
             "source_digest": self.digest,
             "closure": self.source.closure,
-            "worktree_dirty": self.source.dirty,
             "mirrored": self.source.mirrored,
             "versions": self.versions,
         }
 
     def admits(self, lane: Path) -> Admissibility:
-        """Whether one lane's own file can be identified in the tree this run was taken from.
-
-        The run-wide answer comes first, because a dirty tree makes every lane in it unidentifiable
-        whatever git thinks of any one file. A mirror is not asked, since the repository it was
-        copied from is not here and an unanswerable question is not a failed one.
-
-        lane: the file the trial was collected from.
-        """
-        if self.source.dirty:
-            return Admissibility.DIRTY
-        if self.tracked is None or lane.resolve() in self.tracked:
-            return Admissibility.ADMISSIBLE
-        return Admissibility.UNTRACKED
+        """Whether the lane's current bytes belong to the captured source."""
+        expected = self.captured.get(lane.resolve())
+        if expected is None:
+            return Admissibility.UNRECORDED
+        return Admissibility.ADMISSIBLE if blob_of(lane) == expected else Admissibility.UNRECORDED
 
     def baselines(self, node: str) -> str:
         """The digest of one claim's registered rows, empty where the claim registers none.

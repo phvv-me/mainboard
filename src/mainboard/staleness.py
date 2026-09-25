@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 import platform
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=asks git one fixed question about the source tree a reinstall would install
 import sys
 import tomllib
 from contextlib import suppress
@@ -62,14 +61,10 @@ class Snapshot(FrozenModel):
     source: the package directory the snapshot was installed from, absolute, and the workspace
         the deferred worker writes its log into. Read off the receipt here, where the receipt is
         already open, rather than parsed back out of an argv token.
-    dirty: whether that source tree carries uncommitted work. A reinstall from it installs
-        whatever is on disk, half-finished edits included, so the nag says so rather than
-        handing someone a command that would ship another agent's work in progress.
     """
 
     installed: bool
     stale: bool = False
-    dirty: bool = False
     detail: str = ""
     fix: tuple[str, ...] = ()
     uv: tuple[str, ...] = ()
@@ -77,21 +72,10 @@ class Snapshot(FrozenModel):
 
     @property
     def warning(self) -> str:
-        """The one line a CLI invocation prints, empty when there is nothing to say.
-
-        A dirty source is named rather than nagged about. The reinstall would install the tree
-        as it stands, so telling somebody to run it while another agent's half-finished edits
-        sit in that directory is advice that breaks their tool; the line says what moved and
-        what has to happen first.
-        """
+        """The one line a CLI invocation prints, independent of version-control state."""
         if not self.stale:
             return ""
         tool = Project().name
-        if self.dirty:
-            return (
-                f"{tool}: {self.detail}, and that tree has uncommitted work; commit or stash "
-                f"it before `{tool} self-update`"
-            )
         return f"{tool}: {self.detail}; run `{tool} self-update` to fix it"
 
 
@@ -188,33 +172,11 @@ def check(package: Path | None = None) -> Snapshot:
     return Snapshot(
         installed=True,
         stale=True,
-        dirty=_dirty(package),
         detail=f"the source at {package} is newer than this installed snapshot",
         fix=("exec", "--spec", _UV, *uv),
         uv=uv,
         source=package,
     )
-
-
-def _dirty(package: Path) -> bool:
-    """Whether `package` carries uncommitted work, so a reinstall would install it.
-
-    Asked only once a snapshot has already been found stale, which is the only moment the answer
-    changes anything: this check runs on every invocation of the CLI and a `git status` on a
-    large tree is not something an invocation can afford to pay for nothing. A machine with no
-    git, or a source that is not a repository, answers no rather than failing the command that
-    asked.
-
-    package: the source directory the reinstall would install from.
-    """
-    argv = ["git", "-C", str(package), "status", "--porcelain"]
-    try:
-        read = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed local git invocation off PATH, not untrusted input since=2026-09-05
-            argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
-        )
-    except OSError:
-        return False
-    return read.returncode == 0 and bool(read.stdout.strip())
 
 
 def _durable_interpreter(declared: str | None) -> Path | None:

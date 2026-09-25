@@ -257,7 +257,7 @@ class Session:
     def manifest(self, path: Path) -> Artifact | None:
         """Preserve one run manifest per node, using the dispatch's existing source listing.
 
-        Research Log trials require their adjacent committed node.md in that listing.
+        Research Log trials require their adjacent captured node.md in that listing.
         No experiment maintains another source list or computes a second source seal.
         """
         universe = self.declared.universe
@@ -267,8 +267,8 @@ class Session:
         if node in self.manifests:
             return self.manifests[node]
         source = self.taken.source
-        if source.dirty or not source.commit or not source.closure:
-            raise RuntimeError("research logging requires a clean committed Mainboard job")
+        if not source.digest or not source.closure:
+            raise RuntimeError("research logging requires a captured Mainboard source bundle")
         registration = path.parent / "node.md"
         relative = registration.relative_to(Path.cwd()).as_posix()
         listing = Path(source.closure).read_text(encoding="utf-8")

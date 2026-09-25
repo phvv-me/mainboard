@@ -34,7 +34,8 @@ def _shorten(label: str) -> str:
 
 @functools.cache
 def device_tag(index: int = 0) -> str:
-    """Return `{short_name}_CC{major}.{minor}` for the GPU at `index`, or `CPU` without one.
+    """`{short_name}_CC{major}.{minor}` for the GPU at `index`, its bare short name for an
+    accelerator with no CUDA architecture (an Apple GPU), or `CPU` without one.
 
     index: accelerator ordinal as the probe lists it.
     """

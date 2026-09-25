@@ -28,9 +28,9 @@ from . import vocabulary
 from .allocation import Allocation
 from .collection.collector import Collector
 from .jobs import JobSpec
-from .provenance import Source, commanded, tree_source
+from .provenance import Source, SourceTree
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
-from .shared import HandleId, Watcher, announce, db_file, git, logger, now, state_path, workspace
+from .shared import HandleId, Watcher, announce, db_file, logger, now, state_path, workspace
 from .shells import is_windows
 from .shipment import Shipment
 from .snapshots import CLOSURE, Image, Mirrored, Sealed, Snapshots, writable
@@ -265,8 +265,6 @@ class Dispatcher:
             kind="",
             script=asked.command,
             args="",
-            git_sha=git("rev-parse", "--short", "HEAD"),
-            dirty=int(bool(git("status", "--porcelain"))),
             submitted_at=stamped,
             fetch_path=asked.fetch,
             name=asked.name,
@@ -303,17 +301,22 @@ class Dispatcher:
         """
         return Snapshots(root).path(source.key)
 
-    def source(self, command: str = "") -> Source:
-        """Read the tree a command ships once, as both its identity and its snapshot key.
-
-        The whole-tree provenance a command that ships the mirror gets, every nested
-        repository's dirt left out. A command naming a file picks the repository that file lives
-        in; one naming none falls back to the workspace. A job spelled by file never comes
-        here: its provenance is scoped to its closure and read by its shipment.
-
-        command: the shell command the job runs, empty for a caller submitting a written script.
-        """
-        return tree_source(commanded(command, self.root))
+    def source(self, command: str = "", *, paths: Sequence[str] = ()) -> Source:
+        """Fingerprint the mirror scope and explicit command files without version control."""
+        tree = SourceTree(self.root)
+        roots = list(paths or [Project().manifest])
+        roots.extend(
+            (self.root / token).relative_to(self.root).as_posix()
+            for token in shlex.split(command)
+            if (self.root / token).is_file() and (self.root / token).is_relative_to(self.root)
+        )
+        files = [
+            file
+            for path in roots
+            for file in ([path] if (self.root / path).is_file() else tree.kept(path))
+        ]
+        source, _ = tree.seal(files)
+        return source
 
     def stage_listing(self, shipment: Shipment) -> str:
         """Write `shipment`'s closure listing under the jobs directory, empty for a command.
@@ -324,6 +327,7 @@ class Dispatcher:
         """
         if not shipment.sealed:
             return ""
+        SourceTree(self.root).archive(shipment.listing)
         return self._stage(shipment.listing_name, shipment.listing.encode())
 
     def image(
@@ -643,7 +647,10 @@ class Dispatcher:
             prefix=prefix,
             required=[
                 *([artifact] if artifact else []),
-                *([need] for need in shipment.needs),
+                # A need can already live on the host without a local copy. The sealed
+                # snapshot checks every need on that mirror before dispatch; only local
+                # files need punching through the transfer filters here.
+                *([need] for need in shipment.needs if self.local(need).is_file()),
                 *([pin] for pin in shipment.pins),
             ],
         )
@@ -744,7 +751,9 @@ class Dispatcher:
             walltime=resources.walltime or "",
             mem_gb=resources.mem_gb or 0,
         )
-        dispatched = shipment or Shipment.of_command(script, source=self.source(), imports=())
+        dispatched = shipment or Shipment.of_command(
+            script, source=self.source(script, paths=plan.profile.sync.include), imports=()
+        )
         dispatched.admit(self.root)
         prepared, staged = self._prepare_script(script)
         with SyncLock(plan.host, self.sync.root), connection(plan.host) as remote:
@@ -755,8 +764,6 @@ class Dispatcher:
                 extra=[*staged, *([listing] if listing else []), *dispatched.files],
                 fetch=fetch or "",
             )
-            sha = git("rev-parse", "--short", "HEAD")
-            dirty = dispatched.source.dirty
             self._verify(remote, plan, root, verify=verify, containerize=containerize)
             pinned = Snapshots(root).pin(
                 remote,
@@ -787,8 +794,6 @@ class Dispatcher:
                     kind=plan.profile.kind,
                     script=dispatched.spelling if shipment is not None else prepared,
                     args=" ".join(shlex.quote(a) for a in args),
-                    git_sha=sha,
-                    dirty=int(dirty),
                     submitted_at=now(),
                     fetch_path=fetch,
                     name=name,
@@ -798,9 +803,7 @@ class Dispatcher:
                     digest=dispatched.source.digest,
                 )
             )
-        logger.info(
-            "%s -> %s on %s (%s%s)", prepared, handle, plan.host, sha, "+dirty" if dirty else ""
-        )
+        logger.info("%s -> %s on %s (%s)", prepared, handle, plan.host, dispatched.source.identity)
         return handle
 
     def allocating(
@@ -838,8 +841,6 @@ class Dispatcher:
             kind=plan.profile.kind,
             script=shipment.spelling,
             args="",
-            git_sha=git("rev-parse", "--short", "HEAD"),
-            dirty=int(shipment.source.dirty),
             submitted_at=now(),
             fetch_path=shipment.fetch or None,
             name=name,

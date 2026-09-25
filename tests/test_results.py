@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING
 
+import duckdb
 import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
@@ -17,6 +18,86 @@ from mainboard.trials.artifacts import Artifacts
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def test_experiment_scope_does_not_open_unrelated_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "research/example/datasets/experiments"
+    receipt = root / "selected/evidence/receipts/run=sample/part-0.parquet"
+    receipt.parent.mkdir(parents=True)
+    pl.DataFrame({"run": ["selected"], "trial": ["case"], "artifacts": ["{}"]}).write_parquet(
+        receipt
+    )
+    unrelated = root / "unrelated/evidence/receipts/run=sample/part-0.parquet"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_bytes(b"not a receipt")
+    event = root / "unrelated/evidence/artifacts/run/case/events/live.ndjson"
+    event.parent.mkdir(parents=True)
+    event.write_text("not an event")
+    results = Results(tmp_path, experiment="selected")
+    assert results.query("SELECT run FROM trials")["run"].to_list() == ["selected"]
+    assert results.query("SELECT * FROM events").is_empty()
+    assert results.table("missing.v1").is_empty()
+
+
+@pytest.mark.parametrize("experiment", ["..", ".", "../other", "a/b", "a*", "a?"])
+def test_experiment_scope_requires_one_directory(tmp_path: Path, experiment: str) -> None:
+    with pytest.raises(ValueError, match="one experiment directory"):
+        Results(tmp_path, experiment=experiment)
+
+
+def test_run_selection_reads_only_selected_artifacts_and_keeps_verification(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "research/example"
+    evidence = project / "datasets/experiments/node/evidence"
+    directory = evidence / "artifacts/complete/case"
+    writer = Artifacts(project, directory)
+    payload = BytesIO()
+    pl.DataFrame({"value": [7]}).write_parquet(payload)
+    reference = writer.write(
+        payload.getvalue(), media_type="application/vnd.apache.parquet", schema_name="test.v1"
+    )
+    receipt = evidence / "receipts/run=complete/part-0.parquet"
+    receipt.parent.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "run": "complete",
+                "trial": "case",
+                "artifacts": json.dumps({"table": reference.model_dump()}),
+            }
+        ]
+    ).write_parquet(receipt)
+    live = evidence / "artifacts/running/case/events/live.ndjson"
+    live.parent.mkdir(parents=True)
+    missing = {**reference.model_dump(), "path": "datasets/experiments/node/not-yet-collected"}
+    live.write_text(
+        "".join(
+            encode(
+                Frame(
+                    job="running/case",
+                    kind=Kind.sample,
+                    offset=i,
+                    at=datetime.now(UTC),
+                    payload=payload,
+                )
+            )
+            for i, payload in enumerate(
+                [
+                    {"topic": "started", "trial": "case", "data": {"run": "running"}},
+                    {"topic": "artifact", "trial": "case", "data": {"name": "table", **missing}},
+                ]
+            )
+        )
+    )
+    results = Results(tmp_path)
+    assert results.table("test.v1", runs=["complete"])["value"].to_list() == [7]
+    assert results.table("test.v1", runs=[]).is_empty()
+    with pytest.raises(FileNotFoundError):
+        results.table("test.v1")
+    (project / reference.path).write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="content changed"):
+        results.table("test.v1", runs=["complete"])
 
 
 @pytest.mark.parametrize("suffix", [".csv", ".parquet", ".json", ".CSV"])
@@ -116,6 +197,53 @@ def test_sql_file_and_data_paths_use_caller_directory(
     assert_frame_equal(results.query(source.relative_to(tmp_path)), results.query(sql))
     assert results.query(source).to_dicts() == [{"value": 7}]
     assert source.read_text(encoding="utf-8") == sql
+
+
+@pytest.mark.parametrize("source", ["read_parquet('input.parquet')", "jobs", "trials"])
+def test_queries_do_not_read_unrelated_corrupt_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pl.DataFrame({"value": [7]}).write_parquet("input.parquet")
+    evidence = tmp_path / "datasets/experiments/node/evidence"
+    events = evidence / "artifacts/run/case/events/live.ndjson"
+    events.parent.mkdir(parents=True)
+    events.write_text("not an event\n", encoding="utf-8")
+    receipts = evidence / "receipts/run=run/part-0.parquet"
+    receipts.parent.mkdir(parents=True)
+    if source == "trials":
+        pl.DataFrame({"run": ["run"]}).write_parquet(receipts)
+    else:
+        receipts.write_bytes(b"not parquet")
+    frame = Results(tmp_path).query(
+        f"WITH selected AS (SELECT * FROM {source}) SELECT * FROM selected"
+    )
+    assert frame.height == (0 if source == "jobs" else 1)
+
+
+def test_events_are_utc_without_extension_installation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "datasets/experiments/node/evidence/artifacts/run/case/events"
+    directory.mkdir(parents=True)
+    frame = Frame(
+        job="run/case",
+        kind=Kind.sample,
+        offset=0,
+        at=datetime.fromisoformat("2026-09-17T09:00:00+09:00"),
+        payload={"topic": "metrics", "trial": "case", "data": {}},
+    )
+    (directory / "live.ndjson").write_text(encode(frame), encoding="utf-8")
+    connect = duckdb.connect
+
+    def offline_connection(*, config: dict[str, bool]) -> duckdb.DuckDBPyConnection:
+        assert config["autoinstall_known_extensions"] is False
+        return connect(config={**config, "autoload_known_extensions": False})
+
+    monkeypatch.setattr(duckdb, "connect", offline_connection)
+    assert Results(tmp_path).query("SELECT recorded_at FROM events").item() == datetime(
+        2026, 9, 17, 0, 0
+    )
 
 
 def test_sql_text_ending_in_sql_suffix_remains_text(tmp_path: Path) -> None:
@@ -271,6 +399,7 @@ def test_transferred_tables_keep_source_context_but_read_collected_bytes(
     assert table["value"].to_list() == [7] * count
     assert json.loads(table["_trial"][0])["repository"] == source
     assert json.loads(table["_trial"][0])["params"] == context["params"]
+    assert "artifacts" not in json.loads(table["_trial"][0])
     artifacts = results.query("SELECT project, root, reference FROM artifacts")
     assert artifacts["project"].to_list() == [project.name] * count
     assert artifacts["root"].to_list() == [str(project)] * count
@@ -310,6 +439,39 @@ def test_receipt_projects_use_local_ownership_and_union_different_schemas(tmp_pa
         {"project": "one", "one": 1, "two": None},
         {"project": "two", "one": None, "two": 1},
     ]
+
+
+def test_wide_trial_context_does_not_repeat_the_artifact_index(tmp_path: Path) -> None:
+    directory = tmp_path / "datasets/experiments/node/evidence/receipts/run=wide"
+    directory.mkdir(parents=True)
+    references = {
+        f"row-{index}": {
+            "path": f"datasets/experiments/node/evidence/artifacts/wide/objects/{index}",
+            "sha256": "0" * 64,
+            "size": 1,
+            "media_type": "application/octet-stream",
+        }
+        for index in range(2048)
+    }
+    pl.DataFrame(
+        [
+            {
+                "run": "wide",
+                "trial": "case",
+                "verdict": "known",
+                "params": '{"precision":"bf16"}',
+                "artifacts": json.dumps(references),
+                "host": "GH200",
+                "extra_provenance": "preserved",
+            }
+        ]
+    ).write_parquet(directory / "part-0.parquet")
+    rows = Results(tmp_path).query("SELECT context FROM artifacts")
+    assert rows.height == len(references)
+    contexts = [json.loads(value) for value in rows["context"]]
+    assert all("artifacts" not in context for context in contexts)
+    assert all(context["extra_provenance"] == "preserved" for context in contexts)
+    assert max(len(value) for value in rows["context"]) < 1024
 
 
 def test_old_receipts_keep_missing_fields_null_without_inventing_artifacts(tmp_path: Path) -> None:

@@ -90,7 +90,7 @@ def test_cli_plot_uses_sql_and_requested_dpi(
         )
     assert capsys.readouterr().out.strip() == str(path)
     image = plotting.plt.imread(path)
-    assert image.shape[1] == 550
+    assert image.shape[1] == 640
 
 
 @pytest.mark.parametrize("source", [[], ["SELECT 1", "--file", "missing.sql"]])
@@ -151,27 +151,33 @@ def test_numeric_hue_keeps_sql_order_and_exact_palette_colors(
             colors = [patch.get_facecolor() for patch in axis.patches[:2]]
         seen.extend(plotting.mpl.colors.to_hex(color) for color in colors)
 
-    picture = plotting.Plot(pl.DataFrame({"x": [1, 2], "y": [2.0, 3.0], "cell": [20, 10]}))
+    palette = ["#745399", "#b7282e"]
+    picture = plotting.Plot(
+        pl.DataFrame({"x": [1, 2], "y": [2.0, 3.0], "cell": [20, 10]}),
+        PlotStyle(palette=palette),
+    )
     monkeypatch.setattr(picture, "_publish", inspect_colors)
     picture.save(tmp_path / "ordered.png", x="x", y="y", hue="cell", kind=kind)
-    assert seen == list(plotting.paleta.palette.categorical[:2])
+    assert seen == palette
 
 
 def test_exhausted_palette_does_not_cycle(tmp_path: Path) -> None:
-    frame = pl.DataFrame({"x": range(7), "y": range(7), "cell": range(7)})
-    with pytest.raises(ValueError, match="6 slots"):
-        plotting.Plot(frame).save(tmp_path / "refused.png", x="x", y="y", hue="cell")
+    frame = pl.DataFrame({"x": range(3), "y": range(3), "cell": range(3)})
+    style = PlotStyle(palette=["#745399", "#b7282e"])
+    with pytest.raises(ValueError, match="2 slots"):
+        plotting.Plot(frame, style).save(tmp_path / "refused.png", x="x", y="y", hue="cell")
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("explicit", [True, False])
 def test_named_style_uses_manifest_dimensions_dpi_and_fonts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool
 ) -> None:
     (tmp_path / "mainboard.toml").write_text(
         """[workspace]
 name="demo"
 [plots.paper]
-palette="paleta-meta"
+palette="deep"
 figsize=[3.25,2.0]
 dpi=100
 [plots.paper.rc]
@@ -196,8 +202,7 @@ dpi=100
                 "x",
                 "--y",
                 "y",
-                "--style",
-                "paper",
+                *(["--style", "paper"] if explicit else []),
                 "--out",
                 str(output),
             ]

@@ -39,6 +39,7 @@ from .base import (
     Standing,
     forgotten,
     http_transport,
+    image_cuda,
 )
 
 if TYPE_CHECKING:
@@ -50,10 +51,20 @@ if TYPE_CHECKING:
     from ..vocabulary import Resources
     from .base import Transport
 
-# The image an uncontainerized plan rents under: Vast's own base image, whose `-auto` tag resolves
-# to the CUDA build matching the host's driver. Pinned at the house floor rather than at whatever
-# the newest tag happens to be, so the image and the offer filter below agree on one number.
-_DEFAULT_IMAGE = "vastai/base-image:cuda-13.3.1-auto"
+# The images an uncontainerized plan rents under: Vast's own base image at each CUDA minor the
+# house toolchain spans, oldest first. A rental takes the newest one its offer's driver can load,
+# so THE OFFER FILTER'S FLOOR IS THE OLDEST REFERENCE HERE and written nowhere else. One pinned
+# image failed both ways: at 13.3.1 with the floor left at 13.0 it rented hosts whose driver tops
+# out at 13.0, where the container never started and each rental was destroyed after the whole
+# address wait (RTX 5090 51865823 and RTX 5080 51869485 and 51891087, 2026-09-21), and with the
+# floor then raised to 13.3 it shut every L40S, A100 and H100 host out of the market, since those
+# run 13.0 to 13.2 drivers (2026-09-25). The workspace itself declares CUDA 13.0 (`[system]`).
+_BASE_IMAGES = (
+    "vastai/base-image:cuda-13.0.3-auto",
+    "vastai/base-image:cuda-13.1.2-auto",
+    "vastai/base-image:cuda-13.2.1-auto",
+    "vastai/base-image:cuda-13.3.1-auto",
+)
 # The two offer fields a rental has to clear, the highest CUDA version a machine's driver can
 # load and the card's own compute capability (`750` for `sm_75`). Vast publishes both on every
 # bundle row, which is what makes them filterable before renting rather than after.
@@ -138,6 +149,17 @@ def cuda_max_good(offer: Mapping) -> float:
         return float(offer[_CUDA_FIELD])
     except KeyError, TypeError, ValueError:
         return 0.0
+
+
+def base_image(offer: Mapping) -> str:
+    """The newest base image `offer`'s driver can load, the oldest when it publishes no version.
+
+    offer: one bundle row as the offer search returned it, already past the CUDA floor.
+    """
+    loadable = [
+        image for image in _BASE_IMAGES if (image_cuda(image) or 0) <= cuda_max_good(offer)
+    ]
+    return loadable[-1] if loadable else _BASE_IMAGES[0]
 
 
 class OfferTaken(MissionError):
@@ -230,6 +252,12 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         "the instance, so have the command upload its own results and read `logs {handle}` "
         "until that path lands",
     }
+
+    # What a host's driver must reach to load the oldest base image, never below the house
+    # floor. Derived, so the filter and the images cannot disagree again.
+    CUDA_FLOOR: ClassVar[float] = max(
+        ProviderBackend.CUDA_FLOOR, min(image_cuda(image) or 0 for image in _BASE_IMAGES)
+    )
 
     # A host below this download rate spends the address wait pulling the image; see the module
     # note beside `_DOWNLOAD_FLOOR_MBPS`.
@@ -377,7 +405,9 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             )
         return self.uploaded(url)
 
-    def pick(self, *, gpu_name: str, gpus: int, max_usd_hr: float = 0.0) -> dict:
+    def pick(
+        self, *, gpu_name: str, gpus: int, max_usd_hr: float = 0.0, cuda: float = 0.0
+    ) -> dict:
         """The offer to rent: the most reliable machine the budget and the CUDA floors allow.
 
         Renting the lowest-priced listing is what put earlier rentals at the bottom of the
@@ -394,10 +424,11 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         gpu_name: the Vast GPU name the job needs, empty for any.
         gpus: the GPU count per machine.
         max_usd_hr: an hourly ceiling the offer must sit under, 0 for none.
+        cuda: the driver version the image about to be rented needs, 0 for the base images'.
         """
-        offers = self.search(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr)
+        offers = self.search(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr, cuda=cuda)
         if not offers:
-            self.refuse(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr)
+            self.refuse(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr, floor=cuda)
         return self.best(offers)
 
     def best(self, offers: Sequence[Mapping]) -> dict:
@@ -409,7 +440,9 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         """What one hour of `offer` costs under this backend's pricing mode."""
         return float(offer["min_bid"] if self.spot else offer["dph_total"])
 
-    def refuse(self, *, gpu_name: str, gpus: int, max_usd_hr: float) -> NoReturn:
+    def refuse(
+        self, *, gpu_name: str, gpus: int, max_usd_hr: float, floor: float = 0.0
+    ) -> NoReturn:
         """Say why nothing was rentable, naming whichever floor turned the market away.
 
         Reached only once the floored search came back empty, and it spends one more search,
@@ -420,18 +453,20 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         gpu_name: the Vast GPU name the job asked for, empty for any.
         gpus: the GPU count per machine.
         max_usd_hr: the hourly ceiling the search ran under, 0 for none.
+        floor: the driver floor the search ran under, 0 for this backend's own.
         """
+        floor = max(self.CUDA_FLOOR, floor)
         ceiling = f" under ${max_usd_hr:.2f}/hr" if max_usd_hr else ""
         card = f"{gpus}x {gpu_name or 'any'}"
         raw = self.search(gpu_name=gpu_name, gpus=gpus, max_usd_hr=max_usd_hr, floored=False)
         if not raw:
             raise MissionError(f"vast has no rentable {card} offer{ceiling} right now")
-        loadable = [row for row in raw if cuda_max_good(row) >= self.CUDA_FLOOR]
+        loadable = [row for row in raw if cuda_max_good(row) >= floor]
         if not loadable:
             best = max(raw, key=cuda_max_good)
             raise MissionError(
                 f"vast has {len(raw)} rentable {card} offer(s){ceiling} and not one driver "
-                f"reaches CUDA {self.CUDA_FLOOR}, this house's floor. The best is "
+                f"reaches CUDA {floor}, the floor this rental needs. The best is "
                 f"{_describe(best, gpu_name)} at CUDA {cuda_max_good(best)}. Renting it would "
                 "hand back a contract id and no instance, because vast destroys a container its "
                 "driver cannot start. Ask for a card whose hosts run a newer driver."
@@ -441,7 +476,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             best = max(loadable, key=capability)
             raise MissionError(
                 f"vast has {len(loadable)} rentable {card} offer(s){ceiling} whose driver "
-                f"reaches CUDA {self.CUDA_FLOOR}, and not one is an architecture that CUDA still "
+                f"reaches CUDA {floor}, and not one is an architecture that CUDA still "
                 f"builds for. The best is {_describe(best, gpu_name)} at compute capability "
                 f"{capability(best)}, below the sm_{self.CAPABILITY_FLOOR // 10} floor. Renting "
                 "it would boot, bill, and die at the first kernel launch with no kernel image "
@@ -475,9 +510,10 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         script = f"{seeded(key.public)}\n{waiting()}\n{marker}"
         gpus = max(resources.gpus, 1)
         cap = self.hourly_cap(resources, landing=LANDING_SECONDS)
-        page = self.search(gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap)
+        floor = self.floor(plan)
+        page = self.search(gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap, cuda=floor)
         if not page:
-            self.refuse(gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap)
+            self.refuse(gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap, floor=floor)
         for _ in range(_PICK_ATTEMPTS):
             offer = self.best(page)
             try:
@@ -498,7 +534,9 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
                     "vast offer %s was taken before the create; picking again", offer["id"]
                 )
                 if not page:
-                    self.refuse(gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap)
+                    self.refuse(
+                        gpu_name=resources.gpu_name, gpus=gpus, max_usd_hr=cap, floor=floor
+                    )
         else:
             raise MissionError(
                 f"vast took {_PICK_ATTEMPTS} offers out from under the create in a row; the "
@@ -525,6 +563,16 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         self.attach(handle, key=key.public)
         return reachable(endpoint, sleeper=self.sleeper)
 
+    @staticmethod
+    def image(plan: ExecutionPlan, offer: Mapping) -> str:
+        """The image `plan` rents on `offer`: its container's, else the newest base it loads."""
+        return plan.container.image if plan.container is not None else base_image(offer)
+
+    def floor(self, plan: ExecutionPlan) -> float:
+        """The driver version `plan`'s rental needs: its own image's CUDA, else the base floor."""
+        own = image_cuda(plan.container.image) if plan.container is not None else None
+        return max(self.CUDA_FLOOR, own or 0.0)
+
     def rented(
         self,
         offer: Mapping,
@@ -539,14 +587,13 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
 
         offer: the bundle row `pick` chose.
         plan: the resolved execution context, whose own container image is rented when it
-            declares one and vast's base image otherwise.
+            declares one and the newest base image `offer`'s driver loads otherwise.
         launch: the launch-mode fields, either the `ssh` runtype's waiting onstart script for a
             machine a dispatch lands on, or the `args` entrypoint for a prebuilt image.
         """
-        container = plan.container
         body = {
             "client_id": "me",
-            "image": container.image if container is not None else _DEFAULT_IMAGE,
+            "image": self.image(plan, offer),
             "disk": self.disk_gb,
             "label": allocation.label,
             # Fail the rent outright rather than parking a stopped instance we would still owe
@@ -611,6 +658,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         max_usd_hr: float = 0.0,
         limit: int = _SEARCH_LIMIT,
         floored: bool = True,
+        cuda: float = 0.0,
     ) -> list[dict]:
         """Rentable offers matching the filters, cheapest first under this backend's pricing mode.
 
@@ -632,6 +680,8 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         limit: how many offers to ask for.
         floored: whether the house CUDA floors ride on the query. Only `refuse` drops them, to
             ask the raw market what the floors turned away.
+        cuda: the CUDA version the image about to be rented names, which raises the driver
+            floor for this search when a plan brings an image newer than the base images.
         """
         query: dict = {
             "verified": {"eq": True},
@@ -650,7 +700,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
         if max_usd_hr:
             query["dph_total"] = {"lte": max_usd_hr}
         if floored:
-            query[_CUDA_FIELD] = {"gte": self.CUDA_FLOOR}
+            query[_CUDA_FIELD] = {"gte": max(self.CUDA_FLOOR, cuda)}
             query[_CAPABILITY_FIELD] = {"gte": self.CAPABILITY_FLOOR}
             query[_DOWNLOAD_FIELD] = {"gte": self.DOWNLOAD_FLOOR_MBPS}
         offers = self.request("POST", path="/bundles/", body=query).get("offers") or []
@@ -738,6 +788,7 @@ class VastBackend(ProviderBackend, Account, LogSource, Market, Rentable):
             gpu_name=resources.gpu_name,
             gpus=max(resources.gpus, 1),
             max_usd_hr=self.hourly_cap(resources),
+            cuda=self.floor(plan),
         )
         # Receipts are staged before the command and framed after it, in that order, because the
         # log is the only thing that leaves a rental and vast cuts every line of it at 500

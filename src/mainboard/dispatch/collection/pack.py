@@ -1,20 +1,30 @@
 """Standard-library result exporter, also sent to a remote Python over SSH stdin."""
 
 import fnmatch
+import hashlib
 import json
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from stat import S_ISREG
+from types import MappingProxyType
 from zipfile import ZIP_STORED, ZipFile
 
 
-def pack(root: str, *, relative: str) -> None:
+def pack(root: str, *, relative: str, known: Mapping[str, str] = MappingProxyType({})) -> None:
     """Stream regular files under one workspace-relative path without following links."""
     base = Path(root).expanduser().resolve(strict=True)
     with ZipFile(sys.stdout.buffer, "w", compression=ZIP_STORED) as archive:
         for path in _paths(base, relative):
+            expected = known.get(path.relative_to(base).as_posix())
+            if expected is not None:
+                with path.open("rb") as source:
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                if digest.hexdigest() == expected:
+                    continue
             _write(archive, path, base=base)
 
 
@@ -24,10 +34,11 @@ def _paths(base: Path, relative: str) -> Iterator[Path]:
     if not selected.resolve(strict=True).is_relative_to(base):
         raise ValueError("collection path escapes the remote workspace")
     for path in _entries(selected):
+        if _is_excluded(path):
+            continue
         if not S_ISREG(path.lstat().st_mode) or not path.resolve(strict=True).is_relative_to(base):
             raise ValueError("collection contains a non-regular file: " + str(path))
-        if not _is_excluded(path):
-            yield path
+        yield path
 
 
 def _entries(selected: Path) -> Iterator[Path]:
@@ -43,8 +54,10 @@ def _entries(selected: Path) -> Iterator[Path]:
 def _is_excluded(path: Path) -> bool:
     """Leave incomplete files and mutable status sidecars out of immutable publication."""
     patterns = ["*.tmp", "latest.jsonl", "partial-*.jsonl", ".card.lock*"]
-    return any(fnmatch.fnmatch(path.name, pattern) for pattern in patterns) or (
-        path.parent.name == "events" and path.name == "status.json"
+    return (
+        any(fnmatch.fnmatch(path.name, pattern) for pattern in patterns)
+        or (path.parent.name == "events" and path.name == "status.json")
+        or (path.parent.name == "objects" and fnmatch.fnmatch(path.name, "tmp????????"))
     )
 
 

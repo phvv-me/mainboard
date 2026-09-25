@@ -96,6 +96,9 @@ def pytest_configure(config: pytest.Config) -> None:
         config.addinivalue_line("markers", f"{name}: {why}")
     if config.pluginmanager.hasplugin("randomly"):
         config.option.randomly_reorganize = False
+    # Collection identifies cases; it must not archive data, probe hardware, or open receipts.
+    if config.option.collectonly:
+        return
     config.stash[SESSION] = Session(found)
 
 

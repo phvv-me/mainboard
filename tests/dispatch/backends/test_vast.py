@@ -13,6 +13,7 @@ from hypothesis import strategies as st
 from mainboard import MissionError
 from mainboard.dispatch.backends import Delivery, VastBackend
 from mainboard.dispatch.backends import vast as vast_module
+from mainboard.dispatch.backends.base import ProviderBackend, image_cuda
 from mainboard.dispatch.backends.vast import (
     api_key,
     capability,
@@ -44,7 +45,7 @@ _BASE_QUERY = {
     "order": [["dph_total", "asc"]],
     "allocated_storage": 64.0,
     "limit": 32,
-    "cuda_max_good": {"gte": 13.0},
+    "cuda_max_good": {"gte": VastBackend.CUDA_FLOOR},
     "compute_cap": {"gte": 750},
     "inet_down": {"gte": 500.0},
 }
@@ -87,7 +88,7 @@ def offer(identifier: int, *, dph: float, bid: float = 0.1, **extra: float | int
     """One `/bundles` offer row, only the fields the backend and the catalog probe read."""
     row = {"id": identifier, "dph_total": dph, "min_bid": bid, "gpu_name": "RTX 4090"}
     row.update({"num_gpus": 1, "geolocation": "Texas, US", "rentable": True})
-    row.update({"reliability2": 0.99, "cuda_max_good": 13.0, "compute_cap": 890})
+    row.update({"reliability2": 0.99, "cuda_max_good": 13.3, "compute_cap": 890})
     row.update(extra)
     return row
 
@@ -265,14 +266,14 @@ def test_pick_refuses_a_market_whose_every_driver_is_below_the_cuda_floor() -> N
     with pytest.raises(MissionError) as refused_at:
         backend.pick(gpu_name="Tesla T4", gpus=1)
     refusal = str(refused_at.value)
-    assert "CUDA 13.0" in refusal, "the floor it failed is named"
+    assert f"CUDA {VastBackend.CUDA_FLOOR}" in refusal, "the floor it failed is named"
     assert "12.8" in refusal, "the best CUDA actually on offer is named"
     assert "offer 22" in refusal, "the offending offer is named"
     assert "Texas, US" in refusal, "and where it is, so the reader can check it by hand"
     assert "destroys a container its driver cannot start" in refusal, "and what would happen"
     # The diagnosis costs one extra search, and only on the refusal path.
     floored, unfloored = backend.transport.bodies
-    assert floored["cuda_max_good"] == {"gte": 13.0}
+    assert floored["cuda_max_good"] == {"gte": VastBackend.CUDA_FLOOR}
     assert floored["compute_cap"] == {"gte": 750}
     assert "cuda_max_good" not in unfloored
     assert "compute_cap" not in unfloored
@@ -323,7 +324,7 @@ def test_pick_refuses_an_architecture_this_cuda_no_longer_builds_for() -> None:
 @pytest.mark.parametrize(
     ("reader", "field", "absent", "present"),
     [
-        (cuda_max_good, "cuda_max_good", 0.0, 13.0),
+        (cuda_max_good, "cuda_max_good", 0.0, 13.3),
         (capability, "compute_cap", 0, 890),
     ],
     ids=["driver-version", "compute-capability"],
@@ -925,3 +926,31 @@ def test_a_workspace_holding_no_key_pair_never_reaches_the_market(
             vast_plan(), Resources(max_usd=1.0, walltime="00:30:00"), allocation=created_request()
         )
     assert backend.transport.calls == []
+
+
+def test_the_driver_floor_is_read_off_the_oldest_image_a_rental_can_load() -> None:
+    """The filter and the image were once written twice and drifted, 13.0 against 13.3.1.
+
+    Three rentals on 2026-09-21 landed on hosts whose driver topped out at CUDA 13.0 under a
+    13.3.1 image, never started a container, and were destroyed at the end of the address wait.
+    """
+    oldest = min(image_cuda(image) or 0 for image in vast_module._BASE_IMAGES)
+    assert oldest == VastBackend.CUDA_FLOOR
+    assert VastBackend.CUDA_FLOOR >= ProviderBackend.CUDA_FLOOR
+
+
+@pytest.mark.parametrize(
+    ("driver", "image"),
+    [
+        (13.0, "vastai/base-image:cuda-13.0.3-auto"),
+        (13.2, "vastai/base-image:cuda-13.2.1-auto"),
+        (13.4, "vastai/base-image:cuda-13.3.1-auto"),
+    ],
+)
+def test_a_rental_takes_the_newest_base_image_its_driver_loads(driver: float, image: str) -> None:
+    """One pinned 13.3.1 image shut every L40S, A100 and H100 host out of the market (2026-09-25).
+
+    Those hosts run 13.0 to 13.2 drivers, which load an image no newer than their own CUDA, so
+    each offer is matched to the newest base image it can start rather than filtered by one.
+    """
+    assert vast_module.base_image(offer(1, dph=0.5, cuda_max_good=driver)) == image

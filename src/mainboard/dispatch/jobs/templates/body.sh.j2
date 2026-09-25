@@ -38,21 +38,15 @@ export PYTHONPATH={{ pythonpath }}
 unset PYTHONPATH
 {% endif %}
 {% if source %}
-# The tree this job was shipped from, as the dispatcher's own git spelled it. A mirror carries the
-# source and not the history, so this is the one line that lets a receipt name its commit, and a
-# `-dirty` suffix lands the row inadmissible exactly as a local dirty tree would.
+# The captured source identity, computed from paths and bytes without version control.
 export MAINBOARD_SOURCE={{ source }}
 {% endif %}
 {% if commit %}
-# The same tree, whole, so a run can say which revision produced it rather than which tag was
-# nearest. A mirror has no history to derive this from and no worktree to check, so this and the
-# digest below are what a preflight seals against here.
+# Optional historical revision metadata; never an admission condition.
 export MAINBOARD_SOURCE_COMMIT={{ commit }}
 {% endif %}
 {% if digest %}
-# What the dispatching tree's tracked content hashed to. The claim a job can still make on a
-# machine with no git is that these bytes are the bytes the dispatch shipped, and this is the
-# number it makes it against.
+# The SHA-256 of the captured source listing. Preflight verifies the actual file bytes.
 export MAINBOARD_SOURCE_DIGEST={{ digest }}
 {% endif %}
 {% if closure %}

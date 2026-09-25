@@ -189,6 +189,24 @@ def test_run_returns_stdout_on_a_clean_exit_and_types_every_other_ending(
         policy.run(("ssh", "host", "true"), "host", operation="connect")
 
 
+@pytest.mark.parametrize(
+    ("operation", "raised"), [("connect", HostUnreachable), ("command", RuntimeError)]
+)
+def test_a_silent_255_is_unreachable_only_for_the_connect_probe(
+    monkeypatch: pytest.MonkeyPatch, operation: str, raised: type[BaseException]
+) -> None:
+    """The probe runs `echo`, so its 255 is ssh's own; a real command may exit 255 itself.
+
+    Left untyped, a probe that failed without a marker escaped the rental's knock loop as a bare
+    error instead of being knocked again (RTX 4090 52521884, 2026-09-25).
+    """
+    process = _FakeProcess(returncode=255, stdout="", stderr="")
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
+    with pytest.raises(raised) as caught:
+        SshTransport().run(("ssh", "host", "true"), "host", operation=operation)
+    assert type(caught.value) is raised
+
+
 def test_run_reports_a_host_unreachable_when_ssh_cannot_even_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -254,6 +272,29 @@ def test_stream_keeps_binary_bytes_and_preserves_command_failure(
     else:
         assert SshTransport().run(command, "local", operation="stream", output=output) == ""
     assert output.read_bytes() == bytes(range(256))
+
+
+def test_evidence_stream_can_outlive_the_control_deadline(tmp_path: Path) -> None:
+    class ShortPolicy(SshTransport):
+        @property
+        def deadline(self) -> float:
+            return 0.1
+
+        @property
+        def stream_deadline(self) -> float:
+            return 5.0
+
+    command = (
+        sys.executable,
+        "-c",
+        "import time; time.sleep(0.3); print('complete evidence')",
+    )
+    policy = ShortPolicy()
+    with pytest.raises(HostUnreachable, match="timed out after 0.1s"):
+        policy.run(command, "local", operation="control")
+    output = tmp_path / "evidence.bin"
+    assert policy.run(command, "local", operation="collect", output=output) == ""
+    assert output.read_bytes() == b"complete evidence\n"
 
 
 def test_stream_timeout_closes_staging_file_and_terminates_process_tree(

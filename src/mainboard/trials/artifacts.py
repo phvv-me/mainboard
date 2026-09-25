@@ -102,7 +102,7 @@ class Artifacts:
         digest = hashlib.sha256(data).hexdigest()
         target = self.directory / "objects" / digest
         target.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+        with NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(data)
             stream.flush()

@@ -65,6 +65,7 @@ from .engines.compile.state import SyncState
 from .engines.runtimes import resolve
 from .experiments.fleet import Fleet
 from .experiments.identity import run_id
+from .jobs.call import Fresh
 from .jobs.closure import Closure
 from .jobs.target import Target
 from .manifest.loading import load
@@ -1478,7 +1479,9 @@ class Board:
                 "reaches the mirror as it is"
             )
         return Shipment.of_command(
-            command, source=self.dispatcher.source(command), imports=self.imports(plan)
+            command,
+            source=self.dispatcher.source(command, paths=plan.profile.sync.include),
+            imports=self.imports(plan),
         )
 
     def sealed(
@@ -1492,6 +1495,8 @@ class Board:
             workspace's own copy of the environment, the lock the host installs frozen from.
         needs: data paths declared at dispatch time, joining the ones the job file declares.
         """
+        # Reject malformed runner arguments before building or dispatching a snapshot.
+        Fresh.parsed(target.args)
         closure = Closure.of(
             target,
             root=self.root,

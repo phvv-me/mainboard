@@ -58,6 +58,24 @@ def test_profiles_resolve_from_the_manifest_and_a_stranger_still_gets_the_defaul
     assert stranger.sync.protect == ["results/***"]
 
 
+@pytest.mark.parametrize("include", [["mainboard.toml"], []])
+def test_a_host_can_narrow_its_sync_scope_without_losing_safety_rules(
+    include: list[str],
+) -> None:
+    base = HostProfile(
+        sync=Sync(include=["research", "packages"], exclude=[".env"], protect=["results/***"])
+    )
+    child = HostProfile(sync=Sync(include=include, exclude=["references"]))
+    resolved = child.inheriting(base)
+    assert resolved.sync.include == include
+    assert resolved.sync.exclude == [".env", "references"]
+    assert resolved.sync.protect == ["results/***"]
+    assert HostProfile(sync=Sync(exclude=["references"])).inheriting(base).sync.include == [
+        "research",
+        "packages",
+    ]
+
+
 @pytest.mark.parametrize(
     ("queue", "walltime", "admitted"),
     [

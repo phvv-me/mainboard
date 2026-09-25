@@ -1,6 +1,7 @@
 """One selected table and its native layers, axes, and optional facets."""
 
 from pathlib import Path
+from typing import Literal
 
 from patos import FrozenModel
 from pydantic import JsonValue, model_validator
@@ -21,7 +22,9 @@ class Panel(FrozenModel):
     axis: dict[str, JsonValue] = {}
     ticks: dict[str, JsonValue] = {}
     grid: dict[str, JsonValue] = {}
-    legend: dict[str, JsonValue] | None = None
+    label: dict[str, JsonValue] = {}
+    legend: dict[str, JsonValue] | bool | None = None
+    key: Literal["both", "marks", "colors"] = "both"
 
     @model_validator(mode="after")
     def source(self) -> Panel:

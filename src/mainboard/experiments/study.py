@@ -28,14 +28,13 @@ def _now() -> str:
 class Study(FrozenModel):
     """One experiment study: the identity a fleet of trials share.
 
-    study_id: the content-hash identity over (experiment, config space, git sha).
+    study_id: the content-hash identity over (experiment, config space, source digest).
     name: a human slug for logs, filenames, and `Fleet`'s dispatch label.
     experiment: the registered experiment name this study runs.
     hosts: the host aliases the study fans its trials across.
     models: the model ids the study sweeps.
     created_at: ISO-8601 creation time.
-    git_sha: the short HEAD sha the study was created at.
-    dirty: whether the working tree had uncommitted changes at creation.
+    source_digest: the content digest of the captured source bundle.
     """
 
     study_id: str
@@ -44,8 +43,7 @@ class Study(FrozenModel):
     hosts: tuple[str, ...] = ()
     models: tuple[str, ...] = ()
     created_at: str
-    git_sha: str
-    dirty: bool = False
+    source_digest: str
 
     @classmethod
     def create(
@@ -53,18 +51,17 @@ class Study(FrozenModel):
         experiment: str,
         *,
         config_space: Mapping[str, object],
-        git_sha: str,
-        dirty: bool = False,
+        source_digest: str,
         hosts: tuple[str, ...] = (),
         models: tuple[str, ...] = (),
         name: str = "",
     ) -> Study:
-        """A freshly identified study over `experiment`'s config space at the current git sha.
+        """Identify a study by its experiment, configuration space and captured source.
 
         name: an explicit human label, the derived slug (`f"{experiment}-{id[:6]}"`) when empty.
         """
         identity, slug = study_id(
-            experiment=experiment, config_space=config_space, git_sha=git_sha
+            experiment=experiment, config_space=config_space, source_digest=source_digest
         )
         return cls(
             study_id=identity,
@@ -73,8 +70,7 @@ class Study(FrozenModel):
             hosts=hosts,
             models=models,
             created_at=_now(),
-            git_sha=git_sha,
-            dirty=dirty,
+            source_digest=source_digest,
         )
 
 

@@ -3,14 +3,14 @@
 # A path dependency inside the workspace is easy: the manifest spells it relative to the root,
 # the compiled artifact spells it relative to the environment shard, the mirror carries the
 # directory it names, and the same three files mean the same thing on every machine. A path that
-# leaves the root is none of that. `../../packages/paleta` resolves on the workstation, where
+# leaves the root is none of that. `../../packages/sample_lib` resolves on the workstation, where
 # the workspace sits inside the monorepo; on Miyabi the mirror is
 # `/work/xg25g007/x10537/reproducibility`, a SIBLING of the monorepo's own mirror, so the same
 # spelling names a directory nothing ever put there, the lock records a location that exists on
 # one machine in the world, and the digest taken over that lock spells that machine's tree.
 #
 # Two unpublished house packages are exactly this dependency and both were reached by hand until
-# now: paleta-tsukuba commented out of the reproducibility manifest and its figures rendered
+# now: sample-lib commented out of the reproducibility manifest and its figures rendered
 # under a hand-written `PYTHONPATH`, and atpx pinned back to the last published version while
 # the ledger ran the unpublished one out of its source tree the same way. Neither hack survives
 # a dispatch, because neither reaches a host at all.
@@ -18,7 +18,7 @@
 # THE RULE, AND IT HAS NO KNOB: a path dependency that leaves the workspace root is vendored.
 # Every one of them is declared to pixi at `<generated>/vendor/<distribution>` instead of where
 # the manifest says it lives, one location, inside the root, the same distance from the root on
-# every machine. The compiled manifest therefore spells `../../../.mainboard/vendor/paleta-
+# every machine. The compiled manifest therefore spells `../../../.mainboard/vendor/sample_lib-
 # tsukuba` wherever it is compiled, the lock pixi solves from it relativises back to that same
 # spelling, and the environment digest taken over the pair is one number on the workstation and
 # on the host. Nothing downstream needs to learn a new shape: `pixi_manifest.self_installed`
@@ -30,7 +30,7 @@
 # Real, because a resolver handed a symlinked project root is free to record where it really
 # went, and one canonicalised path would put the machine's own tree back into the lock the whole
 # arrangement exists to keep machine-independent. Symlinked entries, because that is what keeps
-# the editable install editable: an edit under `packages/paleta/src` is seen by the very next
+# the editable install editable: an edit under `packages/sample_lib/src` is seen by the very next
 # import, with nothing to re-vendor and nothing to reinstall, exactly as it was when the
 # manifest named the source directly.
 #
@@ -44,7 +44,7 @@
 #
 # THE SOURCE IS NOT PART OF THE ENVIRONMENT'S IDENTITY. An editable install contributes
 # dependency metadata to a prefix and no code, so a lock records a vendored distribution by name
-# and location and never by a hash of its files: editing `paleta/style.py` cannot move a digest,
+# and location, never by a hash of its files: editing `sample_lib/style.py` cannot move a digest,
 # cannot invalidate a lock, and cannot strand a queued wave. Editing that package's
 # `pyproject.toml` moves `Compiler.resolution_digest`, which is the point, since that is the
 # file a solve reads. That digest reads the vendored location too, so the number the workstation

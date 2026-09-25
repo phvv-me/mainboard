@@ -19,7 +19,7 @@ from ..core.project import Project
 from ..jobs.closure import Closure
 from ..jobs.pins import stage
 from ..jobs.target import Target
-from .provenance import Repositories, Row, Source, Status, blob_of, listing, registered
+from .provenance import Row, Source, SourceTree, Status, blob_of, listing, registered
 from .shared import CLOSURE_VAR, COMMIT_VAR, DEFERRED_VAR, DIGEST_VAR, FIRST_PARTY_VAR, SOURCE_VAR
 
 if TYPE_CHECKING:
@@ -70,7 +70,7 @@ class Shipment(FrozenModel):
     @classmethod
     def of_closure(cls, closure: Closure, *, root: Path) -> Shipment:
         """A job, shipping its closure under a provenance scoped to it, run through the runner."""
-        source, rows = Repositories(root).seal(closure.owner, closure.files, built=closure.built)
+        source, rows = SourceTree(root).seal(closure.files, built=closure.built)
         target = closure.target
         head = f"{target.file}::{target.name}" if target.name else target.file
         return cls(
@@ -106,7 +106,7 @@ class Shipment(FrozenModel):
 
         Ordinary commands and software targets keep their existing semantics. Legacy
         project-specific seal checks still run in their own protocol; this checks the
-        committed adjacent node and the already sealed source bytes without importing it.
+        captured adjacent node and the already sealed source bytes without importing it.
         """
         tokens = shlex.split(self.spelling)
         if not tokens:
@@ -117,16 +117,14 @@ class Shipment(FrozenModel):
         target = Target(file=file, name=name)
         if not target.registration:
             return
-        if self.source.dirty or not self.source.commit or not self.sealed:
-            raise MissionError("research submission requires a clean committed Mainboard job")
+        if not self.sealed:
+            raise MissionError("research submission requires a captured Mainboard source bundle")
         rows = [
             Row(path=p, blob=b, status=Status(s))
             for p, b, s in (line.split("\t") for line in self.listing.splitlines())
         ]
         if hashlib.sha256(self.listing.encode()).hexdigest() != self.source.digest:
             raise MissionError("research source listing does not match its recorded digest")
-        if any(row.status.dirty for row in rows):
-            raise MissionError("research source listing contains uncommitted changes")
         registered(root / target.registration, rows, root=root)
         for row in rows:
             if blob_of(root / row.path) != row.blob:

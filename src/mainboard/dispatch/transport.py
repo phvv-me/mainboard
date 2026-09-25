@@ -165,6 +165,11 @@ class SshTransport(FrozenModel):
         return self.connect_timeout + self.server_alive_interval * self.server_alive_count + 5.0
 
     @property
+    def stream_deadline(self) -> float:
+        """A finite wall bound for bulk evidence, separate from SSH's liveness probes."""
+        return max(self.deadline, 600.0)
+
+    @property
     def liveness(self) -> tuple[str, ...]:
         """Only the liveness overrides, leaving every alias setting intact."""
         return (
@@ -263,6 +268,8 @@ class SshTransport(FrozenModel):
         output: caller-owned staging file for raw stdout bytes, otherwise capture text. A
             streamed operation returns an empty string and retains partial bytes on failure.
             The caller owns validation and publication of the completed staging file.
+            Bulk streams allow ten minutes; control calls retain the shorter deadline.
+            SSH keepalives and process-tree termination apply to both paths.
         """
         with ExitStack() as stack:
             sink = (
@@ -274,7 +281,7 @@ class SshTransport(FrozenModel):
                 operation=operation,
                 input_text=input_text,
                 sink=sink,
-                timeout=self.deadline,
+                timeout=self.stream_deadline if output is not None else self.deadline,
             )
         if returncode == 0:
             return stdout or ""
@@ -318,7 +325,11 @@ class SshTransport(FrozenModel):
         """Raise the typed failure `(returncode, stderr)` names, if it names one."""
         if "host key verification failed" in stderr.lower():
             raise ConnectionError(f"ssh to {host!r} failed host-key verification")
-        if is_transport_failure(returncode, stderr):
+        # The connect probe runs only `echo`, which never exits 255, so a 255 there is ssh's own
+        # failure even when it printed nothing a marker names. Left untyped it escaped the
+        # rental's knock loop as a bare error (RTX 4090 52521884, 2026-09-25).
+        silent = operation == "connect" and returncode == _SSH_TRANSPORT_RC
+        if silent or is_transport_failure(returncode, stderr):
             raise HostUnreachable(
                 f"ssh {operation} to {host!r} failed: {_detail(stderr, returncode)}"
             )
@@ -343,7 +354,7 @@ class SshTransport(FrozenModel):
         """Kill `process`'s group, then translate its `communicate()` timeout for the caller."""
         self.terminate(process)
         raise HostUnreachable(
-            f"ssh {operation} to {host!r} timed out after {self.deadline:g}s"
+            f"ssh {operation} to {host!r} timed out after {cause.timeout:g}s"
         ) from cause
 
 

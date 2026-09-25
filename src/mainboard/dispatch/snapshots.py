@@ -204,7 +204,7 @@ class Sealed(Image):
         )
 
     def verified(self, digest: str, results: str) -> str:
-        """Check the frozen listing and every raw Git blob, without status exemptions."""
+        """Check the frozen listing and every raw SHA-256 file digest."""
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise ValueError("a sealed snapshot requires its complete closure digest")
         live = tuple(writable(path) for path in (*self.needs, *([results] if results else [])))
@@ -232,8 +232,8 @@ class Sealed(Image):
                 'mb_real=$(realpath --relative-to="$mb_snap" -- "$mb_snap/$mb_file")',
                 '[ "$mb_real" = "$mb_file" ] || '
                 '{ echo "mainboard: linked source parent: $mb_file" >&2; false; }',
-                'mb_hash=$(git hash-object --no-filters -- "$mb_snap/$mb_file")',
-                '[ "$mb_hash" = "$mb_blob" ] || '
+                'mb_hash=$(sha256sum -- "$mb_snap/$mb_file")',
+                '[ "${mb_hash%% *}" = "$mb_blob" ] || '
                 '{ echo "mainboard: source blob mismatch: $mb_file" >&2; false; }',
                 f'done < "$mb_snap/{CLOSURE}"',
             ]

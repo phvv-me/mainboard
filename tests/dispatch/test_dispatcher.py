@@ -1,7 +1,7 @@
 import inspect
 import os
 import stat
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, nullcontext
 from pathlib import Path
@@ -21,12 +21,11 @@ from mainboard.dispatch import (
     Shipment,
     SyncLock,
     Verdict,
-    shared,
 )
 from mainboard.dispatch import dispatcher as dispatch_module
-from mainboard.dispatch import provenance as provenance_module
 from mainboard.dispatch.jobs import JobSpec
-from mainboard.dispatch.provenance import Source
+from mainboard.dispatch.provenance import SourceTree
+from mainboard.dispatch.provenance import listing as source_listing
 from mainboard.dispatch.schedulers import HostUnreachable, registry
 from mainboard.dispatch.snapshots import CLOSURE, Snapshots
 from mainboard.dispatch.state import Cache
@@ -38,8 +37,10 @@ from .support import (
     RecordingScheduler,
     cache,
     machine_with,
+    pins_on_this_host,
     plan,
     run_record,
+    setgid_inherits,
 )
 
 if TYPE_CHECKING:
@@ -60,29 +61,6 @@ class _StubStrategy:
     def select(self, kind: str, default: str | None = None) -> RecordingScheduler:
         del kind, default
         return self.scheduler
-
-
-def answering(**told: str) -> Callable[..., str]:
-    """A `git` that answers each question by the flag or verb naming it, silence otherwise.
-
-    `told` keys are the distinguishing tokens (`toplevel`, `describe`, `HEAD`, `ls-files`,
-    `status`, `diff`), so a test says what a tree looks like and nothing else.
-    """
-
-    def git(*args: str) -> str:
-        if "--show-toplevel" in args:
-            return told.get("toplevel", "/repo")
-        if "describe" in args:
-            return told.get("describe", "")
-        if "HEAD" in args and "diff" not in args:
-            return told.get("HEAD", "abc1234")
-        if "ls-files" in args:
-            return told.get("ls_files", "")
-        if "status" in args:
-            return told.get("status", "")
-        return told.get("diff", "")
-
-    return git
 
 
 def shipped(dispatcher: Dispatcher, command: str, imports: tuple[str, ...] = ()) -> Shipment:
@@ -123,10 +101,6 @@ def backend(monkeypatch: pytest.MonkeyPatch) -> RecordingScheduler:
     monkeypatch.setattr(dispatch_module, "pick", lambda profile: scheduler)
     monkeypatch.setattr(registry, "SCHEDULERS", _StubStrategy(scheduler))
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
-    monkeypatch.setattr(
-        dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else ""
-    )
-    monkeypatch.setattr(provenance_module, "git", answering())
     monkeypatch.setattr(dispatch_module, "sleep", lambda seconds: None)
     return scheduler
 
@@ -285,31 +259,18 @@ def test_submit_admits_the_request_before_a_single_ssh_connection(
     assert backend.calls == []
 
 
-@pytest.mark.parametrize(("porcelain", "dirty"), [("", 0), ("M x.py", 1)])
-def test_submit_records_the_run_with_the_git_provenance_it_was_dispatched_from(
+def test_submit_records_content_identity_without_git(
     dispatcher: Dispatcher,
     backend: RecordingScheduler,
-    monkeypatch: pytest.MonkeyPatch,
-    porcelain: str,
-    dirty: int,
 ) -> None:
-    monkeypatch.setattr(
-        provenance_module,
-        "git",
-        answering(describe="abc1234", ls_files="100644 aaaa 0\ta.py", status=porcelain),
-    )
     handle = dispatcher.submit(
         plan(), "/repo", script="train.sh", args=("--x", "1"), resources=Resources()
     )
     [run] = dispatcher.cache.recent(10)
-    assert (run.handle, run.target, run.git_sha, run.dirty) == (handle, "gold", "abc1234", dirty)
-    assert run.args == "--x 1"
-    assert run.script == "train.sh"
-    # And the whole commit beside the short one, with the digest of the tree it was taken from:
-    # the mirror this job runs in has no history, so the registry is where a later reader learns
-    # what the run was measured from.
-    assert run.commit == "abc1234"
-    assert len(run.digest) == 64
+    assert (run.handle, run.target, run.git_sha, run.dirty) == (handle, "gold", "", None)
+    assert run.args == "--x 1" and run.script == "train.sh"
+    assert not run.commit and len(run.digest) == 64
+    assert run.source == f"sha256-{run.digest}"
 
 
 def test_direct_script_submission_keeps_the_prepared_path_and_arguments(
@@ -329,6 +290,7 @@ def test_direct_script_submission_keeps_the_prepared_path_and_arguments(
     assert submitted_args == args and record.args == "--label 'a b'"
 
 
+@pins_on_this_host
 def test_submission_reaches_the_scheduler_only_after_the_wrapper_is_frozen(
     dispatcher: Dispatcher,
     backend: RecordingScheduler,
@@ -380,9 +342,6 @@ def test_a_dispatch_runs_from_a_snapshot_of_the_mirror_and_never_from_the_mirror
     """The fault this exists for: a later sync of another tree rewrote the code under live jobs."""
     machine = machine_with()
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-    monkeypatch.setattr(
-        dispatch_module, "git", lambda *args: "abc1234" if args[0] == "rev-parse" else ""
-    )
     handle = dispatcher.run(
         plan(),
         shipped(dispatcher, "python -m foo"),
@@ -470,7 +429,7 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
         shipped(
             dispatcher,
             "python -m foo",
-            imports=("src", "packages/lab-core/src", ".mainboard/vendor/paleta-tsukuba/src"),
+            imports=("src", "packages/lab-core/src", ".mainboard/vendor/sample-lib/src"),
         ),
         root="/repo",
         resources=Resources(),
@@ -483,7 +442,7 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
     # root is compiled inside it, so the tree a job is pinned to carries it like any other.
     assert (
         f"export PYTHONPATH={pinned}/src:{pinned}/packages/lab-core/src:"
-        f"{pinned}/.mainboard/vendor/paleta-tsukuba/src" in body
+        f"{pinned}/.mainboard/vendor/sample-lib/src" in body
     )
     assert "export PYTHONPATH=/repo/src" not in body
     assert "unset PYTHONPATH" not in body
@@ -498,14 +457,16 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     """The listing rides beside the script, the pin copies what it names, the job reads it."""
     machine = machine_with()
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
+    (workdir / "a").mkdir()
+    (workdir / "a/run.py").write_text("pass")
+    (workdir / "mainboard.toml").write_text("")
+    captured, rows = SourceTree(workdir).seal(["a/run.py", "mainboard.toml"])
     sealed = Shipment(
         command="python -m mainboard.jobs.call a/run.py::app -- --x 1",
         spelling="a/run.py::app --x 1",
-        source=Source(
-            identity="v1-dirty", key="v1-dirty-9f9f9f9f", commit="c" * 40, digest="9f" * 32
-        ),
+        source=captured,
         imports=("research/camp", "packages/core/src"),
-        listing="a/run.py\tb1\tmodified\nmainboard.toml\tb2\tclean\n",
+        listing=source_listing(rows),
         needs=("data/corpus",),
         fetch="a/evidence",
         first_party=("core", "experiments"),
@@ -517,17 +478,20 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     )
 
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    listing = ".mainboard/dispatch/jobs/closure-9f9f9f9f9f9f.tsv"
+    listing = f".mainboard/dispatch/jobs/{sealed.listing_name}"
     assert (workdir / listing).read_text(encoding="utf-8") == sealed.listing
     [(staged, *carried)] = dispatcher.shipped
     assert Snapshots.script(staged) == script
     assert carried == [listing, "a/run.py", "mainboard.toml"]
+    # Data resident only on the host must not become a required local transfer. The
+    # snapshot still refuses an absent mirror need before the scheduler sees a job.
+    assert ["data/corpus"] not in dispatcher.required[0]
     body = (workdir / staged).read_text(encoding="utf-8")
     assert f"export PYTHONPATH={pinned}/research/camp:{pinned}/packages/core/src" in body
     assert f"export MAINBOARD_CLOSURE={pinned}/{CLOSURE}" in body
     assert "export MAINBOARD_FIRST_PARTY=core:experiments" in body
     assert "export MAINBOARD_DEFERRED=cutoken" in body
-    assert "export MAINBOARD_SOURCE=v1-dirty" in body
+    assert f"export MAINBOARD_SOURCE={captured.identity}" in body
     assert f"cd {pinned}" in body
     [built] = [line for line in machine.lines if "mb_snap=" in line]
     assert f'cut -f1 "$mb_snap/{CLOSURE}" | rsync -aL --filter' in built
@@ -538,9 +502,9 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     [run] = dispatcher.cache.recent(10)
     assert (run.handle, run.dirty, run.source, run.commit) == (
         handle.id,
-        1,
+        None,
         sealed.source.key,
-        "c" * 40,
+        "",
     )
 
 
@@ -612,69 +576,32 @@ def test_a_failed_prefix_build_prevents_scheduler_submission(
     assert not any(name == "submit" for name, _ in backend.calls)
 
 
-def test_a_moving_working_tree_cannot_split_the_script_from_the_snapshot_it_runs_in(
+def test_source_identity_is_read_once_for_script_and_snapshot(
     dispatcher: Dispatcher,
     backend: RecordingScheduler,
     workdir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One reading of the tree decides both the rendered script and the tree it is pinned in.
-
-    A dirty tree names no commit, so its key digests the working-tree delta, and reading that
-    twice across a dispatch answers twice differently the moment anything moves: the script would
-    then activate from a snapshot the pin never created. A landing, which takes tens of minutes,
-    is where that first cost a whole rental (vast 49867368, 2026-09-04), and a batch dispatched
-    while a colleague commits is the same window on a queue.
-    """
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine_with())
-    deltas = iter("abcdefgh")
-
-    def moving(*args: str) -> str:
-        if "--show-toplevel" in args:
-            return "/repo"
-        if "describe" in args:
-            return "abc1234"
-        return next(deltas, "z")
-
-    monkeypatch.setattr(provenance_module, "git", moving)
-    dispatcher.run(
-        plan(), shipped(dispatcher, "python -m foo"), root="/repo", resources=Resources()
-    )
+    shipment = shipped(dispatcher, "python -m foo")
+    (workdir / "mainboard.toml").write_text("# later edit")
+    dispatcher.run(plan(), shipment, root="/repo", resources=Resources())
     [(root, script, _)] = [call for name, call in backend.calls if name == "submit"]
-    assert "/sources/abc1234-dirty-" in str(root)
-    assert str(root) in (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text(
-        encoding="utf-8"
-    )
+    assert root.endswith(shipment.source.key)
+    assert str(root) in (workdir / ".mainboard/dispatch/jobs" / Path(script).name).read_text()
 
 
-def test_two_dispatches_of_one_tree_share_a_snapshot_and_a_different_tree_gets_its_own(
-    dispatcher: Dispatcher, monkeypatch: pytest.MonkeyPatch
+def test_equal_source_reuses_snapshot_and_changed_bytes_get_a_new_one(
+    dispatcher: Dispatcher,
+    workdir: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Thirty five jobs off one commit must not pay for thirty five copies of the workspace."""
-    described = {"value": "v0.4.8"}
-    monkeypatch.setattr(
-        provenance_module,
-        "git",
-        lambda *args: answering(describe=described["value"], ls_files="100644 a 0\ta.py")(*args),
-    )
+    monkeypatch.setenv("PATH", "")
     first = dispatcher.pinned("/repo", source=dispatcher.source())
-    assert first == "/repo/.mainboard/dispatch/sources/v0.4.8"
+    assert "/sources/sha256-" in first
     assert dispatcher.pinned("/repo", source=dispatcher.source()) == first
-    described["value"] = "v0.4.9"
+    (workdir / "mainboard.toml").write_text("# changed")
     assert dispatcher.pinned("/repo", source=dispatcher.source()) != first
-
-
-def test_git_reports_a_local_commands_stripped_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """And reads no stdin, since a dispatch is routinely called from inside a shell read loop."""
-    asked: list[dict[str, object]] = []
-
-    def record(*args: object, **kwargs: object) -> object:
-        asked.append(kwargs)
-        return type("R", (), {"stdout": " abc \n"})()
-
-    monkeypatch.setattr(shared.subprocess, "run", record)
-    assert dispatch_module.git("rev-parse", "HEAD") == "abc"
-    assert [call["stdin"] for call in asked] == [shared.subprocess.DEVNULL]
 
 
 def test_submit_refuses_a_broken_environment_and_names_the_host_a_scheduler_rejected(
@@ -1018,6 +945,39 @@ def test_rsync_up_refuses_explicit_card_lease_resources_before_transfer(
         )
 
 
+def test_a_narrow_host_mirrors_named_job_files_without_touching_other_projects(
+    workdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if which("rsync") is None:
+        pytest.skip("the optional rsync executable is not installed")
+    job = "research/camp/experiments/node/run.py"
+    untouched = (
+        "research/camp/papers/frozen.tex",
+        "research/other/source.py",
+        "packages/unrelated/src/module.py",
+    )
+    landed = workdir / "host-side"
+    for path in (job, *untouched):
+        (workdir / path).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / path).write_text("local\n")
+        (landed / path).parent.mkdir(parents=True, exist_ok=True)
+        (landed / path).write_text("remote\n")
+    (workdir / "mainboard.toml").write_text("[workspace]\nname = 'lab'\n")
+    real = dispatch_module.rsync
+    monkeypatch.setattr(
+        dispatch_module,
+        "rsync",
+        lambda sources, dest, flags, **k: real(sources, f"{landed}/", flags, **k),
+    )
+    base = HostProfile(sync={"include": ["research", "packages"]})
+    profile = HostProfile(sync={"include": ["mainboard.toml"]}).inheriting(base)
+    instance = Dispatcher(cache=cache(), sync=GitignoreFilter(workdir))
+    instance.rsync_up(plan(profile=profile), "/repo", extra=[job])
+    assert (landed / job).read_text() == "local\n"
+    assert (landed / "mainboard.toml").is_file()
+    assert all((landed / path).read_text() == "remote\n" for path in untouched)
+
+
 def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1077,16 +1037,16 @@ def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refe
     envdir.mkdir(parents=True)
     (envdir / "pixi.toml").write_text("x")
     (envdir / "pixi.lock").write_text("y")
-    source = workdir / "outside/paleta"
-    (source / "src/paleta").mkdir(parents=True)
-    (source / "src/paleta/__init__.py").write_text("SHADE = 'ai'\n")
-    (source / "pyproject.toml").write_text('[project]\nname = "paleta-tsukuba"\n')
-    vendored = workdir / ".mainboard/vendor/paleta-tsukuba"
+    source = workdir / "outside/sample_lib"
+    (source / "src/sample_lib").mkdir(parents=True)
+    (source / "src/sample_lib/__init__.py").write_text("SHADE = 'ai'\n")
+    (source / "pyproject.toml").write_text('[project]\nname = "sample-lib"\n')
+    vendored = workdir / ".mainboard/vendor/sample-lib"
     vendored.mkdir(parents=True)
     for entry in sorted(source.iterdir()):
         (vendored / entry.name).symlink_to(entry)
-    (source / "src/paleta/__pycache__").mkdir()
-    (source / "src/paleta/__pycache__/stale.pyc").write_text("noise")
+    (source / "src/sample_lib/__pycache__").mkdir()
+    (source / "src/sample_lib/__pycache__/stale.pyc").write_text("noise")
     landed = workdir / "host-side"
     real = dispatch_module.rsync
     monkeypatch.setattr(
@@ -1100,12 +1060,12 @@ def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refe
 
     instance.rsync_up(host, "/repo", required=[group])
 
-    arrived = landed / ".mainboard/vendor/paleta-tsukuba"
+    arrived = landed / ".mainboard/vendor/sample-lib"
     assert arrived.is_dir() and not arrived.is_symlink()
     assert not (arrived / "src").is_symlink()
-    assert (arrived / "src/paleta/__init__.py").read_text() == "SHADE = 'ai'\n"
+    assert (arrived / "src/sample_lib/__init__.py").read_text() == "SHADE = 'ai'\n"
     assert (arrived / "pyproject.toml").is_file()
-    assert not (arrived / "src/paleta/__pycache__").exists()
+    assert not (arrived / "src/sample_lib/__pycache__").exists()
 
 
 def test_a_workspace_with_nothing_vendored_ships_no_second_transfer(
@@ -1126,6 +1086,8 @@ def test_a_workspace_with_nothing_vendored_ships_no_second_transfer(
     assert len(sent) == 1
 
 
+@pins_on_this_host
+@setgid_inherits
 def test_a_real_mirror_never_overrides_the_hosts_setgid_group(
     workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

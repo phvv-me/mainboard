@@ -29,7 +29,7 @@ def sealed(
         default.
     environment: the compiled target environment the closure reads, an empty one when None.
     """
-    from mainboard.dispatch.provenance import Repositories
+    from mainboard.dispatch.provenance import SourceTree
 
     target = Target.spelled([Lab.JOB], lab.root)
     assert target is not None
@@ -39,7 +39,7 @@ def sealed(
         distributions=distributions,
         environment=environment or lab.root / Lab.ENVIRONMENT,
     )
-    _, rows = Repositories(lab.root).seal(closure.owner, closure.files, built=closure.built)
+    _, rows = SourceTree(lab.root).seal(closure.files, built=closure.built)
     written = lab.root / ".mainboard/closure.tsv"
     written.parent.mkdir(exist_ok=True)
     written.write_text(listing(row for row in rows if row.path != without), encoding="utf-8")
@@ -90,7 +90,6 @@ def test_a_namespace_application_ships_and_loads_its_relative_imports(
     lab: Lab, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (lab.root / "research/camp/experiments/node/__init__.py").unlink()
-    lab.commit("a namespace application below a regular experiments package")
     written = sealed(lab, monkeypatch)
     assert "research/camp/experiments/helper/tools.py" in written.read_text(encoding="utf-8")
     with pytest.raises(SystemExit) as exited:

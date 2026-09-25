@@ -28,11 +28,9 @@
 # declared words are methods on it. Nothing in a lane names a run, a card, a commit, a claim or a
 # tracked flag, because every one of those is derived.
 #
-# AND A RECEIPT IDENTIFIES THE TREE THAT PRODUCED IT, WHICH USED TO BE THE ONE THING IT COULD NOT.
-# The full commit, the committed tree, a digest of the source files actually on disk and a digest
-# of the claim's registered rows are all derived and stamped, and every row says whether that
-# adds up to something a claim may lean on. A dirty tree still runs and still writes; its rows
-# read `dirty` and no coverage or current-view question counts them.
+# A receipt identifies the captured source by SHA-256 and the registered input rows by digest.
+# New and edited files qualify by their captured bytes, not their version-control state.
+# Historical rejected receipts retain their original labels; no evidence is relabeled.
 #
 # TWO LANE KINDS CHOOSE THEIR OWN CELLS AND ARE OPTIONAL EXTRAS. `Hunt` states a law as a property
 # and spends a draw budget trying to break it, shrinking a failure to a minimal witness; `Study`
@@ -42,6 +40,7 @@
 # rule `adaptive` states: an adaptive result is a CANDIDATE, never coverage, and it is confirmed by
 # a declared parametrize cell on fresh seeds before any claim leans on it.
 
+from ..dispatch.shared import SOURCE_VAR
 from .adaptive import Absent, Owed, driver
 from .adversarial import Breach, Hunt
 from .artifacts import Artifact
@@ -57,7 +56,6 @@ from .lints import Finding, findings
 from .log import Log
 from .provenance import (
     BASELINES,
-    SOURCE_VAR,
     Admissibility,
     Card,
     Preflight,

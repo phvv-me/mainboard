@@ -301,6 +301,7 @@ class GitignoreFilter:
             ":- .gitignore",
         ]
         self.excludes = list(ALWAYS_EXCLUDE)
+        self.nested: dict[Path, pathspec.GitIgnoreSpec] = {}
 
     @staticmethod
     def validate_sources(paths: Sequence[str]) -> None:
@@ -341,11 +342,46 @@ class GitignoreFilter:
         return files
 
     def ignored(self, path: str | Path) -> bool:
-        """Whether `path` (absolute or repo-relative) is git-ignored."""
+        """Apply optional ignore-file syntax without invoking version control."""
         candidate = Path(path)
         if candidate.is_absolute() and candidate.is_relative_to(self.root):
             candidate = candidate.relative_to(self.root)
-        return self.spec.match_file(candidate)
+        suffix = "/" if (self.root / candidate).is_dir() else ""
+        ignored = self.spec.check_file(candidate.as_posix() + suffix).include
+        for parent in reversed(candidate.parents):
+            if parent == Path():
+                continue
+            if parent not in self.nested:
+                self.nested[parent] = pathspec.GitIgnoreSpec.from_lines(
+                    self.__lines(self.root / parent / ".gitignore")
+                )
+            matched = self.nested[parent].check_file(
+                candidate.relative_to(parent).as_posix() + suffix
+            )
+            if matched.include is not None:
+                ignored = matched.include
+        return bool(ignored)
+
+    def files(self, directory: str) -> list[str]:
+        """Walk a source directory without requiring an index, history, or Git binary."""
+        home = self.root / directory
+        denied = pathspec.GitIgnoreSpec.from_lines(ALWAYS_EXCLUDE)
+        found: list[str] = []
+        for folder, directories, files in home.walk():
+            directories[:] = sorted(
+                name
+                for name in directories
+                if not denied.match_file((folder / name).relative_to(self.root).as_posix() + "/")
+                and not self.ignored((folder / name).relative_to(self.root))
+            )
+            found.extend(
+                (folder / name).relative_to(self.root).as_posix()
+                for name in sorted(files)
+                if not denied.match_file((folder / name).relative_to(self.root).as_posix())
+                and not self.ignored((folder / name).relative_to(self.root))
+                and (folder / name).is_file()
+            )
+        return sorted(found)
 
     @staticmethod
     def __lines(gitignore: Path) -> list[str]:

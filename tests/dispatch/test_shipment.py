@@ -110,7 +110,7 @@ def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
 
 @pytest.mark.parametrize("changed", ["node.md", "run.py", "packages/sub/src/sub/thing.py"])
 @pytest.mark.parametrize("late", [False, True])
-def test_research_admission_refuses_dirty_or_stale_source(
+def test_research_admission_accepts_edits_before_capture_and_refuses_later_changes(
     lab: Lab, changed: str, late: bool
 ) -> None:
     target = Target.spelled([Lab.JOB], lab.root)
@@ -125,7 +125,10 @@ def test_research_admission_refuses_dirty_or_stale_source(
     before = Shipment.of_closure(closure, root=lab.root)
     lab.write(path, (lab.root / path).read_text() + "\n# changed\n")
     shipment = before if late else Shipment.of_closure(closure, root=lab.root)
-    with pytest.raises(MissionError, match="changed after|clean committed"):
+    if late:
+        with pytest.raises(MissionError, match="changed after"):
+            shipment.admit(lab.root)
+    else:
         shipment.admit(lab.root)
 
 
@@ -153,7 +156,6 @@ def test_research_admission_keeps_historical_seals_and_never_imports_the_job(lab
         "---\nstatus: refuted\nregistration_sha256: preserved-retired-seal\n---\n",
     )
     lab.write(Lab.JOB, "raise RuntimeError('must not import')\napp = None\n")
-    lab.commit()
     closure = Closure.of(
         target,
         root=lab.root,
@@ -180,7 +182,7 @@ def test_ordinary_dirty_software_and_commands_keep_their_existing_admission(lab:
         target, root=lab.root, distributions=(), environment=lab.root / Lab.ENVIRONMENT
     )
     shipment = Shipment.of_closure(closure, root=lab.root)
-    assert shipment.source.dirty
+    assert shipment.source.identity.startswith("sha256:")
     shipment.admit(lab.root)
     Shipment.of_command("python -m research.work", source=shipment.source, imports=()).admit(
         lab.root
@@ -195,7 +197,6 @@ def test_real_closures_quote_paths_and_parameter_ids_before_admission(
     file = "research/project with spaces/experiments/node/test_law.py"
     lab.write(file, "def test_law():\n    raise RuntimeError('must not import')\n")
     node = lab.write("research/project with spaces/experiments/node/node.md", "# registered\n")
-    lab.commit()
     target = Target.spelled([f"{prefix}{file}::{name}"], lab.root)
     assert target is not None
     closure = Closure.of(

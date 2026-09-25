@@ -60,11 +60,11 @@ def labelled_trial(label: str) -> str:
 
 
 def study_id(
-    *, experiment: str, config_space: Mapping[str, object], git_sha: str
+    *, experiment: str, config_space: Mapping[str, object], source_digest: str
 ) -> tuple[str, str]:
-    """The identity above runs: sha256 over (experiment, sorted config-space digest, git sha).
+    """SHA-256 over the experiment, sorted configuration space and source digest.
 
-    Two calls with the same experiment, config space, and git sha always resolve to the same
+    Two calls with the same experiment, config space, and source digest always resolve to the same
     id, so re-running the same study (even from a fresh process, even on a different host)
     joins the same ledger instead of minting a duplicate one. Returns `(id, slug)`, the 12-hex
     id plus a human-readable slug (`f"{experiment}-{id[:6]}"`) fit for filenames and logs.
@@ -72,11 +72,11 @@ def study_id(
     experiment: the registered experiment name the study runs.
     config_space: the study's config space (its searched fields and domains), hashed with
         sorted keys so field declaration order never changes the id.
-    git_sha: the short HEAD sha the study was created at.
+    source_digest: the content digest of the captured source bundle.
     """
     space_digest = hashlib.sha256(
         json.dumps(dict(config_space), sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    payload = f"{experiment}:{space_digest}:{git_sha}"
+    payload = f"{experiment}:{space_digest}:{source_digest}"
     digest = hashlib.sha256(payload.encode()).hexdigest()[:12]
     return digest, f"{experiment}-{digest[:6]}"

@@ -346,6 +346,28 @@ def test_an_isolated_windows_environment_uses_the_native_unset_script(
     assert feature["vserve"]["target"] == {"win": {"activation": {"scripts": ["unset.bat"]}}}
 
 
+def test_each_shard_emits_only_targets_matching_its_platforms(
+    manifest_from: Callable[[str], Manifest],
+) -> None:
+    manifest = manifest_from(
+        '[workspace]\nname = "w"\nplatforms = ["linux-64", "osx-arm64"]\n'
+        '[system]\nglibc = "2.28"\n'
+        '[on.win-64.python.deps]\nwindows-only = "*"\n'
+        '[on.linux-64.deps]\nlinux-only = "*"\n'
+        '[on.unix.deps]\nunix-only = "*"\n'
+        '[envs.desktop]\nno-default = true\nplatforms = ["win-64"]\n'
+        '[envs.desktop.on.win-64.python.deps]\nwindows-only = "*"\n'
+        '[envs.desktop.on.linux.deps]\nlinux-only = "*"\n'
+    )
+    default = PixiManifest.from_manifest(manifest, project_name=_PROJECT)
+    assert set(default.target) == {"linux-64", "unix"}
+    desktop = PixiManifest.from_manifest(manifest, project_name=_PROJECT, environment="desktop")
+    assert desktop.feature["desktop"]["target"] == {
+        "win-64": {"pypi-dependencies": {"windows-only": "*"}}
+    }
+    assert "linux" not in desktop.target
+
+
 @settings(max_examples=10)
 @given(conda=_TABLE, python=_TABLE, dev=_TABLE, served=_TABLE)
 def test_every_declared_dependency_reaches_exactly_one_generated_table(

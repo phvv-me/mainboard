@@ -23,18 +23,18 @@ name = "lab"
 
 [python.deps]
 lab = { path = ".", editable = true }
-paleta-tsukuba = { path = "../../packages/paleta", editable = true }
+sample-lib = { path = "../../packages/sample_lib", editable = true }
 """
 
-_PYPROJECT = '[project]\nname = "paleta-tsukuba"\nversion = "0.1.0"\n'
+_PYPROJECT = '[project]\nname = "sample-lib"\nversion = "0.1.0"\n'
 
 # Where the compiled artifact of the default environment spells the vendored dependency: inside
 # the workspace, three parents up from the shard it is written into, on every machine.
-_VENDORED = "../../../.mainboard/vendor/paleta-tsukuba"
+_VENDORED = "../../../.mainboard/vendor/sample-lib"
 
 # A lock as pixi writes one for an editable path dependency: the location, relative to the
 # manifest it was solved from, and no hash of anything under it.
-_LOCK = f"version: 7\npackages:\n- pypi: {_VENDORED}\n  name: paleta-tsukuba\n"
+_LOCK = f"version: 7\npackages:\n- pypi: {_VENDORED}\n  name: sample-lib\n"
 
 
 def workstation(base: Path, *, manifest: str = _MANIFEST) -> Path:
@@ -42,17 +42,17 @@ def workstation(base: Path, *, manifest: str = _MANIFEST) -> Path:
     root = base / "mono" / "research" / "repro"
     (root / "src").mkdir(parents=True)
     (root / "mainboard.toml").write_text(manifest, encoding="utf-8")
-    source = base / "mono" / "packages" / "paleta"
-    (source / "src" / "paleta").mkdir(parents=True)
+    source = base / "mono" / "packages" / "sample_lib"
+    (source / "src" / "sample_lib").mkdir(parents=True)
     (source / "pyproject.toml").write_text(_PYPROJECT, encoding="utf-8")
-    (source / "src" / "paleta" / "__init__.py").write_text("SHADE = 'ai'\n", encoding="utf-8")
+    (source / "src" / "sample_lib" / "__init__.py").write_text("SHADE = 'ai'\n", encoding="utf-8")
     return root
 
 
 def mirrored(base: Path, sent_from: Path, *, manifest: str = _MANIFEST) -> Path:
     """The same workspace as its mirror on a host, beside the monorepo's mirror rather than in it.
 
-    `../../packages/paleta` names `<work>/packages/paleta` there, which nothing ever creates.
+    `../../packages/sample_lib` names a sibling package there, which nothing ever creates.
     What the host has instead is the transfer's dereferenced copy of the vendored tree, which is
     the one directory the compiled manifest and the lock name.
     """
@@ -80,13 +80,13 @@ def compile_at(root: Path, environment: str = "default") -> Compiler:
     ("path", "leaves"),
     [
         (".", False),
-        ("packages/paleta", False),
-        ("packages/../paleta", False),
+        ("packages/sample_lib", False),
+        ("packages/../sample_lib", False),
         ("..", True),
-        ("../../packages/paleta", True),
-        ("packages/../../paleta", True),
-        ("/opt/paleta", True),
-        ("C:/paleta", True),
+        ("../../packages/sample_lib", True),
+        ("packages/../../sample_lib", True),
+        ("/opt/sample_lib", True),
+        ("C:/sample_lib", True),
     ],
 )
 def test_whether_a_declared_path_leaves_the_root_is_arithmetic_and_not_a_stat(
@@ -111,12 +111,12 @@ def test_a_dependency_that_leaves_the_root_is_compiled_at_a_location_inside_it(
     compiled = compile_at(root).pixi.manifest.read_text(encoding="utf-8")
 
     assert _VENDORED in compiled
-    assert "packages/paleta" not in compiled
+    assert "packages/sample_lib" not in compiled
     anchor = anchored(compiled, root=root, generated_dir=environment_shard("default"))
-    assert f'path = "{root}/.mainboard/vendor/paleta-tsukuba"' in anchor
+    assert f'path = "{root}/.mainboard/vendor/sample-lib"' in anchor
     assert self_installed(compiled, generated_dir=environment_shard("default")) == [
         "",
-        ".mainboard/vendor/paleta-tsukuba",
+        ".mainboard/vendor/sample-lib",
     ]
 
 
@@ -142,9 +142,9 @@ def test_a_workstation_and_a_hosts_mirror_reach_one_environment_and_one_resoluti
     assert solved.resolution_digest() == landed.resolution_digest()
     # And the host left the copy the mirror carried exactly as it found it, since there is no
     # tree above its root to link into and nothing better to say about it.
-    copy = there / vendor_root() / "paleta-tsukuba"
+    copy = there / vendor_root() / "sample-lib"
     assert copy.is_dir() and not (copy / "src").is_symlink()
-    assert (copy / "src" / "paleta" / "__init__.py").read_text() == "SHADE = 'ai'\n"
+    assert (copy / "src" / "sample_lib" / "__init__.py").read_text() == "SHADE = 'ai'\n"
 
 
 def test_the_vendored_copy_is_a_real_directory_whose_entries_track_the_source(
@@ -158,23 +158,23 @@ def test_the_vendored_copy_is_a_real_directory_whose_entries_track_the_source(
     naming the source directly: an edit is seen by the next import, with nothing rerun.
     """
     root = workstation(tmp_path)
-    source = tmp_path / "mono" / "packages" / "paleta"
+    source = tmp_path / "mono" / "packages" / "sample_lib"
     compile_at(root)
-    vendored = root / vendor_root() / "paleta-tsukuba"
+    vendored = root / vendor_root() / "sample-lib"
 
     assert vendored.is_dir() and not vendored.is_symlink()
     assert (vendored / "src").is_symlink()
-    assert (vendored / "src" / "paleta" / "__init__.py").read_text() == "SHADE = 'ai'\n"
+    assert (vendored / "src" / "sample_lib" / "__init__.py").read_text() == "SHADE = 'ai'\n"
 
-    (source / "src" / "paleta" / "__init__.py").write_text("SHADE = 'kon'\n", encoding="utf-8")
-    assert (vendored / "src" / "paleta" / "__init__.py").read_text() == "SHADE = 'kon'\n"
+    (source / "src" / "sample_lib" / "__init__.py").write_text("SHADE = 'kon'\n", encoding="utf-8")
+    assert (vendored / "src" / "sample_lib" / "__init__.py").read_text() == "SHADE = 'kon'\n"
 
     # A file added or removed at the source's own root changes what the package is, and reaches
     # the vendored directory on the next compile.
-    (source / "README.md").write_text("paleta\n", encoding="utf-8")
+    (source / "README.md").write_text("sample_lib\n", encoding="utf-8")
     (source / "pyproject.toml").unlink()
     compile_at(root)
-    assert (vendored / "README.md").read_text() == "paleta\n"
+    assert (vendored / "README.md").read_text() == "sample_lib\n"
     assert not (vendored / "pyproject.toml").exists()
 
 
@@ -191,10 +191,10 @@ def test_a_vendored_sources_code_never_moves_an_address_but_its_metadata_does(
     root = workstation(tmp_path)
     compiler = compile_at(root)
     compiler.pixi.lock.write_text(_LOCK, encoding="utf-8")
-    source = tmp_path / "mono" / "packages" / "paleta"
+    source = tmp_path / "mono" / "packages" / "sample_lib"
     before = (digest_of(compiler.out), compiler.resolution_digest())
 
-    (source / "src" / "paleta" / "__init__.py").write_text("SHADE = 'kon'\n", encoding="utf-8")
+    (source / "src" / "sample_lib" / "__init__.py").write_text("SHADE = 'kon'\n", encoding="utf-8")
     assert (digest_of(compiler.out), compiler.resolution_digest()) == before
 
     (source / "pyproject.toml").write_text(_PYPROJECT.replace("0.1.0", "0.2.0"), encoding="utf-8")
@@ -213,7 +213,7 @@ def test_a_source_that_is_neither_here_nor_vendored_is_refused_by_name(tmp_path:
     (root / "src").mkdir(parents=True)
     (root / "mainboard.toml").write_text(_MANIFEST, encoding="utf-8")
 
-    with pytest.raises(MissionError, match=r"\.\./\.\./packages/paleta"):
+    with pytest.raises(MissionError, match=r"\.\./\.\./packages/sample_lib"):
         compile_at(root)
 
 
@@ -223,14 +223,14 @@ def test_a_distribution_the_manifest_stopped_declaring_leaves_the_vendored_tree(
     """The tree holds what the manifest declares and nothing else, so no mirror ships a stray."""
     root = workstation(tmp_path)
     compile_at(root)
-    assert (root / vendor_root() / "paleta-tsukuba").is_dir()
+    assert (root / vendor_root() / "sample-lib").is_dir()
 
     (root / "mainboard.toml").write_text(
         '[workspace]\nname = "lab"\n\n[python.deps]\nlab = { path = ".", editable = true }\n',
         encoding="utf-8",
     )
     compile_at(root)
-    assert not (root / vendor_root() / "paleta-tsukuba").exists()
+    assert not (root / vendor_root() / "sample-lib").exists()
 
 
 def test_one_environments_compile_keeps_what_another_environment_declares(
@@ -251,7 +251,7 @@ def test_one_environments_compile_keeps_what_another_environment_declares(
     compile_at(root)
     compile_at(root, "serving")
 
-    assert (root / vendor_root() / "paleta-tsukuba" / "pyproject.toml").is_file()
+    assert (root / vendor_root() / "sample-lib" / "pyproject.toml").is_file()
 
 
 # Verbatim from research/reproducibility/.mainboard/envs/default/pixi.lock, solved by pixi
@@ -266,7 +266,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
       - pypi: ../../..
       - pypi: ../../vendor/atpx
-      - pypi: ../../vendor/paleta-tsukuba
+      - pypi: ../../vendor/sample-lib
 packages:
 - pypi: ../../..
   name: reproducibility
@@ -275,8 +275,8 @@ packages:
   name: atpx
   requires_dist:
   - patos>=0.0.8
-- pypi: ../../vendor/paleta-tsukuba
-  name: paleta-tsukuba
+- pypi: ../../vendor/sample-lib
+  name: sample-lib
   requires_dist:
   - cycler>=0.12
 """
@@ -303,7 +303,7 @@ def test_a_prefix_resolves_the_spelling_pixi_chose_and_not_only_the_one_it_was_h
     ).splitlines()
 
     assert f"- pypi: {host}/.mainboard/vendor/atpx" in resolved
-    assert f"- pypi: {host}/.mainboard/vendor/paleta-tsukuba" in resolved
+    assert f"- pypi: {host}/.mainboard/vendor/sample-lib" in resolved
     assert f"- pypi: {host}" in resolved
     assert "../.." not in "\n".join(resolved)
 
@@ -333,7 +333,7 @@ def test_two_spellings_of_one_vendored_directory_are_one_environment_address(
     [
         "a run that took 3 s ... and then stopped",
         "source /opt/site/lib/../share/env.sh",
-        "- pypi: ../../../../packages/paleta",
+        "- pypi: ../../../../packages/sample_lib",
         "- pypi: https://files.pythonhosted.org/packages/04/4b/h11-0.16.0-py3-none-any.whl",
     ],
 )
@@ -370,8 +370,8 @@ scripts = ["dotenv.sh", "unset.sh", "../../../scripts/activate.sh"]
 PYTHONPATH = "{root}:{root}/research:{root}/research/liereadout/src"
 LOG_LEVEL = "INFO"
 
-[pypi-dependencies.paleta-tsukuba]
-path = "../../../packages/paleta"
+[pypi-dependencies.sample-lib]
+path = "../../../packages/sample_lib"
 editable = true
 """
 
@@ -383,8 +383,8 @@ platforms:
 - name: linux-64-system
   subdir: linux-64
 packages:
-- pypi: ../../../packages/paleta
-  name: paleta-tsukuba
+- pypi: ../../../packages/sample_lib
+  name: sample-lib
 """
 
 

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import polars as pl
@@ -65,7 +66,7 @@ def test_a_device_tag_is_a_slug_or_cpu(index: int) -> None:
     from mainboard.experiments import device_tag
 
     tag = device_tag(index)
-    assert tag == "CPU" or ("_CC" in tag and " " not in tag)
+    assert tag == "CPU" or re.fullmatch(r"[A-Za-z0-9_.]+", tag), tag
 
 
 def test_extend_counts_only_the_new_rows_and_drop_where_forgets_their_keys(tmp_path: Path) -> None:

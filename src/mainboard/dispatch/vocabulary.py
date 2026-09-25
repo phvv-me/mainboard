@@ -12,6 +12,10 @@ from .shared import HandleId
 
 # Seconds between polls while a caller waits on a job it dispatched.
 POLL_SECONDS = 5.0
+# How long a `wait` blocks before it gives the caller back its shell with the job still in flight.
+# Finite by default because a waiter nobody bounded sat for two days on a batch whose last job
+# was owed by a host that had left the network; a caller who means forever passes 0.
+WAIT_SECONDS = 3600.0
 
 QUEUED = "queued"
 RUNNING = "running"

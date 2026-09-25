@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Never, cast
 
 import pytest
 
@@ -41,7 +41,7 @@ class Configured:
     def __init__(self, declared: Declaration | None, plugins: Sequence[str] = ()) -> None:
         self.hook = Hooked(declared)
         self.pluginmanager = Plugins(plugins)
-        self.option = SimpleNamespace()
+        self.option = SimpleNamespace(collectonly=False)
         self.stash = pytest.Stash()
         self.registered: list[str] = []
 
@@ -423,6 +423,25 @@ def test_a_claim_holds_its_measure_once_work_and_the_run_names_itself(
     assert rows["test_first"]["measured"]["loads"] == 1
     assert rows["test_second"]["measured"]["loads"] == 1
     assert rows["test_first"]["measured"]["run"] == rows["test_second"]["measured"]["run"]
+
+
+def test_collection_registers_markers_without_opening_an_acquisition_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan must not snapshot an evidence tree or probe hardware to list its cases."""
+
+    def refuse_session(declared: Declaration) -> Never:
+        raise AssertionError("collection opened an acquisition session")
+
+    monkeypatch.setattr(pytest_plugin, "Session", refuse_session)
+    config = Configured(declaration(tmp_path), plugins=("randomly",))
+    config.option.collectonly = True
+
+    pytest_plugin.pytest_configure(cast("pytest.Config", config))
+
+    assert config.registered
+    assert config.option.randomly_reorganize is False
+    assert pytest_plugin.SESSION not in config.stash
 
 
 def test_a_shuffling_plugin_is_held_still_and_the_declared_markers_are_registered(

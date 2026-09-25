@@ -27,4 +27,4 @@ def study() -> Study:
     Session-scoped because a `Study` is frozen and every test that uses it writes its ledger
     under its own tmp path, so nothing is shared but the identity itself.
     """
-    return Study.create("joint-search", config_space={"bits": [1, 2]}, git_sha="abc123")
+    return Study.create("joint-search", config_space={"bits": [1, 2]}, source_digest="abc123")

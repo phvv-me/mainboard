@@ -2,7 +2,6 @@
 # dispatch depends on `dispatch/__init__.py` and its re-exports.
 
 import logging
-import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-18
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,28 +48,6 @@ DIGEST_VAR = "MAINBOARD_SOURCE_DIGEST"
 CLOSURE_VAR = "MAINBOARD_CLOSURE"
 FIRST_PARTY_VAR = "MAINBOARD_FIRST_PARTY"
 DEFERRED_VAR = "MAINBOARD_DEFERRED"
-
-
-def git(*args: str, exact: bool = False) -> str:
-    """Stripped stdout of a local `git` command, the provenance of whatever is being recorded.
-
-    On `/dev/null` for the same reason every ssh this tool runs is: a dispatch is routinely
-    called from inside a shell loop reading handles, and a child left on the caller's stdin can
-    eat the rest of that loop's input. Nothing asked for here reads any.
-
-    Here in the leaf rather than beside the one dispatch that first needed it, because a trial
-    receipt asks git the same two questions a submit does and neither should drag the other's
-    module in to do it.
-
-    exact: keep the output byte for byte. A porcelain status line starts with the space that
-        means `unstaged`, and stripping it turns ` M src/x.py` into `M src/x.py`, a staged
-        change to a file called `rc/x.py`.
-    """
-    argv = ["git", *args]  # fixed local invocation off PATH, not untrusted input
-    read = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-16
-        argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
-    )
-    return read.stdout if exact else read.stdout.strip()
 
 
 def _as_handle(value: str | int) -> str:

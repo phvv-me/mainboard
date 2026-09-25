@@ -108,4 +108,4 @@ class ParquetArtifacts:
         )
         frame.write_parquet(target, compression="zstd", compression_level=19)
         if target.stat().st_size >= 1000000:
-            raise ValueError(f"archive shard exceeds the Git file budget: {target}")
+            raise ValueError(f"archive shard exceeds the artifact size budget: {target}")

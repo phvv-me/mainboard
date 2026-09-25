@@ -1,5 +1,4 @@
 import os
-import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,7 +35,7 @@ type Relayed = tuple[str, str, tuple[Positional, ...], dict[str, Option]]
 
 
 class Lab:
-    """A workspace on disk with a repository, a submodule and one job, the shape a closure walks.
+    """A workspace on disk with two packages and one job, the shape a closure walks.
 
     The job at `research/camp/experiments/node/run.py` imports a sibling node through its
     package, a distribution under `packages/core/src` that keeps a data file and an unused
@@ -86,13 +85,6 @@ class Lab:
         (info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
         return prefix
 
-    def git(self, *args: str, cwd: Path | None = None) -> str:
-        """Run git in the workspace (or `cwd`), answering its stripped stdout."""
-        done = subprocess.run(
-            ["git", "-C", str(cwd or self.root), *args], check=True, capture_output=True, text=True
-        )
-        return done.stdout.strip()
-
     def write(self, path: str, text: str) -> Path:
         """Write `text` at the workspace-relative `path`, creating its directories."""
         file = self.root / path
@@ -100,26 +92,13 @@ class Lab:
         file.write_text(text, encoding="utf-8")
         return file
 
-    def commit(self, message: str = "more", *, cwd: Path | None = None) -> str:
-        """Stage and commit everything in the workspace (or `cwd`), answering the commit."""
-        self.git("add", "-A", cwd=cwd)
-        self.git(
-            "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", message, cwd=cwd
-        )
-        return self.git("rev-parse", "HEAD", cwd=cwd)
-
 
 def build_lab(root: Path) -> Lab:
-    """Materialise a `Lab` at `root`: two repositories, one job, one commit each."""
+    """Create plain source directories and one job, with no Git dependency."""
     lab = Lab(root)
-    subsource = root.parent / f"{root.name}-sub"
-    subsource.mkdir(parents=True)
-    Lab(subsource).write("src/sub/__init__.py", "")
-    Lab(subsource).write("src/sub/thing.py", "THING = 1\n")
-    lab.git("init", "-q", cwd=subsource)
-    lab.commit("sub", cwd=subsource)
     root.mkdir(parents=True, exist_ok=True)
-    lab.git("init", "-q")
+    lab.write("packages/sub/src/sub/__init__.py", "")
+    lab.write("packages/sub/src/sub/thing.py", "THING = 1\n")
     lab.write(
         "mainboard.toml",
         '[workspace]\nname = "lab"\n\n'
@@ -168,14 +147,4 @@ def build_lab(root: Path) -> Lab:
     lab.write("research/other/experiments/node/__init__.py", "")
     lab.write("research/other/experiments/node/run.py", "def main() -> None:\n    pass\n")
     lab.write("data/corpus/a.txt", "corpus\n")
-    lab.git(
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        "-q",
-        str(subsource),
-        "packages/sub",
-    )
-    lab.commit("lab")
     return lab

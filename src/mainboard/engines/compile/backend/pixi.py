@@ -195,7 +195,10 @@ class Pixi(Tool):
         except FileNotFoundError:
             return True
         declared = parsed.get("workspace", {}).get("platforms", [])
-        names = {entry if isinstance(entry, str) else str(entry.get("platform", "")) for entry in declared}
+        names = {
+            entry if isinstance(entry, str) else str(entry.get("platform", ""))
+            for entry in declared
+        }
         return not names or current_platform() in names
 
     def install(self, env: str, *, resolve: bool = False) -> None:

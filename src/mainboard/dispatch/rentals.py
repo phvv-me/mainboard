@@ -18,6 +18,7 @@
 # will ever write.
 
 import shlex
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -101,12 +102,21 @@ def identity(declared: str = "") -> Identity:
         if declared
         else [Path.home() / ".ssh" / name for name in _KEY_NAMES]
     )
+    locked = []
     for private in candidates:
         public = Path(f"{private}.pub")
-        if public.is_file():
-            return Identity(
-                private=str(private), public=public.read_text(encoding="utf-8").strip()
-            )
+        if not public.is_file():
+            continue
+        if unlocked(private):
+            return Identity(private=str(private), public=published(private))
+        locked.append(str(private))
+    if locked:
+        raise MissionError(
+            f"the ssh key {locked[0]} needs a passphrase and no agent holds it, and a rental is "
+            "opened without a terminal to ask on, so every connection would be refused on a "
+            "machine already billing. Load it with `ssh-add` (`ssh-add --apple-use-keychain` on "
+            "macOS), or point [hosts.<host>.vars] ssh-key at a key that needs none."
+        )
     named = f"{declared} " if declared else ""
     raise MissionError(
         f"no ssh key pair {named}to open a rental with; a rented machine is reached over ssh and "
@@ -114,6 +124,55 @@ def identity(declared: str = "") -> Identity:
         "`ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519`, or point [hosts.<host>.vars] ssh-key at "
         "the private key of a pair you already have."
     )
+
+
+def published(private: Path) -> str:
+    """The public key ssh will actually present for `private`, derived from the private half.
+
+    The `.pub` beside a key is a convenience nothing checks. ssh authenticates from the private
+    file and never reads it, so a stale or mangled one goes unnoticed for years and then goes
+    out with a create as "the key": an `id_rsa.pub` wrapped over three lines since 2022 gave
+    three rentals a key no sshd could parse, and each refused every knock with `Permission
+    denied (publickey)` while the instance ran and billed (2026-09-21). What ssh will offer is
+    what the private half derives, so that is what a rental is created with. A locked key an
+    agent holds cannot be derived without its passphrase, and there the `.pub` is all there is.
+    """
+    derived = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=a constant argv over a path this module chose since=2026-09-21
+        ["ssh-keygen", "-y", "-P", "", "-f", str(private)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if derived.returncode == 0 and derived.stdout.strip():
+        return derived.stdout.strip()
+    return Path(f"{private}.pub").read_text(encoding="utf-8").strip()
+
+
+def unlocked(private: Path) -> bool:
+    """Whether ssh can use `private` with nobody to type: no passphrase, or an agent holding it.
+
+    A rental is knocked on in batch mode, which never prompts. A pair whose private half is
+    locked looks complete, goes out with the create, and then refuses every knock: an RTX 5090
+    ran for five billed minutes on 2026-09-21 behind a locked `id_ed25519` that an empty agent
+    could not open, while an unlocked `id_rsa` sat beside it. So the question is asked of the
+    key before anything is rented, and a locked pair is passed over for the next one.
+    """
+    bare = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=a constant argv over a path this module chose since=2026-09-21
+        ["ssh-keygen", "-y", "-P", "", "-f", str(private)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if bare.returncode == 0:
+        return True
+    printed = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=a constant argv over a path this module chose since=2026-09-21
+        ["ssh-keygen", "-lf", f"{private}.pub"], capture_output=True, text=True, check=False
+    )
+    held = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=a constant argv, no input since=2026-09-21
+        ["ssh-add", "-l"], capture_output=True, text=True, check=False
+    )
+    fingerprint = printed.stdout.split()[1:2]
+    return bool(fingerprint) and fingerprint[0] in held.stdout
 
 
 def seeded(public: str) -> str:
@@ -187,15 +246,20 @@ def reachable(
     attempts: how many knocks before giving up.
     """
     policy = SshTransport(endpoint=endpoint)
+    said = "nothing"
     for _ in range(attempts):
         try:
             policy.warm(endpoint.destination)
         except HostUnreachable as refused:
+            said = str(refused)
             logger.debug("%s not answering ssh yet: %s", endpoint.destination, refused)
             sleeper(_SSH_SECONDS)
         else:
             return endpoint
+    # What ssh last said goes in the refusal, because the remedies are opposite: a timeout is a
+    # machine or a network, and `Permission denied (publickey)` is a key this side sent wrong,
+    # which three rentals hid behind "never answered" on 2026-09-21.
     raise MissionError(
         f"ssh never answered at {endpoint.destination} after {attempts} attempts; the rental is "
-        "up but unreachable, so nothing was landed on it"
+        f"up but unreachable, so nothing was landed on it. The last knock said: {said}"
     )

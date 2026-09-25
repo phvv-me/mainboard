@@ -7,6 +7,7 @@ import tomlkit.items
 from patos import FrozenModel
 from pydantic import Field
 
+from ...core.host import platform_selectors
 from .platforms import PlatformMatrix
 
 # `Toml` backs pydantic fields below, so it must resolve at class-creation time. See the
@@ -655,6 +656,15 @@ class PixiManifest(FrozenModel):
         m = selected_manifest(m, environment)
         platforms = PlatformMatrix.from_manifest(m)
         workspace_platforms = cls.workspace_platforms(platforms, environment)
+        selectors = {
+            selector
+            for entry in workspace_platforms
+            for selector in platform_selectors(
+                entry["platform"]
+                if isinstance(entry, dict) and isinstance(entry.get("platform"), str)
+                else _platform_name(entry)
+            )
+        }
         feature, environments = cls.features(
             m,
             platforms,
@@ -672,7 +682,13 @@ class PixiManifest(FrozenModel):
                 ),
             }
             for platform, scope in m.on.items()
+            if platform in selectors
         }
+        for body in feature.values():
+            if isinstance(body, dict) and isinstance(target := body.get("target"), dict):
+                body["target"] = {
+                    platform: scope for platform, scope in target.items() if platform in selectors
+                }
         if any(_platform_name(entry).startswith("win-") for entry in workspace_platforms) and (
             windows_activation := cls.activation_table(
                 m, windows=True, generated_dir=generated_dir

@@ -82,13 +82,10 @@ class JobSpec(FrozenModel):
         the command, recording what the machine looked like as the work started. Opaque for the
         same reason `sampler` is, and ordered before it in the script because a reading taken
         after the command is under way describes the command rather than the conditions.
-    source: the dispatching tree's identity as `git describe --always --dirty` spells it, exported
-        to the job as `MAINBOARD_SOURCE` so a receipt written on a mirror that has no history can
-        still say which source it measured, and say `-dirty` when the shipped tree was.
-    commit: that tree's whole commit, exported as `MAINBOARD_SOURCE_COMMIT`.
+    source: the captured SHA-256 content identity, exported as `MAINBOARD_SOURCE`.
+    commit: historical metadata only; new dispatches leave this empty.
     digest: that tree's content digest, exported as `MAINBOARD_SOURCE_DIGEST`. A preflight on a
-        mirror cannot read HEAD or check a clean worktree, so what it seals against is this pair,
-        declared by the dispatch that shipped the bytes.
+        mirror verifies this digest against the listing and the actual source bytes.
     closure: where the job finds its closure listing, exported as `MAINBOARD_CLOSURE`, so a
         receipt can list what it ran on and the runner can refuse an import outside it. Empty
         for a command that ships the mirror.

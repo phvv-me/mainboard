@@ -90,8 +90,8 @@ def test_missing_plot_dependencies_name_the_local_install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delitem(sys.modules, "mainboard.plots.table", raising=False)
-    monkeypatch.setitem(sys.modules, "paleta", None)
-    with pytest.raises(MissionError, match=r"mainboard\[wandb,plot\].*packages/paleta"):
+    monkeypatch.setitem(sys.modules, "seaborn", None)
+    with pytest.raises(MissionError, match=r"mainboard\[wandb,plot\]"):
         build(tmp_path)(
             ["plot", "SELECT 1 AS x, 2 AS y", "--x", "x", "--y", "y", "--out", "plot.png"]
         )

@@ -1,4 +1,3 @@
-import shutil
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
@@ -21,7 +20,7 @@ from mainboard.dispatch.snapshots import (
     writable,
 )
 
-from .support import machine_with
+from .support import machine_with, pins_on_this_host
 
 
 def mirrored(
@@ -239,6 +238,7 @@ def sealed_mirror(tmp_path: Path) -> tuple[Snapshots, Sealed, str]:
     return Snapshots(str(root)), Sealed(listing=listing), sha256(payload).hexdigest()
 
 
+@pins_on_this_host
 def test_parallel_pins_freeze_the_listing_and_survive_mirror_replacement(
     sealed_mirror: tuple[Snapshots, Sealed, str],
 ) -> None:
@@ -289,6 +289,7 @@ def test_wrong_mirror_bytes_never_publish_a_snapshot(
     assert not list(Path(trees.base).glob(".pending.*"))
 
 
+@pins_on_this_host
 @pytest.mark.parametrize("reuse", [False, True])
 @pytest.mark.parametrize("field", ["needs", "results"])
 def test_live_paths_cannot_replace_a_verified_source_directory(
@@ -308,6 +309,7 @@ def test_live_paths_cannot_replace_a_verified_source_directory(
     assert Path(trees.path("overlap")).exists() is reuse
 
 
+@pins_on_this_host
 def test_wrappers_are_frozen_by_bytes_and_not_repaired_after_corruption(
     sealed_mirror: tuple[Snapshots, Sealed, str],
 ) -> None:
@@ -336,7 +338,7 @@ def test_wrappers_are_frozen_by_bytes_and_not_repaired_after_corruption(
     assert wrapper.read_text() == "corrupt frozen wrapper\n"
 
 
-@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+@pins_on_this_host
 def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
     tmp_path: Path,
 ) -> None:
@@ -381,7 +383,7 @@ def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(
     assert frozen.read_text(encoding="utf-8") == "v1\n"
 
 
-@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+@pins_on_this_host
 def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_nothing_else(
     tmp_path: Path,
 ) -> None:
@@ -444,7 +446,7 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
         )
 
 
-@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+@pins_on_this_host
 def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding_it(
     tmp_path: Path,
 ) -> None:
@@ -459,7 +461,7 @@ def test_a_second_dispatch_of_one_tree_reuses_the_snapshot_instead_of_rebuilding
     assert not (pinned / "research/compression/pkg/mod.py").exists()
 
 
-@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+@pins_on_this_host
 def test_two_batches_off_one_commit_each_get_their_own_results_link(tmp_path: Path) -> None:
     """A snapshot is keyed on the source and a results path is not part of the source.
 
@@ -495,7 +497,7 @@ def test_two_batches_off_one_commit_each_get_their_own_results_link(tmp_path: Pa
     assert first.joinpath("research/compression/evidence").is_symlink()
 
 
-@pytest.mark.skipif(shutil.which("rsync") is None, reason="the pin runs rsync on the host")
+@pins_on_this_host
 def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors(
     tmp_path: Path,
 ) -> None:

@@ -4,9 +4,7 @@ import pytest
 
 from mainboard import MissionError
 from mainboard.dispatch import Dispatcher, GitignoreFilter, Shipment
-from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch import landing as landing_module
-from mainboard.dispatch import provenance as provenance_module
 from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.landing import Landing, renter
 from mainboard.dispatch.provenance import Source
@@ -208,23 +206,13 @@ def test_the_job_is_pointed_at_the_tree_the_pin_actually_created(
     environment there (vast 49867368, 2026-09-04). The tree is read once, so the launch and the
     script it runs name the same snapshot however much the workspace moves underneath.
     """
-    # The identity holds still and the working tree does not, which is the shape of a landing
-    # that outlives one reading: `git describe` keeps saying the same dirty commit while the
-    # delta the key digests moves under it.
-    deltas = iter("abcdefgh")
-    monkeypatch.setattr(dispatch_module, "git", lambda *args: "abc1234")
-    monkeypatch.setattr(
-        provenance_module,
-        "git",
-        lambda *args: "/repo" if "--show-toplevel" in args else next(deltas, "z"),
-    )
     host = machine_with("/root/projects\n")
     landed, _, dispatcher = landing(workdir, host, monkeypatch)
     landed.land(shipped(dispatcher, "python train.py"))
     (written,) = host.inputs
     (_, (script,), _) = dispatcher.mirrored[0]
     snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
-    assert "-dirty-" in snapshot
+    assert "/sources/sha256-" in snapshot
     assert snapshot in (dispatcher.root / script).read_text(encoding="utf-8")
     assert host.ran(f"mb_final={snapshot}")
 

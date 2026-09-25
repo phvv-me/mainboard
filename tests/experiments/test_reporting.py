@@ -92,8 +92,8 @@ def test_overview_summarizes_every_ledger_file_with_its_name_counts_and_timestam
     cache: Cache, tmp_path: Path
 ) -> None:
     studies = tmp_path / "studies"
-    named = Study.create("e", config_space={"x": 1}, git_sha="s", name="alpha")
-    anonymous = Study.create("e", config_space={"x": 2}, git_sha="s", name="beta")
+    named = Study.create("e", config_space={"x": 1}, source_digest="s", name="alpha")
+    anonymous = Study.create("e", config_space={"x": 2}, source_digest="s", name="beta")
     ledger = StudyLedger.at(studies / f"{named.study_id}.jsonl")
     ledger.created(named)
     for handle in ("H1", "H2"):

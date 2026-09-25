@@ -168,6 +168,7 @@ class Monitor:
         self.board = board
         self.cache = board.dispatcher.cache
         self.streams: dict[str, Bus] = {}
+        self.quiet: dict[str, str] = {}
 
     @staticmethod
     def unpulled(path: str, *, host: str, fault: Exception) -> None:
@@ -256,11 +257,16 @@ class Monitor:
         receipts: tuple[str, ...],
         *,
         covered: bool = False,
+        verdict: str = vocabulary.OK,
     ) -> None:
         """A successful transport is not proof that its declared artifacts arrived.
 
         covered: whether the transcript is a trials session whose every cell was already
             complete and skipped, the one native run that legitimately captures no receipt.
+        verdict: what the run ended on. Only a run claiming success owes a receipt: one that
+            failed before its first trial wrote anything answers the same way on every pass, so
+            holding it pending pulled its results path again every sweep for as long as the
+            cache lived, and ten such runs cost every `wait` a minute per pass.
         """
         # The trials reader loads its dataframe dependency only when evidence needs checking,
         # matching the lazy reader used by `verdict` rather than taxing every CLI startup.
@@ -277,7 +283,8 @@ class Monitor:
             Path(token.partition("::")[0]).name.startswith("test_")
             for token in shlex.split(record.script)
         )
-        if native and job.handle.fetch_path and not receipts and not covered:
+        claimed = verdict == vocabulary.OK
+        if native and claimed and job.handle.fetch_path and not receipts and not covered:
             raise MissionError("native trial has no captured receipt; evidence is unverified")
         if receipts:
             if pulled is None:
@@ -486,6 +493,7 @@ class Monitor:
         running = 0
         finished: list[Finished] = []
         failed: list[Failed] = []
+        self.quiet.clear()
         resumed, waiting = self.held()
         fleet = self.board.fleet()
         records = self.cache.tracked()
@@ -567,10 +575,19 @@ class Monitor:
                         raise MissionError("copied trial receipts are missing from the local log")
                     pulled = job.handle.fetch_path
                 else:
+                    self.answering(job)
                     pulled = self.pull(job)
+                    self.answering(job)
                     harvested = self.capture(record, job)
                     transcript = log.read_text(encoding="utf-8") if log.is_file() else ""
-                self.verify(record, job, pulled, harvested, covered=covered_in(transcript))
+                self.verify(
+                    record,
+                    job,
+                    pulled,
+                    harvested,
+                    covered=covered_in(transcript),
+                    verdict=state.verdict,
+                )
             except (MissionError, OSError, ValueError) as fault:
                 detail = f"settlement pending; remote evidence retained: {fault}"
                 self.evidence(record, harvested, status="pending", detail=detail)
@@ -632,9 +649,23 @@ class Monitor:
             return None
         try:
             job.pull()
-        except (ProcessExecutionError, HostUnreachable, MissionError, OSError) as fault:
+        except HostUnreachable as fault:
+            self.quiet[job.handle.host] = str(fault)
+            return self.unpulled(path, host=job.handle.host, fault=fault)
+        except (ProcessExecutionError, MissionError, OSError) as fault:
             return self.unpulled(path, host=job.handle.host, fault=fault)
         return path
+
+    def answering(self, job: Run) -> None:
+        """Refuse to contact a host that already went quiet in this pass.
+
+        A dead host costs a full connect timeout per contact, and a settled run is contacted
+        for its results and again for its log, so a handful of runs owed by one dead host held
+        every pass for minutes. The first silence is remembered and every later run on that
+        host is left pending for the next pass without being asked.
+        """
+        if (fault := self.quiet.get(job.handle.host)) is not None:
+            raise MissionError(f"{job.handle.host} went quiet earlier in this pass: {fault}")
 
     def release(self, job: Run) -> bool:
         """Let a settled run go, so nothing keeps billing for work that already ended.

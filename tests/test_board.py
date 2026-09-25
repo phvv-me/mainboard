@@ -568,7 +568,7 @@ lab-core = { path = "../../../packages/lab-core", editable = true }
 lab-flat = { path = "../../../packages/lab-flat", editable = true }
 built = { path = "../../../packages/built" }
 elsewhere = { path = "/opt/elsewhere", editable = true }
-paleta-tsukuba = { path = "../../../.mainboard/vendor/paleta-tsukuba", editable = true }
+sample-lib = { path = "../../../.mainboard/vendor/sample-lib", editable = true }
 
 [feature.dev.pypi-dependencies]
 lab-self = { path = "../../..", editable = true }
@@ -577,7 +577,7 @@ lab-self = { path = "../../..", editable = true }
     )
     (workspace / "packages/lab-core/src").mkdir(parents=True)
     (workspace / "packages/lab-flat").mkdir(parents=True)
-    (workspace / ".mainboard/vendor/paleta-tsukuba/src").mkdir(parents=True)
+    (workspace / ".mainboard/vendor/sample-lib/src").mkdir(parents=True)
     (workspace / "src").mkdir()
 
     # A house package that lives outside the workspace is compiled at its vendored location, so
@@ -586,7 +586,7 @@ lab-self = { path = "../../..", editable = true }
     assert board.imports(board.plan(env="default", container="none")) == (
         "packages/lab-core/src",
         "packages/lab-flat",
-        ".mainboard/vendor/paleta-tsukuba/src",
+        ".mainboard/vendor/sample-lib/src",
         "src",
     )
 
@@ -1269,6 +1269,19 @@ def test_a_local_containerized_run_goes_through_the_wrapped_line(
     assert board.run(("true",), container="ngc") == 7
 
 
+@pytest.mark.parametrize("arguments", ["--fresh", "--fresh --timeout 180"])
+def test_invalid_fresh_arguments_fail_before_source_collection(
+    lab: Lab, monkeypatch: pytest.MonkeyPatch, arguments: str
+) -> None:
+    board = Board(lab.root)
+    monkeypatch.setattr(
+        "mainboard.board.Closure.of",
+        lambda *args, **kwargs: pytest.fail("invalid runner arguments reached source collection"),
+    )
+    with pytest.raises(SystemExit, match="takes the parametrize ids"):
+        board.shipment(f"{Lab.JOB}::app {arguments}", board.plan())
+
+
 def test_a_job_spelled_by_file_ships_its_closure_and_declares_what_it_fetches(
     lab: Lab, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1385,11 +1398,11 @@ def test_a_job_runs_here_through_the_same_runner_with_its_closure_exported(
         FakeProvisioner, "run", lambda self, command, env: collected.extend(command) or 0
     )
     board.run([file, "--", "--collect-only"])
-    assert "--collect-only" in collected and any("-dirty" in value for value in collected)
+    assert "--collect-only" in collected and any("sha256:" in value for value in collected)
 
 
 @pytest.mark.parametrize("host", [_GOLD, "rentbox"])
-@pytest.mark.parametrize("condition", ["committed", "missing", "dirty", "untracked"])
+@pytest.mark.parametrize("condition", ["captured", "missing", "edited", "new"])
 def test_research_admission_precedes_scheduler_or_provider_work(
     lab: Lab, monkeypatch: pytest.MonkeyPatch, host: str, condition: str
 ) -> None:
@@ -1421,16 +1434,14 @@ def test_research_admission_precedes_scheduler_or_provider_work(
     node = "research/camp/experiments/node/node.md"
     if condition == "missing":
         (lab.root / node).unlink()
-    elif condition == "dirty":
-        lab.write(node, "changed\n")
-    elif condition == "untracked":
-        lab.git("update-index", "--force-remove", node)
-    if condition == "committed":
+    elif condition in {"edited", "new"}:
+        lab.write(node, "changed or newly written\n")
+    if condition != "missing":
         job = board.on(host).submit(f"{Lab.JOB}::app")
         assert job.handle.id == ("77" if host == _GOLD else "rental-1")
         assert len(submitted) + len(FakeLanding.calls) == 1
     else:
-        with pytest.raises(MissionError, match="committed"):
+        with pytest.raises(MissionError, match="captured|node.md"):
             board.on(host).submit(f"{Lab.JOB}::app")
         assert not staged and not submitted and not FakeLanding.calls
         assert board.dispatcher.cache.total() == 0

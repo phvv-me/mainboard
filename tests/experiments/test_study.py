@@ -7,28 +7,26 @@ if TYPE_CHECKING:
 
 
 def test_creating_a_study_derives_a_stable_identity_and_a_slug_from_its_experiment() -> None:
-    derived = Study.create("joint-search", config_space={"bits": [1, 2]}, git_sha="abc123")
+    derived = Study.create("joint-search", config_space={"bits": [1, 2]}, source_digest="abc123")
     assert derived.experiment == "joint-search"
     assert len(derived.study_id) == 12
     assert derived.name == f"joint-search-{derived.study_id[:6]}"
-    assert (derived.hosts, derived.models, derived.dirty) == ((), (), False)
+    assert (derived.hosts, derived.models) == ((), ())
     assert "T" in derived.created_at
-    twin = Study.create("joint-search", config_space={"bits": [1, 2]}, git_sha="abc123")
+    twin = Study.create("joint-search", config_space={"bits": [1, 2]}, source_digest="abc123")
     assert twin.study_id == derived.study_id
     declared = Study.create(
         "e",
         config_space={},
-        git_sha="s",
+        source_digest="s",
         name="my-run",
         hosts=("gold", "miyabi-g"),
         models=("m1",),
-        dirty=True,
     )
-    assert (declared.name, declared.hosts, declared.models, declared.dirty) == (
+    assert (declared.name, declared.hosts, declared.models) == (
         "my-run",
         ("gold", "miyabi-g"),
         ("m1",),
-        True,
     )
 
 

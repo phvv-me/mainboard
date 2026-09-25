@@ -70,8 +70,8 @@ class RunRecord(FrozenModel):
     kind: str
     script: str
     args: str
-    git_sha: str
-    dirty: int
+    git_sha: str = ""
+    dirty: int | None = None
     submitted_at: str
     fetch_path: str | None = None
     name: str = ""

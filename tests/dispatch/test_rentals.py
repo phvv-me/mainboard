@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from mainboard.dispatch.rentals import (
     LAUNCH,
     handoff,
     identity,
+    published,
     reachable,
     seeded,
     waiting,
@@ -32,6 +34,42 @@ def test_the_key_a_rental_is_opened_with_is_one_this_machine_holds_both_halves_o
     assert identity().private == str(standard)
     assert identity().public == "ssh-ed25519 AAAA me@here"
     assert identity(str(declared)).private == str(declared)
+
+
+def test_a_locked_key_is_passed_over_before_anything_is_rented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rental is knocked on with nobody to type, so a locked pair refuses every knock.
+
+    An RTX 5090 billed five minutes on 2026-09-21 behind a passphrase-protected `id_ed25519`
+    that no agent held, beside an `id_rsa` that needed none.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    keypair(tmp_path)
+    open_pair = keypair(tmp_path, "id_rsa")
+    monkeypatch.setattr(
+        "mainboard.dispatch.rentals.unlocked", lambda private: private.name == "id_rsa"
+    )
+    assert identity().private == str(open_pair)
+    monkeypatch.setattr("mainboard.dispatch.rentals.unlocked", lambda private: False)
+    with pytest.raises(MissionError, match="ssh-add"):
+        identity()
+
+
+def test_the_key_sent_with_a_create_is_the_one_the_private_half_derives(tmp_path: Path) -> None:
+    """ssh never reads the `.pub`, so a mangled one goes unnoticed until a rental trusts it.
+
+    A three-line `id_rsa.pub` gave three rentals a key no sshd could parse on 2026-09-21.
+    """
+    private = tmp_path / "key"
+    made = subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", str(private)], check=False
+    )
+    if made.returncode:
+        pytest.skip("no ssh-keygen here to mint a real pair")
+    true_public = Path(f"{private}.pub").read_text(encoding="utf-8").split()[:2]
+    Path(f"{private}.pub").write_text("ssh-ed25519\nMANGLED\nme@here\n", encoding="utf-8")
+    assert published(private).split()[:2] == true_public
 
 
 def test_a_machine_with_no_key_pair_refuses_naming_the_command_that_makes_one(

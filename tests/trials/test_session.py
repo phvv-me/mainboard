@@ -40,7 +40,7 @@ def test_runtime_manifest_still_refuses_registration_changed_after_dispatch(
     closure.write_text(
         listing([Row(path="experiments/alpha/node.md", blob=blob_of(node), status=Status.CLEAN)])
     )
-    source = Source(commit="a" * 40, closure=str(closure))
+    source = Source(digest="a" * 64, closure=str(closure), root=tmp_path)
     monkeypatch.setattr(Taken, "source", property(lambda self: source), raising=False)
     session = Session(declaration(root))
     node.write_text("changed after dispatch\n")

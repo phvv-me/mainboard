@@ -13,16 +13,16 @@ class Sync(Declared):
     protect: list[str] = []
 
     def merged(self, over: Self) -> Self:
-        """This sync scope layered over `over`, lists unioned in order.
+        """This sync scope layered over `over`, preserving inherited safety rules.
 
-        Layering unions rather than replaces, so a host adding one exclude
-        never silently drops the workspace-wide protect rules, the footgun the
-        previous generation shipped.
+        An explicitly declared include list replaces the inherited transfer scope;
+        omitting it inherits that scope. Excludes and protections remain additive,
+        so narrowing a host never drops workspace-wide artifact protections.
 
         over: the lower-precedence sync scope being overlaid.
         """
         return type(self)(
-            include=_union(over.include, extra=self.include),
+            include=self.include if "include" in self.model_fields_set else over.include,
             exclude=_union(over.exclude, extra=self.exclude),
             protect=_union(over.protect, extra=self.protect),
         )

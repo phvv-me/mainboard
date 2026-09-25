@@ -26,7 +26,7 @@ from .durable import schedule
 from .help import Help
 from .jobs import lanes as lanes_module
 from .listing import Listing
-from .manifest.loading import load
+from .manifest.loading import load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
 from .probe.stress import rows as stress_rows
@@ -650,12 +650,12 @@ def build(root: Path | None = None) -> App:
         dpi: int | None = None,
         title: str = "",
     ) -> None:
-        """Plot a local SELECT using Seaborn and paleta, without implicit aggregation.
+        """Plot a local SELECT using Seaborn and Matplotlib, without implicit aggregation.
 
         sql: define the table, including any filtering, grouping, and ordering.
         file: read a UTF-8 SQL file instead of the positional statement.
             Both the file and paths inside SQL resolve from the caller's current directory.
-        config: explicitly read styles and figures from this manifest-format TOML file.
+        config: overlay project styles and figures from this manifest-format TOML file.
             It does not select an environment or change path resolution.
         figure: render a named [figures.<name>] specification; omit SQL, x, and y.
             Panels use native Seaborn marks and Matplotlib settings, without estimation.
@@ -663,7 +663,7 @@ def build(root: Path | None = None) -> App:
         out: a new output path; repeat for multiple formats, such as .pdf and .png.
         project: restrict scientific rows to this research project.
         kind: scatter, line, or bar; bar requires one row per x/hue group.
-        style: a named [plots.<name>] entry in mainboard.toml; default is paleta-shiho.
+        style: a named [plots.<name>] entry; defaults to paper when declared.
         dpi: raster resolution, overriding the style's DPI when supplied.
         title: the chart title, including the measurement scope when appropriate.
         """
@@ -679,22 +679,16 @@ def build(root: Path | None = None) -> App:
             from .plots.figure import FigurePlot
             from .plots.table import Plot
         except ModuleNotFoundError as fault:
-            if fault.name not in {"paleta", "seaborn", "matplotlib", "pandas"}:
+            if fault.name not in {"seaborn", "matplotlib", "pandas"}:
                 raise
             raise MissionError(
                 "plotting requires the plot extra. From the monorepo root run: "
-                "uv tool install --from './packages/mainboard[wandb,plot]' "
-                "--with ./packages/paleta mainboard --force"
+                "uv tool install --from './packages/mainboard[wandb,plot]' mainboard --force"
             ) from fault
         settings = PlotStyle()
         specification = None
-        manifest = (
-            load(config or workspace_root() / Project().manifest)
-            if config or figure or style
-            else None
-        )
+        manifest = load_plot_config(workspace_root() / Project().manifest, config)
         if figure:
-            assert manifest is not None
             try:
                 specification = manifest.figures[figure]
             except KeyError:
@@ -702,8 +696,8 @@ def build(root: Path | None = None) -> App:
                     f"no figure {figure!r}; declared figures are {sorted(manifest.figures)}"
                 ) from None
             style = style or specification.style
+        style = style or ("paper" if "paper" in manifest.plots else "")
         if style:
-            assert manifest is not None
             styles = manifest.plots
             try:
                 settings = styles[style]
@@ -1258,7 +1252,7 @@ def build(root: Path | None = None) -> App:
     def batch_wait(
         batch_id: str,
         *,
-        timeout: float = 0.0,
+        timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
         json: bool = False,
         agent: bool = False,
@@ -1272,8 +1266,8 @@ def build(root: Path | None = None) -> App:
         with work still in flight.
 
         batch_id: the batch to wait on, as `run` printed it.
-        timeout: give up after this many seconds, exiting 2 with jobs still in flight; 0 waits
-            as long as it takes.
+        timeout: give up after this many seconds, exiting 2 with jobs still in flight, an hour
+            unless said otherwise; 0 waits as long as it takes.
         interval: seconds between sweeps, the dispatch default when 0.
         json: print the verdict as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.
@@ -1363,7 +1357,7 @@ def build(root: Path | None = None) -> App:
         handle: str,
         *,
         on: str = "",
-        timeout: float = 0.0,
+        timeout: float = vocabulary.WAIT_SECONDS,
         interval: float = 0.0,
         json: bool = False,
         agent: bool = False,
@@ -1379,8 +1373,8 @@ def build(root: Path | None = None) -> App:
         handle: the job to wait on, as `submit` printed it, or a batch id as `batch run`
             printed it, which waits for every job of the batch.
         on: the host alias narrowing a handle recorded on several hosts.
-        timeout: give up after this many seconds, exiting 2 with the job still in flight; 0
-            waits as long as it takes.
+        timeout: give up after this many seconds, exiting 2 with the job still in flight, an
+            hour unless said otherwise; 0 waits as long as it takes.
         interval: seconds between polls, the dispatch default when 0.
         json: print the outcome as canonical JSON instead of the default rich table.
         agent: print the compact tabular mode instead of the default rich table.

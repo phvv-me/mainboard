@@ -1,7 +1,11 @@
 import base64
+import shutil
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import pytest
 
 from mainboard import ExecutionPlan
 from mainboard.dispatch import now
@@ -9,6 +13,18 @@ from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Container, HostProfile
+
+# A pin is a Linux host's job, rsync under an flock, and a machine without either (macOS ships
+# no flock) cannot stand in for that host.
+pins_on_this_host = pytest.mark.skipif(
+    shutil.which("rsync") is None or shutil.which("flock") is None,
+    reason="the pin runs rsync under flock on the host",
+)
+# A setgid directory passes its bit to what is made under it on Linux; BSD, macOS included,
+# inherits the group without the bit, so the bit a Linux host keeps cannot be checked here.
+setgid_inherits = pytest.mark.skipif(
+    sys.platform != "linux", reason="setgid-bit inheritance is Linux filesystem behaviour"
+)
 
 if TYPE_CHECKING:
     from types import TracebackType
