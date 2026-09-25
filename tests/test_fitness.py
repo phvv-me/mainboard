@@ -69,8 +69,6 @@ _FIT = System(
         "git-lfs": "3.7.0",
         "gh": "2.80.0",
         "ssh": "10.0",
-        "rsync": "3.4.1",
-        "tar": "1.35",
     },
     cuda="13.0",
     gpus=(Card(name="NVIDIA GeForce RTX 4090", capability="8.9", vram_mb=24564),),
@@ -78,7 +76,7 @@ _FIT = System(
 
 # The sections each role is asked, in the order a report prints them.
 _TARGET = ["platform", "lock", "driver", "cuda-builds", "memory", "disk"]
-_CENTER = [*_TARGET, "tools", "sync", "links", "case", "line-endings", "shells"]
+_CENTER = [*_TARGET, "tools", "links", "case", "line-endings", "shells"]
 
 type Change = str | int | bool | dict[str, str] | tuple[Card, ...]
 
@@ -417,24 +415,6 @@ def test_a_center_missing_a_tool_fails_with_each_install_this_platform_uses(
     assert judged.verdict is Verdict.FAIL
     assert judged.detail == f"missing {', '.join(missing)}; found {found}"
     assert judged.fix == "; ".join(install_command(system, tool) for tool in missing)
-
-
-@pytest.mark.parametrize(
-    ("tools", "verdict", "detail"),
-    [
-        ({"rsync": "3.4.1", "tar": "1.35"}, Verdict.PASS, "mirrors ship through rsync"),
-        ({"tar": "1.35"}, Verdict.PASS, "mirrors ship through tar"),
-        ({}, Verdict.FAIL, "neither rsync nor tar answers, so no mirror can ship"),
-    ],
-    ids=["rsync", "tar standing in", "neither"],
-)
-def test_a_mirror_ships_through_rsync_or_the_tar_that_replaces_it(
-    fitness: Fitness, tools: dict[str, str], verdict: Verdict, detail: str
-) -> None:
-    """Rsync is preferred, and tar is enough, so only a machine with neither fails."""
-    found = fitness.sync(machine(tools=tools))
-    assert (found.verdict, found.detail) == (verdict, detail)
-    assert found.fix == ("" if tools else install_command("Linux", "tar"))
 
 
 @pytest.mark.parametrize(

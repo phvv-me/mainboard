@@ -288,9 +288,9 @@ def test_a_tool_counts_only_when_it_is_on_path_and_answers_with_a_version() -> N
         TOOLS["git-lfs"]: (0, "git-lfs/3.7.0 (GitHub; darwin arm64)\n"),
         TOOLS["ssh"]: (0, "OpenSSH_10.0p2, LibreSSL 3.3.6\n"),
         TOOLS["uv"]: (0, "uv (no version here)\n"),
-        TOOLS["tar"]: (2, "bsdtar 3.7.4\n"),
+        TOOLS["pixi"]: (2, "pixi 0.55.0\n"),
     }
-    on_path = {name: f"/bin/{name}" for name in ("git", "ssh", "uv", "tar")}
+    on_path = {name: f"/bin/{name}" for name in ("git", "ssh", "uv", "pixi")}
     machine, shell = census_of("Darwin", answers, on_path)
 
     assert machine.tools() == {"git": "2.51.0", "git-lfs": "3.7.0", "ssh": "10.0"}

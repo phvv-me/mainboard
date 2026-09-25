@@ -31,7 +31,7 @@ _FIT = System(
     system=platform.system(),
     arch=platform.machine(),
     shells={"bash": "/bin/bash"},
-    tools={"git": "2.51.0", "git-lfs": "3.7.0", "gh": "2.80.0", "ssh": "9.9", "tar": "3.7"},
+    tools={"git": "2.51.0", "git-lfs": "3.7.0", "gh": "2.80.0", "ssh": "9.9"},
     free_bytes=10**12,
     root="/dest",
 )

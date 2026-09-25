@@ -379,7 +379,7 @@ def test_the_link_probe_answers_the_os_refusal_or_nothing(
 
 @given(
     system=st.sampled_from(["Windows", "Darwin", "Linux"]) | WORDS,
-    package=st.sampled_from([*_NATIVE, "tar"]) | WORDS,
+    package=st.sampled_from(_NATIVE) | WORDS,
 )
 def test_every_install_is_a_named_command_and_a_distributions_wherever_none_is_known(
     system: str, package: str
@@ -391,9 +391,7 @@ def test_every_install_is_a_named_command_and_a_distributions_wherever_none_is_k
     install spelled with that package's name.
     """
     distribution = f"sudo apt install {package} (or the {package} package of this distribution)"
-    native = {("Windows", tool) for tool in (*_NATIVE, "tar")} | {
-        ("Darwin", tool) for tool in _NATIVE
-    }
+    native = {(system, tool) for system in ("Windows", "Darwin") for tool in _NATIVE}
     assert (install_command(system, package) == distribution) is ((system, package) not in native)
 
 

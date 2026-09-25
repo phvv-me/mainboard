@@ -1,6 +1,6 @@
 """The standard-library agent `center migrate` runs on the destination, sent over SSH stdin.
 
-A machine about to become the center has no Mainboard yet, often no Bash and no rsync, and may
+A machine about to become the center has no Mainboard yet, often no Bash, and may
 be Windows, macOS or Linux. Everything done there before the tool is installed is therefore
 one of these functions, run by a Python that uv provides and fed through ssh's stdin, so the
 same code clones, places files and signs in on every platform. Each answers with plain JSON,

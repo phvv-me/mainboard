@@ -36,7 +36,6 @@ _INSTALLS = {
         "Windows": "Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0",
         "Darwin": "ssh ships with macOS; restore it with xcode-select --install",
     },
-    "tar": {"Windows": "tar.exe ships with Windows 10 1803 and later; update Windows"},
 }
 _DISTRIBUTION = "sudo apt install {package} (or the {package} package of this distribution)"
 
@@ -68,7 +67,7 @@ def install_command(system: str, package: str) -> str:
     """The command that installs `package` on a `system` machine, a distribution's when unknown.
 
     system: the platform as `platform.system()` spells it.
-    package: the tool, `git`, `git-lfs`, `gh`, `ssh` or `tar`.
+    package: the tool, `git`, `git-lfs`, `gh` or `ssh`.
     """
     return _INSTALLS.get(package, {}).get(system, _DISTRIBUTION.format(package=package))
 

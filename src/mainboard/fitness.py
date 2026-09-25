@@ -112,7 +112,6 @@ class Fitness:
         if role is Role.CENTER:
             found += [
                 self.tools(system),
-                self.sync(system),
                 self.links(system),
                 self.case(system),
                 self.line_endings(system),
@@ -306,20 +305,6 @@ class Fitness:
                 fix="; ".join(install_command(system.system, tool) for tool in missing),
             )
         return Section(section="tools", verdict=Verdict.PASS, detail=found)
-
-    def sync(self, system: System) -> Section:
-        """Whether this machine can ship a mirror to a host: rsync, or the tar that replaces it."""
-        carrier = next((tool for tool in ("rsync", "tar") if tool in system.tools), "")
-        if not carrier:
-            return Section(
-                section="sync",
-                verdict=Verdict.FAIL,
-                detail="neither rsync nor tar answers, so no mirror can ship",
-                fix=install_command(system.system, "tar"),
-            )
-        return Section(
-            section="sync", verdict=Verdict.PASS, detail=f"mirrors ship through {carrier}"
-        )
 
     def links(self, system: System) -> Section:
         """Whether the repository's symbolic links and deep paths survive a checkout here."""

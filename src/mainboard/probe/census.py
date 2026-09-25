@@ -41,8 +41,6 @@ TOOLS: dict[str, tuple[str, ...]] = {
     "git-lfs": ("git", "lfs", "version"),
     "gh": ("gh", "--version"),
     "ssh": ("ssh", "-V"),
-    "rsync": ("rsync", "--version"),
-    "tar": ("tar", "--version"),
     "uv": ("uv", "--version"),
     "pixi": ("pixi", "--version"),
     "tectonic": ("tectonic", "--version"),
