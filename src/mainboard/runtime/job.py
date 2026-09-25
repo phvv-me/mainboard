@@ -1,10 +1,8 @@
 # What a dispatched job is once it reaches the machine that runs it: data, not a shell script.
 #
-# The dispatching workstation decides everything about a job, the command, the tree it runs
-# from, the environment it enters, what it exports and how long it may take, and writes those
-# decisions down as one `Job`. The host's own installed tool reads that record and carries it
-# out, so the job behaves the same under PBS, pueue, a rented box or Windows, and nothing about
-# it is spelled in a shell grammar only some of those machines speak.
+# The dispatching workstation decides everything about a job and writes it down as one `Job`; the
+# host's own installed tool carries it out, so the job behaves the same under PBS, pueue, a rented
+# box or Windows, and nothing is spelled in a shell grammar only some of them speak.
 
 import shlex
 from pathlib import Path
@@ -26,11 +24,10 @@ if TYPE_CHECKING:
 class ToolCall(FrozenModel):
     """One call of this tool a job makes around its command, provisioning or watching.
 
-    args: the tool's own arguments, its name left out, since the runner calls the very tool
-        that is running it rather than whichever one a PATH happens to name.
+    args: the tool's arguments without its name, since the runner calls the very tool running
+        it rather than whichever one a PATH names.
     cwd: where the call runs, the job's working directory when empty.
-    credentials: a JSON file of variables the call alone receives on top of the job's
-        environment, empty for none; a file that is not there adds nothing.
+    credentials: a JSON file of variables only the call receives, empty or missing for none.
     """
 
     args: tuple[str, ...]
@@ -41,11 +38,10 @@ class ToolCall(FrozenModel):
 class PrefixActivation(FrozenModel):
     """Enter one built prefix, addressed by the content of the artifact it was built from.
 
-    The prefix is refused unless its completion stamp names the digest its directory is named
-    for, since a half-built environment and a finished one look the same from outside.
+    Refused unless its completion stamp names the digest its directory is named for, since a
+    half-built environment looks finished from outside.
 
     prefix: the built environment's directory, whose last segment is its digest.
-    env: the environment inside it.
     refusal: what the job says when the prefix is missing or incomplete.
     """
 
@@ -57,14 +53,11 @@ class PrefixActivation(FrozenModel):
     def entered(self, base: Mapping[str, str], *, cwd: str, how: Entering) -> dict[str, str]:
         """`base` inside the prefix, with the runtime step applied and its own `lib/` leading.
 
-        The runtime step runs here as well as in the prefix's `activate.sh`, since a prefix built
-        before that script called it is still entered, and every step only adds what is
-        missing. The environment's own libraries lead the loader path last of all, so one it
-        ships wins over the host's copy and over a wheel's.
+        The runtime step runs here too, for a prefix whose `activate.sh` predates calling it. The
+        environment's own libraries lead the loader path last, so one it ships wins over the
+        host's copy and a wheel's.
 
-        base: the environment the runner was started with.
         cwd: where the activation runs, the job's own tree.
-        how: this machine's way of entering an environment.
         """
         prefix = Path(self.prefix)
         script = prefix / ACTIVATION
@@ -78,7 +71,6 @@ class PrefixActivation(FrozenModel):
 
     @staticmethod
     def _stamped(prefix: Path) -> bool:
-        """Whether `prefix` is a finished build of the digest its directory is named for."""
         try:
             return (prefix / STAMP).read_text(encoding="utf-8").strip() == prefix.name
         except OSError:
@@ -88,9 +80,7 @@ class PrefixActivation(FrozenModel):
 class WorkspaceActivation(FrozenModel):
     """Enter the workspace's own environment, the footing a job addressing no prefix stands on.
 
-    script: the generated activation the workspace writes for the environment.
-    prefix: the environment's installed prefix, whose executables are enough when no script was
-        ever written.
+    prefix: the installed prefix, whose executables are enough when no `script` was written.
     refusal: what the job says when neither exists.
     """
 
@@ -100,15 +90,10 @@ class WorkspaceActivation(FrozenModel):
     refusal: str
 
     def entered(self, base: Mapping[str, str], *, cwd: str, how: Entering) -> dict[str, str]:
-        """`base` inside the workspace's environment, or a `Refusal` when it has none.
+        """`base` inside the workspace's environment: its activation, else its executables.
 
-        The generated activation when one was written, the prefix's executables when only those
-        exist, and a refusal otherwise: a command that quietly runs on whatever interpreter the
-        machine ships costs far more to discover than one that will not start.
-
-        base: the environment the runner was started with.
-        cwd: where the activation runs, the job's own tree.
-        how: this machine's way of entering an environment.
+        Otherwise a `Refusal`, since a command quietly running on the machine's own interpreter
+        costs far more to discover than one that will not start.
         """
         installed, script = Path(self.prefix), Path(self.script)
         shard = installed.parents[2]
@@ -130,10 +115,9 @@ type Activation = Annotated[PrefixActivation | WorkspaceActivation, Field(discri
 class Job(FrozenModel):
     """Everything the host needs to run one dispatched command, in the order it happens.
 
-    command: the command line, run through `bash -c` on POSIX and split into an argv on Windows.
+    command: run through `bash -c` on POSIX and split into an argv on Windows.
     root: the pinned tree the command runs from.
-    activation: how the job's environment is entered.
-    container: an argv that runs the command inside a container instead, empty for none.
+    container: an argv running the command inside a container instead, empty for none.
     walltime: the `HH:MM:SS` cap this runner enforces, empty when a scheduler enforces it or the
         caller chose none.
     logs: the directory a PBS job appends its merged output and exit artifact to, empty for a
@@ -161,14 +145,11 @@ class Job(FrozenModel):
 
     @classmethod
     def read(cls, given: str) -> Job:
-        """The record `given` spells, or the one the job script at that path hands over.
+        """The record `given` spells as JSON, or the one the job script at that path hands over.
 
-        A POSIX script hands its record over inline, which is what a scheduler feeding the
-        script to a shell on stdin still runs. Everything that can name the script instead, a
-        Windows queue whose shell would mangle the record's quotes or someone rerunning a job by
-        hand, names the file, and its last line is the handover carrying the record.
-
-        given: the record as JSON, or the path of a rendered job script.
+        A POSIX script hands its record over inline, which a scheduler feeding it to a shell on
+        stdin still runs. Anything that can name the script instead (a Windows queue whose shell
+        would mangle the quotes, a rerun by hand) names the file.
         """
         if given.lstrip().startswith("{"):
             return cls.model_validate_json(given)
@@ -178,8 +159,8 @@ class Job(FrozenModel):
     def handed(cls, script: str) -> Job:
         """The record a rendered job script hands over, the last word of its last line.
 
-        Lines are what a shell reads, newline-separated and nothing else, since a command may
-        carry a character Python would also call a line break and the record keeps it raw.
+        Lines split on newline only, as a shell reads them, since the record may carry raw
+        characters Python would also call a line break.
         """
         handover = script.rstrip("\n").rpartition("\n")[2]
         return cls.model_validate_json(shlex.split(handover)[-1])

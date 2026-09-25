@@ -1,16 +1,13 @@
 # The part of entering an environment that depends on what is installed and where a job landed.
 #
-# pixi owns activation proper, and on POSIX that stays the shell hook it writes, since conda
-# packages and module systems activate themselves in shell. What pixi cannot know is the rest:
-# that pip's CUDA wheels keep their shared libraries somewhere the loader never looks, that a
-# conda prefix's build search paths are not exported, and that a job which landed on a cluster
-# node has fast local scratch its compile caches belong on. Those are read off the prefix and the
-# machine every time an environment is entered, here, once, in Python.
+# pixi owns activation proper (on POSIX its shell hook, since conda packages and module systems
+# activate in shell). What pixi cannot know is read here off the prefix and the machine on every
+# entry: pip's CUDA wheels keep libraries where the loader never looks, a conda prefix's build
+# search paths are not exported, and a cluster node has fast local scratch for compile caches.
 #
-# Every generated activation calls this module as its last step, `python -m
-# mainboard.runtime.activation` printing the lines a shell evaluates, and a runner that enters an
-# environment without a shell applies the same `Runtime` in process. A step only ever adds: a
-# path list gains what is missing and a variable the caller already set keeps its value.
+# Every generated activation ends with `python -m mainboard.runtime.activation`, printing lines
+# a shell evaluates, and a runner entering without a shell applies the same `Runtime` in process.
+# A step only adds: a path list gains what is missing, and a variable already set keeps its value.
 
 import os
 import shlex
@@ -25,12 +22,7 @@ if TYPE_CHECKING:
 
 
 def prepended(environ: MutableMapping[str, str], name: str, entries: Sequence[Path]) -> None:
-    """Put `entries` at the front of the path list `name`, each at most once.
-
-    environ: the environment being built.
-    name: the path-list variable, `PATH` or `LD_LIBRARY_PATH` say.
-    entries: the directories to lead with, in order.
-    """
+    """Put `entries` at the front of the path list `name` (`PATH` say), each at most once."""
     current = [entry for entry in environ.get(name, "").split(os.pathsep) if entry]
     leading = [str(entry) for entry in entries if str(entry) not in current]
     if leading:
@@ -52,11 +44,10 @@ class Step(ABC):
 
 
 class WheelLibraries(Step):
-    """The shared libraries pip's CUDA wheels install under `site-packages`.
+    """The shared libraries pip's CUDA wheels install under `site-packages`, leading the loader.
 
-    `nvidia-*` wheels put each library under `nvidia/<name>/lib` and RAPIDS' `lib*` wheels under
-    `lib<name>/lib64`, none of which the dynamic loader searches, so a binary that links against
-    one outside torch's own `RPATH` fails to load it. Every such directory leads the loader path.
+    `nvidia-*` wheels use `nvidia/<name>/lib` and RAPIDS' `lib*` wheels `lib<name>/lib64`, which
+    the loader never searches, so a binary linking one outside torch's `RPATH` fails to load it.
     """
 
     def apply(self, environ: MutableMapping[str, str], prefix: Path) -> None:
@@ -73,8 +64,8 @@ class WheelLibraries(Step):
 class BuildPaths(Step):
     """The prefix's own `pkg-config` directory and libclang, for native builds inside it.
 
-    A conda prefix installs both and exports neither, so a cargo or meson build that links a
-    system library from the environment would otherwise find the host's copy or none at all.
+    A conda prefix installs both and exports neither, so a cargo or meson build would find the
+    host's copy or none.
     """
 
     def apply(self, environ: MutableMapping[str, str], prefix: Path) -> None:
@@ -88,13 +79,10 @@ class BuildPaths(Step):
 class CompileCaches(Step):
     """torch.compile's and Triton's caches, on node-local scratch when the job has some.
 
-    A cluster's home and work filesystems are network mounts, and a cold compile against a cache
-    on one is the known way an aarch64 compile hangs, so on a node with local scratch both caches
-    move there. Scratch counts only on a scheduled node or one with a local mount, never a
-    laptop's ordinary temporary directory, and the model caches stay where they are, since the
-    weights are large, persistent and would be wiped with the scratch at the end of every job.
-
-    mount: the local mount whose presence marks a node as having node-local scratch.
+    A cold compile against a cache on a cluster's network mounts is the known way an aarch64
+    compile hangs. Scratch counts only on a scheduled node or one with `mount`, never a laptop's
+    temporary directory. Model caches stay put: the weights are large, persistent, and would be
+    wiped with the scratch after every job.
     """
 
     candidates = ("LOCALDIR", "PBS_LOCALDIR", "TMPDIR")
@@ -117,19 +105,14 @@ class CompileCaches(Step):
             return
         defaulted(environ, "TORCHINDUCTOR_CACHE_DIR", str(scratch / "torchinductor"))
         defaulted(environ, "TRITON_CACHE_DIR", str(scratch / "triton"))
-        # A cache directory that cannot be made is the compiler's to report when it writes
-        # there, not a reason the environment cannot be entered at all.
+        # A cache directory that cannot be made is the compiler's to report, not a refusal here.
         for name in ("TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR"):
             with suppress(OSError):
                 Path(environ[name]).mkdir(parents=True, exist_ok=True)
 
 
 class Runtime:
-    """Every step, applied in order to an environment installed at one prefix.
-
-    prefix: the installed environment, pixi's `CONDA_PREFIX`.
-    steps: what entering it states, the house steps unless a caller needs others.
-    """
+    """Every step, applied in order to the environment installed at `prefix` (`CONDA_PREFIX`)."""
 
     def __init__(
         self,
@@ -140,18 +123,17 @@ class Runtime:
         self.steps = steps
 
     def apply(self, environ: MutableMapping[str, str]) -> None:
-        """Add every step's facts to `environ` in place."""
         for step in self.steps:
             step.apply(environ, self.prefix)
 
     def changes(self, environ: Mapping[str, str]) -> dict[str, str]:
-        """The variables applying the steps to `environ` would set, and their values."""
+        """The variables applying the steps to `environ` would set."""
         applied = dict(environ)
         self.apply(applied)
         return {name: value for name, value in applied.items() if environ.get(name) != value}
 
     def shell(self, environ: Mapping[str, str]) -> str:
-        """The POSIX shell lines that make `environ` what `apply` would, for a sourced script."""
+        """The POSIX shell lines making `environ` what `apply` would."""
         return "".join(
             f"export {name}={shlex.quote(value)}\n"
             for name, value in self.changes(environ).items()
@@ -159,11 +141,7 @@ class Runtime:
 
 
 def main() -> None:
-    """Print the lines finishing the activation the calling shell just performed.
-
-    Reads the prefix the shell entered from `CONDA_PREFIX`, which pixi's hook has just set, and
-    prints nothing for a shell that entered none.
-    """
+    """Print the lines finishing the activation of the `CONDA_PREFIX` pixi's hook just set."""
     prefix = os.environ.get("CONDA_PREFIX", "")
     if prefix:
         sys.stdout.write(Runtime(Path(prefix)).shell(os.environ))

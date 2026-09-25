@@ -314,12 +314,9 @@ def test_the_loop_keeps_reading_until_its_budget_runs_out(depot: Path) -> None:
 
 
 def test_a_fresh_process_minting_by_name_finds_the_wandb_sink() -> None:
-    """Importing the tracking package alone registers every sink, which is the CLI's own path.
+    """Importing the tracking package alone registers every sink, the CLI's own path.
 
-    Guards the registration seam: a sink joins the registry when its module loads, and the
-    package initializer is what loads it, so `mainboard submit` in a fresh interpreter can mint
-    the declared service by name. The suite's own imports register sinks as a side effect, so
-    only a child interpreter proves the production path.
+    The suite's own imports register sinks as a side effect, so only a child interpreter proves it.
     """
     probing = "from mainboard.tracking import Tracker\nTracker.find('wandb')\n"
     proof = subprocess.run(

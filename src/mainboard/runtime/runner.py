@@ -1,15 +1,11 @@
 # The one way a dispatched job runs, on whichever machine it landed on.
 #
-# A job used to be a rendered bash script: an exit trap framing receipts, a `timeout` re-exec for
-# the walltime, a `trap 'exit 143' TERM`, `export` lines and a sourced activation. Each of those is
-# a step here instead, in the order the script ran them, so PBS, pueue, a rented machine and a
-# Windows box all run the same code, and what a job does no longer depends on which shell a
-# scheduler happened to hand it to.
+# What a rendered bash script once did (exit trap, `timeout` re-exec, `trap 'exit 143' TERM`,
+# exports, sourced activation) is a step here, so every scheduler and Windows run the same code.
 #
-# The order is the contract. Build the environment the job was dispatched against, enter it,
-# export what the dispatch decided, attest to the machine, start the sampler, point the command at
-# its receipts file, and run it from the pinned tree under the walltime. Whatever happens after
-# the environment is entered, the receipts the command wrote are framed back and the exit status
+# The order is the contract: build the environment, enter it, export what the dispatch decided,
+# attest, start the sampler, point the command at its receipts file, and run it from the pinned
+# tree under the walltime. Once entered, the receipts are always framed back and the exit status
 # is the command's own, a signal's `128 + N`, or the walltime's `124`/`137`.
 
 import json
@@ -39,8 +35,8 @@ if TYPE_CHECKING:
     from .entry import Entering
     from .job import Job, ToolCall
 
-# The signals a job is ended by, whichever of them this platform has. Receiving one ends the
-# command's whole tree and the job with `128 + N`, the status `trap 'exit 143' TERM` gave it.
+# The signals ending a job, whichever this platform has: the command's tree and the job end with
+# `128 + N`, the status `trap 'exit 143' TERM` gave it.
 _ENDINGS = tuple(
     getattr(signal, name) for name in ("SIGTERM", "SIGINT", "SIGHUP") if hasattr(signal, name)
 )
@@ -52,9 +48,8 @@ _SAMPLER_GRACE = 5.0
 class Receipts:
     """The file a run writes its trial receipts to, framed back through the job's output.
 
-    Named for this runner's process, since a cluster node runs several jobs out of one temporary
-    directory and two sharing a receipts file would hand each other's trials to whichever
-    settled first. See `dispatch.evidence` for why receipts are written to a file at all.
+    Named for this runner's process, since jobs sharing a node's temporary directory would
+    otherwise hand each other's trials over. `dispatch.evidence` says why receipts are a file.
     """
 
     def __init__(self) -> None:
@@ -82,11 +77,9 @@ class Receipts:
 class Runner:
     """Run one `Job` to its exit status.
 
-    `tool` is how the runner calls this very tool for the verbs around a command, its own
-    interpreter rather than whichever `mainboard` a PATH names.
+    `tool` calls this very tool for the verbs around a command, in its own interpreter rather
+    than whichever `mainboard` a PATH names.
 
-    job: what the dispatch decided.
-    environ: the environment this runner was started with, the process's own by default.
     how: this machine's way of entering an environment, chosen by platform by default.
     grace: seconds a command ended at its walltime is given before it is killed outright.
     """
@@ -147,8 +140,7 @@ class Runner:
     def provide(self) -> None:
         """Build the environment this job was dispatched against, unless the host has it.
 
-        Its failure is not the job's: entering the environment afterwards refuses in words that
-        name it, which is the clearer of the two messages.
+        Its failure is only said: entering afterwards refuses in clearer words.
         """
         if self.job.provide is None:
             return
@@ -181,12 +173,8 @@ class Runner:
         return status
 
     def argv(self, environment: Mapping[str, str]) -> list[str]:
-        """The command as the process started for it: its container, `bash -c`, or its words.
-
-        Windows has no shell to hand a line to, so the line is split into the argv it spells
-        and its program is looked up on the environment's own `PATH`, which is what a shell
-        would have searched.
-        """
+        """The command's argv: its container, `bash -c`, or on shell-less Windows its own words,
+        the program looked up on the environment's `PATH` as a shell would."""
         if self.job.container:
             return list(self.job.container)
         if platform.system() != "Windows":
@@ -200,37 +188,31 @@ class Runner:
     ) -> int:
         """Run one of this tool's own verbs to its exit status, 0 when there is none to run.
 
-        The verb runs in this very tool, so a job is provisioned and watched by the tool that is
-        running it. A quiet call's output
-        is discarded, since it belongs in the job's receipts rather than its log; a loud one keeps
-        its errors in the log.
-
-        call: the verb and where it runs, None for nothing to run.
-        environment: the environment it runs in, before its own credentials.
-        quiet: discard its errors too, not only its output.
+        Its output is discarded, since it belongs in the job's receipts rather than its log; a
+        call that is not `quiet` keeps its errors in the log.
         """
         if call is None:
             return 0
         self.flush()
-        return subprocess.call(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=this tool's own verb in its own interpreter since=2026-09-25
-            [*self.tool, *call.args],
-            cwd=call.cwd or self.job.root,
-            env={**environment, **self.credentials(call)},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL if quiet else None,
-        )
+        with self._verb(call, environment, quiet=quiet) as process:
+            return process.wait()
 
     def sample(self, environment: Mapping[str, str]) -> subprocess.Popen[bytes] | None:
         """Start the sampler beside the command, following this runner so it cannot outlive it."""
         call = self.job.sampler
-        if call is None:
-            return None
+        return (
+            None if call is None else self._verb(call, environment, "--parent", str(os.getpid()))
+        )
+
+    def _verb(
+        self, call: ToolCall, environment: Mapping[str, str], *extra: str, quiet: bool = True
+    ) -> subprocess.Popen[bytes]:
         return subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=this tool's own verb in its own interpreter since=2026-09-25
-            [*self.tool, *call.args, "--parent", str(os.getpid())],
+            [*self.tool, *call.args, *extra],
             cwd=call.cwd or self.job.root,
             env={**environment, **self.credentials(call)},
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL if quiet else None,
         )
 
     @staticmethod
@@ -256,8 +238,8 @@ class Runner:
     def say(self, text: str, *, error: bool = False) -> None:
         """Write one line of the runner's own into the job's output, nothing for empty text.
 
-        Straight to the descriptor, the way a shell's `echo` writes, so the line lands wherever
-        the command's own output goes, a PBS log included, in the order it was said.
+        Straight to the descriptor like a shell's `echo`, so it lands wherever the command's
+        output goes, a PBS log included, in order.
         """
         if text:
             self.flush()
@@ -272,12 +254,10 @@ class Runner:
     def output(self) -> Generator[None]:
         """Send a PBS job's merged output to the log a later poll reads, and nothing otherwise.
 
-        A PBS server spools a job's output where no poll looks, and purges the job from its own
-        records soon after it ends, so the job appends to its own log under the dispatch state
-        directory and writes its exit status beside it. The runner's own standard streams are
-        what move, the way `exec >> log 2>&1` moved a script's, so the activation, the command
-        and anything the runner itself says or raises all land in the one log; they are put back
-        when the run ends.
+        A PBS server spools output where no poll looks and soon purges the job, so the job
+        appends to its own log (exit status beside it). The runner's own standard streams move,
+        as `exec >> log 2>&1` moved a script's, so everything lands in the one log until the run
+        ends.
         """
         if not self.job.logs:
             yield
