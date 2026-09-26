@@ -1,6 +1,8 @@
 import base64
+import re
 import shlex
 import subprocess
+from collections.abc import Sequence
 
 import pytest
 
@@ -22,7 +24,7 @@ from mainboard.dispatch.shells import (
 from mainboard.engines.compile.backend import PIXI_VERSION, WINDOWS_INSTALLER
 from mainboard.manifest import HostProfile
 
-from .support import RecordingTransport, cache, machine_with, plan
+from .support import Naps, RecordingTransport, cache, machine_with, plan
 from .test_onboard import FakeDispatcher
 
 _ROOT = "C:/Users/me/.mainboard-jobs"
@@ -265,3 +267,56 @@ def test_a_windows_host_that_left_no_prefix_behind_is_refused_by_name() -> None:
     shell = WindowsShell(windows_plan(), _ROOT, ssh=transport)
     with pytest.raises(MissionError, match="has no C:/Users/me/.mainboard-jobs/.mainboard/envs"):
         Bootstrap(shell).environment()
+
+
+class Holding(RecordingTransport):
+    """A Windows host whose tool's entrypoint running copies hold.
+
+    holders: what each probe for them answers, the last repeating.
+    refusals: how many more installs uv refuses for it.
+    """
+
+    def __init__(self, holders: list[str], refusals: int) -> None:
+        super().__init__()
+        self.holders = holders
+        self.refusals = refusals
+
+    def invoke(
+        self, command: Sequence[str], host: str, *, operation: str, **_: object
+    ) -> tuple[int, str, str]:
+        answer = super().invoke(command, host, operation=operation)
+        if "Win32_Process" in self.scripts[-1]:
+            return 0, self.holders.pop(0) if len(self.holders) > 1 else self.holders[0], ""
+        if "uv tool install" in self.scripts[-1] and self.refusals:
+            self.refusals -= 1
+            return 2, "", "error: Failed to install entrypoint\n  Caused by: (os error 32)"
+        return answer
+
+
+_VERIFYING = "pid 7: mainboard center verify --json"
+
+
+@pytest.mark.parametrize(
+    ("holders", "refusals", "refused", "naps"),
+    [
+        pytest.param([_VERIFYING, ""], 1, "", 2, id="released-then-installed-on-a-retry"),
+        pytest.param([_VERIFYING], 9, f"is held by {_VERIFYING}; stop it", 13, id="held-by-one"),
+        pytest.param([""], 9, "error: Failed to install entrypoint", 2, id="held-by-nobody"),
+    ],
+)
+def test_an_entrypoint_a_running_copy_holds_is_waited_for_retried_and_named(
+    monkeypatch: pytest.MonkeyPatch, holders: list[str], refusals: int, refused: str, naps: int
+) -> None:
+    """Windows cannot replace a running executable, so uv refused to install the tool while a
+    copy of it ran there, and the same install succeeded by hand minutes later (pedro-home,
+    2026-09-26)."""
+    slept = Naps()
+    monkeypatch.setattr("time.sleep", slept)
+    transport = Holding(holders, refusals)
+    bootstrap = Bootstrap(WindowsShell(windows_plan(), _ROOT, ssh=transport))
+    if refused:
+        with pytest.raises(MissionError, match=re.escape(refused)):
+            bootstrap.tool()
+    else:
+        assert bootstrap.tool().winner == "uv"
+    assert len(slept.waited) == naps

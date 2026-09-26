@@ -138,6 +138,12 @@ class Dialect(ABC):
     def pixi_installer(self) -> str:
         """pixi's official installer at the fleet's pinned version."""
 
+    @property
+    @abstractmethod
+    def holders(self) -> str:
+        """The line printing each running process that holds the tool's entrypoint, empty where
+        a running executable can be replaced anyway."""
+
     @abstractmethod
     def proof(self, plan: ExecutionPlan, root: str) -> str:
         """The path whose presence proves `plan`'s environment was provisioned under `root`."""
@@ -184,6 +190,7 @@ class Posix(Dialect):
     uv_bootstrap = ("command -v curl", _UV_INSTALLER)
     pip = ("python3 -m pip --version", "python3 -m pip install --user --break-system-packages")
     pixi_installer = POSIX_INSTALLER
+    holders = ""
 
     def proof(self, plan: ExecutionPlan, root: str) -> str:
         return activation(root, env=plan.env)
@@ -263,6 +270,12 @@ class Windows(Dialect):
     # The installer's own inner probes leave an exit code behind that says nothing about the
     # install; the version read right after it is what vouches for the pixi it put down.
     pixi_installer = f"{WINDOWS_INSTALLER}; $LASTEXITCODE = 0"
+    # uv's trampoline stays alive for as long as the tool it launched runs.
+    holders = (
+        f"$entrypoint = Join-Path $HOME '.local\\bin\\{_TOOL}.exe'; "
+        "Get-CimInstance Win32_Process | Where-Object ExecutablePath -eq $entrypoint | "
+        'ForEach-Object { "pid $($_.ProcessId): $($_.CommandLine)" }'
+    )
 
     def proof(self, plan: ExecutionPlan, root: str) -> str:
         return plan.prefix(root)

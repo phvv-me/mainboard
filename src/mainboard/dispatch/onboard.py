@@ -10,7 +10,13 @@ from typing import TYPE_CHECKING
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from patos import FrozenModel, Resolution, Strategy, StrategyError
-from tenacity import Retrying, retry_if_result, stop_after_attempt, wait_fixed
+from tenacity import (
+    Retrying,
+    retry_if_exception,
+    retry_if_result,
+    stop_after_attempt,
+    wait_fixed,
+)
 
 from ..core.errors import MissionError
 from ..core.project import Project
@@ -33,6 +39,16 @@ _TOOL = Project().name
 
 # Where the tool's own source sits inside a synced workspace that vendors it.
 _SOURCE = f"packages/{_TOOL}"
+
+# uv's refusal when Windows will not let it replace the tool's entrypoint while a running copy
+# holds it (pedro-home, 2026-09-26): the same install succeeded by hand minutes later.
+_HELD = "failed to install entrypoint"
+
+# How often an install polls for running copies of the tool to end, how often it retries a held
+# entrypoint, and the pause between either.
+_HOLDER_POLLS = 12
+_INSTALL_ATTEMPTS = 3
+_PAUSE = 5.0
 
 
 def gpus_command() -> str:
@@ -282,8 +298,42 @@ class Bootstrap:
             raise MissionError(
                 f"cannot install {_TOOL} on {self.shell.plan.host!r} by {where}: {refused}"
             ) from None
-        routes.select(resolution.winner).install()
+        self._install(routes.select(resolution.winner))
         return resolution
+
+    def _install(self, installer: Installer) -> None:
+        """Run the winning route, riding out an entrypoint a running copy of the tool holds.
+
+        Windows cannot replace a running executable, so the install first waits a bounded time
+        for every running copy to end (a verify a dropped ssh left behind), then retries uv's
+        refusal a few times, and a refusal that outlasts both names the processes holding it.
+        """
+        Retrying(
+            retry=retry_if_result(bool),
+            stop=stop_after_attempt(_HOLDER_POLLS),
+            wait=wait_fixed(_PAUSE),
+            retry_error_callback=lambda state: None,
+        )(self._holders)
+        attempts = Retrying(
+            retry=retry_if_exception(_held),
+            stop=stop_after_attempt(_INSTALL_ATTEMPTS),
+            wait=wait_fixed(_PAUSE),
+            reraise=True,
+        )
+        try:
+            attempts(installer.install)
+        except MissionError as refusal:
+            if not (_held(refusal) and (holders := self._holders())):
+                raise
+            raise MissionError(
+                f"{_TOOL}'s entrypoint on {self.shell.plan.host!r} is held by "
+                f"{'; '.join(holders.splitlines())}; stop it and install again"
+            ) from refusal
+
+    def _holders(self) -> str:
+        """Each running process holding the tool's entrypoint, one per line."""
+        probe = self.shell.dialect.holders
+        return self.shell.run(probe).strip() if probe else ""
 
     def environment(self) -> None:
         """Have the machine's own tool compile the synced manifest and install `env` from it.
@@ -301,6 +351,11 @@ class Bootstrap:
                 f"{host!r} has no {self.shell.proof} after installing {self.env!r}; "
                 "the environment was not provisioned"
             )
+
+
+def _held(refusal: BaseException) -> bool:
+    """Whether `refusal` is uv finding the tool's entrypoint held by a running copy."""
+    return _HELD in str(refusal).lower()
 
 
 def read_facts(text: str) -> HostFacts:
