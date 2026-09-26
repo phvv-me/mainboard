@@ -37,6 +37,8 @@ _TRANSPORT_MARKERS = (
     "control socket",
     "control master",
     "timed out",
+    # ServerAliveCountMax keepalives went unanswered: `Timeout, server <host> not responding.`
+    "not responding",
     # An ssh that would not authenticate ran no command. Read as a command answer, an expired
     # credential's `Permission denied (keyboard-interactive)` raised a bare `RuntimeError` out of
     # `Job.transcript` (whose contract costs a quiet host only its transcript) and took a whole

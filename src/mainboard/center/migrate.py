@@ -23,9 +23,9 @@ from ..core.project import Project
 from ..core.section import Section, Verdict, staged
 from ..dispatch.onboard import Bootstrap, Onboarding
 from ..dispatch.shared import announce
-from ..dispatch.shells import open_shell
+from ..dispatch.shells import dialect_for, open_shell, plain_errors
 from ..dispatch.targets import probe_capabilities
-from ..dispatch.transport import SshTransport
+from ..dispatch.transport import HostUnreachable, SshTransport
 from ..fitness import Fitness, Role
 from ..probe.system import System
 from .carrier import Carrier
@@ -66,6 +66,12 @@ _UNHOLDABLE = re.compile(
     r"|(^|/)(con|prn|aux|nul|conin\$|conout\$|com[1-9]|lpt\d) *(\.[^/]*)?(/|$)",
     re.IGNORECASE,
 )
+
+# How long the destination's own `center verify` may run, a torch and CUDA smoke and every lint
+# tool's probe included, and the silence its ssh rides out while that smoke loads the machine:
+# the default 45 s dropped it with `Timeout, server not responding` (pedro-home, 2026-09-26).
+_VERIFY_SECONDS = 1800.0
+_PATIENT = {"server_alive_interval": 30.0, "server_alive_count": 10}
 
 # A readiness report as `center verify --json` prints it.
 _SECTIONS = TypeAdapter(list[Section])
@@ -408,20 +414,32 @@ class Migration:
         return rows
 
     def verify(self, plan: ExecutionPlan, root: str) -> list[Section]:
-        """The destination's own `center verify`, which is the readiness suite run there."""
+        """The destination's own `center verify`, which is the readiness suite run there.
+
+        It rides one ssh process whose keepalives are patient enough for the smoke that loads
+        the machine, bounded by a wall clock past any full verify.
+        """
         self.watch(f"verifying {self.destination}")
-        with open_shell(plan, root, ssh=self.transport) as shell:
-            line = shell.stage(f"{_TOOL} center verify --json", activate=False)
-            _, out, err = shell.execute(line)
+        dialect = dialect_for(plan.profile)
+        ssh = self.transport.model_copy(update=_PATIENT)
+        line = dialect.stage(plan, root, command=f"{_TOOL} center verify --json", activate=False)
+        argv = dialect.one_shot(ssh, self.destination, line)
+        try:
+            _, out, err = ssh.invoke(
+                argv, self.destination, operation="verify", timeout=_VERIFY_SECONDS
+            )
+        except HostUnreachable as dropped:
+            out, err = "", str(dropped)
         start = out.find("[")
         try:
             sections = _SECTIONS.validate_json(out[start:] if start >= 0 else "")
         except ValueError:
+            said = plain_errors(err or out).strip()[-240:]
             return [
                 Section(
                     section="verify",
                     verdict=Verdict.FAIL,
-                    detail=f"no readiness report came back: {(err or out).strip()[-240:]}",
+                    detail=f"no readiness report came back: {said}",
                     fix=f"{_TOOL} center verify (on {self.destination})",
                 )
             ]

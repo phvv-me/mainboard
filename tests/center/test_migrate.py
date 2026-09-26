@@ -46,15 +46,11 @@ _VERIFIED = "Loading...\n" + json.dumps(
 
 
 class Shell:
-    """A destination shell that runs nothing: it keeps each command and answers fixed words.
-
-    verified: what `center verify` prints there.
-    """
+    """A destination shell that runs nothing: it keeps each command and answers fixed words."""
 
     dialect = Posix()
 
-    def __init__(self, verified: str = _VERIFIED) -> None:
-        self.verified = verified
+    def __init__(self) -> None:
         self.ran: list[str] = []
 
     def __enter__(self) -> Shell:
@@ -72,13 +68,6 @@ class Shell:
         self.ran.append(command)
         return "installed default\n"
 
-    def stage(self, command: str, *, activate: bool) -> str:
-        return command
-
-    def execute(self, line: str) -> tuple[int, str, str]:
-        self.ran.append(line)
-        return 1, self.verified, ""
-
 
 class Moving:
     """Everything one migration test arranges: the tree, both homes, the far side, the shell.
@@ -87,7 +76,7 @@ class Moving:
     home: this center's home.
     destination: where the workspace goes on the far side.
     far: the far side's home.
-    shell: the destination shell the install and verify steps go through.
+    shell: the destination shell the install steps go through.
     probes: what each capabilities probe answers, in order.
     """
 
@@ -99,7 +88,11 @@ class Moving:
         self.far.mkdir()
         self.shell = Shell()
         self.probes: list[Facts] = [self.facts(uv="uv")]
-        self.canned = {"census": _FIT.model_dump_json(), "login": '{"signed": true}'}
+        self.canned = {
+            "census": _FIT.model_dump_json(),
+            "login": '{"signed": true}',
+            "verify": _VERIFIED,
+        }
 
     def facts(self, *, uv: str) -> Facts:
         """The destination as the stock probe finds it."""
@@ -310,12 +303,28 @@ def test_an_install_step_that_fails_is_the_last_one_tried(
     assert "install default" not in report
 
 
-def test_a_destination_whose_verify_says_nothing_readable_fails_that_row(moving: Moving) -> None:
-    """No report is not a clean report."""
-    moving.shell.verified = "mainboard: command not found"
-    report = _sections(moving.migration().run())
+@pytest.mark.parametrize(
+    ("verified", "said"),
+    [("mainboard: command not found", "command not found"), ("", "not responding")],
+    ids=["nothing readable", "the link dropped"],
+)
+def test_a_destination_whose_verify_says_nothing_readable_fails_that_row(
+    moving: Moving, verified: str, said: str
+) -> None:
+    """No report is not a clean report, and a dropped link is a failed row, not a crash.
+
+    The verify rides keepalives patient through the torch smoke that loads the destination,
+    whose 45 s of silence under the default ones dropped it (pedro-home, 2026-09-26).
+    """
+    moving.canned["verify"] = verified
+    migration = moving.migration()
+    report = _sections(migration.run())
     assert report["verify"].verdict is Verdict.FAIL
-    assert "command not found" in report["verify"].detail
+    assert said in report["verify"].detail
+    argv = migration.transport.invoked[-1]
+    assert "ServerAliveInterval=30" in argv and "ServerAliveCountMax=10" in argv
+    assert argv[-1] == "timeout=1800"
+    assert "mainboard center verify --json" in argv[-2]
 
 
 def test_a_center_with_nothing_optional_carries_nothing_for_it(moving: Moving) -> None:

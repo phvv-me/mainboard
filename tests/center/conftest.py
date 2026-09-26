@@ -9,7 +9,7 @@ import pytest
 
 from mainboard.center.carrier import _BOOTSTRAP as BOOTSTRAP
 from mainboard.center.carrier import MARKER
-from mainboard.dispatch.transport import SshTransport
+from mainboard.dispatch.transport import HostUnreachable, SshTransport
 
 from ..git.conftest import OWNED, Forge, Workspace, isolated_git, template
 
@@ -69,11 +69,28 @@ class LocalTransport(SshTransport):
     machine's own tools (a census, a gh login).
 
     home: the destination's home directory, what the child sees as HOME.
-    canned: fixed answers by agent function name.
+    canned: fixed answers by agent function name, and what `center verify` prints as `verify`.
+    invoked: every one-shot argv, its timeout last.
     """
 
     home: Path
     canned: dict[str, str] = {}
+    invoked: list[tuple[str, ...]] = []
+
+    def invoke(
+        self,
+        command: tuple[str, ...],
+        host: str,
+        *,
+        operation: str,
+        input_text: str | None = None,
+        timeout: float | None = None,
+    ) -> tuple[int, str, str]:
+        """What `center verify` printed there, the link dropped when nothing is canned."""
+        self.invoked.append((*command, f"timeout={timeout:g}"))
+        if not (said := self.canned.get(operation, "")):
+            raise HostUnreachable(f"ssh {operation} to {host!r} failed: Timeout, not responding")
+        return 0, said, ""
 
     def feed(
         self, command: tuple[str, ...], host: str, *, operation: str, chunks: Iterable[bytes]
