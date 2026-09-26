@@ -77,7 +77,7 @@ class Repo:
 
     Every question is asked of git in this working tree and answered fresh, since a verb that
     commits or pulls changes the answer halfway through. Only what cannot change during a verb is
-    cached: the remote URL, the owner and the submodule entries `.gitmodules` declares.
+    cached: the remote URL, the owner and the submodules `.gitmodules` and the index record.
 
     name: the workspace-relative path, `.` for the root.
     declared: the URL the parent's `.gitmodules` declares, empty for the root.
@@ -130,7 +130,34 @@ class Repo:
 
     @cached_property
     def children(self) -> list[Repo]:
-        """Every submodule `.gitmodules` declares here, checked out or not, in declared order."""
+        """Every submodule the index records a gitlink for, checked out or not, in declared order.
+
+        `.gitmodules` only names each one's URL and branch: an entry there with no gitlink is
+        stale, answered by `stale` and walked by no verb, since git itself refuses it as a
+        pathspec (`packages/cunicode`, 2026-09-26).
+        """
+        linked = self._gitlinks
+        return [
+            Repo(
+                self.path / entry["path"],
+                name=posixpath.join(self.name, entry["path"]).removeprefix("./"),
+                declared=resolved(entry.get("url", ""), self.url),
+                branch=entry.get("branch", ""),
+                owns=self.owns,
+            )
+            for entry in self._declared
+            if entry["path"] in linked
+        ]
+
+    @property
+    def stale(self) -> list[str]:
+        """Every path `.gitmodules` declares a submodule at with no gitlink in the index."""
+        linked = self._gitlinks
+        return [entry["path"] for entry in self._declared if entry["path"] not in linked]
+
+    @cached_property
+    def _declared(self) -> list[dict[str, str]]:
+        """Every submodule entry `.gitmodules` declares, its fields by name, in declared order."""
         entries: dict[str, dict[str, str]] = {}
         # No `.gitmodules`, or one declaring nothing, is exit 1 and no output: no submodules.
         listing = self.git.run(
@@ -140,16 +167,17 @@ class Repo:
             key, _, value = record.partition("\n")
             section, _, field = key.removeprefix("submodule.").rpartition(".")
             entries.setdefault(section, {})[field] = value
-        return [
-            Repo(
-                self.path / entry["path"],
-                name=posixpath.join(self.name, entry["path"]).removeprefix("./"),
-                declared=resolved(entry.get("url", ""), self.url),
-                branch=entry.get("branch", ""),
-                owns=self.owns,
-            )
-            for entry in entries.values()
-        ]
+        return list(entries.values())
+
+    @cached_property
+    def _gitlinks(self) -> frozenset[str]:
+        """The declared paths the index records a submodule pointer at."""
+        paths = [entry["path"] for entry in self._declared]
+        if not paths:
+            return frozenset()
+        listing = self.git.out("ls-files", "--stage", "-z", "--", *paths)
+        entries = (entry.partition("\t") for entry in listing.split("\0") if entry)
+        return frozenset(path for meta, _, path in entries if meta.startswith(_GITLINK))
 
     def relative(self, child: Repo) -> str:
         """`child`'s path inside this repository, the way this repository's index names it."""

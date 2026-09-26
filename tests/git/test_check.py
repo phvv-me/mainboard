@@ -123,3 +123,22 @@ def test_lfs_content_with_no_git_lfs_here_fails(workspace: Workspace, fake_lfs: 
     assert (".", "lfs", Verdict.FAIL) in _found(findings)
     (fake_lfs / "code").write_text("0", encoding="utf-8")
     assert (".", "lfs", Verdict.FAIL) not in _found(workspace.tree().check())
+
+
+def test_a_gitmodules_entry_with_no_gitlink_is_named_by_check_and_skipped_by_every_verb(
+    workspace: Workspace,
+) -> None:
+    """Git refuses such an entry as a pathspec, which failed a whole pull row
+    (`packages/sqlalchemy-cockroachdb/cockroach-proto`, 2026-09-26)."""
+    for field, value in (("path", "gone"), ("url", workspace.forge.url(FOREIGN, "gone"))):
+        workspace.git(
+            workspace.path, "config", "-f", ".gitmodules", f"submodule.gone.{field}", value
+        )
+    workspace.forge.publish(workspace.path, {})
+    stale = [finding for finding in workspace.tree().check() if finding.check == "gitmodules"]
+    assert [(finding.repo, finding.verdict, finding.detail) for finding in stale] == [
+        (".", Verdict.WARN, "gone: stale .gitmodules entry with no gitlink; remove it")
+    ]
+    steps = workspace.tree().pull()
+    assert "gone" not in {step.repo for step in steps}
+    assert all(step.outcome.settled for step in steps)

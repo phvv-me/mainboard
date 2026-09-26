@@ -23,7 +23,8 @@ class Check:
     records it is published (or the commit exists nowhere this machine can see), a branch that
     diverged from its upstream, a file in HEAD over the size ceiling, LFS content with no
     git-lfs to move it. A `warn` is the ordinary state of work in progress: detached, unpushed,
-    behind, a checkout off its recorded pointer, a pointer the next push will carry.
+    behind, a checkout off its recorded pointer, a pointer the next push will carry, or a stale
+    `.gitmodules` entry every verb skips.
     """
 
     def __init__(self, tree: Tree) -> None:
@@ -49,6 +50,7 @@ class Check:
     def _findings(self, repo: Repo) -> list[Finding]:
         return [
             *self._fetched(repo),
+            *self._stale(repo),
             *self._line(repo),
             *self._pointers(repo),
             *self._sizes(repo),
@@ -60,6 +62,12 @@ class Check:
         if complaint := self.unfetched.get(repo.name):
             return [_warn(repo, "fetch", f"{complaint}; reading the refs fetched last")]
         return []
+
+    @staticmethod
+    def _stale(repo: Repo) -> list[Finding]:
+        """A `.gitmodules` entry with no gitlink, which git refuses as a pathspec."""
+        detail = "stale .gitmodules entry with no gitlink; remove it"
+        return [_warn(repo, "gitmodules", f"{path}: {detail}") for path in repo.stale]
 
     @staticmethod
     def _line(repo: Repo) -> list[Finding]:
