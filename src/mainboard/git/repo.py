@@ -266,16 +266,12 @@ class Repo:
     def serves(self, commit: str) -> bool:
         """Whether `origin` hands out `commit`, which a clone of a parent pointing at it needs.
 
-        A remote branch this clone knows holding it answers without the network. A shallow clone
-        cannot trace a branch back past its boundary and a clone with no remote branches has none
-        to trace, so either asks the remote itself for that one commit.
+        A remote branch this clone knows holding it answers without the network. Otherwise the
+        remote itself is asked for that one commit, since a clone's refs see only part of it: a
+        shallow clone cannot trace a branch past its boundary, and a single-branch clone never
+        tracks the other branches that may hold it.
         """
-        return bool(self.homes(commit)) or (self._blind() and self._offered(commit))
-
-    def _blind(self) -> bool:
-        """Whether this clone's remote branches cannot say which commits the remote holds."""
-        shallow = self.git.line("rev-parse", "--is-shallow-repository") == "true"
-        return shallow or not self.git.out("for-each-ref", "--count=1", f"refs/remotes/{REMOTE}/")
+        return bool(self.homes(commit)) or self._offered(commit)
 
     def _offered(self, commit: str) -> bool:
         """Whether `origin` serves `commit` when asked for it alone, without its history or tree.

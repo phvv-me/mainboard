@@ -198,6 +198,27 @@ def test_a_head_no_remote_holds_stops_the_move_before_the_destination_is_touched
     assert not moving.destination.exists()
 
 
+@pytest.mark.parametrize("pushed", [True, False])
+def test_a_single_branch_clone_asks_its_remote_for_a_head_only_another_branch_holds(
+    moving: Moving, pushed: bool
+) -> None:
+    """A clone tracking `main` alone, its HEAD a commit `pins` holds, as the monorepo pins."""
+    tree = moving.tree
+    seed = tree.forge.seed("Pedrexus", "projects")
+    tree.git(seed, "switch", "-q", "-c", "pins")
+    pinned = tree.forge.commit(seed, "pin", {"pin.txt": "pin\n"})
+    tree.git(seed, "push", "-q", "origin", "pins")
+    only_main = "+refs/heads/main:refs/remotes/origin/main"
+    tree.git(tree.path, "config", "remote.origin.fetch", only_main)
+    tree.git(tree.path, "fetch", "-q", "origin", "pins")
+    tree.git(tree.path, "checkout", "-q", "--detach", pinned)
+    if not pushed:
+        tree.forge.commit(tree.path, "local only", {"local.txt": "x\n"})
+    assert not tree.tree().root.homes(tree.head(tree.path))
+    failed = [row.section for row in moving.migration().preflight() if row.verdict is Verdict.FAIL]
+    assert failed == ([] if pushed else ["publish ."])
+
+
 def test_a_platform_the_workspace_cannot_serve_stops_the_move_after_the_census(
     moving: Moving,
 ) -> None:

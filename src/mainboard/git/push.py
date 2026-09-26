@@ -94,7 +94,7 @@ def _unserved(repo: Repo) -> str:
 
     What this machine last heard from each remote is asked first, and a submodule is fetched
     only when that says no, so a pointer pushed from another machine is not held for stale refs;
-    a shallow or branchless clone then asks its remote for the commit itself.
+    a clone whose refs still miss it then asks its remote for the commit itself.
     A submodule never checked out cannot be asked and is left to `check`.
     """
     recorded = repo.pointers()

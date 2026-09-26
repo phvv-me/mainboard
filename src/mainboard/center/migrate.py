@@ -151,9 +151,11 @@ class Migration:
 
     def preflight(self) -> list[Section]:
         """Whether every owned repository's HEAD can be fetched, and what stays behind unsaved."""
+        tree = self.board.git()
+        unserved = {repo.name for repo in tree.owned() if not repo.serves(repo.head())}
         rows: list[Section] = []
-        for state in self.board.git().status():
-            if not state.published:
+        for state in tree.status():
+            if state.repo in unserved:
                 rows.append(
                     Section(
                         section=f"publish {state.repo}",
