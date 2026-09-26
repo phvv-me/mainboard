@@ -285,6 +285,10 @@ class Repo:
             asked = ("fetch", "--quiet", "--depth=1", "--filter=tree:0", self.url, commit)
             return probe.run(*asked, network=True).succeeded
 
+    def tracked(self) -> list[str]:
+        """Every path the index tracks, sparse ones included, as git spells it."""
+        return [path for path in self.git.out("ls-files", "-z").split("\0") if path]
+
     def pointers(self) -> dict[str, str]:
         """The commit HEAD records for every submodule path, keyed by that path."""
         paths = [self.relative(child) for child in self.children]

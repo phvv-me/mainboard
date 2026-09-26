@@ -11,17 +11,19 @@ from patos import Resolution
 
 from mainboard import Board
 from mainboard.center import migrate
-from mainboard.center.migrate import Migration, github_token
-from mainboard.center.state import claude_key
+from mainboard.center.carrier import Carrier
+from mainboard.center.migrate import Migration, github_host_keys, github_token
+from mainboard.center.state import Carried, Destination, claude_key
 from mainboard.core.errors import MissionError
 from mainboard.core.host import current_platform, pixi_platform
 from mainboard.core.section import Section, Verdict
 from mainboard.dispatch.onboard import Bootstrap, Onboarding
 from mainboard.dispatch.shells import Posix
 from mainboard.dispatch.targets import Facts
+from mainboard.git.repo import Repo
 from mainboard.probe.system import System
 
-from .conftest import LocalTransport, Workspace
+from .conftest import HELD, REFUSED, LocalTransport, Workspace, posix_names, unholdable
 
 # The destination's alias, a machine no manifest declares yet.
 _DESTINATION = "pedro-home"
@@ -103,18 +105,26 @@ class Moving:
         """The destination as the stock probe finds it."""
         return Facts(name=_DESTINATION, home=str(self.far), uv=uv, platform="Linux x86_64")
 
-    def migration(self, *, token: str = "gho_secret") -> Migration:
+    def migration(self, *, token: str = "gho_secret", host_keys: Sequence[str] = ()) -> Migration:
         """A migration of this tree to the far side, with this machine's GitHub token."""
-        transport = LocalTransport(home=self.far, canned=self.canned)
         return Migration(
             Board(self.tree.path),
             _DESTINATION,
             root=str(self.destination),
-            transport=transport,
+            transport=LocalTransport(home=self.far, canned=self.canned),
             watch=lambda said: None,
             home=self.home,
             token=lambda: token,
+            host_keys=lambda: list(host_keys),
         )
+
+    def carrier(self) -> Carrier:
+        """The carrier a migration calls the far side through."""
+        return Carrier(_DESTINATION, "uv", LocalTransport(home=self.far, canned=self.canned))
+
+    def place(self, **fields: str) -> Destination:
+        """The far side as its agent reports it, with `fields` over the defaults."""
+        return Destination(root=str(self.destination), home=str(self.far), **fields)
 
 
 @pytest.fixture
@@ -351,3 +361,69 @@ def test_the_github_token_is_whatever_gh_holds_and_nothing_otherwise(
 
     monkeypatch.setattr(migrate.subprocess, "run", run)
     assert github_token() == token
+    assert github_host_keys() == token.splitlines()
+
+
+def test_the_ssh_carry_adds_only_what_the_destination_lacks_and_vouches_for_github(
+    moving: Moving, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the destination's user adapted stays as it was, and GitHub is never trusted on sight.
+
+    A block whose `Host` line the destination declares is left alone, a new one names this
+    machine's login for a destination logging in as someone else, known host lines join as a
+    union, and a clone reaching GitHub over ssh brings GitHub's published keys when this machine
+    never recorded them. A rerun adds nothing, and keys no one could fetch are a warning.
+    """
+    monkeypatch.setattr(Repo, "url", property(lambda repo: "git@github.com:Pedrexus/projects.git"))
+    for home, config, known in (
+        (
+            moving.home,
+            "Host github.com\n    IdentityFile ~/.ssh/id_github\nHost x\n",
+            "x ssh-rsa X",
+        ),
+        (moving.far, "Host macmini\n    User pedro\nHost x\n    User pedro", "mac ssh-rsa M"),
+    ):
+        (home / ".ssh").mkdir()
+        (home / ".ssh" / "config").write_text(config, encoding="utf-8")
+        (home / ".ssh" / "known_hosts").write_text(f"{known}\n", encoding="utf-8")
+    keys = ["ssh-ed25519 GH"]
+    migration = moving.migration(host_keys=keys)
+    manifest = Board(moving.tree.path).manifest
+    carried = Carried(
+        moving.tree.path, manifest, moving.place(user="Pedro"), home=moving.home, user="me"
+    )
+    assert (
+        "1 host blocks and 2 known host lines" in migration.trust(moving.carrier(), carried).detail
+    )
+    assert (moving.far / ".ssh" / "config").read_text(encoding="utf-8") == (
+        "Host macmini\n    User pedro\nHost x\n    User pedro\n\n"
+        "Host github.com\n    User me\n    IdentityFile ~/.ssh/id_github\n"
+    )
+    assert (moving.far / ".ssh" / "known_hosts").read_text(encoding="utf-8") == (
+        "mac ssh-rsa M\nx ssh-rsa X\ngithub.com ssh-ed25519 GH\n"
+    )
+    again = migration.trust(moving.carrier(), carried)
+    assert (again.verdict, again.detail) == (
+        Verdict.PASS,
+        "0 host blocks and 0 known host lines added",
+    )
+    unfetched = moving.migration().trust(moving.carrier(), carried)
+    assert unfetched.verdict is Verdict.WARN and "gh auth login" in unfetched.fix
+
+
+@posix_names
+def test_a_windows_checkout_leaves_out_only_the_paths_ntfs_refuses(moving: Moving) -> None:
+    """A name Windows cannot hold costs that one path, never its whole repository.
+
+    Each repository holding such names is cloned and gets a warning counting and naming them.
+    """
+    unholdable(moving.tree)
+    migration = moving.migration()
+    rows = _sections(migration.clone(moving.carrier(), moving.place(system="Windows")))
+    assert rows["clone packages/lib"].verdict is Verdict.PASS
+    assert rows["unholdable packages/lib"].verdict is Verdict.WARN
+    assert rows["unholdable packages/lib"].detail.startswith(f"{len(REFUSED)} tracked paths")
+    assert rows["unholdable ."].detail.endswith(": root?.md")
+    lib = moving.destination / "packages" / "lib"
+    assert all((lib / path).is_file() for path in HELD)
+    assert not any((lib / path).exists() for path in REFUSED)

@@ -1,3 +1,4 @@
+import getpass
 import io
 import json
 import os
@@ -19,9 +20,10 @@ from mainboard.probe.census import Census
 
 from ..git.conftest import Workspace
 from ..strategies import WORDS
+from .conftest import HELD, REFUSED, posix_names, unholdable
 
-# The owned submodule of the fixture tree, as `[parent, path]` the way the migration names it.
-_LIB = [[".", "packages/lib"]]
+# The owned submodule of the fixture tree, as `[parent, path, url]` the way the migration names it.
+_LIB = [[".", "packages/lib", "forge:phvv-me/lib.git"]]
 
 # A scripted command table: what a command line starting with each prefix answers.
 type Answers = Mapping[tuple[str, ...], tuple[int, str]]
@@ -106,6 +108,7 @@ def test_where_answers_the_root_and_home_absolute_in_this_machines_spelling(home
         "root": str(home / "projects"),
         "home": str(home),
         "separator": os.sep,
+        "user": getpass.getuser(),
     }
     assert Path(str(remote.where("relative")["root"])).is_absolute()
 
@@ -251,7 +254,7 @@ def test_clone_checks_out_the_root_and_owned_submodules_and_a_rerun_changes_noth
         {"repo": "packages/lib", "outcome": "done", "detail": "at its pointer"},
     ]
     for _ in range(2):
-        assert remote.clone(str(base), origin(tree), "main", commit, _LIB) == done
+        assert remote.clone(str(base), origin(tree), "main", commit, _LIB, {}) == done
     assert tree.head(base) == commit
     assert tree.git(base, "rev-parse", "--abbrev-ref", "main@{upstream}") == "origin/main"
     assert tree.head(base / "packages" / "lib") == tree.head(tree.lib)
@@ -273,7 +276,7 @@ def _occupied(tree: Workspace, base: Path, commit: str) -> str:
 
 def _ahead(tree: Workspace, base: Path, commit: str) -> str:
     """A checkout of this repository holding a commit the center's HEAD lacks."""
-    remote.clone(str(base), origin(tree), "main", commit, [])
+    remote.clone(str(base), origin(tree), "main", commit, [], {})
     return tree.forge.commit(base, "local work", {"local.txt": "only here\n"})
 
 
@@ -298,7 +301,7 @@ def test_clone_holds_a_root_it_did_not_make_and_leaves_it_as_it_was(
     base = tmp_path / "destination"
     commit = tree.head(tree.path)
     kept = occupy(tree, base, commit)
-    steps = remote.clone(str(base), origin(tree), "main", commit, _LIB)
+    steps = remote.clone(str(base), origin(tree), "main", commit, _LIB, {})
     assert steps == [{"repo": ".", "outcome": "held", "detail": steps[0]["detail"]}]
     assert said in steps[0]["detail"]
     if kept:
@@ -315,15 +318,22 @@ def test_clone_detaches_without_a_branch_and_reports_each_failure_as_its_own_row
     """
     commit = tree.head(tree.path)
     base = tmp_path / "detached"
-    steps = remote.clone(str(base), origin(tree), "", commit, [[".", "packages/absent"]])
+    steps = remote.clone(
+        str(base),
+        origin(tree),
+        "",
+        commit,
+        [[".", "packages/absent", "forge:phvv-me/absent.git"]],
+        {},
+    )
     assert steps[0] == {"repo": ".", "outcome": "done", "detail": f"detached at {commit[:12]}"}
     assert tree.git(base, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
     assert steps[1]["repo"] == "packages/absent" and steps[1]["outcome"] == "failed"
     assert steps[1]["detail"]
     nowhere = (tmp_path / "nowhere.git").as_uri()
-    failed = remote.clone(str(tmp_path / "unreached"), nowhere, "main", commit, _LIB)
+    failed = remote.clone(str(tmp_path / "unreached"), nowhere, "main", commit, _LIB, {})
     assert [row["outcome"] for row in failed] == ["failed"]
-    unknown = remote.clone(str(tmp_path / "fresh"), origin(tree), "main", "0" * 40, _LIB)
+    unknown = remote.clone(str(tmp_path / "fresh"), origin(tree), "main", "0" * 40, _LIB, {})
     assert [row["outcome"] for row in unknown] == ["failed"]
     assert unknown[0]["detail"]
 
@@ -356,7 +366,7 @@ def test_clone_prepares_lfs_when_present_and_long_paths_on_windows(
     runner = run({("git", "lfs", "version"): (lfs, ""), ("git", "-C"): (1, "")})
     if system == "nt":
         windows(monkeypatch)
-    steps = remote.clone(str(tmp_path / "base"), "forge:x.git", "main", "abc", _LIB)
+    steps = remote.clone(str(tmp_path / "base"), "forge:x.git", "main", "abc", _LIB, {})
     assert steps == [{"repo": ".", "outcome": "failed", "detail": ""}]
     assert runner.commands[: len(expected)] == expected
 
@@ -441,3 +451,44 @@ def test_run_answers_status_and_output_and_127_for_a_program_that_cannot_start(
     assert remote._run(echo, stdin="token") == (0, "TOKEN\n")
     missing = str(tmp_path / "absent-tool")
     assert remote._run((missing, "--version")) == (127, f"{missing} could not run")
+
+
+def test_ssh_on_a_machine_with_no_ssh_files_makes_them_from_what_it_was_sent(home: Path) -> None:
+    """A fresh destination gets the blocks a blank line apart and one known host line each.
+
+    Sent again, they are all there already, so nothing is added.
+    """
+    for added in (2, 0):
+        sent = remote.ssh(["Host a\n    User me", "Host b"], ["a k", "b k"])
+        assert sent == {"blocks": added, "keys": added}
+    config = (home / ".ssh" / "config").read_text(encoding="utf-8")
+    assert config == "Host a\n    User me\n\nHost b\n"
+    assert (home / ".ssh" / "known_hosts").read_text(encoding="utf-8") == "a k\nb k\n"
+
+
+@posix_names
+@pytest.mark.parametrize("interrupted", [False, True], ids=["fresh", "after a failed checkout"])
+def test_clone_leaves_out_exactly_the_excluded_paths_and_converges(
+    tree: Workspace, tmp_path: Path, interrupted: bool
+) -> None:
+    """Every other path lands, each excluded name matching itself alone, and a rerun converges.
+
+    So does a run over what a checkout that failed on those names left behind: a library cloned
+    with an empty index and a stray file where a tracked one goes.
+    """
+    commit = unholdable(tree)
+    base = tmp_path / "destination"
+    lib = base / "packages" / "lib"
+    excluded = {".": ["root?.md"], "packages/lib": sorted(REFUSED)}
+    if interrupted:
+        remote.clone(str(base), origin(tree), "main", commit, [], {})
+        tree.git(lib.parent, "clone", "-q", "--no-checkout", "forge:phvv-me/lib.git", "lib")
+        (lib / "lib.txt").write_text("stray\n", encoding="utf-8")
+    for _ in range(2):
+        steps = remote.clone(str(base), origin(tree), "main", commit, _LIB, excluded)
+        assert [step["outcome"] for step in steps] == ["done", "done"]
+    assert all((lib / path).is_file() for path in {*HELD, "lib.txt"})
+    assert not any((lib / path).exists() for path in REFUSED)
+    assert not (base / "root?.md").exists()
+    assert tree.head(lib) == tree.head(tree.lib)
+    assert tree.git(lib, "status", "--porcelain") == ""

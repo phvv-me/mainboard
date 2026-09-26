@@ -17,6 +17,7 @@ import tarfile
 from collections.abc import Iterator, Sequence
 from contextlib import closing
 from fnmatch import fnmatch
+from getpass import getuser
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
@@ -83,7 +84,7 @@ _MACOS_ONLY = ("usekeychain",)
 _DEFAULT_KEYS = ("id_ed25519", "id_ecdsa", "id_rsa")
 
 # The host GitHub is reached at over ssh, which the workspace's own submodules name.
-_GITHUB = "github.com"
+GITHUB = "github.com"
 
 
 def claude_key(path: str) -> str:
@@ -99,12 +100,14 @@ class Destination(FrozenModel):
 
     root: the workspace root, absolute and in that machine's spelling, as is `home`.
     system: the platform as `platform.system()` spells it there.
+    user: the login the migration's ssh runs as there.
     """
 
     root: str
     home: str
     separator: str = "/"
     system: str = ""
+    user: str = ""
 
 
 class Parcel(FrozenModel):
@@ -206,18 +209,26 @@ class SshConfig:
         ]
 
     @staticmethod
-    def rendered(blocks: Sequence[list[str]], *, system: str) -> str:
-        """The blocks as a config the destination's ssh client accepts."""
+    def rendered(blocks: Sequence[list[str]], *, system: str, user: str = "") -> list[str]:
+        """Each block as text the destination's ssh client accepts.
+
+        user: the login a block naming none reaches its host as, empty to leave it to ssh; the
+            catch-all `Host *` is left alone, since it would rename every other host there too.
+        """
         refused = (_WINDOWS_REFUSES if system == "Windows" else ()) + (
             _MACOS_ONLY if system != "Darwin" else ()
         )
-        lines = [
-            line
-            for block in blocks
-            for line in block
-            if not line.strip().lower().startswith(refused)
-        ]
-        return "\n".join(lines).strip() + "\n"
+        rendered = []
+        for block in blocks:
+            lines = [line for line in block if not line.strip().lower().startswith(refused)]
+            if (
+                user
+                and _patterns(block) != ["*"]
+                and not any(line.strip().lower().split()[:1] == ["user"] for line in block)
+            ):
+                lines.insert(1, f"    User {user}")
+            rendered.append("\n".join(lines).strip())
+        return rendered
 
     @staticmethod
     def _blocks(text: str) -> list[list[str]]:
@@ -255,44 +266,56 @@ class Carried:
     manifest: the workspace's loaded manifest, which names the environments and the hosts.
     destination: where the new center keeps its root and home.
     home: this machine's home directory.
+    user: this machine's login, the one its ssh config's blocks were written for.
     """
 
     def __init__(
-        self, root: Path, manifest: Manifest, destination: Destination, *, home: Path
+        self,
+        root: Path,
+        manifest: Manifest,
+        destination: Destination,
+        *,
+        home: Path,
+        user: str = "",
     ) -> None:
         self.root = root
         self.manifest = manifest
         self.destination = destination
         self.home = home
+        self.user = user or getuser()
 
     def ssh(self) -> list[Parcel]:
-        """The ssh config blocks the declared hosts need, the keys they name, and known hosts."""
+        """The keys the needed ssh blocks name and the default ones, each with its public half."""
         folder = self.home / ".ssh"
+        named = [self._home_path(identity) for identity in SshConfig.identities(self._blocks())]
+        keys = [
+            path
+            for path in dict.fromkeys([*named, *(folder / key for key in _DEFAULT_KEYS)])
+            if path is not None and path.is_file()
+        ]
+        pairs = [
+            pair
+            for key in keys
+            for pair in ((key, True), (key.with_name(f"{key.name}.pub"), False))
+        ]
+        return [self._home(path, secret=secret) for path, secret in pairs if path.is_file()]
+
+    def ssh_config(self) -> list[str]:
+        """The ssh blocks the declared, held and GitHub hosts need, with every jump host.
+
+        Each names this machine's login where it names none and the destination logs in as
+        someone else, whose name ssh would otherwise send.
+        """
+        user = self.user if self.destination.user not in ("", self.user) else ""
+        return SshConfig.rendered(self._blocks(), system=self.destination.system, user=user)
+
+    def known_hosts(self) -> list[str]:
+        """This machine's known host lines, none when it keeps no such file."""
         try:
-            config = SshConfig((folder / "config").read_text(encoding="utf-8"))
+            text = (self.home / ".ssh" / "known_hosts").read_text(encoding="utf-8")
         except FileNotFoundError:
             return []
-        blocks = config.needed([*self.manifest.profiles(), *Holdings(self.root).read(), _GITHUB])
-        named = [self._home_path(identity) for identity in config.identities(blocks)] + [
-            folder / key for key in _DEFAULT_KEYS
-        ]
-        keys = [path for path in dict.fromkeys(named) if path is not None and path.is_file()]
-        files = [
-            *(
-                pair
-                for key in keys
-                for pair in ((key, True), (key.with_name(f"{key.name}.pub"), False))
-            ),
-            (folder / "known_hosts", False),
-        ]
-        return [
-            Parcel(
-                anchor="home",
-                path=".ssh/config",
-                data=SshConfig.rendered(blocks, system=self.destination.system).encode(),
-            ),
-            *(self._home(path, secret=secret) for path, secret in files if path.is_file()),
-        ]
+        return [line.strip() for line in text.splitlines() if line.strip()]
 
     def workspace(self) -> list[Parcel]:
         """The `.env`, the `.mainboard/` registry and ledgers, and every environment's lock."""
@@ -455,6 +478,14 @@ class Carried:
         return Parcel(
             anchor="root", path=path.relative_to(self.root).as_posix(), source=path, secret=secret
         )
+
+    def _blocks(self) -> list[list[str]]:
+        """The blocks of this machine's ssh config the destination needs, none without one."""
+        try:
+            config = SshConfig((self.home / ".ssh" / "config").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        return config.needed([*self.manifest.profiles(), *Holdings(self.root).read(), GITHUB])
 
     def _home_path(self, written: str) -> Path | None:
         """An `IdentityFile` as written, resolved here, None when it lies outside home."""

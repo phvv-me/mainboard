@@ -11,9 +11,34 @@ from mainboard.center.carrier import _BOOTSTRAP as BOOTSTRAP
 from mainboard.center.carrier import MARKER
 from mainboard.dispatch.transport import SshTransport
 
-from ..git.conftest import Forge, Workspace, isolated_git, template
+from ..git.conftest import OWNED, Forge, Workspace, isolated_git, template
 
 __all__ = ["LocalTransport", "isolated_git", "template"]
+
+# Names NTFS refuses, each beside one it holds that a pattern left unescaped would also catch:
+# a wildcard, a bracket, a trailing blank, a colon, a device name with an extension or a space.
+REFUSED = frozenset(
+    {"notes/why?.md", "notes/[ab]?.md", "notes/a*b.md", "notes/end ", "notes/a: b.md"}
+    | {"CON.txt", "aux .log", "dot."}
+)
+HELD = frozenset({"notes/a1.md", "notes/aXb.md", "notes/end", "notes/[ab].md", "console.md"})
+
+posix_names = pytest.mark.skipif(
+    sys.platform == "win32", reason="a Windows checkout cannot hold the names NTFS refuses"
+)
+
+
+def unholdable(tree: Workspace) -> str:
+    """Commit `REFUSED` and `HELD` in the owned library and `root?.md` in the root, all pushed.
+
+    Answers the root's new commit, which records the library's.
+    """
+    tree.forge.publish(tree.forge.seed(OWNED, "lib"), dict.fromkeys(REFUSED | HELD, "x\n"))
+    tree.git(tree.lib, "fetch", "-q", "origin")
+    tree.git(tree.lib, "checkout", "-q", "origin/main")
+    commit = tree.forge.commit(tree.path, "names", {"root?.md": "x\n"})
+    tree.git(tree.path, "push", "-q", "origin", "main")
+    return commit
 
 
 @pytest.fixture

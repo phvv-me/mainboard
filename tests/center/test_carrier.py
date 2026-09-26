@@ -1,3 +1,4 @@
+import getpass
 import json
 import os
 import sys
@@ -118,7 +119,9 @@ def test_the_real_loader_runs_the_agent_end_to_end_on_its_own_stdin(
     """
     agent = Carrier("gold", "uv", Local())
     place = agent.call("where", {"root": "~/projects"}, Destination)
-    assert place == Destination(root=str(home / "projects"), home=str(home), separator=os.sep)
+    assert place == Destination(
+        root=str(home / "projects"), home=str(home), separator=os.sep, user=getpass.getuser()
+    )
     (tmp_path / "receipts.ndjson").write_text("{}\n", encoding="utf-8")
     parcels = [
         Parcel(anchor="root", path=".env", data=b"KEY=1\n", secret=True),

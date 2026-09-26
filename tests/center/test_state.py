@@ -286,14 +286,23 @@ def test_the_ssh_cut_carries_each_hosts_jump_chain_and_speaks_the_destinations_c
     blocks and the leading lines stay behind, and a `none` jump names no host.
     """
     carried.destination = _DESTINATION.model_copy(update={"system": system})
-    parcels = carried.ssh()
-    config = parcels[0].data.decode()
-    hosts = [line.split()[1] for line in config.splitlines() if line.startswith("Host ")]
-    assert hosts == ["*", "bastion", "gold", "tunnel", "relay", "direct", "rented", "github.com"]
+    blocks = carried.ssh_config()
+    assert [block.split()[1] for block in blocks] == [
+        "*",
+        "bastion",
+        "gold",
+        "tunnel",
+        "relay",
+        "direct",
+        "rented",
+        "github.com",
+    ]
+    config = "\n".join(blocks)
     assert ("ControlMaster auto" in config, "ControlPersist" in config) == (control, control)
     assert ("UseKeychain" in config) is keychain
-    assert "Match" not in config and "Include" not in config and config.endswith("\n")
-    assert [(parcel.path, parcel.secret) for parcel in parcels[1:]] == [
+    assert "Match" not in config and "Include" not in config and "User" not in config
+    assert carried.known_hosts() == ["gold ssh-ed25519 AAAA"]
+    assert [(parcel.path, parcel.secret) for parcel in carried.ssh()] == [
         (".ssh/id_bastion", True),
         (".ssh/id_bastion.pub", False),
         (".ssh/id_gold", True),
@@ -302,15 +311,38 @@ def test_the_ssh_cut_carries_each_hosts_jump_chain_and_speaks_the_destinations_c
         (".ssh/id_github", True),
         (".ssh/id_ed25519", True),
         (".ssh/id_ed25519.pub", False),
-        (".ssh/known_hosts", False),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("far", "named"),
+    [("", False), ("me", False), ("Pedro", True)],
+    ids=["unknown", "same", "other"],
+)
+def test_a_destination_logging_in_as_someone_else_names_this_machines_login(
+    carried: Carried, ssh: Path, far: str, named: bool
+) -> None:
+    """A block that relied on this machine's login keeps reaching its host as that login.
+
+    A block that names its own user keeps it, and the catch-all `Host *` is never renamed.
+    """
+    carried.user = "me"
+    carried.destination = _DESTINATION.model_copy(update={"user": far})
+    write(
+        ssh / "config", "Host *\n    ServerAliveInterval 30\nHost gold\nHost direct\n  User ops\n"
+    )
+    assert carried.ssh_config() == [
+        "Host *\n    ServerAliveInterval 30",
+        "Host gold\n    User me" if named else "Host gold",
+        "Host direct\n  User ops",
     ]
 
 
 def test_the_ssh_cut_carries_nothing_it_does_not_find(carried: Carried, home: Path) -> None:
-    """No config means no ssh parcel at all, and absent known hosts are not invented."""
-    assert carried.ssh() == []
+    """No config, keys or known hosts mean nothing to carry, and nothing is invented."""
+    assert (carried.ssh(), carried.ssh_config(), carried.known_hosts()) == ([], [], [])
     write(home / ".ssh" / "config", "Host gold\n    HostName gold.lab\n")
-    assert [parcel.path for parcel in carried.ssh()] == [".ssh/config"]
+    assert (carried.ssh(), carried.ssh_config()) == ([], ["Host gold\n    HostName gold.lab"])
 
 
 def test_identities_are_read_as_written_and_empty_ones_skipped() -> None:

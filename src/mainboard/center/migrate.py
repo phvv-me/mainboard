@@ -9,6 +9,7 @@
 # findings from the same census and judge `facts` uses, and the final word from the destination
 # running `center verify` on itself.
 
+import re
 import subprocess
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -28,7 +29,7 @@ from ..dispatch.transport import SshTransport
 from ..fitness import Fitness, Role
 from ..probe.system import System
 from .carrier import Carrier
-from .state import Carried, Destination, Parcel, packed
+from .state import GITHUB, Carried, Destination, Parcel, packed
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
     from ..context.plan import ExecutionPlan
     from ..dispatch.shared import Watcher
     from ..dispatch.targets import Facts
+    from ..git.repo import Repo
+    from ..git.tree import Tree
 
 _TOOL = Project().name
 
@@ -53,6 +56,17 @@ _EXTRAS = {"plot": "seaborn", "wandb": "wandb"}
 # target, holds the human checkout, and the destination expands the `~` in its own spelling.
 _CHECKOUT = "~/projects"
 
+# A remote reached over ssh at GitHub, `git@github.com:owner/name` or `ssh://git@github.com/...`.
+_GITHUB_SSH = re.compile(r"(ssh://)?([^@/:]+@)?github\.com[:/]")
+
+# What a Windows filesystem cannot hold in a path, as git for Windows judges it: a character NTFS
+# forbids, a name ending in a space or a dot, or a device name, whatever extension follows it.
+_UNHOLDABLE = re.compile(
+    r'[<>:"|?*\x01-\x1f]|[ .](/|$)'
+    r"|(^|/)(con|prn|aux|nul|conin\$|conout\$|com[1-9]|lpt\d) *(\.[^/]*)?(/|$)",
+    re.IGNORECASE,
+)
+
 # A readiness report as `center verify --json` prints it.
 _SECTIONS = TypeAdapter(list[Section])
 
@@ -68,6 +82,13 @@ class Written(FrozenModel):
     """How many shipped files changed bytes on the destination."""
 
     written: int
+
+
+class Trusted(FrozenModel):
+    """How many ssh host blocks and known host lines the destination took."""
+
+    blocks: int
+    keys: int
 
 
 class Merged(FrozenModel):
@@ -94,6 +115,7 @@ class Migration:
     watch: announces each step as it begins.
     home: this machine's home directory, whose agent state and ssh keys are carried.
     token: answers this machine's GitHub token, empty when it has none.
+    host_keys: answers GitHub's ssh host keys as GitHub publishes them, none when unreachable.
     """
 
     def __init__(
@@ -106,6 +128,7 @@ class Migration:
         watch: Watcher | None = None,
         home: Path | None = None,
         token: Callable[[], str] | None = None,
+        host_keys: Callable[[], list[str]] | None = None,
     ) -> None:
         self.board = board
         self.destination = destination
@@ -114,6 +137,7 @@ class Migration:
         self.watch = watch or announce
         self.home = home or Path.home()
         self.token = token or github_token
+        self.host_keys = host_keys or github_host_keys
 
     def run(self) -> list[Section]:
         """Every step in order, stopping only where continuing could not change the answer."""
@@ -136,6 +160,7 @@ class Migration:
         self.watch(f"signing {self.destination} in to GitHub")
         report.append(self.sign_in(carrier))
         report.append(self.ship(carrier, place, "ssh", carried.ssh()))
+        report.append(self.trust(carrier, carried))
         self.watch(f"cloning the workspace to {self.destination}:{place.root}")
         cloned = self.clone(carrier, place)
         report += cloned
@@ -243,22 +268,55 @@ class Migration:
             detail=f"{len(parcels)} files, {written} written, {kept} already there",
         )
 
-    def clone(self, carrier: Carrier, place: Destination) -> list[Section]:
-        """The root at this HEAD and each owned submodule at its pointer, then the foreign rest."""
+    def trust(self, carrier: Carrier, carried: Carried) -> Section:
+        """The ssh host blocks and known host lines the destination lacks, added beside its own.
+
+        GitHub's host keys come from GitHub's API over the gh login when a clone reaches GitHub
+        over ssh and this machine never recorded them, since a first connection must not be what
+        vouches for them.
+        """
         tree = self.board.git()
-        owned = tree.owned()
+        known = carried.known_hosts()
+        urls = [tree.root.url, *(child.declared for _, child in _submodules(tree))]
+        wanted = any(_GITHUB_SSH.match(url) for url in urls) and not any(
+            GITHUB in line.split()[0].split(",") for line in known
+        )
+        fetched = self.host_keys() if wanted else []
+        known += [f"{GITHUB} {key}" for key in fetched]
+        added = carrier.call("ssh", {"blocks": carried.ssh_config(), "known": known}, Trusted)
+        detail = f"{added.blocks} host blocks and {added.keys} known host lines added"
+        if wanted and not fetched:
+            return Section(
+                section="carry ssh config",
+                verdict=Verdict.WARN,
+                detail=f"{detail}; GitHub's host keys unknown here and gh could not fetch them",
+                fix=f"gh auth login, then {_TOOL} center migrate {self.destination}",
+            )
+        return Section(section="carry ssh config", verdict=Verdict.PASS, detail=detail)
+
+    def clone(self, carrier: Carrier, place: Destination) -> list[Section]:
+        """The root at this HEAD and each owned submodule at its pointer, then the foreign rest.
+
+        On Windows each repository's checkout leaves out the tracked paths NTFS cannot hold,
+        which a warning names, instead of failing that repository whole.
+        """
+        tree = self.board.git()
+        pairs = _submodules(tree)
         submodules = [
-            [parent.name, parent.relative(child)]
-            for parent in owned
-            for child in parent.children
-            if child.initialized and child.owned
+            [parent.name, parent.relative(child), child.declared] for parent, child in pairs
         ]
         foreign = [
             child.name
-            for parent in owned
+            for parent in tree.owned()
             for child in parent.children
             if child.initialized and not child.owned
         ]
+        repos = [tree.root, *(child for _, child in pairs)]
+        excluded = {
+            repo.name: paths
+            for repo in (repos if place.system == "Windows" else [])
+            if (paths := [path for path in repo.tracked() if _UNHOLDABLE.search(path)])
+        }
         steps = carrier.call(
             "clone",
             {
@@ -267,6 +325,7 @@ class Migration:
                 "branch": tree.root.branch(),
                 "commit": tree.root.head(),
                 "submodules": submodules,
+                "excluded": excluded,
             },
             list[Cloned],
         )
@@ -279,6 +338,16 @@ class Migration:
                 fix="" if step.outcome == "done" else again,
             )
             for step in steps
+        ]
+        rows += [
+            Section(
+                section=f"unholdable {repo}",
+                verdict=Verdict.WARN,
+                detail=f"{len(paths)} tracked paths Windows cannot hold left out: "
+                + ", ".join(paths[:3]),
+                fix=f'rename them in {repo} (no <>:"|?*, trailing space or dot, or device name)',
+            )
+            for repo, paths in excluded.items()
         ]
         if foreign:
             rows.append(
@@ -377,14 +446,34 @@ class Migration:
         return found
 
 
+def _submodules(tree: Tree) -> list[tuple[Repo, Repo]]:
+    """Each checked-out owned submodule with its parent, parents first."""
+    return [
+        (parent, child)
+        for parent in tree.owned()
+        for child in parent.children
+        if child.initialized and child.owned
+    ]
+
+
 def github_token() -> str:
     """This machine's GitHub token as gh holds it, empty when gh is absent or signed out.
 
     Read into memory for the one call that hands it on over ssh's stdin, and never printed.
     """
+    return _gh("auth", "token")
+
+
+def github_host_keys() -> list[str]:
+    """GitHub's ssh host keys as its API publishes them over gh's https, none when unreachable."""
+    return _gh("api", "meta", "--jq", ".ssh_keys[]").splitlines()
+
+
+def _gh(*arguments: str) -> str:
+    """What `gh arguments` prints, empty when gh is absent or refuses."""
     try:
         done = subprocess.run(
-            ["gh", "auth", "token"], capture_output=True, text=True, check=False, timeout=30
+            ["gh", *arguments], capture_output=True, text=True, check=False, timeout=30
         )
     except OSError, subprocess.SubprocessError:
         return ""
