@@ -417,8 +417,13 @@ studies, the pulse memory, both digest memories, job scripts and closure
 listings in one transaction, then reads every source back: one row per source
 with its expected and imported counts, and the logs rebuilt byte for byte. It
 exits 1 on any difference, only ever reads the old files, and refuses a second
-import unless `--again` sets the first lake aside under `lake.aside/`. Every
-other verb still writes the old files for now.
+import unless `--again` sets the first lake aside under `lake.aside/`.
+
+Every verb reads and writes that lake: runs and hosts, batch events, captured
+transcripts and receipts, costs and offers, holds, studies, the pulse memory,
+digests and staged job scripts. A workspace that still holds the old files is
+refused until it is imported, so nothing reads as a workspace that never
+dispatched anything.
 
 ## Portable process chores
 

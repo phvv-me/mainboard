@@ -746,10 +746,19 @@ class Dispatcher:
         return outputs
 
     def _stage(self, name: str, content: bytes) -> str:
-        """Atomically stage exact bytes and answer their workspace-relative path."""
+        """Atomically stage exact bytes and answer their workspace-relative path.
+
+        The staged file is only what the mirror carries to the host; the record of it is the
+        lake's, a job script in `job_specs` and a closure listing in `closures`, kept once per
+        content-addressed name.
+        """
         path = state_path(self.root) / "jobs" / name
         with GeneratedFiles(directory=path.parent).locked() as files:
             files.write(path, content)
+        table, column, key, rows = _recorded(name, content)
+        held = self.cache.session.rows(f"SELECT 1 FROM lake.{table} WHERE {column} = ?", [key])
+        if not held:
+            self.cache.session.append(table, rows)
         return path.relative_to(self.root).as_posix()
 
     def _verdict(self, handle: Handle, state: JobState) -> Verdict:
@@ -833,3 +842,27 @@ class Dispatcher:
                 f"{_TOOL} on {plan.host!r} cannot run a job ({failure_reason(err)}); run "
                 f"`{Project().name} setup {plan.host}` to install this version there"
             )
+
+
+def _recorded(name: str, content: bytes) -> tuple[str, str, str, list[dict[str, object]]]:
+    """How one staged file is recorded: its table, the column and value naming it, its rows.
+
+    A closure listing is one row per listed file, its tab-separated path, blob and status; any
+    other staged file is a job script, kept whole beside the SHA-256 of its bytes.
+    """
+    stamp = now()
+    if name.startswith("closure-"):
+        closure = name.removeprefix("closure-").removesuffix(".tsv")
+        listed = (line.split("\t") for line in content.decode().splitlines() if line)
+        rows: list[dict[str, object]] = [
+            {"ts": stamp, "closure": closure, "path": path, "blob": blob, "status": status}
+            for path, blob, status in listed
+        ]
+        return "closures", "closure", closure, rows
+    script: dict[str, object] = {
+        "ts": stamp,
+        "name": name,
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "script": content.decode("utf-8", "replace"),
+    }
+    return "job_specs", "name", name, [script]

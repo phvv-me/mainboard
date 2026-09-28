@@ -744,6 +744,10 @@ def test_a_rendered_and_a_staged_script_are_both_content_addressed(
     prepared, staged = dispatcher._prepare_script(str(external))  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
     assert staged == (prepared,)
     assert (workdir / prepared).read_text() == external.read_text()
+    # The lake keeps each staged script once, however often it is staged again.
+    recorded = dispatcher.cache.session.rows("SELECT name, script FROM lake.job_specs")
+    assert len(recorded) == 2
+    assert (Path(prepared).name, external.read_bytes().decode()) in recorded
     with pytest.raises(FileNotFoundError, match="cannot be shipped to the host"):
         dispatcher._prepare_script("./missing/job.sh")  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
 

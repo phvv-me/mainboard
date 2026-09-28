@@ -58,8 +58,8 @@ Phase 4 (branch `mb-writers`)
 - [x] 4.10 (`3e27892`) Pulse -> `pulse`, a row per growth; one shared session per lake per process
 - [x] 4.11 (`cb5b097`) Holds -> `holds_log`
 - [x] 4.12 (`b3884b9`) Studies -> `studies`
-- [x] 4.13 Digests (mirror, collection) -> `digests`, rows only for moved stamps; the remote agent keeps its file
-- [~] 4.14 Job specs / closures -> `job_specs` / `closures` (transient files only for shipping)
+- [x] 4.13 (`44b84b0`) Digests (mirror, collection) -> `digests`, rows only for moved stamps; the remote agent keeps its file
+- [x] 4.14 Job specs / closures -> `job_specs` / `closures` (staged files are only what the mirror ships)
 - [ ] 4.15 Full suite green, merge `mb-writers` into main
 - [ ] 4.16 Run `mb center migrate-state` on `D:\projects` and verify
 
