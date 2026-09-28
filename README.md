@@ -239,6 +239,19 @@ Profiles inherit `[hosts.defaults]`, values interpolate (`{{ env('LOCALDIR') }}`
 `{{ num_cpus() }}`), and queue policies are data the tool enforces at submit
 time with the error you wish the scheduler gave you.
 
+The solve is source: `install --resolve` (and `add`, `remove`, `upgrade`) writes
+each environment's pixi lock byte for byte into `mb.lock` beside the manifest,
+one sorted section per environment with the digest it was solved from and the
+pixi that solved it. Commit it. `install` copies a section into the ignored
+state directory, where pixi reads it, and refuses a section the manifest has
+moved past. A workspace still on `mainboard.toml` gets `mb.lock` too, since
+the file travels with the tree (one already holding `mainboard.lock` keeps
+it). A workspace solved before `mb.lock` existed has its cached lock
+adopted into it on the next `install` (one line says so), and `doctor` names a
+cached lock that `mb.lock` lacks or disagrees with, and the command that
+repairs it. `setup` and dispatch ship `mb.lock` to a host beside the cached
+copy an older release installs from.
+
 A target never holds a human checkout: Mainboard keeps everything there in one
 folder, `~/.mainboard-jobs` unless the profile names another `root`. `setup` reads
 the home in the host's own shell (`$HOME`, `%USERPROFILE%` on Windows) and places
@@ -378,7 +391,8 @@ a platform the workspace or its lock cannot serve, then:
    pointer (foreign reference submodules are left to fetch on demand);
 4. carries what git does not hold: the `.env`, `.mainboard/` (the dispatch
    registry as a consistent SQLite snapshot, ledgers, batches, audits, recovery,
-   source archives, holds) and every environment's compiled lock; Claude Code's
+   source archives, holds), every environment's compiled lock and `mb.lock`
+   as it stands, committed or not; Claude Code's
    memory re-keyed to the new workspace path, its settings, agents, skills,
    commands and plugin lists, and this workspace's trust and MCP settings in
    `~/.claude.json`; Codex's config (trusted projects re-keyed), auth, MCP OAuth
