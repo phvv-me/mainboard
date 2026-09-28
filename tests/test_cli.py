@@ -1082,3 +1082,17 @@ def test_lanes_run_runs_local_groups_in_place_and_submits_each_group_to_every_ot
         *([("wait", "", ("4242",), {"host": "gold", "say": _said})] * (2 if wait else 0)),
     ]
     assert "local exit 0" in capsys.readouterr().out
+
+
+def test_activate_names_the_environments_own_activation_for_a_shell_to_source(
+    depot: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The state directory keeps no activation; `eval "$(mb activate)"` sources the env's own."""
+    with pytest.raises(MissionError, match="run `.* install serving`"):
+        build(depot)(["activate", "--env", "serving"])
+    script = depot / Project().activation("default", depot)
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("export READY=yes\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="0"):
+        build(depot)(["activate"])
+    assert capsys.readouterr().out.strip() == f". {script.as_posix()}"

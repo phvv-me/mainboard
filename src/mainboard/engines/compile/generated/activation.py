@@ -1,6 +1,11 @@
+# The bash that enters an environment: the host's module stack, pixi's own activation, the
+# second-stage binaries and what `runtime.activation` adds. It is part of the environment it
+# enters, written into that environment's own directory by the install that built it (a
+# content-addressed prefix, or `<state>/envs/<env>/`), never into the state directory itself;
+# `mb activate` names it for a shell to source.
+
 import shlex
 import sys
-from functools import cache
 from typing import TYPE_CHECKING
 
 from ....core.project import Project
@@ -8,27 +13,6 @@ from ....core.project import Project
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
-
-    from jinja2 import Environment
-
-
-@cache
-def _templates() -> Environment:
-    """The shell templates shipped as package data, so they stay diffable and shellcheck-able.
-
-    Autoescaping is off because HTML-escaping `&` `<` `>` corrupts bash. Built lazily because
-    jinja2 costs 6 ms of every cold start and only an install renders one.
-    """
-    from jinja2 import Environment, PackageLoader
-
-    return Environment(
-        loader=PackageLoader("mainboard.engines.compile"),
-        autoescape=False,  # ruff:ignore[jinja2-autoescape-false]
-        keep_trailing_newline=True,
-        trim_blocks=True,
-        lstrip_blocks=True,
-    )
-
 
 # Where Lmod / environment-modules drops its shell init, first existing one wins.
 _MODULE_INITS = (
@@ -56,41 +40,52 @@ def module_specs(modules: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(f"{name}/{version}" if version else name for name, version in modules.items())
 
 
-class ActivationScript:
-    """A per-host `<state directory>/activate.sh` that sets up the whole runtime in one `source`.
+def activation(
+    hook: str,
+    *,
+    modules: Sequence[str] = (),
+    binaries: Sequence[Path] = (),
+    runtime: bool = True,
+) -> str:
+    """The bash entering an environment whose pixi activation is `hook`.
 
-    In order: the module init, `module purge` and `module load` of the per-host pinned modules
-    (which must load; an empty map skips the block), pixi's activation (as
-    `Provisioner.activated()` applies it), `binaries` on PATH, then what `runtime.activation`
-    prints, run by the interpreter that wrote the script so no PATH decides which tool answers.
+    Declared modules are part of the environment's identity, so they must load: a host without a
+    module system is refused rather than run on whatever it has. Module inits and conda
+    activation scripts are not nounset-safe, so `set -u` is relaxed while activating and
+    restored after, for callers running under it.
 
-    binaries: the second-stage directories `Provisioner.activated()` also exports.
+    modules: the host's module stack, `name/version` specs in load order, loaded before pixi.
+    binaries: second-stage executable directories, leading pixi's `bin/`.
+    runtime: end with what `runtime.activation` prints, for a caller not applying it itself.
     """
+    # A failure returns its status from a sourced activation and exits one run by `bash -c`.
+    stop = "{ _mb_status=$?; return $_mb_status 2>/dev/null || exit $_mb_status; }"
+    lines = ["case $- in *u*) _mb_nounset=1; set +u;; *) _mb_nounset=0;; esac"]
+    if modules:
+        lines += [
+            module_init_snippet(),
+            "command -v module >/dev/null 2>&1 || { echo 'mainboard: declared host modules "
+            f"require a working module system' >&2; false; }} || {stop}",
+            f"module purge || {stop}",
+            f"module load {shlex.join(modules)} || {stop}",
+        ]
+    lines.append(hook.strip())
+    if binaries:
+        # A colon even on Windows: only bash reads this, and `;` made one unusable entry.
+        joined = ":".join(shlex.quote(str(path)) for path in binaries)
+        lines.append(f'export PATH={joined}:"$PATH"')
+    if runtime:
+        module = shlex.join([sys.executable, "-m", f"{Project().package}.runtime.activation"])
+        lines.append(f'eval "$({module})"')
+    lines.append('if [ "$_mb_nounset" = 1 ]; then set -u; fi; unset _mb_nounset')
+    return "\n".join(lines) + "\n"
 
-    def __init__(self, path: Path, hook: str, binaries: Sequence[Path] = ()) -> None:
-        self.path = path
-        self.hook = hook
-        self.binaries = binaries
 
-    def render(self, modules: Mapping[str, str]) -> str:
-        """The `activate.sh` text; no `modules` omits the block, never purging the job's stack."""
-        specs = shlex.join(module_specs(modules))
-        return (
-            _templates()
-            .get_template("activate.sh.j2")
-            .render(
-                module_init=module_init_snippet(),
-                modules=specs,
-                hook=self.hook.strip(),
-                # A colon even on Windows: only bash reads this, and `;` made one unusable entry.
-                binaries=":".join(shlex.quote(str(path)) for path in self.binaries),
-                runtime=shlex.join(
-                    [sys.executable, "-m", f"{Project().package}.runtime.activation"]
-                ),
-            )
-        )
-
-    def write(self, modules: Mapping[str, str]) -> Path:
-        """Write `activate.sh` with line feeds, since bash reads `\\r` as part of each command."""
-        self.path.write_text(self.render(modules), encoding="utf-8", newline="\n")
-        return self.path
+def write(
+    path: Path, hook: str, *, modules: Mapping[str, str], binaries: Sequence[Path] = ()
+) -> Path:
+    """Write the activation of the environment at `path`'s directory, with line feeds, since
+    bash reads a carriage return as part of each command."""
+    text = activation(hook, modules=module_specs(modules), binaries=binaries)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return path

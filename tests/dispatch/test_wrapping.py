@@ -21,7 +21,7 @@ def test_wrap_stages_cd_then_path_then_modules_before_the_environment() -> None:
     steps = wrap(plan(), "/repo", command="python -m foo").split(" && ")
     assert steps[0] == "cd /repo"
     assert steps[1] == f"export PATH={':'.join(_USER_BINS)}:$PATH"
-    assert f"if [ -f /repo/{Project().out_dirs[0]}/activate.sh ]" in steps[2]
+    assert f"if [ -f /repo/{Project().out_dirs[0]}/envs/default/activate.sh ]" in steps[2]
     assert (
         f"export PATH=/repo/{Project().out_dirs[0]}/envs/default/.pixi/envs/default/bin:$PATH"
         in steps[2]
@@ -65,12 +65,13 @@ def test_wrap_containerized_delegates_to_the_injected_builder_or_refuses_without
 
 def test_the_activation_stage_tries_the_named_script_then_the_prefix_then_refuses() -> None:
     """A silent wrong interpreter costs far more to find than a command that refuses to start."""
-    assert activation("/repo") == f"/repo/{Project().out_dirs[0]}/activate.sh"
+    assert activation("/repo") == f"/repo/{Project().out_dirs[0]}/envs/default/activate.sh"
     assert (
-        activation("/repo", env="serving") == f"/repo/{Project().out_dirs[0]}/activate-serving.sh"
+        activation("/repo", env="serving")
+        == f"/repo/{Project().out_dirs[0]}/envs/serving/activate.sh"
     )
     default = activation_stage(plan(), "/repo")
-    assert default.startswith(f"if [ -f /repo/{Project().out_dirs[0]}/activate.sh ]")
+    assert default.startswith(f"if [ -f /repo/{Project().out_dirs[0]}/envs/default/activate.sh ]")
     assert (
         f"elif [ -d /repo/{Project().out_dirs[0]}/envs/default/.pixi/envs/default/bin ]" in default
     )
@@ -81,7 +82,7 @@ def test_the_activation_stage_tries_the_named_script_then_the_prefix_then_refuse
         ":$PATH; fi"
     )
     serving = activation_stage(plan(env="serving"), "/repo")
-    assert f"if [ -f /repo/{Project().out_dirs[0]}/activate-serving.sh ]" in serving
+    assert f"if [ -f /repo/{Project().out_dirs[0]}/envs/serving/activate.sh ]" in serving
     assert "envs/default" not in serving
     assert serving.endswith("exit 1; fi")
 

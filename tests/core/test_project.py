@@ -95,8 +95,8 @@ def test_a_workspace_keeps_the_state_directory_it_has_and_a_fresh_one_follows_it
     assert project.out_dir(tmp_path) == ".mb"
     monkeypatch.chdir(legacy)
     assert (project.out_dir(), project.out()) == (".mainboard", legacy / ".mainboard")
-    assert project.activation() == ".mainboard/activate.sh"
-    assert project.activation("serving", fresh) == ".mb/activate-serving.sh"
+    assert project.activation() == ".mainboard/envs/default/activate.sh"
+    assert project.activation("serving", fresh) == ".mb/envs/serving/activate.sh"
 
 
 def test_a_workspace_keeps_the_lock_it_has_and_a_fresh_one_takes_the_primary_name(

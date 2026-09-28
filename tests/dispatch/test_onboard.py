@@ -112,7 +112,7 @@ def test_the_remote_shell_stages_a_bare_command_and_activates_only_when_asked() 
     assert "activate.sh" not in host.lines[0]
     assert host.lines[0].endswith("uv --version")
     shell.run(f"{Project().package} facts", activate=True)
-    assert f"/repo/{Project().out_dirs[0]}/activate.sh" in host.lines[1]
+    assert f"/repo/{Project().out_dirs[0]}/envs/default/activate.sh" in host.lines[1]
     assert shell.ok("command -v uv")
     assert not shell.ok("missing broken thing")
     with pytest.raises(MissionError, match="`broken` failed on 'gold'"):
@@ -306,9 +306,9 @@ def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
     assert dispatcher.mirrored == [("gold", "/repo")]
     assert host.ran("uv tool install")
     assert host.ran(f"{Project().package} install default --profile gold")
-    assert host.ran(f"test -f /repo/{Project().out_dirs[0]}/activate.sh")
+    assert host.ran(f"test -f /repo/{Project().out_dirs[0]}/envs/default/activate.sh")
     assert (report.installer, report.tool, report.env) == ("uv", "0.1.0", "default")
-    assert report.activate == f"/repo/{Project().out_dirs[0]}/activate.sh"
+    assert report.activate == f"/repo/{Project().out_dirs[0]}/envs/default/activate.sh"
     assert report.capabilities is not None and report.capabilities.pixi.endswith("/pixi")
     assert (report.root, report.capabilities.home) == ("/repo", "/home/me")
     assert report.hardware is not None and report.hardware.hostname == "gold-1"
@@ -334,8 +334,8 @@ def test_onboarding_a_named_environment_verifies_that_environments_own_activatio
     setup.plan = plan(env="serving")
     report = setup.run()
     assert host.ran(f"{Project().package} install serving --profile gold")
-    assert host.ran(f"test -f /repo/{Project().out_dirs[0]}/activate-serving.sh")
-    assert report.activate == f"/repo/{Project().out_dirs[0]}/activate-serving.sh"
+    assert host.ran(f"test -f /repo/{Project().out_dirs[0]}/envs/serving/activate.sh")
+    assert report.activate == f"/repo/{Project().out_dirs[0]}/envs/serving/activate.sh"
 
 
 @pytest.mark.parametrize(
@@ -389,7 +389,8 @@ def test_onboarding_refuses_a_provisioning_that_left_no_activation_behind(
 ) -> None:
     host = machine_with(rules=(*_HEALTHY, ("test -f", 1, "")))
     setup, _ = onboarding(host, monkeypatch)
-    with pytest.raises(MissionError, match=rf"has no /repo/\{Project().out_dirs[0]}/activate\.sh"):
+    missing = rf"has no /repo/\{Project().out_dirs[0]}/envs/default/activate\.sh"
+    with pytest.raises(MissionError, match=missing):
         setup.run()
 
 

@@ -12,7 +12,8 @@ from ...runtime.activation import Runtime
 from .backend import Pixi
 from .compiler import Compiler
 from .ecosystems import SecondStage
-from .generated import ActivationScript, GeneratedFiles
+from .generated import GeneratedFiles
+from .generated.activation import write
 from .pixi_manifest import selected_manifest
 from .state import SyncState
 from .vendor import Vendor
@@ -197,15 +198,16 @@ class Provisioner:
         return tuple(dict.fromkeys(path.relative_to(self.root).as_posix() for path in paths))
 
     def activate(self, env: str = "default", *, modules: Mapping[str, str] = {}) -> Path:
-        """Write `env`'s own `activate.sh` for this host (see `ActivationScript`), returning it.
+        """Write `env`'s activation into its own directory for this host, returning it.
 
         modules: this host's Lmod stack, name to version.
         """
-        self.out.mkdir(exist_ok=True)
         shard = self._shard(env)
         path = self.root / Project().activation(env)
-        hook = shard.pixi.shell_hook(env)
-        return ActivationScript(path, hook, self.binaries(env)).write(modules)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return write(
+            path, shard.pixi.shell_hook(env), modules=modules, binaries=self.binaries(env)
+        )
 
     def runs_here(self, env: str = "default") -> bool:
         """Whether `env` declares this machine's platform, so it can be installed here."""

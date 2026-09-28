@@ -437,6 +437,20 @@ $ mainboard proc wait --port localhost:8000 --timeout 60
 $ mainboard proc wait --file results/done.json --pid 4242
 ```
 
+## Entering an environment
+
+`mb shell` opens a shell inside the workspace's environment and `mb run -- <cmd>`
+runs one command there. To enter it in the shell you already have:
+
+```console
+$ eval "$(mb activate)"             # or: eval "$(mb activate --env serving)"
+```
+
+The activation (the host's modules, pixi's own activation, second-stage
+binaries) is written into the environment's own directory by `mb install`, so
+the state directory keeps no activation scripts, and manifests template with
+plain `{{ name }}` and `{{ env('HOME', '') }}` rather than a template engine.
+
 ## Logging
 
 One logger for the tool and every workspace using it, loguru's call shape on

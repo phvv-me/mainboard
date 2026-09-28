@@ -263,7 +263,7 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
     pinned = dispatcher.pinned("/repo", source=dispatcher.source())
     assert pinned.startswith(f"/repo/{Project().out_dirs[0]}/dispatch/sources/")
     assert job.activation == WorkspaceActivation(
-        script=f"{pinned}/{Project().out_dirs[0]}/activate-serving.sh",
+        script=f"{pinned}/{Project().out_dirs[0]}/envs/serving/activate.sh",
         prefix=f"{pinned}/{Project().out_dirs[0]}/envs/serving/.pixi/envs/serving",
         refusal=job.activation.refusal,
     )

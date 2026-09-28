@@ -176,14 +176,13 @@ class Project(FrozenModel):
         return here / self.out_dir(here)
 
     def activation(self, env: str = "default", root: Path | None = None) -> str:
-        """The activation script for `env`, relative to workspace `root` (the cwd's workspace).
+        """`env`'s activation script, relative to workspace `root` (the cwd's workspace).
 
-        One per environment, since a shared file would activate whichever was provisioned last.
-        The default keeps the bare `activate.sh` that onboarded hosts and hand-written job
-        scripts already source.
+        It lives in the environment's own directory beside the prefix it activates, as a
+        content-addressed prefix keeps its own, so the state directory holds none;
+        `mb activate` names it for a shell to source.
         """
-        suffix = "" if env == "default" else f"-{env}"
-        return f"{self.out_dir(root)}/activate{suffix}.sh"
+        return f"{self.out_dir(root)}/envs/{env}/activate.sh"
 
     def find_root(self, start: Path) -> Path:
         """The workspace `start` lies in: the nearest manifest upward, or the one composing it.

@@ -1,4 +1,5 @@
 import os
+import shlex
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
@@ -413,11 +414,28 @@ def build(root: Path | None = None) -> App:
 
         env: the environment name, this machine's declared profile choice when omitted.
         resolve: allow a fresh dependency solve when the lock is stale.
-        profile: the declared host profile describing this machine, so the generated activation
-            carries that host's modules; what `setup` passes when a host installs its own.
+        profile: the declared host profile describing this machine, so the environment's
+            activation carries that host's modules; what `setup` passes when a host installs.
         """
         with progress(f"installing {env or 'the environment'}") as stage:
             board("local").install(env, resolve=resolve, profile=profile, watch=stage)
+
+    @app.command
+    def activate(env: str = "default") -> None:
+        """Print the line that enters `env` in the current shell: `eval "$(mb activate)"`.
+
+        The activation lives in the environment's own directory, written by `install`, so the
+        state directory keeps none; this names it, refusing an environment never installed here.
+
+        env: the environment name.
+        """
+        root = workspace_root()
+        script = root / Project().activation(env, root)
+        if not script.is_file():
+            raise MissionError(
+                f"environment {env!r} has no activation here; run `{project.name} install {env}`"
+            )
+        print(f". {shlex.quote(script.as_posix())}")
 
     @app.command(version_flags=[])
     def shell(

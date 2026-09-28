@@ -34,9 +34,10 @@ Living tracker, updated as each step lands. Last update: 2026-09-28.
 | 2 | Committed `mb.lock` (all envs, byte-exact, adoption of legacy cache locks) | done, on main |
 | 3 | Lake foundation (`state/lake.py`, schema, `mb center migrate-state` importer) | done, on main |
 | 4 | Move every writer into the lake; drop wandb; structlog | done, on main; `D:\projects` migrated |
-| 5 | Activation from `mb.toml`; drop generated scripts and jinja2 | pending |
+| 5 | Activation from `mb.toml`; drop generated scripts and jinja2 | done, on main |
 | 6 | Git provenance instead of source zips; HF pins into the HF cache; native report | pending |
 | 7 | Remove old paths, polars -> DuckDB, seaborn/pandas out, regression tests, center setup | pending |
+| 8 | API review, remote connectivity, miyabi-g multiplexing on Windows | pending |
 
 ## Step checklist (worked strictly in order, one at a time)
 
@@ -66,8 +67,12 @@ Phase 4 (branch `mb-writers`)
       owner deletes them
 
 Phase 5
-- [ ] 5.1 Activation declared in `mb.toml`, computed in Python
-- [ ] 5.2 Remove generated `.sh`/`.bat` activation scripts and jinja2
+- [x] 5.1 No activation in the state directory: each environment's activation lives in its own
+      directory (`<state>/envs/<env>/activate.sh`, as prefixes already did), built from `mb.toml`
+      by plain Python; `eval "$(mb activate)"` enters it. Kept on disk because second-stage
+      binaries need the manifest, which a job's entry should not load.
+- [x] 5.2 jinja2 removed: the activation is plain Python and manifests use a literal-only
+      `{{ name }}` / `{{ fn('arg') }}` evaluator
 
 Phase 6
 - [ ] 6.1 Source provenance: git SHA + zstd patch in the lake instead of source zips
@@ -80,6 +85,11 @@ Phase 7
 - [ ] 7.3 Remove old file-state paths; regression tests for legacy reads
 - [ ] 7.4 Center setup: `mb install` / `center verify`, PATH
 - [ ] 7.5 Lazy CLI imports (one session per lake per process already landed in 4.10)
+
+Phase 8 (added 2026-09-28)
+- [ ] 8.1 API review: one way to do each thing, no repeated tooling
+- [ ] 8.2 Every remote server reachable through `mb` without issues (check each)
+- [ ] 8.3 Connection multiplexing to miyabi-g on Windows (no ControlMaster in Win32-OpenSSH)
 
 Owner decisions pending (not blocking): libsass re-solve approach; pushing `main`/branches.
 

@@ -105,7 +105,7 @@ def test_every_job_enters_the_plans_own_environment_or_refuses_to_start() -> Non
     """A queued job and an interactive run must land in the same interpreter."""
     default = spec().job(pbs=False).activation
     assert default == WorkspaceActivation(
-        script=f"/repo/{Project().out_dirs[0]}/activate.sh",
+        script=f"/repo/{Project().out_dirs[0]}/envs/default/activate.sh",
         prefix=f"/repo/{Project().out_dirs[0]}/envs/default/.pixi/envs/default",
         refusal=default.refusal,
     )
@@ -116,7 +116,7 @@ def test_every_job_enters_the_plans_own_environment_or_refuses_to_start() -> Non
     assert f"{Project().name} setup gold --env default" in default.refusal
     serving = spec(plan=plan(env="serving")).job(pbs=False).activation
     assert isinstance(serving, WorkspaceActivation)
-    assert serving.script == f"/repo/{Project().out_dirs[0]}/activate-serving.sh"
+    assert serving.script == f"/repo/{Project().out_dirs[0]}/envs/serving/activate.sh"
 
 
 def test_an_addressed_environment_is_entered_frozen_and_never_reconciled() -> None:
@@ -202,8 +202,8 @@ def test_a_rendered_script_run_by_sh_hands_over_to_the_tool_on_its_path(
     tool = shutil.which("mainboard", path=str(Path(sys.executable).parent))
     if tool is None:
         pytest.skip("the tool's console script is not installed beside this interpreter")
-    (tmp_path / Project().out_dirs[0]).mkdir()
-    (tmp_path / Project().out_dirs[0] / "activate.sh").write_text(
+    (tmp_path / Project().out_dirs[0] / "envs" / "default").mkdir(parents=True)
+    (tmp_path / Project().out_dirs[0] / "envs" / "default" / "activate.sh").write_text(
         "echo activating\n", encoding="utf-8"
     )
     receipt = '{"trial_receipt": {"run_id": "sh"}}'

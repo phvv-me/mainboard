@@ -21,7 +21,8 @@ from ...core import MissionError, Project
 from .backend import Pixi
 from .compiler import Compiler
 from .ecosystems import SecondStage
-from .generated import ActivationScript, GeneratedFiles
+from .generated import GeneratedFiles
+from .generated.activation import write
 from .pixi_lock import canonical
 from .pixi_manifest import anchored, normalized, selected_manifest
 from .provisioner import environment_shard
@@ -183,9 +184,12 @@ class Prefixes:
                 for directory in stage.binary_dirs(self.environment)
                 if directory.is_dir()
             ]
-            ActivationScript(
-                target / ACTIVATION, pixi.shell_hook(self.environment), binaries
-            ).write(modules)
+            write(
+                target / ACTIVATION,
+                pixi.shell_hook(self.environment),
+                modules=modules,
+                binaries=binaries,
+            )
             pixi.cache_windows_activation(self.environment, binaries)
             files.write(target / STAMP, f"{digest}\n")
         return target

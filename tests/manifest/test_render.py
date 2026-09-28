@@ -45,3 +45,32 @@ def test_exec_returns_stdout_and_a_failure_names_the_command(tmp_path: Path) -> 
 def test_vars_must_be_a_table(tmp_path: Path) -> None:
     with pytest.raises(MissionError, match=r"\[vars\] must be a table"):
         Interpolator(tmp_path).rendered({"vars": "nope"})
+
+
+@pytest.mark.parametrize(
+    ("template", "said"),
+    [
+        ("{{ vars.home | upper }}", "not a name or a call"),
+        ("{{ 1 + 1 }}", "not a name or a call"),
+        ("{% if true %}x{% endif %}", "statements are not evaluated"),
+        ("{{ nowhere }}", "undefined"),
+        ("{{ num_cpus }}", "is a function"),
+        ("{{ vars() }}", "not a function"),
+        ("{{ env(__import__('os')) }}", "malformed"),
+    ],
+    ids=[
+        "a filter",
+        "arithmetic",
+        "a statement",
+        "an undefined name",
+        "an uncalled function",
+        "a value called",
+        "code as an argument",
+    ],
+)
+def test_a_template_evaluates_names_and_literal_calls_and_refuses_anything_else(
+    tmp_path: Path, template: str, said: str
+) -> None:
+    """A manifest is data: it names values and calls a fixed set of functions, never code."""
+    with pytest.raises(MissionError, match=said):
+        Interpolator(tmp_path).rendered({"at": template})

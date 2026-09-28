@@ -1,10 +1,11 @@
+import ast
 import os
 import platform
+import re
 import shlex
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=exec() launches an explicitly declared manifest command as argv without a shell
 import sys
 from collections.abc import Callable, Mapping
-from functools import cache
 from typing import TYPE_CHECKING
 
 from ...core.errors import MissionError
@@ -12,19 +13,14 @@ from ...core.errors import MissionError
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from jinja2.sandbox import SandboxedEnvironment
-
-
-@cache
-def _engine() -> SandboxedEnvironment:
-    """The sandboxed template engine, built on the first template, since jinja2 costs 6 ms."""
-    from jinja2 import StrictUndefined
-    from jinja2.sandbox import SandboxedEnvironment
-
-    return SandboxedEnvironment(undefined=StrictUndefined)
-
-
 _EXEC_TIMEOUT = 20.0
+
+# A `{{ }}` template, and the two things one may hold: a dotted name (`vars.home`) or a call of a
+# scope function with literal arguments (`env('HOME', '')`). Nothing else is evaluated, so a
+# manifest can never run code beyond the functions named below.
+_TEMPLATE = re.compile(r"\{\{\s*(.*?)\s*\}\}", re.DOTALL)
+_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+_CALL = re.compile(r"([A-Za-z_]\w*)\((.*)\)", re.DOTALL)
 
 type Json = str | int | float | bool | None | list["Json"] | dict[str, "Json"]
 type Scope = dict[str, Json | Callable[..., Json]]
@@ -64,7 +60,9 @@ class Interpolator:
         if "{{" not in text and "{%" not in text:
             return text
         try:
-            return _engine().from_string(text).render(scope)
+            if "{%" in text:
+                raise ValueError("`{% %}` statements are not evaluated; use `{{ name }}`")
+            return _TEMPLATE.sub(lambda found: str(_evaluated(found[1], scope)), text)
         except Exception as error:
             raise MissionError(f"template at {at} failed: {error}") from error
 
@@ -86,6 +84,26 @@ class Interpolator:
         if isinstance(value, list):
             return [self.__walk(item, scope, at=f"{at}[]") for item in value]
         return value
+
+
+def _evaluated(expression: str, scope: Scope) -> Json:
+    """What one template's `expression` names: a scope value by dotted name, or a call."""
+    if call := _CALL.fullmatch(expression):
+        function = scope.get(call[1])
+        if not callable(function):
+            raise ValueError(f"{call[1]!r} is not a function a template can call")
+        arguments = ast.literal_eval(f"({call[2]},)") if call[2].strip() else ()
+        return function(*arguments)
+    if not _NAME.fullmatch(expression):
+        raise ValueError(f"{expression!r} is not a name or a call a template evaluates")
+    value: object = scope
+    for part in expression.split("."):
+        if not isinstance(value, Mapping) or part not in value:
+            raise ValueError(f"{expression!r} is undefined")
+        value = value[part]
+    if callable(value):
+        raise ValueError(f"{expression!r} is a function; call it as {expression}()")
+    return value  # type: ignore[return-value]
 
 
 def _env(name: str, default: str = "") -> str:

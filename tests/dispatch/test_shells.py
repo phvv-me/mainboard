@@ -147,8 +147,8 @@ def test_the_posix_shell_keeps_its_bash_lines_and_closes_its_connection() -> Non
         assert shell.ok("command -v uv")
         assert host.lines[-1].startswith("cd /repo && export PATH=")
         assert host.calls[-1][:2] == ["bash", "-lc"]
-        assert shell.proof == f"/repo/{Project().out_dirs[0]}/activate.sh"
-        assert shell.activation_record == f"/repo/{Project().out_dirs[0]}/activate.sh"
+        assert shell.proof == f"/repo/{Project().out_dirs[0]}/envs/default/activate.sh"
+        assert shell.activation_record == f"/repo/{Project().out_dirs[0]}/envs/default/activate.sh"
     assert shell.dialect.session("gold", f"cd /x && {Project().package} shell")[3] == (
         f"bash -lc 'cd /x && {Project().package} shell'"
     )

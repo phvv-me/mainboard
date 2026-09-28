@@ -510,7 +510,7 @@ def test_activate_writes_the_script_a_bare_shell_gets_the_whole_runtime_from(
 
     path = provisioner.activate(modules=modules)
 
-    assert path == provisioner.out / "activate.sh"
+    assert path == provisioner.environment_dir() / "activate.sh"
     text = path.read_text()
     assert ("module load singularity/4.2.1" in text) is loaded
     assert "export PATH=/env/bin:$PATH" in text
@@ -546,8 +546,8 @@ def test_activate_gives_a_named_environment_its_own_script(
 
     path = provisioner.activate("serving")
 
-    assert path == provisioner.out / "activate-serving.sh"
-    assert not (provisioner.out / "activate.sh").exists()
+    assert path == provisioner.environment_dir("serving") / "activate.sh"
+    assert not (provisioner.environment_dir() / "activate.sh").exists()
 
 
 def test_provision_installs_the_second_stage_after_pixi(
