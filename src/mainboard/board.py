@@ -24,7 +24,7 @@ from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
-from .core.shell import foreground
+from .core.shell import become, foreground
 from .deps import Dependencies
 from .dispatch import vocabulary
 from .dispatch.backends.base import (
@@ -581,7 +581,7 @@ class Board:
         queue: str = "",
         walltime: str = "",
         keep: bool = False,
-        replace: Callable[[str, list[str]], NoReturn] = os.execvp,
+        replace: Callable[[str, list[str]], NoReturn] = become,
     ) -> NoReturn:
         """Hand this terminal a session on the bound host, inside its mirrored workspace.
 
@@ -1102,7 +1102,7 @@ class Board:
         self,
         env: str = "",
         *,
-        replace: Callable[[str, list[str], Mapping[str, str]], NoReturn] = os.execve,
+        replace: Callable[[str, list[str], Mapping[str, str]], NoReturn] = become,
     ) -> NoReturn:
         """Hand this terminal to an interactive `pixi shell` inside the workspace environment.
 

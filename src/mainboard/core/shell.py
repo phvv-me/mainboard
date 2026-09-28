@@ -1,7 +1,10 @@
+import os
 import shlex
-from collections.abc import Callable
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the argv a verb hands over, the Windows stand-in for exec since=2026-09-28
+import sys
+from collections.abc import Callable, Mapping
 from string.templatelib import Interpolation, Template
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 from plumbum import FG, ProcessExecutionError
 
@@ -48,3 +51,18 @@ def _render(template: Template, convert: Callable[[Interpolation], str]) -> str:
             'write t"..." so interpolations stay quotable'
         )
     return "".join(convert(item) if isinstance(item, Interpolation) else item for item in template)
+
+
+def become(program: str, argv: list[str], env: Mapping[str, str] | None = None) -> NoReturn:
+    """Hand this process over to `program` with `argv`, the terminal and its signals included.
+
+    POSIX replaces the process. Windows has no exec: its `os.exec*` starts a child without quoting
+    its arguments, so an ssh handed `bash -lc 'cd root && ...'` ran only the `cd` in the login
+    shell and the rest from the home directory. There the child is run to completion instead,
+    its arguments quoted the way Windows parses them, and its exit status becomes this one's.
+    """
+    if sys.platform != "win32":
+        if env is None:
+            os.execvp(program, argv)
+        os.execvpe(program, argv, dict(env))
+    raise SystemExit(subprocess.call(argv, env=None if env is None else dict(env)))

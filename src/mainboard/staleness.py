@@ -32,6 +32,7 @@ from plumbum.commands.processes import ProcessTimedOut
 
 from .core.errors import MissionError
 from .core.project import Project
+from .core.shell import become
 from .engines.compile.backend.engine import PixiEngine
 from .engines.compile.backend.process import Process
 
@@ -127,7 +128,7 @@ class Refresh:
             return
         say(f"updated from {self.found.source}")
         os.environ.update(REFRESHED.exported("1"))
-        os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
+        become(sys.executable, [sys.executable, *sys.orig_argv[1:]])
 
     def replaced(self) -> bool:
         """Whether another process reinstalled the snapshot while this one waited its turn."""
