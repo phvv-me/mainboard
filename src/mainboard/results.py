@@ -309,7 +309,7 @@ class Results:
         jobs: list[object] = []
         lake = Lake.at(self.root)
         if lake.exists():
-            jobs = lake.query(f"SELECT record FROM {ALIAS}.runs").get_column("record").to_list()
+            jobs = [record for (record,) in lake.query(f"SELECT record FROM {ALIAS}.runs")]
         connection.execute(
             """
             CREATE TABLE jobs AS SELECT row->>'target' AS server,

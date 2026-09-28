@@ -107,7 +107,7 @@ class Importer:
         Raises MissionError when the lake already holds an import and `again` is not set.
         """
         if self.lake.exists():
-            done = self.lake.query(f"SELECT count(*) AS n FROM {ALIAS}.imports")["n"][0]
+            [(done,)] = self.lake.query(f"SELECT count(*) FROM {ALIAS}.imports")
             if done and not again:
                 raise MissionError(
                     f"{self.lake.catalog} already holds an import; pass --again to set that "

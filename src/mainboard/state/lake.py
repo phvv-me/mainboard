@@ -41,7 +41,6 @@ from threading import RLock
 from typing import Any
 
 import duckdb
-import polars as pl
 from filelock import FileLock, Timeout
 from patos import FrozenModel
 from pydantic import Field
@@ -102,20 +101,6 @@ _LOCKED_WAIT_S = 1.0
 _SESSIONS: weakref.WeakValueDictionary[tuple[Path, int], Session] = weakref.WeakValueDictionary()
 _SHARING = RLock()
 
-# The polars type each SQL type is staged as. Timestamps and JSON travel as text, which the
-# insert casts, so a caller hands ISO strings and JSON documents as they are stored elsewhere.
-_STAGED: dict[str, type[pl.DataType]] = {
-    "VARCHAR": pl.String,
-    "JSON": pl.String,
-    "TIMESTAMPTZ": pl.String,
-    "BIGINT": pl.Int64,
-    "UBIGINT": pl.UInt64,
-    "INTEGER": pl.Int32,
-    "DOUBLE": pl.Float64,
-    "BOOLEAN": pl.Boolean,
-    "BLOB": pl.Binary,
-}
-
 # The SQLite WAL-index header fields `check` reads from the catalog's `-shm` file: `mxFrame`, the
 # last valid frame in the WAL, at byte 16, and `nBackfill`, how many frames were already copied
 # into the database, at byte 96. Both are native-endian 32-bit integers.
@@ -169,39 +154,17 @@ def insert(
     """Append `rows` to the attached lake's `table` in one statement, returning how many.
 
     Each row maps column names to values; a column a row leaves out is NULL. Timestamps may be
-    ISO strings or datetimes, JSON columns documents or Python values. The batch is staged as
-    one typed frame handed to DuckDB over the Arrow stream interface, never row by row.
+    ISO strings or datetimes, JSON columns documents or Python values. The batch travels as one
+    typed list per column, unnested side by side by DuckDB itself, never row by row.
     """
     schema = BY_NAME[table]
     staged = list(rows)
     if not staged:
         return 0
-    columns = {
-        column: [_cell(kind, row.get(column)) for row in staged] for column, kind in schema.columns
-    }
-    frame = pl.DataFrame(
-        columns, schema={column: _STAGED[kind] for column, kind in schema.columns}, strict=False
-    )
-    connection.register("staged", _Stream(frame))
-    try:
-        connection.execute(f"INSERT INTO {ALIAS}.{table} BY NAME SELECT * FROM staged")
-    finally:
-        connection.unregister("staged")
+    columns = ", ".join(f"unnest(?::{kind}[]) AS {column}" for column, kind in schema.columns)
+    values = [[_cell(kind, row.get(column)) for row in staged] for column, kind in schema.columns]
+    connection.execute(f"INSERT INTO {ALIAS}.{table} BY NAME SELECT {columns}", values)
     return len(staged)
-
-
-class _Stream:
-    """A polars frame seen only through the Arrow C stream interface.
-
-    DuckDB converts a polars frame through pyarrow, which this tool does not install, but it
-    reads any object offering `__arrow_c_stream__` directly.
-    """
-
-    def __init__(self, frame: pl.DataFrame) -> None:
-        self.frame = frame
-
-    def __arrow_c_stream__(self, requested_schema: object = None) -> object:
-        return self.frame.__arrow_c_stream__(requested_schema)
 
 
 class Finding(FrozenModel):
@@ -409,16 +372,10 @@ class Lake(FrozenModel):
                 insert(connection, table, staged)
         return len(staged)
 
-    def query(self, sql: str, parameters: Iterable[object] = ()) -> pl.DataFrame:
-        """One read-only query's result; tables and views are named `lake.<name>`."""
+    def query(self, sql: str, parameters: Iterable[object] = ()) -> list[tuple[Any, ...]]:
+        """One read-only query's rows; tables and views are named `lake.<name>`."""
         with self.open() as connection:
-            result = connection.execute(sql, list(parameters))
-            return pl.DataFrame(
-                result.fetchall(),
-                schema=[column[0] for column in result.description],
-                orient="row",
-                infer_schema_length=None,
-            )
+            return connection.execute(sql, list(parameters)).fetchall()
 
     def maintain(self) -> bool:
         """Checkpoint the lake under the maintenance lock, False when another holds it.
