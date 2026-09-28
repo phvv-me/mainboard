@@ -21,7 +21,6 @@ from patos import FrozenModel
 
 from ..compute import summary
 from ..core.errors import MissionError
-from ..core.project import Project
 from ..costs import Catalog, Ledger, Quote, SetupFit
 from ..dispatch.backends.base import Market, ProviderBackend, route
 
@@ -36,8 +35,6 @@ if TYPE_CHECKING:
 _UNFITTED_SETUP_S = 300.0
 
 # Where the workspace keeps the two files this reads, both written by the tool itself.
-_CATALOG = "catalog.ndjson"
-_COSTS = "costs"
 
 
 def platform(*, alias: str, kind: str) -> str:
@@ -98,16 +95,16 @@ class Estimator:
     """Prices a batch from what this workspace knows, asking a market for what it does not.
 
     The offer roster says what hardware costs and the cost ledger how long each platform takes to
-    start work (both the workspace's own files by default). Owned hardware needs neither.
+    start work (both the workspace lake's by default). Owned hardware needs neither.
     """
 
     def __init__(
         self, board: Board, *, catalog: Catalog | None = None, ledger: Ledger | None = None
     ) -> None:
-        generated = Project().out(board.root)
+        session = board.dispatcher.cache.session
         self.board = board
-        self.catalog = catalog if catalog is not None else Catalog.load(generated / _CATALOG)
-        self.ledger = ledger if ledger is not None else Ledger(generated / _COSTS)
+        self.catalog = catalog if catalog is not None else Catalog.load(session)
+        self.ledger = ledger if ledger is not None else Ledger(session)
 
     def hardware(self, job: BatchJob, *, card: str) -> str:
         """What `job` lands on: what onboarding recorded, else the hardware it asked to rent."""
@@ -160,7 +157,7 @@ class Estimator:
         if not offers:
             return
         self.catalog.add(*offers)
-        self.catalog.save(Project().out(self.board.root) / _CATALOG)
+        self.catalog.save(self.board.dispatcher.cache.session)
 
     def row(self, job: BatchJob, transfer: TransferSet) -> JobEstimate:
         """Price one job against its target's fitted behavior and whatever offer covers it.

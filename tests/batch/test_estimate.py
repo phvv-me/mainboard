@@ -2,11 +2,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import ExecutionPlan, MissionError, Project
+from mainboard import ExecutionPlan, MissionError
 from mainboard.batch import BatchEstimate, Estimator, JobEstimate, TransferSet, platform
 from mainboard.costs import Catalog, Ledger, Observation, Offer
 from mainboard.dispatch import HostSetup
 from mainboard.dispatch.backends import Market, ProviderBackend
+from mainboard.dispatch.state import Cache
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Defaults, HostProfile
 from mainboard.probe import HostFacts
@@ -60,7 +61,7 @@ def test_a_target_nobody_has_timed_is_priced_pessimistically_and_says_so(
     lab: Board, tmp_path: Path
 ) -> None:
     """A number no observation supports would be worse than an assumption that admits itself."""
-    row = priced(lab, Ledger(tmp_path), runtime_s=60)
+    row = priced(lab, Ledger(Cache.private().session), runtime_s=60)
     assert (row.setup_p50_s, row.setup_p90_s, row.setup_samples) == (300.0, 300.0, 0)
     assert (row.rate_usd_hr, row.expected_usd, row.p90_usd) == (0.0, 0.0, 0.0)
     assert (row.target, row.kind, row.runtime_s) == ("gold", "ssh", 60.0)
@@ -69,7 +70,7 @@ def test_a_target_nobody_has_timed_is_priced_pessimistically_and_says_so(
 def test_three_recorded_dispatches_turn_the_assumption_into_a_fit(
     lab: Board, tmp_path: Path
 ) -> None:
-    ledger = Ledger(tmp_path)
+    ledger = Ledger(Cache.private().session)
     timed(ledger, "gold", 4.0, 6.0, 20.0)
     row = priced(lab, ledger)
     assert (row.setup_p50_s, row.setup_samples) == (6.0, 3)
@@ -80,7 +81,7 @@ def test_a_rented_row_carries_the_meter_and_an_owned_one_carries_nothing(
     lab: Board, tmp_path: Path
 ) -> None:
     """Owned hardware is already paid for, so its row prices at zero instead of at a guess."""
-    ledger = Ledger(tmp_path)
+    ledger = Ledger(Cache.private().session)
     declaring(lab, "vast", HostProfile(kind="vast"))
     estimator = Estimator(lab, catalog=Catalog((_OFFER,)), ledger=ledger)
     rental = spec({"target": "vast", "command": "true", "gpu_name": "RTX 4090", "runtime_s": 3600})
@@ -94,7 +95,7 @@ def test_a_rented_row_carries_the_meter_and_an_owned_one_carries_nothing(
 def test_a_job_asking_for_hardware_no_offer_covers_is_still_a_row(
     lab: Board, tmp_path: Path
 ) -> None:
-    row = priced(lab, Ledger(tmp_path), gpu_name="GB200", gpus=2)
+    row = priced(lab, Ledger(Cache.private().session), gpu_name="GB200", gpus=2)
     assert (row.rate_usd_hr, row.expected_usd) == (0.0, 0.0)
     assert row.hardware == "2x GB200"
 
@@ -125,7 +126,7 @@ class Quoting(ProviderBackend, Market):
 def quoted(lab: Board, tmp_path: Path, *, catalog: Catalog) -> JobEstimate:
     """One rented job's row against `catalog`, on a host routed to the quoting backend."""
     declaring(lab, "rented", HostProfile(kind="quoting"))
-    estimator = Estimator(lab, catalog=catalog, ledger=Ledger(tmp_path))
+    estimator = Estimator(lab, catalog=catalog, ledger=Ledger(Cache.private().session))
     rental = spec(
         {"target": "rented", "command": "true", "gpu_name": "A100", "gpus": 4, "runtime_s": 3600}
     )
@@ -149,7 +150,7 @@ def test_an_empty_roster_is_priced_from_the_providers_own_market_rather_than_at_
     assert row.expected_usd == pytest.approx(1.20 * (3600 + 300) / 3600)
     # Narrowed to exactly what the job asked to rent, and kept, so the next estimate is free.
     assert Quoting.asked == [("A100", 4)]
-    assert (lab.root / Project().out_dirs[0] / "catalog.ndjson").is_file()
+    assert Catalog.load(lab.dispatcher.cache.session).offers(gpu="A100")
 
 
 def test_a_roster_that_already_prices_the_card_costs_no_round_trip_and_says_it_is_stored(
@@ -219,7 +220,9 @@ def test_a_card_prices_the_same_however_the_request_spells_it(
     Quoting.fault = None
     Quoting.offers = market
     declaring(lab, "rented", HostProfile(kind="quoting"))
-    estimator = Estimator(lab, catalog=Catalog(tuple(stored)), ledger=Ledger(tmp_path))
+    estimator = Estimator(
+        lab, catalog=Catalog(tuple(stored)), ledger=Ledger(Cache.private().session)
+    )
     rental = spec(
         {"target": "rented", "command": "true", "gpu_name": "RTX_4090", "runtime_s": 3600}
     )
@@ -244,7 +247,9 @@ def test_a_row_naming_no_card_is_priced_for_the_one_its_host_will_actually_rent(
     profile = HostProfile(kind="quoting", defaults=Defaults(gpu_name="RTX 4090"))
     declaring(lab, "rented", profile)
     cheaper = Offer(provider="quoting", gpu="T4", rate_usd_hr=0.05)
-    estimator = Estimator(lab, catalog=Catalog((cheaper, _SPELLED)), ledger=Ledger(tmp_path))
+    estimator = Estimator(
+        lab, catalog=Catalog((cheaper, _SPELLED)), ledger=Ledger(Cache.private().session)
+    )
     rental = spec({"target": "rented", "command": "true", "runtime_s": 3600})
     row = estimator.row(rental.jobs[0], TransferSet(job="rented-1", target="rented"))
     assert (row.rate_usd_hr, row.rate_source, row.hardware) == (0.36, "catalog", "1x RTX 4090")
@@ -269,7 +274,7 @@ def test_a_provider_that_publishes_no_market_leaves_the_roster_alone_and_says_it
 ) -> None:
     """Neither hpc-ai nor modal quotes a market, so the row admits it rather than reading free."""
     declaring(lab, "silent", HostProfile(kind="marketless"))
-    estimator = Estimator(lab, catalog=Catalog(), ledger=Ledger(tmp_path))
+    estimator = Estimator(lab, catalog=Catalog(), ledger=Ledger(Cache.private().session))
     rental = spec({"target": "silent", "command": "true", "gpu_name": "H100"})
     row = estimator.row(rental.jobs[0], TransferSet(job="silent-1", target="silent"))
     assert row.rate_usd_hr == 0.0
@@ -282,7 +287,7 @@ def test_owned_hardware_is_never_asked_for_a_price_it_does_not_have(
 ) -> None:
     """A machine already paid for prices at zero as a fact, so no market is contacted for it."""
     Quoting.asked = []
-    assert priced(lab, Ledger(tmp_path)).rate_source == "owned"
+    assert priced(lab, Ledger(Cache.private().session)).rate_source == "owned"
     assert Quoting.asked == []
 
 
@@ -292,7 +297,10 @@ def test_the_hardware_column_prefers_what_onboarding_actually_found(
     """A ready host describes real hardware, so the row never has to guess from the request."""
     cache = lab.dispatcher.cache
     cache.save_host(HostSetup(host="gold", root="/repo"))
-    assert priced(lab, Ledger(tmp_path), gpus=1, gpu_name="RTX 4090").hardware == "1x RTX 4090"
+    assert (
+        priced(lab, Ledger(Cache.private().session), gpus=1, gpu_name="RTX 4090").hardware
+        == "1x RTX 4090"
+    )
     cache.save_host(
         HostSetup(
             host="gold",
@@ -302,7 +310,7 @@ def test_the_hardware_column_prefers_what_onboarding_actually_found(
             ),
         )
     )
-    assert priced(lab, Ledger(tmp_path)).hardware == "64 GB RAM"
+    assert priced(lab, Ledger(Cache.private().session)).hardware == "64 GB RAM"
 
 
 def test_a_batch_adds_up_what_it_ships_and_what_it_will_cost(lab: Board, tmp_path: Path) -> None:
@@ -314,7 +322,7 @@ def test_a_batch_adds_up_what_it_ships_and_what_it_will_cost(lab: Board, tmp_pat
         TransferSet(job=job.name, target=job.target, wire_bytes=size)
         for job, size in zip(declared.jobs, (10, 32), strict=True)
     ]
-    table = Estimator(lab, catalog=Catalog(), ledger=Ledger(tmp_path)).table(
+    table = Estimator(lab, catalog=Catalog(), ledger=Ledger(Cache.private().session)).table(
         "smoke-1", declared.jobs, transfers
     )
     assert isinstance(table, BatchEstimate)
@@ -323,7 +331,7 @@ def test_a_batch_adds_up_what_it_ships_and_what_it_will_cost(lab: Board, tmp_pat
 
 
 def test_the_workspace_owns_the_catalog_and_the_ledger_an_estimate_reads(lab: Board) -> None:
-    """Both files are the tool's own, so pricing a batch needs nothing passed in."""
+    """Both live in the workspace lake, so pricing a batch needs nothing passed in."""
     estimator = Estimator(lab)
     assert estimator.catalog.roster == []
-    assert estimator.ledger.path == lab.root / Project().out_dirs[0] / "costs" / "costs.ndjson"
+    assert estimator.ledger.session is lab.dispatcher.cache.session

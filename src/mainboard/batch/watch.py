@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..core.project import Project
 from ..costs import Ledger, Observation
 from ..dispatch import vocabulary
 from ..dispatch.shared import now
@@ -26,7 +25,6 @@ if TYPE_CHECKING:
     from .receipts import Bus, Event
 
 # Where the workspace keeps the observations a later estimate fits its setup times from.
-_COSTS = "costs"
 
 # What a handle the run registry has forgotten reads as, so a row always says something.
 _UNKNOWN = "unknown"
@@ -76,7 +74,7 @@ class Watch:
         self.board = board
         self.id = batch_id
         self.bus = bus or Journal(board.dispatcher.cache.session, batch_id)
-        self.ledger = Ledger(Project().out(board.root) / _COSTS)
+        self.ledger = Ledger(board.dispatcher.cache.session)
 
     @staticmethod
     def detail(handle: str, swept: MonitorReport) -> str:

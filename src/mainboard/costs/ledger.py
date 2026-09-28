@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from ..state.lake import Session
 
 
 class Observation(FrozenModel):
@@ -38,31 +38,31 @@ class Observation(FrozenModel):
 
 
 class Ledger:
-    """Append-only NDJSON observations, one line per dispatched job in `root/costs.ndjson`.
+    """The workspace lake's `costs` table, one observation per dispatched job.
 
     Read whole at fit time, since a year of dispatches stays small.
     """
 
-    def __init__(self, root: Path) -> None:
-        self.path = root / "costs.ndjson"
+    def __init__(self, session: Session) -> None:
+        self.session = session
 
     def observations(self, *, provider: str = "", gpu: str = "") -> list[Observation]:
-        """Every recorded observation, an empty filter matching all."""
-        try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
-        except FileNotFoundError:
-            return []
-        rows = (Observation.model_validate_json(line) for line in lines if line.strip())
+        """Every recorded observation in the order recorded, an empty filter matching all."""
+        fields = tuple(Observation.model_fields)
+        rows = self.session.rows(
+            f"SELECT {', '.join(fields)} FROM lake.costs "
+            "WHERE (? = '' OR provider = ?) AND (? = '' OR gpu = ?) ORDER BY rowid",
+            [provider, provider, gpu, gpu],
+        )
         return [
-            row
+            Observation.model_validate(
+                {key: value for key, value in zip(fields, row, strict=True) if value is not None}
+            )
             for row in rows
-            if (not provider or row.provider == provider) and (not gpu or row.gpu == gpu)
         ]
 
     def record(self, observation: Observation) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(observation.model_dump_json() + "\n")
+        self.session.append("costs", [observation.model_dump()])
 
 
 class SetupFit(FrozenModel):

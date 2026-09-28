@@ -1,12 +1,13 @@
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 from .ledger import Ledger, SetupFit
 from .model import BillingModel
+
+if TYPE_CHECKING:
+    from ..state.lake import Session
 
 
 def card(name: str) -> str:
@@ -66,13 +67,16 @@ class Catalog:
         self.roster: list[Offer] = list(offers)
 
     @classmethod
-    def load(cls, path: Path) -> Catalog:
-        """A catalog read from the NDJSON `save` writes, empty when the file is absent."""
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except FileNotFoundError:
-            return cls()
-        return cls(tuple(Offer.model_validate_json(line) for line in lines if line.strip()))
+    def load(cls, session: Session) -> Catalog:
+        """The roster the lake's newest `save` kept, empty when none was ever saved."""
+        fields = tuple(Offer.model_fields)
+        rows = session.rows(
+            f"SELECT {', '.join(fields)} FROM lake.quotes "
+            "WHERE ts = (SELECT max(ts) FROM lake.quotes) ORDER BY rowid"
+        )
+        return cls(
+            tuple(Offer.model_validate(dict(zip(fields, row, strict=True))) for row in rows)
+        )
 
     def add(self, *offers: Offer) -> None:
         self.roster.extend(offers)
@@ -118,8 +122,7 @@ class Catalog:
             )
         return sorted(priced, key=lambda quote: quote.expected_usd)
 
-    def save(self, path: Path) -> None:
-        """Write the roster as NDJSON, one offer per line."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        text = "\n".join(offer.model_dump_json() for offer in self.roster)
-        path.write_text(text + "\n" if text else "", encoding="utf-8")
+    def save(self, session: Session) -> None:
+        """Keep the whole roster in the lake's `quotes` under one stamp, the newest roster."""
+        stamp = datetime.now(UTC)
+        session.append("quotes", [{"ts": stamp, **offer.model_dump()} for offer in self.roster])

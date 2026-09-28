@@ -17,6 +17,7 @@ from mainboard.costs import (
     from_gpuhunt,
     from_vast,
 )
+from mainboard.dispatch.state import Cache
 
 from ..strategies import WORDS
 
@@ -88,7 +89,7 @@ def test_an_observation_reads_a_phase_as_zero_until_both_of_its_stamps_land(
 def test_the_ledger_appends_every_observation_and_narrows_by_provider_and_gpu(
     tmp_path: Path,
 ) -> None:
-    ledger = Ledger(tmp_path)
+    ledger = Ledger(Cache.private().session)
     assert ledger.observations() == []
     recorded = [
         Observation(provider="modal", gpu="H100", t_submit=0.0, t_running=5.0, t_ended=35.0),
@@ -114,7 +115,7 @@ def test_the_ledger_appends_every_observation_and_narrows_by_provider_and_gpu(
 def test_a_setup_fit_needs_three_measured_setups_and_brackets_them(
     tmp_path: Path, setups: Sequence[float], samples: int | None
 ) -> None:
-    ledger = Ledger(tmp_path)
+    ledger = Ledger(Cache.private().session)
     for setup in setups:
         ledger.record(
             Observation(provider="modal", t_submit=0.0, t_running=setup, t_ended=setup + 1.0)
@@ -147,7 +148,7 @@ def test_a_catalog_narrows_by_hardware_first_and_by_provider_within_it(
 def test_quotes_price_every_offer_cheapest_first_and_penalize_the_unmeasured(
     tmp_path: Path,
 ) -> None:
-    ledger = Ledger(tmp_path)
+    ledger = Ledger(Cache.private().session)
     for _ in range(3):
         ledger.record(
             Observation(provider="modal", gpu="GB200", t_submit=0.0, t_running=2.0, t_ended=3.0)
@@ -174,19 +175,18 @@ def test_quotes_price_every_offer_cheapest_first_and_penalize_the_unmeasured(
     assert all(quote.expected_usd == pytest.approx(quote.p90_usd) for quote in unfitted)
 
 
-def test_a_catalog_round_trips_through_ndjson_and_reads_an_absent_file_as_no_offers(
-    tmp_path: Path,
-) -> None:
+def test_a_catalog_round_trips_through_the_lake_and_the_newest_roster_is_the_catalog() -> None:
+    session = Cache.private().session
+    assert Catalog.load(session).roster == []
     roster = (
         Offer(provider="hpc-ai", gpu="B200-SXM-180GB", rate_usd_hr=3.5, granularity_s=60),
         Offer(provider="modal", gpu="T4", rate_usd_hr=0.59, available=True, source="scraped"),
     )
-    target = tmp_path / "feeds" / "catalog.ndjson"
-    Catalog(roster).save(target)
-    assert Catalog.load(target).roster == list(roster)
-    Catalog().save(tmp_path / "empty.ndjson")
-    assert Catalog.load(tmp_path / "empty.ndjson").roster == []
-    assert Catalog.load(tmp_path / "missing.ndjson").roster == []
+    Catalog(roster).save(session)
+    assert Catalog.load(session).roster == list(roster)
+    newer = (Offer(provider="vast", gpu="RTX 5090", rate_usd_hr=0.4),)
+    Catalog(newer).save(session)
+    assert Catalog.load(session).roster == list(newer)
 
 
 def test_an_imported_row_and_a_probed_one_land_under_the_single_name_a_query_asks_for() -> None:

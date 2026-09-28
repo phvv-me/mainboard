@@ -53,9 +53,9 @@ Phase 4 (branch `mb-writers`)
 - [x] 4.6 Harvested receipts (`receipts.ndjson`) -> `receipts`
 - [x] 4.7 Captured job logs (`<handle>.log`) -> `log_lines`; the durable pass logs to the systemd
       journal instead of `monitor.log`
-- [~] 4.8 Costs ledger -> lake table
-- [ ] 4.9 GPU quotes catalog -> lake table
-- [ ] 4.10 Pulse -> lake table
+- [x] 4.8 Costs ledger -> `costs`
+- [x] 4.9 GPU quotes catalog -> `quotes` (each save one stamped roster, the newest is the catalog)
+- [~] 4.10 Pulse -> lake table
 - [ ] 4.11 Holds -> lake table
 - [ ] 4.12 Studies -> lake table
 - [ ] 4.13 Digests (mirror, collection) -> `digests`
