@@ -239,14 +239,23 @@ def test_the_activation_table_sources_the_dotenv_loader_before_declared_scripts(
 def test_windows_replaces_generated_activation_scripts_with_batch_files(
     manifest_from: Callable[[str], Manifest],
 ) -> None:
-    """Pixi selects native scripts per target while keeping one mixed-platform workspace."""
+    """Pixi selects native scripts per target while keeping one mixed-platform workspace, and
+    cmd never `CALL`s a declared POSIX script, which would hang a headless install."""
     manifest = manifest_from(
         '[workspace]\nname = "w"\nplatforms = ["linux-64", "win-64"]\n'
+        'scripts = ["scripts/activate.sh", "scripts/site.BAT"]\n'
         "[env]\nOMP_NUM_THREADS = false\n"
     )
     compiled = PixiManifest.from_manifest(manifest, project_name="mainboard")
-    assert compiled.activation["scripts"] == ["dotenv.sh", "unset.sh"]
-    assert compiled.target["win"]["activation"] == {"scripts": ["dotenv.bat", "unset.bat"]}
+    assert compiled.activation["scripts"] == [
+        "dotenv.sh",
+        "unset.sh",
+        "../scripts/activate.sh",
+        "../scripts/site.BAT",
+    ]
+    assert compiled.target["win"]["activation"] == {
+        "scripts": ["dotenv.bat", "unset.bat", "../scripts/site.BAT"]
+    }
 
 
 def test_a_platform_environment_value_reaches_only_its_target(

@@ -54,6 +54,10 @@ _DOTENV_BAT = "dotenv.bat"
 _UNSET_SH = "unset.sh"
 _UNSET_BAT = "unset.bat"
 
+# Windows activation runs under cmd, which `CALL`s a POSIX script into its file association and,
+# without a desktop, never returns, so a declared script joins it only with a batch suffix.
+_BATCH_SUFFIXES = frozenset({".bat", ".cmd"})
+
 
 def cleared(env: dict[str, str | bool]) -> list[str]:
     """The variables `env` declares `false`, in order.
@@ -345,12 +349,16 @@ class PixiManifest(FrozenModel):
         """The `[activation]` table: exported env vars and the scripts pixi sources on entry.
 
         The dotenv loader comes first so every later script sees what it loads; declared
-        scripts are workspace-relative and rerooted.
+        scripts are workspace-relative and rerooted, and Windows takes only the batch ones.
         """
         scripts: list[Toml] = [
             *([_DOTENV_BAT if windows else _DOTENV_SH] if m.workspace.dotenv else []),
             *([_UNSET_BAT if windows else _UNSET_SH] if cleared(m.env) else []),
-            *(rerooted(script, generated_dir=generated_dir) for script in m.workspace.scripts),
+            *(
+                rerooted(script, generated_dir=generated_dir)
+                for script in m.workspace.scripts
+                if not windows or PurePosixPath(script).suffix.lower() in _BATCH_SUFFIXES
+            ),
         ]
         exported = {name: value for name, value in m.env.items() if isinstance(value, str)}
         return {
