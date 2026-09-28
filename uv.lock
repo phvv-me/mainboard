@@ -485,7 +485,7 @@ name = "cuda-bindings"
 version = "13.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "sys_platform != 'emscripten'" },
+    { name = "cuda-pathfinder" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b1/81/bff68ce829999c1e4209c761bbf903b1c06ec570416ddb25020864ad5907/cuda_bindings-13.3.1-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:1ab2f74ed65bfef4163ba07a8db16f1085e0729291db12a2423aff84ee8278b8", size = 6013639, upload-time = "2026-05-29T23:12:03.509Z" },
@@ -501,8 +501,8 @@ name = "cuda-core"
 version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
+    { name = "cuda-pathfinder" },
+    { name = "numpy" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ae/7c/3fcfbc1e1b09fd389ad8ef809b513e407e5eb71db2558962b0910ee13f04/cuda_core-1.1.1-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:74881deb1d39f9f202b48532a62af4b53d524f2ea71a6a8c9caac2a66cac7d48", size = 5836547, upload-time = "2026-07-29T23:05:41.94Z" },
@@ -556,17 +556,17 @@ wheels = [
 
 [[package]]
 name = "duckdb"
-version = "1.5.5"
+version = "2.0.0.dev2609250715"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7d/19/e57151753576373c6696a12022648546cca6038e8833fda2908ee2342d9b/duckdb-1.5.5.tar.gz", hash = "sha256:72f33ee57ca7595b23957671a2cc7f7fe2be0ecc2d68f63abedcfcaa3a5c1238", size = 18066741, upload-time = "2026-07-22T10:55:17.819Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/9b/54f456c3a41dd7c0836eab85242c417d032cb5e04772d4b364c22b14a70c/duckdb-2.0.0.dev2609250715.tar.gz", hash = "sha256:f9c372dec179c616d0d0b358873342e8034690b4a238fdfc1b3e56a9426b8431", size = 16285644, upload-time = "2026-09-25T16:03:14.373Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3e/56/12c65bfa2d2605b81981b264788891bcf11ec72227889554cead5d8d13b9/duckdb-1.5.5-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:8e6413dd40facb7b8ab21bd844450cd8f549b29e138635be9cf090ef4d2049e2", size = 32761946, upload-time = "2026-07-22T10:54:53.412Z" },
-    { url = "https://files.pythonhosted.org/packages/b9/46/682ce155f17e0d2822d4f13ee3db9ca4b5b7c2da61b841b2629035e1f4bc/duckdb-1.5.5-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:64078acfd16541132ac6e191eb81b2845554444a0305cc1aa581ba107e514aa8", size = 17375069, upload-time = "2026-07-22T10:54:57.269Z" },
-    { url = "https://files.pythonhosted.org/packages/39/ce/a24bcbd3289c8f305a430759c5fc12242740b4af3e17f7593f3a34e333d2/duckdb-1.5.5-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:8c11775cc99a447618d5f1840126db17f2652f3eae05529df4f81f40e2df7151", size = 15519791, upload-time = "2026-07-22T10:55:00.681Z" },
-    { url = "https://files.pythonhosted.org/packages/d9/76/3a01afbc615c1d418c0de58a6b68ac5ce2a8563232c0464bfbc2ce552398/duckdb-1.5.5-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:77bbc1e6ba12e1e06f9020117bdf848627ecfdf36f907550e62e008e6109dece", size = 19398251, upload-time = "2026-07-22T10:55:04.168Z" },
-    { url = "https://files.pythonhosted.org/packages/a1/43/3a5e81d1728f4d234c79bfe385808ee7c04834f7c37a4b5c257459c25614/duckdb-1.5.5-cp314-cp314-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fbf0f2d48b43c6c304d00463b463c27ead6c4b01c3c1816b750f728decf71afe", size = 21513851, upload-time = "2026-07-22T10:55:07.864Z" },
-    { url = "https://files.pythonhosted.org/packages/91/41/fc7c829172c60ca22485251eab285f4f1a0d87b486a024c726f21471d86e/duckdb-1.5.5-cp314-cp314-win_amd64.whl", hash = "sha256:9dc826c4b50e64f6c4e4d07a3a9cb075ef70ba3899dc43ec5493dc3d7b04b353", size = 13691858, upload-time = "2026-07-22T10:55:11.181Z" },
-    { url = "https://files.pythonhosted.org/packages/e1/2c/95d9216b79e9273689d7ebce125a54503ed0c9bd7da931f0265888e99779/duckdb-1.5.5-cp314-cp314-win_arm64.whl", hash = "sha256:63e48d4b74b15aeacd688976432a7225163df8c226eddeb8536bba2d4d4ff433", size = 14470180, upload-time = "2026-07-22T10:55:14.445Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/15/9d610a45bee8b8a0a6cb8b4b90698f1fa2142b1787ba84c2729f95714759/duckdb-2.0.0.dev2609250715-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:04ba9c86b3094c207d63416a7d6d43084516bfe75a41c2c394bced14e5f51c2e", size = 35543544, upload-time = "2026-09-25T16:02:50.634Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/d4/387d5d5d70cd556018a70bb8a2959cde6e5c7b51ea574ccac69978664098/duckdb-2.0.0.dev2609250715-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:46eb281283c979c2750f37df2dfceeee46a4f2d42c236845b46d4bcfed1d7e2a", size = 18863790, upload-time = "2026-09-25T16:02:54.204Z" },
+    { url = "https://files.pythonhosted.org/packages/99/30/ffe767827b89b29e3d054d0115fa20a6afba487ee216fd270542065d816d/duckdb-2.0.0.dev2609250715-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:580e486d70e55748f787083037cddffb217f37053bffdd98609636d102fe8999", size = 16810762, upload-time = "2026-09-25T16:02:57.109Z" },
+    { url = "https://files.pythonhosted.org/packages/50/b7/2b0dadc46b043e02b4b20059f0be77ed7915d720c2086eca60b4029f994f/duckdb-2.0.0.dev2609250715-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8ed6c24b203a79f852615c54b9cb8a991a2baccd23923b63c4fdf711816b3302", size = 20739547, upload-time = "2026-09-25T16:03:00.624Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/49/61b1e19eec10307cca60d1fcece4c1b2ef69c8a23afc7786bac60a24a463/duckdb-2.0.0.dev2609250715-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b1afbb9239b09ab8a0bb0609aefd0cd4e1fe3a28360bba145042e1e5458a887f", size = 23995249, upload-time = "2026-09-25T16:03:03.999Z" },
+    { url = "https://files.pythonhosted.org/packages/57/94/7e9b62bfa9b20f061a37a2e5885f46ec1528aadee12d7b58f43bb0c3b199/duckdb-2.0.0.dev2609250715-cp314-cp314-win_amd64.whl", hash = "sha256:b5fcab15f52a3210eb94522335f020a18688a6207d6fc53741a7da2afc8f90c6", size = 15048275, upload-time = "2026-09-25T16:03:08.178Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/76/7d8075f871d26a5e542bd035f6ad3dbe1e0c6ed7a27f9483af0ab13fa551/duckdb-2.0.0.dev2609250715-cp314-cp314-win_arm64.whl", hash = "sha256:9224903c281449e75b762bd20c2017212afd51e3a4a2ef84a8e4c924f3e2cc91", size = 15212227, upload-time = "2026-09-25T16:03:11.176Z" },
 ]
 
 [[package]]
@@ -1055,7 +1055,7 @@ requires-dist = [
     { name = "cuda-bindings", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=13.0" },
     { name = "cuda-core", marker = "(sys_platform == 'linux' and extra == 'cuda') or (sys_platform == 'win32' and extra == 'cuda')", specifier = ">=1.1" },
     { name = "cyclopts", specifier = ">=3.0" },
-    { name = "duckdb", specifier = ">=1.5.4" },
+    { name = "duckdb", specifier = "==2.0.0.dev2609250715" },
     { name = "filelock", specifier = ">=3.13" },
     { name = "hypothesis", marker = "extra == 'adversarial'", specifier = ">=6.100" },
     { name = "jinja2", specifier = ">=3.1" },
