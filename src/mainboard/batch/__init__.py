@@ -3,7 +3,7 @@
 # whole flow publishes through and is the one place those shapes are written down.
 
 from .estimate import BatchEstimate, Estimator, JobEstimate, platform
-from .receipts import Event, Mirrored, Receipts, Topic
+from .receipts import Event, Receipts, Topic
 from .runner import Batch
 from .spec import BatchSpec, Selection
 from .transfer import Transfer, TransferSet
@@ -17,7 +17,6 @@ __all__ = [
     "Estimator",
     "Event",
     "JobEstimate",
-    "Mirrored",
     "Receipts",
     "Selection",
     "Topic",

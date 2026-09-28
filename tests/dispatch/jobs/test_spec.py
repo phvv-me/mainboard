@@ -182,9 +182,7 @@ def test_a_dispatched_job_carries_the_provenance_a_mirror_cannot_derive_and_noth
 
 def test_the_calls_around_the_command_travel_as_this_tools_own_verbs() -> None:
     build = ToolCall(args=("provide", "default", "--source", "x"), cwd="/repo")
-    watch = ToolCall(
-        args=("sample", "s", "--job", "j"), credentials=f"/repo/{Project().out_dirs[0]}/t.json"
-    )
+    watch = ToolCall(args=("sample", "s", "--job", "j"))
     attest = ToolCall(args=("attest", "s", "--job", "j"))
     job = recorded(spec(provide=build, sampler=watch, attestation=attest).render(pbs=False))
     assert (job.provide, job.sampler, job.attestation) == (build, watch, attest)

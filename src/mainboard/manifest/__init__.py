@@ -13,7 +13,7 @@ from .schema.root import Manifest
 from .schema.scope import PlatformScope, Scope
 from .schema.spec import Spec
 from .schema.toolchain import Toolchain
-from .schema.tracking import Tracking, TrackingMode
+from .schema.tracking import Tracking
 from .schema.workspace import Header
 
 __all__ = [
@@ -39,6 +39,5 @@ __all__ = [
     "Sync",
     "Toolchain",
     "Tracking",
-    "TrackingMode",
     "load",
 ]

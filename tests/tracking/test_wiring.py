@@ -1,6 +1,3 @@
-import json
-import subprocess
-import sys
 from collections.abc import Sequence
 from time import monotonic, sleep
 from types import TracebackType
@@ -8,9 +5,9 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
-from mainboard import Board, ExecutionPlan, Job, Project
-from mainboard.batch import Mirrored, Receipts, Topic
-from mainboard.batch.runner import directory
+from mainboard import Board, ExecutionPlan, Job
+from mainboard.batch import Topic
+from mainboard.batch.receipts import Journal
 from mainboard.cli import build
 from mainboard.dispatch import Handle
 from mainboard.dispatch.state import Cache, RunRecord
@@ -18,13 +15,10 @@ from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.manifest import Tracking
 from mainboard.runtime.job import ToolCall
 
-from .support import FakeWandb, keyed
-
 if TYPE_CHECKING:
     from pathlib import Path
 
 _HOST = "miyabi-g"
-_ROOT = "/work/p"
 
 
 class Asked(NamedTuple):
@@ -36,9 +30,7 @@ class Asked(NamedTuple):
 
 
 class FakeRemote:
-    """The one ssh connection a credential staging opens, keeping what it was piped."""
-
-    piped: list[tuple[str, str]] = []
+    """An ssh connection that answers every command with nothing."""
 
     def __init__(self, command: str = "") -> None:
         self.command = command
@@ -60,29 +52,20 @@ class FakeRemote:
     def __getitem__(self, argv: str | tuple[str, ...]) -> FakeRemote:
         return FakeRemote(argv if isinstance(argv, str) else " ".join(argv))
 
-    def __lshift__(self, text: str) -> FakeRemote:
-        FakeRemote.piped.append((self.command, text))
-        return self
-
     def close(self) -> None:
         return
 
 
-def tracking(board: Board, **fields: str | float) -> Board:
-    """Turn this workspace's tracking lane on, at whatever the caller declared."""
+def tracking(board: Board, **fields: float) -> Board:
+    """This workspace with its live lane at whatever the caller declared."""
     board.shared["manifest"] = board.manifest.model_copy(update={"tracking": Tracking(**fields)})
     return board
 
 
-def test_a_stream_writes_its_own_file_and_mirrors_it_only_when_the_workspace_asked(
-    board: Board, service: FakeWandb
-) -> None:
-    """The composition root, so no flow has to know that a reporting service exists."""
-    assert isinstance(board.receipts("plain"), Receipts)
-    composed = tracking(board).receipts("mirrored")
-    assert isinstance(composed, Mirrored)
-    assert isinstance(composed.canonical, Receipts)
-    assert composed.canonical.path == directory(board, "mirrored") / "events.ndjson"
+def test_every_stream_publishes_into_the_workspace_lake(board: Board) -> None:
+    """The composition root, so no flow has to know where its receipts are kept."""
+    bus = board.receipts("plain")
+    assert isinstance(bus, Journal) and bus.batch == "plain"
 
 
 def test_a_sampler_takes_the_interval_the_manifest_declared(board: Board) -> None:
@@ -112,93 +95,56 @@ def submitting(board: Board, monkeypatch: pytest.MonkeyPatch) -> list[Asked]:
 
 
 def test_a_run_that_named_itself_nothing_is_named_here_so_its_stream_has_a_key(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
+    board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A sweep on another day settles the run, so the key has to outlive this process."""
-    keyed(monkeypatch)
+    """A sweep on another day settles the run, so the key has to outlive this process; and a
+    submission is recorded whether or not anything samples it."""
     asked = submitting(tracking(board, interval=0.0), monkeypatch)
-    monkeypatch.setattr("mainboard.board.connection", FakeRemote)
     board.on(_HOST).submit("python train.py")
     [seen] = asked
     assert seen.name.startswith(f"{_HOST}-") and seen.sampler is None
     stream = seen.name
-    [line] = Receipts(directory(board, stream) / "events.ndjson").replay()
+    [line] = board.receipts(stream).replay()
     assert (line.topic, line.job, line.data["handle"]) == (Topic.SUBMITTED, stream, "77")
     assert line.data["target"] == _HOST and line.data["command"] == "python train.py"
     # The node field is optional both ways: absent when nothing declared one, on the line and
     # in the run registry when the dispatch did.
     assert "node" not in line.data
     board.on(_HOST).submit("python train.py", name="noded", node="tax-law")
-    [noded] = Receipts(directory(board, "noded") / "events.ndjson").replay()
+    [noded] = board.receipts("noded").replay()
     assert noded.data["node"] == "tax-law"
 
 
 def test_a_batch_job_still_watches_itself_though_only_the_batch_publishes_for_it(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
+    board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The node says the one thing only it can say, and the batch says everything else."""
-    keyed(monkeypatch)
     asked = submitting(tracking(board, interval=20.0), monkeypatch)
     board.on(_HOST).submit("echo hi", name="batch:smoke-1/gold-1")
     sampler = asked[0].sampler
     assert sampler is not None and sampler.args[:4] == ("sample", "smoke-1", "--job", "gold-1")
-    assert not (directory(board, "smoke-1") / "events.ndjson").exists()
+    assert board.receipts("smoke-1").replay() == []
 
 
 def test_a_dispatched_job_is_handed_the_line_that_makes_it_watch_itself(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
+    board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The seam that carries the live lane onto a host, plus the one credential it needs there."""
-    keyed(monkeypatch, key="secret")
-    FakeRemote.piped = []
+    """The seam that carries the live lane onto a host."""
     asked = submitting(tracking(board, interval=15.0), monkeypatch)
-    monkeypatch.setattr("mainboard.board.connection", FakeRemote)
     monkeypatch.setattr(
         "mainboard.dispatch.shells.connection", lambda host, ssh=None: FakeRemote()
     )
     board.on(_HOST).submit("python train.py", walltime="01:00:00")
     stream = asked[0].name
     assert asked[0].sampler == ToolCall(
-        args=("sample", stream, "--job", stream, "--interval", "15", "--seconds", "3600"),
-        credentials=f"{asked[0].root}/{Project().out_dirs[0]}/tracking.json",
+        args=("sample", stream, "--job", stream, "--interval", "15", "--seconds", "3600")
     )
-    [(command, text)] = FakeRemote.piped
-    assert "umask 077" in command and "tracking.json" in command
-    assert json.loads(text) == {"WANDB_API_KEY": "secret"}
 
 
-def test_a_machine_holding_no_credential_stages_nothing_and_still_samples(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
-) -> None:
-    keyed(monkeypatch)
-    FakeRemote.piped = []
-    asked = submitting(tracking(board, interval=5.0), monkeypatch)
-    monkeypatch.setattr("mainboard.board.connection", FakeRemote)
-    board.on(_HOST).submit("python train.py")
-    sampler = asked[0].sampler
-    assert sampler is not None and sampler.args[0] == "sample"
-    assert FakeRemote.piped == []
-
-
-def test_staging_is_for_a_machine_that_is_not_this_one(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
-) -> None:
-    """This machine reads the workspace `.env` directly, so nothing is ever written for it."""
-    keyed(monkeypatch, key="secret")
-    FakeRemote.piped = []
-    monkeypatch.setattr("mainboard.board.connection", FakeRemote)
-    tracking(board).stage(_ROOT)
-    assert FakeRemote.piped == []
-
-
-def test_nothing_is_sampled_and_nothing_is_staged_when_the_lane_is_off(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    FakeRemote.piped = []
-    monkeypatch.setattr("mainboard.board.connection", FakeRemote)
-    assert board.sampling(("s", "j"), root=_ROOT, resources=Resources()) is None
-    board.stage(_ROOT)
-    assert FakeRemote.piped == []
+def test_nothing_is_sampled_or_attested_when_the_interval_is_zero(board: Board) -> None:
+    quiet = tracking(board, interval=0.0)
+    assert quiet.sampling(("s", "j"), resources=Resources()) is None
+    assert quiet.attesting(("s", "j")) is None
 
 
 def swept(board: Board, monkeypatch: pytest.MonkeyPatch, verdict: str) -> None:
@@ -231,34 +177,30 @@ def recorded(handle: str, name: str) -> None:
 
 
 def test_the_durable_sweep_publishes_for_every_run_a_batch_does_not_already_own(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
+    board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """What makes a plain submit and a study trial as tracked as a batch job."""
-    keyed(monkeypatch)
+    """What makes a plain submit and a study trial as recorded as a batch job, sampled or not."""
     recorded("81", "nightly")
     recorded("82", "batch:smoke-1")
-    tracked = tracking(board)
-    swept(tracked, monkeypatch, "running")
-    tracked.monitor().once()
-    stream = Receipts(directory(board, "nightly") / "events.ndjson")
-    assert [line.topic for line in stream.replay()] == [Topic.STATE]
-    assert not (directory(board, "smoke-1") / "events.ndjson").exists()
+    quiet = tracking(board, interval=0.0)
+    swept(quiet, monkeypatch, "running")
+    quiet.monitor().once()
+    assert [line.topic for line in board.receipts("nightly").replay()] == [Topic.STATE]
+    assert board.receipts("smoke-1").replay() == []
 
 
 def test_a_quiet_sweep_writes_nothing_and_a_terminal_one_writes_the_last_line(
-    board: Board, monkeypatch: pytest.MonkeyPatch, service: FakeWandb
+    board: Board, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """This runs on a cron, so an unchanged run must cost the stream no line at all."""
-    keyed(monkeypatch)
     recorded("83", "nightly-two")
-    tracked = tracking(board)
-    swept(tracked, monkeypatch, "running")
-    tracked.monitor().once()
-    tracked.monitor().once()
-    stream = Receipts(directory(board, "nightly-two") / "events.ndjson")
+    swept(board, monkeypatch, "running")
+    board.monitor().once()
+    board.monitor().once()
+    stream = board.receipts("nightly-two")
     assert [line.topic for line in stream.replay()] == [Topic.STATE]
 
-    fresh = tracking(Board(board.root))
+    fresh = Board(board.root)
     swept(fresh, monkeypatch, "ok")
     monkeypatch.setattr(fresh.dispatcher, "fetch", lambda handle, **kw: None)
     # The settled run left no output to capture, and reading it would dial the real host.
@@ -281,24 +223,13 @@ def test_a_quiet_sweep_writes_nothing_and_a_terminal_one_writes_the_last_line(
     assert stream.replay() == published
 
 
-def test_a_sweep_on_a_workspace_that_tracks_nothing_publishes_nothing(
-    board: Board, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    recorded("84", "nightly-three")
-    swept(board, monkeypatch, "running")
-    board.monitor().once()
-    assert not (directory(board, "nightly-three") / "events.ndjson").exists()
-
-
 def test_the_sample_verb_watches_this_machine_until_it_is_told_to_stop(
     depot: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The verb a job script calls, and the one somebody runs by hand beside a long job."""
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["sample", "live-1", "--interval", "0.01", "--seconds", "0.05"])
-    published = Receipts(
-        depot / Project().out_dirs[0] / "batches" / "live-1" / "events.ndjson"
-    ).replay()
+    published = Board(depot).receipts("live-1").replay()
     assert published and {line.topic for line in published} == {Topic.SAMPLE}
     assert published[0].job == "live-1"
     reading = published[0].data
@@ -307,21 +238,9 @@ def test_the_sample_verb_watches_this_machine_until_it_is_told_to_stop(
 
 def test_the_loop_keeps_reading_until_its_budget_runs_out(depot: Path) -> None:
     """More than the first reading, which is what a series watched live actually needs."""
-    sampler = Board(depot).samples("live-2", job="j", interval=0.005, seconds=0.4)
+    sampler = Board(depot).samples("live-2", job="j", interval=0.005, seconds=10.0)
     with sampler:
-        deadline = monotonic() + 3.0
+        deadline = monotonic() + 10.0
         while len(sampler.bus.replay()) < 3 and monotonic() < deadline:
             sleep(0.01)
     assert len(sampler.bus.replay()) >= 3
-
-
-def test_a_fresh_process_minting_by_name_finds_the_wandb_sink() -> None:
-    """Importing the tracking package alone registers every sink, the CLI's own path.
-
-    The suite's own imports register sinks as a side effect, so only a child interpreter proves it.
-    """
-    probing = "from mainboard.tracking import Tracker\nTracker.find('wandb')\n"
-    proof = subprocess.run(
-        [sys.executable, "-c", probing], capture_output=True, text=True, timeout=60, check=False
-    )
-    assert proof.returncode == 0, proof.stderr

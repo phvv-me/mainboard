@@ -346,11 +346,16 @@ def test_the_extras_carried_are_the_ones_this_center_installed(
     """The destination gets the same tool, plotting included where it was here."""
 
     def installed(name: str) -> None:
-        if name == "wandb":
-            raise PackageNotFoundError(name)
+        return
 
     monkeypatch.setattr(migrate, "distribution", installed)
     assert Migration.extras() == ["plot"]
+
+    def missing(name: str) -> None:
+        raise PackageNotFoundError(name)
+
+    monkeypatch.setattr(migrate, "distribution", missing)
+    assert Migration.extras() == []
 
 
 @pytest.mark.parametrize(

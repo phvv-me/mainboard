@@ -686,7 +686,7 @@ def build(root: Path | None = None) -> App:
             raise MissionError(
                 "plotting requires the plot extra. From the monorepo root run: "
                 "uv tool install --reinstall --python 3.14 "
-                "--from './packages/mainboard[wandb,plot]' mainboard --force"
+                "--from './packages/mainboard[plot]' mainboard --force"
             ) from fault
         settings = PlotStyle()
         specification = None
@@ -1243,7 +1243,7 @@ def build(root: Path | None = None) -> App:
         GPU memory and busyness, host memory, and the enforced cgroup cap that memory is really
         running under, which is the number an OOM kill fires against and the one a hosted
         dashboard never had. Every reading is a `job.sample` receipt, so it lands in the
-        workspace's own file first and reaches whatever `[tracking]` declared second.
+        workspace lake beside the rest of the stream.
 
         A dispatched job starts this for itself, so this verb is here for a command somebody
         runs by hand and for the job scripts that already call it.

@@ -1364,9 +1364,7 @@ def test_research_admission_precedes_scheduler_or_provider_work(
     monkeypatch.setattr(Board, "containerizer", lambda self, plan, root: None)
     board = Board(lab.root)
     declare(board, monkeypatch, "rentbox", kind="fakerental")
-    staged = []
     submitted = []
-    monkeypatch.setattr(Board, "stage", lambda self, root: staged.append(root))
 
     def submit(plan, shipment, **kwargs):
         submitted.append(shipment)
@@ -1385,7 +1383,7 @@ def test_research_admission_precedes_scheduler_or_provider_work(
     else:
         with pytest.raises(MissionError, match="captured|node.md"):
             board.on(host).submit(f"{Lab.JOB}::app")
-        assert not staged and not submitted and not FakeLanding.calls
+        assert not submitted and not FakeLanding.calls
         assert board.dispatcher.cache.total() == 0
 
 

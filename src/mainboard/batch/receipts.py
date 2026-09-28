@@ -193,38 +193,6 @@ class Journal:
         return events
 
 
-class Mirrored:
-    """One canonical transport with best-effort mirrors beside it, how a reporting sink joins.
-
-    The canonical publish happens first and a mirror that raises is logged and dropped, so an
-    expired token or a node with no route out costs one copy, never the line. `replay` reads the
-    canonical bus alone, the only one guaranteed to hold every line. A mirror is caught broadly
-    on purpose: it is a whole vendor SDK behind one call, and a batch must never die because a
-    dashboard did.
-    """
-
-    def __init__(self, canonical: Bus, *mirrors: Bus) -> None:
-        self.canonical = canonical
-        self.mirrors = mirrors
-
-    def publish(self, event: Event) -> None:
-        self.canonical.publish(event)
-        for mirror in self.mirrors:
-            try:
-                mirror.publish(event)
-            except Exception:
-                logger.warning(
-                    "mirror %s dropped %s for %s",
-                    type(mirror).__name__,
-                    event.topic,
-                    event.job or event.batch,
-                    exc_info=True,
-                )
-
-    def replay(self) -> list[Event]:
-        return self.canonical.replay()
-
-
 def publish(
     bus: Bus, batch: str, topic: Topic, *, job: str = "", data: Mapping[str, JsonValue]
 ) -> Event:

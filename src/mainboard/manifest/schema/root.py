@@ -31,7 +31,7 @@ class Manifest(Scope):
 
     Beside it: `[vars]` feed interpolation, `[containers.*]` declare base images, `[hosts.*]`
     are execution profiles inheriting `[hosts.defaults]`, `[gates.*]` are what `doctor` asks,
-    `[templates.*]` what `new` renders, `[tracking]` where receipts are mirrored, `[papers.*]`
+    `[templates.*]` what `new` renders, `[tracking]` how often a job samples itself, `[papers.*]`
     what `paper` builds, `[plots.*]` how charts look, `[admission.<card>]` how idle a card must
     be before a trial, `[git]` whose repositories `git` may write and what never commits,
     `[lint]` what `lint` runs and leaves alone, `[ci]` the hosts `ci --matrix` runs on.

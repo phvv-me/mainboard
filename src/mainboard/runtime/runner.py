@@ -8,7 +8,6 @@
 # tree under the walltime. Once entered, the receipts are always framed back and the exit status
 # is the command's own, a signal's `128 + N`, or the walltime's `124`/`137`.
 
-import json
 import os
 import platform
 import shlex
@@ -210,21 +209,10 @@ class Runner:
         return subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=this tool's own verb in its own interpreter since=2026-09-25
             [*self.tool, *call.args, *extra],
             cwd=call.cwd or self.job.root,
-            env={**environment, **self.credentials(call)},
+            env=dict(environment),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL if quiet else None,
         )
-
-    @staticmethod
-    def credentials(call: ToolCall) -> dict[str, str]:
-        """The variables `call` alone receives, nothing when it names no file or a missing one."""
-        if not call.credentials:
-            return {}
-        try:
-            staged: dict[str, str] = json.loads(Path(call.credentials).read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
-        return staged
 
     def exit_artifact(self) -> Path:
         """Where a PBS job's status is kept for a server that has since forgotten the job."""

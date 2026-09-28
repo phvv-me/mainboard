@@ -1,4 +1,3 @@
-import json
 import os
 import platform
 import shlex
@@ -15,7 +14,7 @@ from plumbum import local as localhost
 
 from .batch.estimate import Estimator, JobEstimate
 from .batch.receipts import Journal, Topic, publish
-from .batch.runner import Batch, directory
+from .batch.runner import Batch
 from .batch.spec import BatchJob, Selection
 from .batch.transfer import TransferSet
 from .batch.watch import Watch
@@ -29,7 +28,6 @@ from .core.shell import foreground
 from .deps import Dependencies
 from .dispatch import vocabulary
 from .dispatch.backends.base import (
-    Credentials,
     Delivery,
     LogSource,
     ProviderBackend,
@@ -80,16 +78,7 @@ from .probe.snapshot import HostFacts
 from .runtime.activation import Runtime
 from .runtime.job import walltime_seconds
 from .scaffold import Scaffold
-from .tracking import (
-    Sampler,
-    attesting,
-    credential,
-    host_env,
-    is_batched,
-    mirrored,
-    sampling,
-    streamed,
-)
+from .tracking import Sampler, attesting, is_batched, sampling, streamed
 from .verdicts import Verdicts
 
 if TYPE_CHECKING:
@@ -334,7 +323,7 @@ class Board:
         command: what the job runs, recorded as this run's config.
         node: the ledger slug the run serves, carried on the line only when one was declared.
         """
-        if is_batched(label) or not self.manifest.tracking.on:
+        if is_batched(label):
             return
         stream, job = streamed(label, handle=run.handle.id)
         publish(
@@ -360,19 +349,18 @@ class Board:
         """
         Sampler(self.receipts(stream), stream=stream, job=job, interval=0.0).attest()
 
-    def attesting(self, tracked: tuple[str, str], *, root: str) -> ToolCall | None:
-        """The call this job makes to attest its own machine, None when tracking is off.
+    def attesting(self, tracked: tuple[str, str]) -> ToolCall | None:
+        """The call this job makes to attest its own machine, None when sampling is off.
 
         Gated like `sampling`, but with no interval: an attestation happens exactly once and its
         whole value is that it happens before the work.
 
         tracked: the stream and job the attestation belongs to.
-        root: the workspace root on the host.
         """
         if not self.manifest.tracking.on:
             return None
         stream, job = tracked
-        return attesting(root=root, stream=stream, job=job)
+        return attesting(stream=stream, job=job)
 
     def batch(self, spec: BatchSpec, *, selection: Selection | None = None) -> Batch:
         """The declared batch over this workspace, ready to prepare, price and dispatch.
@@ -771,22 +759,11 @@ class Board:
         return plan.model_copy(update={"profile": profile})
 
     def receipts(self, stream: str) -> Bus:
-        """Where one stream's events go: this workspace's own file, plus whatever it declared.
-
-        The composition root for tracking, so a batch, a plain submit and a study all mirror the
-        same way and none knows a reporting service exists. `[tracking]` set `off` gets the file
-        alone and every caller is unchanged.
+        """Where one stream's events go: this workspace's lake, the one record of them.
 
         stream: the receipts stream, a batch id, a study id, or one run's own name.
         """
-        under = directory(self, stream)
-        return mirrored(
-            Journal(self.dispatcher.cache.session, stream),
-            self.manifest.tracking,
-            stream=stream,
-            directory=under,
-            workspace=self.manifest.workspace.name,
-        )
+        return Journal(self.dispatcher.cache.session, stream)
 
     def remote_root(self) -> str:
         """The workspace root on the bound host, refusing one its setup never placed."""
@@ -1100,16 +1077,10 @@ class Board:
             parent=parent,
         )
 
-    def sampling(
-        self, tracked: tuple[str, str], *, root: str, resources: Resources
-    ) -> ToolCall | None:
+    def sampling(self, tracked: tuple[str, str], *, resources: Resources) -> ToolCall | None:
         """The call this job makes so it samples itself, None when nothing samples it.
 
-        A host asked to ship its own series gets the credential staged by `stage`; one without a
-        credential still samples, into a queued offline run.
-
         tracked: the stream and job the samples belong to.
-        root: the workspace root on the host.
         resources: the resolved request, whose walltime bounds the sampler as it bounds the job.
         """
         declared = self.manifest.tracking
@@ -1117,7 +1088,6 @@ class Board:
             return None
         stream, job = tracked
         return sampling(
-            root=root,
             stream=stream,
             job=job,
             interval=declared.interval,
@@ -1162,26 +1132,6 @@ class Board:
         argv = [binary, "shell", *pixi.scope(), "--frozen", "-e", plan.env]
         environ = os.environ | pixi.overrides
         replace(binary, argv, environ | Runtime(pixi.env_prefix(plan.env)).changes(environ))
-
-    def stage(self, root: str) -> None:
-        """Put the one credential this host's jobs need where the job's runner will read it.
-
-        A dispatched job ships its own live series, so the key must be on the machine running
-        it. Exactly one variable is written, to its own file with no group or world permission,
-        passed over stdin so it never shows in a process listing, and never logged. A machine
-        holding no credential stages nothing and its jobs queue offline for a later `wandb
-        sync`. `submit` stages once per dispatch, since the sampler and the attestation read
-        the same file.
-
-        root: the workspace root on the host.
-        """
-        variable = credential(self.manifest.tracking)
-        Credentials().load()
-        secret = os.environ.get(variable, "") if variable else ""
-        if not secret or self.local:
-            return
-        with open_shell(self.plan(container="none"), root) as shell:
-            shell.write(host_env(root), json.dumps({variable: secret}))
 
     def submit(
         self,
@@ -1270,7 +1220,6 @@ class Board:
             )
         else:
             root = self.remote_root()
-            self.stage(root)
             provisioner = Provisioner(self.root, self.manifest)
             # Before the address is taken and the mirror leaves, so the pin, the shipped artifact
             # and the manifest this command was invoked under are one thing.
@@ -1286,8 +1235,8 @@ class Board:
                     node=node,
                     fetch=fetch,
                     containerize=self.containerizer(plan, root),
-                    sampler=self.sampling(tracked, root=root, resources=resources),
-                    attestation=self.attesting(tracked, root=root),
+                    sampler=self.sampling(tracked, resources=resources),
+                    attestation=self.attesting(tracked),
                     watch=watch,
                     prefix=self.addressed(plan, root),
                     artifact=provisioner.artifact_for(plan.env),

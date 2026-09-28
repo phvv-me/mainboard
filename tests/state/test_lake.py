@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from threading import Thread
 
 import duckdb
 import pytest
@@ -298,6 +299,28 @@ def test_a_session_attaches_once_and_again_only_after_a_refusal(
     assert len({id(connection) for connection in seen}) == 3
     assert session.append("pulse", [{"key": "gold/1", "size": 3}]) == 1
     assert session.rows("SELECT key FROM lake.pulse") == [("gold/1",)]
+
+
+def test_threads_sharing_a_session_take_turns_and_lose_nothing(lake: Lake) -> None:
+    """A sampler appends from its thread while its owner reads; one connection serves both."""
+    session = Session(lake)
+    faults: list[BaseException] = []
+
+    def appending(worker: int) -> None:
+        try:
+            for step in range(10):
+                session.append("pulse", [{"key": f"{worker}/{step}", "size": step}])
+                session.rows("SELECT count(*) FROM lake.pulse")
+        except BaseException as fault:  # noqa: BLE001 - the test reports whatever a thread hit
+            faults.append(fault)
+
+    workers = [Thread(target=appending, args=(worker,)) for worker in range(4)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert faults == []
+    assert session.rows("SELECT count(*) FROM lake.pulse") == [(40,)]
 
 
 def test_a_session_raises_what_another_attach_would_not_fix(lake: Lake) -> None:

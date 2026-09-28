@@ -573,7 +573,7 @@ class Monitor:
         detail: where its results landed or why it failed, empty while it is still in flight.
         """
         label = record.name or ""
-        if is_batched(label) or not self.board.manifest.tracking.on:
+        if is_batched(label):
             return
         stream, job = streamed(label, handle=record.handle)
         bus = self.streams.setdefault(stream, self.board.receipts(stream))

@@ -28,12 +28,10 @@ class ToolCall(FrozenModel):
     args: the tool's arguments without its name, since the runner calls the very tool running
         it rather than whichever one a PATH names.
     cwd: where the call runs, the job's working directory when empty.
-    credentials: a JSON file of variables only the call receives, empty or missing for none.
     """
 
     args: tuple[str, ...]
     cwd: str = ""
-    credentials: str = ""
 
 
 class PrefixActivation(FrozenModel):

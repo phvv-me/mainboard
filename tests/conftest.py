@@ -31,9 +31,6 @@ from .support import Answer, Lab, Launcher, Option, Owner, Relayed, build_lab
 # pytest reads `pytest_plugins` from the top-level conftest alone.
 pytest_plugins = ["pytester", "mainboard.testing"]
 
-# The stand-in for "this module was never imported", so the tracking seal restores absence as
-# faithfully as it restores a module.
-_ABSENT = object()
 
 _MANIFEST = Project().manifests[0]
 
@@ -112,7 +109,7 @@ mem-gb = "min(100, attempt * 50)"
 test = { run = "pytest", dir = "packages/lab-core" }
 
 [tracking]
-mode = "off"
+interval = 0
 
 [gates]
 lint = "ruff check ."
@@ -126,26 +123,6 @@ install = "mainboard add prove -l python"
 study = { path = "templates/study", into = "studies", answers = { home = "monorepo" } }
 tool = "templates/tool"
 """
-
-
-@pytest.fixture(autouse=True)
-def sealed_tracking() -> Iterator[None]:
-    """Keep every test off the real tracking SDK, whatever a manifest under test declares.
-
-    Tracking is on by default, so a manifest silent about it would open real runs. Halting the
-    import makes the sink refuse as on a machine without the package, which `Mirrored` absorbs
-    like any refusal. A test wanting a sink patches its own stand-in later and so wins.
-
-    The restore is by hand because asking a root autouse fixture for `monkeypatch` moves its
-    teardown after every package conftest's, one of which clears caches a test had patched.
-    """
-    held = sys.modules.get("wandb", _ABSENT)
-    sys.modules["wandb"] = None
-    yield
-    if held is _ABSENT:
-        sys.modules.pop("wandb", None)
-    else:
-        sys.modules["wandb"] = held
 
 
 @pytest.fixture(scope="session", autouse=True)

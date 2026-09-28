@@ -4,10 +4,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from mainboard import Project
 from mainboard.batch import Topic
 from mainboard.runtime.job import ToolCall
-from mainboard.tracking import Sampler, attesting, host_env, sampling
+from mainboard.tracking import Sampler, attesting, sampling
 
 from ..batch.support import Recorder
 
@@ -113,11 +112,9 @@ def test_an_attestation_says_what_the_machine_was_doing_before_the_work_started(
     assert [line.topic for line in bus.replay()] == [Topic.ATTESTED]
 
 
-def test_the_attestation_is_this_tools_own_verb_carrying_the_staged_credential() -> None:
+def test_the_attestation_is_this_tools_own_verb() -> None:
     """A reading taken beside the command describes the command, not the conditions it got."""
-    assert attesting(root="/repo", stream=_STREAM, job=_JOB) == ToolCall(
-        args=("attest", _STREAM, "--job", _JOB), credentials=host_env("/repo")
-    )
+    assert attesting(stream=_STREAM, job=_JOB) == ToolCall(args=("attest", _STREAM, "--job", _JOB))
 
 
 def test_entering_samples_at_once_so_a_job_that_dies_early_still_left_a_series() -> None:
@@ -168,13 +165,8 @@ def test_a_dispatched_job_starts_the_sampler_itself_or_is_left_alone(
     interval: float, seconds: float, sampled: tuple[str, ...] | None
 ) -> None:
     """The seam that carries the live lane onto a machine that is not this one."""
-    call = sampling(root="/work/p", stream=_STREAM, job=_JOB, interval=interval, seconds=seconds)
+    call = sampling(stream=_STREAM, job=_JOB, interval=interval, seconds=seconds)
     expected = (
-        None
-        if sampled is None
-        else ToolCall(
-            args=("sample", _STREAM, "--job", _JOB, *sampled), credentials=host_env("/work/p")
-        )
+        None if sampled is None else ToolCall(args=("sample", _STREAM, "--job", _JOB, *sampled))
     )
     assert call == expected
-    assert host_env("/work/p") == f"/work/p/{Project().out_dirs[0]}/tracking.json"

@@ -46,7 +46,7 @@ _EDITS: dict[str, Json] = {
     "git": {"owners": ["phvv-me"], "ceiling-mb": 10},
     "ci": {"hosts": ["gold"]},
     "templates": {"lib": "templates/lib"},
-    "tracking": {"project": "lab", "interval": 30},
+    "tracking": {"interval": 30},
     "containers": {"cuda": {"image": "docker://nvidia/cuda"}},
     "papers": {"head": {"dir": "papers/head", "limit": 9, "ends": "Conclusion"}},
     "hosts": {"miyabi-g": {"kind": "pbs", "defaults": {"interact-queue": "interact-g"}}},

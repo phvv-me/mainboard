@@ -40,7 +40,7 @@ _STATE = "source-state.json"
 _LOCK = "self-update.lock"
 
 # The extra a plain reinstall silently drops, so the named command always carries it.
-_EXTRA = "wandb"
+_EXTRA = "plot"
 
 # uv is never a host prerequisite: Pixi resolves and runs this exact package in its cached exec
 # environment.

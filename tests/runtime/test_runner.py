@@ -223,31 +223,26 @@ def test_the_command_sees_its_exports_after_the_environment_and_its_own_pythonpa
     assert json.loads(seen.read_text(encoding="utf-8"))["PYTHONPATH"] == "/inherited"
 
 
-def test_the_calls_around_the_command_run_this_tool_with_their_own_credentials(
+def test_the_calls_around_the_command_run_this_tool_where_each_belongs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
     """Provisioning, attestation and the sampler each reach the tool running the job."""
-    record = (
-        "import os, sys; "
-        "open(sys.argv[1], 'w').write(os.environ.get('TOKEN', '') + ' ' + os.getcwd())"
-    )
+    record = "import os, sys; open(sys.argv[1], 'w').write(os.getcwd())"
     monkeypatch.setattr(Runner, "tool", (sys.executable, "-c", record))
-    credentials = tmp_path / "tracking.json"
-    credentials.write_text(json.dumps({"TOKEN": "secret"}), encoding="utf-8")
     mirror = tmp_path / "mirror"
     mirror.mkdir()
     ran = runner(
         tmp_path,
         python("pass"),
         provide=ToolCall(args=(str(tmp_path / "provided"),), cwd=str(mirror)),
-        attestation=ToolCall(args=(str(tmp_path / "attested"),), credentials=str(credentials)),
-        sampler=ToolCall(args=(str(tmp_path / "sampled"),), credentials=str(credentials)),
+        attestation=ToolCall(args=(str(tmp_path / "attested"),)),
+        sampler=ToolCall(args=(str(tmp_path / "sampled"),)),
     )
     assert ran.run() == 0
-    token, _, where = (tmp_path / "provided").read_text(encoding="utf-8").partition(" ")
-    assert (token, Path(where).resolve()) == ("", mirror.resolve())
-    token, _, where = (tmp_path / "attested").read_text(encoding="utf-8").partition(" ")
-    assert (token, Path(where).resolve()) == ("secret", tmp_path.resolve())
+    assert Path((tmp_path / "provided").read_text(encoding="utf-8")).resolve() == mirror.resolve()
+    assert (
+        Path((tmp_path / "attested").read_text(encoding="utf-8")).resolve() == tmp_path.resolve()
+    )
     assert "could not build" not in capfd.readouterr().out
 
 
@@ -261,11 +256,6 @@ def test_a_failed_build_is_said_and_left_to_the_environment_to_refuse(
         "mainboard: could not build the environment this job was dispatched with"
         in capfd.readouterr().out
     )
-
-
-def test_credentials_that_were_never_staged_add_nothing(tmp_path: Path) -> None:
-    assert Runner.credentials(ToolCall(args=())) == {}
-    assert Runner.credentials(ToolCall(args=(), credentials=str(tmp_path / "missing"))) == {}
 
 
 def test_the_command_runs_as_its_container_bash_or_its_own_words(

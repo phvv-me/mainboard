@@ -91,7 +91,7 @@ def test_help_respects_document_boundaries_and_exact_command_precedence(
 @pytest.mark.parametrize(
     ("absent", "raised", "match"),
     [
-        ("matplotlib", MissionError, r"mainboard\[wandb,plot\]"),
+        ("matplotlib", MissionError, r"mainboard\[plot\]"),
         ("mainboard.plots.figure", ModuleNotFoundError, r"mainboard\.plots\.figure"),
     ],
     ids=["a plot dependency names the local install", "anything else surfaces as itself"],

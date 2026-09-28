@@ -53,7 +53,7 @@ _BLOCKING = frozenset({"platform", "lock"})
 
 # The optional extras of this tool worth carrying, each with the distribution that shows this
 # center installed it: the destination gets the same tool, plotting included.
-_EXTRAS = {"plot": "seaborn", "wandb": "wandb"}
+_EXTRAS = {"plot": "matplotlib"}
 
 # Where the workspace goes on the destination unless told otherwise: the center, unlike a dispatch
 # target, holds the human checkout, and the destination expands the `~` in its own spelling.

@@ -65,9 +65,6 @@ search = ["optuna>=4.0"]
 # functionality on NVIDIA's supported platforms, so the extra contains only this richer layer.
 cuda = ["cuda-core>=1.1; sys_platform == 'linux' or sys_platform == 'win32'"]
 modal = ["modal>=1.0"]
-# The tracking sink imports this lazily and refuses cleanly without it, so tracking is on by
-# default and the package still installs on a machine that never wanted the service.
-wandb = ["wandb>=0.28"]
 plot = ["matplotlib>=3.9", "seaborn>=0.13.2"]
 
 [project.scripts]

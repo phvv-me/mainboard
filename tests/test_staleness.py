@@ -32,7 +32,7 @@ class Layout:
     tool: Path
     source: Path
 
-    def declare(self, requirement: str = 'extras = ["wandb"], ', *, head: str = "") -> None:
+    def declare(self, requirement: str = 'extras = ["plot"], ', *, head: str = "") -> None:
         """Write the receipt naming `source`, with `requirement` fields and `head` lines."""
         entry = f'name = "mainboard", {requirement}directory = {json.dumps(str(self.source))}'
         (self.tool / "uv-receipt.toml").write_text(
@@ -121,7 +121,7 @@ def test_the_check_records_on_first_run_then_names_the_reinstall_when_the_tree_m
         "--reinstall-package",
         "mainboard",
         "--from",
-        f"{snapshot.source}[wandb]",
+        f"{snapshot.source}[plot]",
         "mainboard",
         "--force",
     )
@@ -333,7 +333,7 @@ def test_the_refresh_keeps_only_a_durable_interpreter(
         == ("tool", "install", "--reinstall-package", "mainboard", "--python", str(python))
     ) is kept
     assert (str(python) in fix) is kept
-    assert "[wandb]" in fix[-3]
+    assert "[plot]" in fix[-3]
 
 
 def test_a_checkout_running_its_own_source_has_nothing_to_be_stale_against(
@@ -420,7 +420,7 @@ def test_a_reinstall_names_its_source_absolutely_and_the_worker_reads_it_off_the
 
     assert found.source == snapshot.source
     assert found.uv[0] == "uv" and found.uv[-1] == "--force"
-    assert f"{snapshot.source}[wandb]" in found.uv
+    assert f"{snapshot.source}[plot]" in found.uv
     assert found.fix == ("exec", "--spec", staleness._UV, *found.uv)
     log = Project().out(snapshot.source) / "self-update.log"
     assert staleness._refresh_log(found.source) == log

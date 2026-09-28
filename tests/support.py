@@ -136,7 +136,7 @@ kind = "ssh"
 root = "/repo"
 
 [tracking]
-mode = "off"
+interval = 0
 """,
     )
     lab.write(".gitignore", "data/\n__pycache__/\n*.pyc\n*_generated.py\n")

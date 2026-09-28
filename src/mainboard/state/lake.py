@@ -37,6 +37,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import duckdb
@@ -515,14 +516,16 @@ class Session:
         self.lake = lake
         self._stack = ExitStack()
         self._connection: duckdb.DuckDBPyConnection | None = None
+        self._turn = RLock()
         # Detaching is the collector's job, not a caller's: otherwise only interpreter exit
         # releases the catalog, which Windows then refuses to delete or move.
         weakref.finalize(self, self._stack.close)
 
     def close(self) -> None:
         """Detach now; the next statement attaches again."""
-        self._stack.close()
-        self._connection = None
+        with self._turn:
+            self._stack.close()
+            self._connection = None
 
     def rows(self, sql: str, parameters: Iterable[object] = ()) -> list[tuple[Any, ...]]:
         """What `sql` answers in this session."""
@@ -535,8 +538,14 @@ class Session:
         return self.run(lambda connection: insert(connection, table, staged))
 
     def run[T](self, statement: Callable[[duckdb.DuckDBPyConnection], T]) -> T:
-        """`statement` over this session's connection, reattached while the lake refuses it."""
-        return _patiently(recoverable, before=self.close)(lambda: statement(self._attached()))
+        """`statement` over this session's connection, reattached while the lake refuses it.
+
+        One statement at a time: a DuckDB connection is not safe across threads (a sampler
+        publishes from its own thread while its owner reads the stream), and a per-thread cursor
+        would be closed under its thread by the reattach a stale catalog snapshot needs.
+        """
+        with self._turn:
+            return _patiently(recoverable, before=self.close)(lambda: statement(self._attached()))
 
     def _attached(self) -> duckdb.DuckDBPyConnection:
         """The connection, attaching first; a fresh workspace's lake is created on this use."""

@@ -3,8 +3,8 @@
 # A hosted dashboard sees the memory a process used, never the cgroup ceiling the scheduler set,
 # which is what an OOM kill fires against. Every sample carries used memory, that cap and the
 # fraction between them, the series that says whether a job is about to die. Samples land in the
-# job's own NDJSON first and the declared sink second, so this runs unchanged on a laptop, on
-# gold and on a compute node with no route out.
+# workspace lake of the machine taking them, so this runs unchanged on a laptop, on gold and on a
+# compute node with no route out.
 
 from threading import Event as Flag
 from threading import Thread
@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Protocol
 import psutil
 
 from ..batch.receipts import Topic, publish
-from ..core.project import Project
 from ..probe.machine import Machine
 from ..runtime.job import ToolCall
 
@@ -29,11 +28,6 @@ if TYPE_CHECKING:
 # How long a stop waits for the sampling thread to notice, past which the thread is a daemon and
 # the process may leave without it.
 _JOIN_S = 5.0
-
-# The file a host keeps the tracking credential in, written by the dispatcher and read by the job.
-# Not the workspace `.env`, so staging never overwrites what the host declares, and one known
-# path to audit, rotate or delete.
-_HOST_ENV = "tracking.json"
 
 # Compute utilization above which an accelerator counts as working, `probe.gating.gpu_busy`'s
 # threshold, so one workspace has one idea of busy.
@@ -208,27 +202,18 @@ class Sampler:
             self.thread.join(timeout=_JOIN_S)
 
 
-def host_env(root: str) -> str:
-    """Where a host under workspace `root` keeps the tracking credential, as a JSON object."""
-    return f"{root}/{Project().out_dir()}/{_HOST_ENV}"
-
-
-def attesting(*, root: str, stream: str, job: str) -> ToolCall:
+def attesting(*, stream: str, job: str) -> ToolCall:
     """The call a dispatched job makes to attest to its own machine before it works.
 
     The foreground twin of `sampling`: a reading taken before the command describes the
     conditions it was handed, not the command. Its output is discarded (it belongs in the
     receipts, not the log), and a failure never stops the job, since a missing attestation is a
     row saying nothing while a refused dispatch is a run that never happened.
-
-    root: the workspace root on the host, where the staged credential lives.
     """
-    return ToolCall(args=("attest", stream, "--job", job), credentials=host_env(root))
+    return ToolCall(args=("attest", stream, "--job", job))
 
 
-def sampling(
-    *, root: str, stream: str, job: str, interval: float, seconds: float = 0.0
-) -> ToolCall | None:
+def sampling(*, stream: str, job: str, interval: float, seconds: float = 0.0) -> ToolCall | None:
     """The call a dispatched job makes to sample itself, None for an `interval` of 0.
 
     The seam carrying the live lane onto another machine: the job's runner starts the host's own
@@ -236,13 +221,8 @@ def sampling(
     configured on the host. It never outlives its job: the runner hands it its pid to follow and
     stops it when the command ends, it carries the job's wall budget (`seconds`, 0 for none), and
     its output goes nowhere rather than into the job's log.
-
-    root: the workspace root on the host, where the staged credential lives.
     """
     if interval <= 0:
         return None
     budget = ("--seconds", f"{seconds:g}") if seconds else ()
-    return ToolCall(
-        args=("sample", stream, "--job", job, "--interval", f"{interval:g}", *budget),
-        credentials=host_env(root),
-    )
+    return ToolCall(args=("sample", stream, "--job", job, "--interval", f"{interval:g}", *budget))
