@@ -42,6 +42,7 @@ from .render import diverted, install_traceback, mode_of, plain, progress, recor
 from .results import Results
 from .runtime.job import Job
 from .runtime.runner import Runner
+from .state import Importer, Lake
 from .vigil import STALL_SECONDS
 
 if TYPE_CHECKING:
@@ -1516,6 +1517,27 @@ def build(root: Path | None = None) -> App:
         with progress(f"moving the center to {destination}") as stage:
             sections = Migration(board("local"), destination, root=root, watch=stage).run()
         return _sectioned(sections, output, title="migrate")
+
+    @center.command(name="migrate-state")
+    def migrate_state(*, again: bool = False, output: Output = _RICH) -> int:
+        """Import this workspace's file state into its state lake once, and prove it landed.
+
+        Creates the lake (`lake.sqlite` beside a `lake/` data folder in the state directory) and
+        appends, in one transaction, the dispatch registry, batch events, receipts and logs,
+        cost ledgers, the offer catalog, held machines, study ledgers, the pulse memory, both
+        digest memories, job scripts and closure listings. Then reads every source's rows back
+        against the files and rebuilds the logs byte for byte, one row per comparison, and exits
+        1 when any differs. The files are only read: nothing is moved, rewritten or deleted, and
+        wandb folders, pins, source archives, recovery and environments are left out.
+
+        again: import even though the lake already holds an import, setting that lake aside
+            under `lake.aside/` first rather than appending the same records twice.
+        fields: a comma-separated projection over source/table/expected/imported/strays/ok/detail.
+        """
+        with progress("importing the state directory into the lake"):
+            tallies = Importer(Lake.at(workspace_root())).run(again=again)
+        output.print_rows([tally.model_dump() for tally in tallies], title="migrate-state")
+        return 0 if all(tally.ok for tally in tallies) else 1
 
     @center.command
     def paper(
