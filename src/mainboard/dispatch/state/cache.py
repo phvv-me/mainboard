@@ -110,7 +110,7 @@ class Cache:
 
     def __init__(self, lake: Lake | None = None) -> None:
         self.lake = lake or Lake.at(workspace())
-        self.session = Session(self.lake)
+        self.session = self.lake.session()
 
     @classmethod
     def private(cls) -> Cache:

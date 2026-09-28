@@ -98,6 +98,10 @@ _BUSY_MS = 30000
 _LOCKED_ATTEMPTS = 30
 _LOCKED_WAIT_S = 1.0
 
+# The live session on each catalog, gone when its last holder is, and the lock creating one.
+_SESSIONS: weakref.WeakValueDictionary[tuple[Path, int], Session] = weakref.WeakValueDictionary()
+_SHARING = RLock()
+
 # The polars type each SQL type is staged as. Timestamps and JSON travel as text, which the
 # insert casts, so a caller hands ISO strings and JSON documents as they are stored elsewhere.
 _STAGED: dict[str, type[pl.DataType]] = {
@@ -260,6 +264,24 @@ class Lake(FrozenModel):
 
     def exists(self) -> bool:
         return self.catalog.is_file()
+
+    def session(self) -> Session:
+        """This process's one session on this lake, shared by every holder while any holds it.
+
+        An attach costs a tenth of a second, and a command reads the lake from several places
+        (the registry, a manifest's held machines, a verdict), so they share one. A catalog file
+        replaced under the same name (a restore, a fresh import) is a different lake and gets a
+        session of its own, since an attach keeps reading the file it opened.
+        """
+        try:
+            identity = (self.catalog, self.catalog.stat().st_ino)
+        except FileNotFoundError:
+            identity = (self.catalog, 0)
+        with _SHARING:
+            shared = _SESSIONS.get(identity)
+            if shared is None:
+                shared = _SESSIONS[identity] = Session(self)
+            return shared
 
     def ready(self) -> Lake:
         """This lake, created first when the workspace keeps no state at all yet.

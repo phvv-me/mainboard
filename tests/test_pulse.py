@@ -1,15 +1,15 @@
-import json
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from plumbum import ProcessExecutionError
 
-from mainboard import Board, MissionError, Project
+from mainboard import Board, MissionError
 from mainboard.dispatch.schedulers import HostUnreachable
-from mainboard.dispatch.state import RunRecord
+from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.jobs.beacon import CELL, CELLS
 from mainboard.pulse import Probe, Pulse, Pulses, Reading
 
@@ -19,9 +19,9 @@ from .support import Clock, run
 def test_a_job_is_only_called_quiet_once_it_has_been_seen_printing_nothing_new(
     tmp_path: Path,
 ) -> None:
-    """The on-disk memory lets a later process know what the first look saw; growth resets the
+    """The lake's memory lets a later process know what the first look saw; growth resets the
     silence, and a job that printed nothing yet has no pulse, since a queue looks like a hang."""
-    board = SimpleNamespace(root=tmp_path)
+    board = looking(tmp_path)
     clock = Clock()
     output = {"1": f"{CELLS} 2\n{CELL} passed a.py::t[x]\n", "2": ""}
 
@@ -49,14 +49,12 @@ def test_a_job_is_only_called_quiet_once_it_has_been_seen_printing_nothing_new(
     assert Pulses(board, read=read, clock=clock).taken([]) == {}
 
 
-def test_the_memory_forgets_a_job_a_day_after_it_last_grew_and_survives_being_torn(
+def test_the_memory_keeps_one_row_per_growth_and_recalls_only_the_jobs_asked_about(
     tmp_path: Path,
 ) -> None:
-    """Another process may watch a job this look was not asked about, so it is kept a day."""
-    board = SimpleNamespace(root=tmp_path)
-    memory = Project().out(tmp_path) / "pulse.json"
-    memory.parent.mkdir(parents=True)
-    memory.write_text("torn {", encoding="utf-8")
+    """Another process may watch a job this look was not asked about, so nothing is dropped,
+    and output that did not grow costs the memory no row."""
+    board = looking(tmp_path)
     clock = Clock()
 
     def read(records: Sequence[RunRecord]) -> dict[RunRecord, Reading]:
@@ -65,14 +63,17 @@ def test_the_memory_forgets_a_job_a_day_after_it_last_grew_and_survives_being_to
     pulses = Pulses(board, read=read, clock=clock)
     pulses.taken([run("1")])
     pulses.taken([run("2")])
-    assert set(json.loads(memory.read_text(encoding="utf-8"))) == {"gold/1", "gold/2"}
     clock.now += 86_401
-    pulses.taken([run("2")])
-    assert set(json.loads(memory.read_text(encoding="utf-8"))) == {"gold/2"}
+    assert pulses.taken([run("2")])[run("2")].quiet_s == 86_401
+    assert set(pulses.recalled(["gold/1", "gold/2", "gold/3"])) == {"gold/1", "gold/2"}
+    assert pulses.session.rows("SELECT count(*) FROM lake.pulse") == [(2,)]
 
-    memory.unlink()
-    memory.mkdir()
-    assert pulses.taken([run("2")])[run("2")].quiet_s is None
+
+def looking(root: Path) -> Board:
+    """A stand-in board with its own lake, which is all a look needs of one."""
+    return cast(
+        "Board", SimpleNamespace(root=root, dispatcher=SimpleNamespace(cache=Cache.private()))
+    )
 
 
 class Remote:
