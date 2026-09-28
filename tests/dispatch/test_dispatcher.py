@@ -34,6 +34,7 @@ from mainboard.dispatch.state import Cache
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy
 from mainboard.runtime.job import Job, PrefixActivation, ToolCall, WorkspaceActivation
+from mainboard.state.lake import Lake
 
 from ..support import Lab
 from .support import (
@@ -768,7 +769,7 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
     (landed / "project/stale.py").write_text("retired source")
     (landed / "project/measurementst").write_text("not the literal output path")
     (landed / "project/new-output").mkdir()
-    database = workdir / "state.sqlite"
+    database = Lake.at(workdir)
     store = Cache(database)
     store.record(
         run_record("old", target="other-alias").model_copy(
@@ -780,7 +781,7 @@ def test_concurrent_mirrors_preserve_declared_outputs_and_prune_source(
     def mirror(job: int) -> None:
         instance = Dispatcher(cache=Cache(database), sync=GitignoreFilter(workdir))
         host = plan(profile=HostProfile(kind="ssh", root="/repo", sync={"include": ["project"]}))
-        with closing(instance.cache.connection):
+        with closing(instance.cache):
             ready.wait(timeout=10)
             instance.mirror(
                 host,

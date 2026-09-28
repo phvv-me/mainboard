@@ -5,6 +5,7 @@ import pytest
 from mainboard import Board
 from mainboard.dispatch import Dispatcher, GitignoreFilter
 from mainboard.dispatch.state import Cache
+from mainboard.state.lake import Lake
 
 from .support import Recorder
 
@@ -18,7 +19,7 @@ def lab(workspace: Path) -> Board:
     """
     board = Board(workspace)
     board.shared["dispatcher"] = Dispatcher(
-        cache=Cache(workspace / "dispatch.sqlite"), sync=GitignoreFilter(workspace)
+        cache=Cache(Lake.at(workspace)), sync=GitignoreFilter(workspace)
     )
     return board
 

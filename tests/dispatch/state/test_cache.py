@@ -1,5 +1,4 @@
 import gc
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -10,13 +9,20 @@ from mainboard.costs.catalog import Offer
 from mainboard.dispatch import HostSetup, now
 from mainboard.dispatch.lease import Lease
 from mainboard.dispatch.state import Cache
+from mainboard.state.lake import Lake
 
 from ..support import cache, run_record
 
 
-def test_in_memory_state_cannot_create_a_phony_durable_settlement_lock() -> None:
-    with pytest.raises(MissionError, match="file-backed"), cache().settlement:
-        pytest.fail("an in-memory registry cannot coordinate durable settlement")
+def test_a_private_registry_settles_under_its_own_lake_and_leaves_nothing_behind() -> None:
+    store = cache()
+    root = store.lake.root
+    with store.settlement:
+        assert Path(store.settlement.lock_file).parent == store.lake.out / "run"
+    store.record(run_record("H1"))
+    del store
+    gc.collect()
+    assert not root.exists()
 
 
 def test_unlimited_history_retains_old_output_declarations() -> None:
@@ -37,26 +43,60 @@ def test_the_settlement_lock_follows_the_opened_database_not_a_later_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    store = Cache(Path("dispatch.sqlite"))
+    store = Cache(Lake.at(Path()))
     monkeypatch.chdir(tmp_path.parent)
-    assert Path(store.settlement.lock_file) == tmp_path / "dispatch.settlement.lock"
+    assert Path(store.settlement.lock_file) == store.lake.out / "run" / "settlement.lock"
+    assert store.lake.out.parent == tmp_path
 
 
 def test_a_held_dispatch_can_reenter_its_own_settlement_lock(tmp_path: Path) -> None:
-    original = Cache(tmp_path / "dispatch.sqlite")
-    reopened = Cache(original.path)
+    original = Cache(Lake.at(tmp_path))
+    reopened = Cache(original.lake)
     with original.settlement, reopened.settlement.acquire(timeout=0):
         assert reopened.settlement.is_locked
 
 
-def test_a_cache_nobody_holds_any_more_closes_the_database_it_opened() -> None:
-    """A short-lived cache is the collector's to close, not a caller's to remember."""
-    store = cache()
-    connection = store.connection
+def test_a_cache_nobody_holds_any_more_detaches_the_lake_it_opened(tmp_path: Path) -> None:
+    """A short-lived cache is the collector's to close, not a caller's to remember: while it is
+    attached the catalog is held open, which Windows refuses to delete."""
+    store = Cache(Lake.at(tmp_path))
+    store.record(run_record("H1"))
+    catalog = store.path
     del store
     gc.collect()
-    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
-        connection.execute("SELECT 1")
+    catalog.unlink()
+    assert not catalog.exists()
+
+
+def test_a_closed_cache_reattaches_on_its_next_statement(tmp_path: Path) -> None:
+    store = Cache(Lake.at(tmp_path))
+    store.record(run_record("H1"))
+    store.close()
+    assert store.run("H1").handle == "H1"
+
+
+def test_a_workspace_with_state_from_before_the_lake_is_refused_until_imported(
+    tmp_path: Path,
+) -> None:
+    lake = Lake.at(tmp_path)
+    (lake.out / "dispatch").mkdir(parents=True)
+    (lake.out / "dispatch" / "db.sqlite").write_bytes(b"")
+    with pytest.raises(MissionError, match="migrate-state"):
+        Cache(lake).total()
+    assert not lake.exists()
+
+
+def test_lake_data_without_its_catalog_is_never_papered_over(tmp_path: Path) -> None:
+    lake = Lake.at(tmp_path)
+    lake.data.mkdir(parents=True)
+    with pytest.raises(MissionError, match="catalog"):
+        Cache(lake).total()
+    assert not lake.exists()
+
+
+def test_two_processes_creating_the_same_fresh_lake_share_it(tmp_path: Path) -> None:
+    Lake.at(tmp_path).create()
+    assert Lake.at(tmp_path).ready().exists()
 
 
 def test_a_run_round_trips_through_the_registry_and_upserts_by_its_identity() -> None:
@@ -223,9 +263,9 @@ def test_a_lease_is_replaced_in_place_and_a_host_forgotten_by_alias() -> None:
 def test_a_setup_an_older_mainboard_recorded_reads_as_never_set_up() -> None:
     """A record whose schema moved on asks for `setup` again instead of failing every command."""
     state = cache()
-    state.connection.execute(
-        "INSERT INTO hosts (alias, facts, probed_at) VALUES (?, ?, ?)",
-        ("gold", '{"host": "gold", "retired": true}', now()),
+    state.lake.ready().append(
+        "host_facts",
+        [{"alias": "gold", "facts": '{"host": "gold", "retired": true}', "probed_at": now()}],
     )
     with pytest.raises(LookupError, match="older mainboard"):
         state.host("gold")

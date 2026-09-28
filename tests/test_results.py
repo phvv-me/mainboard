@@ -11,9 +11,9 @@ from polars.testing import assert_frame_equal
 
 from mainboard import MissionError, Results
 from mainboard.cli import build
-from mainboard.dispatch.shared import db_file
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.observe import Frame, Kind, encode
+from mainboard.state.lake import Lake
 from mainboard.trials.artifacts import Artifacts
 
 if TYPE_CHECKING:
@@ -317,7 +317,7 @@ def test_cli_query_preserves_missing_file_error(tmp_path: Path) -> None:
 def test_jobs_distinguish_backend_observations_from_settlement(
     tmp_path: Path, verdict: str | None, reported: str | None, evidence: str, settled: bool
 ) -> None:
-    cache = Cache(db_file(tmp_path))
+    cache = Cache(Lake.at(tmp_path))
     record = RunRecord(
         handle="5080",
         target="vast",

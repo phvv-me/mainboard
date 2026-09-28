@@ -29,10 +29,9 @@ def written(root: Path, name: str, *, size: int = 4096, at: float = _AFTER) -> P
 
 def mirrored(board: Board, alias: str = "miyabi-g", *, at: str = _MIRRORED) -> None:
     """Record that `alias` was onboarded, and therefore mirrored, at `at`."""
-    board.dispatcher.cache.save_host(HostSetup(host=alias, root="/work/p"))
-    board.dispatcher.cache.connection.execute(
-        "UPDATE hosts SET facts = json_set(facts, '$.onboarded_at', ?) WHERE alias = ?",
-        (at, alias),
+    setup = HostSetup(host=alias, root="/work/p", onboarded_at=at)
+    board.dispatcher.cache.lake.ready().append(
+        "host_facts", [{"alias": alias, "probed_at": at, "facts": setup.model_dump_json()}]
     )
 
 

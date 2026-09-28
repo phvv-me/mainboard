@@ -10,10 +10,27 @@ import pytest
 
 from mainboard import MissionError
 from mainboard.cli import build
-from mainboard.dispatch.state.storage import connect
 from mainboard.state import Importer, Lake, Tally
 from mainboard.state import importer as importer_module
 from mainboard.state.lake import insert
+
+# The registry schema every release before the lake wrote, which an import must still read.
+_REGISTRY = """
+CREATE TABLE IF NOT EXISTS hosts (alias TEXT PRIMARY KEY, facts TEXT NOT NULL, probed_at TEXT);
+CREATE TABLE IF NOT EXISTS runs (target TEXT NOT NULL, handle TEXT NOT NULL, data TEXT NOT NULL,
+    submitted_at TEXT NOT NULL, PRIMARY KEY (target, handle, submitted_at));
+CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL);
+"""
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    """A registry as the releases before the lake kept it: WAL-mode SQLite, autocommit."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, autocommit=True)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.executescript(_REGISTRY)
+    return connection
+
 
 # Each batch log as it sits on disk: CRLF endings, a line that is not UTF-8, a NUL byte and no
 # final newline, an empty file, and one nested a level down.

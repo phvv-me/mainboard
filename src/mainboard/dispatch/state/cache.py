@@ -1,36 +1,33 @@
-# The dispatch registries: the shared db's `runs` table, keyed by `(target, handle,
-# submitted_at)` since a scheduler handle alone is not an identity (pueue reissues small
-# integer ids after a daemon restart), and its `hosts` table, one onboarding record per alias.
+# The dispatch registries in the workspace's state lake: `runs_log`, whose `runs` view is the
+# current record per `(target, handle, submitted_at)` since a scheduler handle alone is not an
+# identity (pueue reissues small integer ids after a daemon restart), and `host_facts`, whose
+# `hosts` view is one onboarding record per alias. Both logs are append-only: a change appends the
+# whole new record, a removal appends a drop, and the views read the last record per key.
 
 import weakref
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING
+from shutil import rmtree
+from tempfile import mkdtemp
+from typing import TYPE_CHECKING, Any
 
 from filelock import FileLock
 from patos import FrozenModel
 from pydantic import ValidationError
 
-from ...core.errors import MissionError
+from ...state.lake import ALIAS, Lake, Session
 from .. import vocabulary
 from ..lease import Lease
 from ..onboard import HostSetup
-from ..shared import db_file, now
+from ..shared import now, workspace
 from ..vocabulary import Request
-from .storage import connect
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-# The `runs` identity every single-row write matches, bound by `_identity`.
-_IDENTITY = "target = ? AND handle = ? AND submitted_at = ?"
-
-# The name `jobs` prints for a run: its label, else the script it was submitted as.
-_LABEL = "coalesce(nullif(json_extract(data, '$.name'), ''), json_extract(data, '$.script'))"
+    from collections.abc import Mapping, Sequence
 
 
 class RunRecord(FrozenModel):
-    """One dispatched job's provenance, the `runs` table row payload.
+    """One dispatched job's provenance, the `runs_log` record payload.
 
     handle: the scheduler's job handle, or a provider's own run id (the dispatch-wide run id).
     kind: the target's kind at submit time, a scheduler's (`ssh` / `pbs` / `slurm` / `local`) or
@@ -95,34 +92,62 @@ class RunRecord(FrozenModel):
     lease: Lease | None = None
     reason: str = ""
 
+    @property
+    def label(self) -> str:
+        """The name `jobs` prints for this run: its label, else the script it was submitted as."""
+        return self.name or self.script
+
 
 class Cache:
-    """Dispatch state in one SQLite file, with `runs`, `hosts` and `history` tables."""
+    """The dispatch registries, `runs` and `hosts`, in one workspace's state lake.
 
-    def __init__(self, path: Path | None = None) -> None:
-        self.path = path or db_file()
-        if self.path != Path(":memory:"):
-            self.path = self.path.resolve()
-        self.connection = connect(self.path)
-        # Closing is the collector's job, not a caller's: otherwise only interpreter exit reclaims
-        # it, which every short-lived cache in a suite reports as an unclosed database.
-        weakref.finalize(self, self.connection.close)
+    The lake is opened on the first statement, not at construction, so a board that never touches
+    the registry (a host installing an environment) never creates or attaches one, and the one
+    session is kept for this cache's life rather than attached per statement. Every write that
+    reads first (a reservation, a compare-and-set transition) holds the registry lock across its
+    read and append, the way the one SQLite statement it replaces was atomic.
+    """
+
+    def __init__(self, lake: Lake | None = None) -> None:
+        self.lake = lake or Lake.at(workspace())
+        self.session = Session(self.lake)
+
+    @classmethod
+    def private(cls) -> Cache:
+        """A registry in a lake of its own under a temporary directory, removed with the cache."""
+        root = Path(mkdtemp(prefix="mb-registry-"))
+        cache = cls(Lake.at(root))
+        weakref.finalize(cache, _discard, cache.session, root)
+        return cache
+
+    @property
+    def path(self) -> Path:
+        """The catalog this registry is kept in."""
+        return self.lake.catalog
 
     @property
     def settlement(self) -> FileLock:
         """The shared launch/cancel/settle lock; remote lifecycle requires durable state."""
-        if self.path == Path(":memory:"):
-            raise MissionError("durable settlement requires a file-backed dispatch cache")
-        return FileLock(self.path.with_suffix(".settlement.lock"), is_singleton=True)
+        return self._lock("settlement.lock")
+
+    @property
+    def _registry(self) -> FileLock:
+        """The lock every read-then-append holds, so two processes cannot both win a race."""
+        return self._lock("registry.lock")
+
+    def close(self) -> None:
+        """Detach the lake now rather than whenever the collector reclaims this cache."""
+        self.session.close()
 
     def forget(self, run: RunRecord) -> None:
-        """Drop one run's row entirely, the only thing that ever leaves this table.
+        """Drop one run's record entirely, the only thing that ever leaves `runs`.
 
-        A quota-held dispatch is a row about a request, replaced by the real run once it goes
+        A quota-held dispatch is a record about a request, replaced by the real run once it goes
         through; keeping both would read thirteen jobs as fourteen, so the placeholder goes
         rather than being settled into a verdict it never had.
         """
-        self.connection.execute(f"DELETE FROM runs WHERE {_IDENTITY}", _identity(run))
+        with self._registry:
+            self._append("runs_log", [_row(run, dropped=True)])
 
     def delivery(self, run: RunRecord, status: str) -> RunRecord:
         """Advance evidence without replacing another process's computation or report fields."""
@@ -130,17 +155,18 @@ class Cache:
 
     def drop_host(self, alias: str) -> None:
         """Forget `alias`'s onboarding, for a machine that no longer exists to be set up."""
-        self.connection.execute("DELETE FROM hosts WHERE alias = ?", (alias,))
+        with self._registry:
+            self._append(
+                "host_facts", [{"ts": now(), "alias": alias, "facts": "{}", "dropped": True}]
+            )
 
     def host(self, alias: str) -> HostSetup:
         """`alias`'s recorded onboarding, raising when the host was never set up."""
-        row = self.connection.execute(
-            "SELECT facts FROM hosts WHERE alias = ?", (alias,)
-        ).fetchone()
-        if row is None:
+        rows = self._rows(f"SELECT facts FROM {ALIAS}.hosts WHERE alias = ?", (alias,))
+        if not rows:
             raise LookupError(f"host {alias!r} has never been set up; run `setup {alias}`")
         try:
-            return HostSetup.model_validate_json(row["facts"])
+            return HostSetup.model_validate_json(rows[0][0])
         except ValidationError:
             raise LookupError(
                 f"host {alias!r} was set up by an older mainboard; run `setup {alias}`"
@@ -148,91 +174,67 @@ class Cache:
 
     def hosts(self) -> list[HostSetup]:
         """Every onboarded host, most recently set up first."""
-        rows = self.connection.execute(
-            "SELECT facts FROM hosts ORDER BY probed_at DESC"
-        ).fetchall()
-        return [setup for row in rows if (setup := _current(row["facts"])) is not None]
+        rows = self._rows(f"SELECT facts FROM {ALIAS}.hosts ORDER BY probed_at DESC")
+        return [setup for (facts,) in rows if (setup := _current(facts)) is not None]
 
     def mark_synced(self, alias: str) -> None:
         """Stamp `alias`'s mirror watermark, which a later transfer set measures its delta from.
 
         A host never onboarded has no mirror this store has seen, so nothing to stamp.
         """
-        try:
-            setup = self.host(alias)
-        except LookupError:
-            return
-        self.connection.execute(
-            "UPDATE hosts SET facts = ? WHERE alias = ?",
-            (setup.model_copy(update={"synced_at": now()}).model_dump_json(), alias),
-        )
+        with self._registry:
+            try:
+                setup = self.host(alias)
+            except LookupError:
+                return
+            synced = setup.model_copy(update={"synced_at": now()})
+            self._append("host_facts", [_host(synced, probed_at=setup.onboarded_at)])
 
     def live(self) -> list[RunRecord]:
         """Every run without a terminal verdict, newest first, never truncated by a limit.
 
-        A listing that hides half a dispatched wave sends an operator to `qstat` by hand. The
-        verdict lives in each row's payload, not a column, so the filter is here, not in SQL.
+        A listing that hides half a dispatched wave sends an operator to `qstat` by hand.
         """
         return [run for run in self.recent(None) if run.verdict not in vocabulary.TERMINAL]
 
     def recent(self, limit: int | None = 20) -> list[RunRecord]:
         """Dispatched runs, newest first; None retains all historical declarations."""
-        rows = self.connection.execute(
-            "SELECT data FROM runs ORDER BY submitted_at DESC LIMIT ?",
-            (-1 if limit is None else limit,),
-        ).fetchall()
-        return [RunRecord.model_validate_json(row["data"]) for row in rows]
+        bound = "" if limit is None else f" LIMIT {int(limit)}"
+        rows = self._rows(f"SELECT record FROM {ALIAS}.runs ORDER BY submitted_at DESC{bound}")
+        return [RunRecord.model_validate_json(record) for (record,) in rows]
 
     def record(self, run: RunRecord) -> None:
-        """Record a dispatched run (upsert by its `(target, handle, submitted_at)` identity)."""
-        self.connection.execute(
-            "INSERT INTO runs (target, handle, data, submitted_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(target, handle, submitted_at) DO UPDATE SET data = excluded.data",
-            (run.target, run.handle, run.model_dump_json(), run.submitted_at),
-        )
+        """Record a dispatched run, replacing whatever its identity recorded before."""
+        with self._registry:
+            self._append("runs_log", [_row(run)])
 
     def reserve(self, run: RunRecord) -> None:
         """Reserve a creation once; unresolved identical requests cannot allocate twice."""
-        row = self.connection.execute(
-            "INSERT INTO runs (target, handle, data, submitted_at) "
-            "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM runs WHERE target = ? "
-            "AND json_extract(data, '$.verdict') IN (?, ?) "
-            "AND json_extract(data, '$.script') = ? "
-            "AND json_extract(data, '$.digest') = ?) RETURNING handle",
-            (
-                run.target,
-                run.handle,
-                run.model_dump_json(),
-                run.submitted_at,
-                run.target,
-                vocabulary.PREPARED,
-                vocabulary.SUBMITTING,
-                run.script,
-                run.digest,
-            ),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"an unresolved creation already exists for {run.name or run.script!r} on "
-                f"{run.target}; inspect its job record and provider label before retrying"
-            )
+        with self._registry:
+            pending = (vocabulary.PREPARED, vocabulary.SUBMITTING)
+            if any(
+                other.verdict in pending
+                and other.script == run.script
+                and other.digest == run.digest
+                for other in self._on(run.target)
+            ):
+                raise ValueError(
+                    f"an unresolved creation already exists for {run.name or run.script!r} on "
+                    f"{run.target}; inspect its job record and provider label before retrying"
+                )
+            self._append("runs_log", [_row(run)])
 
     def bind(self, run: RunRecord, handle: str) -> RunRecord:
-        """Replace the intent identity in one statement, preserving its provenance and time."""
-        return self._returned(
-            "UPDATE runs SET handle = ?, data = json_set(data, '$.handle', ?, '$.state', ?, "
-            f"'$.verdict', ?) WHERE {_IDENTITY} "
-            "AND json_extract(data, '$.verdict') = ? RETURNING data",
-            (
-                handle,
-                handle,
-                vocabulary.QUEUED,
-                vocabulary.QUEUED,
-                *_identity(run),
-                vocabulary.SUBMITTING,
-            ),
-            missing=LookupError(f"no submitting creation {run.creation!r} on {run.target!r}"),
-        )
+        """Replace the intent identity in one commit, preserving its provenance and time."""
+        with self._registry:
+            current = self._at(run)
+            if current is None or current.verdict != vocabulary.SUBMITTING:
+                raise LookupError(f"no submitting creation {run.creation!r} on {run.target!r}")
+            bound = current.model_copy(
+                update={"handle": handle, "state": vocabulary.QUEUED, "verdict": vocabulary.QUEUED}
+            )
+            self._append("runs_log", [_row(current, dropped=True), _row(bound)])
+            return bound
 
     def leave_prepared(
         self, run: RunRecord, verdict: str, *, lease: Lease | None = None
@@ -240,18 +242,15 @@ class Cache:
         """Claim preparation once, so cancellation and creation cannot both win."""
         if verdict not in vocabulary.VERDICTS[vocabulary.PREPARED]:
             raise ValueError(f"invalid prepared transition to {verdict!r}")
-        return self._returned(
-            "UPDATE runs SET data = json_set(data, '$.state', ?, '$.verdict', ?, '$.reported', ?, "
-            f"'$.lease', json(?)) WHERE {_IDENTITY} "
-            "AND json_extract(data, '$.verdict') = ? RETURNING data",
-            (
-                verdict,
-                verdict,
-                verdict if verdict in vocabulary.TERMINAL else None,
-                lease.model_dump_json() if lease else "null",
-                *_identity(run),
-                vocabulary.PREPARED,
-            ),
+        return self._transition(
+            run,
+            vocabulary.PREPARED,
+            {
+                "state": verdict,
+                "verdict": verdict,
+                "reported": verdict if verdict in vocabulary.TERMINAL else None,
+                "lease": lease,
+            },
             missing=ValueError(
                 f"creation {run.creation!r} is no longer prepared; do not resend it"
             ),
@@ -263,30 +262,29 @@ class Cache:
         The refusal proves nothing was allocated, so the request may be sent again or left to
         `interrupted` to close.
         """
-        return self._returned(
-            "UPDATE runs SET data = json_set(data, '$.state', ?, '$.verdict', ?, '$.lease', "
-            f"json('null')) WHERE {_IDENTITY} "
-            "AND json_extract(data, '$.verdict') = ? RETURNING data",
-            (vocabulary.PREPARED, vocabulary.PREPARED, *_identity(run), vocabulary.SUBMITTING),
+        return self._transition(
+            run,
+            vocabulary.SUBMITTING,
+            {"state": vocabulary.PREPARED, "verdict": vocabulary.PREPARED, "lease": None},
             missing=ValueError(f"creation {run.creation!r} is not submitting; nothing to reopen"),
         )
 
     def creation(self, label: str, target: str) -> RunRecord:
         """Read the same request before or after its provider handle replaced the intent."""
-        return self._returned(
-            "SELECT data FROM runs WHERE target = ? AND json_extract(data, '$.creation') = ?",
-            (target, label),
-            missing=LookupError(f"no creation {label!r} on {target!r}"),
-        )
+        for run in self._on(target):
+            if run.creation == label:
+                return run
+        raise LookupError(f"no creation {label!r} on {target!r}")
 
     def relet(self, run: RunRecord, lease: Lease) -> RunRecord:
         """Replace `run`'s rental lease, the deadline a sweep releases the machine at."""
-        return self._returned(
-            f"UPDATE runs SET data = json_set(data, '$.lease', json(?)) WHERE {_IDENTITY} "
-            "RETURNING data",
-            (lease.model_dump_json(), *_identity(run)),
-            missing=_unregistered(run),
-        )
+        with self._registry:
+            current = self._at(run)
+            if current is None:
+                raise _unregistered(run)
+            relet = current.model_copy(update={"lease": lease})
+            self._append("runs_log", [_row(relet)])
+            return relet
 
     def report(self, run: RunRecord, verdict: str) -> None:
         """Record the verdict a durable monitor last surfaced for `run`."""
@@ -302,44 +300,18 @@ class Cache:
         """
         return self._change(run, state=state, exit_code=exit_code, verdict=verdict)
 
-    def _change(self, run: RunRecord, **fields: str | int | None) -> RunRecord:
-        """Update one registered identity atomically and return its complete current record."""
-        arguments = tuple(item for key, value in fields.items() for item in (f"$.{key}", value))
-        placeholders = ", ".join("?, ?" for _ in fields)
-        expression = f"json_set(data, {placeholders})"
-        if "verdict" in fields:
-            terminal = tuple(sorted(vocabulary.TERMINAL))
-            held = ", ".join("?" for _ in terminal)
-            expression = (
-                f"CASE WHEN json_extract(data, '$.verdict') IN ({held}) "
-                "AND json_extract(data, '$.verdict') != ? "
-                f"THEN data ELSE {expression} END"
-            )
-            arguments = (*terminal, fields["verdict"], *arguments)
-        return self._returned(
-            f"UPDATE runs SET data = {expression} WHERE {_IDENTITY} RETURNING data",
-            (*arguments, *_identity(run)),
-            missing=_unregistered(run),
-        )
-
-    def _returned(
-        self, sql: str, parameters: Sequence[str | int | None], *, missing: Exception
-    ) -> RunRecord:
-        """The one row `sql` returns as a record, raising `missing` when it matched none."""
-        row = self.connection.execute(sql, parameters).fetchone()
-        if row is None:
-            raise missing
-        return RunRecord.model_validate_json(row["data"])
-
     def run(self, handle: str, target: str | None = None) -> RunRecord:
-        """The newest run dispatched as `handle` (older rows are history), narrowed to `target`.
+        """The newest run dispatched as `handle` (older records are history), narrowed to `target`.
 
         `handle` may also be the name `jobs` prints for a run, its label or else its script, the
         spelling an operator copies off that table; a handle wins where both match. A handle
         recorded on several targets, or a name on several runs, raises with the candidates
         rather than guessing one.
         """
-        runs = self._runs("handle", handle, target) or self._runs(_LABEL, handle, target)
+        every = self._on(target)
+        runs = [run for run in every if run.handle == handle] or [
+            run for run in every if run.label == handle
+        ]
         if not runs:
             where = f" on {target!r}" if target else ""
             raise LookupError(f"no recorded run {handle!r}{where}")
@@ -350,27 +322,14 @@ class Cache:
             )
         return runs[0]
 
-    def _runs(self, column: str, value: str, target: str | None) -> list[RunRecord]:
-        """Every row whose `column` expression is `value`, on `target` if given, newest first."""
-        rows = self.connection.execute(
-            f"SELECT data FROM runs WHERE {column} = ? AND target = coalesce(?, target) "
-            "ORDER BY submitted_at DESC",
-            (value, target),
-        ).fetchall()
-        return [RunRecord.model_validate_json(row["data"]) for row in rows]
-
     def save_host(self, setup: HostSetup) -> HostSetup:
-        """Stamp `setup` with the current time and upsert it by alias.
+        """Stamp `setup` with the current time and record it as `setup.host`'s onboarding.
 
         The store owns the timestamp, so two records of the same host can always be ordered.
         """
         stamped = setup.model_copy(update={"onboarded_at": now()})
-        self.connection.execute(
-            "INSERT INTO hosts (alias, facts, probed_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(alias) DO UPDATE SET facts = excluded.facts, "
-            "probed_at = excluded.probed_at",
-            (stamped.host, stamped.model_dump_json(), stamped.onboarded_at),
-        )
+        with self._registry:
+            self._append("host_facts", [_host(stamped, probed_at=stamped.onboarded_at)])
         return stamped
 
     def settled(self, limit: int) -> list[RunRecord]:
@@ -379,8 +338,8 @@ class Cache:
         return list(islice(landed, limit))
 
     def total(self) -> int:
-        """How many runs this cache holds, the count a truncated listing measures against."""
-        return int(self.connection.execute("SELECT count(*) AS runs FROM runs").fetchone()["runs"])
+        """How many runs this registry holds, the count a truncated listing measures against."""
+        return int(self._rows(f"SELECT count(*) FROM {ALIAS}.runs")[0][0])
 
     def tracked(self) -> list[RunRecord]:
         """Every run a durable sweep still owes an outcome for, newest first.
@@ -394,19 +353,113 @@ class Cache:
             if run.verdict not in vocabulary.TERMINAL or run.reported != run.verdict
         ]
 
+    def _change(self, run: RunRecord, **fields: str | int | None) -> RunRecord:
+        """Update one registered identity atomically and answer its complete current record.
 
-def _identity(run: RunRecord) -> tuple[str, str, str]:
-    """The parameters `_IDENTITY` binds for `run`."""
-    return run.target, run.handle, run.submitted_at
+        A terminal verdict is never replaced by a different one: a late or stale report leaves the
+        whole record as it stands rather than half of it.
+        """
+        with self._registry:
+            current = self._at(run)
+            if current is None:
+                raise _unregistered(run)
+            verdict = fields.get("verdict")
+            if (
+                "verdict" in fields
+                and current.verdict in vocabulary.TERMINAL
+                and current.verdict != verdict
+            ):
+                return current
+            changed = current.model_copy(update=fields)
+            self._append("runs_log", [_row(changed)])
+            return changed
+
+    def _transition(
+        self,
+        run: RunRecord,
+        expected: str,
+        update: Mapping[str, object],
+        *,
+        missing: Exception,
+    ) -> RunRecord:
+        """Move `run` on only while its current verdict is `expected`, raising `missing` else."""
+        with self._registry:
+            current = self._at(run)
+            if current is None or current.verdict != expected:
+                raise missing
+            moved = current.model_copy(update=dict(update))
+            self._append("runs_log", [_row(moved)])
+            return moved
+
+    def _at(self, run: RunRecord) -> RunRecord | None:
+        """The current record of `run`'s identity, None when it was never recorded or dropped."""
+        rows = self._rows(
+            f"SELECT record FROM {ALIAS}.runs "
+            "WHERE target = ? AND handle = ? AND submitted_at = ?",
+            (run.target, run.handle, run.submitted_at),
+        )
+        return RunRecord.model_validate_json(rows[0][0]) if rows else None
+
+    def _on(self, target: str | None) -> list[RunRecord]:
+        """Every current run, on `target` when given, newest first."""
+        rows = self._rows(
+            f"SELECT record FROM {ALIAS}.runs WHERE target = coalesce(?, target) "
+            "ORDER BY submitted_at DESC",
+            (target,),
+        )
+        return [RunRecord.model_validate_json(record) for (record,) in rows]
+
+    def _lock(self, name: str) -> FileLock:
+        """The process-reentrant file lock `name` under the lake's run directory."""
+        path = self.lake.out / "run" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return FileLock(path, is_singleton=True)
+
+    def _rows(self, sql: str, parameters: Sequence[object] = ()) -> list[tuple[Any, ...]]:
+        """What `sql` answers in this cache's session."""
+        return self.session.rows(sql, parameters)
+
+    def _append(self, table: str, rows: Sequence[Mapping[str, object]]) -> None:
+        """Append `rows` to `table` in one commit of this cache's session."""
+        self.session.append(table, rows)
+
+
+def _row(run: RunRecord, *, dropped: bool = False) -> dict[str, object]:
+    """The `runs_log` row recording `run`, or its removal when `dropped`."""
+    return {
+        "ts": now(),
+        "target": run.target,
+        "handle": run.handle,
+        "submitted_at": run.submitted_at,
+        "record": run.model_dump_json(),
+        "dropped": dropped,
+    }
+
+
+def _host(setup: HostSetup, *, probed_at: str | None) -> dict[str, object]:
+    """The `host_facts` row recording `setup`, ordered among its alias's records by `probed_at`."""
+    return {
+        "ts": now(),
+        "alias": setup.host,
+        "probed_at": probed_at,
+        "facts": setup.model_dump_json(),
+        "dropped": False,
+    }
+
+
+def _discard(session: Session, root: Path) -> None:
+    """Detach a private registry's lake and delete the directory it lived in."""
+    session.close()
+    rmtree(root, ignore_errors=True)
 
 
 def _unregistered(run: RunRecord) -> LookupError:
     return LookupError(f"no registered run {run.handle!r} on {run.target!r}")
 
 
-def _current(facts: str) -> HostSetup | None:
+def _current(facts: object) -> HostSetup | None:
     """A recorded setup, None when an older mainboard wrote it and `setup` must record it anew."""
     try:
-        return HostSetup.model_validate_json(facts)
+        return HostSetup.model_validate_json(str(facts))
     except ValidationError:
         return None

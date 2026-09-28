@@ -16,6 +16,7 @@ from mainboard.dispatch.state import Cache
 from mainboard.dispatch.transport import Endpoint
 from mainboard.dispatch.vocabulary import Resources
 from mainboard.manifest import Container, HostProfile
+from mainboard.state.lake import Lake
 
 from .backends.support import BareBackend
 from .support import RecordingAgent, RecordingMachine, machine_with, plan, recorded
@@ -84,7 +85,7 @@ def landing(
     monkeypatch.setattr(landing_module, "connection", lambda where, ssh=None: host)
     backend = FakeRenter(**overrides)
     dispatcher = Dispatcher(
-        cache=Cache(workdir / "dispatch.sqlite"), sync=GitignoreFilter(workdir)
+        cache=Cache(Lake.at(workdir)), sync=GitignoreFilter(workdir)
     )
     dispatcher.mirrored: list[tuple[str, tuple[str, ...], str]] = []
     dispatcher.reached: list[str] = []

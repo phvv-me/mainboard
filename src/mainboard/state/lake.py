@@ -32,10 +32,12 @@ import json
 import os
 import struct
 import sys
-from collections.abc import Generator, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+import weakref
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import polars as pl
@@ -66,6 +68,20 @@ _OPTIONS = (
     ("parquet_compression_level", "3"),
     ("expire_older_than", "'30 days'"),
     ("delete_older_than", "'7 days'"),
+)
+
+# The files a workspace kept its state in before the lake, which `ready` refuses to bury under a
+# fresh empty lake until `mb center migrate-state` has imported them.
+_LEGACY = (
+    "dispatch/db.sqlite",
+    "dispatch/holds.json",
+    "dispatch/digests.json",
+    "batches",
+    "costs",
+    "studies",
+    "catalog.ndjson",
+    "collection.digests.json",
+    "pulse.json",
 )
 
 # How many times a commit that lost a race to another writer's snapshot is retried.
@@ -243,6 +259,33 @@ class Lake(FrozenModel):
 
     def exists(self) -> bool:
         return self.catalog.is_file()
+
+    def ready(self) -> Lake:
+        """This lake, created first when the workspace keeps no state at all yet.
+
+        Creation is never a way to paper over a loss: data files without their catalog, or state
+        files from before the lake that were never imported, raise with the repair instead, since
+        an empty lake over either would read as a workspace that never dispatched anything.
+        """
+        if self.exists():
+            return self
+        if self.data.exists():
+            raise MissionError(
+                f"{self.data} holds lake data but its catalog {self.catalog} is gone; restore "
+                "the catalog rather than creating a lake that forgets that data"
+            )
+        legacy = [name for name in _LEGACY if (self.out / name).exists()]
+        if legacy:
+            raise MissionError(
+                f"{self.out} keeps state from before the lake ({', '.join(legacy)}); import it "
+                "once with `mb center migrate-state`"
+            )
+        try:
+            self.create()
+        except MissionError:
+            if not self.exists():
+                raise
+        return self
 
     @contextmanager
     def open(self, *, write: bool = False) -> Generator[duckdb.DuckDBPyConnection]:
@@ -450,12 +493,70 @@ def locked(fault: BaseException) -> bool:
     return isinstance(fault, duckdb.Error) and "database is locked" in str(fault)
 
 
-def _patiently() -> Retrying:
-    """Attempts of one operation, retried while the catalog is locked, the last fault raised."""
+def recoverable(fault: BaseException) -> bool:
+    """Whether a fresh attach outlives `fault`: a locked catalog, or inlined rows another
+    process's maintenance flushed out from under an attached session's cached view of them."""
+    return locked(fault) or (
+        isinstance(fault, duckdb.Error) and "ducklake_inlined_data" in str(fault)
+    )
+
+
+class Session:
+    """One lake attached read-write for as long as its owner keeps it, attached on first use.
+
+    Attaching costs a tenth of a second, so a registry or a bus keeps one session rather than
+    attaching per statement, and never attaches at all when it is never used (a host installing
+    an environment builds a board that never touches its registry). A statement the catalog
+    refused as locked or stale is run again on a fresh attach; a failed statement committed
+    nothing, so running it again cannot duplicate a row.
+    """
+
+    def __init__(self, lake: Lake) -> None:
+        self.lake = lake
+        self._stack = ExitStack()
+        self._connection: duckdb.DuckDBPyConnection | None = None
+        # Detaching is the collector's job, not a caller's: otherwise only interpreter exit
+        # releases the catalog, which Windows then refuses to delete or move.
+        weakref.finalize(self, self._stack.close)
+
+    def close(self) -> None:
+        """Detach now; the next statement attaches again."""
+        self._stack.close()
+        self._connection = None
+
+    def rows(self, sql: str, parameters: Iterable[object] = ()) -> list[tuple[Any, ...]]:
+        """What `sql` answers in this session."""
+        bound = list(parameters)
+        return self.run(lambda connection: connection.execute(sql, bound).fetchall())
+
+    def append(self, table: str, rows: Iterable[Mapping[str, object]]) -> int:
+        """Append `rows` to `table` in one commit, returning how many were appended."""
+        staged = list(rows)
+        return self.run(lambda connection: insert(connection, table, staged))
+
+    def run[T](self, statement: Callable[[duckdb.DuckDBPyConnection], T]) -> T:
+        """`statement` over this session's connection, reattached while the lake refuses it."""
+        return _patiently(recoverable, before=self.close)(lambda: statement(self._attached()))
+
+    def _attached(self) -> duckdb.DuckDBPyConnection:
+        """The connection, attaching first; a fresh workspace's lake is created on this use."""
+        if self._connection is None:
+            self._connection = self._stack.enter_context(self.lake.ready().open(write=True))
+        return self._connection
+
+
+def _patiently(
+    retry: Callable[[BaseException], bool] = locked, *, before: Callable[[], None] | None = None
+) -> Retrying:
+    """Attempts of one operation, retried while `retry` accepts the fault, the last one raised.
+
+    before: run between attempts, as a session detaching so the next attempt attaches afresh.
+    """
     return Retrying(
-        retry=retry_if_exception(locked),
+        retry=retry_if_exception(retry),
         stop=stop_after_attempt(_LOCKED_ATTEMPTS),
         wait=wait_random_exponential(max=_LOCKED_WAIT_S),
+        before_sleep=(lambda _state: before()) if before else None,
         reraise=True,
     )
 

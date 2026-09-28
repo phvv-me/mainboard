@@ -10,7 +10,7 @@ from filelock import FileLock
 
 from mainboard import MissionError
 from mainboard.state import Finding, Lake
-from mainboard.state.lake import cache_home, insert, locked
+from mainboard.state.lake import Session, cache_home, insert, locked, recoverable
 from mainboard.state.schema import TABLES, VIEWS
 
 from .conftest import finished, writers
@@ -276,3 +276,57 @@ def test_a_failed_operation_still_closes_its_connection(lake: Lake) -> None:
     os.replace(lake.catalog, lake.catalog.with_suffix(".moved"))
     os.replace(lake.catalog.with_suffix(".moved"), lake.catalog)
     assert lake.check().ok
+
+
+def test_a_session_attaches_once_and_again_only_after_a_refusal(
+    lake: Lake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A locked or stale catalog costs one fresh attach; the statement then runs again."""
+    monkeypatch.setattr("mainboard.state.lake._LOCKED_WAIT_S", 0)
+    session = Session(lake)
+    seen: list[duckdb.DuckDBPyConnection] = []
+
+    def flaky(connection: duckdb.DuckDBPyConnection) -> int:
+        seen.append(connection)
+        if len(seen) == 1:
+            raise duckdb.IOException("database is locked")
+        if len(seen) == 2:
+            raise duckdb.CatalogException("Table ducklake_inlined_data_1_1 does not exist")
+        return 7
+
+    assert session.run(flaky) == 7
+    assert len({id(connection) for connection in seen}) == 3
+    assert session.append("pulse", [{"key": "gold/1", "size": 3}]) == 1
+    assert session.rows("SELECT key FROM lake.pulse") == [("gold/1",)]
+
+
+def test_a_session_raises_what_another_attach_would_not_fix(lake: Lake) -> None:
+    session = Session(lake)
+    with pytest.raises(duckdb.CatalogException, match="nonexistent"):
+        session.rows("SELECT * FROM lake.nonexistent")
+    assert not recoverable(duckdb.CatalogException("Table nonexistent does not exist"))
+
+
+def test_a_lake_another_process_created_first_is_shared_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raced = Lake.at(tmp_path)
+    creating = Lake.create
+
+    def beaten(self: Lake) -> str:
+        creating(self)
+        raise MissionError("a state lake already exists")
+
+    monkeypatch.setattr(Lake, "create", beaten)
+    assert raced.ready().exists()
+
+
+def test_a_failed_creation_is_not_mistaken_for_a_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refused(self: Lake) -> str:
+        raise MissionError("disk full")
+
+    monkeypatch.setattr(Lake, "create", refused)
+    with pytest.raises(MissionError, match="disk full"):
+        Lake.at(tmp_path).ready()

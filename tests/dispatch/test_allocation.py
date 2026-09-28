@@ -8,18 +8,19 @@ from mainboard import Board, MissionError
 from mainboard.dispatch.allocation import Allocation
 from mainboard.dispatch.state import Cache
 from mainboard.listing import Listing
+from mainboard.state.lake import Lake
 
 from .support import created_request
 
 
 def test_a_lost_create_response_remains_durable_across_processes(tmp_path: Path) -> None:
     original = created_request().record
-    first = Cache(tmp_path / "dispatch.sqlite")
+    first = Cache(Lake.at(tmp_path))
     first.reserve(original)
     allocation = Allocation(cache=first, record=original)
     allocation.begin()
     allocation.interrupted()
-    fresh = Cache(first.path)
+    fresh = Cache(first.lake)
     assert fresh.run(original.handle).verdict == "submitting"
     assert fresh.tracked() == [fresh.run(original.handle)]
     with pytest.raises(ValueError, match="unresolved creation"):
@@ -77,7 +78,7 @@ def test_a_never_created_terminal_request_needs_no_second_write(
     record = created_request().record
     board.dispatcher.cache.reserve(record)
     board.dispatcher.cache.leave_prepared(record, verdict)
-    fresh = Cache(board.dispatcher.cache.path)
+    fresh = Cache(board.dispatcher.cache.lake)
     assert fresh.run(record.handle).reported == verdict
     assert fresh.tracked() == []
     monkeypatch.setattr(board, "job", lambda *args, **kwargs: pytest.fail("provider touched"))

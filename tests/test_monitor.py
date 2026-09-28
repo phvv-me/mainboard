@@ -646,7 +646,7 @@ def test_a_cancel_refuses_instead_of_waiting_forever_on_a_held_settlement_claim(
 ) -> None:
     seed("37")
     monkeypatch.setattr("mainboard.verdicts.SETTLEMENT_SECONDS", 0.05)
-    held = FileLock(board.dispatcher.cache.path.with_suffix(".settlement.lock"))
+    held = FileLock(board.dispatcher.cache.settlement.lock_file)
     with held, pytest.raises(MissionError, match="held settlement"):
         board.verdicts().cancel("37")
 
@@ -656,7 +656,7 @@ def test_competing_monitor_does_not_read_a_stale_settlement_cursor(
 ) -> None:
     seed("33")
     trips = probing(board, monkeypatch, finishing())
-    with FileLock(board.dispatcher.cache.path.with_suffix(".settlement.lock")):
+    with FileLock(board.dispatcher.cache.settlement.lock_file):
         skipped = board.monitor().once()
         assert not skipped.changed
         assert skipped.running is None

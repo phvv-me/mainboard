@@ -878,7 +878,7 @@ def test_a_batch_wait_looks_only_at_its_own_running_jobs_and_a_held_claim_defers
     monkeypatch.setattr(Vigil, "look", look)
     monkeypatch.setattr("mainboard.verdicts.SETTLEMENT_SECONDS", 0.05)
     monkeypatch.setattr(Job, "kill", lambda self: pytest.fail("killed under a held claim"))
-    with FileLock(board.dispatcher.cache.path.with_suffix(".settlement.lock")):
+    with FileLock(board.dispatcher.cache.settlement.lock_file):
         settled = board.verdicts().wait(stream, poll=lambda seconds: None)
     assert looked == [["1"], ["1"]]
     assert settled.code == STALLED

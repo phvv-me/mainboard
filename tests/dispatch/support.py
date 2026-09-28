@@ -430,12 +430,8 @@ def recorded(script: str) -> Job:
 
 
 def cache() -> Cache:
-    """A dispatch state cache in a private in-memory database.
-
-    It creates every table the file-backed store does, without the WAL journal's fsync per test
-    that once made this slice the slowest in the suite.
-    """
-    return Cache(Path(":memory:"))
+    """A dispatch registry in a lake of its own, removed with the cache."""
+    return Cache.private()
 
 
 def run_record(handle: str, *, target: str = "gold", submitted_at: str = "t0") -> RunRecord:

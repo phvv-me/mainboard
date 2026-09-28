@@ -1,3 +1,4 @@
+import gc
 import os
 import shutil
 import sys
@@ -16,11 +17,11 @@ from mainboard.deps import Change, Dependencies
 from mainboard.dispatch import Handle, HostSetup
 from mainboard.dispatch.backends import Credentials
 from mainboard.dispatch.dispatcher import Dispatcher
-from mainboard.dispatch.shared import db_file
-from mainboard.dispatch.state import Cache, DownHost, Failed, Finished, MonitorReport
+from mainboard.dispatch.state import DownHost, Failed, Finished, MonitorReport
 from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold, Scaffolded
+from mainboard.state.lake import Lake
 from mainboard.verdicts import StreamVerdict, TrialVerdict, Verdicts
 
 from .support import Answer, Lab, Launcher, Option, Owner, Relayed, build_lab
@@ -231,11 +232,8 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-# The shared dispatch database's tables, emptied together after any test that wrote to one.
-_TABLES = ("runs", "hosts", "history")
-
-# The kernel's tmpfs: the shared workspace below is mostly SQLite writes, each WAL commit one
-# fsync that costs milliseconds on a real disk against microseconds here.
+# The kernel's tmpfs: the shared workspace below is mostly catalog commits, each one fsync that
+# costs milliseconds on a real disk against microseconds here.
 _MEMORY = Path("/dev/shm")
 
 # The handle a recorded submit answers with, so a test reads a fixed id out of the rendered row.
@@ -287,16 +285,17 @@ def surveyed() -> list[ComputePath]:
 
 @pytest.fixture(scope="session")
 def station() -> Iterator[Path]:
-    """The one workspace the root-level modules share, its dispatch database created once.
+    """The one workspace the root-level modules share, its state lake created once.
 
-    Creating a SQLite file is fsync bound at tens of milliseconds and any board reaching for a
-    dispatcher opens it, so a workspace per test paid that per test; `depot` empties it instead.
+    Creating a lake takes a third of a second and any board reaching for its registry opens one,
+    so a workspace per test paid that per test; `depot` recreates it only after a test wrote.
     """
     under = _MEMORY if os.access(_MEMORY, os.W_OK) else None
     root = Path(mkdtemp(dir=under, prefix="mainboard-station-"))
     (root / _MANIFEST).write_text(_FIXTURE)
-    Cache(root / db_file()).connection.close()
+    Lake.at(root).create()
     yield root
+    gc.collect()
     rmtree(root, ignore_errors=True)
 
 
@@ -304,20 +303,30 @@ def station() -> Iterator[Path]:
 def depot(station: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """`station` entered as the working directory, with whatever a test recorded dropped after.
 
-    Rows are counted first since most tests write none, and even an empty `DELETE` syncs.
+    The lake is append-only, so a test that wrote leaves a fresh lake behind it rather than an
+    emptied one; the catalog's stamp says whether it wrote, since most tests write nothing.
     """
     monkeypatch.setenv("MC_TEST_SCRATCH", "/scratch/lab")
     monkeypatch.chdir(station)
+    lake = Lake.at(station)
+    before = _stamp(lake)
     yield station
     for generated in ("studies", "batches"):
         rmtree(Project().out(station) / generated, ignore_errors=True)
-    cache = Cache(station / db_file())
-    counted = " + ".join(f"(SELECT count(*) FROM {table})" for table in _TABLES)
-    if cache.connection.execute(f"SELECT {counted} AS rows").fetchone()["rows"]:
-        cache.connection.executescript(
-            "BEGIN; " + " ".join(f"DELETE FROM {table};" for table in _TABLES) + " COMMIT;"
-        )
-    cache.connection.close()
+    if _stamp(lake) != before:
+        gc.collect()
+        for written in (lake.data, *lake.catalog.parent.glob(f"{lake.catalog.name}*")):
+            rmtree(written) if written.is_dir() else written.unlink()
+        lake.create()
+
+
+def _stamp(lake: Lake) -> tuple[tuple[str, int, int], ...]:
+    """What the lake's catalog files look like on disk, changed by any commit."""
+    return tuple(
+        (path.name, stat.st_size, stat.st_mtime_ns)
+        for path in sorted(lake.catalog.parent.glob(f"{lake.catalog.name}*"))
+        if (stat := path.stat())
+    )
 
 
 @pytest.fixture

@@ -124,7 +124,7 @@ class Moving:
 def moving(tree: Workspace, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Moving:
     """A center with state worth carrying, and a destination reached through local stand-ins."""
     arranged = Moving(tree, home, tmp_path)
-    Board(tree.path).dispatcher.cache.connection.close()
+    Board(tree.path).dispatcher.cache.close()
     (tree.path / ".env").write_text("EXA_API_KEY=secret\n", encoding="utf-8")
     ledger = tree.path / ".mainboard" / "costs" / "costs.ndjson"
     ledger.parent.mkdir(parents=True)

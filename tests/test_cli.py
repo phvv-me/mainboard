@@ -13,12 +13,12 @@ from plumbum import local
 from mainboard import Board, ComputePath, MissionError, Project, Survey
 from mainboard.batch import JobEstimate
 from mainboard.cli import _said, build, main
-from mainboard.dispatch.shared import db_file
 from mainboard.dispatch.state import Cache, MonitorReport, RunRecord
 from mainboard.dispatch.vocabulary import JobState
 from mainboard.jobs.lanes import Cell
 from mainboard.monitor import Monitor
 from mainboard.probe.occupancy import CardOccupancy, Holder, Occupancy
+from mainboard.state.lake import Lake
 from mainboard.verdicts import StreamVerdict, Verdicts
 
 if TYPE_CHECKING:
@@ -331,7 +331,7 @@ def test_an_empty_log_says_where_its_job_stands_and_exits_on_whether_it_still_mi
     exit 1, while one that has not started exits 2 with where it stands.
     """
     monkeypatch.setattr(Verdicts, "captured", lambda self, handle, host="": "")
-    Cache(depot / db_file()).record(
+    Cache(Lake.at(depot)).record(
         RunRecord(
             handle="3289319",
             target=_MIYABI_G,

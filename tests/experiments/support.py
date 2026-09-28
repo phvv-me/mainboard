@@ -72,7 +72,7 @@ class FakeDispatcher:
 
 def dispatch_cache() -> Cache:
     """The real dispatch run registry in memory, sparing each test the WAL journal's slow fsync."""
-    return Cache(Path(":memory:"))
+    return Cache.private()
 
 
 class FakeBoard:

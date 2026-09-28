@@ -22,6 +22,7 @@ from ..engines.compile.generated import GeneratedFiles
 from ..engines.compile.vendor import vendor_root
 from ..manifest.loading import load
 from ..runtime.job import ToolCall
+from ..state.lake import Lake
 from . import vocabulary
 from .agent import Agent, Scope, SshLink
 from .agent.program import CLOSURE
@@ -31,7 +32,7 @@ from .jobs import JobSpec
 from .mirror import Mirror
 from .provenance import Source, SourceTree
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
-from .shared import HandleId, Watcher, announce, db_file, logger, now, state_path, workspace
+from .shared import HandleId, Watcher, announce, logger, now, state_path, workspace
 from .shipment import Shipment
 from .snapshots import Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
@@ -146,7 +147,7 @@ class Dispatcher:
         """Defaults: the store under the root, a filter rooted there, the root found upward."""
         self.sync = sync or GitignoreFilter(root or workspace())
         self.root = self.sync.root
-        self.cache = cache or Cache(db_file(self.root))
+        self.cache = cache or Cache(Lake.at(self.root))
 
     def await_many(
         self, handles: Sequence[Handle], *, interval: float = vocabulary.POLL_SECONDS

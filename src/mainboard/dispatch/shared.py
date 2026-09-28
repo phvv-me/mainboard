@@ -79,11 +79,6 @@ def state_path(root: Path | None = None) -> Path:
     return here / state_dir(here)
 
 
-def db_file(root: Path | None = None) -> Path:
-    """The shared dispatch SQLite file, holding both the run registry and command history."""
-    return state_path(root) / "db.sqlite"
-
-
 # Every module logs here, so configuring `mainboard.dispatch` reaches all of them.
 logger = logging.getLogger("mainboard.dispatch")
 

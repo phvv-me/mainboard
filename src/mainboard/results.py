@@ -2,9 +2,7 @@
 
 import json
 import os
-import sqlite3
 from collections.abc import Callable, Collection
-from contextlib import closing
 from datetime import UTC
 from io import BytesIO
 from pathlib import Path
@@ -14,8 +12,8 @@ import duckdb
 import polars as pl
 
 from .dispatch import vocabulary
-from .dispatch.shared import db_file
 from .observe.files import FrameFile
+from .state.lake import ALIAS, Lake
 from .trials.artifacts import Artifact
 
 
@@ -304,11 +302,10 @@ class Results:
         """)
 
     def _jobs(self, connection: duckdb.DuckDBPyConnection) -> None:
-        jobs = []
-        path = db_file(self.root)
-        if path.is_file():
-            with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as state:
-                jobs = [row[0] for row in state.execute("SELECT data FROM runs")]
+        jobs: list[object] = []
+        lake = Lake.at(self.root)
+        if lake.exists():
+            jobs = lake.query(f"SELECT record FROM {ALIAS}.runs").get_column("record").to_list()
         connection.execute(
             """
             CREATE TABLE jobs AS SELECT row->>'target' AS server,
