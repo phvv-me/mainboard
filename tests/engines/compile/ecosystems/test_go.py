@@ -67,7 +67,7 @@ def test_sync_installs_every_declared_module_and_unlinks_what_was_dropped(
     assert go.gobin == pixi.manifest.parent / "go" / "bin"
     assert go.binary_dirs() == (go.gobin,)
     assert " ".join(fp.calls[0]) == (
-        f"{tool_paths['pixi']} run --manifest-path {pixi.manifest} --environment default "
+        f"{tool_paths['pixi']} run --manifest-path {pixi.manifest} --environment default --frozen "
         f"go install {_TOOL}@v1.4.0"
     )
     assert sorted(path.name for path in go.gobin.iterdir()) == ["tool"]

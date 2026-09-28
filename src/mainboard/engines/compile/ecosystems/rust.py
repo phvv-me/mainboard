@@ -66,7 +66,14 @@ class Rust(Ecosystem):
 
     def cargo(self, verb: str, *args: str) -> None:
         self.pixi(
-            "run", "cargo", verb, "--root", str(self.install_root), *args, environment=self.env
+            "run",
+            "cargo",
+            verb,
+            "--root",
+            str(self.install_root),
+            *args,
+            environment=self.env,
+            frozen=True,
         )
 
     def binary_dirs(self) -> tuple[Path, ...]:

@@ -86,5 +86,10 @@ class Go(Ecosystem):
         with local.env(GOBIN=str(self.gobin)):
             for module, spec in self.deps.items():
                 self.pixi(
-                    "run", "go", "install", self.reference(module, spec), environment=self.env
+                    "run",
+                    "go",
+                    "install",
+                    self.reference(module, spec),
+                    environment=self.env,
+                    frozen=True,
                 )

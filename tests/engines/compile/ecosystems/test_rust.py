@@ -92,7 +92,7 @@ def test_sync_installs_a_missing_crate_into_a_root_the_generated_directory_owns(
     assert rust.install_root == pixi.manifest.parent / "cargo"
     assert rust.binary_dirs() == (rust.install_root / "bin",)
     assert " ".join(fp.calls[0]) == (
-        f"{tool_paths['pixi']} run --manifest-path {pixi.manifest} --environment default "
+        f"{tool_paths['pixi']} run --manifest-path {pixi.manifest} --environment default --frozen "
         f"cargo install --root {rust.install_root} --version >=14 ripgrep"
     )
 
