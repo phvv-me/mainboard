@@ -48,11 +48,13 @@ _MACHINE_LOCAL = (
     "*.sqlite-wal",
     "*.sqlite-shm",
     "dispatch/locks/*",
+    "run/*",
 )
 
 # The SQLite stores shipped as a consistent snapshot rather than as the bytes a writer may be
-# halfway through: the dispatch registry here, Codex's memories under home.
-_REGISTRY = "dispatch/db.sqlite"
+# halfway through: the state lake's catalog (its Parquet files are immutable and ship as they are)
+# and an unimported registry here, Codex's memories under home.
+_SNAPSHOTS = ("lake.sqlite", "dispatch/db.sqlite")
 
 # Each agent's per-user state under home: what is copied as is, and what is a credential.
 _CLAUDE = ("settings.json", "CLAUDE.md", "keybindings.json", "agents", "skills", "commands")
@@ -318,7 +320,7 @@ class Carried:
         return [line.strip() for line in text.splitlines() if line.strip()]
 
     def workspace(self) -> list[Parcel]:
-        """The `.env`, the state directory's registry and ledgers, and every environment's lock."""
+        """The `.env`, the state directory's lake, and every environment's lock."""
         out = Project().out(self.root)
         parcels = (
             [self._root(self.root / ".env", secret=True)] if (self.root / ".env").is_file() else []
@@ -328,18 +330,18 @@ class Carried:
             for path in sorted(out.rglob("*"))
             if path.is_file()
             and not path.is_symlink()
-            and (relative := path.relative_to(out).as_posix()) != _REGISTRY
+            and (relative := path.relative_to(out).as_posix()) not in _SNAPSHOTS
             and not any(fnmatch(relative, rule) for rule in _MACHINE_LOCAL)
         ]
-        registry = out / _REGISTRY
-        if registry.is_file():
-            parcels.append(
-                Parcel(
-                    anchor="root",
-                    path=registry.relative_to(self.root).as_posix(),
-                    data=snapshot(registry),
-                )
+        parcels += [
+            Parcel(
+                anchor="root",
+                path=database.relative_to(self.root).as_posix(),
+                data=snapshot(database),
             )
+            for database in (out / name for name in _SNAPSHOTS)
+            if database.is_file()
+        ]
         provisioner = Provisioner(self.root, self.manifest)
         artifacts = dict.fromkeys(
             relative

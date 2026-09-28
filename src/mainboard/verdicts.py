@@ -19,7 +19,7 @@ from filelock import Timeout
 from patos import FrozenModel
 from pydantic import ValidationError
 
-from .batch.receipts import OFFERED, Event, Journal, Receipts, Topic, latest
+from .batch.receipts import OFFERED, Event, Journal, Topic, latest
 from .core.errors import MissionError
 from .diagnosis import reason
 from .dispatch import vocabulary
@@ -668,9 +668,7 @@ def lined(path: Path) -> tuple[TrialVerdict, ...]:
     a torn log: another tool's well-formed evidence once reached `Event` and answered with a
     pydantic traceback instead of the empty table the caller could be told about.
     """
-    companion = path.parent / "events.ndjson"
-    corrections = Receipts(companion).replay() if companion != path and companion.is_file() else []
-    return parsed(path.read_text(encoding="utf-8").splitlines(), corrections, source=str(path))
+    return parsed(path.read_text(encoding="utf-8").splitlines(), source=str(path))
 
 
 def parsed(

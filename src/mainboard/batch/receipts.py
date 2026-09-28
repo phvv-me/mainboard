@@ -1,8 +1,9 @@
 # THE BATCH EVENT CONTRACT, and the one place it is written down.
 #
 # Everything a batch learns is published as one line, and every later verb reads its cursor back
-# out of these lines rather than memory. The store is a file today and a broker tomorrow, so
-# nothing downstream may depend on the lines being local, inode-ordered, or written by the reader.
+# out of these lines rather than memory. The store is the workspace lake today and could be a
+# broker tomorrow, so nothing downstream may depend on the lines being local or written by the
+# reader.
 #
 # THE ENVELOPE. Every line is one `Event`. Envelope fields never carry payload and payload never
 # carries routing, so a subscriber filters on the envelope without parsing what it filters.
@@ -40,11 +41,9 @@
 # published before it settles, so the terminal line is the last one and a sink may close on it.
 
 import json
-import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
 
-from filelock import FileLock
 from patos import FrozenModel
 from pydantic import JsonValue, ValidationError
 
@@ -54,7 +53,6 @@ from ..state.lake import Session
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from pathlib import Path
 
 
 class Topic(StrEnum):
@@ -98,49 +96,13 @@ class Event(FrozenModel):
 
 
 class Bus(Protocol):
-    """Where a batch's receipts go: one file now, a broker later, the same two verbs either way."""
+    """Where a batch's receipts go: the lake now, a broker later, the same two verbs either way."""
 
     def publish(self, event: Event) -> None:
         """Hand one event to the transport."""
 
     def replay(self) -> list[Event]:
         """Every event this batch has published, oldest first."""
-
-
-class Receipts:
-    """The file transport: the batch's `events.ndjson`, created with its directory on publish.
-
-    Append-only and read whole (a batch is tens of jobs). An unreadable line is skipped rather
-    than fatal, so a log torn by a crash still replays everything before the tear.
-    """
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def publish(self, event: Event) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with FileLock(self.path.with_suffix(".lock")), self.path.open("a+b") as opened:
-            if opened.tell():
-                opened.seek(-1, os.SEEK_END)
-                if opened.read(1) != b"\n":
-                    opened.write(b"\n")
-            opened.write((event.model_dump_json() + "\n").encode())
-            opened.flush()
-            os.fsync(opened.fileno())
-
-    def replay(self) -> list[Event]:
-        if not self.path.is_file():
-            return []
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        events: list[Event] = []
-        for number, line in enumerate(lines, 1):
-            if not line.strip():
-                continue
-            try:
-                events.append(Event.model_validate_json(line))
-            except ValidationError:
-                logger.warning("unreadable receipt line retained at {}:{}", self.path, number)
-        return events
 
 
 class Journal:
