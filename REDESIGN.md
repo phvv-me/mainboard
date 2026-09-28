@@ -35,7 +35,7 @@ Living tracker, updated as each step lands. Last update: 2026-09-28.
 | 3 | Lake foundation (`state/lake.py`, schema, `mb center migrate-state` importer) | done, on main |
 | 4 | Move every writer into the lake; drop wandb; structlog | done, on main; `D:\projects` migrated |
 | 5 | Activation from `mb.toml`; drop generated scripts and jinja2 | done, on main |
-| 6 | Git provenance instead of source zips; HF pins into the HF cache; native report | pending |
+| 6 | Source in the lake, pins in the HF cache, query over the lake | done, on main |
 | 7 | Remove old paths, polars -> DuckDB, seaborn/pandas out, regression tests, center setup | pending |
 | 8 | API review, remote connectivity, miyabi-g multiplexing on Windows | pending |
 
@@ -75,9 +75,14 @@ Phase 5
       `{{ name }}` / `{{ fn('arg') }}` evaluator
 
 Phase 6
-- [ ] 6.1 Source provenance: git SHA + zstd patch in the lake instead of source zips
-- [ ] 6.2 HF pins resolved into the HF cache (no mb-side copy)
-- [ ] 6.3 Native `mb report` over the lake (replaces the wandb dashboard)
+- [x] 6.1 (`4a26d72`) Source kept in the lake instead of zips: each file's bytes once in `blobs`
+      (by SHA-256) and the listing in `closures`; `SourceTree.restore` rebuilds a tree. Changed
+      from "git SHA + patch": the workspace spans 50 submodules and untracked files, and an
+      unpushed commit can vanish; content addressing gives the same dedup exactly. D:\projects'
+      198 zips (812 MB) imported as 1,612 blobs (186 MiB raw, +61 MB lake).
+- [x] 6.2 (`6d35575`) Pins staged as links into the HF cache; D:\projects' 63 pins (1.6 GB, 57 of
+      them held nowhere else) moved into `~/.cache/huggingface/hub` with verified links left.
+- [x] 6.3 (`5e34f6e`) No separate report verb: `mb query` reads `lake.<table>` beside results.
 
 Phase 7
 - [ ] 7.1 polars -> DuckDB
@@ -87,11 +92,19 @@ Phase 7
 - [ ] 7.5 Lazy CLI imports (one session per lake per process already landed in 4.10)
 
 Phase 8 (added 2026-09-28)
-- [ ] 8.1 API review: one way to do each thing, no repeated tooling
-- [ ] 8.2 Every remote server reachable through `mb` without issues (check each)
-- [ ] 8.3 Connection multiplexing to miyabi-g on Windows (no ControlMaster in Win32-OpenSSH)
+- [~] 8.1 API review: `setup --sync-only` dropped for `sync` (`1a561ee`); verbs otherwise orthogonal
+- [x] 8.2 All 6 key-less hosts answer `mb compute` in 5 s; `mb shell --on` fixed on Windows
+      (`997878f`, exec unquoted args). Setup of hosts blocked by the stale default lock (below).
+- [x] 8.3 No Windows ssh can multiplex; `mb unlock <host>` keeps one agent on
+      `~/.ssh/mb-agent.sock` every command adopts. miyabi-g needs the owner to run it once
+      (key passphrase).
 
-Owner decisions pending (not blocking): libsass re-solve approach; pushing `main`/branches.
+Owner decisions pending: (1) BLOCKING remote setup/sync: the default env lock is stale (uncommitted
+mainboard.toml edits add remaster-lab/m2/glinet deps; mainboard's own deps changed) and the
+re-solve fails on Windows (zzzeeksphinx -> libsass sdist needs MSVC): restrict/drop zzzeeksphinx
+or solve on Linux. (2) pushing `main`/branches. (3) deleting the migrated legacy files.
+Tests: per the owner (2026-09-28) tests are not maintained for now; one known failure in
+tests/dispatch/test_provenance.py (archive test edits the job file).
 
 ## Workspace state (D:\projects)
 
