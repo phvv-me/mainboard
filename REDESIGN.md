@@ -85,11 +85,17 @@ Phase 6
 - [x] 6.3 (`5e34f6e`) No separate report verb: `mb query` reads `lake.<table>` beside results.
 
 Phase 7
-- [ ] 7.1 polars -> DuckDB
-- [ ] 7.2 seaborn/pandas out (grouped plots in matplotlib, hex palettes)
-- [ ] 7.3 Remove old file-state paths; regression tests for legacy reads
-- [ ] 7.4 Center setup: `mb install` / `center verify`, PATH
-- [ ] 7.5 Lazy CLI imports (one session per lake per process already landed in 4.10)
+- [~] 7.1 polars: gone from every state path (lake staging is DuckDB `unnest`, `95d097a`) and no
+      longer imported by any command that does not read results (`863723e`). Kept in `trials`,
+      whose public API (`log.table`, `log.read_table`) hands experiments polars frames.
+- [ ] 7.2 seaborn/pandas: DECISION. `seaborn.objects` drives 216 figure layers (mostly the ICLR
+      2027 cutok paper); replacing it re-implements its grammar and re-verifies every figure.
+      Both live only in the optional `[plot]` extra, so no host installs them. Recommend keep.
+- [x] 7.3 (`9feb360`) The file receipts transport removed; the center migration carries the lake
+      (catalog as a SQLite backup, immutable Parquet as is). The old files in D:\projects stay
+      until the owner deletes them.
+- [ ] 7.4 Center verify: blocked by the stale default lock (every env gate syncs the env first).
+- [~] 7.5 CLI import 894 -> 765 ms; the rest is plumbum/filelock/cyclopts at import time.
 
 Phase 8 (added 2026-09-28)
 - [~] 8.1 API review: `setup --sync-only` dropped for `sync` (`1a561ee`); verbs otherwise orthogonal
