@@ -33,7 +33,7 @@ Living tracker, updated as each step lands. Last update: 2026-09-28.
 | 1 | Names and aliases (`mb`, `mb.toml`, `.mb/`, `MB_*`, markers read both) | done, on main |
 | 2 | Committed `mb.lock` (all envs, byte-exact, adoption of legacy cache locks) | done, on main |
 | 3 | Lake foundation (`state/lake.py`, schema, `mb center migrate-state` importer) | done, on main |
-| 4 | Move every writer into the lake; drop wandb; structlog | done, on main; D:projects migrated |
+| 4 | Move every writer into the lake; drop wandb; structlog | done, on main; `D:\projects` migrated |
 | 5 | Activation from `mb.toml`; drop generated scripts and jinja2 | pending |
 | 6 | Git provenance instead of source zips; HF pins into the HF cache; native report | pending |
 | 7 | Remove old paths, polars -> DuckDB, seaborn/pandas out, regression tests, center setup | pending |
@@ -61,7 +61,9 @@ Phase 4 (branch `mb-writers`)
 - [x] 4.13 (`44b84b0`) Digests (mirror, collection) -> `digests`, rows only for moved stamps; the remote agent keeps its file
 - [x] 4.14 (`2bf1f46`) Job specs / closures -> `job_specs` / `closures` (staged files are only what the mirror ships)
 - [x] 4.15 Full suite green; `mb-writers` fast-forwarded into main
-- [~] 4.16 Run `mb center migrate-state` on `D:\projects` and verify
+- [x] 4.16 Imported `D:\projects` (every source matched, logs rebuilt byte for byte; a 32 MB lake
+      against 3.2 GB of files) and reinstalled `mb` from source; the old files stay until the
+      owner deletes them
 
 Phase 5
 - [ ] 5.1 Activation declared in `mb.toml`, computed in Python
