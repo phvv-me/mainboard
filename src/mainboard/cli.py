@@ -40,7 +40,6 @@ from .probe.occupancy import rows as occupancy_rows
 from .probe.system import System
 from .proc import Processes
 from .render import diverted, install_traceback, mode_of, plain, progress, record, rows, totals
-from .results import Results
 from .runtime.job import Job
 from .runtime.runner import Runner
 from .state import Importer, Lake
@@ -661,6 +660,10 @@ def build(root: Path | None = None) -> App:
         source = _query_source(sql, file)
         if source is None:
             source = "SELECT * FROM runs"
+        from .results import (
+            Results,  # its dataframe engine is paid only by the verbs reading results
+        )
+
         results = Results(workspace_root())
         if out is not None:
             print(results.export(source, out, project=project))
@@ -740,6 +743,10 @@ def build(root: Path | None = None) -> App:
                 raise MissionError(
                     f"no plot style {style!r}; declared styles are {sorted(manifest.plots)}"
                 ) from None
+        from .results import (
+            Results,  # its dataframe engine is paid only by the verbs reading results
+        )
+
         results = Results(workspace_root())
         if specification is not None:
             saved = FigurePlot(settings).render(

@@ -10,9 +10,16 @@ from zipfile import ZipFile
 from filelock import FileLock
 
 from ...core.project import Project
-from ...trials.artifacts import relative_path
 from ..state.digests import KeptDigests
 from ..transport import SshTransport
+
+
+def relative_path(value: str) -> PurePosixPath:
+    """`value` checked as a portable project-relative path, the trials package's rule; imported
+    on use, since that package loads a dataframe engine no other verb needs."""
+    from ...trials.artifacts import relative_path as checked
+
+    return checked(value)
 
 
 class Collector:
