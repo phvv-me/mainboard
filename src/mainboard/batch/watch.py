@@ -16,7 +16,7 @@ from ..costs import Ledger, Observation
 from ..dispatch import vocabulary
 from ..dispatch.shared import now
 from .estimate import platform
-from .receipts import OFFERED, Receipts, Topic, latest, publish
+from .receipts import OFFERED, Journal, Topic, latest, publish
 from .runner import directory
 
 if TYPE_CHECKING:
@@ -77,7 +77,7 @@ class Watch:
         self.board = board
         self.id = batch_id
         self.dir = directory(board, batch_id)
-        self.bus = bus or Receipts(self.dir / "events.ndjson")
+        self.bus = bus or Journal(board.dispatcher.cache.session, batch_id)
         self.ledger = Ledger(Project().out(board.root) / _COSTS)
 
     @staticmethod

@@ -6,7 +6,6 @@ import pytest
 
 from mainboard import Board, MissionError
 from mainboard.batch import Topic
-from mainboard.batch.runner import directory
 from mainboard.cli import build
 
 from .support import receipts
@@ -134,7 +133,7 @@ def test_running_prints_the_batch_id_then_every_handle_it_dispatched(
     assert identity.startswith("smoke-")
     assert "4242" in out
     assert [call[0] for call in relayed] == ["submit"]
-    lines = receipts(directory(Board(depot), identity))
+    lines = receipts(Board(depot), identity)
     assert [event.topic for event in lines.replay()] == [Topic.OPENED, Topic.SUBMITTED]
 
 
@@ -159,7 +158,7 @@ def test_running_part_of_a_plan_dispatches_it_and_records_the_rest_as_skipped(
     identity = out.splitlines()[0]
     assert [call[2] for call in relayed] == [("echo python",), ("echo markdown",)]
     assert "skipped: not named by --only" in out
-    lines = receipts(directory(Board(depot), identity))
+    lines = receipts(Board(depot), identity)
     assert [event.job for event in lines.replay() if event.topic is Topic.SKIPPED] == ["cpp"]
 
 

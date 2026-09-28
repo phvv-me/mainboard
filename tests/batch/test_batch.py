@@ -246,8 +246,8 @@ def test_a_batch_keeps_its_receipts_in_its_own_directory(lab: Board) -> None:
     batch = Batch(lab, spec(_TWO[0]))
     assert batch.dir == lab.root / Project().out_dirs[0] / "batches" / batch.id
     batch.open()
-    assert batch.bus.path.is_file()
-    assert Watch(lab, batch.id).bus.path == batch.bus.path
+    assert [event.topic for event in batch.bus.replay()] == ["batch.opened"]
+    assert Watch(lab, batch.id).bus.replay() == batch.bus.replay()
 
 
 def test_a_pass_reports_every_target_in_one_view_and_publishes_only_what_moved(

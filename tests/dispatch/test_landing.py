@@ -84,9 +84,7 @@ def landing(
     """A `Landing` onto `host`, its ssh connection stubbed and its mirror and agent recorded."""
     monkeypatch.setattr(landing_module, "connection", lambda where, ssh=None: host)
     backend = FakeRenter(**overrides)
-    dispatcher = Dispatcher(
-        cache=Cache(Lake.at(workdir)), sync=GitignoreFilter(workdir)
-    )
+    dispatcher = Dispatcher(cache=Cache(Lake.at(workdir)), sync=GitignoreFilter(workdir))
     dispatcher.mirrored: list[tuple[str, tuple[str, ...], str]] = []
     dispatcher.reached: list[str] = []
     dispatcher.pins = PinningAgent(host)

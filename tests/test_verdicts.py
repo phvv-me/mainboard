@@ -5,7 +5,7 @@ import pytest
 from filelock import FileLock
 
 from mainboard import Board, Job, MissionError
-from mainboard.batch.receipts import Event, Receipts, Topic, publish
+from mainboard.batch.receipts import Event, Journal, Topic, publish
 from mainboard.batch.runner import directory
 from mainboard.dispatch.state import Cache, RunRecord
 from mainboard.monitor import Monitor
@@ -27,6 +27,14 @@ if TYPE_CHECKING:
 _STREAM = "study-receipts"
 
 
+def into(board: Board, stream: str) -> Path:
+    """`stream`'s directory, made first: files a sweep brings home land in it, and nothing
+    publishing a receipt creates it any more now that receipts live in the lake."""
+    under = directory(board, stream)
+    under.mkdir(parents=True, exist_ok=True)
+    return under
+
+
 def receipt(run: str, case: str, **fields: str) -> str:
     """One printed `trial_receipt` line for `case` of `run`, passed unless `fields` say not."""
     return json.dumps(
@@ -43,7 +51,7 @@ def test_a_cached_success_is_not_delivered_before_its_first_evidence_event(
     board.dispatcher.cache.delivery(record, status)
     assert board.verdicts().handled("79").code == 2
     assert board.verdicts().handled("79").trials[0].verdict == "blocked"
-    under = directory(board, "crashed-before-event")
+    under = into(board, "crashed-before-event")
     under.mkdir(parents=True, exist_ok=True)
     (under / "receipts.ndjson").write_text(receipt("r", "case", verdict="validated") + "\n")
     assert board.verdicts().of("crashed-before-event").code == 2
@@ -53,7 +61,7 @@ def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidenc
     board: Board,
 ) -> None:
     recorded(board, "77", name="lost-transfer", verdict="ok")
-    under = directory(board, "lost-transfer")
+    under = into(board, "lost-transfer")
     under.mkdir(parents=True, exist_ok=True)
     path = under / "receipts.ndjson"
     original = "".join(
@@ -62,7 +70,7 @@ def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidenc
     )
     path.write_text(original)
     publish(
-        Receipts(under / "events.ndjson"),
+        Journal(board.dispatcher.cache.session, "lost-transfer"),
         "lost-transfer",
         Topic.EVIDENCE,
         job="lost-transfer",
@@ -119,7 +127,7 @@ def recorded(
 
 def published(board: Board, stream: str) -> None:
     """A stream holding one job of every outcome a batch can leave behind."""
-    bus = Receipts(directory(board, stream) / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, stream)
     lines: list[tuple[Topic, str, dict[str, str | int]]] = [
         (
             Topic.SUBMITTED,
@@ -153,7 +161,7 @@ def dispatched(board: Board, stream: str, lines: tuple[tuple[str, Topic, str, st
 
     The file order must be free to disagree with the stamps, the way a broker's redelivery does.
     """
-    bus = Receipts(directory(board, stream) / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, stream)
     for at, topic, job, said in lines:
         taken = topic is Topic.SUBMITTED
         bus.publish(
@@ -263,7 +271,7 @@ def test_a_stream_reads_the_outcome_the_durable_sweep_already_settled(board: Boa
     """A batch whose watching session died is settled by the cron pass in the registry only, so
     the registry row is joined onto the rows the receipts left in flight (2026-09-04)."""
     stream = "swept-batch"
-    bus = Receipts(directory(board, stream) / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, stream)
     publish(bus, stream, Topic.SUBMITTED, job="tex", data={"handle": "3294910", "target": "gold"})
     # Nothing dispatched under that handle yet, so the row stands exactly as the stream left it.
     assert (board.verdicts().of(stream).trials[0].verdict, board.verdicts().of(stream).code) == (
@@ -302,7 +310,7 @@ def test_a_measurement_taken_under_contention_says_so_on_every_row_of_its_run(
 ) -> None:
     """A contended artifact otherwise looks exactly as authoritative as a clean one."""
     stream = f"contention-{flagged.count('%')}-{attested is not None}"
-    bus = Receipts(directory(board, stream) / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, stream)
     publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "9", "target": "gold"})
     if attested is not None:
         publish(bus, stream, Topic.ATTESTED, job="a", data=attested)
@@ -470,7 +478,7 @@ def test_a_failed_row_says_what_it_said_on_the_way_out(
     """Thirty two GH200 jobs printed identical `failed` rows while the line that explained each
     sat in the log the sweep had already brought home (2026-09-05)."""
     recorded(board, "9", name="doomed", verdict=verdict)
-    stored = directory(board, "doomed") / "9.log"
+    stored = into(board, "doomed") / "9.log"
     stored.parent.mkdir(parents=True, exist_ok=True)
     stored.write_text(log, encoding="utf-8")
     [row] = board.verdicts().of("9").trials
@@ -512,7 +520,7 @@ def test_same_named_host_jobs_keep_their_own_state_and_child_receipts(
     active = remote if shared_handle else "1679"
     recorded(board, remote, name=stream, target="miyabi-g", verdict="ok")
     recorded(board, active, name=stream, target="crimson")
-    bus = Receipts(directory(board, stream) / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, stream)
     launchers = [("miyabi-g", remote), ("crimson", active)]
     for target, handle in launchers[:1] if missing_submission else launchers:
         publish(
@@ -540,7 +548,7 @@ def test_same_named_host_jobs_keep_their_own_state_and_child_receipts(
                 "trials": cases,
             },
         )
-    path = directory(board, stream) / "receipts.ndjson"
+    path = into(board, stream) / "receipts.ndjson"
     original = "\n".join(receipts) + "\n"
     path.write_text(original)
 
@@ -589,7 +597,7 @@ def test_wait_on_a_batch_id_sweeps_until_every_job_settles_and_answers_the_batch
 ) -> None:
     """One `wait` serves a handle and a batch alike, and a batch's answer is its whole verdict."""
     stream = "smoke-1"
-    bus = Receipts(directory(board, stream) / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, stream)
     publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "1", "target": "gold"})
     publish(bus, stream, Topic.SUBMITTED, job="b", data={"handle": "2", "target": "gold"})
     publish(
@@ -622,7 +630,7 @@ def test_wait_gives_up_at_the_deadline_and_reports_the_run_still_in_flight(
 ) -> None:
     """A bounded wait is the contract: exit 2 with the truth, never a hang."""
     if batch:
-        bus = Receipts(directory(board, "smoke-2") / "events.ndjson")
+        bus = Journal(board.dispatcher.cache.session, "smoke-2")
         publish(bus, "smoke-2", Topic.SUBMITTED, job="a", data={"handle": "1", "target": "gold"})
     else:
         recorded(board, "8", name="smoke-2")
@@ -684,7 +692,7 @@ def test_the_captured_tail_is_preferred_over_a_backend_that_may_no_longer_exist(
     recorded(board, "5", name="chatty", target="miyabi-g")
     monkeypatch.setattr(Job, "transcript", lambda self: "live output")
     assert board.verdicts().captured("5") == "live output"
-    stored = directory(board, "chatty") / "5.log"
+    stored = into(board, "chatty") / "5.log"
     stored.parent.mkdir(parents=True, exist_ok=True)
     stored.write_text("what the sweep brought home\n", encoding="utf-8")
     assert board.verdicts().captured("5") == "what the sweep brought home\n"
@@ -782,10 +790,10 @@ def test_a_cancel_says_what_it_could_not_verify_and_retries_what_it_could_not_re
 def test_a_stream_row_the_sweep_settled_as_failed_says_why(board: Board) -> None:
     """A joined outcome carries the cause from the log the sweep brought home, as a floor does."""
     stream = "swept-failure"
-    bus = Receipts(directory(board, stream) / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, stream)
     publish(bus, stream, Topic.SUBMITTED, job="tex", data={"handle": "3294911", "target": "gold"})
     recorded(board, "3294911", name=f"batch:{stream}/tex", verdict="failed")
-    (directory(board, stream) / "3294911.log").write_text(
+    (into(board, stream) / "3294911.log").write_text(
         "Traceback (most recent call last):\nMemoryError: CUDA out of memory\n", encoding="utf-8"
     )
     [row] = board.verdicts().of(stream).trials
@@ -858,7 +866,7 @@ def test_a_batch_wait_looks_only_at_its_own_running_jobs_and_a_held_claim_defers
 ) -> None:
     """A conclusion under another process's settlement claim waits for the next look."""
     stream = "wave-1"
-    bus = Receipts(directory(board, stream) / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, stream)
     publish(bus, stream, Topic.SUBMITTED, job="a", data={"handle": "1", "target": "gold"})
     recorded(board, "1", name=stream, verdict="running")
     recorded(board, "2", name="another", verdict="running")

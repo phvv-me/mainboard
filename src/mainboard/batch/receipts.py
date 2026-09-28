@@ -50,6 +50,7 @@ from patos import FrozenModel
 from pydantic import JsonValue, ValidationError
 
 from ..dispatch.shared import now
+from ..state.lake import Session
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -142,6 +143,53 @@ class Receipts:
                 events.append(Event.model_validate_json(line))
             except ValidationError:
                 logger.warning("unreadable receipt line retained at %s:%d", self.path, number)
+        return events
+
+
+class Journal:
+    """The lake transport: the workspace lake's `events`, one batch's lines selected by its id.
+
+    Replayed in commit order, the order a file would have been appended in. A row whose topic
+    this release no longer knows is skipped rather than fatal, the tolerance a torn file gets.
+    """
+
+    def __init__(self, session: Session, batch: str) -> None:
+        self.session = session
+        self.batch = batch
+
+    def publish(self, event: Event) -> None:
+        self.session.append(
+            "events",
+            [
+                {
+                    "ts": event.at,
+                    "batch": event.batch,
+                    "topic": str(event.topic),
+                    "job": event.job,
+                    "data": event.data,
+                }
+            ],
+        )
+
+    def replay(self) -> list[Event]:
+        rows = self.session.rows(
+            "SELECT ts, batch, topic, job, data FROM lake.events WHERE batch = ? ORDER BY rowid",
+            [self.batch],
+        )
+        events: list[Event] = []
+        for at, batch, topic, job, data in rows:
+            try:
+                events.append(
+                    Event(
+                        at=at.isoformat(),
+                        batch=batch,
+                        topic=topic,
+                        job=job or "",
+                        data=json.loads(data) if data else {},
+                    )
+                )
+            except ValidationError:
+                logger.warning("unreadable event of %s retained in the lake: %s", batch, topic)
         return events
 
 

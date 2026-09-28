@@ -18,7 +18,7 @@ from filelock import Timeout
 from patos import FrozenModel
 from pydantic import ValidationError
 
-from .batch.receipts import OFFERED, Event, Receipts, Topic, latest
+from .batch.receipts import OFFERED, Event, Journal, Receipts, Topic, latest
 from .batch.runner import directory
 from .core.errors import MissionError
 from .diagnosis import reason
@@ -304,8 +304,7 @@ class Verdicts:
             ) from None
         stream, job = streamed(record.name or "", handle=record.handle)
         under = directory(self.board, stream)
-        stream_file = under / "events.ndjson"
-        history = Receipts(stream_file).replay() if stream_file.is_file() else []
+        history = Journal(self.board.dispatcher.cache.session, stream).replay()
         events = self.__events(history, record)
         mine = tuple(trial for trial in eventful(events) if trial.handle == record.handle)
         cases = {
@@ -350,9 +349,8 @@ class Verdicts:
             read = lined(path)
             return StreamVerdict(stream=target, trials=read, note=unreadable(path, read))
         under = directory(self.board, target)
-        stream_file = under / "events.ndjson"
-        if stream_file.is_file() or (under / "receipts.ndjson").is_file():
-            events = Receipts(stream_file).replay()
+        events = Journal(self.board.dispatcher.cache.session, target).replay()
+        if events or (under / "receipts.ndjson").is_file():
             recorded = eventful(events)
             seen = {(trial.target, trial.handle) for trial in recorded}
             missing = tuple(
@@ -363,7 +361,7 @@ class Verdicts:
             )
             found = (*self.swept(recorded), *missing, *harvest(under))
             return StreamVerdict(
-                stream=target, trials=qualified(found, events), note=unreadable(stream_file, found)
+                stream=target, trials=qualified(found, events), note=silent(target, events, found)
             )
         return self.handled(target, host=host)
 
@@ -474,7 +472,7 @@ class Verdicts:
         """
         deadline = monotonic() + timeout if timeout else None
         monitor = self.board.monitor()
-        stream = (directory(self.board, handle) / "events.ndjson").is_file()
+        stream = bool(Journal(self.board.dispatcher.cache.session, handle).replay())
         vigil = Vigil(Pulses(self.board), stall=stall, say=say)
         # What already settled answers before any pass runs, since a pass settles the whole
         # workspace and a caller re-reading a finished batch owes it nothing.
@@ -587,6 +585,19 @@ def unreadable(path: Path, trials: tuple[TrialVerdict, ...]) -> str:
         f"{path} holds {len(lines)} line(s), none of which is evidence this verb reads. It reads "
         "the batch event envelope and the `trial_receipt` line, so a harness writing another "
         "shape settles here as soon as it prints one of those two per trial"
+    )
+
+
+def silent(stream: str, events: list[Event], trials: tuple[TrialVerdict, ...]) -> str:
+    """Why stream `stream` yielded no rows, empty when it yielded some; `unreadable` for a
+    stream kept in the lake rather than a file."""
+    if trials:
+        return ""
+    if not events:
+        return f"stream {stream} has recorded nothing yet"
+    return (
+        f"stream {stream} holds {len(events)} event(s), none of which settles a trial yet: a "
+        "trial settles on its job.settled event or on a `trial_receipt` line its log prints"
     )
 
 

@@ -1,8 +1,8 @@
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mainboard import Board
-from mainboard.batch import BatchSpec, Event, Receipts
+from mainboard.batch import BatchSpec, Event
+from mainboard.batch.receipts import Journal
 from mainboard.manifest import HostProfile
 
 if TYPE_CHECKING:
@@ -43,6 +43,6 @@ def published(bus: Bus, topic: str) -> list[Event]:
     return [event for event in bus.replay() if event.topic == topic]
 
 
-def receipts(path: Path) -> Receipts:
-    """A file-backed bus under `path`, the transport a real batch writes through."""
-    return Receipts(path / "events.ndjson")
+def receipts(board: Board, stream: str) -> Journal:
+    """The lake bus `stream` publishes through, the transport a real batch writes through."""
+    return Journal(board.dispatcher.cache.session, stream)

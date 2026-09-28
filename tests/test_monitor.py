@@ -15,7 +15,8 @@ from filelock import FileLock
 from plumbum.commands.processes import ProcessExecutionError
 
 from mainboard import Board, Job, MissionError, Project
-from mainboard.batch import Receipts, Topic
+from mainboard.batch import Topic
+from mainboard.batch.receipts import Journal
 from mainboard.batch.runner import directory
 from mainboard.cli import build
 from mainboard.costs.catalog import Offer
@@ -1060,7 +1061,7 @@ def test_an_evidence_status_keeps_only_well_formed_trials_and_survives_an_unsave
     )
     monitor = board.monitor()
     monitor.evidence(record, receipts, status="copied")
-    bus = Receipts(directory(board, "statused") / "events.ndjson")
+    bus = Journal(board.dispatcher.cache.session, "statused")
     [event] = [event for event in bus.replay() if event.topic == Topic.EVIDENCE]
     assert event.data["trials"] == [["r", "c"]]
 

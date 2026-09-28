@@ -14,7 +14,7 @@ from ..dispatch.shared import Watcher
 from ..dispatch.transport import HostUnreachable
 from ..dispatch.vocabulary import Request
 from .estimate import Estimator
-from .receipts import Receipts, Topic, latest, payload, publish
+from .receipts import Journal, Topic, latest, payload, publish
 from .spec import Selection
 from .transfer import Transfer, TransferSet
 
@@ -80,7 +80,7 @@ class Batch:
         self.board = board
         self.spec = spec
         self.dir = directory(board, spec.batch_id)
-        self.bus = bus or Receipts(self.dir / "events.ndjson")
+        self.bus = bus or Journal(board.dispatcher.cache.session, spec.batch_id)
         self.selection = selection or Selection()
         self.jobs = self.selection.chosen(spec.jobs)
         self.skipped = tuple(job for job in spec.jobs if not self.selection.holds(job.name))

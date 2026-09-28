@@ -14,7 +14,7 @@ from plumbum import ProcessExecutionError
 from plumbum import local as localhost
 
 from .batch.estimate import Estimator, JobEstimate
-from .batch.receipts import Receipts, Topic, publish
+from .batch.receipts import Journal, Topic, publish
 from .batch.runner import Batch, directory
 from .batch.spec import BatchJob, Selection
 from .batch.transfer import TransferSet
@@ -781,7 +781,7 @@ class Board:
         """
         under = directory(self, stream)
         return mirrored(
-            Receipts(under / "events.ndjson"),
+            Journal(self.dispatcher.cache.session, stream),
             self.manifest.tracking,
             stream=stream,
             directory=under,
