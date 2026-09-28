@@ -17,6 +17,7 @@ from .core.errors import MissionError
 from .core.project import Project
 from .core.section import Section, Verdict
 from .engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER, EnvironmentAudit
+from .engines.compile.lockfile import Lockfile
 from .engines.compile.provisioner import Provisioner
 from .engines.compile.state import SyncState
 
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
     from .board import Board
     from .dispatch.onboard import HostSetup
     from .durable import Settler
+    from .engines.compile.backend import Pixi
+    from .engines.compile.lockfile import Solved
 
 # The tool this workspace answers to, so no message below spells the binary's name.
 _TOOL = Project().name
@@ -108,8 +111,13 @@ class Doctor:
         damaged = (
             sorted(EnvironmentAudit(pixi.env_prefix(environment)).suspect()) if installed else []
         )
+        lockfile = Lockfile(self.board.root)
+        solved = lockfile.get(environment)
+        # The committed lock's blessing once it holds one, since `install` materializes it.
         lock_stale = (
-            not pixi.lock.exists()
+            solved.solved_from != compiler.resolution_digest()
+            if solved is not None
+            else not pixi.lock.exists()
             or state.environment != environment
             or state.solved_from != compiler.resolution_digest()
         )
@@ -127,6 +135,7 @@ class Doctor:
             findings.append(
                 ("pixi.lock was not solved from this manifest", f"{install} --resolve")
             )
+        findings += Doctor._committed(pixi, state, solved, lockfile, environment)
         if installed and state.compiled_from != compiler.digest():
             findings.append((f"compiled before the current manifest: {environment}", install))
         if damaged:
@@ -143,6 +152,35 @@ class Doctor:
             verdict=Verdict.PASS,
             detail=f"{environment} is provisioned, fresh and whole, on pixi {solver}",
         )
+
+    @staticmethod
+    def _committed(
+        pixi: Pixi, state: SyncState, solved: Solved | None, lockfile: Lockfile, environment: str
+    ) -> list[tuple[str, str]]:
+        """Where the state directory's lock parts from the committed one, with the repair.
+
+        The committed lock is the truth and the cached one its copy, so a copy that differs is
+        put back by an install; a cached lock the committed one lacks is adopted by an install
+        when a solve blessed it for this environment, and has to be solved again otherwise.
+        """
+        install = f"{_TOOL} install {environment}"
+        if not pixi.lock.is_file():
+            return []
+        if solved is None:
+            adoptable = state.environment == environment and bool(state.solved_from)
+            return [
+                (
+                    f"{lockfile.path.name} holds no lock for {environment}, only the untracked "
+                    f"{pixi.lock} does",
+                    install if adoptable else f"{install} --resolve",
+                )
+            ]
+        if (
+            pixi.lock.read_bytes() != solved.lock.encode("utf-8")
+            or state.solved_from != solved.solved_from
+        ):
+            return [(f"{pixi.lock} disagrees with {lockfile.path.name}", install)]
+        return []
 
     def fleet(self, setups: Mapping[str, HostSetup] | None = None) -> Section:
         """What compute this workspace can reach, and what stands between it and the rest.

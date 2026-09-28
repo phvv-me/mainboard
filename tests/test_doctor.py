@@ -15,6 +15,8 @@ from mainboard.doctor import Doctor, Section, Verdict
 from mainboard.durable import Every, Settler, Settling
 from mainboard.engines.compile import Provisioner
 from mainboard.engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER, CommandResult
+from mainboard.engines.compile.generated import GeneratedFiles
+from mainboard.engines.compile.lockfile import Lockfile, Solved
 from mainboard.engines.compile.state import SyncState
 from mainboard.staleness import Snapshot
 
@@ -133,8 +135,9 @@ def climbed(workspace: Path, stage: str) -> None:
     """Walk the workspace's generated tree up to `stage` and stop there.
 
     bare is a workspace nothing ever compiled. compiled has a manifest and a lock no digest
-    vouches for. solved records the current digests without an installed prefix. provisioned
-    installs `default` without recording what it was built from, blessed records those digests,
+    vouches for. solved records the current digests, in the state and the committed lock, without
+    an installed prefix. provisioned installs `default` without recording what it was built
+    from, blessed records those digests,
     whole does the same for `serving`, and damaged then takes an installed wheel's import roots
     away underneath pixi.
     """
@@ -173,6 +176,13 @@ def climbed(workspace: Path, stage: str) -> None:
             }
         )
         SyncState.path(directory).write_text(current.render(), encoding="utf-8")
+        committed = Solved(
+            solved_from=current.solved_from,
+            solved_by=PIXI_VERSION,
+            lock=provisioner.pixi_for(env).lock.read_bytes().decode(),
+        )
+        with GeneratedFiles(directory=provisioner.out).locked() as files:
+            Lockfile(workspace).put(files, env, committed)
 
     if stage == "solved":
         bless("default")
@@ -340,6 +350,7 @@ def test_a_row_carrying_several_findings_names_the_command_that_fixes_each(
     """
     climbed(workspace, "damaged")
     Provisioner(workspace, Board(workspace).manifest).pixi_for("default").lock.unlink()
+    Project().lock(workspace).unlink()
     found = Doctor(Board(workspace)).environment()
 
     assert found.verdict is Verdict.FAIL
@@ -350,6 +361,50 @@ def test_a_row_carrying_several_findings_names_the_command_that_fixes_each(
         found.fix
         == f"{Project().name} install default --resolve; {Project().name} install default"
     )
+
+
+@pytest.mark.parametrize(
+    ("drift", "fragment"),
+    [
+        pytest.param(
+            "uncommitted", "{lock} holds no lock for default, only the untracked", id="new"
+        ),
+        pytest.param("edited", "disagrees with {lock}", id="edited-cache"),
+        pytest.param("reblessed", "disagrees with {lock}", id="reblessed-state"),
+    ],
+)
+def test_a_cached_lock_the_committed_one_does_not_hold_is_a_finding_an_install_repairs(
+    workspace: Path, drift: str, fragment: str
+) -> None:
+    """The committed lock is the truth and the cache its copy, which an install puts back."""
+    climbed(workspace, "blessed")
+    provisioner = Provisioner(workspace, Board(workspace).manifest)
+    committed = Project().lock(workspace)
+    if drift == "uncommitted":
+        committed.unlink()
+    elif drift == "edited":
+        provisioner.pixi.lock.write_bytes(b"version: 7\n")
+    else:
+        state = SyncState.load(provisioner.environment_dir())
+        SyncState.path(provisioner.environment_dir()).write_text(
+            state.model_copy(update={"solved_from": "elsewhere"}).render(), encoding="utf-8"
+        )
+
+    found = Doctor(Board(workspace)).environment()
+
+    assert found.verdict is Verdict.FAIL
+    assert fragment.format(lock=committed.name) in found.detail
+    assert found.fix == f"{Project().name} install default"
+
+
+def test_a_committed_lock_not_yet_materialized_is_no_finding(workspace: Path) -> None:
+    """A fresh clone holds the committed lock and no cache; its first install writes the copy."""
+    climbed(workspace, "blessed")
+    Provisioner(workspace, Board(workspace).manifest).pixi.lock.unlink()
+
+    found = Doctor(Board(workspace)).environment()
+
+    assert found.verdict is Verdict.PASS
 
 
 def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
