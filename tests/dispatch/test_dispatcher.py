@@ -24,11 +24,12 @@ from mainboard.dispatch import (
 )
 from mainboard.dispatch import dispatcher as dispatch_module
 from mainboard.dispatch.agent import Agent
+from mainboard.dispatch.agent.program import CLOSURE
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.provenance import SourceTree
 from mainboard.dispatch.provenance import listing as source_listing
 from mainboard.dispatch.schedulers import HostUnreachable, registry
-from mainboard.dispatch.snapshots import CLOSURE, Snapshots
+from mainboard.dispatch.snapshots import Snapshots
 from mainboard.dispatch.state import Cache
 from mainboard.dispatch.vocabulary import POLL_SECONDS, JobState, Request, Resources
 from mainboard.manifest import Container, Defaults, HostProfile, QueuePolicy

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..core.errors import MissionError
 from . import vocabulary
+from .agent.program import CLOSURE
 from .backends.base import ProviderBackend
 from .dispatcher import Handle
 from .jobs import JobSpec
@@ -25,7 +26,7 @@ from .rentals import Rental, handoff
 from .schedulers.base import failure_reason
 from .shared import Watcher, announce, logger
 from .shells import PosixShell
-from .snapshots import CLOSURE, Snapshots
+from .snapshots import Snapshots
 from .sync import SyncLock
 from .targets import home_of, placed
 from .transport import SshTransport

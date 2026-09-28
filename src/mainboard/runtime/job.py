@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from patos import FrozenModel
 from pydantic import Field
 
-from ..engines.compile.prefixes import ACTIVATION, STAMP
+from ..core.project import Project
+from ..engines.compile.prefixes import ACTIVATION, STAMPED
 from .activation import Runtime, prepended
 from .entry import Refusal
 
@@ -72,7 +73,8 @@ class PrefixActivation(FrozenModel):
     @staticmethod
     def _stamped(prefix: Path) -> bool:
         try:
-            return (prefix / STAMP).read_text(encoding="utf-8").strip() == prefix.name
+            stamp = Project().marked(prefix, STAMPED)
+            return stamp.read_text(encoding="utf-8").strip() == prefix.name
         except OSError:
             return False
 

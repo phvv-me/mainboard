@@ -40,10 +40,13 @@ _WINDOWS_DIRS = ("", "Library/mingw-w64/bin", "Library/usr/bin", "Library/bin", 
 # The file extensions Windows runs by name.
 _RUNNABLE = (".exe", ".bat", ".cmd")
 
-# The generated PATH file on macOS and Linux, and the marked line that sources it.
-PATH_FILE = ".config/mainboard/path.sh"
-_BEGIN = "# >>> mainboard >>>"
-_END = "# <<< mainboard <<<"
+# The generated PATH file on macOS and Linux, and the marked line that sources it. Both keep the
+# legacy name on purpose: every startup file already sourcing it stays correct untouched, and a
+# block under any of the tool's names counts as present, so none is ever appended twice.
+PATH_FILE = f".config/{Project().package}/path.sh"
+_BEGIN = f"# >>> {Project().package} >>>"
+_END = f"# <<< {Project().package} <<<"
+_BEGINS = tuple(f"# >>> {name} >>>" for name in Project().names)
 _SOURCE = f'[ -f "$HOME/{PATH_FILE}" ] && . "$HOME/{PATH_FILE}"'
 
 # Which startup file each POSIX shell reads in every mode an agent starts it in.
@@ -318,7 +321,7 @@ def _sourced(startup: Path) -> bool:
         text = startup.read_text(encoding="utf-8")
     except FileNotFoundError:
         text = ""
-    if _BEGIN in text:
+    if any(begin in text for begin in _BEGINS):
         return False
     block = f"{_BEGIN}\n{_SOURCE}\n{_END}\n"
     startup.write_text(

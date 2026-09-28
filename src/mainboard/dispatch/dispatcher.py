@@ -24,6 +24,7 @@ from ..manifest.loading import load
 from ..runtime.job import ToolCall
 from . import vocabulary
 from .agent import Agent, Scope, SshLink
+from .agent.program import CLOSURE
 from .allocation import Allocation
 from .collection.collector import Collector
 from .jobs import JobSpec
@@ -32,7 +33,7 @@ from .provenance import Source, SourceTree
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
 from .shared import HandleId, Watcher, announce, db_file, logger, now, state_path, workspace
 from .shipment import Shipment
-from .snapshots import CLOSURE, Image, Mirrored, Sealed, Snapshots, writable
+from .snapshots import Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
 from .sync import CARD_LEASES, GitignoreFilter, SyncLock, denied, patterns
 from .transport import SshTransport

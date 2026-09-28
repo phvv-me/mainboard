@@ -8,12 +8,10 @@ import pytest
 from mainboard import Project
 from mainboard.dispatch import HostUnreachable
 from mainboard.dispatch.agent import Agent, AgentRefused, Rules, Scope
+from mainboard.dispatch.agent.program import CLOSURE, STAMP, WRAPPERS
 from mainboard.dispatch.provenance import Row, Status, blob_of
 from mainboard.dispatch.provenance import listing as listed
 from mainboard.dispatch.snapshots import (
-    CLOSURE,
-    STAMP,
-    WRAPPERS,
     Mirrored,
     Sealed,
     Snapshots,
@@ -496,6 +494,9 @@ def test_a_half_built_tree_waits_for_an_operator_rather_than_being_reused(
         ("../outside.py", "invalid closure path"),
         (".mainboard-jobs/job.sh", "reserved closure path"),
         (CLOSURE, "reserved closure path"),
+        # A tree's controls are recognized under every name, the one a newer release writes too.
+        (".mb-jobs/job.sh", "reserved closure path"),
+        (".mb-source", "reserved closure path"),
     ],
 )
 def test_a_listing_naming_a_path_outside_the_tree_or_its_controls_is_refused(

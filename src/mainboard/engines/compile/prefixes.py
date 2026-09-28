@@ -40,7 +40,9 @@ PREFIXES = "prefixes"
 KEEP = 2
 
 # A finished prefix's stamp naming its digest, so an interrupted build never passes as complete.
-STAMP = ".mainboard-prefix"
+# A marker file (`Project.marker`): written under the legacy name, read under any.
+STAMPED = "prefix"
+STAMP = Project().marker(STAMPED)
 
 ACTIVATION = "activate.sh"
 
@@ -138,7 +140,7 @@ class Prefixes:
         """Whether the environment `digest` names is finished and safe to activate."""
         target = self.path(digest)
         try:
-            stamped = (target / STAMP).read_text(encoding="utf-8").strip()
+            stamped = Project().marked(target, STAMPED).read_text(encoding="utf-8").strip()
         except FileNotFoundError:
             return False
         return stamped == digest and all(

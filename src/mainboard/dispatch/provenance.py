@@ -21,7 +21,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-_ARCHIVE_LISTING = ".mainboard-source-listing.tsv"
+# Written under the legacy name on purpose (`Project.marker` says why), read under any.
+_ARCHIVE_LISTING = Project().marker("source-listing.tsv")
 # How old a partial archive, or a temporary folder an older release archived in, must be before
 # it counts as left by a killed process rather than one still writing.
 _STALE_SECONDS = 86_400
@@ -151,7 +152,12 @@ class SourceTree:
         _swept(target.parent)
         if target.exists():
             with ZipFile(target) as archive:
-                if archive.read(_ARCHIVE_LISTING).decode() != manifest or any(
+                held = set(archive.namelist())
+                listed = next(
+                    (name for name in Project().markers("source-listing.tsv") if name in held),
+                    _ARCHIVE_LISTING,
+                )
+                if archive.read(listed).decode() != manifest or any(
                     hashlib.sha256(archive.read(row.path)).hexdigest() != row.blob for row in rows
                 ):
                     raise MissionError(f"source archive verification failed: {target}")

@@ -106,7 +106,15 @@ def test_archives_preserve_original_bytes_and_reject_corruption(lab: Lab) -> Non
     lab.write(Lab.JOB, "edited after archival\n")
     assert tree.archive(manifest) == archive
     with ZipFile(archive) as stored:
-        assert stored.read(Lab.JOB) == original
+        assert stored.namelist()[0] == ".mainboard-source-listing.tsv"
+        held = {name: stored.read(name) for name in stored.namelist()[1:]}
+        assert held[Lab.JOB] == original
+    # An archive a newer release listed under the current name verifies all the same.
+    with ZipFile(archive, "w") as stored:
+        stored.writestr(".mb-source-listing.tsv", manifest)
+        for name, payload in held.items():
+            stored.writestr(name, payload)
+    assert tree.archive(manifest) == archive
     with ZipFile(archive, "w") as stored:
         stored.writestr(".mainboard-source-listing.tsv", "wrong")
     with pytest.raises(MissionError, match="archive verification"):

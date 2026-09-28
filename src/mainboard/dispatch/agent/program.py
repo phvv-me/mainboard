@@ -30,10 +30,25 @@ if TYPE_CHECKING:
 # How much of a file is read or copied at a time, so no file ever has to fit in memory.
 CHUNK = 1 << 20
 
-# A pinned tree's own control files, which no closure may ship and no live path may replace.
-STAMP = ".mainboard-source"
-CLOSURE = ".mainboard-closure"
-WRAPPERS = ".mainboard-jobs"
+# The tool's names, primary first, and the legacy one every release has named its files by.
+# Spelled here because this module imports nothing beyond the standard library; `core.project`
+# derives the same names from pyproject.toml, and a test holds the two equal.
+NAMES = ("mb", "mainboard")
+LEGACY = "mainboard"
+
+
+def marked(suffix: str) -> tuple[str, ...]:
+    """A control file `.<name>-<suffix>` under every name, primary first."""
+    return tuple(f".{name}-{suffix}" for name in NAMES)
+
+
+# A pinned tree's own control files, which no closure may ship and no live path may replace. A
+# tree is read by whichever release a host runs, so each is written under the legacy name every
+# release reads (`Project.marker` says why) and recognized under any.
+STAMP = f".{LEGACY}-source"
+CLOSURE = f".{LEGACY}-closure"
+WRAPPERS = f".{LEGACY}-jobs"
+RESERVED = (*marked("source"), *marked("closure"), *marked("jobs"))
 
 # Whether this interpreter stands on Windows, read once so a test can stand in for either OS.
 WINDOWS = os.name == "nt"
@@ -150,6 +165,20 @@ def checked(relative: str) -> str:
 def native(root: str, relative: str) -> str:
     """`relative`, a forward-slash workspace path, as this OS spells it under `root`."""
     return os.path.join(root, *relative.split("/"))
+
+
+def reserved(relative: str) -> bool:
+    """Whether `relative` names one of a pinned tree's control files, under any of its names."""
+    wrappers = tuple(f"{name}/" for name in marked("jobs"))
+    return relative in RESERVED or relative.startswith(wrappers)
+
+
+def present(directory: str, names: Sequence[str], written: str) -> str:
+    """The first of `names` `directory` holds, else where `written`, its written name, would be."""
+    found = (os.path.join(directory, name) for name in names)
+    return next(
+        (path for path in found if os.path.lexists(path)), os.path.join(directory, written)
+    )
 
 
 def digest(path: str) -> str:
@@ -796,7 +825,7 @@ class Sealed:
     def verify(self, snap: str) -> None:
         """Check the frozen listing and every listed file's place and bytes."""
         real = os.path.realpath(snap)
-        for relative, blob in self.__rows(os.path.join(snap, CLOSURE)):
+        for relative, blob in self.__rows(present(snap, marked("closure"), CLOSURE)):
             for live in self.live:
                 if relative == live or relative.startswith(live + "/"):
                     raise Refusal(f"live path overlaps source: {live}")
@@ -828,7 +857,7 @@ class Sealed:
             relative = fields[0]
             if unsafe(relative):
                 raise Refusal(f"invalid closure path: {relative}")
-            if relative in (CLOSURE, STAMP, WRAPPERS) or relative.startswith(WRAPPERS + "/"):
+            if reserved(relative):
                 raise Refusal(f"reserved closure path: {relative}")
             yield relative, fields[1]
 
@@ -856,7 +885,7 @@ class Snapshot:
         """Build or verify the tree under the pin lock, and answer where it stands."""
         os.makedirs(self.base, exist_ok=True)
         with locked(os.path.join(self.base, ".pin.lock")):
-            if os.path.isfile(os.path.join(self.final, STAMP)):
+            if os.path.isfile(present(self.final, marked("source"), STAMP)):
                 self.__reuse()
             else:
                 self.__build()
@@ -881,7 +910,7 @@ class Snapshot:
                 shutil.rmtree(pending)
 
     def __reuse(self) -> None:
-        with open(os.path.join(self.final, STAMP), "rb") as stamp:
+        with open(present(self.final, marked("source"), STAMP), "rb") as stamp:
             if stamp.read() != self.spec["stamp"].encode("utf-8"):
                 raise Refusal("snapshot stamp mismatch")
         self.image.verify(self.final)

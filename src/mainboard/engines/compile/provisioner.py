@@ -52,8 +52,9 @@ def environment_segment(environment: str) -> str:
     return environment
 
 
-# The lock and resolver inputs a shard's prefix was last synced with, so a sync happens once.
-_SYNCED = ".mainboard-synced"
+# The lock and resolver inputs a shard's prefix was last synced with, so a sync happens once:
+# the suffix of a marker file (`Project.marker`), written under the legacy name, read under any.
+_SYNCED = "synced"
 
 # Where each environment's shard lives; its depth is what compiled paths are written against.
 _ENVS = "envs"
@@ -285,14 +286,13 @@ class Provisioner:
         """
         if not shard.pixi.ready(env) or not shard.pixi.lock.is_file():
             return
-        stamp = shard.directory / _SYNCED
         current = f"{shard.compiler.resolution_digest()}:{shard.pixi.lock.stat().st_mtime_ns}"
         with suppress(OSError):
-            if stamp.read_text(encoding="utf-8") == current:
+            if Project().marked(shard.directory, _SYNCED).read_text(encoding="utf-8") == current:
                 return
         shard.pixi.sync(env)
         with suppress(OSError):
-            stamp.write_text(current, encoding="utf-8")
+            (shard.directory / Project().marker(_SYNCED)).write_text(current, encoding="utf-8")
 
     def binaries(self, env: str) -> list[Path]:
         """The existing second-stage binary directories in PATH order, never a dead entry."""

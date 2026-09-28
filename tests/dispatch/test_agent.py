@@ -14,6 +14,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from mainboard import Project
 from mainboard.dispatch.agent import Digests, Rules, Scope, program, walk
 from mainboard.dispatch.agent.program import DIRECTORY, FILE, LINK, Refusal, checked, containers
 from mainboard.dispatch.sync import compiled
@@ -64,6 +65,23 @@ def test_a_repository_starts_the_judgement_over_and_a_literal_path_names_one_tre
         "paths": [],
         "repositories": ["lib"],
     }
+
+
+def test_a_trees_control_file_is_written_under_the_legacy_name_and_found_under_any(
+    tmp_path: Path,
+) -> None:
+    """A tree is read by whichever release a host runs, so every release must find its stamp."""
+    # The agent a host runs imports nothing of the package, so it spells the names itself.
+    assert (Project().names, Project().package) == (program.NAMES, program.LEGACY)
+    assert program.STAMP == ".mainboard-source"
+    assert program.marked("source") == (".mb-source", ".mainboard-source")
+    written = str(tmp_path / program.STAMP)
+    assert program.present(str(tmp_path), program.marked("source"), program.STAMP) == written
+    (tmp_path / ".mb-source").write_text("key")
+    found = program.present(str(tmp_path), program.marked("source"), program.STAMP)
+    assert found == str(tmp_path / ".mb-source")
+    assert program.reserved(".mb-closure") and program.reserved(".mb-jobs/job-a.sh")
+    assert not program.reserved(".mb/envs")
 
 
 @pytest.mark.parametrize(

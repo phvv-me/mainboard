@@ -30,7 +30,7 @@ from patos import FrozenModel
 from ..core.project import Project
 from ..jobs.pins import staging
 from .agent import AgentRefused
-from .agent.program import CLOSURE, STAMP, WRAPPERS, ScopeSpec
+from .agent.program import WRAPPERS, ScopeSpec, reserved
 from .shared import state_dir
 
 if TYPE_CHECKING:
@@ -70,8 +70,8 @@ def _hex_sha256(text: str) -> bool:
 
 
 def _reserved(path: str) -> bool:
-    """Whether `path` would replace one of a snapshot's own control files."""
-    return path in (".", CLOSURE, STAMP, WRAPPERS) or path.startswith(WRAPPERS + "/")
+    """Whether `path` would replace one of a snapshot's own control files, under any name."""
+    return path == "." or reserved(path)
 
 
 class Image(ABC, FrozenModel):

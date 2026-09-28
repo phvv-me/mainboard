@@ -325,6 +325,10 @@ def test_posix_startup_files_are_wired_once_for_the_shells_present(home: Path) -
     assert (home / ".bashrc").read_text(encoding="utf-8").startswith(marked)
     assert (home / ".zshenv").read_text(encoding="utf-8") == "setopt nobeep\n"
     assert first.verdict == second.verdict == Verdict.PASS
+    # A block under the tool's current name counts as the line already being there.
+    (home / ".profile").write_text("# >>> mb >>>\n. elsewhere\n# <<< mb <<<\n", encoding="utf-8")
+    third = exposed(folders, "Darwin", home, Machine(), sh="/bin/sh").apply()
+    assert third.detail == f"the environment is on every shell's PATH{carried}"
 
 
 def test_a_machine_with_no_known_shell_still_gets_the_path_file(home: Path) -> None:
