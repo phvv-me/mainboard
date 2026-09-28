@@ -380,7 +380,7 @@ def test_a_finished_trial_settles_the_study_that_owns_it(
     seed("8", name=study_label(_STUDY))
     probing(board, monkeypatch, finishing())
     board.monitor().once()
-    assert StudyLedger(board.root, _STUDY).statuses() == {"8": "ok"}
+    assert StudyLedger(board.dispatcher.cache.session, _STUDY).statuses() == {"8": "ok"}
 
 
 def test_a_down_host_is_reported_once_and_its_jobs_left_for_the_next_pass(

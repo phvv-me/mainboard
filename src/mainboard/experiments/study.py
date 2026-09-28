@@ -1,18 +1,19 @@
 # A study is the identity above a trial: `run_id` names one config, `Study` the whole sweep.
-# `StudyLedger` is its append-only JSON-lines event log, the durable record `Fleet` writes and a
-# report reads back. Dispatch knows nothing about studies and this module never imports it.
+# `StudyLedger` is its append-only event log in the workspace lake's `studies`, the durable
+# record `Fleet` writes and a report reads back. Dispatch knows nothing about studies and this
+# module never imports it.
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from ..core.project import Project
 from .identity import study_id
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from pathlib import Path
+
+    from ..state.lake import Session
 
 
 def _now() -> str:
@@ -105,27 +106,22 @@ class Progress(FrozenModel):
 
 
 class StudyLedger:
-    """A study's append-only event log at `<root>/<state directory>/studies/<study_id>.jsonl`.
+    """A study's append-only event log, its rows of a workspace lake's `studies`.
 
     It mirrors what dispatch records per handle in its own `Cache`, so a study's shape reads
     back without touching dispatch.
     """
 
-    def __init__(self, root: Path, study_id: str) -> None:
-        self.path = Project().out(root) / "studies" / f"{study_id}.jsonl"
-
-    @classmethod
-    def at(cls, path: Path) -> StudyLedger:
-        """A ledger bound to an already-resolved `.jsonl` path, for a caller without the root."""
-        ledger = cls.__new__(cls)
-        ledger.path = path
-        return ledger
+    def __init__(self, session: Session, study_id: str) -> None:
+        self.session = session
+        self.study_id = study_id
 
     def append(self, event: StudyEvent) -> None:
-        """Append one event line, creating the ledger's directory on first use."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as opened:
-            opened.write(event.model_dump_json() + "\n")
+        """Append one event."""
+        self.session.append(
+            "studies",
+            [{"ts": event.at, "study": self.study_id, **event.model_dump(exclude={"at"})}],
+        )
 
     def created(self, study: Study) -> None:
         """Record `study`'s creation, carrying its human label for a later report."""
@@ -133,10 +129,17 @@ class StudyLedger:
 
     def events(self) -> list[StudyEvent]:
         """Every recorded event, oldest first."""
-        if not self.path.is_file():
-            return []
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        return [StudyEvent.model_validate_json(line) for line in lines if line]
+        rows = self.session.rows(
+            "SELECT ts, kind, handle, host, state, name FROM lake.studies WHERE study = ? "
+            "ORDER BY rowid",
+            [self.study_id],
+        )
+        return [
+            StudyEvent(
+                at=ts.isoformat(), kind=kind, handle=handle, host=host, state=state, name=name
+            )
+            for ts, kind, handle, host, state, name in rows
+        ]
 
     def progress(self) -> Progress:
         return Progress.fold(self.statuses())

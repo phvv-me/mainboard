@@ -6,14 +6,12 @@ from typing import TYPE_CHECKING, TypedDict
 
 from patos import FrozenModel
 
-from ..core.project import Project
 from . import reporting
 from .identity import labelled_study, study_label
 from .study import StudyLedger
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-    from pathlib import Path
     from typing import Unpack
 
     from ..board import Board, Run
@@ -61,12 +59,12 @@ class Fleet:
         self._origins: dict[Handle, Dispatched] = {}
 
     @classmethod
-    def overview(cls, board_root: Path, cache: Cache) -> list[StudySummary]:
-        """Every study under `board_root`, each summary joined against the dispatch `cache`.
+    def overview(cls, cache: Cache) -> list[StudySummary]:
+        """Every study `cache`'s lake records, each summary joined against its runs.
 
         A classmethod since listing studies needs no bound host.
         """
-        return reporting.overview(cache, Project().out(board_root) / "studies")
+        return reporting.overview(cache)
 
     def owner(self, handle: Handle) -> str:
         """The study id owning `handle`, empty when it belongs to no study.
@@ -84,7 +82,7 @@ class Fleet:
 
     def progress(self, study: Study) -> Progress:
         """`study`'s live trial counts, dispatch's resolved verdicts merged over its ledger."""
-        ledger = StudyLedger(self.board.root, study.study_id)
+        ledger = StudyLedger(self.board.dispatcher.cache.session, study.study_id)
         return reporting.study_progress(self.board.dispatcher.cache, ledger, study)
 
     def resubmit(
@@ -97,7 +95,7 @@ class Fleet:
 
         failed_handles: handles this same `Fleet` instance submitted.
         """
-        ledger = StudyLedger(self.board.root, study.study_id)
+        ledger = StudyLedger(self.board.dispatcher.cache.session, study.study_id)
         origins = (self._origins.pop(handle) for handle in failed_handles)
         return [
             self._dispatch(ledger, study, origin.host, origin.command, attempt=attempt)
@@ -114,11 +112,13 @@ class Fleet:
         for handle, verdict in verdicts.items():
             study_id = self.owner(handle)
             if study_id:
-                StudyLedger(self.board.root, study_id).verdict(handle.id, state=verdict.verdict)
+                StudyLedger(self.board.dispatcher.cache.session, study_id).verdict(
+                    handle.id, state=verdict.verdict
+                )
 
     def statuses(self, study: Study) -> dict[str, str]:
         """Every handle `study` has dispatched, folded to its current ledger status."""
-        return StudyLedger(self.board.root, study.study_id).statuses()
+        return StudyLedger(self.board.dispatcher.cache.session, study.study_id).statuses()
 
     def submit_all(
         self,
@@ -135,8 +135,8 @@ class Fleet:
 
         resource_overrides: forwarded to `Board.submit` for every trial.
         """
-        ledger = StudyLedger(self.board.root, study.study_id)
-        if not ledger.path.is_file():
+        ledger = StudyLedger(self.board.dispatcher.cache.session, study.study_id)
+        if not ledger.events():
             ledger.created(study)
         return [
             self._dispatch(ledger, study, host, command, **resource_overrides)

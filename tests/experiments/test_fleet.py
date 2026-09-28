@@ -30,7 +30,7 @@ def test_submit_all_dispatches_every_pair_under_the_studys_label_and_ledgers_eac
     ]
     assert fleet.statuses(study) == {job.handle.id: "submitted" for job in jobs}
     fleet.submit_all([("gold", "cmd3")], study=study)
-    events = StudyLedger(board.root, study.study_id).events()
+    events = StudyLedger(board.dispatcher.cache.session, study.study_id).events()
     assert [event.name for event in events if event.kind == "created"] == [study.name]
 
 
@@ -55,8 +55,9 @@ def test_settle_records_each_verdict_in_the_ledger_of_the_study_that_owns_its_ha
     board.dispatcher.cache.record(make_run(study_label(study.study_id), handle=owned.id))
     board.dispatcher.cache.record(make_run("ad-hoc", handle=unowned.id))
     Fleet(board).settle({owned: Verdict(verdict="ok"), unowned: Verdict(verdict="ok")})
-    assert StudyLedger(board.root, study.study_id).statuses() == {"77": "ok"}
-    assert [path.stem for path in board.root.glob("**/studies/*.jsonl")] == [study.study_id]
+    assert StudyLedger(board.dispatcher.cache.session, study.study_id).statuses() == {"77": "ok"}
+    recorded = board.dispatcher.cache.session.rows("SELECT DISTINCT study FROM lake.studies")
+    assert recorded == [(study.study_id,)]
 
 
 def test_owner_prefers_this_fleets_own_record_then_the_dispatch_label_then_nothing(
@@ -95,7 +96,7 @@ def test_a_fleet_reads_a_studys_live_progress_and_lists_every_study_under_the_bo
     label = study_label(study.study_id)
     board.dispatcher.cache.record(make_run(label, handle=job.handle.id, verdict="ok"))
     assert fleet.progress(study) == Progress(submitted=1, ok=1)
-    [summary] = Fleet.overview(board.root, board.dispatcher.cache)
+    [summary] = Fleet.overview(board.dispatcher.cache)
     assert (summary.study_id, summary.name, summary.counts) == (
         study.study_id,
         study.name,

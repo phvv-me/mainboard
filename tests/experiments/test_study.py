@@ -1,10 +1,5 @@
-from typing import TYPE_CHECKING
-
-from mainboard import Project
+from mainboard.dispatch.state import Cache
 from mainboard.experiments import Progress, Study, StudyEvent, StudyLedger
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_creating_a_study_derives_a_stable_identity_and_a_slug_from_its_experiment() -> None:
@@ -22,20 +17,17 @@ def test_creating_a_study_derives_a_stable_identity_and_a_slug_from_its_experime
     assert (declared.name, declared.hosts, declared.models) == ("my-run", ("gold",), ("m1",))
 
 
-def test_a_study_ledger_lives_under_the_generated_studies_dir_and_reopens_by_path(
-    tmp_path: Path,
-) -> None:
-    ledger = StudyLedger(tmp_path, "abc123def456")
-    assert ledger.path == tmp_path / Project().out_dirs[0] / "studies" / "abc123def456.jsonl"
-    ledger.submitted("H1", host="gold")
-    assert len(StudyLedger(tmp_path, "abc123def456").events()) == 1
-    assert len(StudyLedger.at(ledger.path).events()) == 1
+def test_a_study_ledger_reopens_by_its_id_and_holds_only_its_own_study() -> None:
+    session = Cache.private().session
+    StudyLedger(session, "abc123def456").submitted("H1", host="gold")
+    assert len(StudyLedger(session, "abc123def456").events()) == 1
+    assert StudyLedger(session, "another").events() == []
 
 
 def test_a_ledger_folds_each_handles_latest_event_into_its_status_and_progress(
-    tmp_path: Path, study: Study
+    study: Study,
 ) -> None:
-    ledger = StudyLedger(tmp_path, study.study_id)
+    ledger = StudyLedger(Cache.private().session, study.study_id)
     assert (ledger.events(), ledger.statuses(), ledger.progress()) == ([], {}, Progress())
     ledger.created(study)
     for handle in ("H1", "H2", "H3", "H4"):
@@ -43,7 +35,7 @@ def test_a_ledger_folds_each_handles_latest_event_into_its_status_and_progress(
     ledger.verdict("H1", state="ok")
     ledger.verdict("H2", state="failed")
     ledger.verdict("H3", state="vanished")
-    ledger.append(StudyEvent(at="t0", kind="other", handle="H5"))
+    ledger.append(StudyEvent(at="2026-01-01T00:00:00+00:00", kind="other", handle="H5"))
 
     events = ledger.events()
     assert [event.kind for event in events[:2]] == ["created", "submitted"]
@@ -51,11 +43,3 @@ def test_a_ledger_folds_each_handles_latest_event_into_its_status_and_progress(
     assert (events[1].handle, events[1].host) == ("H1", "gold")
     assert ledger.statuses() == {"H1": "ok", "H2": "failed", "H3": "vanished", "H4": "submitted"}
     assert ledger.progress() == Progress(submitted=4, running=1, ok=1, failed=2)
-
-
-def test_a_ledger_ignores_a_blank_line_left_in_its_append_only_file(tmp_path: Path) -> None:
-    ledger = StudyLedger(tmp_path, "sid")
-    ledger.submitted("H1", host="gold")
-    with ledger.path.open("a", encoding="utf-8") as opened:
-        opened.write("\n")
-    assert len(ledger.events()) == 1
