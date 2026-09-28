@@ -99,6 +99,23 @@ def test_a_workspace_keeps_the_state_directory_it_has_and_a_fresh_one_follows_it
     assert project.activation("serving", fresh) == ".mb/activate-serving.sh"
 
 
+def test_a_workspace_keeps_the_lock_it_has_and_a_fresh_one_takes_the_primary_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The lock is tracked and travels itself, so a legacy manifest does not pull it along."""
+    project = Project(names=_NAMES)
+    assert project.locks == ("mb.lock", "mainboard.lock")
+    (tmp_path / "mainboard.toml").write_text("")
+    assert project.lock(tmp_path) == tmp_path / "mb.lock"
+    monkeypatch.chdir(tmp_path)
+    assert project.lock() == tmp_path / "mb.lock"
+    (tmp_path / "mainboard.lock").write_text("")
+    assert project.lock(tmp_path) == tmp_path / "mainboard.lock"
+    (tmp_path / "mb.lock").write_text("")
+    with pytest.raises(MissionError, match=r"both mb\.lock and mainboard\.lock.*keep mb\.lock"):
+        project.lock(tmp_path)
+
+
 def test_a_variable_is_read_under_either_name_and_exported_under_both() -> None:
     """A job may import an older release than the one that dispatched it."""
     source = Project(names=_NAMES).variable("SOURCE")

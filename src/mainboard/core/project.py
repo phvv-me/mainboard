@@ -85,6 +85,11 @@ class Project(FrozenModel):
         return tuple(f".{name}" for name in self.names)
 
     @property
+    def locks(self) -> tuple[str, ...]:
+        """The committed lock filenames a workspace root may hold, primary first."""
+        return tuple(f"{name}.lock" for name in self.names)
+
+    @property
     def jobs_roots(self) -> tuple[str, ...]:
         """Where a dispatch target keeps the tool's code and state unless its profile says
         otherwise, primary first: one dedicated folder under the login home, never a human
@@ -130,6 +135,21 @@ class Project(FrozenModel):
         owner's call.
         """
         return self._declared(directory) or directory / self.manifests[0]
+
+    def lock(self, root: Path | None = None) -> Path:
+        """The committed lock at workspace `root` (the cwd's workspace), or where a new one goes.
+
+        The first name one already exists under, so a lock is never renamed behind its owner;
+        with none, the primary name even beside a legacy manifest. The state directory follows
+        its manifest only because it is ignored, so a clone or mirror must derive its name from
+        a file that travels; the lock is tracked and travels itself, and no older release reads
+        it under any name, so nothing argues for the legacy one.
+
+        Raises MissionError when `root` holds more than one.
+        """
+        here = root or self.workspace()
+        found = self._one(here, self.locks, "record one workspace's solves twice")
+        return found or here / self.locks[0]
 
     def out_dir(self, root: Path | None = None) -> str:
         """The generated-state directory's name at workspace `root` (the cwd's workspace).
@@ -202,10 +222,18 @@ class Project(FrozenModel):
 
     def _declared(self, directory: Path) -> Path | None:
         """The one manifest `directory` holds under any name, None when it holds none."""
-        found = [directory / name for name in self.manifests if (directory / name).is_file()]
+        return self._one(directory, self.manifests, "declare one workspace twice")
+
+    @staticmethod
+    def _one(directory: Path, names: tuple[str, ...], why: str) -> Path | None:
+        """The one file `directory` holds under any of `names`, None when it holds none.
+
+        why: what holding several would mean, for the refusal.
+        """
+        found = [directory / name for name in names if (directory / name).is_file()]
         if len(found) > 1:
             raise MissionError(
                 f"{directory} holds both {' and '.join(path.name for path in found)}, which "
-                f"declare one workspace twice; keep {found[0].name} and delete the other"
+                f"{why}; keep {found[0].name} and delete the other"
             )
         return found[0] if found else None
