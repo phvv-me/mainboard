@@ -1,15 +1,21 @@
 # The machines this workspace is holding and their host profiles. A held rental resolves under
-# `--on` like `gold`, but outlives no manifest, so its profile lives beside the dispatch state
-# (JSON, program to program) and the loader lays it over the declared hosts.
+# `--on` like `gold`, but outlives no manifest, so its profile lives in the workspace lake's
+# `holds_log` and the loader lays it over the declared hosts. A workspace with no lake yet holds
+# nothing, and reading its holds never creates one.
 
-import os
-from pathlib import Path
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from patos import FrozenModel
-from pydantic import AwareDatetime, TypeAdapter
+from pydantic import AwareDatetime
 
 from ..core.project import Project
 from .schema.host import HostProfile
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ..state.lake import Session
 
 
 class Held(FrozenModel):
@@ -32,22 +38,18 @@ class Held(FrozenModel):
     profile: HostProfile
 
 
-_LISTED = TypeAdapter(list[Held])
-
-
 class Holdings:
-    """The file of held machines inside one workspace's dispatch state."""
+    """The held machines of one workspace, the lake's `holds` view."""
 
     def __init__(self, root: Path) -> None:
-        self.path = Project().out(root) / "dispatch" / "holds.json"
+        self.root = root
 
     def read(self) -> dict[str, Held]:
-        """Every held machine by alias."""
-        try:
-            text = self.path.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        """Every held machine by alias, none in a workspace that has no lake yet."""
+        if not (Project().out(self.root) / "lake.sqlite").is_file():
             return {}
-        return {held.alias: held for held in _LISTED.validate_json(text)}
+        rows = self._session().rows("SELECT held FROM lake.holds ORDER BY alias")
+        return {held.alias: held for held in (Held.model_validate_json(row) for (row,) in rows)}
 
     def profiles(self) -> dict[str, HostProfile]:
         """The host profile of every held machine by alias."""
@@ -55,15 +57,18 @@ class Holdings:
 
     def save(self, held: Held) -> None:
         """Record `held`, replacing whatever was recorded under its alias."""
-        self._write({**self.read(), held.alias: held})
+        self._append(held.alias, held=held.model_dump_json())
 
     def drop(self, alias: str) -> None:
         """Forget `alias`, if held."""
-        self._write({name: held for name, held in self.read().items() if name != alias})
+        self._append(alias, dropped=True)
 
-    def _write(self, holdings: dict[str, Held]) -> None:
-        """Replace the file in one rename, so a reader never sees half of it."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        pending = self.path.with_suffix(".part")
-        pending.write_bytes(_LISTED.dump_json(list(holdings.values()), indent=2))
-        os.replace(pending, self.path)
+    def _append(self, alias: str, **fields: object) -> None:
+        self._session().append("holds_log", [{"ts": datetime.now(UTC), "alias": alias, **fields}])
+
+    def _session(self) -> Session:
+        """The workspace lake's shared session, imported here so loading a manifest in a
+        workspace holding nothing never loads the database engine."""
+        from ..state.lake import Lake
+
+        return Lake.at(self.root).session()

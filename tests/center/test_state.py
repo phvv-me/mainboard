@@ -28,6 +28,7 @@ from mainboard.core.section import Verdict
 from mainboard.manifest.held import Held, Holdings
 from mainboard.manifest.loading import load
 from mainboard.manifest.schema.host import HostProfile
+from mainboard.state.lake import Lake
 
 from ..strategies import WORDS
 
@@ -176,6 +177,8 @@ def ssh(home: Path, root: Path) -> Path:
     for public in ("id_bastion", "id_relay", "id_unrelated", "id_ed25519"):
         write(folder / f"{public}.pub", "PUBLIC")
     write(folder / "known_hosts", "gold ssh-ed25519 AAAA\n")
+    # A workspace holding a machine has a lake, made here since this one keeps legacy files too.
+    Lake.at(root).create()
     Holdings(root).save(
         Held(
             alias="rented",
