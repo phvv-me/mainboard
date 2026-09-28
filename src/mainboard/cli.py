@@ -24,7 +24,7 @@ from .core.errors import MissionError
 from .core.project import Project
 from .core.section import Section, Verdict, failed
 from .delimiter import Delimiter
-from .dispatch import vocabulary
+from .dispatch import keys, vocabulary
 from .dispatch.commandline import joined
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
@@ -419,6 +419,22 @@ def build(root: Path | None = None) -> App:
         """
         with progress(f"installing {env or 'the environment'}") as stage:
             board("local").install(env, resolve=resolve, profile=profile, watch=stage)
+
+    @app.command
+    def unlock(*hosts: str) -> None:
+        """Unlock each host's ssh key once, so every later connection this tool opens is silent.
+
+        Keeps one ssh-agent on a fixed socket beside the ssh config, started on demand and
+        outliving this process; every command this tool runs afterwards uses it. On Windows no ssh
+        can share a connection, so this is what makes a passphrase-protected host (miyabi-g)
+        reachable without a prompt per connection. Asks each key's passphrase once per boot.
+
+        hosts: the ssh aliases whose keys to add.
+        """
+        for host in hosts:
+            if status := keys.unlock(host):
+                raise MissionError(f"{host} still refuses a silent login (exit {status})")
+            print(f"{host}: reachable without a prompt")
 
     @app.command
     def activate(env: str = "default") -> None:
@@ -2092,6 +2108,7 @@ def main() -> None:
     _forget_openssh_descriptors()
     install_traceback()
     staleness.current()
+    keys.adopt()
     app = build()
     try:
         app(Delimiter(app).placed(sys.argv[1:]))

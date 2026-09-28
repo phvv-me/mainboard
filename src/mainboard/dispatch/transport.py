@@ -373,8 +373,12 @@ def _decoded(output: bytes | None) -> str:
 
 
 def _detail(stderr: str, returncode: int) -> str:
-    """The last thing ssh said, or its exit status when it said nothing."""
-    return stderr.strip().splitlines()[-1] if stderr.strip() else f"exit {returncode}"
+    """The last thing ssh said, or its exit status when it said nothing, with the fix for a key
+    the agent does not hold yet."""
+    said = stderr.strip().splitlines()[-1] if stderr.strip() else f"exit {returncode}"
+    if "permission denied (publickey" in said.lower():
+        said += "; unlock its key once with `mb unlock <host>`"
+    return said
 
 
 def is_transport_failure(retcode: int, stderr: str) -> bool:
