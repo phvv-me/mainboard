@@ -33,7 +33,7 @@ class JobSpec(FrozenModel):
     plan: names the host and the environment the job enters, carried whole so a job's prefix
         and environment can never disagree.
     root: the snapshot of the mirror this dispatch pinned, the job's tree on the host. Its
-        `.mainboard/` links back to the mirror, handing the job the mirror's environment while
+        state directory links back to the mirror, handing the job the mirror's environment while
         its code stays frozen.
     queue/select/gpus/account/mem_gb: PBS header values, ignored by a plain script.
     walltime: `HH:MM:SS` cap, empty for uncapped (a PBS render raises).
@@ -108,11 +108,12 @@ class JobSpec(FrozenModel):
                 "defaults before rendering"
             )
         record = shlex.quote(self.job(pbs=pbs).model_dump_json())
-        handover = f'PATH="{":".join(USER_BINS)}:$PATH" exec {Project().name} job {record}'
+        handover = f'PATH="{":".join(USER_BINS)}:$PATH" exec {Project().package} job {record}'
         lines = [
             "#!/bin/sh",
             *(self.directives(gpu_in_select=gpu_in_select) if pbs else ()),
-            f"# A {Project().name} job. The record below is what runs; this line hands it over.",
+            f"# A {Project().package} job. The record below is what runs; this line hands it "
+            "over.",
             handover,
         ]
         return "\n".join(lines) + "\n"

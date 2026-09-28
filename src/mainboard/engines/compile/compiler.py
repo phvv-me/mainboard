@@ -26,7 +26,7 @@ _UNSET_BAT_FILE = "unset.bat"
 
 
 class Compiler:
-    """Turns a manifest into the generated `.mainboard/` env, and says when that env is stale.
+    """Turns a manifest into the generated state directory's env, and says when that env is stale.
 
     It provisions nothing, so the same write runs under `Provisioner.activated`'s short lock and
     inside `provision`'s longer one.
@@ -93,7 +93,7 @@ class Compiler:
         Asked under the (reentrant) workspace-root lock the compile takes, since a compile landing
         between a solve and this read made the refusal name the command that had just succeeded.
         """
-        with GeneratedFiles(directory=self.root / Project().out_dir).locked():
+        with GeneratedFiles(directory=Project().out(self.root)).locked():
             state = SyncState.load(self.out)
             if not self.pixi.lock.exists():
                 return
@@ -187,7 +187,7 @@ class Compiler:
         project = Project()
         compiled = PixiManifest.from_manifest(
             self.manifest,
-            project_name=project.name,
+            project_name=project.package,
             environment=self.environment,
             generated_dir=self.generated_dir,
         ).to_toml()

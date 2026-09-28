@@ -23,8 +23,9 @@ _TOOL = Project().name
 # the workspace runner instead of imported.
 _COPIER = "copier"
 
-# The task rows a monorepo project's template writes for the root manifest to adopt.
-_TASKS = f"{_TOOL}.tasks.toml"
+# The task rows a monorepo project's template writes for the root manifest to adopt, under any
+# of the tool's names, since a template written for an older name keeps writing that one.
+_TASKS = tuple(f"{name}.tasks.toml" for name in Project().names)
 
 # The file that makes a directory a copier template.
 _MARKER = "copier.yml"
@@ -72,7 +73,8 @@ class Scaffold:
             if first is None:
                 raise MissionError(
                     f"this workspace declares no templates. Add a [templates] table to "
-                    f"{self.board.project.manifest}, or name one with --template."
+                    f"{self.board.project.manifest(self.board.root).name}, or name one with "
+                    "--template."
                 )
             return first
         known = declared.get(template) or next(
@@ -154,15 +156,16 @@ class Scaffold:
 
     def reported(self, slug: str, destination: Path) -> Scaffolded:
         """What the render produced, with the task rows read back for the caller to paste."""
-        rows = destination / _TASKS
-        try:
-            snippet = rows.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        rows = next(
+            (destination / name for name in _TASKS if (destination / name).is_file()), None
+        )
+        if rows is None:
             return Scaffolded(project=slug, path=str(destination))
+        snippet = rows.read_text(encoding="utf-8")
         return Scaffolded(
             project=slug,
             path=str(destination),
             tasks=str(rows),
-            paste=f"{self.board.root / self.board.project.manifest} [tasks]",
+            paste=f"{self.board.project.manifest(self.board.root)} [tasks]",
             snippet=snippet,
         )

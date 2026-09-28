@@ -9,7 +9,10 @@ from mainboard.lab.run import default_dataset_resolver
 def test_a_run_resolves_a_dataset_through_the_resolver_it_was_injected_with(
     context: Run, tmp_path: Path
 ) -> None:
-    assert default_dataset_resolver("org/dataset") == Path(Project().out_dir) / "data/org/dataset"
+    assert (
+        default_dataset_resolver("org/dataset")
+        == Path(Project().out_dir(Path.cwd())) / "data/org/dataset"
+    )
     assert context.dataset("org/dataset") == default_dataset_resolver("org/dataset")
     injected = Run(
         model_id="gpt2",

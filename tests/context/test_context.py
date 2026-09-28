@@ -25,7 +25,7 @@ _PROFILE = HostProfile(
 @pytest.fixture
 def resolver(workspace: Path) -> Resolver:
     """A resolver over the full-featured fixture workspace."""
-    return Resolver(load(workspace / Project().manifest))
+    return Resolver(load(Project().manifest(workspace)))
 
 
 def test_a_plan_resolves_where_and_how_one_command_runs(resolver: Resolver) -> None:
@@ -36,7 +36,7 @@ def test_a_plan_resolves_where_and_how_one_command_runs(resolver: Resolver) -> N
     assert miyabi.env == "default"
     assert miyabi.vars["cuda"] == "13.0"
     assert miyabi.prefix("/work/x/projects") == (
-        "/work/x/projects/.mainboard/envs/default/.pixi/envs/default"
+        f"/work/x/projects/{Project().out_dirs[0]}/envs/default/.pixi/envs/default"
     )
     assert not resolver.plan("miyabi-g", container="none").containerized
     assert resolver.plan("gold").env == "serving"

@@ -61,7 +61,7 @@ class TrialOutcome:
         payload: dict[str, JsonValue] = {
             "run_id": self.run_id,
             "outcome": str(self.verdict),
-            "producer": Project().name,
+            "producer": Project().package,
             **({"node": self.node} if self.node else {}),
             "gates": [
                 {"status": str(verdict.status), "reason": verdict.reason}
@@ -163,7 +163,9 @@ def runnable(
     """
     trial_id = config.run_id(model=model, lane=lane)
     run = Run(
-        model_id=model, config=config, artifact_dir=Path(Project().out_dir) / "runs" / trial_id
+        model_id=model,
+        config=config,
+        artifact_dir=Path(Project().out_dir(Path.cwd())) / "runs" / trial_id,
     )
     evidence: list[GateVerdict] = []
     for gate in experiment_cls.gates:

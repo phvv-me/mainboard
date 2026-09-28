@@ -9,7 +9,7 @@ from mainboard.core.membership import Membership
 
 from ..strategies import WORDS
 
-_MANIFEST = Project().manifest
+_MANIFEST = Project().manifests[0]
 
 
 def _project(directory: Path, marker: str) -> Path:
@@ -27,10 +27,12 @@ def test_members_are_the_matched_projects_no_exclusion_leaves_out(tmp_path: Path
     _project(tmp_path / "research" / "head", _MANIFEST)
     (tmp_path / "research" / "notes").mkdir()
     (tmp_path / "research" / "README.md").write_text("", encoding="utf-8")
-    membership = Membership(tmp_path, ["packages/*", "research/*", "!packages/retired"], _MANIFEST)
+    membership = Membership(
+        tmp_path, ["packages/*", "research/*", "!packages/retired"], (_MANIFEST,)
+    )
 
     assert membership.directories() == ["packages/lib", "research/head"]
-    assert "." not in Membership(tmp_path, ["**"], _MANIFEST).directories()
+    assert "." not in Membership(tmp_path, ["**"], (_MANIFEST,)).directories()
     assert membership.claims(tmp_path / "research" / "head")
     assert not membership.claims(tmp_path / "packages" / "retired")
     assert not membership.claims(tmp_path / "research" / "notes")
@@ -41,7 +43,7 @@ def test_members_are_the_matched_projects_no_exclusion_leaves_out(tmp_path: Path
 def test_every_listed_directory_claims_itself(names: list[str]) -> None:
     """What `directories` lists, `claims` agrees with, whatever the names."""
     root = Path(__file__).parent
-    membership = Membership(root, names, _MANIFEST)
+    membership = Membership(root, names, (_MANIFEST,))
     assert all(membership.claims(root / path) for path in membership.directories())
 
 
@@ -49,12 +51,12 @@ def test_declared_reads_only_the_workspace_members_and_refuses_broken_toml(
     tmp_path: Path,
 ) -> None:
     (tmp_path / _MANIFEST).write_text('[workspace]\nmembers = ["a"]\n', encoding="utf-8")
-    assert Membership.declared(tmp_path, _MANIFEST).included == ["a"]
+    assert Membership.declared(tmp_path / _MANIFEST, (_MANIFEST,)).included == ["a"]
     (tmp_path / _MANIFEST).write_text("[tasks]\n", encoding="utf-8")
-    assert Membership.declared(tmp_path, _MANIFEST).included == []
+    assert Membership.declared(tmp_path / _MANIFEST, (_MANIFEST,)).included == []
     (tmp_path / _MANIFEST).write_text("members = [", encoding="utf-8")
     with pytest.raises(MissionError, match="not valid TOML"):
-        Membership.declared(tmp_path, _MANIFEST)
+        Membership.declared(tmp_path / _MANIFEST, (_MANIFEST,))
 
 
 def test_inside_a_member_the_workspace_composing_it_is_the_root(tmp_path: Path) -> None:

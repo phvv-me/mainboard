@@ -318,7 +318,7 @@ class Board:
     @property
     def manifest(self) -> Manifest:
         """The loaded workspace manifest, shared across every `on` pivot."""
-        return self.once("manifest", lambda: load(self.root / self.project.manifest))
+        return self.once("manifest", lambda: load(self.project.manifest(self.root)))
 
     @property
     def resolver(self) -> Resolver:
@@ -511,7 +511,7 @@ class Board:
         A workspace vendoring the tool's source needs no version; one consuming it from an index
         names it like any other dependency, and a host with no vendored source installs that.
         """
-        declared = self.manifest.requirement(self.project.name)
+        declared = self.manifest.requirement(self.project.package)
         return declared.version if declared is not None else ""
 
     def fleet(self) -> Fleet:
@@ -583,7 +583,7 @@ class Board:
             env=plan.env,
             activate=activate,
             installer="in-place",
-            tool=version(self.project.name),
+            tool=version(self.project.package),
         )
 
     def interact(
@@ -640,8 +640,9 @@ class Board:
         staged = dialect.stage(plan, self.remote_root(), command=session, activate=False)
         if keep:
             # `new-session -A` attaches to the named session when it exists and only otherwise
-            # starts one, so the same verb both opens and returns to a held allocation.
-            held = f"{self.project.name}-{self.host}"
+            # starts one, so the same verb both opens and returns to a held allocation; named by
+            # the package, so a session held under an older release is still the one found.
+            held = f"{self.project.package}-{self.host}"
             staged = f"tmux new-session -A -s {shlex.quote(held)} {shlex.quote(staged)}"
         # A bounded transport suits a poll, not a session, so the user's ssh config owns this one.
         replace("ssh", dialect.session(self.host, staged))
@@ -766,9 +767,8 @@ class Board:
             return plan
         if recorded.capabilities is None:
             return plan
-        return plan.model_copy(
-            update={"profile": resolved_profile(plan.profile, recorded.capabilities)}
-        )
+        profile = resolved_profile(plan.profile, recorded.capabilities, recorded=recorded.root)
+        return plan.model_copy(update={"profile": profile})
 
     def receipts(self, stream: str) -> Bus:
         """Where one stream's events go: this workspace's own file, plus whatever it declared.
@@ -964,7 +964,7 @@ class Board:
 
         An editable install puts `src/` on `sys.path` when the package keeps its code there and
         the package directory otherwise, read off this workspace, which every mirror and
-        snapshot copies. An out-of-root path dependency is compiled at `.mainboard/vendor/<dist>`
+        snapshot copies. An out-of-root path dependency is compiled at `<state>/vendor/<dist>`
         (see `engines.compile.vendor`), inside the root, so it arrives here with the rest.
         """
         where = Provisioner(self.root, self.manifest).environment_dir(plan.env)
@@ -972,7 +972,7 @@ class Board:
             compiled = (where / MANIFEST).read_text(encoding="utf-8")
         except OSError:
             return ()
-        packages = self_installed(compiled, generated_dir=environment_shard(plan.env))
+        packages = self_installed(compiled, generated_dir=environment_shard(plan.env, self.root))
         return tuple(
             f"{package}/src".lstrip("/") if (self.root / package / "src").is_dir() else package
             for package in packages
@@ -996,7 +996,7 @@ class Board:
         except MissionError as unbuilt:
             logger.warning("dispatching without an addressed environment: %s", unbuilt)
             return ""
-        return prefix_path(root, plan.env, digest)
+        return prefix_path(root, plan.env, digest, out=Project().out_dir())
 
     def resources(
         self,

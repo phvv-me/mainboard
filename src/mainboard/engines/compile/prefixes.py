@@ -49,12 +49,14 @@ MANIFEST = "pixi.toml"
 LOCK = "pixi.lock"
 
 
-def prefix_path(root: str, environment: str, digest: str) -> str:
+def prefix_path(root: str, environment: str, digest: str, *, out: str) -> str:
     """Where the environment `digest` (from `digest_of`) lives under `root`, on any machine.
 
     Path arithmetic alone, so a dispatch can pin it before the host has been asked anything.
+
+    out: the workspace's state directory name, the center's own for a host's mirror of it.
     """
-    return f"{root}/{Project().out_dir}/{PREFIXES}/{environment}/{digest}"
+    return f"{root}/{out}/{PREFIXES}/{environment}/{digest}"
 
 
 def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
@@ -68,7 +70,7 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
     source: a directory named after its environment, holding `pixi.toml` and `pixi.lock`.
     modules: the target host's declared module stack, in activation order.
     """
-    shard = environment_shard(source.name)
+    shard = environment_shard(source.name, root=source.parents[2])
     state = SyncState.load(source)
     # The machine's own path flavor; `normalized` matches its forward-slash spelling.
     root = PurePath(state.compiled_at or _standing(source, shard))
@@ -125,11 +127,12 @@ class Prefixes:
 
     @property
     def base(self) -> Path:
-        return Path(prefix_path(str(self.root), self.environment, "")).parent
+        return self.path("").parent
 
     def path(self, digest: str) -> Path:
         """Where the environment `digest` names is built, whether or not it has been yet."""
-        return Path(prefix_path(str(self.root), self.environment, digest))
+        out = Project().out_dir(self.root)
+        return Path(prefix_path(str(self.root), self.environment, digest, out=out))
 
     def built(self, digest: str) -> bool:
         """Whether the environment `digest` names is finished and safe to activate."""
@@ -193,7 +196,7 @@ class Prefixes:
         which outlives every pruned pinned tree a shared prefix serves, so an editable follows
         the mirror rather than the snapshot. Only the copy is rewritten, never the digested source.
         """
-        shard = environment_shard(self.environment)
+        shard = environment_shard(self.environment, root=self.root)
         for entry in (*GeneratedFiles(directory=source).inputs, SyncState.path(source)):
             text = entry.read_text(encoding="utf-8")
             files.write(target / entry.name, anchored(text, root=self.root, generated_dir=shard))
@@ -204,12 +207,13 @@ class Prefixes:
         Read off the trees, which queued jobs actually name, not the run registry.
         """
         found: set[str] = set()
-        for link in sources.glob(f"*/{Project().out_dir}/envs/*/.pixi"):
-            try:
-                resolved = link.readlink()
-            except OSError:
-                continue
-            found.add(resolved.parent.name)
+        for out in Project().out_dirs:
+            for link in sources.glob(f"*/{out}/envs/*/.pixi"):
+                try:
+                    resolved = link.readlink()
+                except OSError:
+                    continue
+                found.add(resolved.parent.name)
         return found
 
     def prune(self, *, live: Collection[str]) -> list[str]:

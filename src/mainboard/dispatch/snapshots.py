@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.project import Project
-from ..jobs.pins import STAGING as PINS
+from ..jobs.pins import staging
 from .agent import AgentRefused
 from .agent.program import CLOSURE, STAMP, WRAPPERS, ScopeSpec
 from .shared import state_dir
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from .agent.program import ImageSpec
 
 # Under the state directory every transfer excludes, so a sync neither ships nor prunes one.
-SOURCES = f"{state_dir()}/sources"
+SOURCES = "sources"
 
 
 def stamped(key: str, *, commit: str, digest: str) -> str:
@@ -129,13 +129,13 @@ class Sealed(Image):
             "digest": digest,
             "needs": live[: len(self.needs)],
             "pins": list(self.pins),
-            "staging": PINS,
+            "staging": staging(),
             "live": live,
         }
 
 
 class Snapshots:
-    """The pinned source trees on one host, under `{root}/{STATE_DIR}/sources/`.
+    """The pinned source trees on one host, under `{root}/{state_dir()}/sources/`.
 
     Source files share inodes with the mirror; directories and frozen metadata add storage.
     Hardlinking also makes the pin correct: the mirror replaces a changed file by renaming a new
@@ -152,7 +152,7 @@ class Snapshots:
 
     @property
     def base(self) -> str:
-        return f"{self.root}/{SOURCES}"
+        return f"{self.root}/{state_dir()}/{SOURCES}"
 
     def path(self, key: str) -> str:
         """Where `key` is pinned, materialised or not: pure arithmetic, because a dispatch renders
@@ -222,7 +222,7 @@ class Snapshots:
                         "base": self.base,
                         "key": key,
                         "stamp": stamped(key, commit=commit, digest=digest),
-                        "out": Project().out_dir,
+                        "out": Project().out_dir(),
                         "prefix": prefix,
                         "environment": environment,
                         "results": relative,

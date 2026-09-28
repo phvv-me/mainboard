@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 from plumbum import local
 
-from mainboard import Board, ExecutionPlan, MissionError
+from mainboard import Board, ExecutionPlan, MissionError, Project
 from mainboard.dispatch import (
     Dispatcher,
     GitignoreFilter,
@@ -65,7 +65,7 @@ def shipped(dispatcher: Dispatcher, command: str, imports: tuple[str, ...] = ())
 def submitted(backend: RecordingScheduler, workdir: Path) -> tuple[str, Job]:
     """The pinned root the one submission ran in, and the job its staged script hands over."""
     [(root, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    staged = workdir / ".mainboard/dispatch/jobs" / Path(script).name
+    staged = workdir / f"{Project().out_dirs[0]}/dispatch/jobs" / Path(script).name
     return root, recorded(staged.read_text(encoding="utf-8"))
 
 
@@ -73,7 +73,10 @@ def compiled(workdir: Path) -> tuple[str, str]:
     """A workspace with `src/run.py` and a compiled manifest and lock, the pair it returns."""
     (workdir / "src").mkdir()
     (workdir / "src/run.py").write_text("print(1)")
-    group = (".mainboard/envs/default/pixi.toml", ".mainboard/envs/default/pixi.lock")
+    group = (
+        f"{Project().out_dirs[0]}/envs/default/pixi.toml",
+        f"{Project().out_dirs[0]}/envs/default/pixi.lock",
+    )
     (workdir / group[0]).parent.mkdir(parents=True)
     for path, text in zip(group, "xy", strict=True):
         (workdir / path).write_text(text)
@@ -214,7 +217,8 @@ def test_run_renders_a_job_script_ships_it_and_hands_back_a_pollable_handle(
     db8171ec0bd191b2, and every job of the wave died at environment prime.
     """
     trio = tuple(
-        f".mainboard/envs/default/{name}" for name in ("pixi.toml", "pixi.lock", "state.toml")
+        f"{Project().out_dirs[0]}/envs/default/{name}"
+        for name in ("pixi.toml", "pixi.lock", "state.toml")
     )
     resources = Resources(gpus=4, walltime="01:00:00", queue="gen-S", mem_gb=240)
     handle = dispatcher.run(
@@ -255,13 +259,13 @@ def test_run_renders_the_job_script_against_the_plans_own_environment(
     # symlink back to the mirror, so it gets the mirror's environment out of a tree whose code
     # no later sync can rewrite.
     pinned = dispatcher.pinned("/repo", source=dispatcher.source())
-    assert pinned.startswith("/repo/.mainboard/dispatch/sources/")
+    assert pinned.startswith(f"/repo/{Project().out_dirs[0]}/dispatch/sources/")
     assert job.activation == WorkspaceActivation(
-        script=f"{pinned}/.mainboard/activate-serving.sh",
-        prefix=f"{pinned}/.mainboard/envs/serving/.pixi/envs/serving",
+        script=f"{pinned}/{Project().out_dirs[0]}/activate-serving.sh",
+        prefix=f"{pinned}/{Project().out_dirs[0]}/envs/serving/.pixi/envs/serving",
         refusal=job.activation.refusal,
     )
-    assert "mainboard setup gold --env serving" in job.activation.refusal
+    assert f"{Project().name} setup gold --env serving" in job.activation.refusal
 
 
 def test_run_on_a_pbs_host_with_no_resolved_walltime_fails_before_any_sync(
@@ -337,7 +341,7 @@ def test_a_direct_script_is_recorded_staged_quoted_and_by_content_identity_witho
     assert run.source == f"sha256-{run.digest}"
     [(_, prepared, submitted_args)] = [call for name, call in backend.calls if name == "submit"]
     assert Snapshots.script(run.script) == prepared
-    assert run.script.startswith(".mainboard/dispatch/jobs/")
+    assert run.script.startswith(f"{Project().out_dirs[0]}/dispatch/jobs/")
     assert (workdir / run.script).read_bytes() == script.read_bytes()
     assert submitted_args == args and run.args == "--label 'a b'"
 
@@ -436,7 +440,7 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     """
     machine = machine_with()
     monkeypatch.setattr(dispatch_module, "connection", lambda host: machine)
-    prefix = "/repo/.mainboard/prefixes/default/abcd1234"
+    prefix = f"/repo/{Project().out_dirs[0]}/prefixes/default/abcd1234"
     announced: list[str] = []
     dispatcher.run(
         plan(),
@@ -448,7 +452,7 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     )
     root, job = submitted(backend, workdir)
     # Nothing in the job asks pixi to reconcile anything, which made a shared prefix a race.
-    artifact = f"{root}/.mainboard/envs/default"
+    artifact = f"{root}/{Project().out_dirs[0]}/envs/default"
     assert job.provide == ToolCall(
         args=("provide", "default", "--source", artifact, "--expect", "abcd1234"), cwd="/repo"
     )
@@ -464,7 +468,7 @@ def test_every_job_activates_the_addressed_environment_its_own_tree_names(
     [asked] = [line for line in machine.lines if "provide" in line]
     assert asked.startswith("cd /repo && ")
     assert asked.endswith(
-        f"mainboard provide default --source {artifact} --expect abcd1234 >/dev/null"
+        f"{Project().package} provide default --source {artifact} --expect abcd1234 >/dev/null"
     )
     assert f"built default on gold for {root}" in announced
 
@@ -479,7 +483,7 @@ def test_a_job_imports_the_tree_it_was_pinned_to_and_never_the_mirror(
     job freezes it instead: the pinned tree's import roots go on `PYTHONPATH` ahead of anything
     the environment adds, and nothing the submitting shell exported survives.
     """
-    imports = ("src", "packages/lab-core/src", ".mainboard/vendor/sample-lib/src")
+    imports = ("src", "packages/lab-core/src", f"{Project().out_dirs[0]}/vendor/sample-lib/src")
     dispatcher.run(
         plan(),
         shipped(dispatcher, "python -m foo", imports=imports),
@@ -499,8 +503,8 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     """The listing rides beside the script, the pin copies what it names, the job reads it."""
     (workdir / "a").mkdir()
     (workdir / "a/run.py").write_text("pass")
-    (workdir / "mainboard.toml").write_text("")
-    captured, rows = SourceTree(workdir).seal(["a/run.py", "mainboard.toml"])
+    (Project().manifest(workdir)).write_text("")
+    captured, rows = SourceTree(workdir).seal(["a/run.py", Project().manifests[0]])
     sealed = Shipment(
         command="python -m mainboard.jobs.call a/run.py::app -- --x 1",
         spelling="a/run.py::app --x 1",
@@ -516,11 +520,11 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
         plan(), sealed, root="/repo", resources=Resources(), fetch="a/evidence"
     )
     [(pinned, script, _args)] = [call for name, call in backend.calls if name == "submit"]
-    listing = f".mainboard/dispatch/jobs/{sealed.listing_name}"
+    listing = f"{Project().out_dirs[0]}/dispatch/jobs/{sealed.listing_name}"
     assert (workdir / listing).read_text(encoding="utf-8") == sealed.listing
     [(staged, *carried)] = dispatcher.shipped
     assert Snapshots.script(staged) == script
-    assert carried == [listing, "a/run.py", "mainboard.toml"]
+    assert carried == [listing, "a/run.py", Project().manifests[0]]
     # Data resident only on the host must not become a required local transfer. The
     # snapshot still refuses an absent mirror need before the scheduler sees a job.
     assert ["data/corpus"] not in dispatcher.required[0]
@@ -563,7 +567,7 @@ def test_a_failed_prefix_build_prevents_scheduler_submission(
             shipped(dispatcher, "python -m foo"),
             root="/repo",
             resources=Resources(),
-            prefix="/repo/.mainboard/prefixes/default/abcd1234",
+            prefix=f"/repo/{Project().out_dirs[0]}/prefixes/default/abcd1234",
         )
     assert not any(name == "submit" for name, _ in backend.calls)
 
@@ -572,7 +576,7 @@ def test_source_identity_is_read_once_for_script_and_snapshot(
     dispatcher: Dispatcher, backend: RecordingScheduler, workdir: Path
 ) -> None:
     shipment = shipped(dispatcher, "python -m foo")
-    (workdir / "mainboard.toml").write_text("# later edit")
+    (Project().manifest(workdir)).write_text("# later edit")
     dispatcher.run(plan(), shipment, root="/repo", resources=Resources())
     root, job = submitted(backend, workdir)
     assert root.endswith(shipment.source.key) and job.root == root
@@ -587,7 +591,7 @@ def test_equal_source_reuses_snapshot_and_changed_bytes_get_a_new_one(
     first = dispatcher.pinned("/repo", source=dispatcher.source())
     assert "/sources/sha256-" in first
     assert dispatcher.pinned("/repo", source=dispatcher.source()) == first
-    (workdir / "mainboard.toml").write_text("# changed")
+    (Project().manifest(workdir)).write_text("# changed")
     assert dispatcher.pinned("/repo", source=dispatcher.source()) != first
 
 
@@ -617,7 +621,7 @@ def test_submit_refuses_a_broken_environment_and_names_the_host_a_scheduler_reje
         "connection",
         lambda host: machine_with(rules=[("job --help", 1, 'Error: Unknown command "job"')]),
     )
-    with pytest.raises(SystemExit, match=r"cannot run a job .*`mainboard setup gold`"):
+    with pytest.raises(SystemExit, match=rf"cannot run a job .*`{Project().name} setup gold`"):
         dispatcher.submit(plan(), "/repo", script="train.sh", args=(), resources=Resources())
 
 
@@ -689,7 +693,7 @@ def test_fetch_pulls_the_recorded_path_back_into_its_own_parent_directory(
     fetch_path: str,
 ) -> None:
     """The results land under the workspace, wherever the command that pulls them was typed."""
-    (workdir / "mainboard.toml").write_text(
+    (Project().manifest(workdir)).write_text(
         "[workspace]\nname = 'test'\n[hosts.gold]\npython = 'remote-python'\n"
     )
     pulled = []
@@ -709,7 +713,7 @@ def test_a_collection_that_could_not_be_trusted_is_refused_naming_the_path_and_h
     dispatcher: Dispatcher, workdir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A conflict, a failed stream or a torn archive all end the fetch with one mission error."""
-    (workdir / "mainboard.toml").write_text("[workspace]\nname = 'test'\n[hosts.gold]\n")
+    (Project().manifest(workdir)).write_text("[workspace]\nname = 'test'\n[hosts.gold]\n")
 
     def conflicting(self: dispatch_module.Collector, host: str, **_: str) -> int:
         raise ValueError("conflicting collected evidence, local copy preserved: out/a")
@@ -725,7 +729,7 @@ def test_a_rendered_and_a_staged_script_are_both_content_addressed(
     """Repeated runs reuse the file instead of growing the jobs directory unboundedly."""
     spec = JobSpec(cmd="python -m foo", plan=plan(), root="/repo")
     rendered = dispatcher.write_job_script(spec, pbs=False)
-    assert rendered.startswith(".mainboard/dispatch/jobs/")
+    assert rendered.startswith(f"{Project().out_dirs[0]}/dispatch/jobs/")
     assert dispatcher.write_job_script(spec, pbs=False) == rendered
     assert dispatcher._prepare_script("job") == ("job", ())  # ruff:ignore[private-member-access]  reason=unit-tests the module-private staging helper since=2026-08-16
     external = workdir.parent / "external.sh"
@@ -912,7 +916,9 @@ def test_mirror_ships_a_required_group_by_name_or_refuses_an_incomplete_one(
     """The compiled artifact must ride the mirror whole, since a half lock installs nothing."""
     group = compiled(workdir)
     with pytest.raises(LookupError, match="incomplete"):
-        standalone.mirror(plan(), "/repo", required=[(*group, ".mainboard/envs/default/gone")])
+        standalone.mirror(
+            plan(), "/repo", required=[(*group, f"{Project().out_dirs[0]}/envs/default/gone")]
+        )
     standalone.mirror(plan(), "/repo", required=[group], extra=[group[0]])
     [push] = pushes
     assert push["named"] == list(group)
@@ -959,12 +965,12 @@ def test_a_narrow_host_mirrors_named_job_files_without_touching_other_projects(
         (workdir / path).write_text("local\n")
         (landed / path).parent.mkdir(parents=True, exist_ok=True)
         (landed / path).write_text("remote\n")
-    (workdir / "mainboard.toml").write_text("[workspace]\nname = 'lab'\n")
+    (Project().manifest(workdir)).write_text("[workspace]\nname = 'lab'\n")
     base = HostProfile(sync={"include": ["research", "packages"]})
-    profile = HostProfile(sync={"include": ["mainboard.toml"]}).inheriting(base)
+    profile = HostProfile(sync={"include": [Project().manifests[0]]}).inheriting(base)
     standalone.mirror(plan(profile=profile), str(landed), extra=[job])
     assert (landed / job).read_text() == "local\n"
-    assert (landed / "mainboard.toml").is_file()
+    assert (Project().manifest(landed)).is_file()
     assert all((landed / path).read_text() == "remote\n" for path in untouched)
 
 
@@ -980,7 +986,7 @@ def test_a_real_mirror_carries_the_staged_job_script_past_a_required_group(
     or directory`, exit 127 (vast 49865738, 2026-09-04).
     """
     group = compiled(workdir)
-    script = ".mainboard/dispatch/jobs/job-abc.sh"
+    script = f"{Project().out_dirs[0]}/dispatch/jobs/job-abc.sh"
     (workdir / script).parent.mkdir(parents=True)
     (workdir / script).write_text("#!/bin/bash\nexit 0\n")
     landed = workdir / "host-side"
@@ -1008,22 +1014,22 @@ def test_a_real_mirror_carries_a_vendored_dependency_as_the_files_its_links_refe
     (source / "src/sample_lib").mkdir(parents=True)
     (source / "src/sample_lib/__init__.py").write_text("SHADE = 'ai'\n")
     (source / "pyproject.toml").write_text('[project]\nname = "sample-lib"\n')
-    vendored = workdir / ".mainboard/vendor/sample-lib"
+    vendored = workdir / f"{Project().out_dirs[0]}/vendor/sample-lib"
     vendored.mkdir(parents=True)
     for entry in sorted(source.iterdir()):
         (vendored / entry.name).symlink_to(entry)
     (source / "src/sample_lib/__pycache__").mkdir()
     (source / "src/sample_lib/__pycache__/stale.pyc").write_text("noise")
     landed = workdir / "host-side"
-    (landed / ".mainboard/vendor/retired").mkdir(parents=True)
+    (landed / f"{Project().out_dirs[0]}/vendor/retired").mkdir(parents=True)
     standalone.mirror(plan(), str(landed))
-    arrived = landed / ".mainboard/vendor/sample-lib"
+    arrived = landed / f"{Project().out_dirs[0]}/vendor/sample-lib"
     assert arrived.is_dir() and not arrived.is_symlink()
     assert not (arrived / "src").is_symlink()
     assert (arrived / "src/sample_lib/__init__.py").read_text() == "SHADE = 'ai'\n"
     assert (arrived / "pyproject.toml").is_file()
     assert not (arrived / "src/sample_lib/__pycache__").exists()
-    assert not (landed / ".mainboard/vendor/retired").exists()
+    assert not (landed / f"{Project().out_dirs[0]}/vendor/retired").exists()
 
 
 @setgid_inherits
@@ -1051,7 +1057,11 @@ def test_a_real_mirror_never_overrides_the_hosts_setgid_group(
     os.chown(landed, -1, project_gid)
     landed.chmod(landed.stat().st_mode | stat.S_ISGID)
     standalone.mirror(plan(), str(landed), required=[group])
-    for made in (".mainboard", ".mainboard/envs", ".mainboard/envs/default"):
+    for made in (
+        Project().out_dirs[0],
+        f"{Project().out_dirs[0]}/envs",
+        f"{Project().out_dirs[0]}/envs/default",
+    ):
         found = (landed / made).stat()
         assert found.st_gid == project_gid, (
             f"{made} landed on group {found.st_gid}, not {project_gid}"

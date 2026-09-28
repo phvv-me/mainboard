@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.dispatch import Facts
 from mainboard.dispatch import onboard as onboard_module
 from mainboard.dispatch.onboard import Bootstrap, Onboarding, installers
@@ -27,7 +27,7 @@ from mainboard.manifest import HostProfile
 from .support import Naps, RecordingTransport, cache, machine_with, plan
 from .test_onboard import FakeDispatcher
 
-_ROOT = "C:/Users/me/.mainboard-jobs"
+_ROOT = f"C:/Users/me/{Project().jobs_roots[0].removeprefix('~/')}"
 _FACTS_JSON = '{"schema_version": 1, "hostname": "homelab", "cpu_logical_cores": 16}'
 _WINDOWS_FACTS = Facts(
     name="homelab", home="C:/Users/me", platform="Windows AMD64", uv="C:/uv.exe"
@@ -70,12 +70,14 @@ def test_the_windows_stage_sets_location_and_path_and_hands_activation_to_the_ho
         in bare
     )
     assert bare.endswith("; uv --version; exit $LASTEXITCODE")
-    assert "mainboard run" not in bare
-    activated = shell.stage("mainboard facts --json", activate=True)
+    assert f"{Project().package} run" not in bare
+    activated = shell.stage(f"{Project().package} facts --json", activate=True)
     assert "$env:HF_HUB_OFFLINE = '1';" in activated
     assert "$start.FileName = 'mainboard'" in activated
     assert f"$start.WorkingDirectory = '{_ROOT}'" in activated
-    assert "$start.Arguments = 'run --env default -- mainboard facts --json'" in activated
+    assert (
+        f"$start.Arguments = 'run --env default -- {Project().package} facts --json'" in activated
+    )
     assert "$start.UseShellExecute = $false" in activated
     assert "$LASTEXITCODE = $process.ExitCode; exit $LASTEXITCODE" in activated
 
@@ -107,7 +109,7 @@ def test_the_windows_shell_runs_each_script_as_its_own_encoded_ssh_one_shot() ->
     assert not shell.ok("broken")
     with pytest.raises(MissionError, match="`broken` failed on 'homelab'"):
         shell.run("broken")
-    assert shell.proof == f"{_ROOT}/.mainboard/envs/default/.pixi/envs/default"
+    assert shell.proof == f"{_ROOT}/{Project().out_dirs[0]}/envs/default/.pixi/envs/default"
     assert shell.provisioned.startswith("if (Test-Path -LiteralPath '")
     assert shell.activation_record == ""
 
@@ -144,10 +146,10 @@ def test_the_posix_shell_keeps_its_bash_lines_and_closes_its_connection() -> Non
         assert shell.ok("command -v uv")
         assert host.lines[-1].startswith("cd /repo && export PATH=")
         assert host.calls[-1][:2] == ["bash", "-lc"]
-        assert shell.proof == "/repo/.mainboard/activate.sh"
-        assert shell.activation_record == "/repo/.mainboard/activate.sh"
-    assert shell.dialect.session("gold", "cd /x && mainboard shell")[3] == (
-        "bash -lc 'cd /x && mainboard shell'"
+        assert shell.proof == f"/repo/{Project().out_dirs[0]}/activate.sh"
+        assert shell.activation_record == f"/repo/{Project().out_dirs[0]}/activate.sh"
+    assert shell.dialect.session("gold", f"cd /x && {Project().package} shell")[3] == (
+        f"bash -lc 'cd /x && {Project().package} shell'"
     )
 
 
@@ -164,9 +166,9 @@ def test_the_windows_dialect_probes_files_and_opens_its_sessions_in_powershell()
         "if (Test-Path -LiteralPath 'C:/a b.txt' -PathType Leaf) { exit 0 } else { exit 1 }"
     )
     assert dialect.noop == "exit 0"
-    session = dialect.session("homelab", "mainboard shell")
+    session = dialect.session("homelab", f"{Project().package} shell")
     assert session[:5] == ["ssh", "-t", "homelab", "powershell", "-NoProfile"]
-    assert decoded(session) == "mainboard shell"
+    assert decoded(session) == f"{Project().package} shell"
 
 
 def test_a_foreground_command_is_handed_the_terminal_as_its_activated_line(
@@ -185,10 +187,10 @@ def test_a_foreground_command_is_handed_the_terminal_as_its_activated_line(
     monkeypatch.setattr("mainboard.dispatch.shells.subprocess.call", launch)
     posix = PosixShell(machine_with(), plan(), "/repo")
     windows = WindowsShell(windows_plan(), _ROOT, ssh=RecordingTransport())
-    assert posix.foreground("mainboard shell") == 3
-    assert windows.foreground("mainboard shell") == 3
-    assert launched[0] == ["-lc", posix.stage("mainboard shell", activate=True)]
-    assert decoded(launched[1]) == windows.stage("mainboard shell", activate=True)
+    assert posix.foreground(f"{Project().package} shell") == 3
+    assert windows.foreground(f"{Project().package} shell") == 3
+    assert launched[0] == ["-lc", posix.stage(f"{Project().package} shell", activate=True)]
+    assert decoded(launched[1]) == windows.stage(f"{Project().package} shell", activate=True)
 
 
 def test_a_windows_write_makes_its_directory_and_quotes_the_text_as_data() -> None:
@@ -248,11 +250,13 @@ def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
     assert transport.ran(
         "uv tool install --force --reinstall --python '>=3.14' --editable packages/mainboard"
     )
-    assert transport.ran("mainboard install default --profile homelab")
+    assert transport.ran(f"{Project().package} install default --profile homelab")
     assert transport.ran(
-        f"Test-Path -LiteralPath '{_ROOT}/.mainboard/envs/default/.pixi/envs/default'"
+        f"Test-Path -LiteralPath '{_ROOT}/{Project().out_dirs[0]}/envs/default/.pixi/envs/default'"
     )
-    assert transport.ran("$start.Arguments = 'run --env default -- mainboard facts --json'")
+    assert transport.ran(
+        f"$start.Arguments = 'run --env default -- {Project().package} facts --json'"
+    )
     assert not transport.ran("pueued -d")
     assert any("answers no pueue" in message for message in caplog.messages)
     assert (report.installer, report.activate, report.tool) == ("uv", "", "0.1.0")
@@ -265,7 +269,10 @@ def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
 def test_a_windows_host_that_left_no_prefix_behind_is_refused_by_name() -> None:
     transport = RecordingTransport(rules=[("Test-Path", 1, "")])
     shell = WindowsShell(windows_plan(), _ROOT, ssh=transport)
-    with pytest.raises(MissionError, match="has no C:/Users/me/.mainboard-jobs/.mainboard/envs"):
+    with pytest.raises(
+        MissionError,
+        match=f"has no {_ROOT}/{Project().out_dirs[0]}/envs",
+    ):
         Bootstrap(shell).environment()
 
 
@@ -293,7 +300,7 @@ class Holding(RecordingTransport):
         return answer
 
 
-_VERIFYING = "pid 7: mainboard center verify --json"
+_VERIFYING = f"pid 7: {Project().package} center verify --json"
 
 
 @pytest.mark.parametrize(

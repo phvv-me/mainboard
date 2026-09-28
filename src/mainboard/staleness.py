@@ -195,7 +195,7 @@ def say(line: str) -> None:
 
 def _refresh_log(source: Path | None) -> Path:
     """Durable deferred-update log under `source`'s workspace, the working directory's if None."""
-    return (source or Path.cwd()) / Project().out_dir / "self-update.log"
+    return Project().out(source or Path.cwd()) / "self-update.log"
 
 
 def check(package: Path | None = None) -> Snapshot:
@@ -212,7 +212,7 @@ def check(package: Path | None = None) -> Snapshot:
         requirement = next(
             entry
             for entry in declared["tool"]["requirements"]
-            if entry.get("name") == Project().name and "directory" in entry
+            if entry.get("name") == Project().package and "directory" in entry
         )
     except OSError, tomllib.TOMLDecodeError, KeyError, StopIteration:
         return Snapshot(installed=True, detail="the uv receipt names no source directory")
@@ -229,11 +229,11 @@ def check(package: Path | None = None) -> Snapshot:
         "tool",
         "install",
         "--reinstall-package",
-        Project().name,
+        Project().package,
         *(("--python", str(interpreter)) if interpreter else ()),
         "--from",
         f"{package}[{extras}]",
-        Project().name,
+        Project().package,
         "--force",
     )
     tree = digest(source)
@@ -261,7 +261,7 @@ def _durable_interpreter(declared: str | None) -> Path | None:
     if not declared:
         return None
     interpreter = Path(declared)
-    generated = {".mainboard", ".pixi"} & {part.casefold() for part in interpreter.parts}
+    generated = {*Project().out_dirs, ".pixi"} & {part.casefold() for part in interpreter.parts}
     return None if generated or not interpreter.is_file() else interpreter
 
 
@@ -288,7 +288,7 @@ def tool_root(package: Path) -> Path | None:
 
 def _marker(receipt: Path) -> str:
     """The identity of one install, so a reinstall invalidates what was recorded for the last."""
-    return f"{Project().name}:{receipt.stat().st_mtime_ns}"
+    return f"{Project().package}:{receipt.stat().st_mtime_ns}"
 
 
 def _recorded(state: Path, *, marker: str, current: str) -> str:

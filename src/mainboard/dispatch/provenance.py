@@ -102,7 +102,7 @@ class SourceTree:
         A dataset a trial reads is pinned through `needs` or `resources`, never archived as
         source; a host mirror still ships whatever its own sync include names.
         """
-        manifest = self.root / Project().manifest
+        manifest = Project().manifest(self.root)
         data = load(manifest).workspace.data if manifest.is_file() else DATA
         return self.filter.files(
             sorted(entry.name for entry in self.root.iterdir()), excluded=data
@@ -142,7 +142,7 @@ class SourceTree:
         leaves one partial its retry truncates, and archiving sweeps what is a day stale.
         """
         digest = hashlib.sha256(manifest.encode()).hexdigest()
-        target = self.root / Project().out_dir / "source-archives" / f"{digest}.zip"
+        target = Project().out(self.root) / "source-archives" / f"{digest}.zip"
         rows = [
             Row(path=p, blob=b, status=Status(s))
             for p, b, s in (line.split("\t") for line in manifest.splitlines())

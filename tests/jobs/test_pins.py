@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from mainboard.core.errors import MissionError
-from mainboard.jobs.pins import STAGING, Pin, hub_cache, split, stage
+from mainboard.jobs.pins import Pin, hub_cache, split, stage, staging
 
 
 def test_a_pin_is_spelled_repo_revision_and_file() -> None:
@@ -38,7 +38,7 @@ def test_staging_copies_a_cached_pin_under_the_workspace_and_names_a_missing_one
     root = tmp_path / "workspace"
     root.mkdir()
     staged = stage(("hf://o/n@r/tokenizer.json",), root, cache)
-    assert staged == (f"{STAGING}/models--o--n/snapshots/r/tokenizer.json",)
+    assert staged == (f"{staging(root)}/models--o--n/snapshots/r/tokenizer.json",)
     assert (root / staged[0]).read_text() == "{}"
     with pytest.raises(MissionError, match="hf download o/n other.json --revision r"):
         stage(("hf://o/n@r/other.json",), root, cache)

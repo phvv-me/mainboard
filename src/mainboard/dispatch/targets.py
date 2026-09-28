@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 # The user's ssh client config; its concrete `Host` aliases are dispatch targets.
 _SSH_CONFIG = Path.home() / ".ssh" / "config"
 
+# The tool's jobs folders under a login home, primary first, as the probes look for them.
+_FOLDERS = tuple(root.removeprefix("~/") for root in Project().jobs_roots)
+
 # Stock-tools capability probe printing `key=value` lines, run in a login shell so the HPC
 # scheduler is on PATH. A per-user engine is also looked for in its install directory, since a
 # non-interactive login shell often never reads the `.bashrc` line its installer appended.
@@ -39,9 +42,12 @@ _CAPABILITIES = "\n".join(
         'pixi=$(command -v pixi || ls "$HOME"/.pixi/bin/pixi 2>/dev/null)',
         'uv=$(command -v uv || ls "$HOME"/.local/bin/uv 2>/dev/null)',
         "platform=$(uname -sm)",
+        # The first of the tool's own jobs folders the home already holds, under any name.
+        f"jobs=$(for d in {' '.join(_FOLDERS)}; do"
+        ' [ -d "$HOME/$d" ] && { printf "~/%s" "$d"; break; }; done)',
         "printf 'home=%s\\nkind=%s\\ngpu=%s\\nmem=%s\\naccount=%s\\nqueue=%s\\n"
-        "pixi=%s\\nuv=%s\\nplatform=%s\\n'"
-        ' "$HOME" "$kind" "$gpu" "$mem" "$(id -gn)" "$queue" "$pixi" "$uv" "$platform"',
+        "pixi=%s\\nuv=%s\\nplatform=%s\\njobs=%s\\n'"
+        ' "$HOME" "$kind" "$gpu" "$mem" "$(id -gn)" "$queue" "$pixi" "$uv" "$platform" "$jobs"',
     )
 )
 
@@ -67,6 +73,9 @@ _WINDOWS_CAPABILITIES = "\n".join(
         '"pixi=$pixi"',
         '"uv=$uv"',
         '"platform=Windows $env:PROCESSOR_ARCHITECTURE"',
+        f"$jobs = @({','.join(f"'{folder}'" for folder in _FOLDERS)})"
+        " | Where-Object { Test-Path (Join-Path $HOME $_) } | Select-Object -First 1",
+        "\"jobs=$(if ($jobs) { '~/' + $jobs })\"",
     )
 )
 
@@ -89,6 +98,9 @@ class Facts(FrozenModel):
     sysmem_gb: system memory in GiB.
     platform: the host's `uname -sm` string.
     pixi / uv: the binary already on the host, empty when onboarding has to install one.
+    jobs: the tool's jobs folder the home already holds (`~/.mainboard-jobs`), under whichever
+        name the release that set it up used; empty when none, or from a probe (or a record of
+        one) that did not look.
     """
 
     name: str
@@ -102,6 +114,7 @@ class Facts(FrozenModel):
     platform: str = ""
     pixi: str = ""
     uv: str = ""
+    jobs: str = ""
 
     @classmethod
     def parsed(cls, name: str, text: str) -> Self:
@@ -121,6 +134,7 @@ class Facts(FrozenModel):
             platform=fields["platform"].strip(),
             pixi=fields["pixi"],
             uv=fields["uv"],
+            jobs=fields.get("jobs", ""),
         )
 
     @property
@@ -202,14 +216,30 @@ def rooted(profile: HostProfile, *, host: str) -> str:
     return profile.root
 
 
-def resolve(profile: HostProfile, facts: Facts) -> HostProfile:
+def resolve(profile: HostProfile, facts: Facts, *, recorded: str = "") -> HostProfile:
     """`profile` with the gaps it left open (`kind: "auto"`, a `~` root, `account`, `platform`)
     filled from `facts`; an explicit manifest value always wins, and the manifest schema owns
-    validation."""
+    validation.
+
+    A root the manifest leaves unset is one of the tool's jobs folders, chosen so a host never
+    moves: the one its last setup placed when that was one of them, else the one its home
+    already holds, and only on a host holding none the primary name's. So a host set up under a
+    legacy name keeps its folder, its mirror and its built environments, and a renamed tool
+    never builds a second copy beside the first.
+
+    recorded: the root the host's last recorded setup placed, empty when it has none.
+    """
     updates: dict[str, str] = {}
     if profile.kind == "auto":
         updates["kind"] = facts.kind
-    if (root := placed(profile.root, home=facts.home)) != profile.root:
+    folders = [placed(folder, home=facts.home) for folder in Project().jobs_roots]
+    if "root" in profile.model_fields_set:
+        chosen = profile.root
+    elif recorded in folders:
+        chosen = recorded
+    else:
+        chosen = facts.jobs or profile.root
+    if (root := placed(chosen, home=facts.home)) != profile.root:
         updates["root"] = root
     if not profile.account:
         updates["account"] = facts.account

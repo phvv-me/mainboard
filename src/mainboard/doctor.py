@@ -264,7 +264,7 @@ class Doctor:
         notes = [f"superseded, safe to remove: {', '.join(superseded)}"] if superseded else []
         if legacy:
             notes.append(
-                f"legacy, still served by its own .mainboard/activate-<env>.sh: "
+                f"legacy, still served by its own {provisioner.out.name}/activate-<env>.sh: "
                 f"{', '.join(legacy)}; `{_TOOL} install <env>` reprovisions one under the "
                 "current layout, after which it joins the superseded ones"
             )

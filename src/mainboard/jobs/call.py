@@ -34,7 +34,7 @@ from cyclopts import App
 from ..dispatch.evidence import RECEIPTS_VAR
 from ..dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
 from . import beacon
-from .pins import STAGING
+from .pins import staging
 from .target import SEPARATOR, TEST_PREFIX, dotted, home_of
 
 if TYPE_CHECKING:
@@ -134,7 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return fresh.run(spelling)
     file, _, name = spelling.partition(SEPARATOR)
     guard = Guard.armed(Path.cwd())
-    pins = Path.cwd() / STAGING
+    pins = Path.cwd() / staging(Path.cwd())
     if pins.is_dir():
         # A job that declared Hub pins reads exactly them, whatever the host caches elsewhere.
         os.environ["HF_HUB_CACHE"] = str(pins)

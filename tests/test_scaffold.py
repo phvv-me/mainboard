@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import pytest
 from plumbum import local
 
-from mainboard import Board, MissionError
+from mainboard import Board, MissionError, Project
 from mainboard.engines.compile.backend import PixiEngine
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ def test_a_project_lands_under_its_templates_home_with_its_rows_read_back(
     assert made.path == str(workspace / _HOME / "scratch-probe")
     assert made.tasks == str(workspace / _HOME / "scratch-probe" / _TASKS)
     assert made.snippet == _ROWS
-    assert made.paste == f"{workspace / 'mainboard.toml'} [tasks]"
+    assert made.paste == f"{Project().manifest(workspace)} [tasks]"
     staged = " ".join(fp.calls[0])
     assert str(workspace / _FIRST) in staged
     for answer in ("--defaults", "project_name=Scratch Probe", "description=Scratch Probe"):
@@ -145,7 +145,7 @@ def test_a_render_that_cannot_happen_says_which_thing_is_in_the_way(
     if occupied:
         (workspace / _HOME / "probe").mkdir(parents=True)
     if "declares no templates" in refusal:
-        (workspace / "mainboard.toml").write_text('[workspace]\nname = "bare"\n')
+        (Project().manifest(workspace)).write_text('[workspace]\nname = "bare"\n')
     with pytest.raises(MissionError, match=refusal):
         Board(workspace).scaffold().render("probe")
 
@@ -158,6 +158,6 @@ def test_a_failing_render_reaches_the_caller_with_copier_own_output(
 ) -> None:
     """The engine's own complaint is the useful half, and the refusal says how to install it."""
     fp.register([fp.any()], returncode=127, stderr="copier: command not found\n")
-    with pytest.raises(MissionError, match=r"`copier copy` failed.*mainboard install"):
+    with pytest.raises(MissionError, match=rf"`copier copy` failed.*{Project().name} install"):
         Board(workspace).scaffold().render("probe")
     assert "copier: command not found" in capsys.readouterr().err

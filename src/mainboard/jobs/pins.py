@@ -1,9 +1,9 @@
 """Hub pins a job declares as needs: `hf://<repo>@<revision>/<filename>`, shipped from the cache.
 
 A tokenizer or config read offline at a pinned revision fails on a host whose cache never held
-it, so a need may name the Hub entry: the dispatch stages the locally cached file under
-`.mainboard/pins` in the cache's layout, ships it like any need, and the runner points the Hub
-client there, so an offline read finds exactly what was pinned.
+it, so a need may name the Hub entry: the dispatch stages the locally cached file under the
+workspace state directory's `pins` in the cache's layout, ships it like any need, and the runner
+points the Hub client there, so an offline read finds exactly what was pinned.
 """
 
 from __future__ import annotations
@@ -16,14 +16,12 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.errors import MissionError
+from ..core.project import Project
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 PREFIX = "hf://"
-# Where staged pins sit under the workspace, in the Hub cache layout; a job's Hub client is
-# pointed here by the runner.
-STAGING = ".mainboard/pins"
 
 
 class Pin(FrozenModel):
@@ -66,6 +64,12 @@ def is_pin(need: str) -> bool:
     return need.startswith(PREFIX)
 
 
+def staging(root: Path | None = None) -> str:
+    """Where staged pins sit under workspace `root` (the cwd's workspace), relative to it, in
+    the Hub cache layout; a job's Hub client is pointed here by the runner."""
+    return f"{Project().out_dir(root)}/pins"
+
+
 def split(needs: Iterable[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The declared needs as workspace paths and Hub pins, each in declaration order."""
     listed = list(needs)
@@ -87,7 +91,7 @@ def stage(specs: Sequence[str], root: Path, cache: Path | None = None) -> tuple[
                 f"the pin {spec} is not in this machine's Hub cache at {source}; fetch it with "
                 f"`hf download {pin.repo} {pin.filename} --revision {pin.revision}` first"
             )
-        relative = PurePosixPath(STAGING) / pin.relative
+        relative = PurePosixPath(staging(root)) / pin.relative
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.is_file() or target.stat().st_size != source.stat().st_size:

@@ -59,7 +59,9 @@ class Linter:
         self._environments: dict[str, Mapping[str, str]] = {}
         # The generated tree is never the workspace's own text, whether or not a `.gitignore`
         # already says so.
-        self._excluded = GitIgnoreSpec.from_lines([f"/{Project().out_dir}/", *self.table.exclude])
+        self._excluded = GitIgnoreSpec.from_lines(
+            [*(f"/{name}/" for name in Project().out_dirs), *self.table.exclude]
+        )
 
     def lint(self, paths: Sequence[Path]) -> Report:
         """Repair text, run the writing tools in declared order, then every check at once.

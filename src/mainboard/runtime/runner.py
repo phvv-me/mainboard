@@ -84,7 +84,7 @@ class Runner:
     grace: seconds a command ended at its walltime is given before it is killed outright.
     """
 
-    tool: tuple[str, ...] = (sys.executable, "-m", Project().name)
+    tool: tuple[str, ...] = (sys.executable, "-m", Project().package)
 
     def __init__(
         self,

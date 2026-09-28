@@ -52,11 +52,11 @@ _STARTUP = {"zsh": (".zshenv",), "bash": (".profile", ".bashrc"), "sh": (".profi
 # The PATH a fresh POSIX login starts from, before any startup file adds to it.
 _BARE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
-# A path segment only a Mainboard environment carries, its prefix and second-stage directories
-# alike, which marks a stale user PATH entry.
-_PREFIX_MARK = os.sep.join(("", Project().out_dir, "envs", ""))
+# The path segments only this tool's environments carry, under any of its state directory names,
+# their prefix and second-stage directories alike, which mark a stale user PATH entry.
+_PREFIX_MARKS = tuple(os.sep.join(("", name, "envs", "")) for name in Project().out_dirs)
 
-# This tool, which every agent shell must reach wherever uv put it.
+# This tool as it is typed, which every agent shell must reach wherever uv put it.
 _TOOL = Project().name
 
 # How many names a detail line spells out before it only counts the rest.
@@ -143,7 +143,8 @@ class Exposure:
         kept = [
             entry
             for entry in entries
-            if entry not in self.folders and _PREFIX_MARK not in entry.replace("/", os.sep)
+            if entry not in self.folders
+            and not any(mark in entry.replace("/", os.sep) for mark in _PREFIX_MARKS)
         ]
         wanted = [*self.folders, *kept]
         if wanted == entries:
@@ -174,7 +175,8 @@ class Exposure:
         """Write the PATH file and source it from each present shell's startup files."""
         path_file = self.home / PATH_FILE
         lines = [
-            "# Written by `mainboard center verify`: the default environment and the tool on PATH",
+            f"# Written by `{Project().name} center verify`: the default environment and the "
+            "tool on PATH",
             *(
                 _prepended(folder)
                 for folder in reversed([*self.folders, str(self.home / ".local" / "bin")])
@@ -257,7 +259,7 @@ class Exposure:
             f"add `Remove-Item Alias:{',Alias:'.join(aliases)} -Force "
             "-ErrorAction SilentlyContinue` to $PROFILE"
             if aliases
-            else "mainboard install, then open a new shell"
+            else f"{Project().name} install, then open a new shell"
         )
         return Section(section=f"path {kind}", verdict=Verdict.WARN, detail=detail, fix=fix)
 

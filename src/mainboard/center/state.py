@@ -36,9 +36,9 @@ if TYPE_CHECKING:
 
 type Anchor = Literal["root", "home"]
 
-# What `.mainboard/` keeps that belongs to this machine alone or is rebuilt from what does ship:
-# environment prefixes (reinstalled from the shipped lock), the hub pin cache (refetched at its
-# recorded revisions), generated activation scripts, a digest cache and every lock file.
+# What the state directory keeps that belongs to this machine alone or is rebuilt from what does
+# ship: environment prefixes (reinstalled from the shipped lock), the hub pin cache (refetched at
+# its recorded revisions), generated activation scripts, a digest cache and every lock file.
 _MACHINE_LOCAL = (
     "envs/*",
     "pins/*",
@@ -318,8 +318,8 @@ class Carried:
         return [line.strip() for line in text.splitlines() if line.strip()]
 
     def workspace(self) -> list[Parcel]:
-        """The `.env`, the `.mainboard/` registry and ledgers, and every environment's lock."""
-        out = self.root / Project().out_dir
+        """The `.env`, the state directory's registry and ledgers, and every environment's lock."""
+        out = Project().out(self.root)
         parcels = (
             [self._root(self.root / ".env", secret=True)] if (self.root / ".env").is_file() else []
         )

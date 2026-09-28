@@ -24,8 +24,10 @@ from .core.project import Project
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
-# The tool this workspace answers to, so no unit file or message below spells the binary's name.
-_TOOL = Project().name
+# The tool's legacy name, so no unit file below spells the binary's name. Units keep it on
+# purpose: an armed timer is then found and replaced under the name it was installed with, never
+# doubled beside a renamed one, and the script it runs exists in every release.
+_TOOL = Project().package
 # The one pass a period runs, the same line a person types at a terminal.
 _PASS = ("monitor", "--json")
 # Where a pass appends what it settled, beside the rest of the generated state.
@@ -83,7 +85,7 @@ class Every(FrozenModel):
         if found is None:
             raise MissionError(
                 f"a period is written like 20m, 1h or 90s, not {written!r}; "
-                f"`{_TOOL} monitor --every 0` removes the pass"
+                f"`{Project().name} monitor --every 0` removes the pass"
             )
         return cls(seconds=int(found[1]) * _UNITS[found[2]], written=said)
 
@@ -183,7 +185,7 @@ class SystemdUser(Settler):
         Idempotent: the units are rewritten from the root and `every` and the enable is repeatable,
         so changing the period is the same command.
         """
-        log = self.root / Project().out_dir / _LOG
+        log = Project().out(self.root) / _LOG
         log.parent.mkdir(parents=True, exist_ok=True)
         self.units.mkdir(parents=True, exist_ok=True)
         self.service.write_text(self._service(log), encoding="utf-8")
@@ -218,7 +220,7 @@ class SystemdUser(Settler):
                     "no periodic pass installed, so a dispatched job settles only while a "
                     "session sweeps it"
                 ),
-                fix=f"{_TOOL} monitor --every {_SUGGESTED}",
+                fix=f"{Project().name} monitor --every {_SUGGESTED}",
             )
         shown = self._shown()
         every = self._setting(self.timer, "OnUnitActiveSec")
@@ -356,7 +358,8 @@ class Unsupported(Settler):
         """The one sentence a platform with no implementation here is refused with."""
         return (
             f"{platform.system()} has no service manager {_TOOL} can install a periodic pass "
-            f"into; sweep with `{_TOOL} monitor` from a scheduler this machine already runs"
+            f"into; sweep with `{Project().name} monitor` from a scheduler this machine already "
+            "runs"
         )
 
 

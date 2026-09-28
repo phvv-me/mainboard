@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.dispatch.provenance import Source
 from mainboard.dispatch.shared import (
     CLOSURE_VAR,
@@ -60,7 +60,7 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
     assert shipment.fetch == "research/camp/experiments/node/evidence"
     assert shipment.first_party == ("core", "experiments", "sub")
     assert shipment.deferred == ()
-    assert shipment.listing.splitlines()[0].startswith("mainboard.toml\t")
+    assert shipment.listing.splitlines()[0].startswith(f"{Project().manifests[0]}\t")
     assert len(shipment.listing.splitlines()) == len(closure.files)
     assert shipment.listing_name == f"closure-{shipment.source.digest[:12]}.tsv"
     exported = shipment.exports("/pinned/closure.tsv")

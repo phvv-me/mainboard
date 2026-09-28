@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.engines.compile.backend import Pixi
 from mainboard.engines.compile.ecosystems import SecondStage
 from mainboard.engines.compile.prefixes import STAMP, Prefixes, digest_of, prefix_path
@@ -78,12 +78,14 @@ def test_an_environment_is_addressed_by_the_artifact_it_would_be_built_from(
     assert digest_of(one) != digest_of(other)
     assert digest_of(artifact("one")) == digest_of(one)
     assert prefixes.path(digest_of(one)) == Path(
-        prefix_path(str(prefixes.root), "default", digest_of(one))
+        prefix_path(
+            str(prefixes.root), "default", digest_of(one), out=Project().out_dir(prefixes.root)
+        )
     )
     assert (
         prefixes.path(digest_of(one))
         .as_posix()
-        .endswith(f".mainboard/prefixes/default/{digest_of(one)}")
+        .endswith(f"{Project().out_dirs[0]}/prefixes/default/{digest_of(one)}")
     )
     # And nothing was built by asking where it would go.
     assert not prefixes.built(digest_of(one))
@@ -417,8 +419,8 @@ def test_prune_keeps_every_environment_a_pinned_tree_still_names(
     for age, name in enumerate(("kept", "stale", "recent", "newest")):
         (prefixes.base / name).mkdir(parents=True)
         os.utime(prefixes.base / name, (1_000_000 + age, 1_000_000 + age))
-    sources = tmp_path / ".mainboard" / "dispatch" / "sources"
-    pinned = sources / "abc" / ".mainboard" / "envs" / "default"
+    sources = tmp_path / Project().out_dirs[0] / "dispatch" / "sources"
+    pinned = sources / "abc" / Project().out_dirs[0] / "envs" / "default"
     pinned.mkdir(parents=True)
     (pinned / ".pixi").symlink_to(prefixes.path("kept") / ".pixi")
 
@@ -471,6 +473,6 @@ def test_a_pinned_tree_whose_environment_is_not_a_link_names_no_prefix(
     prefixes: Prefixes, tmp_path: Path
 ) -> None:
     sources = tmp_path / "sources"
-    (sources / "abc" / ".mainboard" / "envs" / "default" / ".pixi").mkdir(parents=True)
+    (sources / "abc" / Project().out_dirs[0] / "envs" / "default" / ".pixi").mkdir(parents=True)
 
     assert prefixes.referenced(sources) == set()

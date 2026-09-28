@@ -5,7 +5,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import JsonValue, ValidationError
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.ci import FAMILIES, Definition, Family, Package, family_of
 
 from .conftest import declare, step
@@ -63,7 +63,7 @@ def test_the_package_is_the_nearest_pyproject_declaring_a_gate(tmp_path: Path) -
     assert found.root == package
     assert found.definition.os == FAMILIES
     assert found.definition.steps[0].argv == ("ruff", "check", ".")
-    with pytest.raises(MissionError, match=r"declares \[tool.mainboard.ci\]"):
+    with pytest.raises(MissionError, match=rf"declares \[tool.{Project().name}.ci\]"):
         Package.found(tmp_path)
 
 

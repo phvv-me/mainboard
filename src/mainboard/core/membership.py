@@ -19,24 +19,23 @@ class Membership:
     content therefore picks only the projects in it.
 
     patterns: workspace-relative globs, each `!pattern` excluding what it matches.
-    manifest: the manifest's file name.
+    manifests: every file name a manifest may take.
     """
 
-    def __init__(self, root: Path, patterns: Sequence[str], manifest: str) -> None:
+    def __init__(self, root: Path, patterns: Sequence[str], manifests: Sequence[str]) -> None:
         self.root = root
-        self.markers = (manifest, _PYPROJECT)
+        self.markers = (*manifests, _PYPROJECT)
         self.included = [pattern for pattern in patterns if not pattern.startswith("!")]
         self.excluded = [pattern[1:] for pattern in patterns if pattern.startswith("!")]
 
     @classmethod
-    def declared(cls, root: Path, manifest: str) -> Membership:
-        """The membership the manifest file in `root` declares, read without validating it all."""
-        path = root / manifest
+    def declared(cls, path: Path, manifests: Sequence[str]) -> Membership:
+        """The membership the manifest at `path` declares, read without validating it all."""
         try:
             tree = tomllib.loads(path.read_text(encoding="utf-8"))
         except tomllib.TOMLDecodeError as error:
             raise MissionError(f"{path} is not valid TOML: {error}") from None
-        return cls(root, tree.get("workspace", {}).get("members", []), manifest)
+        return cls(path.parent, tree.get("workspace", {}).get("members", []), manifests)
 
     def directories(self) -> list[str]:
         """Every member's workspace-relative path, sorted."""

@@ -77,7 +77,8 @@ class Step(Declared):
 
 
 class Definition(Declared):
-    """A package's `[tool.mainboard.ci]` table: where its gate must pass, and the gate itself.
+    """A package's `[tool.mb.ci]` table (`[tool.mainboard.ci]` read too): where its gate must
+    pass, and the gate itself.
 
     os: the families the package supports, each of which a full matrix covers.
     steps: the commands, in order; a leg stops at the first that fails, as a CI job does.
@@ -122,7 +123,7 @@ class Package(Declared):
                 text = (directory / PYPROJECT).read_text(encoding="utf-8")
             except FileNotFoundError:
                 continue
-            table = tomllib.loads(text).get("tool", {}).get(Project().name, {}).get("ci")
+            table = (Project().table(tomllib.loads(text).get("tool", {})) or {}).get("ci")
             if table is not None:
                 return cls(root=directory, definition=Definition.model_validate(table))
         raise MissionError(

@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import ExecutionPlan, MissionError
+from mainboard import ExecutionPlan, MissionError, Project
 from mainboard.batch import BatchEstimate, Estimator, JobEstimate, TransferSet, platform
 from mainboard.costs import Catalog, Ledger, Observation, Offer
 from mainboard.dispatch import HostSetup
@@ -149,7 +149,7 @@ def test_an_empty_roster_is_priced_from_the_providers_own_market_rather_than_at_
     assert row.expected_usd == pytest.approx(1.20 * (3600 + 300) / 3600)
     # Narrowed to exactly what the job asked to rent, and kept, so the next estimate is free.
     assert Quoting.asked == [("A100", 4)]
-    assert (lab.root / ".mainboard" / "catalog.ndjson").is_file()
+    assert (lab.root / Project().out_dirs[0] / "catalog.ndjson").is_file()
 
 
 def test_a_roster_that_already_prices_the_card_costs_no_round_trip_and_says_it_is_stored(
@@ -326,4 +326,4 @@ def test_the_workspace_owns_the_catalog_and_the_ledger_an_estimate_reads(lab: Bo
     """Both files are the tool's own, so pricing a batch needs nothing passed in."""
     estimator = Estimator(lab)
     assert estimator.catalog.roster == []
-    assert estimator.ledger.path == lab.root / ".mainboard" / "costs" / "costs.ndjson"
+    assert estimator.ledger.path == lab.root / Project().out_dirs[0] / "costs" / "costs.ndjson"

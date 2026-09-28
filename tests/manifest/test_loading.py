@@ -41,11 +41,11 @@ def test_a_manifest_without_a_workspace_table_names_its_workspace_after_its_dire
 ) -> None:
     root = tmp_path / "tidy"
     root.mkdir()
-    (root / Project().manifest).write_text(
+    (Project().manifest(root)).write_text(
         '[lint.tools.ruff]\ncheck = "ruff check {files}"\nfiles = ["*.py"]\n', encoding="utf-8"
     )
 
-    loaded = load(root / Project().manifest)
+    loaded = load(Project().manifest(root))
 
     assert loaded.workspace.name == "tidy"
     assert list(loaded.lint.tools) == ["ruff"]
@@ -63,7 +63,7 @@ def test_a_manifest_without_a_workspace_table_names_its_workspace_after_its_dire
 def test_a_manifest_that_cannot_be_read_names_what_went_wrong(
     tmp_path: Path, body: str | None, match: str
 ) -> None:
-    path = tmp_path / Project().manifest
+    path = Project().manifest(tmp_path)
     if body is not None:
         path.write_text(body, encoding="utf-8")
     with pytest.raises(MissionError, match=match):
@@ -76,6 +76,6 @@ def test_a_manifest_dumped_to_toml_loads_back_as_the_same_model(
     tmp_path: Path, manifest: Manifest
 ) -> None:
     """Every example writes and reloads a file, so the budget stays small on purpose."""
-    path = tmp_path / Project().manifest
+    path = Project().manifest(tmp_path)
     path.write_text(tomlkit.dumps(manifest.model_dump(exclude_defaults=True)), encoding="utf-8")
     assert load(path) == manifest

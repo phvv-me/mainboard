@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.dispatch import GitignoreFilter, SyncLock
 from mainboard.dispatch import sync as sync_module
 from mainboard.dispatch.agent import Agent, Rules
 from mainboard.dispatch.mirror import Mirror
-from mainboard.dispatch.shared import STATE_DIR
+from mainboard.dispatch.shared import state_dir
 from mainboard.dispatch.sync import ALWAYS_EXCLUDE, CARD_LEASES, patterns
 from mainboard.dispatch.transport import Endpoint
 
@@ -59,8 +59,7 @@ def test_the_denylist_covers_git_env_and_every_generated_directory() -> None:
     assert (
         ".git",
         ".env",
-        f"{STATE_DIR}/",
-        ".mainboard/",
+        *(f"{name}/" for name in Project().out_dirs),
         ".pixi/",
         "__pycache__/",
         "*/evidence/artifacts/***",
@@ -119,7 +118,7 @@ def test_the_sync_lock_releases_its_file_however_the_mirror_ends(
     lock.__exit__(None, None, None)
     (tmp_path / "mainboard.toml").touch()
     monkeypatch.chdir(tmp_path)
-    assert SyncLock("gold").path == tmp_path / STATE_DIR / "locks" / lock.path.name
+    assert SyncLock("gold").path == tmp_path / state_dir(tmp_path) / "locks" / lock.path.name
 
     def refuse(*, timeout: float | None = None, poll_interval: float = 0.05) -> None:
         del timeout, poll_interval

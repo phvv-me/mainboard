@@ -348,7 +348,7 @@ def test_vouch_reads_the_generated_files_under_the_lock_that_writes_them(
     environment: str, generated: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Always release the writer and bound the worker join, even on assertion failure."""
-    monkeypatch.setattr(Project, "out_dir", property(lambda self: generated))
+    monkeypatch.setattr(Project, "out_dir", lambda self, root=None: generated)
     provisioner = Provisioner(
         tmp_path, Manifest.model_validate(tomllib.loads(f"{_BARE}[envs.serving]\n"))
     )

@@ -14,8 +14,9 @@ if TYPE_CHECKING:
 _PROTECTED = ("gh006", "gh013", "protected branch")
 
 # The prefix of the branch a push falls back to when the remote protects the one it tracks,
-# named after this tool so a stranger reading the remote knows which process made it.
-_FALLBACK = Project().name
+# named after this tool so a stranger reading the remote knows which process made it, and after
+# its package rather than its shortest name so a branch an older release pushed is still found.
+_FALLBACK = Project().package
 
 
 class Push:

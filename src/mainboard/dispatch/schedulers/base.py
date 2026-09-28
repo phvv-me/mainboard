@@ -99,7 +99,7 @@ def workspace_session(*, env: str, command: Sequence[str], resources: Resources)
     such a host allocates nothing.
     """
     del resources
-    tool = Project().name
+    tool = Project().package
     if command:
         return shlex.join([tool, "run", "--env", env, "--", *command])
     return shlex.join([tool, "shell", env])

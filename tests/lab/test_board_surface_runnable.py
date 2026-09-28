@@ -150,7 +150,7 @@ def test_runnable_builds_the_artifact_dir_under_the_projects_runs_path() -> None
             return {}
 
     outcome = runnable(Capturing, "gpt2", Capturing())
-    assert captured == [Path(Project().out_dir) / "runs" / outcome.run_id]
+    assert captured == [Path(Project().out_dir(Path.cwd())) / "runs" / outcome.run_id]
 
 
 @pytest.mark.parametrize(
@@ -191,7 +191,7 @@ def test_every_outcome_renders_one_receipt_line_under_the_one_published_key(
     record = json.loads(line)[RECEIPT]
     assert record["run_id"] == outcome.run_id
     assert record["outcome"] == word
-    assert record["producer"] == Project().name
+    assert record["producer"] == Project().package
     assert record["gates"] == gates
     assert absent not in record
     for field, value in own.items():

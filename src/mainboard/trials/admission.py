@@ -42,7 +42,7 @@ def policy(card: str, root: Path | None = None) -> Admission:
     root: the workspace root; found from the working directory when omitted, which inside a
         dispatched job is the pinned tree the manifest shipped with.
     """
-    manifest = load((root or Project().find_root(Path.cwd())) / "mainboard.toml")
+    manifest = load(Project().manifest(root or Project().find_root(Path.cwd())))
     return manifest.admission.get(card, Admission())
 
 

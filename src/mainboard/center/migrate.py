@@ -41,7 +41,10 @@ if TYPE_CHECKING:
     from ..git.repo import Repo
     from ..git.tree import Tree
 
-_TOOL = Project().name
+# What the owner types, and what the destination runs: the script every release installs, since
+# the destination may still carry an older one.
+_NAME = Project().name
+_TOOL = Project().package
 
 # The findings about the destination that make every later step pointless: a platform the
 # workspace never declared, and a lock with nothing for it, both of which the install would only
@@ -192,7 +195,7 @@ class Migration:
                         section=f"publish {state.repo}",
                         verdict=Verdict.FAIL,
                         detail=f"HEAD {state.head} is on no remote branch, so no clone fetches it",
-                        fix=f"{_TOOL} center git push",
+                        fix=f"{_NAME} center git push",
                     )
                 )
             if state.changed or state.untracked:
@@ -204,7 +207,7 @@ class Migration:
                             f"{state.changed} changed and {state.untracked} untracked paths stay "
                             "on this machine"
                         ),
-                        fix=f'{_TOOL} center git commit -m "..." && {_TOOL} center git push',
+                        fix=f'{_NAME} center git commit -m "..." && {_NAME} center git push',
                     )
                 )
         return rows or [
@@ -296,7 +299,7 @@ class Migration:
                 section="carry ssh config",
                 verdict=Verdict.WARN,
                 detail=f"{detail}; GitHub's host keys unknown here and gh could not fetch them",
-                fix=f"gh auth login, then {_TOOL} center migrate {self.destination}",
+                fix=f"gh auth login, then {_NAME} center migrate {self.destination}",
             )
         return Section(section="carry ssh config", verdict=Verdict.PASS, detail=detail)
 
@@ -335,7 +338,7 @@ class Migration:
             },
             list[Cloned],
         )
-        again = f"{_TOOL} center migrate {self.destination} --root <an empty directory>"
+        again = f"{_NAME} center migrate {self.destination} --root <an empty directory>"
         rows = [
             Section(
                 section=f"clone {step.repo}",
@@ -406,7 +409,7 @@ class Migration:
                             section=name,
                             verdict=Verdict.FAIL,
                             detail=str(refusal).splitlines()[0][:240],
-                            fix=f"{_TOOL} center migrate {self.destination}",
+                            fix=f"{_NAME} center migrate {self.destination}",
                         )
                     )
                     break
@@ -440,7 +443,7 @@ class Migration:
                     section="verify",
                     verdict=Verdict.FAIL,
                     detail=f"no readiness report came back: {said}",
-                    fix=f"{_TOOL} center verify (on {self.destination})",
+                    fix=f"{_NAME} center verify (on {self.destination})",
                 )
             ]
         return [staged("verify", row) for row in sections]

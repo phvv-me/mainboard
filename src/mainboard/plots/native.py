@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 def load_style(config: str | Path) -> PlotStyle:
     """Load a project's paper style over the root manifest's native settings."""
     root = Project().find_root(Path.cwd())
-    return load_plot_config(root / "mainboard.toml", root / config).plots["paper"]
+    return load_plot_config(Project().manifest(root), root / config).plots["paper"]
 
 
 def apply_style(style: PlotStyle) -> None:

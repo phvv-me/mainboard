@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from pathspec import GitIgnoreSpec
 from patos import FrozenModel
 
+from ..core.project import Project
 from ..core.section import Section, Verdict
 from ..workstation import abbreviated
 
@@ -34,7 +35,7 @@ _SCRIPTS = (
     "Makefile",
     "*.mk",
     "maskfile.md",
-    "mainboard.toml",
+    *Project().manifests,
     "settings.json",
     ".github/workflows/*.yml",
 )

@@ -28,8 +28,9 @@ class Sync(Declared):
 class HostProfile(Declared):
     """One remote (or local) machine's execution profile, inheriting `[hosts.defaults]` per field.
 
-    root: where the workspace lives there, the tool's `~/.<name>-jobs` folder by default; a
-        leading `~` is the host's own home as its setup probed it (`%USERPROFILE%` on Windows).
+    root: where the workspace lives there. Unset, one of the tool's `~/.<name>-jobs` folders,
+        the one the host already uses when it has one (`dispatch.targets.resolve`); a leading
+        `~` is the host's own home as its setup probed it (`%USERPROFILE%` on Windows).
     platform: the pixi platform (`win-64`), probed at setup when empty; it decides whether the
         host is reached through a login `bash` or PowerShell.
     python: the bootstrap interpreter in the remote ssh login shell, quoted as that shell needs;
@@ -40,7 +41,7 @@ class HostProfile(Declared):
     """
 
     kind: str = "auto"
-    root: str = Project().jobs_root
+    root: str = Project().jobs_roots[0]
     platform: str = ""
     python: str = "python3"
     account: str = ""

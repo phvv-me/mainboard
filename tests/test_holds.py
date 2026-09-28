@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from mainboard import Board, MissionError
+from mainboard import Board, MissionError, Project
 from mainboard.costs.catalog import Offer
 from mainboard.dispatch import HostSetup, vocabulary
 from mainboard.dispatch.aliases import SshAliases
@@ -100,7 +100,7 @@ def rental(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Holds]:
     The provider rents through `Renter`, onboarding answers with a root, parking hands its
     script to `Remote`, and the ssh config is a file under the workspace.
     """
-    manifest = workspace / "mainboard.toml"
+    manifest = Project().manifest(workspace)
     manifest.write_text(manifest.read_text() + _PROVIDER)
     Renter.rented, Renter.cancelled, Remote.handed = [], [], []
     monkeypatch.setattr("mainboard.holds.route", lambda kind: Renter())
@@ -171,7 +171,7 @@ def test_a_hold_rents_names_sets_up_and_parks_a_machine_that_answers_as_a_host(
         4.0,
     )
     assert Remote.handed == ["exec sleep infinity\n"]
-    profile = load(rental.board.root / "mainboard.toml").profile(held.alias)
+    profile = load(Project().manifest(rental.board.root)).profile(held.alias)
     assert (profile.kind, profile.platform, profile.root) == ("ssh", "linux-64", "/root/projects")
     assert profile.sync.include == ["packages/lab-core"]
     assert profile.defaults.walltime == "03:00:00"
@@ -261,7 +261,7 @@ def test_release_ends_the_rental_and_forgets_everything_the_hold_wrote(rental: H
     assert Renter.cancelled == ["77"]
     assert Holdings(rental.board.root).read() == {}
     assert held.alias not in rental.aliases.path.read_text()
-    assert held.alias not in load(rental.board.root / "mainboard.toml").hosts
+    assert held.alias not in load(Project().manifest(rental.board.root)).hosts
     with pytest.raises(MissionError, match=r"'ghost' is not held; held machines are \[\]"):
         rental.release("ghost")
 

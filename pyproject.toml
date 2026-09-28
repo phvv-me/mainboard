@@ -67,6 +67,10 @@ wandb = ["wandb>=0.28"]
 plot = ["matplotlib>=3.9", "seaborn>=0.13.2"]
 
 [project.scripts]
+# Every script pointing at the CLI is a name the tool answers to, and `core.project.Project`
+# derives them all from this table: the shortest is the primary name every new file and folder
+# takes, the others are legacy names read indefinitely.
+mb = "mainboard.cli:main"
 mainboard = "mainboard.cli:main"
 
 # NO `pytest11` ENTRY POINT, and the reason is this file's own coverage gate. An entry-point

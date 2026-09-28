@@ -97,7 +97,7 @@ def machine(**changes: Change) -> System:
 
 def fitness_of(root: Path, platforms: str = _DECLARED) -> Fitness:
     """A judge over a workspace at `root` holding the fixture manifest."""
-    manifest = root / Project().manifest
+    manifest = Project().manifest(root)
     manifest.write_text(_MANIFEST.format(platforms=platforms), encoding="utf-8")
     return Fitness(root, load(manifest))
 

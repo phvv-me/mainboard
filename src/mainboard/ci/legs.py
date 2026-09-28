@@ -199,7 +199,7 @@ class RemoteLeg(Leg):
     @property
     def root(self) -> str:
         """Where the leg's copy of the workspace lives on the host, beside the host's mirror."""
-        return f"{self.mirror}/{Project().out_dir}/ci"
+        return f"{self.mirror}/{Project().out_dir()}/ci"
 
     def run(self, steps: Sequence[Step]) -> Iterator[Result]:
         """The package shipped, then its steps, every one `not run` when it never arrived."""

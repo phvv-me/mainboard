@@ -1,5 +1,6 @@
 from patos import FrozenModel
 
+from ..core.project import Project
 from ..manifest.schema.container import Container
 from ..manifest.schema.host import HostProfile
 
@@ -26,6 +27,7 @@ class ExecutionPlan(FrozenModel):
         """The environment prefix under the executing machine's workspace `root`.
 
         Always a bound host path outside any image, which lets a fixed off-the-shelf image serve
-        every dependency change.
+        every dependency change. Its state directory is the name this workspace keeps, which a
+        host's mirror of it keeps too.
         """
-        return f"{root}/.mainboard/envs/{self.env}/.pixi/envs/{self.env}"
+        return f"{root}/{Project().out_dir()}/envs/{self.env}/.pixi/envs/{self.env}"

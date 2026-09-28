@@ -69,10 +69,10 @@ class Repository:
     def manifest(self, lint: str = "") -> None:
         """Write the manifest with `lint` as its `[lint]` tables, the stand-in tool beside it."""
         self.write("tool.py", _TOOL)
-        self.write(Project().manifest, f"{_HEADER}\n{lint}")
+        self.write(Project().manifests[0], f"{_HEADER}\n{lint}")
 
     def linter(self, *, check: bool = False, only: Sequence[str] = ()) -> Linter:
-        return Linter(self.root, load(self.root / Project().manifest), check=check, only=only)
+        return Linter(self.root, load(Project().manifest(self.root)), check=check, only=only)
 
 
 def tool(arguments: str) -> str:

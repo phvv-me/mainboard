@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar, NoReturn
 import pytest
 from plumbum import local
 
-from mainboard import Board, ExecutionPlan, Fleet, HostFacts, Job, MissionError, Survey
+from mainboard import Board, ExecutionPlan, Fleet, HostFacts, Job, MissionError, Project, Survey
 from mainboard.batch import Topic
 from mainboard.board import ProviderJob
 from mainboard.deps import Dependencies
@@ -101,14 +101,17 @@ class FakeProvisioner:
 
     def activate(self, env: str, *, modules: dict[str, str]) -> str:
         FakeProvisioner.calls.append(("activate", (env, dict(modules))))
-        return f"/repo/.mainboard/{env}-activate.sh"
+        return f"/repo/{Project().out_dirs[0]}/{env}-activate.sh"
 
     def artifact_for(self, env: str) -> tuple[str, ...]:
         FakeProvisioner.calls.append(("artifact_for", env))
-        return (f".mainboard/envs/{env}/pixi.toml", f".mainboard/envs/{env}/pixi.lock")
+        return (
+            f"{Project().out_dirs[0]}/envs/{env}/pixi.toml",
+            f"{Project().out_dirs[0]}/envs/{env}/pixi.lock",
+        )
 
     def environment_dir(self, env: str) -> Path:
-        return Path(f"/nowhere/.mainboard/envs/{env}")
+        return Path(f"/nowhere/{Project().out_dirs[0]}/envs/{env}")
 
     def recompiled(self, env: str) -> None:
         FakeProvisioner.calls.append(("recompiled", env))
@@ -241,7 +244,9 @@ def installed(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Boar
     otherwise outlive it and make a later test read an environment nobody installed.
     """
     for environment in ("default", "serving"):
-        fingerprint = workspace / f".mainboard/envs/{environment}/.pixi/envs/{environment}"
+        fingerprint = (
+            workspace / f"{Project().out_dirs[0]}/envs/{environment}/.pixi/envs/{environment}"
+        )
         fingerprint = fingerprint / "conda-meta"
         fingerprint.mkdir(parents=True)
         (fingerprint / ".pixi-environment-fingerprint").write_text("installed\n")
@@ -408,7 +413,7 @@ def test_a_local_auto_container_asks_the_runtime_registry_to_choose(
     assert wrap is not None
     assert wrap(["python", "train.py"]) == [
         "nvcr.io/nvidia/pytorch:25.06-py3",
-        f"{board.root}/.mainboard/envs/default/.pixi/envs/default",
+        f"{board.root}/{Project().out_dirs[0]}/envs/default/.pixi/envs/default",
         "python",
         "train.py",
     ]
@@ -437,8 +442,8 @@ def test_run_hands_a_declared_task_to_pixi_and_anything_else_to_the_shell(
     board.on(_MIYABI_G).line("pytest --quiet", container="none")
 
     assert staged == [
-        "pixi run --manifest-path .mainboard/envs/default/pixi.toml --frozen -e default "
-        "test --quiet",
+        f"pixi run --manifest-path {Project().out_dirs[0]}/envs/default/pixi.toml --frozen "
+        "-e default test --quiet",
         "pytest --quiet",
     ]
 
@@ -457,7 +462,7 @@ def test_attest_publishes_one_reading_of_this_machine_into_the_streams_receipts(
 def test_remote_root_comes_from_the_profile_or_refuses(board: Board) -> None:
     assert board.on(_MIYABI_G).remote_root() == _REMOTE_ROOT
     with pytest.raises(
-        MissionError, match=r"no probed home to place ~/.mainboard-jobs.*setup gold"
+        MissionError, match=rf"no probed home to place {Project().jobs_roots[0]}.*setup gold"
     ):
         board.on(_GOLD).remote_root()
 
@@ -568,7 +573,9 @@ def test_installing_here_provisions_and_activates_in_place(
     assert [call for call in FakeProvisioner.calls if call[0] == "activate"] == (
         [("activate", activated)] if activated else []
     )
-    assert setup.activate == (f"/repo/.mainboard/{env}-activate.sh" if activated else "")
+    assert setup.activate == (
+        f"/repo/{Project().out_dirs[0]}/{env}-activate.sh" if activated else ""
+    )
     assert (setup.host, setup.installer) == ("local", "in-place")
     assert setup.tool
 
@@ -610,16 +617,16 @@ lab-core = { path = "../../../packages/lab-core", editable = true }
 lab-flat = { path = "../../../packages/lab-flat", editable = true }
 built = { path = "../../../packages/built" }
 elsewhere = { path = "/opt/elsewhere", editable = true }
-sample-lib = { path = "../../../.mainboard/vendor/sample-lib", editable = true }
+sample-lib = { path = "../../../OUT/vendor/sample-lib", editable = true }
 
 [feature.dev.pypi-dependencies]
 lab-self = { path = "../../..", editable = true }
-""",
+""".replace("OUT", Project().out_dirs[0]),
         encoding="utf-8",
     )
     (workspace / "packages/lab-core/src").mkdir(parents=True)
     (workspace / "packages/lab-flat").mkdir(parents=True)
-    (workspace / ".mainboard/vendor/sample-lib/src").mkdir(parents=True)
+    (workspace / f"{Project().out_dirs[0]}/vendor/sample-lib/src").mkdir(parents=True)
     (workspace / "src").mkdir()
 
     # A house package that lives outside the workspace is compiled at its vendored location, so
@@ -628,7 +635,7 @@ lab-self = { path = "../../..", editable = true }
     assert board.imports(board.plan(env="default", container="none")) == (
         "packages/lab-core/src",
         "packages/lab-flat",
-        ".mainboard/vendor/sample-lib/src",
+        f"{Project().out_dirs[0]}/vendor/sample-lib/src",
         "src",
     )
 
@@ -769,13 +776,13 @@ def onboarded(monkeypatch: pytest.MonkeyPatch) -> dict[str, str | bool | tuple[s
         pytest.param(
             _GOLD,
             {},
-            ("serving", "~/.mainboard-jobs", False),
+            ("serving", Project().jobs_roots[0], False),
             id="the environment the profile itself names",
         ),
         pytest.param(
             _GOLD,
             {"sync_only": True},
-            ("serving", "~/.mainboard-jobs", True),
+            ("serving", Project().jobs_roots[0], True),
             id="a sync of a host already onboarded",
         ),
     ],
@@ -795,9 +802,9 @@ def test_installing_a_host_onboards_it_with_the_lock_this_workspace_solved(
         "root": root,
         "env": env,
         "artifact": (
-            f".mainboard/envs/{env}/pixi.toml",
-            f".mainboard/envs/{env}/pixi.lock",
-            f".mainboard/envs/{env}/state.toml",
+            f"{Project().out_dirs[0]}/envs/{env}/pixi.toml",
+            f"{Project().out_dirs[0]}/envs/{env}/pixi.lock",
+            f"{Project().out_dirs[0]}/envs/{env}/state.toml",
         ),
         "resolve": False,
         "containerized": False,
@@ -845,7 +852,7 @@ def test_shell_replaces_this_process_with_its_frozen_pixi_shard(
         installed.shell(environment, replace=replace)
 
     binary = str(installed.root / "bin" / "pixi")
-    manifest = str(installed.root / ".mainboard" / "envs" / environment / "pixi.toml")
+    manifest = str(installed.root / Project().out_dirs[0] / "envs" / environment / "pixi.toml")
     argv = [binary, "shell", "--manifest-path", manifest, "--frozen", "-e", environment]
     assert seen == [(binary, argv)]
 
@@ -878,7 +885,7 @@ def test_shell_carries_the_workspace_floors_into_the_replacing_process(
 @pytest.mark.parametrize(
     ("host", "env", "refusal"),
     [
-        ("local", "serving", "Run `mainboard install serving`"),
+        ("local", "serving", f"Run `{Project().name} install serving`"),
         (_GOLD, "", "this machine only"),
     ],
     ids=["an environment nothing provisioned", "a board bound to another machine"],
@@ -916,12 +923,12 @@ def test_interact_hands_an_ssh_host_terminal_to_that_hosts_own_tool(
     assert argv[:3] == ["ssh", "-t", _GOLD]
     assert argv[3].startswith("bash -lc ")
     assert "cd /home/p/lab" in argv[3]
-    assert argv[3].endswith("mainboard shell serving'")
+    assert argv[3].endswith(f"{Project().package} shell serving'")
 
     seen.clear()
     with pytest.raises(Replaced):
         board.on(_GOLD).interact("pwd", replace=replace)
-    assert seen[0][3].endswith("mainboard run --env serving -- pwd'")
+    assert seen[0][3].endswith(f"{Project().package} run --env serving -- pwd'")
 
 
 def test_interact_asks_a_queued_host_for_an_allocation_before_the_terminal(
@@ -940,7 +947,7 @@ def test_interact_asks_a_queued_host_for_an_allocation_before_the_terminal(
     assert f"cd {_REMOTE_ROOT}" in staged
     assert "module load singularity/4.2.1" in staged
     assert staged.endswith("qsub -I -q debug-g -l walltime=00:30:00 -W group_list=xg25g007'")
-    assert f"tmux new-session -A -s {board.project.name}-{_MIYABI_G} " in kept
+    assert f"tmux new-session -A -s {board.project.package}-{_MIYABI_G} " in kept
     assert "qsub -I" in kept
 
 
@@ -1063,7 +1070,10 @@ def test_a_rentable_provider_is_landed_on_rather_than_handed_a_bare_command(
         (
             "rentbox",
             "python train.py",
-            (f".mainboard/envs/{env}/pixi.toml", f".mainboard/envs/{env}/pixi.lock"),
+            (
+                f"{Project().out_dirs[0]}/envs/{env}/pixi.toml",
+                f"{Project().out_dirs[0]}/envs/{env}/pixi.lock",
+            ),
         )
     ]
     assert ("vouch", env) in FakeProvisioner.calls
@@ -1269,7 +1279,7 @@ def test_remote_file_runs_refuse_before_staging_or_ssh(
     monkeypatch.setattr("mainboard.board.connection", lambda *a, **kw: pytest.fail("SSH reached"))
     with pytest.raises(MissionError, match="remote file targets require submission"):
         board.run([f"{Lab.JOB}::app"])
-    assert not (lab.root / ".mainboard/dispatch/jobs").exists()
+    assert not (lab.root / f"{Project().out_dirs[0]}/dispatch/jobs").exists()
 
 
 def test_windows_native_targets_pass_process_environment_without_a_posix_utility(
@@ -1314,7 +1324,7 @@ def test_a_job_runs_here_through_the_same_runner_with_its_closure_exported(
     assert argv[:2] == ["env", f"PYTHONPATH={lab.root / 'research/camp'}"]
     listed = next(item for item in argv if item.startswith("MAINBOARD_CLOSURE="))
     listing = Path(listed.removeprefix("MAINBOARD_CLOSURE="))
-    assert listing.is_relative_to(lab.root / ".mainboard/dispatch/jobs")
+    assert listing.is_relative_to(lab.root / f"{Project().out_dirs[0]}/dispatch/jobs")
     assert Lab.JOB in listing.read_text(encoding="utf-8")
     # No compiled manifest names a distribution here, so the roster is the node's own root's.
     assert "MAINBOARD_FIRST_PARTY=experiments" in argv
@@ -1457,7 +1467,7 @@ def test_a_host_set_up_once_is_planned_and_run_as_its_probe_found_it(
     )
     bound = board.on(_GOLD)
     assert bound.plan().profile.platform == "win-64"
-    assert bound.remote_root() == "C:/Users/lab/.mainboard-jobs"
+    assert bound.remote_root() == f"C:/Users/lab/{Project().jobs_roots[0].removeprefix('~/')}"
     assert bound.run(("true",), container="none") == 4
     [argv] = launched
     assert argv[0] == "ssh"

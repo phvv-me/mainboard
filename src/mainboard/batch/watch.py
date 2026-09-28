@@ -78,7 +78,7 @@ class Watch:
         self.id = batch_id
         self.dir = directory(board, batch_id)
         self.bus = bus or Receipts(self.dir / "events.ndjson")
-        self.ledger = Ledger(board.root / Project().out_dir / _COSTS)
+        self.ledger = Ledger(Project().out(board.root) / _COSTS)
 
     @staticmethod
     def detail(handle: str, swept: MonitorReport) -> str:

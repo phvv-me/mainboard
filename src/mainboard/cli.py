@@ -689,7 +689,7 @@ def build(root: Path | None = None) -> App:
             ) from fault
         settings = PlotStyle()
         specification = None
-        manifest = load_plot_config(workspace_root() / Project().manifest, config)
+        manifest = load_plot_config(Project().manifest(workspace_root()), config)
         if figure:
             try:
                 specification = manifest.figures[figure]
@@ -792,7 +792,7 @@ def build(root: Path | None = None) -> App:
         json: print the readings as JSON instead of the table.
         agent: print the compact tabular mode instead of the default rich table.
         """
-        manifest = load(workspace_root() / project.manifest)
+        manifest = load(project.manifest(workspace_root()))
         remote = [alias for alias, profile in manifest.hosts.items() if profile.kind == "ssh"]
         names = ["local", *remote] if every else [on]
         listed: list[dict[str, str | int | float | bool]] = []
@@ -832,7 +832,7 @@ def build(root: Path | None = None) -> App:
         container: with `--on`, a container name overriding the profile's, `none` for bare.
         fields: a comma-separated projection over the declared or planned fields.
         """
-        manifest = load(workspace_root() / project.manifest)
+        manifest = load(project.manifest(workspace_root()))
         if on:
             resolved = Resolver(manifest).plan(on, env=env, container=container)
             output.print_record(resolved.model_dump(), title="plan")
@@ -872,7 +872,7 @@ def build(root: Path | None = None) -> App:
             inventory.under([path.resolve() for path in paths]) if paths else inventory.changed()
         )
         steps = [step.strip() for step in only.split(",") if step.strip()]
-        report = Linter(root, load(root / project.manifest), check=check, only=steps).lint(files)
+        report = Linter(root, load(project.manifest(root)), check=check, only=steps).lint(files)
         if json:
             record(report.model_dump(mode="json"), mode="json", fields=(), title="lint")
         else:
@@ -973,7 +973,7 @@ def build(root: Path | None = None) -> App:
         yes: dispatch without asking.
         agent: print the compact tabular mode instead of the default rich table.
         """
-        manifest = load(workspace_root() / project.manifest)
+        manifest = load(project.manifest(workspace_root()))
         hosts = [alias.strip() for alias in on.split(",") if alias.strip()]
         if unsupported := [
             host
@@ -986,7 +986,7 @@ def build(root: Path | None = None) -> App:
             )
         with progress(f"collecting {target}"):
             probe = ["run", "--", "python", "-m", "mainboard.jobs.lanes", "collect", target]
-            cells = lanes_module.parsed(localhost[project.name][probe]())
+            cells = lanes_module.parsed(localhost[project.package][probe]())
         if not cells:
             raise MissionError(f"{target} collected no cells")
         groups = lanes_module.grouped(cells, by=group, per_job=per_job)
@@ -1498,7 +1498,7 @@ def build(root: Path | None = None) -> App:
         the workspace or its lock cannot serve. Then signs gh in with this machine's login,
         carries the ssh config blocks and keys the host profiles use, clones the monorepo at
         this HEAD with every owned submodule at its recorded pointer, carries what git does not
-        hold (the `.env`, the `.mainboard/` registry and ledgers and every environment's lock,
+        hold (the `.env`, the state directory's registry and ledgers and every environment's lock,
         Claude Code's memory re-keyed to the new workspace path and its project settings,
         Codex's and opencode's config, credentials and memories), installs this tool and the
         default environment from the lock this center solved, and ends with the destination
@@ -1565,7 +1565,7 @@ def build(root: Path | None = None) -> App:
         names: the members to check, by name or path; every member when omitted.
         fields: a comma-separated projection over section/verdict/detail/fix.
         """
-        standalone = Standalone(composition(workspace_root() / project.manifest))
+        standalone = Standalone(composition(project.manifest(workspace_root())))
         with progress("checking the members alone"):
             sections = standalone.sections(names)
         return _sectioned(sections, output, title="members")

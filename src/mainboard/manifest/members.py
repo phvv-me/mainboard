@@ -149,7 +149,7 @@ class Composition:
     @cached_property
     def members(self) -> list[Member]:
         """Every member, in path order, refusing two that would share a namespace."""
-        paths = Membership(self.root, self.manifest.workspace.members, Project().manifest)
+        paths = Membership(self.root, self.manifest.workspace.members, Project().manifests)
         members = [self._member(path) for path in paths.directories()]
         seen: dict[str, str] = {}
         for member in members:
@@ -202,7 +202,7 @@ class Composition:
         directory = self.root / path
         name = PurePosixPath(path).name
         package = Package.read(directory / PYPROJECT)
-        source = directory / Project().manifest
+        source = Project().manifest(directory)
         try:
             tree = rendered(source)
         except FileNotFoundError:

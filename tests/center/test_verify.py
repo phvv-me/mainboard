@@ -248,7 +248,7 @@ def test_every_lint_tool_must_start_from_the_environment_or_this_machine(
     Both the read-only check and the fix a writer declares must start, since `lint` runs one
     and `lint --check` the other.
     """
-    manifest = workspace / Project().manifest
+    manifest = Project().manifest(workspace)
     manifest.write_text(manifest.read_text(encoding="utf-8") + _LINT, encoding="utf-8")
     board = Board(workspace)
     suffix = ".exe" if sys.platform == "win32" else ""

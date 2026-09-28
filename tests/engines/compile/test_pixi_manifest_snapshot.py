@@ -10,7 +10,7 @@ from mainboard.engines.compile.pixi_manifest import PixiManifest
 if TYPE_CHECKING:
     from mainboard.manifest import Manifest
 
-_PROJECT = Project().name
+_PROJECT = Project().package
 _FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -51,7 +51,7 @@ def test_the_compiler_reads_nothing_that_belongs_to_another_subsystem(workspace:
     The `workspace` fixture is the repo's one full-featured manifest, carrying `[vars]`
     interpolation, `[hosts.*]` and `[containers.*]`, none of which the pixi compiler reads.
     """
-    manifest = load(workspace / Project().manifest)
+    manifest = load(Project().manifest(workspace))
     compiled = PixiManifest.from_manifest(manifest, project_name=_PROJECT)
     document = tomllib.loads(compiled.to_toml())
 

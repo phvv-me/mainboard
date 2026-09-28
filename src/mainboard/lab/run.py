@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 def default_dataset_resolver(name: str) -> Path:
     """The hardware-free default: a dataset resolves under the project's staged-data cache."""
-    return Path(Project().out_dir) / "data" / name
+    return Path(Project().out_dir(Path.cwd())) / "data" / name
 
 
 @dataclass(frozen=True, slots=True)

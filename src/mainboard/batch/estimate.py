@@ -104,7 +104,7 @@ class Estimator:
     def __init__(
         self, board: Board, *, catalog: Catalog | None = None, ledger: Ledger | None = None
     ) -> None:
-        generated = board.root / Project().out_dir
+        generated = Project().out(board.root)
         self.board = board
         self.catalog = catalog if catalog is not None else Catalog.load(generated / _CATALOG)
         self.ledger = ledger if ledger is not None else Ledger(generated / _COSTS)
@@ -160,7 +160,7 @@ class Estimator:
         if not offers:
             return
         self.catalog.add(*offers)
-        self.catalog.save(self.board.root / Project().out_dir / _CATALOG)
+        self.catalog.save(Project().out(self.board.root) / _CATALOG)
 
     def row(self, job: BatchJob, transfer: TransferSet) -> JobEstimate:
         """Price one job against its target's fitted behavior and whatever offer covers it.

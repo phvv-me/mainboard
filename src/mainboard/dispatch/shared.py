@@ -53,15 +53,12 @@ DEFERRED_VAR = "MAINBOARD_DEFERRED"
 type HandleId = Annotated[str, BeforeValidator(str)]
 
 
-def state_dir() -> str:
+def state_dir(root: Path | None = None) -> str:
     """The subdirectory of the generated tree every dispatch artifact (sqlite state, job scripts,
-    logs) lives under, apart from the manifest compiler's output. Workspace-relative so the same
-    string names it here and on a host, where a job script writes its log for a later poll."""
-    return f"{Project().out_dir}/dispatch"
-
-
-# For a reader that wants the value; internal submodules call `state_dir()`.
-STATE_DIR = state_dir()
+    logs) lives under, apart from the manifest compiler's output, in workspace `root` (the cwd's
+    workspace). Workspace-relative so the same string names it here and on a host, where a job
+    script writes its log for a later poll."""
+    return f"{Project().out_dir(root)}/dispatch"
 
 
 def workspace(start: Path | None = None) -> Path:
@@ -77,7 +74,8 @@ def workspace(start: Path | None = None) -> Path:
 
 def state_path(root: Path | None = None) -> Path:
     """The dispatch state directory as a real path, under `root` or the discovered workspace."""
-    return (root or workspace()) / state_dir()
+    here = root or workspace()
+    return here / state_dir(here)
 
 
 def db_file(root: Path | None = None) -> Path:

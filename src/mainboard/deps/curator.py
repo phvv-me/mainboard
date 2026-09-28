@@ -50,7 +50,7 @@ class Dependencies:
 
     @property
     def path(self) -> Path:
-        return self.board.root / self.board.project.manifest
+        return self.board.project.manifest(self.board.root)
 
     def add(
         self,

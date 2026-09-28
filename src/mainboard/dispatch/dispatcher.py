@@ -45,8 +45,9 @@ if TYPE_CHECKING:
     from ..context.plan import ExecutionPlan
     from .transport import Machine
 
-# The tool a host runs its own jobs through, so nothing below spells the binary's name.
-_TOOL = Project().name
+# The tool a host runs its own jobs through, so nothing below spells the binary's name: the
+# package's own script, which every release a host may still run installs.
+_TOOL = Project().package
 
 # What never belongs in a vendored path dependency's copy on a host: caches and environments
 # beside its sources, which no build reads and one of which is gigabytes. Its own list because
@@ -74,7 +75,7 @@ def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") 
     """
     if plan.containerized:
         return None
-    artifact = f"{pinned}/{Project().out_dir}/envs/{plan.env}"
+    artifact = f"{pinned}/{Project().out_dir()}/envs/{plan.env}"
     expect = ("--expect", prefix.rpartition("/")[2]) if prefix else ()
     return ToolCall(args=("provide", plan.env, "--source", artifact, *expect), cwd=root)
 
@@ -177,7 +178,7 @@ class Dispatcher:
 
         Source synchronization stays separate from this evidence collection.
         """
-        python = load(self.root / Project().manifest).profile(host).python
+        python = load(Project().manifest(self.root)).profile(host).python
         try:
             published = Collector(self.root, ssh).pull(
                 host, root=root, path=path.rstrip("/"), python=python
@@ -245,7 +246,7 @@ class Dispatcher:
         """Fingerprint the mirror scope and explicit command files without version control."""
         tree = SourceTree(self.root)
         roots = [
-            *(paths or [Project().manifest]),
+            *(paths or [Project().manifest(self.root).name]),
             *(
                 (self.root / token).relative_to(self.root).as_posix()
                 for token in shlex.split(command)
@@ -378,8 +379,9 @@ class Dispatcher:
         with SyncLock(policy.endpoint or plan.host, self.sync.root):
             outputs = self._protected_outputs(fetch, sources=named)
             scopes = [self.scope(plan, include, hidden=outputs)]
-            if self.local(vendor_root()).is_dir():
-                scopes.append(Scope([vendor_root()], deny=patterns(_VENDOR_EXCLUDE), follow=True))
+            vendored = vendor_root(self.root)
+            if self.local(vendored).is_dir():
+                scopes.append(Scope([vendored], deny=patterns(_VENDOR_EXCLUDE), follow=True))
             Mirror(self.root, self.agent(plan, ssh=policy)).push(
                 root,
                 scopes=scopes,
@@ -818,12 +820,13 @@ class Dispatcher:
         if retcode != 0:
             raise SystemExit(f"environment on {plan.host!r} is broken: {failure_reason(err)}")
         # An unknown verb's `--help` prints the root help and succeeds, so the usage line the
-        # verb's own help opens with is what tells the two tools apart.
-        usage = shlex.quote(f"Usage: {_TOOL} job ")
-        runs = wrap(plan, root, command=f"{_TOOL} job --help | grep -q {usage}", activate=False)
+        # verb's own help opens with is what tells the two tools apart, under whichever name the
+        # host's release titles its help.
+        usage = shlex.quote(f"Usage: ({'|'.join(Project().names)}) job ")
+        runs = wrap(plan, root, command=f"{_TOOL} job --help | grep -qE {usage}", activate=False)
         retcode, _, err = remote["bash"][["-lc", runs]].run(retcode=None)
         if retcode != 0:
             raise SystemExit(
                 f"{_TOOL} on {plan.host!r} cannot run a job ({failure_reason(err)}); run "
-                f"`{_TOOL} setup {plan.host}` to install this version there"
+                f"`{Project().name} setup {plan.host}` to install this version there"
             )

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.jobs.closure import Closure, Module, Walker, _absolute
 from mainboard.jobs.target import Target
 
@@ -17,7 +17,7 @@ _ENVIRONMENT = Lab.ENVIRONMENT
 # whole, the resource it declared and the manifest. Nothing from the other campaign, nothing
 # from the ignored data directory.
 _SHIPPED = (
-    "mainboard.toml",
+    Project().manifests[0],
     "packages/core/src/core/__init__.py",
     "packages/core/src/core/data.txt",
     "packages/core/src/core/spare.py",
@@ -177,7 +177,7 @@ def test_the_job_file_itself_reaches_its_home_root_even_when_nothing_else_is_imp
     assert closure.roots == ("research/camp",)
     assert closure.first_party == ("core", "experiments", "sub")
     assert closure.files == (
-        "mainboard.toml",
+        Project().manifests[0],
         "research/camp/experiments/node/__init__.py",
         "research/camp/experiments/node/node.md",
         "research/camp/experiments/node/run.py",
@@ -249,7 +249,7 @@ def test_a_node_needs_no_repository_to_capture_its_source(lab: Lab, tmp_path: Pa
     loose = tmp_path / "loose"
     (loose / "node").mkdir(parents=True)
     (loose / "node" / "run.py").write_text("def main() -> None:\n    pass\n", encoding="utf-8")
-    (loose / "mainboard.toml").write_text("", encoding="utf-8")
+    (Project().manifest(loose)).write_text("", encoding="utf-8")
     target = Target.spelled(["node/run.py"], loose)
     assert target is not None
     closure = Closure.of(target, root=loose, distributions=(), environment=loose / _ENVIRONMENT)

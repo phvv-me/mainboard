@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.dispatch import Dispatcher, GitignoreFilter, Shipment
 from mainboard.dispatch import landing as landing_module
 from mainboard.dispatch.agent import AgentRefused
@@ -122,14 +122,17 @@ def test_a_rental_gets_the_workspace_the_tool_and_the_environment_before_the_job
     assert landed.land(shipped(dispatcher, "python train.py")).id == "4242"
     assert backend.asked == [("vast", "00:30:00")]
     root, extra, where = dispatcher.mirrored[0]
-    assert (root, where) == ("/root/.mainboard-jobs", "root@ssh5.vast.ai")
+    assert (root, where) == (
+        f"/root/{Project().jobs_roots[0].removeprefix('~/')}",
+        "root@ssh5.vast.ai",
+    )
     assert dispatcher.reached == ["root@ssh5.vast.ai"]
     assert extra[0].startswith(f"{state_dir()}/jobs/job-")
     ordered = [
         next(at for at, line in enumerate(host.lines) if marker in line)
         for marker in (
             "uv tool install",
-            "mainboard install default",
+            f"{Project().package} install default",
             "mainboard-agent-pin",
             LAUNCH,
         )
@@ -177,7 +180,7 @@ def test_the_waiting_entrypoint_is_handed_the_staged_line_naming_the_tree_the_pi
     landed.land(shipped(dispatcher, "python train.py"))
     (written,) = host.inputs
     (root, (script,), _) = dispatcher.mirrored[0]
-    assert written.startswith(f"cd {root}/{SOURCES}/sha256-")
+    assert written.startswith(f"cd {root}/{state_dir()}/{SOURCES}/sha256-")
     snapshot = written.removeprefix("cd ").split(" && ", maxsplit=1)[0]
     assert written.endswith(f"sh {snapshot}/.mainboard-jobs/{Path(script).name}\n")
     assert "export PATH=" in written

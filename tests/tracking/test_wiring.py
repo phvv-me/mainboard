@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import pytest
 
-from mainboard import Board, ExecutionPlan, Job
+from mainboard import Board, ExecutionPlan, Job, Project
 from mainboard.batch import Mirrored, Receipts, Topic
 from mainboard.batch.runner import directory
 from mainboard.cli import build
@@ -160,7 +160,7 @@ def test_a_dispatched_job_is_handed_the_line_that_makes_it_watch_itself(
     stream = asked[0].name
     assert asked[0].sampler == ToolCall(
         args=("sample", stream, "--job", stream, "--interval", "15", "--seconds", "3600"),
-        credentials=f"{asked[0].root}/.mainboard/tracking.json",
+        credentials=f"{asked[0].root}/{Project().out_dirs[0]}/tracking.json",
     )
     [(command, text)] = FakeRemote.piped
     assert "umask 077" in command and "tracking.json" in command
@@ -296,7 +296,9 @@ def test_the_sample_verb_watches_this_machine_until_it_is_told_to_stop(
     """The verb a job script calls, and the one somebody runs by hand beside a long job."""
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["sample", "live-1", "--interval", "0.01", "--seconds", "0.05"])
-    published = Receipts(depot / ".mainboard" / "batches" / "live-1" / "events.ndjson").replay()
+    published = Receipts(
+        depot / Project().out_dirs[0] / "batches" / "live-1" / "events.ndjson"
+    ).replay()
     assert published and {line.topic for line in published} == {Topic.SAMPLE}
     assert published[0].job == "live-1"
     reading = published[0].data

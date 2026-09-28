@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.dispatch import Facts, HostSetup
 from mainboard.dispatch import onboard as onboard_module
 from mainboard.dispatch.onboard import (
@@ -110,8 +110,8 @@ def test_the_remote_shell_stages_a_bare_command_and_activates_only_when_asked() 
     assert host.lines[0].startswith("cd /repo && export PATH=")
     assert "activate.sh" not in host.lines[0]
     assert host.lines[0].endswith("uv --version")
-    shell.run("mainboard facts", activate=True)
-    assert "/repo/.mainboard/activate.sh" in host.lines[1]
+    shell.run(f"{Project().package} facts", activate=True)
+    assert f"/repo/{Project().out_dirs[0]}/activate.sh" in host.lines[1]
     assert shell.ok("command -v uv")
     assert not shell.ok("missing broken thing")
     with pytest.raises(MissionError, match="`broken` failed on 'gold'"):
@@ -207,7 +207,7 @@ def test_a_host_already_running_the_declared_tool_is_onboarded_without_installin
     assert not host.ran("uv tool install")
     assert not host.ran("pip install")
     assert dispatcher.cache.host("gold").installer == "present"
-    assert host.ran("mainboard install default")
+    assert host.ran(f"{Project().package} install default")
 
 
 @pytest.mark.parametrize(
@@ -216,14 +216,15 @@ def test_a_host_already_running_the_declared_tool_is_onboarded_without_installin
         pytest.param(
             [("command -v", 1, ""), ("pip --version", 1, ""), ("-d packages", 1, "")],
             ">=0.4.8",
-            "cannot install mainboard on 'gold' by installing mainboard>=0.4.8 from an index",
+            f"cannot install {Project().package} on 'gold' by installing "
+            f"{Project().package}>=0.4.8 from an index",
             id="from-an-index",
         ),
         pytest.param(
             [("command -v", 1, ""), ("pip --version", 1, "")],
             "",
-            "cannot install mainboard on 'gold' by installing from the source this workspace "
-            "vendors at packages/mainboard",
+            f"cannot install {Project().package} on 'gold' by installing from the source this "
+            f"workspace vendors at packages/{Project().package}",
             id="from-the-vendored-source",
         ),
     ],
@@ -280,12 +281,12 @@ def test_a_host_owing_runs_is_never_given_a_different_environment_under_them(
         return
     with pytest.raises(MissionError, match=r"still owes 1 run\(s\) an outcome \(F1\)"):
         setup.run()
-    assert not host.ran("mainboard install")
+    assert not host.ran(f"{Project().package} install")
 
 
 def test_read_facts_starts_at_the_first_brace_and_refuses_output_carrying_no_snapshot() -> None:
-    assert facts_command() == "mainboard facts --json"
-    assert gpus_command() == "mainboard gpus --json"
+    assert facts_command() == f"{Project().package} facts --json"
+    assert gpus_command() == f"{Project().package} gpus --json"
     assert read_facts(f"module: loading cuda\n{_FACTS_JSON}\n").hostname == "gold-1"
     with pytest.raises(MissionError, match="no host facts"):
         read_facts("command not found: mainboard\n")
@@ -304,10 +305,10 @@ def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
         report = setup.run()
     assert dispatcher.mirrored == [("gold", "/repo")]
     assert host.ran("uv tool install")
-    assert host.ran("mainboard install default --profile gold")
-    assert host.ran("test -f /repo/.mainboard/activate.sh")
+    assert host.ran(f"{Project().package} install default --profile gold")
+    assert host.ran(f"test -f /repo/{Project().out_dirs[0]}/activate.sh")
     assert (report.installer, report.tool, report.env) == ("uv", "0.1.0", "default")
-    assert report.activate == "/repo/.mainboard/activate.sh"
+    assert report.activate == f"/repo/{Project().out_dirs[0]}/activate.sh"
     assert report.capabilities is not None and report.capabilities.pixi.endswith("/pixi")
     assert (report.root, report.capabilities.home) == ("/repo", "/home/me")
     assert report.hardware is not None and report.hardware.hostname == "gold-1"
@@ -332,9 +333,9 @@ def test_onboarding_a_named_environment_verifies_that_environments_own_activatio
     setup, _ = onboarding(host, monkeypatch)
     setup.plan = plan(env="serving")
     report = setup.run()
-    assert host.ran("mainboard install serving --profile gold")
-    assert host.ran("test -f /repo/.mainboard/activate-serving.sh")
-    assert report.activate == "/repo/.mainboard/activate-serving.sh"
+    assert host.ran(f"{Project().package} install serving --profile gold")
+    assert host.ran(f"test -f /repo/{Project().out_dirs[0]}/activate-serving.sh")
+    assert report.activate == f"/repo/{Project().out_dirs[0]}/activate-serving.sh"
 
 
 @pytest.mark.parametrize(
@@ -342,14 +343,14 @@ def test_onboarding_a_named_environment_verifies_that_environments_own_activatio
     [
         (
             (
-                ".mainboard/envs/default/pixi.toml",
-                ".mainboard/envs/default/pixi.lock",
-                ".mainboard/envs/default/state.toml",
+                f"{Project().out_dirs[0]}/envs/default/pixi.toml",
+                f"{Project().out_dirs[0]}/envs/default/pixi.lock",
+                f"{Project().out_dirs[0]}/envs/default/state.toml",
             ),
             False,
-            "mainboard install default --profile gold",
+            f"{Project().package} install default --profile gold",
         ),
-        ((), True, "mainboard install default --resolve --profile gold"),
+        ((), True, f"{Project().package} install default --resolve --profile gold"),
     ],
 )
 def test_onboarding_ships_the_compiled_artifact_unless_told_to_solve_on_the_host(
@@ -376,8 +377,10 @@ def test_onboarding_places_the_default_root_under_the_home_the_probe_found(
     """The probe already answered where home is, so nothing asks the host twice."""
     host = machine_with(rules=_HEALTHY)
     setup, dispatcher = onboarding(host, monkeypatch, root=HostProfile().root)
-    assert setup.run().root == "/home/me/.mainboard-jobs"
-    assert dispatcher.mirrored == [("gold", "/home/me/.mainboard-jobs")]
+    assert setup.run().root == f"/home/me/{Project().jobs_roots[0].removeprefix('~/')}"
+    assert dispatcher.mirrored == [
+        ("gold", f"/home/me/{Project().jobs_roots[0].removeprefix('~/')}")
+    ]
     assert not host.ran('printf %s "$HOME"')
 
 
@@ -386,7 +389,7 @@ def test_onboarding_refuses_a_provisioning_that_left_no_activation_behind(
 ) -> None:
     host = machine_with(rules=(*_HEALTHY, ("test -f", 1, "")))
     setup, _ = onboarding(host, monkeypatch)
-    with pytest.raises(MissionError, match=r"has no /repo/\.mainboard/activate\.sh"):
+    with pytest.raises(MissionError, match=rf"has no /repo/\{Project().out_dirs[0]}/activate\.sh"):
         setup.run()
 
 
@@ -429,7 +432,7 @@ def test_sync_only_re_mirrors_and_re_provisions_without_bootstrap_or_hardware_pr
     report = setup.run(sync_only=True)
     assert setup.plan.profile.platform == found.pixi_platform
     assert dispatcher.mirrored == [("gold", used)]
-    assert host.ran("mainboard install default --profile gold")
+    assert host.ran(f"{Project().package} install default --profile gold")
     assert not host.ran("uv tool install")
     assert not host.ran("facts --json")
     assert not host.ran("mainboard --version")
@@ -449,7 +452,7 @@ def test_sync_only_refuses_a_host_that_was_never_onboarded_or_whose_home_was_nev
     with pytest.raises(LookupError, match="'gold' has never been set up"):
         setup.run(sync_only=True)
     dispatcher.cache.save_host(HostSetup(host="gold", root="/recorded"))
-    with pytest.raises(MissionError, match="no probed home to place ~/.mainboard-jobs"):
+    with pytest.raises(MissionError, match=f"no probed home to place {Project().jobs_roots[0]}"):
         setup.run(sync_only=True)
 
 
@@ -487,7 +490,7 @@ def test_a_host_on_another_pixi_is_brought_to_the_pin_and_refused_when_it_stays_
             MissionError, match=f"still runs pixi {named} after installing {PIXI_VERSION}"
         ):
             refused.run()
-        assert not stuck.ran("mainboard install default")
+        assert not stuck.ran(f"{Project().package} install default")
 
 
 def test_a_dead_queue_daemon_is_started_once_and_refused_when_it_stays_down(
@@ -506,7 +509,9 @@ def test_a_dead_queue_daemon_is_started_once_and_refused_when_it_stays_down(
     setup, _ = onboarding(revived, monkeypatch)
     assert setup.run().host
     assert revived.ran("pueued -d")
-    installed = next(i for i, line in enumerate(revived.lines) if "mainboard install" in line)
+    installed = next(
+        i for i, line in enumerate(revived.lines) if f"{Project().package} install" in line
+    )
     daemon = next(i for i, line in enumerate(revived.lines) if "pueued -d" in line)
     assert installed < daemon
     assert "activate.sh" in revived.lines[daemon]

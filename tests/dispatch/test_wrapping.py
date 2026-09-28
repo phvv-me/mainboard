@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from mainboard import Project
 from mainboard.dispatch import HostUnreachable, SshTransport
 from mainboard.dispatch import wrapping as wrapping_module
 from mainboard.dispatch.wrapping import absent, activation, activation_stage, connection, wrap
@@ -20,8 +21,11 @@ def test_wrap_stages_cd_then_path_then_modules_before_the_environment() -> None:
     steps = wrap(plan(), "/repo", command="python -m foo").split(" && ")
     assert steps[0] == "cd /repo"
     assert steps[1] == f"export PATH={':'.join(_USER_BINS)}:$PATH"
-    assert "if [ -f /repo/.mainboard/activate.sh ]" in steps[2]
-    assert "export PATH=/repo/.mainboard/envs/default/.pixi/envs/default/bin:$PATH" in steps[2]
+    assert f"if [ -f /repo/{Project().out_dirs[0]}/activate.sh ]" in steps[2]
+    assert (
+        f"export PATH=/repo/{Project().out_dirs[0]}/envs/default/.pixi/envs/default/bin:$PATH"
+        in steps[2]
+    )
     assert steps[-1] == "python -m foo"
     assert "module" not in " && ".join(steps)
     moduled = wrap(
@@ -61,18 +65,23 @@ def test_wrap_containerized_delegates_to_the_injected_builder_or_refuses_without
 
 def test_the_activation_stage_tries_the_named_script_then_the_prefix_then_refuses() -> None:
     """A silent wrong interpreter costs far more to find than a command that refuses to start."""
-    assert activation("/repo") == "/repo/.mainboard/activate.sh"
-    assert activation("/repo", env="serving") == "/repo/.mainboard/activate-serving.sh"
+    assert activation("/repo") == f"/repo/{Project().out_dirs[0]}/activate.sh"
+    assert (
+        activation("/repo", env="serving") == f"/repo/{Project().out_dirs[0]}/activate-serving.sh"
+    )
     default = activation_stage(plan(), "/repo")
-    assert default.startswith("if [ -f /repo/.mainboard/activate.sh ]")
-    assert "elif [ -d /repo/.mainboard/envs/default/.pixi/envs/default/bin ]" in default
+    assert default.startswith(f"if [ -f /repo/{Project().out_dirs[0]}/activate.sh ]")
+    assert (
+        f"elif [ -d /repo/{Project().out_dirs[0]}/envs/default/.pixi/envs/default/bin ]" in default
+    )
     # The default environment may run on a bare PATH, since an interactive command may need
     # nothing activated at all.
     assert default.endswith(
-        "else export PATH=/repo/.mainboard/envs/default/.pixi/envs/default/bin:$PATH; fi"
+        f"else export PATH=/repo/{Project().out_dirs[0]}/envs/default/.pixi/envs/default/bin"
+        ":$PATH; fi"
     )
     serving = activation_stage(plan(env="serving"), "/repo")
-    assert "if [ -f /repo/.mainboard/activate-serving.sh ]" in serving
+    assert f"if [ -f /repo/{Project().out_dirs[0]}/activate-serving.sh ]" in serving
     assert "envs/default" not in serving
     assert serving.endswith("exit 1; fi")
 
@@ -81,12 +90,12 @@ def test_the_refusal_names_the_command_that_provisions_the_environment_where_it_
     """Naming an environment is the user stating which interpreter they want."""
     remote = activation_stage(plan(env="vserve"), "/repo")
     assert (
-        "found no vserve environment at /repo/.mainboard/envs/vserve/.pixi/envs/vserve on gold"
-        in remote
+        f"found no vserve environment at /repo/{Project().out_dirs[0]}/envs/vserve/.pixi/envs/"
+        "vserve on gold" in remote
     )
-    assert "mainboard setup gold --env vserve" in remote
+    assert f"{Project().name} setup gold --env vserve" in remote
     here = activation_stage(plan(host="local", env="vserve"), "/repo")
-    assert "mainboard install vserve`" in here
+    assert f"{Project().name} install vserve`" in here
     assert "--on" not in here
     assert "found no vserve environment" in wrap(
         plan(env="vserve"), "/repo", command="python -c 1"
@@ -94,9 +103,9 @@ def test_the_refusal_names_the_command_that_provisions_the_environment_where_it_
 
 
 def test_an_unfinished_prefix_refuses_by_naming_the_one_command_that_rebuilds_it() -> None:
-    refusal = absent("/repo/.mainboard/prefixes/default/a123", "serving")
+    refusal = absent(f"/repo/{Project().out_dirs[0]}/prefixes/default/a123", "serving")
     assert "no completed environment with the expected identity at /repo/" in refusal
-    assert "`mainboard provide serving` rebuilds exactly it" in refusal
+    assert f"`{Project().package} provide serving` rebuilds exactly it" in refusal
 
 
 def test_open_warms_the_host_before_plumbum_and_prepends_the_user_install_dirs(

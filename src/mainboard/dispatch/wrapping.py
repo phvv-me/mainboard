@@ -26,7 +26,8 @@ _CONNECT_BACKOFF = 2.0
 
 
 def activation(root: str, *, env: str = "default") -> str:
-    """The activation script a provisioned workspace under `root` carries for `env`."""
+    """The activation script a provisioned workspace under `root` carries for `env`, under the
+    state directory this workspace keeps, which a host's mirror of it keeps too."""
     return f"{root}/{Project().activation(env)}"
 
 
@@ -98,8 +99,9 @@ def activation_stage(plan: ExecutionPlan, root: str) -> str:
 
 
 def absent(prefix: str, env: str) -> str:
-    """The refusal a job whose addressed prefix is missing or unfinished prints."""
-    tool = Project().name
+    """The refusal a job whose addressed prefix is missing or unfinished prints, naming the
+    host's own tool by the script every release installs."""
+    tool = Project().package
     return (
         f"{tool} found no completed environment with the expected identity at {prefix}. It is "
         "addressed by the content of the manifest and lock this job was dispatched with, so "

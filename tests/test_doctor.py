@@ -8,7 +8,7 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 from plumbum.commands.processes import ProcessTimedOut
 
-from mainboard import Board, ComputePath, HostFacts, Survey
+from mainboard import Board, ComputePath, HostFacts, Project, Survey
 from mainboard.compute import Access
 from mainboard.dispatch import HostSetup
 from mainboard.doctor import Doctor, Section, Verdict
@@ -44,9 +44,10 @@ _BROKEN = json.dumps(
 )
 _SETTLED = json.dumps({"result": {"breakages": []}, "exit_status": 0})
 
-# The repairs the two gates name: install the reporting tool, rerun the plain command.
+# The repairs the two gates name: install the reporting tool (as the fixture manifest spells
+# it), rerun the plain command.
 _INSTALL = "mainboard add prove -l python"
-_LINT = "mainboard run -- ruff check ."
+_LINT = f"{Project().name} run -- ruff check ."
 
 # The generated tree in every state the environment section tells apart, each step the one the
 # step before it makes sense on, so a case names its state and the ladder walks up to it.
@@ -210,11 +211,11 @@ def test_a_manifest_that_loads_reports_what_it_declares(workspace: Path) -> None
 
 def test_a_manifest_that_will_not_load_is_the_whole_report(workspace: Path) -> None:
     """Every other section was going to read that manifest, so inventing them says nothing."""
-    (workspace / "mainboard.toml").write_text("[workspace]\nname = 3\n")
+    Project().manifest(workspace).write_text("[workspace]\nname = 3\n")
     sections = Doctor(Board(workspace)).sections()
     assert [found.section for found in sections] == ["manifest"]
     assert sections[0].verdict is Verdict.FAIL
-    assert sections[0].fix == "mainboard check"
+    assert sections[0].fix == f"{Project().name} check"
 
 
 @pytest.mark.parametrize(
@@ -224,24 +225,29 @@ def test_a_manifest_that_will_not_load_is_the_whole_report(workspace: Path) -> N
             "bare",
             Verdict.WARN,
             "default: nothing compiled yet",
-            "mainboard install default --resolve",
+            f"{Project().name} install default --resolve",
         ),
         (
             "compiled",
             Verdict.FAIL,
             "pixi.lock was not solved from this manifest",
-            "mainboard install default --resolve",
+            f"{Project().name} install default --resolve",
         ),
-        ("solved", Verdict.WARN, "never installed: default", "mainboard install default"),
+        ("solved", Verdict.WARN, "never installed: default", f"{Project().name} install default"),
         (
             "provisioned",
             Verdict.FAIL,
             "compiled before the current manifest: default",
-            "mainboard install default --resolve; mainboard install default",
+            f"{Project().name} install default --resolve; {Project().name} install default",
         ),
         ("blessed", Verdict.PASS, f"fresh and whole, on pixi {PIXI_VERSION}", ""),
         ("whole", Verdict.PASS, f"fresh and whole, on pixi {PIXI_VERSION}", ""),
-        ("damaged", Verdict.FAIL, "needs reinstalling: ghost", "mainboard install default"),
+        (
+            "damaged",
+            Verdict.FAIL,
+            "needs reinstalling: ghost",
+            f"{Project().name} install default",
+        ),
     ],
     ids=[
         "nothing was ever built here, a first step and not a broken state",
@@ -271,7 +277,7 @@ def test_the_environment_section_tells_apart_every_way_a_workspace_drifts(
             False,
             Verdict.WARN,
             "serving: nothing compiled yet",
-            "mainboard install serving --resolve",
+            f"{Project().name} install serving --resolve",
             id="the selected shard was never compiled",
         ),
         pytest.param(
@@ -279,7 +285,7 @@ def test_the_environment_section_tells_apart_every_way_a_workspace_drifts(
             True,
             Verdict.WARN,
             "never installed: serving",
-            "mainboard install serving",
+            f"{Project().name} install serving",
             id="compiled and solved but never installed is only missing the install",
         ),
         pytest.param(
@@ -340,7 +346,10 @@ def test_a_row_carrying_several_findings_names_the_command_that_fixes_each(
     assert found.detail == (
         "default: pixi.lock was not solved from this manifest; needs reinstalling: ghost"
     )
-    assert found.fix == "mainboard install default --resolve; mainboard install default"
+    assert (
+        found.fix
+        == f"{Project().name} install default --resolve; {Project().name} install default"
+    )
 
 
 def test_a_report_nobody_named_an_environment_for_covers_every_declared_one(
@@ -408,7 +417,7 @@ def test_the_fleet_verdict_is_a_pure_function_of_the_rows_it_was_handed(
     assert (found.fix == "") == (found.verdict is Verdict.PASS)
     assert found.detail.startswith(f"{len(usable)} ")
     if found.verdict is Verdict.WARN:
-        assert found.fix == "mainboard compute"
+        assert found.fix == f"{Project().name} compute"
     if any(row.access is Access.PROVISIONED for row in rows):
         assert "cached setup, job readiness unverified" in found.detail
 
@@ -436,12 +445,12 @@ def test_the_hosts_verdict_compares_each_recorded_digest_against_the_manifest_no
     diverged = doctor.hosts({"gold": fresh, "miyabi-g": stale, "vast": unrecorded})
     assert diverged.verdict is Verdict.WARN
     assert diverged.detail == "diverged from the current manifest: miyabi-g"
-    assert diverged.fix == "mainboard setup miyabi-g --sync-only"
+    assert diverged.fix == f"{Project().name} setup miyabi-g --sync-only"
 
     missing = doctor.hosts({"lost": missing_environment})
     assert missing.verdict is Verdict.WARN
     assert missing.detail == "diverged from the current manifest: lost"
-    assert missing.fix == "mainboard setup lost --sync-only"
+    assert missing.fix == f"{Project().name} setup lost --sync-only"
 
 
 @pytest.mark.parametrize(
@@ -453,7 +462,7 @@ def test_the_hosts_verdict_compares_each_recorded_digest_against_the_manifest_no
             _BROKEN,
             Verdict.FAIL,
             "2 breakages: .: failing_claims, research/x: stale_claims",
-            "mainboard run -- prove doctor",
+            f"{Project().name} run -- prove doctor",
             id="the findings are the gate's own judgment and are passed on as written",
         ),
         pytest.param(
@@ -579,7 +588,7 @@ def test_the_sections_are_the_questions_asked_before_starting_work(
     owning thread can.
     """
     if manifest:
-        (workspace / "mainboard.toml").write_text(manifest)
+        Project().manifest(workspace).write_text(manifest)
     board = Board(workspace)
     sections = quiet(board).sections()
     assert [found.section for found in sections] == expected
@@ -662,7 +671,7 @@ def test_an_old_root_names_one_rm_rf_per_environment_already_reprovisioned(
     until `mainboard install <env>` reprovisions them. A root holding only superseded copies
     has nothing legacy to name.
     """
-    (tmp_path / "mainboard.toml").write_text(
+    Project().manifest(tmp_path).write_text(
         '[workspace]\nname = "lab"\n\n[envs.mcmr]\n\n[envs.serving]\n'
     )
     board = Board(tmp_path)
@@ -690,7 +699,9 @@ def test_an_old_root_names_one_rm_rf_per_environment_already_reprovisioned(
             Verdict.WARN,
         ),
         (
-            Settling(detail="no periodic pass installed", fix="mainboard monitor --every 20m"),
+            Settling(
+                detail="no periodic pass installed", fix=f"{Project().name} monitor --every 20m"
+            ),
             Verdict.WARN,
         ),
     ],

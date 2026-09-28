@@ -210,7 +210,7 @@ class Sampler:
 
 def host_env(root: str) -> str:
     """Where a host under workspace `root` keeps the tracking credential, as a JSON object."""
-    return f"{root}/{Project().out_dir}/{_HOST_ENV}"
+    return f"{root}/{Project().out_dir()}/{_HOST_ENV}"
 
 
 def attesting(*, root: str, stream: str, job: str) -> ToolCall:

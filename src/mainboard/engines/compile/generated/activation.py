@@ -57,7 +57,7 @@ def module_specs(modules: Mapping[str, str]) -> tuple[str, ...]:
 
 
 class ActivationScript:
-    """A per-host `.mainboard/activate.sh` that sets up the whole runtime in one `source`.
+    """A per-host `<state directory>/activate.sh` that sets up the whole runtime in one `source`.
 
     In order: the module init, `module purge` and `module load` of the per-host pinned modules
     (which must load; an empty map skips the block), pixi's activation (as
@@ -84,7 +84,9 @@ class ActivationScript:
                 hook=self.hook.strip(),
                 # A colon even on Windows: only bash reads this, and `;` made one unusable entry.
                 binaries=":".join(shlex.quote(str(path)) for path in self.binaries),
-                runtime=shlex.join([sys.executable, "-m", f"{Project().name}.runtime.activation"]),
+                runtime=shlex.join(
+                    [sys.executable, "-m", f"{Project().package}.runtime.activation"]
+                ),
             )
         )
 

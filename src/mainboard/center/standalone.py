@@ -138,7 +138,7 @@ class Standalone:
     def _escapes(self, member: Member) -> list[Section]:
         """Every path its own files spell that climbs out of it, which a clone does not have."""
         rows: list[Section] = []
-        for name in (PYPROJECT, Project().manifest):
+        for name in (PYPROJECT, *Project().manifests):
             try:
                 text = (self.root / member.path / name).read_text(encoding="utf-8")
             except FileNotFoundError:
@@ -157,8 +157,11 @@ class Standalone:
                 )
         return rows
 
-    @staticmethod
-    def _depends(member: Member) -> list[Section]:
+    def _manifest(self, member: Member) -> str:
+        """The member's manifest as the workspace spells it, under whichever name it holds."""
+        return f"{member.path}/{Project().manifest(self.root / member.path).name}"
+
+    def _depends(self, member: Member) -> list[Section]:
         """Every task depending on a task the member itself does not declare."""
         if member.manifest is None:
             return []
@@ -169,7 +172,7 @@ class Standalone:
                 "task",
                 Verdict.FAIL,
                 f"{name} depends on {need}, which the member does not declare",
-                fix=f"declare {need} in {member.path}/{Project().manifest}",
+                fix=f"declare {need} in {self._manifest(member)}",
             )
             for table in tables
             for name, spec in table.items()
@@ -266,7 +269,7 @@ class Standalone:
                 fix = (
                     "install the member rather than import it by path"
                     if kind == "[env]"
-                    else f"declare them in {member.path}/{Project().manifest}"
+                    else f"declare them in {self._manifest(member)}"
                 )
                 detail = f"root {kind} {', '.join(reaching)} reach into it"
                 rows.append(_row(member, "root", Verdict.WARN, detail, fix=fix))

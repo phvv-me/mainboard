@@ -30,7 +30,8 @@ if TYPE_CHECKING:
     from ..manifest.schema.host import HostProfile
     from .transport import Machine
 
-_TOOL = Project().name
+# The script every release of the tool installs, so a host still on an older release runs it.
+_TOOL = Project().package
 
 # uv's official installer, used only when a host has neither uv nor pip to install the tool with.
 _UV_INSTALLER = "curl -LsSf https://astral.sh/uv/install.sh | sh"
@@ -270,11 +271,13 @@ class Windows(Dialect):
     # The installer's own inner probes leave an exit code behind that says nothing about the
     # install; the version read right after it is what vouches for the pixi it put down.
     pixi_installer = f"{WINDOWS_INSTALLER}; $LASTEXITCODE = 0"
-    # uv's trampoline stays alive for as long as the tool it launched runs.
+    # uv's trampoline stays alive for as long as the tool it launched runs, under whichever of
+    # its names it was started by, and an install replaces every one.
     holders = (
-        f"$entrypoint = Join-Path $HOME '.local\\bin\\{_TOOL}.exe'; "
-        "Get-CimInstance Win32_Process | Where-Object ExecutablePath -eq $entrypoint | "
-        'ForEach-Object { "pid $($_.ProcessId): $($_.CommandLine)" }'
+        f"$entrypoints = @({','.join(f"'{name}.exe'" for name in Project().names)}) | "
+        "ForEach-Object { Join-Path $HOME ('.local\\bin\\' + $_) }; "
+        "Get-CimInstance Win32_Process | Where-Object { $entrypoints -contains $_.ExecutablePath }"
+        ' | ForEach-Object { "pid $($_.ProcessId): $($_.CommandLine)" }'
     )
 
     def proof(self, plan: ExecutionPlan, root: str) -> str:

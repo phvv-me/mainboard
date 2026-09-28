@@ -15,7 +15,7 @@ from mainboard.dispatch.provenance import SourceTree, listing
 from mainboard.dispatch.shared import CLOSURE_VAR, DEFERRED_VAR, FIRST_PARTY_VAR
 from mainboard.jobs import call
 from mainboard.jobs.closure import Closure
-from mainboard.jobs.pins import STAGING
+from mainboard.jobs.pins import staging
 from mainboard.jobs.pytest import Judged
 from mainboard.jobs.target import Target
 
@@ -389,7 +389,7 @@ def test_a_test_target_without_a_listing_runs_under_pytests_hook_and_reads_stage
         test_local="import os\n\n\ndef test_reads_the_staged_pins():\n"
         "    assert os.environ['HF_HUB_CACHE'].endswith('pins')\n"
     )
-    (pytester.path / STAGING).mkdir(parents=True)
+    (pytester.path / staging(pytester.path)).mkdir(parents=True)
     monkeypatch.delenv(CLOSURE_VAR, raising=False)
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))

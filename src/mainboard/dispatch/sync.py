@@ -22,9 +22,10 @@ from filelock import FileLock
 from patos import FrozenModel
 
 from ..core.errors import MissionError
+from ..core.project import Project
 from .agent import Rules, Scope, walk
 from .agent.program import FILE, LINK
-from .shared import state_dir, state_path
+from .shared import state_path
 from .transport import Endpoint
 
 if TYPE_CHECKING:
@@ -37,8 +38,7 @@ if TYPE_CHECKING:
 ALWAYS_EXCLUDE = (
     ".git",
     ".env",
-    f"{state_dir()}/",
-    ".mainboard/",
+    *(f"{name}/" for name in Project().out_dirs),
     ".pixi/",
     "__pycache__/",
     # Published trial output travels down only. Uploading a fetched live segment replaces

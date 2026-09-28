@@ -19,7 +19,7 @@ def test_the_whole_promise_composes(workspace: Path, monkeypatch: pytest.MonkeyP
     the queue policy consulted on the way. The fused tool's promise in one
     assertion block.
     """
-    manifest = load(workspace / Project().manifest)
+    manifest = load(Project().manifest(workspace))
     plan = Resolver(manifest).plan("miyabi-g")
     admit(plan.profile, queue="short-g", walltime="06:00:00", mem_gb=100)
 
@@ -46,7 +46,7 @@ def test_a_plan_carries_its_container_stage_or_refuses_to_be_wrapped_without_one
     workspace: Path,
 ) -> None:
     """A bare host skips the stage entirely, and a containerized one will not go without it."""
-    manifest = load(workspace / Project().manifest)
+    manifest = load(Project().manifest(workspace))
     line = wrap(Resolver(manifest).plan("gold"), "/home/pedro/projects", command="nvidia-smi")
     assert "apptainer" not in line and "docker" not in line
     assert "nvidia-smi" in line

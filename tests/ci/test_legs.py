@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.ci import SHIP, LocalLeg, Package, RemoteLeg, Result, Step, Verdict
 from mainboard.context.plan import ExecutionPlan
 from mainboard.dispatch.transport import HostUnreachable, SshTransport
@@ -81,7 +81,7 @@ def test_a_windows_leg_ships_first_then_runs_each_step_in_powershell_from_its_ow
     results = list(leg.run(gate))
 
     assert (leg.name, leg.family) == ("box", "win")
-    assert shipped == [(leg.plan, "/m/.mainboard/ci", "packages/p")]
+    assert shipped == [(leg.plan, f"/m/{Project().out_dirs[0]}/ci", "packages/p")]
     assert _verdicts(results) == [
         (SHIP, Verdict.OK),
         ("lint", Verdict.OK),
@@ -92,7 +92,7 @@ def test_a_windows_leg_ships_first_then_runs_each_step_in_powershell_from_its_ow
     assert timeout == gate[0].timeout
     assert command[:1] == ("ssh",) and "box" in command
     script = base64.b64decode(command[-1]).decode("utf-16-le")
-    assert "Set-Location -LiteralPath '/m/.mainboard/ci/packages/p'" in script
+    assert f"Set-Location -LiteralPath '/m/{Project().out_dirs[0]}/ci/packages/p'" in script
     assert "& 'uv' 'run' 'ruff' 'check' '.'" in script
 
 
@@ -105,7 +105,7 @@ def test_a_posix_leg_runs_each_step_under_a_login_bash_in_its_own_copy(ssh: Ssh)
     command, _ = ssh.calls[0]
     assert command[-2] == "gpu"
     assert command[-1].startswith("bash -lc ")
-    assert "cd /m/.mainboard/ci/packages/p" in command[-1]
+    assert f"cd /m/{Project().out_dirs[0]}/ci/packages/p" in command[-1]
     assert "uv run pytest -k '\"'\"'a b'\"'\"'" in command[-1]
 
 

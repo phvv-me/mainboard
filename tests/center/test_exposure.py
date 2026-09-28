@@ -12,13 +12,14 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from mainboard import Project
 from mainboard.center.exposure import PATH_FILE, Exposure, directories, executables
 from mainboard.core.section import Verdict
 
 from ..strategies import WORDS
 
 # The name this tool answers to, which every shell must resolve on top of the declared tools.
-_TOOL = "mainboard"
+_TOOL = Project().name
 
 # The PATH value a PowerShell `SetEnvironmentVariable` call writes, as its single-quoted literal.
 _WRITTEN = re.compile(r"'Path', '((?:[^']|'')*)', 'User'")
@@ -208,16 +209,16 @@ def test_each_shell_kind_is_asked_the_way_an_agent_starts_it(tmp_path: Path) -> 
     assert [row.section for row in rows] == ["path bash", "path cmd", "path pwsh", "path zsh"]
     assert rows[0].detail == (
         "0 of 8 resolve into the environment; "
-        "missing mainboard, tool0, tool1, tool2, tool3, tool4 and 3 more"
+        f"missing {_TOOL}, tool0, tool1, tool2, tool3, tool4 and 3 more"
     )
-    assert rows[0].fix == "mainboard install, then open a new shell"
+    assert rows[0].fix == f"{Project().name} install, then open a new shell"
     asked = {argv[0]: argv for argv, _ in spawn.ran}
     assert asked["/bin/bash"][1] == "-lc"
     assert asked["/bin/zsh"][1] == "-c"
-    assert "for t in mainboard tool0" in asked["/bin/zsh"][2]
+    assert f"for t in {_TOOL} tool0" in asked["/bin/zsh"][2]
     assert asked["/bin/cmd"] == ("/bin/cmd", "/d", "/c", "where", _TOOL, *names)
     assert asked["/bin/pwsh"][1:3] == ("-NoProfile", "-Command")
-    assert "@('mainboard','tool0'" in asked["/bin/pwsh"][3]
+    assert f"@('{_TOOL}','tool0'" in asked["/bin/pwsh"][3]
     assert "if ($c.Source) { $c.Source } else { $c.Definition }" in asked["/bin/pwsh"][3]
 
 
@@ -251,7 +252,7 @@ def entries(data: st.DataObject, folders: list[str], root: Path) -> tuple[list[s
     """
     others = [str(root / "other" / word) for word in data.draw(st.lists(WORDS, unique=True))]
     stale = [
-        str(root / "old" / ".mainboard" / "envs" / word / inner)
+        str(root / "old" / Project().out_dirs[0] / "envs" / word / inner)
         for word in data.draw(st.lists(WORDS, unique=True, max_size=3))
         for inner in (Path(".pixi", "envs", word, "bin"), Path("cargo", "bin"))
     ]

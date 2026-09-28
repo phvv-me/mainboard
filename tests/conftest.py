@@ -34,7 +34,7 @@ pytest_plugins = ["pytester", "mainboard.testing"]
 # faithfully as it restores a module.
 _ABSENT = object()
 
-_MANIFEST = Project().manifest
+_MANIFEST = Project().manifests[0]
 
 # Hypothesis runs derandomized: the gate demands every line and branch on every run, so a property
 # that reaches a branch must reach it again tomorrow, and with no example database a fresh checkout
@@ -145,6 +145,20 @@ def sealed_tracking() -> Iterator[None]:
         sys.modules.pop("wandb", None)
     else:
         sys.modules["wandb"] = held
+
+
+@pytest.fixture(scope="session", autouse=True)
+def outside_any_workspace(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Run the suite from a directory no workspace manifest encloses.
+
+    A path a host reads is named after the state directory of the workspace the working
+    directory lies in, so a checkout nested in a workspace (this package inside the monorepo)
+    would lend the suite that workspace's legacy name and read differently than in CI.
+    """
+    here = Path.cwd()
+    os.chdir(tmp_path_factory.mktemp("outside"))
+    yield
+    os.chdir(here)
 
 
 @pytest.fixture(autouse=True)
@@ -296,7 +310,7 @@ def depot(station: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.chdir(station)
     yield station
     for generated in ("studies", "batches"):
-        rmtree(station / Project().out_dir / generated, ignore_errors=True)
+        rmtree(Project().out(station) / generated, ignore_errors=True)
     cache = Cache(station / db_file())
     counted = " + ".join(f"(SELECT count(*) FROM {table})" for table in _TABLES)
     if cache.connection.execute(f"SELECT {counted} AS rows").fetchone()["rows"]:

@@ -228,7 +228,7 @@ class Closure(FrozenModel):
         files.update(built)
         for resource in declared.resources:
             files.update(cls.__pinned(resource, root, sources))
-        files.add(Project().manifest)
+        files.add(Project().manifest(root).name)
         if config:
             files.add(config)
         wanted, pinned = split(dict.fromkeys([*declared.needs, *needs]))

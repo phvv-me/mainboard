@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING
 
+from mainboard import Project
 from mainboard.experiments import Progress, Study, StudyEvent, StudyLedger
 
 if TYPE_CHECKING:
@@ -25,7 +26,7 @@ def test_a_study_ledger_lives_under_the_generated_studies_dir_and_reopens_by_pat
     tmp_path: Path,
 ) -> None:
     ledger = StudyLedger(tmp_path, "abc123def456")
-    assert ledger.path == tmp_path / ".mainboard" / "studies" / "abc123def456.jsonl"
+    assert ledger.path == tmp_path / Project().out_dirs[0] / "studies" / "abc123def456.jsonl"
     ledger.submitted("H1", host="gold")
     assert len(StudyLedger(tmp_path, "abc123def456").events()) == 1
     assert len(StudyLedger.at(ledger.path).events()) == 1

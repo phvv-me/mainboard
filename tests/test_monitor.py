@@ -14,7 +14,7 @@ import pytest
 from filelock import FileLock
 from plumbum.commands.processes import ProcessExecutionError
 
-from mainboard import Board, Job, MissionError
+from mainboard import Board, Job, MissionError, Project
 from mainboard.batch import Receipts, Topic
 from mainboard.batch.runner import directory
 from mainboard.cli import build
@@ -708,9 +708,9 @@ def test_queued_native_submission_cannot_verify_an_empty_transfer(
 ) -> None:
     """A native trial with no captured receipt cannot settle an empty transfer, its identity kept
     through real rendering, submission, and settlement."""
-    manifest = lab.root / "mainboard.toml"
+    manifest = Project().manifest(lab.root)
     lab.write(
-        "mainboard.toml",
+        Project().manifests[0],
         manifest.read_text() + f'\n[hosts.miyabi-g]\nkind = "{kind}"\nroot = "/repo"\n',
     )
     file = "research/project with spaces/experiments/node/test_law.py"
@@ -738,7 +738,7 @@ def test_queued_native_submission_cannot_verify_an_empty_transfer(
     assert isinstance(generated, str)
     assert generated.startswith(".mainboard-jobs/job-") and generated.endswith(".sh")
     assert (
-        board.root / ".mainboard/dispatch/jobs" / Path(generated).name
+        board.root / f"{Project().out_dirs[0]}/dispatch/jobs" / Path(generated).name
     ).is_file() and args == ()
     probing(board, monkeypatch, finishing())
     monkeypatch.setattr(Job, "pull", lambda job: None)
@@ -828,7 +828,7 @@ def test_a_rented_workspace_is_fetched_before_the_provider_destroys_it(
     assert item.pulled_path == "results/run"
     [(host, fields)] = transfers
     assert host == "root@rental.example"
-    assert fields["root"] == "/rental/.mainboard-jobs"
+    assert fields["root"] == f"/rental/{Project().jobs_roots[0].removeprefix('~/')}"
     assert fields["ssh"].endpoint.port == 2222
     assert Rented.calls[-1].get_method() == "DELETE"
 
@@ -1217,7 +1217,7 @@ def test_installing_the_pass_writes_both_units_and_arms_them(root: Path) -> None
     found = settler.install(Every.parse("20m"))
     service = settler.service.read_text(encoding="utf-8")
     timer = settler.timer.read_text(encoding="utf-8")
-    log = root / ".mainboard" / "monitor.log"
+    log = root / Project().out_dirs[0] / "monitor.log"
     assert re.fullmatch(r"mainboard-monitor-[0-9a-f]{8}\.service", settler.service.name)
     assert f"WorkingDirectory={root}" in service
     assert "ExecStart=/usr/bin/mainboard monitor --json" in service
@@ -1248,7 +1248,7 @@ def test_a_machine_with_no_periodic_pass_names_the_command_that_installs_one(
         False,
         True,
     )
-    assert found.fix == "mainboard monitor --every 20m"
+    assert found.fix == f"{Project().name} monitor --every 20m"
     assert manager.calls == []
 
 
@@ -1305,7 +1305,7 @@ def test_a_workstation_with_no_snapshot_on_path_has_nothing_for_a_timer_to_run(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("mainboard.durable.which", lambda name: None)
-    with pytest.raises(MissionError, match="no mainboard on PATH"):
+    with pytest.raises(MissionError, match=f"no {Project().package} on PATH"):
         systemd(root, Systemd()).install(Every.parse("20m"))
 
 
@@ -1319,7 +1319,7 @@ def test_removing_the_pass_disarms_it_before_taking_its_units_away(root: Path) -
     assert not settler.timer.exists() and not settler.service.exists()
     assert ("systemctl", "--user", "disable", "--now", timer) in manager.calls
     assert not found.installed
-    assert found.fix == "mainboard monitor --every 20m"
+    assert found.fix == f"{Project().name} monitor --every 20m"
     assert settler.remove().installed is False
 
 
@@ -1402,9 +1402,12 @@ def test_asking_the_machine_answers_rather_than_raising(
         (
             "20m",
             "loginctl enable-linger pedro",
-            ("mainboard: the timer sweeps every 20m", "mainboard: run `loginctl enable-linger"),
+            (
+                f"{Project().name}: the timer sweeps every 20m",
+                f"{Project().name}: run `loginctl enable-linger",
+            ),
         ),
-        ("0", "", ("mainboard: nothing periodic runs here",)),
+        ("0", "", (f"{Project().name}: nothing periodic runs here",)),
     ],
     ids=["installing prints what it installed and the step a reboot needs", "removing says so"],
 )
@@ -1424,6 +1427,6 @@ def test_the_monitor_verb_hands_the_pass_to_this_machine_and_takes_it_back(
         build(workspace)(["monitor", "--every", every])
     out = capsys.readouterr().out
     assert all(line in out for line in lines)
-    assert out.count("mainboard: ") == len(lines)
+    assert out.count(f"{Project().name}: ") == len(lines)
     assert recorder.installed == (["20m"] if fix else [])
     assert recorder.removed == (0 if fix else 1)

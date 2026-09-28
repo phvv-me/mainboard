@@ -54,7 +54,7 @@ def test_the_memory_forgets_a_job_a_day_after_it_last_grew_and_survives_being_to
 ) -> None:
     """Another process may watch a job this look was not asked about, so it is kept a day."""
     board = SimpleNamespace(root=tmp_path)
-    memory = tmp_path / Project().out_dir / "pulse.json"
+    memory = Project().out(tmp_path) / "pulse.json"
     memory.parent.mkdir(parents=True)
     memory.write_text("torn {", encoding="utf-8")
     clock = Clock()

@@ -170,7 +170,7 @@ def test_a_settled_failure_carries_what_it_said_on_the_way_out(
     that run's receipts, which is what thirty two GH200 jobs were missing on 2026-09-05.
     """
     seed_run("H9", verdict="failed")
-    stored = depot / Project().out_dir / "batches" / "train" / "H9.log"
+    stored = Project().out(depot) / "batches" / "train" / "H9.log"
     stored.parent.mkdir(parents=True, exist_ok=True)
     stored.write_text("Traceback:\n  frame\nRuntimeError: the gate failed\nexit=1\n")
 

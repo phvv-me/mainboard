@@ -35,10 +35,10 @@ class Collector:
         captures. Publication is per file; a retry can finish an interrupted import.
         """
         scope = relative_path(path)
-        with TemporaryDirectory(prefix=".mainboard-collect-", dir=self.root) as temporary:
+        with TemporaryDirectory(prefix=f".{Project().name}-collect-", dir=self.root) as temporary:
             staged = Path(temporary)
             self._extract(archive, staged=staged, scope=scope.as_posix())
-            lock = self.root / Project().out_dir / "collection.lock"
+            lock = Project().out(self.root) / "collection.lock"
             lock.parent.mkdir(parents=True, exist_ok=True)
             with FileLock(lock, timeout=self.transport.deadline):
                 pending = self._pending(staged)
@@ -57,7 +57,7 @@ class Collector:
         known = self._known(relative)
         script += f"\npack({root!r}, relative={relative.as_posix()!r}, known={known!r})\n"
         self.root.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix=".mainboard-collect-", dir=self.root) as temporary:
+        with TemporaryDirectory(prefix=f".{Project().name}-collect-", dir=self.root) as temporary:
             archive = Path(temporary) / "transfer.zip"
             self.transport.run(
                 ("ssh", *self.transport.options, self.transport.destination(host), f"{python} -"),
@@ -70,7 +70,7 @@ class Collector:
 
     def _known(self, relative: PurePosixPath) -> dict[str, str]:
         """Skip only byte-identical published files; live event snapshots still transfer."""
-        digests = Digests(str(self.root / Project().out_dir / "collection.digests.json"))
+        digests = Digests(str(Project().out(self.root) / "collection.digests.json"))
         published = (
             path
             for path in (self.root / relative).rglob("*")

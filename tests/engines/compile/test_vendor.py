@@ -4,7 +4,7 @@ from shutil import copytree
 
 import pytest
 
-from mainboard import Manifest, MissionError
+from mainboard import Manifest, MissionError, Project
 from mainboard.engines.compile import Provisioner, digest_of
 from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles
@@ -25,7 +25,7 @@ sample-lib = { path = "../../packages/sample_lib", editable = true }
 
 _PYPROJECT = '[project]\nname = "sample-lib"\nversion = "0.1.0"\n'
 
-_VENDORED = "../../../.mainboard/vendor/sample-lib"
+_VENDORED = f"../../../{Project().out_dirs[0]}/vendor/sample-lib"
 
 # A lock as pixi writes one for an editable path dependency: a relative location, no hash.
 _LOCK = f"version: 7\npackages:\n- pypi: {_VENDORED}\n  name: sample-lib\n"
@@ -35,7 +35,7 @@ def workstation(base: Path, *, manifest: str = _MANIFEST) -> Path:
     """The workspace as it stands here: inside a monorepo, below the package it depends on."""
     root = base / "mono" / "research" / "repro"
     (root / "src").mkdir(parents=True)
-    (root / "mainboard.toml").write_text(manifest, encoding="utf-8")
+    (Project().manifest(root)).write_text(manifest, encoding="utf-8")
     source = base / "mono" / "packages" / "sample_lib"
     (source / "src" / "sample_lib").mkdir(parents=True)
     (source / "pyproject.toml").write_text(_PYPROJECT, encoding="utf-8")
@@ -54,7 +54,7 @@ def mirrored(base: Path, sent_from: Path, *, manifest: str = _MANIFEST) -> Path:
     (work / "projects").mkdir(parents=True)
     root = work / "repro"
     (root / "src").mkdir(parents=True)
-    (root / "mainboard.toml").write_text(manifest, encoding="utf-8")
+    (Project().manifest(root)).write_text(manifest, encoding="utf-8")
     copytree(sent_from / vendor_root(), root / vendor_root(), symlinks=False)
     return root
 
@@ -62,7 +62,7 @@ def mirrored(base: Path, sent_from: Path, *, manifest: str = _MANIFEST) -> Path:
 def compile_at(root: Path, environment: str = "default") -> Compiler:
     """Compile one of `root`'s environments and hand back the compiler that wrote it."""
     manifest = Manifest.model_validate(
-        tomllib.loads((root / "mainboard.toml").read_text(encoding="utf-8"))
+        tomllib.loads((Project().manifest(root)).read_text(encoding="utf-8"))
     )
     compiler = Provisioner(root, manifest).compiler_for(environment)
     with GeneratedFiles(directory=compiler.out).locked() as files:
@@ -99,10 +99,10 @@ def test_a_dependency_that_leaves_the_root_is_compiled_at_a_location_inside_it(
     assert _VENDORED in compiled
     assert "packages/sample_lib" not in compiled
     anchor = anchored(compiled, root=root, generated_dir=environment_shard("default"))
-    assert f'path = "{root.as_posix()}/.mainboard/vendor/sample-lib"' in anchor
+    assert f'path = "{root.as_posix()}/{Project().out_dirs[0]}/vendor/sample-lib"' in anchor
     assert self_installed(compiled, generated_dir=environment_shard("default")) == [
         "",
-        ".mainboard/vendor/sample-lib",
+        f"{Project().out_dirs[0]}/vendor/sample-lib",
     ]
 
 
@@ -169,7 +169,7 @@ def test_a_vendored_sources_code_never_moves_an_address_but_its_metadata_does(
 def test_a_source_that_is_neither_here_nor_vendored_is_refused_by_name(tmp_path: Path) -> None:
     root = tmp_path / "mono" / "research" / "repro"
     (root / "src").mkdir(parents=True)
-    (root / "mainboard.toml").write_text(_MANIFEST, encoding="utf-8")
+    (Project().manifest(root)).write_text(_MANIFEST, encoding="utf-8")
 
     with pytest.raises(MissionError, match=r"\.\./\.\./packages/sample_lib"):
         compile_at(root)
@@ -182,7 +182,7 @@ def test_a_distribution_the_manifest_stopped_declaring_leaves_the_vendored_tree(
     compile_at(root)
     assert (root / vendor_root() / "sample-lib").is_dir()
 
-    (root / "mainboard.toml").write_text(
+    (Project().manifest(root)).write_text(
         '[workspace]\nname = "lab"\n\n[python.deps]\nlab = { path = ".", editable = true }\n',
         encoding="utf-8",
     )
@@ -233,7 +233,7 @@ packages:
 """
 
 # The same lock with the spelling pixi was handed.
-_HANDED_LOCK = _SOLVED_LOCK.replace("../../vendor/", "../../../.mainboard/vendor/")
+_HANDED_LOCK = _SOLVED_LOCK.replace("../../vendor/", f"../../../{Project().out_dirs[0]}/vendor/")
 
 
 def test_a_prefix_resolves_the_spelling_pixi_chose_and_not_only_the_one_it_was_handed() -> None:
@@ -243,8 +243,9 @@ def test_a_prefix_resolves_the_spelling_pixi_chose_and_not_only_the_one_it_was_h
         _SOLVED_LOCK, root=host, generated_dir=environment_shard("default")
     ).splitlines()
 
-    assert f"- pypi: {host}/.mainboard/vendor/atpx" in resolved
-    assert f"- pypi: {host}/.mainboard/vendor/sample-lib" in resolved
+    out = Project().out_dir()
+    assert f"- pypi: {host}/{out}/vendor/atpx" in resolved
+    assert f"- pypi: {host}/{out}/vendor/sample-lib" in resolved
     assert f"- pypi: {host}" in resolved
     assert "../.." not in "\n".join(resolved)
 
@@ -254,7 +255,7 @@ def test_two_spellings_of_one_vendored_directory_are_one_environment_address(
 ) -> None:
     shards = []
     for side, lock in (("solved", _SOLVED_LOCK), ("handed", _HANDED_LOCK)):
-        shard = tmp_path / side / ".mainboard" / "envs" / "default"
+        shard = tmp_path / side / Project().out_dirs[0] / "envs" / "default"
         shard.mkdir(parents=True)
         (shard / "pixi.toml").write_text('[workspace]\nname = "lab"\n', encoding="utf-8")
         (shard / "pixi.lock").write_text(lock, encoding="utf-8")
@@ -317,7 +318,7 @@ def test_one_workspace_compiled_on_two_machines_is_one_environment(tmp_path: Pat
     """Miyabi jobs 3300221, 3300226, 3300241 and 3300249 died at prime over the root."""
     digests = []
     for root in (tmp_path / "home/pedro/projects", tmp_path / "work/xg25g007/x10537/projects"):
-        shard = root / ".mainboard" / "envs" / "default"
+        shard = root / Project().out_dirs[0] / "envs" / "default"
         shard.mkdir(parents=True)
         (shard / "pixi.toml").write_text(
             _ROOTED_MANIFEST.format(root=root.as_posix()), encoding="utf-8"
@@ -334,7 +335,7 @@ def test_one_workspace_compiled_on_two_machines_is_one_environment(tmp_path: Pat
 def test_an_export_the_workspace_really_changed_still_moves_the_address(tmp_path: Path) -> None:
     digests = []
     for level in ("INFO", "DEBUG"):
-        shard = tmp_path / level / ".mainboard" / "envs" / "default"
+        shard = tmp_path / level / Project().out_dirs[0] / "envs" / "default"
         shard.mkdir(parents=True)
         (shard / "pixi.toml").write_text(
             _ROOTED_MANIFEST.format(root=(tmp_path / level).as_posix()).replace(
@@ -357,9 +358,10 @@ def test_a_host_reading_a_pinned_snapshot_addresses_what_the_mirror_compiled(
 ) -> None:
     """A snapshot root matched nothing: a host read fc4975ef2096b9ac, not 136d5ed03c0f20a5."""
     mirror = tmp_path / "work/xg25g007/x10537/projects"
+    out = Project().out_dirs[0]
     for shard in (
-        mirror / ".mainboard/envs/default",
-        mirror / ".mainboard/dispatch/sources/7e145df6-dirty/.mainboard/envs/default",
+        mirror / f"{out}/envs/default",
+        mirror / f"{out}/dispatch/sources/7e145df6-dirty/{out}/envs/default",
     ):
         shard.mkdir(parents=True)
         (shard / "pixi.toml").write_text(
@@ -371,7 +373,7 @@ def test_a_host_reading_a_pinned_snapshot_addresses_what_the_mirror_compiled(
         )
 
     compiled, pinned = (
-        digest_of(mirror / ".mainboard/envs/default"),
-        digest_of(mirror / ".mainboard/dispatch/sources/7e145df6-dirty/.mainboard/envs/default"),
+        digest_of(mirror / f"{out}/envs/default"),
+        digest_of(mirror / f"{out}/dispatch/sources/7e145df6-dirty/{out}/envs/default"),
     )
     assert compiled == pinned

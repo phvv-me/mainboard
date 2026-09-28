@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 def runner() -> str:
     """The module a job's script runs its target through, `python -m` style."""
-    return f"{Project().name}.jobs.call"
+    return f"{Project().package}.jobs.call"
 
 
 class Shipment(FrozenModel):

@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
-from mainboard import Board, ComputePath, HostFacts
+from mainboard import Board, ComputePath, HostFacts, Project
 from mainboard.compute import Survey
 from mainboard.deps import Change, Dependencies
 from mainboard.dispatch import HostSetup
@@ -74,7 +74,7 @@ class Lab:
     DISTRIBUTIONS = ("packages/core/src", "packages/sub/src")
     # Where the lab's compiled target environment would sit, the shape a dispatched job's
     # closure reads a distribution's installed shape from.
-    ENVIRONMENT = ".mainboard/envs/default/.pixi/envs/default"
+    ENVIRONMENT = f"{Project().out_dirs[0]}/envs/default/.pixi/envs/default"
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -124,7 +124,7 @@ def build_lab(root: Path) -> Lab:
     lab.write("packages/sub/src/sub/__init__.py", "")
     lab.write("packages/sub/src/sub/thing.py", "THING = 1\n")
     lab.write(
-        "mainboard.toml",
+        Project().manifests[0],
         """[workspace]
 name = "lab"
 

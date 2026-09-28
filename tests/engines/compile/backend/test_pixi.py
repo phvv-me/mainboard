@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from plumbum import CommandNotFound
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.engines.compile.backend import (
     PIXI_VERSION,
     CommandResult,
@@ -61,8 +61,10 @@ def test_command_vouches_declared_floors_through_its_environment(
 @pytest.mark.parametrize(
     ("env", "resolve", "command"),
     [
-        pytest.param("default", False, "mainboard install", id="default-locked"),
-        pytest.param("training", True, "mainboard install training --resolve", id="named-resolve"),
+        pytest.param("default", False, f"{Project().name} install", id="default-locked"),
+        pytest.param(
+            "training", True, f"{Project().name} install training --resolve", id="named-resolve"
+        ),
     ],
 )
 def test_windows_home_storage_failure_names_the_outside_sandbox_provisioning_command(

@@ -42,9 +42,6 @@ _SLURM_LIVE = {SlurmState.PENDING, SlurmState.RUNNING, SlurmState.SUSPENDED, Slu
 _SQUEUE_FORMAT = "%i|%j|%T|%P|%M"
 _SACCT_FORMAT = "JobID,State,ExitCode"
 
-# `%j` is SLURM's job-id substitution, giving the same merged-output path a PBS runner writes.
-_LOG_TEMPLATE = f"{state_dir()}/logs/%j.log"
-
 
 class SlurmJob(Model):
     """One SLURM job row, parsed from `squeue` or `sacct`."""
@@ -130,8 +127,13 @@ def _build_resource_flags(resources: Resources) -> list[str]:
 
 
 def build_sbatch_flags(resources: Resources, script: str) -> list[str]:
-    """Render `resources` as `sbatch` flags, including the output sink and the script itself."""
-    return ["sbatch", f"--output={_LOG_TEMPLATE}", *_build_resource_flags(resources), script]
+    """Render `resources` as `sbatch` flags, including the output sink and the script itself.
+
+    The sink's `%j` is SLURM's job-id substitution, giving the same merged-output path a PBS
+    runner writes.
+    """
+    log = f"{state_dir()}/logs/%j.log"
+    return ["sbatch", f"--output={log}", *_build_resource_flags(resources), script]
 
 
 def slurm_verdict(state: SlurmState | str | None, exit_code: int | None) -> str:

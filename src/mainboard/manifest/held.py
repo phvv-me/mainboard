@@ -39,7 +39,7 @@ class Holdings:
     """The file of held machines inside one workspace's dispatch state."""
 
     def __init__(self, root: Path) -> None:
-        self.path = root / Project().out_dir / "dispatch" / "holds.json"
+        self.path = Project().out(root) / "dispatch" / "holds.json"
 
     def read(self) -> dict[str, Held]:
         """Every held machine by alias."""

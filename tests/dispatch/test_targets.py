@@ -5,7 +5,7 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.dispatch import Facts, resolve, smallest_fit, ssh_hosts
 from mainboard.dispatch import targets as targets_mod
 from mainboard.dispatch.targets import home_of, placed, probe_capabilities, rooted
@@ -23,6 +23,7 @@ queue=interact-g
 pixi=/home/me/.pixi/bin/pixi
 uv=/home/me/.local/bin/uv
 platform=Linux aarch64
+jobs=~/.mainboard-jobs
 """
 
 
@@ -48,10 +49,14 @@ def test_a_multi_alias_host_line_yields_each_of_its_destinations(tmp_path: Path)
 
 
 def test_the_capabilities_probe_parses_the_key_value_lines_its_own_script_prints() -> None:
-    for field in ("home=", "kind=", "gpu=", "mem=", "account=", "queue=", "pixi=", "uv="):
+    fields = ("home=", "kind=", "gpu=", "mem=", "account=", "queue=", "pixi=", "uv=", "jobs=")
+    for field in fields:
         assert field in targets_mod._CAPABILITIES
         assert field in targets_mod._WINDOWS_CAPABILITIES
     assert "uname -sm" in targets_mod._CAPABILITIES
+    # Both probes look for the tool's jobs folder under every name, the primary first.
+    assert "for d in .mb-jobs .mainboard-jobs;" in targets_mod._CAPABILITIES
+    assert "@('.mb-jobs','.mainboard-jobs')" in targets_mod._WINDOWS_CAPABILITIES
     transport = RecordingTransport(rules=[("bash -lc", 0, _GPU_PROBE)])
     facts = probe_capabilities("miyabi-g", ssh=transport)
     assert transport.calls[-1][:3] == ["ssh", "-o", "BatchMode=yes"]
@@ -68,6 +73,7 @@ def test_the_capabilities_probe_parses_the_key_value_lines_its_own_script_prints
         platform="Linux aarch64",
         pixi="/home/me/.pixi/bin/pixi",
         uv="/home/me/.local/bin/uv",
+        jobs="~/.mainboard-jobs",
     )
     assert facts.pixi_platform == "linux-aarch64"
 
@@ -130,7 +136,7 @@ def test_a_tilde_root_is_placed_under_the_probed_home_and_any_other_root_is_kept
 def test_a_root_no_probe_has_placed_is_refused_with_the_setup_that_places_it() -> None:
     assert rooted(HostProfile(root="/work/x"), host="gold") == "/work/x"
     with pytest.raises(
-        MissionError, match=r"no probed home to place ~/.mainboard-jobs.*setup gold"
+        MissionError, match=rf"no probed home to place {Project().jobs_roots[0]}.*setup gold"
     ):
         rooted(HostProfile(), host="gold")
 
@@ -142,7 +148,7 @@ def test_resolve_fills_only_the_gaps_the_manifest_left_open() -> None:
     filled = resolve(HostProfile(kind="auto", account=""), facts)
     assert (filled.kind, filled.root, filled.account) == (
         "pbs",
-        "/home/me/.mainboard-jobs",
+        f"/home/me/{Project().jobs_roots[0].removeprefix('~/')}",
         "labgrp",
     )
     assert filled.platform == "linux-64"
@@ -151,6 +157,26 @@ def test_resolve_fills_only_the_gaps_the_manifest_left_open() -> None:
     assert (kept.kind, kept.root, kept.account) == ("ssh", "/custom/root", "declared")
     assert kept.platform == "win-64"
     assert resolve(declared, Facts(name="gold")) is declared
+
+
+def test_an_unset_root_keeps_the_jobs_folder_a_host_already_uses_under_any_name() -> None:
+    """A host set up under the legacy name never moves; only a host holding none gets the new."""
+    fresh, legacy = (f"/home/me/{root.removeprefix('~/')}" for root in Project().jobs_roots)
+    facts = Facts(name="gold", home="/home/me", kind="ssh")
+    unset = HostProfile()
+    assert resolve(unset, facts).root == fresh
+    # The probe found the legacy folder in the home, as on a host an older release set up.
+    probed = facts.model_copy(update={"jobs": Project().jobs_roots[1]})
+    assert resolve(unset, probed).root == legacy
+    # A record from before the probe looked still names the folder the setup placed.
+    assert resolve(unset, facts, recorded=legacy).root == legacy
+    # A recorded root that was the manifest's own, since dropped, is not one to keep.
+    assert resolve(unset, facts, recorded="/custom/root").root == fresh
+    # A root the manifest spells always wins, and resolving twice changes nothing.
+    assert (
+        resolve(HostProfile(root="/custom/root"), probed, recorded=legacy).root == "/custom/root"
+    )
+    assert resolve(resolve(unset, probed), facts).root == legacy
 
 
 def test_smallest_fit_keeps_the_big_iron_free_or_names_what_it_had_to_choose_from() -> None:

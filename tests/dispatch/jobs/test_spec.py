@@ -9,6 +9,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from mainboard import Project
 from mainboard.dispatch.evidence import receipts_in
 from mainboard.dispatch.jobs import JobSpec
 from mainboard.dispatch.shared import state_dir
@@ -65,14 +66,14 @@ def test_a_pbs_render_needs_an_explicit_walltime_and_carries_the_full_header() -
         "#PBS -l walltime=06:00:00",
         "#PBS -W group_list=xg25g007",
         "#PBS -j oe",
-        "# A mainboard job. The record below is what runs; this line hands it over.",
+        f"# A {Project().package} job. The record below is what runs; this line hands it over.",
     ]
     # PBS enforces the walltime and spools the output itself, so the runner does neither.
     job = recorded(text)
     assert (job.command, job.walltime, job.logs) == (
         "python -m foo",
         "",
-        "/repo/.mainboard/dispatch/logs",
+        f"/repo/{Project().out_dirs[0]}/dispatch/logs",
     )
 
 
@@ -104,23 +105,26 @@ def test_every_job_enters_the_plans_own_environment_or_refuses_to_start() -> Non
     """A queued job and an interactive run must land in the same interpreter."""
     default = spec().job(pbs=False).activation
     assert default == WorkspaceActivation(
-        script="/repo/.mainboard/activate.sh",
-        prefix="/repo/.mainboard/envs/default/.pixi/envs/default",
+        script=f"/repo/{Project().out_dirs[0]}/activate.sh",
+        prefix=f"/repo/{Project().out_dirs[0]}/envs/default/.pixi/envs/default",
         refusal=default.refusal,
     )
-    assert "found no default environment at /repo/.mainboard/envs/default" in default.refusal
-    assert "mainboard setup gold --env default" in default.refusal
+    assert (
+        f"found no default environment at /repo/{Project().out_dirs[0]}/envs/default"
+        in default.refusal
+    )
+    assert f"{Project().name} setup gold --env default" in default.refusal
     serving = spec(plan=plan(env="serving")).job(pbs=False).activation
     assert isinstance(serving, WorkspaceActivation)
-    assert serving.script == "/repo/.mainboard/activate-serving.sh"
+    assert serving.script == f"/repo/{Project().out_dirs[0]}/activate-serving.sh"
 
 
 def test_an_addressed_environment_is_entered_frozen_and_never_reconciled() -> None:
     """The activation is the prefix's own, which stops a job asking pixi to reconcile anything."""
-    prefix = "/repo/.mainboard/prefixes/default/abcd1234"
+    prefix = f"/repo/{Project().out_dirs[0]}/prefixes/default/abcd1234"
     frozen = spec(prefix=prefix).job(pbs=False).activation
     assert frozen == PrefixActivation(prefix=prefix, env="default", refusal=frozen.refusal)
-    assert "mainboard provide default` rebuilds exactly it" in frozen.refusal
+    assert f"{Project().package} provide default` rebuilds exactly it" in frozen.refusal
 
 
 def test_the_job_owns_its_pythonpath_command_and_container() -> None:
@@ -169,7 +173,9 @@ def test_a_dispatched_job_carries_the_provenance_a_mirror_cannot_derive_and_noth
 
 def test_the_calls_around_the_command_travel_as_this_tools_own_verbs() -> None:
     build = ToolCall(args=("provide", "default", "--source", "x"), cwd="/repo")
-    watch = ToolCall(args=("sample", "s", "--job", "j"), credentials="/repo/.mainboard/t.json")
+    watch = ToolCall(
+        args=("sample", "s", "--job", "j"), credentials=f"/repo/{Project().out_dirs[0]}/t.json"
+    )
     attest = ToolCall(args=("attest", "s", "--job", "j"))
     job = recorded(spec(provide=build, sampler=watch, attestation=attest).render(pbs=False))
     assert (job.provide, job.sampler, job.attestation) == (build, watch, attest)
@@ -189,8 +195,10 @@ def test_a_rendered_script_run_by_sh_hands_over_to_the_tool_on_its_path(
     tool = shutil.which("mainboard", path=str(Path(sys.executable).parent))
     if tool is None:
         pytest.skip("the tool's console script is not installed beside this interpreter")
-    (tmp_path / ".mainboard").mkdir()
-    (tmp_path / ".mainboard" / "activate.sh").write_text("echo activating\n", encoding="utf-8")
+    (tmp_path / Project().out_dirs[0]).mkdir()
+    (tmp_path / Project().out_dirs[0] / "activate.sh").write_text(
+        "echo activating\n", encoding="utf-8"
+    )
     receipt = '{"trial_receipt": {"run_id": "sh"}}'
     command = f"printf '%s\\n' {shlex.quote(receipt)} >> \"$MAINBOARD_RECEIPTS\"; exit 3"
     script = tmp_path / "job.sh"

@@ -160,7 +160,12 @@ _WAITED = {"host": "", "timeout": 3600.0, "interval": 5.0, "stall": 1200.0, "say
         ),
         (
             ["collect", "results/run", "--on", "gold"],
-            ("fetch_path", "", ("gold",), {"root": "~/.mainboard-jobs", "path": "results/run"}),
+            (
+                "fetch_path",
+                "",
+                ("gold",),
+                {"root": Project().jobs_roots[0], "path": "results/run"},
+            ),
         ),
     ],
     ids=[
@@ -672,7 +677,7 @@ def test_the_mode_flags_refuse_each_other_before_anything_is_probed(
 
 
 def test_lanes_refuses_a_windows_roster_before_collecting_or_dispatching(depot: Path) -> None:
-    manifest = depot / "mainboard.toml"
+    manifest = Project().manifest(depot)
     original = manifest.read_text()
     try:
         manifest.write_text(original + '\n[hosts.homelab]\nplatform = "win-64"\nkind = "ssh"\n')
@@ -1028,7 +1033,7 @@ def test_lanes_run_dispatches_nothing_until_a_plan_exists_and_is_agreed(
     with pytest.raises(refusal, match=match):
         build(depot)(["lanes", "run", _LANE, "--on", "local,gold", "--group", "model", *flags])
     assert launcher.argv == [
-        Project().name,
+        Project().package,
         *("run", "--", "python", "-m", "mainboard.jobs.lanes", "collect", _LANE),
     ]
     assert relayed == []

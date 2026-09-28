@@ -59,9 +59,10 @@ _SYNCED = ".mainboard-synced"
 _ENVS = "envs"
 
 
-def environment_shard(environment: str) -> PurePosixPath:
-    """The workspace-relative directory `environment`'s artifact is generated into, by name."""
-    return PurePosixPath(Project().out_dir) / _ENVS / environment_segment(environment)
+def environment_shard(environment: str, root: Path | None = None) -> PurePosixPath:
+    """The directory `environment`'s artifact is generated into, by name, relative to workspace
+    `root` (the cwd's workspace)."""
+    return PurePosixPath(Project().out_dir(root)) / _ENVS / environment_segment(environment)
 
 
 def validate_environment_roster(manifest: Manifest) -> None:
@@ -120,14 +121,14 @@ class Provisioner:
     """Compiles a manifest into a pixi workspace and keeps it installed and activatable.
 
     Every entry point recompiles under one lock once the manifest moved on, so nothing is served
-    from a stale `.mainboard/`.
+    from a stale state directory.
     """
 
     def __init__(self, root: Path, manifest: Manifest) -> None:
         validate_environment_roster(manifest)
         self.root = root
         self.manifest = manifest
-        self.out = root / Project().out_dir
+        self.out = Project().out(root)
         self._shards: dict[str, _EnvironmentShard] = {}
 
     def _shard(self, environment: str = "default") -> _EnvironmentShard:
@@ -135,7 +136,7 @@ class Provisioner:
         environment = environment_segment(environment)
         self.manifest.environment(environment)
         if environment not in self._shards:
-            directory = self.root / environment_shard(environment)
+            directory = self.root / environment_shard(environment, self.root)
             self._shards[environment] = _EnvironmentShard(
                 self.root, self.manifest, directory, environment
             )

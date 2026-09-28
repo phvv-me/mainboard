@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from mainboard import Project
 from mainboard.batch import Topic
 from mainboard.runtime.job import ToolCall
 from mainboard.tracking import Sampler, attesting, host_env, sampling
@@ -176,4 +177,4 @@ def test_a_dispatched_job_starts_the_sampler_itself_or_is_left_alone(
         )
     )
     assert call == expected
-    assert host_env("/work/p") == "/work/p/.mainboard/tracking.json"
+    assert host_env("/work/p") == f"/work/p/{Project().out_dirs[0]}/tracking.json"

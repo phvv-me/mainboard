@@ -15,7 +15,7 @@ from mainboard.engines.compile.backend.result import CommandResult
 from mainboard.git.process import Git
 from mainboard.manifest.loading import composition
 
-_MANIFEST = Project().manifest
+_MANIFEST = Project().manifests[0]
 
 # The root's `PYTHONPATH`: a directory holding `common`, a member's own `src/`, and a directory
 # outside the workspace, which no clone could be missing.
@@ -109,7 +109,7 @@ def life(tmp_path: Path) -> Path:
             _MANIFEST: _ROOT,
             "research/common/__init__.py": "",
             "research/common/bases.py": "",
-            "research/loose/mainboard.toml": '[tasks]\nlook = "echo"\n',
+            f"research/loose/{Project().manifests[0]}": '[tasks]\nlook = "echo"\n',
         },
     )
     _repository(
@@ -186,12 +186,13 @@ def test_every_member_is_judged_for_whoever_clones_it_alone(
         (
             "research/head: escape",
             "fail",
-            "mainboard.toml python.deps.lib.path reaches ../../packages/lib, outside the member",
+            f"{Project().manifests[0]} python.deps.lib.path reaches ../../packages/lib, "
+            "outside the member",
         ),
         (
             "research/head: escape",
             "fail",
-            "mainboard.toml tasks.cache.env.DIR reaches ../cache, outside the member",
+            f"{Project().manifests[0]} tasks.cache.env.DIR reaches ../cache, outside the member",
         ),
         (
             "research/head: task",

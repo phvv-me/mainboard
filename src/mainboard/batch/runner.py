@@ -222,4 +222,4 @@ def labelled_batch(label: str) -> str:
 
 def directory(board: Board, batch_id: str) -> Path:
     """Where `batch_id` keeps its receipts under `board`'s generated tree."""
-    return board.root / Project().out_dir / _BATCHES / batch_id
+    return Project().out(board.root) / _BATCHES / batch_id

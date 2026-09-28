@@ -88,7 +88,7 @@ class Pulses:
         """
         self.read = read or Probe(board)
         self.clock = clock
-        self.memory = board.root / Project().out_dir / _MEMORY
+        self.memory = Project().out(board.root) / _MEMORY
 
     def taken(self, records: Sequence[RunRecord]) -> dict[RunRecord, Pulse]:
         """Every running record's pulse, leaving out a run whose host did not answer and one that

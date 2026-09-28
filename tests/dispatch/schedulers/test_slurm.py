@@ -4,6 +4,7 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
+from mainboard import Project
 from mainboard.dispatch.schedulers import Slurm, build_sbatch_flags, slurm_verdict
 from mainboard.dispatch.schedulers import slurm as slurm_mod
 from mainboard.dispatch.schedulers.slurm import (
@@ -75,7 +76,7 @@ def test_only_a_set_resource_becomes_an_sbatch_flag(resources: Resources) -> Non
     """A CPU-only job must carry no `--gpus`, since a cluster without GPU GRES rejects one."""
     flags = build_sbatch_flags(resources, "job.sh")
     assert flags[0] == "sbatch"
-    assert flags[1] == "--output=.mainboard/dispatch/logs/%j.log"
+    assert flags[1] == f"--output={Project().out_dirs[0]}/dispatch/logs/%j.log"
     assert flags[-1] == "job.sh"
     optional = {flag.split("=", 1)[0]: flag.split("=", 1)[1] for flag in flags[2:-1]}
     assert optional.get("--gpus") == (str(resources.gpus) if resources.gpus else None)

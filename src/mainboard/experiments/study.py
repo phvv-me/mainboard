@@ -105,14 +105,14 @@ class Progress(FrozenModel):
 
 
 class StudyLedger:
-    """A study's append-only event log at `<root>/.mainboard/studies/<study_id>.jsonl`.
+    """A study's append-only event log at `<root>/<state directory>/studies/<study_id>.jsonl`.
 
     It mirrors what dispatch records per handle in its own `Cache`, so a study's shape reads
     back without touching dispatch.
     """
 
     def __init__(self, root: Path, study_id: str) -> None:
-        self.path = root / Project().out_dir / "studies" / f"{study_id}.jsonl"
+        self.path = Project().out(root) / "studies" / f"{study_id}.jsonl"
 
     @classmethod
     def at(cls, path: Path) -> StudyLedger:

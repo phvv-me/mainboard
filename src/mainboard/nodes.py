@@ -68,5 +68,5 @@ def _children(directory: Path) -> list[Path]:
         if entry.is_dir()
         and not entry.name.startswith(".")
         and entry.name not in _SKIPPED
-        and entry.name != Project().out_dir
+        and entry.name not in Project().out_dirs
     ]

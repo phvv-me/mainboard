@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from mainboard import Project
 from mainboard.dispatch import HostUnreachable
 from mainboard.dispatch.agent import Agent, AgentRefused, Rules, Scope
 from mainboard.dispatch.provenance import Row, Status, blob_of
@@ -59,7 +60,7 @@ def test_only_a_workspace_relative_results_path_is_ever_spliced_into_the_shell(
 
 def test_a_pin_asks_the_host_for_one_tree_named_by_its_key_and_answers_where_it_stands() -> None:
     agent = RecordingAgent()
-    image = mirrored("research/compression", "mainboard.toml")
+    image = mirrored("research/compression", Project().manifests[0])
     pinned = Snapshots("/work/projects/").pin(
         agent,
         key="abc1234",
@@ -68,11 +69,11 @@ def test_a_pin_asks_the_host_for_one_tree_named_by_its_key_and_answers_where_it_
         commit="c0ffee",
         digest="d1",
     )
-    assert pinned == "/work/projects/.mainboard/dispatch/sources/abc1234"
+    assert pinned == f"/work/projects/{Project().out_dirs[0]}/dispatch/sources/abc1234"
     [request] = agent.requests
     asked = request["pin"]
     assert asked["root"] == "/work/projects"
-    assert asked["base"] == "/work/projects/.mainboard/dispatch/sources"
+    assert asked["base"] == f"/work/projects/{Project().out_dirs[0]}/dispatch/sources"
     assert asked["stamp"] == "abc1234\ncommit c0ffee\ndigest d1\n"
     assert asked["results"] == "research/compression/raw"
     assert asked["image"] == {"kind": "mirrored", "scope": image.scope}
@@ -81,7 +82,7 @@ def test_a_pin_asks_the_host_for_one_tree_named_by_its_key_and_answers_where_it_
 
 def test_a_sealed_pin_sends_its_needs_normalised_and_every_live_path_it_links() -> None:
     agent = RecordingAgent()
-    staged = f".mainboard/dispatch/jobs/job-{'c' * 64}.sh"
+    staged = f"{Project().out_dirs[0]}/dispatch/jobs/job-{'c' * 64}.sh"
     Snapshots("/work/projects").pin(
         agent,
         key="abc1234-9f9f9f9f",
@@ -97,7 +98,7 @@ def test_a_sealed_pin_sends_its_needs_normalised_and_every_live_path_it_links() 
         "digest": "ab" * 32,
         "needs": ["data/corpus"],
         "pins": ["p/x"],
-        "staging": ".mainboard/pins",
+        "staging": f"{Project().out_dirs[0]}/pins",
         "live": ["data/corpus", "research/node/evidence"],
     }
     assert (asked["script"], asked["wrapper"]) == (staged, f"{WRAPPERS}/job-{'c' * 64}.sh")
@@ -120,7 +121,7 @@ def test_a_host_that_refused_or_dropped_while_pinning_is_told_apart(
         )
 
 
-_SEALED = Sealed(listing=".mainboard/dispatch/jobs/closure-abc.tsv")
+_SEALED = Sealed(listing=f"{Project().out_dirs[0]}/dispatch/jobs/closure-abc.tsv")
 
 
 @pytest.mark.parametrize(
@@ -148,7 +149,7 @@ _SEALED = Sealed(listing=".mainboard/dispatch/jobs/closure-abc.tsv")
             id="mirrored-results-over-the-closure",
         ),
         pytest.param(
-            {"script": ".mainboard/dispatch/jobs/job-abc.sh"},
+            {"script": f"{Project().out_dirs[0]}/dispatch/jobs/job-abc.sh"},
             "full SHA-256 name",
             id="a-wrapper-not-named-by-its-whole-digest",
         ),
@@ -173,15 +174,18 @@ _MIRROR = {
     "research/compression/raw/earlier.json": "{}\n",
     "research/data/corpus.txt": "corpus\n",
     ".gitignore": "*.log\n",
-    ".mainboard/envs/default/.pixi/envs/default/marker": "env\n",
-    ".mainboard/envs/default/pixi.toml": "[workspace]\n",
-    ".mainboard/vendor/house/src/house/__init__.py": "",
-    ".mainboard/vendor/house/src/house/extra.py": "",
+    f"{Project().out_dirs[0]}/envs/default/.pixi/envs/default/marker": "env\n",
+    f"{Project().out_dirs[0]}/envs/default/pixi.toml": "[workspace]\n",
+    f"{Project().out_dirs[0]}/vendor/house/src/house/__init__.py": "",
+    f"{Project().out_dirs[0]}/vendor/house/src/house/extra.py": "",
 }
 
 
 def _mirror(root: Path) -> Path:
-    for directory in (".mainboard/dispatch/logs", ".mainboard/dispatch/jobs"):
+    for directory in (
+        f"{Project().out_dirs[0]}/dispatch/logs",
+        f"{Project().out_dirs[0]}/dispatch/jobs",
+    ):
         (root / directory).mkdir(parents=True)
     for path, text in _MIRROR.items():
         (root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -206,7 +210,7 @@ def sealed_mirror(tmp_path: Path) -> tuple[Snapshots, Sealed, str]:
             )
         ]
     ).encode()
-    listing = ".mainboard/dispatch/jobs/closure-source.tsv"
+    listing = f"{Project().out_dirs[0]}/dispatch/jobs/closure-source.tsv"
     (root / listing).write_bytes(payload)
     return Snapshots(str(root)), Sealed(listing=listing), sha256(payload).hexdigest()
 
@@ -290,7 +294,7 @@ def test_wrappers_are_frozen_by_bytes_and_not_repaired_after_corruption(
     frozen = Path(trees.pin(local(), key="wrappers", image=image, digest=digest))
     payloads = (b"#!/bin/sh\r\n# non-UTF8: \xff\r\n", b"#!/bin/sh\n# second\n")
     for payload in payloads:
-        staged = f".mainboard/dispatch/jobs/job-{sha256(payload).hexdigest()}.sh"
+        staged = f"{Project().out_dirs[0]}/dispatch/jobs/job-{sha256(payload).hexdigest()}.sh"
         (root / staged).write_bytes(payload)
         (root / staged).chmod(0o640)
         mode = (root / staged).stat().st_mode & 0o777
@@ -318,21 +322,26 @@ def test_a_pinned_tree_survives_the_sync_that_rewrites_the_mirror_under_it(root:
         Snapshots(str(root)).pin(
             local(),
             key="abc1234",
-            image=mirrored("research/compression", ignore=("raw/",), deny=(".mainboard/",)),
+            image=mirrored(
+                "research/compression", ignore=("raw/",), deny=(f"{Project().out_dirs[0]}/",)
+            ),
             results="research/compression/raw",
         )
     )
     frozen = pinned / "research/compression/pkg/mod.py"
     assert frozen.stat().st_ino == (root / "research/compression/pkg/mod.py").stat().st_ino
     # The environment, data and results are reached live in the mirror, where the pull looks.
-    assert (pinned / ".mainboard/envs/default/.pixi").is_symlink()
-    assert (pinned / ".mainboard/dispatch").is_symlink()
-    marker = pinned / ".mainboard/envs/default/.pixi/envs/default/marker"
+    assert (pinned / f"{Project().out_dirs[0]}/envs/default/.pixi").is_symlink()
+    assert (pinned / f"{Project().out_dirs[0]}/dispatch").is_symlink()
+    marker = pinned / f"{Project().out_dirs[0]}/envs/default/.pixi/envs/default/marker"
     assert marker.read_text(encoding="utf-8") == "env\n"
     # Hardlinked, not symlinked, so the job's tooling recompiles it into this snapshot.
-    generated = pinned / ".mainboard/envs/default/pixi.toml"
+    generated = pinned / f"{Project().out_dirs[0]}/envs/default/pixi.toml"
     assert not generated.is_symlink()
-    assert generated.stat().st_ino == (root / ".mainboard/envs/default/pixi.toml").stat().st_ino
+    assert (
+        generated.stat().st_ino
+        == (root / f"{Project().out_dirs[0]}/envs/default/pixi.toml").stat().st_ino
+    )
     assert (pinned / "research/data").is_symlink()
     assert (pinned / "research/compression/raw").resolve() == root / "research/compression/raw"
 
@@ -350,13 +359,13 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
 ) -> None:
     """Everything undeclared (a spare module, a vendored sibling) stays unreachable, so an import
     the closure missed fails on the node."""
-    listing = ".mainboard/dispatch/jobs/closure-abc.tsv"
+    listing = f"{Project().out_dirs[0]}/dispatch/jobs/closure-abc.tsv"
     payload = listed(
         [
             Row(path=path, blob=blob_of(root / path), status=Status.CLEAN)
             for path in (
                 "research/compression/pkg/mod.py",
-                ".mainboard/vendor/house/src/house/__init__.py",
+                f"{Project().out_dirs[0]}/vendor/house/src/house/__init__.py",
             )
         ]
     ).encode()
@@ -374,21 +383,18 @@ def test_a_sealed_tree_holds_the_listed_files_the_environment_and_the_needs_and_
     frozen = pinned / "research/compression/pkg/mod.py"
     assert frozen.stat().st_ino == (root / "research/compression/pkg/mod.py").stat().st_ino
     assert not (pinned / "research/compression/pkg/spare.py").exists()
-    assert (pinned / ".mainboard/vendor/house/src/house/__init__.py").is_file()
-    assert not (pinned / ".mainboard/vendor/house/src/house/extra.py").exists()
-    assert not (pinned / ".mainboard/vendor").is_symlink()
+    assert (pinned / f"{Project().out_dirs[0]}/vendor/house/src/house/__init__.py").is_file()
+    assert not (pinned / f"{Project().out_dirs[0]}/vendor/house/src/house/extra.py").exists()
+    assert not (pinned / f"{Project().out_dirs[0]}/vendor").is_symlink()
     assert (pinned / "research/data").is_symlink()
     assert (pinned / "research/data/corpus.txt").read_text(encoding="utf-8") == "corpus\n"
     assert (pinned / "research/compression/raw").resolve() == root / "research/compression/raw"
-    assert (pinned / ".mainboard/envs/default/.pixi").is_symlink()
-    assert (pinned / ".mainboard/dispatch").is_symlink()
+    assert (pinned / f"{Project().out_dirs[0]}/envs/default/.pixi").is_symlink()
+    assert (pinned / f"{Project().out_dirs[0]}/dispatch").is_symlink()
     assert not (pinned / ".gitignore").exists()
-    assert sorted(entry.name for entry in pinned.iterdir()) == [
-        ".mainboard",
-        CLOSURE,
-        STAMP,
-        "research",
-    ]
+    assert sorted(entry.name for entry in pinned.iterdir()) == sorted(
+        [Project().out_dirs[0], CLOSURE, STAMP, "research"]
+    )
     assert (pinned / CLOSURE).read_bytes() == payload
     with pytest.raises(SystemExit, match="the need research/absent is not on the mirror"):
         Snapshots(str(root)).pin(
@@ -444,8 +450,8 @@ def test_a_job_recompiling_its_manifest_writes_into_its_own_tree_not_the_mirrors
     pinned = Path(
         Snapshots(str(root)).pin(local(), key="abc1234", image=mirrored("research/compression"))
     )
-    generated = pinned / ".mainboard/envs/default/pixi.toml"
-    mirrored_manifest = root / ".mainboard/envs/default/pixi.toml"
+    generated = pinned / f"{Project().out_dirs[0]}/envs/default/pixi.toml"
+    mirrored_manifest = root / f"{Project().out_dirs[0]}/envs/default/pixi.toml"
     replacement = generated.with_suffix(".toml.tmp")
     replacement.write_text("[workspace]\nname = 'pinned'\n", encoding="utf-8")
     replacement.replace(generated)
@@ -495,7 +501,7 @@ def test_a_half_built_tree_waits_for_an_operator_rather_than_being_reused(
 def test_a_listing_naming_a_path_outside_the_tree_or_its_controls_is_refused(
     root: Path, row: str, refusal: str
 ) -> None:
-    listing = ".mainboard/dispatch/jobs/closure-bad.tsv"
+    listing = f"{Project().out_dirs[0]}/dispatch/jobs/closure-bad.tsv"
     payload = f"{row}\t{'0' * 64}\tclean\n".encode()
     (root / listing).write_bytes(payload)
     with pytest.raises(SystemExit, match=refusal):
@@ -510,17 +516,19 @@ def test_staged_pins_reach_the_tree_through_their_shared_directory_or_refuse_by_
 ) -> None:
     trees, image, digest = sealed_mirror
     frozen = Path(trees.pin(local(), key="pins", image=image, digest=digest))
-    pin = ".mainboard/pins/models--o--n/snapshots/r/tokenizer.json"
+    pin = f"{Project().out_dirs[0]}/pins/models--o--n/snapshots/r/tokenizer.json"
     staged = Path(trees.root) / pin
     staged.parent.mkdir(parents=True)
     staged.write_text("{}", encoding="utf-8")
     pinned = image.model_copy(update={"pins": (pin,)})
     trees.pin(local(), key="pins", image=pinned, digest=digest)
-    assert (frozen / ".mainboard/pins").is_symlink()
+    assert (frozen / f"{Project().out_dirs[0]}/pins").is_symlink()
     assert (frozen / pin).read_text(encoding="utf-8") == "{}"
     trees.pin(local(), key="pins", image=pinned, digest=digest)
-    absent = image.model_copy(update={"pins": (".mainboard/pins/absent.json",)})
-    with pytest.raises(SystemExit, match="the need .mainboard/pins/absent.json is not on"):
+    absent = image.model_copy(update={"pins": (f"{Project().out_dirs[0]}/pins/absent.json",)})
+    with pytest.raises(
+        SystemExit, match=f"the need {Project().out_dirs[0]}/pins/absent.json is not on"
+    ):
         trees.pin(local(), key="pins", image=absent, digest=digest)
 
 
@@ -531,7 +539,7 @@ def test_a_frozen_wrapper_reached_through_a_link_is_refused(
     trees, image, digest = sealed_mirror
     root = Path(trees.root)
     payload = b"#!/bin/sh\n"
-    staged = f".mainboard/dispatch/jobs/job-{sha256(payload).hexdigest()}.sh"
+    staged = f"{Project().out_dirs[0]}/dispatch/jobs/job-{sha256(payload).hexdigest()}.sh"
     (root / staged).write_bytes(payload)
     frozen = Path(trees.pin(local(), key="wrap", image=image, digest=digest, script=staged))
     wrapper = frozen / Snapshots.script(staged)
@@ -552,7 +560,9 @@ def test_a_mirrored_tree_carries_links_names_its_prefix_and_leaves_a_linked_resu
     """A results path reached through a link into the mirror is left alone, since clearing it
     would clear the mirror's results. Where a file system shares no inode, the copy is a copy."""
     (root / "research/compression/pkg/alias.py").symlink_to("mod.py")
-    (root / ".mainboard/envs/README").write_text("not an environment", encoding="utf-8")
+    (root / f"{Project().out_dirs[0]}/envs/README").write_text(
+        "not an environment", encoding="utf-8"
+    )
     (root / "research/data/out").mkdir()
     (root / "research/data/out/kept.json").write_text("{}", encoding="utf-8")
 
@@ -571,7 +581,7 @@ def test_a_mirrored_tree_carries_links_names_its_prefix_and_leaves_a_linked_resu
         )
     )
     assert os.readlink(pinned / "research/compression/pkg/alias.py") == "mod.py"
-    assert os.readlink(pinned / ".mainboard/envs/default/.pixi") == f"{prefix}/.pixi"
+    assert os.readlink(pinned / f"{Project().out_dirs[0]}/envs/default/.pixi") == f"{prefix}/.pixi"
     assert (root / "research/data/out/kept.json").is_file()
     assert (pinned / "research/data").is_symlink()
     copied = pinned / "research/compression/pkg/mod.py"

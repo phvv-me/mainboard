@@ -35,9 +35,10 @@ if TYPE_CHECKING:
 VENDOR = "vendor"
 
 
-def vendor_root() -> str:
-    """The workspace-relative directory every vendored path dependency is materialized in."""
-    return f"{Project().out_dir}/{VENDOR}"
+def vendor_root(root: Path | None = None) -> str:
+    """The directory every vendored path dependency is materialized in, relative to workspace
+    `root` (the cwd's workspace)."""
+    return f"{Project().out_dir(root)}/{VENDOR}"
 
 
 def outside(path: str) -> bool:
@@ -90,7 +91,7 @@ class Vendor:
 
     @property
     def base(self) -> Path:
-        return self.root / vendor_root()
+        return self.root / vendor_root(self.root)
 
     def roster(self) -> dict[str, str]:
         """Every distribution vendored here, against the declared location it comes from."""

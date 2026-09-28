@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from plumbum import local
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.engines.compile import Provisioner, SecondStage, task_line
 from mainboard.engines.compile.backend import CommandResult, Pixi
 from mainboard.engines.compile.compiler import Compiler
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 _BARE = '[workspace]\nname = "w"\n'
 _NODE = '[workspace]\nname = "w"\n[nodejs.deps]\nprettier = ">=3"\n'
 _PINNED = '[workspace]\nname = "w"\nplatforms = ["linux-64"]\n'
-_WRAPPED = "pixi run --manifest-path .mainboard/envs/{env}/pixi.toml --frozen"
+_WRAPPED = f"pixi run --manifest-path {Project().out_dirs[0]}/envs/{{env}}/pixi.toml --frozen"
 
 
 @pytest.fixture
@@ -60,7 +60,7 @@ def test_provision_compiles_and_installs_under_one_lock(
 ) -> None:
     """A second provision recompiles nothing, the writer being a no-op on a match."""
     provisioner = Provisioner(tmp_path, manifest_from(_PINNED))
-    assert provisioner.out == tmp_path / ".mainboard"
+    assert provisioner.out == tmp_path / Project().out_dirs[0]
     assert provisioner.pixi.manifest == provisioner.out / "envs" / "default" / "pixi.toml"
     assert provisioner.stage is provisioner.compiler.stage
     assert provisioner.artifact == provisioner.artifact_for("default")
@@ -363,9 +363,9 @@ def test_each_environment_compiles_into_an_independent_selected_manifest_shard(
         provisioner.out / "envs" / "serving" / ".pixi" / "envs" / "serving"
     )
     assert provisioner.artifact_for("serving")[:3] == (
-        ".mainboard/envs/serving/pixi.toml",
-        ".mainboard/envs/serving/pixi.lock",
-        ".mainboard/envs/serving/state.toml",
+        f"{Project().out_dirs[0]}/envs/serving/pixi.toml",
+        f"{Project().out_dirs[0]}/envs/serving/pixi.lock",
+        f"{Project().out_dirs[0]}/envs/serving/state.toml",
     )
 
 
@@ -390,7 +390,7 @@ def test_an_environment_name_cannot_escape_or_alias_its_portable_shard_directory
     manifest = manifest_from(f'[workspace]\nname = "w"\n[envs.{json.dumps(environment)}]\n')
     with pytest.raises(MissionError, match="cannot name a generated directory"):
         Provisioner(tmp_path, manifest).environment_dir(environment)
-    assert not (tmp_path / ".mainboard").exists()
+    assert not (tmp_path / Project().out_dirs[0]).exists()
 
 
 def test_environment_names_that_are_portable_segments_keep_their_logical_spelling(
@@ -400,7 +400,7 @@ def test_environment_names_that_are_portable_segments_keep_their_logical_spellin
         tmp_path, manifest_from('[workspace]\nname = "w"\n[envs."py3.14_cuda-13"]\n')
     )
     assert provisioner.environment_dir("py3.14_cuda-13") == (
-        tmp_path / ".mainboard" / "envs" / "py3.14_cuda-13"
+        tmp_path / Project().out_dirs[0] / "envs" / "py3.14_cuda-13"
     )
 
 
@@ -681,13 +681,13 @@ def test_a_task_row_added_between_dispatches_refreshes_source_but_reuses_the_pre
     (root / "src").mkdir(parents=True)
 
     def compile_with(extra: str) -> None:
-        (root / "mainboard.toml").write_text(_DISPATCHED.format(extra=extra), encoding="utf-8")
+        (Project().manifest(root)).write_text(_DISPATCHED.format(extra=extra), encoding="utf-8")
         manifest = Manifest.model_validate(
-            tomllib.loads((root / "mainboard.toml").read_text(encoding="utf-8"))
+            tomllib.loads((Project().manifest(root)).read_text(encoding="utf-8"))
         )
         Provisioner(root, manifest).recompiled("default")
 
-    shard = root / ".mainboard" / "envs" / "default"
+    shard = root / Project().out_dirs[0] / "envs" / "default"
     compile_with("")
     (shard / "pixi.lock").write_text("version: 7\n", encoding="utf-8")
     before = digest_of(shard)

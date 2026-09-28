@@ -66,7 +66,7 @@ class Fleet:
 
         A classmethod since listing studies needs no bound host.
         """
-        return reporting.overview(cache, board_root / Project().out_dir / "studies")
+        return reporting.overview(cache, Project().out(board_root) / "studies")
 
     def owner(self, handle: Handle) -> str:
         """The study id owning `handle`, empty when it belongs to no study.

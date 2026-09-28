@@ -10,7 +10,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from mainboard import MissionError
+from mainboard import MissionError, Project
 from mainboard.dispatch.provenance import Source, SourceTree, Status, blob_of, listing, named
 from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
@@ -151,7 +151,7 @@ def test_a_killed_archival_leaves_one_partial_its_retry_replaces(lab: Lab) -> No
     """The partial is named by its digest, and what a day has passed over is swept."""
     tree = SourceTree(lab.root)
     first, rows = sealed(lab)
-    folder = lab.root / ".mainboard" / "source-archives"
+    folder = Project().out(lab.root) / "source-archives"
     partial = folder / f"{first.digest}.zip.partial"
     lab.write(str(partial.relative_to(lab.root)), "killed mid-write")
     stale = [folder / "source-old" / "source.zip", folder / "other.zip.partial"]

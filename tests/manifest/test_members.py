@@ -8,7 +8,7 @@ from mainboard.engines.compile.pixi_manifest import PixiManifest
 from mainboard.manifest.loading import composition
 from mainboard.manifest.members import Package
 
-_MANIFEST = Project().manifest
+_MANIFEST = Project().manifests[0]
 
 _ROOT = """
 [workspace]

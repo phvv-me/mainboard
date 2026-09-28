@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from mainboard import Project
 from mainboard.dispatch import HostUnreachable
 from mainboard.dispatch.schedulers import (
     Local,
@@ -52,22 +53,28 @@ def test_a_host_that_runs_the_work_itself_hands_the_terminal_to_its_own_tool(
     """No queue stands between the caller and the machine, so its own tool owns activation."""
     resources = Resources()
     assert backend.interactive(env="serving", command=(), resources=resources) == (
-        "mainboard shell serving"
+        f"{Project().package} shell serving"
     )
     assert backend.interactive(
         env="default", command=("nvidia-smi", "-L"), resources=resources
-    ) == ("mainboard run --env default -- nvidia-smi -L")
+    ) == (f"{Project().package} run --env default -- nvidia-smi -L")
 
 
 def test_a_log_is_read_from_the_state_dir_path_the_job_template_writes() -> None:
-    assert log_path("/repo", handle="2435326.opbs") == "/repo/.mainboard/dispatch/logs/2435326.log"
-    assert log_path("/repo", handle="2435326") == "/repo/.mainboard/dispatch/logs/2435326.log"
+    assert (
+        log_path("/repo", handle="2435326.opbs")
+        == f"/repo/{Project().out_dirs[0]}/dispatch/logs/2435326.log"
+    )
+    assert (
+        log_path("/repo", handle="2435326")
+        == f"/repo/{Project().out_dirs[0]}/dispatch/logs/2435326.log"
+    )
     remote = machine_with("abc")
     assert read_log(remote, "/repo", handle="42", offset=10) == "abc"
     assert remote.calls[-1] == [
         "bash",
         "-lc",
-        "tail -c +11 /repo/.mainboard/dispatch/logs/42.log 2>/dev/null",
+        f"tail -c +11 /repo/{Project().out_dirs[0]}/dispatch/logs/42.log 2>/dev/null",
     ]
 
 

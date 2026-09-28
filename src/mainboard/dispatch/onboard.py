@@ -34,8 +34,9 @@ if TYPE_CHECKING:
     from ..context.plan import ExecutionPlan
     from .dispatcher import Dispatcher
 
-# The tool this workspace answers to, so nothing below spells the name of the binary it installs.
-_TOOL = Project().name
+# The tool's distribution and the script every release of it installs, so nothing below spells
+# the name of the binary it installs, and a host still on an older release answers to it.
+_TOOL = Project().package
 
 # Where the tool's own source sits inside a synced workspace that vendors it.
 _SOURCE = f"packages/{_TOOL}"
@@ -509,8 +510,9 @@ class Onboarding:
             f"{host!r} still owes {len(owed)} run(s) an outcome ({named}{more}) and this "
             f"workspace's environment has changed since {host!r} was set up. Every one of those "
             "runs activates the environment this would replace, so shipping it now would change "
-            f"what they run in while they wait. Let them settle (`{_TOOL} jobs`), or "
-            f"`{_TOOL} cancel <handle>` the ones you no longer need, then set the host up again."
+            f"what they run in while they wait. Let them settle (`{Project().name} jobs`), or "
+            f"`{Project().name} cancel <handle>` the ones you no longer need, then set the host "
+            "up again."
         )
 
     def run(self, *, sync_only: bool = False) -> HostSetup:

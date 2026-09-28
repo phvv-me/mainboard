@@ -8,6 +8,7 @@ from patos import FrozenModel
 from pydantic import Field
 
 from ...core.host import platform_selectors
+from ...core.project import Project
 from .platforms import PlatformMatrix
 
 # `Toml` backs pydantic fields below, so it must resolve at class-creation time.
@@ -25,7 +26,9 @@ _DEP_TABLES = ("dependencies", "pypi-dependencies", "dependency-overrides")
 
 _PLATFORMS = "platforms"
 _PYPI_OPTIONS = "pypi-options"
-_DEFAULT_GENERATED_DIR = PurePosixPath(".mainboard")
+# Only a generated directory's depth enters the path arithmetic below, and every state directory
+# name the tool answers to sits at the same depth.
+_DEFAULT_GENERATED_DIR = PurePosixPath(Project().out_dirs[0])
 
 # One relative path token (leading parents and the segments under them), guarded against biting
 # into a longer path (`/opt/a/../b`) or prose (`...`).

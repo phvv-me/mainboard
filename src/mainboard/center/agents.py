@@ -16,6 +16,7 @@ import tomllib
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+from ..core.project import Project
 from ..core.section import Section, Verdict
 from ..git.process import Git
 from .state import claude_key
@@ -35,8 +36,9 @@ _OPENCODE_VARIABLE = re.compile(r"\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
 # A value that is an absolute path on some machine: `/…` or `C:\…`.
 _ABSOLUTE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
 
-# The launcher that loads the workspace `.env` itself, so a server it starts needs nothing else.
-_TOOL = "mainboard"
+# The launcher that loads the workspace `.env` itself, under any of its names, so a server it
+# starts needs nothing else.
+_TOOL = Project().names
 
 type Junction = Callable[[Path, Path], str]
 
@@ -175,7 +177,9 @@ class Agents:
             section="agents: memory",
             verdict=Verdict.WARN,
             detail=f"no Claude Code memory under {folder.parent.name}",
-            fix="run `mainboard center migrate` from the previous center, which re-keys it",
+            fix=(
+                f"run `{Project().name} center migrate` from the previous center, which re-keys it"
+            ),
         )
 
     def logins(self) -> Section:
@@ -243,7 +247,7 @@ class Agents:
         if isinstance(program, str) and program and not self.which(program):
             yield f"{server}: {program} is not on PATH"
         for name in sorted(set(variable.findall(json.dumps(entry)))):
-            if name in self.environment or (name in self.dotenv and program == _TOOL):
+            if name in self.environment or (name in self.dotenv and program in _TOOL):
                 continue
             where = (
                 "only in .env, which this server's launcher does not load"
@@ -277,7 +281,7 @@ class Agents:
         The text file is set aside rather than deleted until its stand-in exists, so a refused
         link leaves the checkout exactly as git wrote it.
         """
-        aside = path.with_name(f"{path.name}.mainboard-link")
+        aside = path.with_name(f"{path.name}.{Project().name}-link")
         aside.unlink(missing_ok=True)
         if not target.is_dir():
             os.link(target, aside)

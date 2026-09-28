@@ -13,4 +13,4 @@ if TYPE_CHECKING:
 @pytest.fixture
 def loaded(workspace: Path) -> Manifest:
     """The full-featured fixture manifest, rendered and validated straight off disk."""
-    return load(workspace / Project().manifest)
+    return load(Project().manifest(workspace))

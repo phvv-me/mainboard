@@ -233,7 +233,7 @@ def test_windows_hands_the_update_to_one_worker_that_outlives_the_launcher(
     marker is old enough that its worker can no longer be on its way.
     """
     found = snapshot.stale()
-    log = snapshot.source / ".mainboard" / "self-update.log"
+    log = snapshot.source / Project().out_dirs[0] / "self-update.log"
 
     Refresh(found).run()
     Refresh(found).run()
@@ -306,7 +306,7 @@ def test_every_invocation_starts_on_its_sources_newest_code(
             ("uv", "python", "cpython-3.14.7", "python.exe"), True, id="a-uv-managed-python"
         ),
         pytest.param(
-            ("checkout", ".mainboard", "envs", "tool", ".pixi", "python.exe"),
+            ("checkout", Project().out_dirs[0], "envs", "tool", ".pixi", "python.exe"),
             False,
             id="a-project-environment-python",
         ),
@@ -419,7 +419,7 @@ def test_a_reinstall_names_its_source_absolutely_and_the_worker_reads_it_off_the
     assert found.uv[0] == "uv" and found.uv[-1] == "--force"
     assert f"{snapshot.source}[wandb]" in found.uv
     assert found.fix == ("exec", "--spec", staleness._UV, *found.uv)
-    log = snapshot.source / Project().out_dir / "self-update.log"
+    log = Project().out(snapshot.source) / "self-update.log"
     assert staleness._refresh_log(found.source) == log
 
     Refresh(found).run()
@@ -428,4 +428,4 @@ def test_a_reinstall_names_its_source_absolutely_and_the_worker_reads_it_off_the
     assert handed[handed.index("--") + 1 :] == found.uv
     assert str(log) in handed
     monkeypatch.chdir(tmp_path)
-    assert staleness._refresh_log(None) == tmp_path / Project().out_dir / "self-update.log"
+    assert staleness._refresh_log(None) == Project().out(tmp_path) / "self-update.log"

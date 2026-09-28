@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from mainboard import Project
 from mainboard.cli import build
 from mainboard.dispatch.evidence import RECEIPTS_VAR, receipts_in
 from mainboard.runtime.entry import Entering, Refusal
@@ -62,13 +63,15 @@ def job(
     **fields: str | bool | dict[str, str] | ToolCall | tuple[str, ...],
 ) -> Job:
     """A job running `command` from `tmp_path` in the default environment of its workspace."""
-    installed = tmp_path / ".mainboard" / "envs" / "default" / ".pixi" / "envs" / "default"
+    installed = (
+        tmp_path / Project().out_dirs[0] / "envs" / "default" / ".pixi" / "envs" / "default"
+    )
     return Job.model_validate(
         {
             "command": command,
             "root": str(tmp_path),
             "activation": WorkspaceActivation(
-                script=str(tmp_path / ".mainboard" / "activate.sh"),
+                script=str(tmp_path / Project().out_dirs[0] / "activate.sh"),
                 prefix=str(installed),
                 refusal="install default",
             ),
@@ -129,7 +132,7 @@ def test_a_pbs_job_appends_its_output_and_status_where_a_later_poll_reads_them(
     tmp_path: Path, capfd: pytest.CaptureFixture[str]
 ) -> None:
     """A server that purges the job from its history still leaves its exit behind."""
-    logs = tmp_path / ".mainboard" / "dispatch" / "logs"
+    logs = tmp_path / Project().out_dirs[0] / "dispatch" / "logs"
     ran = Runner(
         job(tmp_path, writing(5), logs=str(logs)),
         environ={**os.environ, "PBS_JOBID": "42.opbs"},
@@ -287,7 +290,9 @@ def test_the_command_runs_as_its_container_bash_or_its_own_words(
 def test_the_cli_hands_a_record_to_the_runner_and_exits_with_its_status(
     tmp_path: Path,
 ) -> None:
-    installed = tmp_path / ".mainboard" / "envs" / "default" / ".pixi" / "envs" / "default"
+    installed = (
+        tmp_path / Project().out_dirs[0] / "envs" / "default" / ".pixi" / "envs" / "default"
+    )
     (installed / "bin").mkdir(parents=True)
     record = job(tmp_path, python("raise SystemExit(5)")).model_dump_json()
     with pytest.raises(SystemExit) as ended:
@@ -295,7 +300,9 @@ def test_the_cli_hands_a_record_to_the_runner_and_exits_with_its_status(
     assert ended.value.code == 5
     # A queue that names the script instead, as Windows' does, hands over the same record.
     script = tmp_path / "job.sh"
-    script.write_text(f"#!/bin/sh\nexec mainboard job {shlex.quote(record)}\n", encoding="utf-8")
+    script.write_text(
+        f"#!/bin/sh\nexec {Project().package} job {shlex.quote(record)}\n", encoding="utf-8"
+    )
     with pytest.raises(SystemExit) as ended:
         build(tmp_path)(["job", str(script)])
     assert ended.value.code == 5
@@ -317,4 +324,4 @@ def test_the_verbs_help_opens_with_the_usage_line_a_dispatch_probes_a_host_for(
     with pytest.raises(SystemExit) as ended:
         build(tmp_path)(["job", "--help"])
     assert ended.value.code == 0
-    assert "Usage: mainboard job " in capsys.readouterr().out
+    assert f"Usage: {Project().name} job " in capsys.readouterr().out
