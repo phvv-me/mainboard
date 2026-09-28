@@ -113,6 +113,7 @@ _STAGED: dict[str, type[pl.DataType]] = {
     "INTEGER": pl.Int32,
     "DOUBLE": pl.Float64,
     "BOOLEAN": pl.Boolean,
+    "BLOB": pl.Binary,
 }
 
 # The SQLite WAL-index header fields `check` reads from the catalog's `-shm` file: `mxFrame`, the
@@ -344,6 +345,40 @@ class Lake(FrozenModel):
                 connection.execute("COMMIT")
         return spec
 
+    def evolve(self, connection: duckdb.DuckDBPyConnection) -> None:
+        """Bring a lake an older release created up to this release's schema, once.
+
+        Tables and columns are only ever added and views replaced, so a lake at an older schema
+        version loses nothing; the step is recorded in `schema_log` and taken under the
+        maintenance lock so two processes never race it.
+        """
+        if _version(connection) >= VERSION:
+            return
+        with FileLock(self.lock):
+            if _version(connection) >= VERSION:
+                return
+            held = set(
+                connection.execute(
+                    "SELECT table_name, column_name FROM duckdb_columns() WHERE database_name = ?",
+                    [ALIAS],
+                ).fetchall()
+            )
+            tables = {table for table, _ in held}
+            connection.execute("BEGIN")
+            connection.execute(f"USE {ALIAS}")
+            for table in TABLES:
+                if table.name not in tables:
+                    connection.execute(table.ddl)
+                    continue
+                for column, kind in table.columns:
+                    if (table.name, column) not in held:
+                        connection.execute(f"ALTER TABLE {table.name} ADD COLUMN {column} {kind}")
+            for view in VIEWS:
+                connection.execute(view.ddl.replace("CREATE VIEW", "CREATE OR REPLACE VIEW", 1))
+            _record(connection, _spec(connection))
+            connection.execute("COMMIT")
+            connection.execute("USE memory")
+
     def upgrade(self) -> str:
         """Migrate the catalog to the extension's latest spec, returning the spec it is now at.
 
@@ -570,9 +605,12 @@ class Session:
             return _patiently(recoverable, before=self.close)(lambda: statement(self._attached()))
 
     def _attached(self) -> duckdb.DuckDBPyConnection:
-        """The connection, attaching first; a fresh workspace's lake is created on this use."""
+        """The connection, attaching first; a fresh workspace's lake is created on this use and
+        an older release's lake brought up to this schema."""
         if self._connection is None:
-            self._connection = self._stack.enter_context(self.lake.ready().open(write=True))
+            connection = self._stack.enter_context(self.lake.ready().open(write=True))
+            self.lake.evolve(connection)
+            self._connection = connection
         return self._connection
 
 
@@ -590,6 +628,12 @@ def _patiently(
         before_sleep=(lambda _state: before()) if before else None,
         reraise=True,
     )
+
+
+def _version(connection: duckdb.DuckDBPyConnection) -> int:
+    """The newest schema version the attached lake records."""
+    row = connection.execute(f"SELECT max(version) FROM {ALIAS}.schema_log").fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
 
 
 def _spec(connection: duckdb.DuckDBPyConnection) -> str:

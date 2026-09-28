@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ..core.project import Project
 from ..dispatch.provenance import Row, SourceTree, Status, blob_of, listing
 from ..dispatch.shared import CLOSURE_VAR, DIGEST_VAR
 from ..probe.machine import Machine
@@ -131,7 +132,13 @@ def source(repo: Path) -> Source:
     tree = SourceTree(repo)
     captured, rows = tree.seal(tree.sources())
     manifest = listing(rows)
-    closure = tree.archive(manifest).with_suffix(".tsv")
+    tree.archive(manifest)
+    # The listing a later read of this trial verifies against, staged where dispatch stages its
+    # own; the record of it is the lake's.
+    closure = (
+        Project().out(tree.root) / "dispatch" / "jobs" / f"closure-{captured.digest[:12]}.tsv"
+    )
+    closure.parent.mkdir(parents=True, exist_ok=True)
     closure.write_text(manifest, encoding="utf-8")
     return Source(digest=captured.digest, closure=str(closure), root=tree.root)
 

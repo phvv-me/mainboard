@@ -12,7 +12,7 @@ from filelock import FileLock
 from mainboard import MissionError
 from mainboard.state import Finding, Lake
 from mainboard.state.lake import Session, cache_home, insert, locked, recoverable
-from mainboard.state.schema import TABLES, VIEWS
+from mainboard.state.schema import TABLES, VERSION, VIEWS
 
 from .conftest import finished, writers
 
@@ -76,7 +76,7 @@ def test_a_lake_is_only_ever_created_on_purpose(tmp_path: Path) -> None:
     assert options["expire_older_than"] == "30 days"
     assert options["delete_older_than"] == "7 days"
     assert options["version"] == spec
-    assert lake.query("SELECT version, spec FROM lake.schema_log").rows() == [(1, spec)]
+    assert lake.query("SELECT version, spec FROM lake.schema_log").rows() == [(VERSION, spec)]
     with pytest.raises(MissionError, match="already exists"):
         lake.create()
     with lake.open(write=True) as connection:

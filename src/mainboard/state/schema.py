@@ -14,8 +14,9 @@
 
 from patos import FrozenModel
 
-# The schema's own version, recorded in `schema_log` by `Lake.create` beside the DuckLake spec.
-VERSION = 1
+# The schema's own version, recorded in `schema_log` by `Lake.create` beside the DuckLake spec
+# and by `Lake.evolve` when an older lake gains what this one added. 2 added `blobs`.
+VERSION = 2
 
 
 class Table(FrozenModel):
@@ -210,6 +211,13 @@ TABLES: tuple[Table, ...] = (
             ("path", "VARCHAR"),
             ("blob", "VARCHAR"),
             ("status", "VARCHAR"),
+        ),
+    ),
+    Table(
+        name="blobs",
+        columns=(
+            ("sha256", "VARCHAR"),
+            ("bytes", "BLOB"),
         ),
     ),
     Table(

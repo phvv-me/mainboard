@@ -1,13 +1,16 @@
-"""Source identity from the files that run, independent of version control."""
+"""Source identity from the files that run, independent of version control.
+
+What ran is kept as the listing (`closures`) and each listed file's bytes once per content
+(`blobs`) in the workspace lake, so any dispatched tree can be rebuilt exactly, whichever of
+the workspace's repositories a file belongs to and whether or not it was ever committed.
+"""
 
 import hashlib
 import re
-import shutil
-import time
+from datetime import UTC, datetime
 from enum import StrEnum, auto
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
-from zipfile import ZIP_DEFLATED, ZipFile
 
 from patos import FrozenModel
 
@@ -15,17 +18,15 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..manifest.loading import load
 from ..manifest.schema.workspace import DATA
+from ..state.lake import ALIAS, Lake
 from .sync import GitignoreFilter
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-# Written under the legacy name on purpose (`Project.marker` says why), read under any.
-_ARCHIVE_LISTING = Project().marker("source-listing.tsv")
-# How old a partial archive, or a temporary folder an older release archived in, must be before
-# it counts as left by a killed process rather than one still writing.
-_STALE_SECONDS = 86_400
+# How many bytes of new source are staged before they are appended, bounding memory.
+_CHUNK_BYTES = 64 << 20
 
 
 class Status(StrEnum):
@@ -79,6 +80,14 @@ def registered(node: Path, rows: Sequence[Row], *, root: Path) -> None:
         raise MissionError(f"{relative} must be captured before this job is acquired")
     if blob_of(node) != row.blob:
         raise MissionError(f"{relative} changed after Mainboard prepared the job")
+
+
+def parsed(manifest: str) -> list[Row]:
+    """The rows of a listing `listing` wrote."""
+    return [
+        Row(path=path, blob=blob, status=Status(status))
+        for path, blob, status in (line.split("\t") for line in manifest.splitlines() if line)
+    ]
 
 
 def named(identity: str) -> str:
@@ -136,47 +145,79 @@ class SourceTree:
         digest = hashlib.sha256(listing(rows).encode()).hexdigest()
         return Source(identity=f"sha256:{digest}", key=f"sha256-{digest}", digest=digest), rows
 
-    def archive(self, manifest: str) -> Path:
-        """Keep retrievable source bytes locally before dispatch, not merely their hashes.
+    def archive(self, manifest: str) -> str:
+        """Keep retrievable source bytes before dispatch, not merely their hashes; return the
+        listing's digest.
 
-        The zip is written as `<digest>.zip.partial` and renamed whole, so a killed archival
-        leaves one partial its retry truncates, and archiving sweeps what is a day stale.
+        Each listed file's bytes land in the lake's `blobs` once per content, a file unchanged
+        since any earlier dispatch costing nothing, and the listing in `closures`. A file that
+        changed since it was listed is refused rather than kept under the wrong digest.
         """
+        rows = parsed(manifest)
         digest = hashlib.sha256(manifest.encode()).hexdigest()
-        target = Project().out(self.root) / "source-archives" / f"{digest}.zip"
-        rows = [
-            Row(path=p, blob=b, status=Status(s))
-            for p, b, s in (line.split("\t") for line in manifest.splitlines())
-        ]
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _swept(target.parent)
-        if target.exists():
-            with ZipFile(target) as archive:
-                held = set(archive.namelist())
-                listed = next(
-                    (name for name in Project().markers("source-listing.tsv") if name in held),
-                    _ARCHIVE_LISTING,
-                )
-                if archive.read(listed).decode() != manifest or any(
-                    hashlib.sha256(archive.read(row.path)).hexdigest() != row.blob for row in rows
-                ):
-                    raise MissionError(f"source archive verification failed: {target}")
-            return target
-        pending = target.with_name(f"{target.name}.partial")
-        with ZipFile(pending, "w", compression=ZIP_DEFLATED) as archive:
-            archive.writestr(_ARCHIVE_LISTING, manifest)
-            for row in rows:
-                payload = (self.root / row.path).read_bytes()
-                if hashlib.sha256(payload).hexdigest() != row.blob:
-                    raise MissionError(f"{row.path} changed before source archival")
-                archive.writestr(row.path, payload)
-        pending.replace(target)
-        return target
+        session = Lake.at(self.root).session()
+        wanted = sorted({row.blob for row in rows})
+        held = {
+            blob
+            for (blob,) in session.rows(
+                f"SELECT DISTINCT sha256 FROM {ALIAS}.blobs WHERE list_contains(?, sha256)",
+                [wanted],
+            )
+        }
+        staged: list[dict[str, object]] = []
+        size = 0
+        for row in rows:
+            if row.blob in held:
+                continue
+            payload = (self.root / row.path).read_bytes()
+            if hashlib.sha256(payload).hexdigest() != row.blob:
+                raise MissionError(f"{row.path} changed before source archival")
+            staged.append({"sha256": row.blob, "bytes": payload})
+            held.add(row.blob)
+            size += len(payload)
+            if size >= _CHUNK_BYTES:
+                session.append("blobs", staged)
+                staged, size = [], 0
+        session.append("blobs", staged)
+        closure, stamp = digest[:12], datetime.now(UTC)
+        if not session.rows(
+            f"SELECT 1 FROM {ALIAS}.closures WHERE closure = ? LIMIT 1", [closure]
+        ):
+            session.append(
+                "closures",
+                [
+                    {
+                        "ts": stamp,
+                        "closure": closure,
+                        "path": row.path,
+                        "blob": row.blob,
+                        "status": str(row.status),
+                    }
+                    for row in rows
+                ],
+            )
+        return digest
 
+    def restore(self, digest: str, into: Path) -> list[Path]:
+        """Write the tree whose listing has `digest` under `into`, byte for byte, from the lake.
 
-def _swept(folder: Path) -> None:
-    """Remove the partial archives and temporary folders killed archivals left a day ago."""
-    stale = time.time() - _STALE_SECONDS
-    for leftover in [*folder.glob("*.partial"), *folder.glob("source-*")]:
-        if leftover.stat().st_mtime < stale:
-            shutil.rmtree(leftover) if leftover.is_dir() else leftover.unlink()
+        Raises MissionError when the lake holds no such listing or misses one of its files.
+        """
+        session = Lake.at(self.root).session()
+        rows = session.rows(
+            f"SELECT c.path, c.blob, b.bytes FROM {ALIAS}.closures c "
+            f"LEFT JOIN (SELECT DISTINCT ON (sha256) sha256, bytes FROM {ALIAS}.blobs) b "
+            "ON b.sha256 = c.blob WHERE c.closure = ? ORDER BY c.path",
+            [digest[:12]],
+        )
+        if not rows:
+            raise MissionError(f"the lake keeps no source listing {digest[:12]}")
+        written: list[Path] = []
+        for path, blob, payload in rows:
+            if payload is None:
+                raise MissionError(f"the lake keeps no bytes for {path} ({blob[:12]})")
+            target = into / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+            written.append(target)
+        return written

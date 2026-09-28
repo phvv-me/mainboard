@@ -1,19 +1,17 @@
-import os
 import shutil
 import subprocess
-import time
 from hashlib import sha256
 from pathlib import Path
-from zipfile import ZipFile
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from mainboard import MissionError, Project
+from mainboard import MissionError
 from mainboard.dispatch.provenance import Source, SourceTree, Status, blob_of, listing, named
 from mainboard.jobs.closure import Closure
 from mainboard.jobs.target import Target
+from mainboard.state.lake import Lake
 
 from ..support import Lab
 
@@ -96,29 +94,29 @@ def test_ignore_files_are_optional_and_nested_rules_apply(tmp_path: Path) -> Non
     assert not any("__pycache__" in file for file in files)
 
 
-def test_archives_preserve_original_bytes_and_reject_corruption(lab: Lab) -> None:
+def test_archives_keep_each_files_bytes_once_and_restore_the_tree_exactly(
+    lab: Lab, tmp_path: Path
+) -> None:
+    """The lake keeps what ran byte for byte, and a file unchanged since costs no second copy."""
     tree = SourceTree(lab.root)
     first, rows = sealed(lab)
     manifest = listing(rows)
-    archive = tree.archive(manifest)
-    assert archive.name == f"{first.digest}.zip"
+    assert tree.archive(manifest) == first.digest
+    session = Lake.at(lab.root).session()
+    stored = session.rows("SELECT count(*) FROM lake.blobs")
     original = (lab.root / Lab.JOB).read_bytes()
-    lab.write(Lab.JOB, "edited after archival\n")
-    assert tree.archive(manifest) == archive
-    with ZipFile(archive) as stored:
-        assert stored.namelist()[0] == ".mainboard-source-listing.tsv"
-        held = {name: stored.read(name) for name in stored.namelist()[1:]}
-        assert held[Lab.JOB] == original
-    # An archive a newer release listed under the current name verifies all the same.
-    with ZipFile(archive, "w") as stored:
-        stored.writestr(".mb-source-listing.tsv", manifest)
-        for name, payload in held.items():
-            stored.writestr(name, payload)
-    assert tree.archive(manifest) == archive
-    with ZipFile(archive, "w") as stored:
-        stored.writestr(".mainboard-source-listing.tsv", "wrong")
-    with pytest.raises(MissionError, match="archive verification"):
-        tree.archive(manifest)
+    lab.write(Lab.JOB, "# edited after archival\n")
+    assert tree.archive(manifest) == first.digest
+    assert session.rows("SELECT count(*) FROM lake.blobs") == stored
+    restored = tmp_path / "restored"
+    written = tree.restore(first.digest, restored)
+    assert (restored / Lab.JOB).read_bytes() == original
+    assert len(written) == len(rows)
+    edited, changed = sealed(lab)
+    tree.archive(listing(changed))
+    assert session.rows("SELECT count(*) FROM lake.blobs") == [(stored[0][0] + 1,)]
+    with pytest.raises(MissionError, match="no source listing"):
+        tree.restore("0" * 64, restored)
 
 
 @pytest.mark.parametrize(
@@ -153,26 +151,6 @@ def test_sources_leave_out_the_data_a_host_still_ships(tmp_path: Path, tracked: 
     assert {"datasets/experiments/law/rows.parquet", "experiments/law/evidence/run.json"} <= set(
         shipped
     )
-
-
-def test_a_killed_archival_leaves_one_partial_its_retry_replaces(lab: Lab) -> None:
-    """The partial is named by its digest, and what a day has passed over is swept."""
-    tree = SourceTree(lab.root)
-    first, rows = sealed(lab)
-    folder = Project().out(lab.root) / "source-archives"
-    partial = folder / f"{first.digest}.zip.partial"
-    lab.write(str(partial.relative_to(lab.root)), "killed mid-write")
-    stale = [folder / "source-old" / "source.zip", folder / "other.zip.partial"]
-    fresh = folder / "writing.zip.partial"
-    for leftover in [*stale, fresh]:
-        lab.write(str(leftover.relative_to(lab.root)), "left behind")
-    day_ago = time.time() - 2 * 86_400
-    for leftover in [stale[0].parent, stale[1]]:
-        os.utime(leftover, (day_ago, day_ago))
-    archive = tree.archive(listing(rows))
-    with ZipFile(archive) as stored:
-        assert stored.read(Lab.JOB) == (lab.root / Lab.JOB).read_bytes()
-    assert sorted(path.name for path in folder.iterdir()) == [archive.name, fresh.name]
 
 
 def test_source_change_before_archiving_is_rejected(lab: Lab) -> None:
