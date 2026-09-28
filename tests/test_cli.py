@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
+from plumbum import local
 
 from mainboard import Board, ComputePath, MissionError, Project, Survey
 from mainboard.batch import JobEstimate
@@ -588,6 +589,21 @@ def test_the_entry_point_hands_everything_from_the_command_on_to_the_command(
     assert relayed == reached
     if code != "0":
         assert "--walltim" in capsys.readouterr().err
+
+
+def test_the_entry_point_hides_the_ssh_sessions_descriptor_table_from_every_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An `ssh.exe` that inherits the table of the sshd session driving this tool hangs."""
+    leaked = "C28FC6F98A2C44ABBBD89D6A3037D0D9_POSIX_FD_STATE"
+    monkeypatch.setenv(leaked, "AAAAAAICAgA=")
+    local.env[leaked] = "AAAAAAICAgA="
+    monkeypatch.setattr("mainboard.cli.staleness.current", lambda: None)
+    monkeypatch.setattr("sys.argv", ["mainboard", "--version"])
+    with pytest.raises(SystemExit, match="0"):
+        main()
+    assert leaked not in os.environ
+    assert leaked not in local.env
 
 
 @pytest.mark.parametrize(

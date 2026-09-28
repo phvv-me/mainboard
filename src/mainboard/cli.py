@@ -1,3 +1,4 @@
+import os
 import sys
 from contextlib import suppress
 from dataclasses import dataclass
@@ -2027,6 +2028,20 @@ def _changes(report: MonitorReport) -> list[dict[str, str]]:
     return [dict(zip(_CHANGE_COLUMNS, row, strict=True)) for row in moved]
 
 
+def _forget_openssh_descriptors() -> None:
+    """Drop the descriptor table Win32-OpenSSH hands the process it spawns.
+
+    sshd passes its child a `<guid>_POSIX_FD_STATE` naming that child's own handles, and the
+    variable rides every environment inherited after it. An `ssh.exe` this tool starts reads the
+    stale table as its own and hangs before reading its config, so a center driven over ssh
+    reached no host (pedro-home, 2026-09-26). plumbum copied the environment at import, so its
+    copy loses the table too.
+    """
+    for name in [name for name in os.environ if name.endswith("_POSIX_FD_STATE")]:
+        del os.environ[name]
+        del localhost.env[name]
+
+
 def main() -> None:
     """Console entry point, `MissionError` printed to stderr without a traceback, exit 1.
 
@@ -2034,6 +2049,7 @@ def main() -> None:
     new code when the source moved, and says so on stderr only. A trailing-command verb then gets
     the `--` its command implies, so nothing typed after the command is ever read as this tool's.
     """
+    _forget_openssh_descriptors()
     install_traceback()
     staleness.current()
     app = build()
