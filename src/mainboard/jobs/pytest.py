@@ -1,6 +1,5 @@
 """Native pytest integration, loaded only for test targets."""
 
-import os
 import sys
 from collections.abc import Sequence
 from contextlib import suppress
@@ -88,9 +87,9 @@ class Runner:
     @staticmethod
     def plugins() -> list[Beacon]:
         """The beacon in a dispatched job, nothing at a terminal."""
-        if RECEIPTS_VAR not in os.environ:
+        if not RECEIPTS_VAR.present():
             return []
-        return [Beacon(nested=NESTED in os.environ)]
+        return [Beacon(nested=NESTED.present())]
 
     def install(self, config: Config) -> AssertionRewritingHook:
         hook = self.original(config)

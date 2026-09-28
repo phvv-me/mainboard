@@ -104,7 +104,7 @@ class Sealed(Image):
     """A job's closure and nothing beside it, what a job spelled by file runs from.
 
     listing: the mirror's workspace-relative closure listing, first column naming every shipped
-        file. Frozen as `CLOSURE`, which the runner reads through `MAINBOARD_CLOSURE` rather than
+        file. Frozen as `CLOSURE`, which the runner reads through `MB_CLOSURE` rather than
         a later mirror's listing.
     needs: data paths the job reads, linked back to the mirror on every dispatch. A need the
         mirror lacks refuses the dispatch by name, since a dangling link fails after the queue.

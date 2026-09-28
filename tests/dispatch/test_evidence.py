@@ -41,9 +41,11 @@ def block(receipts: str) -> str:
 
 
 def test_the_staged_variable_and_the_framing_shell_name_the_same_file():
-    assert staging().startswith(f"export {RECEIPTS_VAR}=/tmp/mainboard-receipts.$$.ndjson")
-    assert f": > ${RECEIPTS_VAR}" in staging()
-    assert f'"${RECEIPTS_VAR}"' in framing()
+    assert staging().startswith(
+        f"export {RECEIPTS_VAR.names[0]}=/tmp/mainboard-receipts.$$.ndjson"
+    )
+    assert f": > ${RECEIPTS_VAR.names[0]}" in staging()
+    assert f'"${RECEIPTS_VAR.names[0]}"' in framing()
     assert "fold -w 240" in framing()
 
 
@@ -128,7 +130,7 @@ def test_the_shell_that_really_runs_on_the_instance_frames_a_receipt_back_whole(
     """
     line = json.dumps({"trial_receipt": {"run_id": "r1", "outcome": "passed", "pad": "x" * pad}})
     script = f"""{staging()}
-printf '%s\\n' {shlex.quote(line)} >> "${RECEIPTS_VAR}"
+printf '%s\\n' {shlex.quote(line)} >> "${RECEIPTS_VAR.names[0]}"
 echo "epoch 1 loss 0.4"
 {framing()}
 """
@@ -147,7 +149,7 @@ def test_an_image_missing_the_tools_costs_its_receipts_and_never_the_jobs_exit_c
     # Emptying PATH after the command ran is exactly an image without base64, tr, fold and sed.
     script = f"""set -euo pipefail
 {staging()}
-printf '%s\\n' '{{"trial_receipt": {{"run_id": "r1"}}}}' >> "${RECEIPTS_VAR}"
+printf '%s\\n' '{{"trial_receipt": {{"run_id": "r1"}}}}' >> "${RECEIPTS_VAR.names[0]}"
 status=0
 bash -c 'exit {code}' || status=$?
 PATH=/nonexistent

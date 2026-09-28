@@ -42,8 +42,8 @@ def dispatched(monkeypatch: pytest.MonkeyPatch, root: Path, closure: str, digest
     """Pose as a dispatched job whose captured closure listing is `closure` under `digest`."""
     copied = root / ".mainboard-closure"
     copied.write_bytes(Path(closure).read_bytes())
-    monkeypatch.setenv(CLOSURE_VAR, str(copied))
-    monkeypatch.setenv(DIGEST_VAR, digest)
+    monkeypatch.setenv(CLOSURE_VAR.names[0], str(copied))
+    monkeypatch.setenv(DIGEST_VAR.names[0], digest)
 
 
 def test_a_vocabulary_answers_only_for_the_words_its_consumer_declared() -> None:
@@ -154,7 +154,8 @@ def test_a_local_source_is_captured_and_a_dispatched_source_is_verified(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.delenv(CLOSURE_VAR, raising=False)
+    for name in CLOSURE_VAR.names:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PATH", "")
     lane = tmp_path / "test_law.py"
     lane.write_text("pass")
@@ -221,7 +222,8 @@ def test_a_probe_that_broke_is_never_mistaken_for_a_host_with_no_device() -> Non
 def test_a_preflight_derives_every_field_a_receipt_would_otherwise_retype(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv(CLOSURE_VAR, raising=False)
+    for name in CLOSURE_VAR.names:
+        monkeypatch.delenv(name, raising=False)
     (tmp_path / "test_law.py").write_text("def test_holds(trial): ...\n")
     taken = Preflight(
         tmp_path,

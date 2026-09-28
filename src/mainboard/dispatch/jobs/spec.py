@@ -51,16 +51,16 @@ class JobSpec(FrozenModel):
     sampler: watches the host beside the command, None for none.
     attestation: records the machine immediately before the command, None for none; it runs
         before the sampler, since a reading taken once the command runs describes the command.
-    source: the captured SHA-256 content identity, exported as `MAINBOARD_SOURCE`.
+    source: the captured SHA-256 content identity, exported as `MB_SOURCE`.
     commit: historical metadata only; new dispatches leave this empty.
-    digest: the tree's content digest, exported as `MAINBOARD_SOURCE_DIGEST`, which a preflight
+    digest: the tree's content digest, exported as `MB_SOURCE_DIGEST`, which a preflight
         on a mirror verifies against the listing and the actual source bytes.
-    closure: the closure listing, exported as `MAINBOARD_CLOSURE` so a receipt lists what it ran
+    closure: the closure listing, exported as `MB_CLOSURE` so a receipt lists what it ran
         on and the runner refuses an import outside it; empty when the command ships the mirror.
     first_party: the workspace import roots' top-level names, colon-joined, exported as
-        `MAINBOARD_FIRST_PARTY` for the runner's finder.
+        `MB_FIRST_PARTY` for the runner's finder.
     deferred: colon-joined top-level names whose whole distribution the closure left to the
-        environment, exported as `MAINBOARD_DEFERRED` so the runner's finder admits them.
+        environment, exported as `MB_DEFERRED` so the runner's finder admits them.
     exports: the host profile's `[hosts.<name>.exports]`, set last so every job on that host
         runs in the world its profile declares.
     """
@@ -158,7 +158,13 @@ class JobSpec(FrozenModel):
             FIRST_PARTY_VAR: self.first_party,
             DEFERRED_VAR: self.deferred,
         }
-        return {name: value for name, value in provenance.items() if value} | self.exports
+        exported = {
+            name: value
+            for variable, value in provenance.items()
+            if value
+            for name in variable.names
+        }
+        return exported | self.exports
 
     def directives(self, *, gpu_in_select: bool) -> list[str]:
         """The `#PBS` header lines: queue, chunk, walltime, group and merged output."""

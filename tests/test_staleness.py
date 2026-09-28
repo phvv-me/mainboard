@@ -77,7 +77,8 @@ def linux(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     replaced: list[list[str]] = []
     monkeypatch.setattr("mainboard.staleness.platform.system", lambda: "Linux")
     monkeypatch.setattr("mainboard.staleness.os.execv", lambda path, argv: replaced.append(argv))
-    monkeypatch.delenv(staleness.REFRESHED, raising=False)
+    for name in staleness.REFRESHED.names:
+        monkeypatch.delenv(name, raising=False)
     return replaced
 
 
@@ -188,8 +189,9 @@ def test_a_stale_snapshot_reinstalls_itself_quietly_and_reexecutes_the_same_comm
     assert printed.out == ""
     assert ran == [found.fix]
     assert (linux == [[sys.executable, "mainboard", "jobs"]]) is updated
-    assert (os.environ.get(staleness.REFRESHED) == "1") is updated
-    monkeypatch.delenv(staleness.REFRESHED, raising=False)
+    assert (staleness.REFRESHED.exported("1").items() <= os.environ.items()) is updated
+    for name in staleness.REFRESHED.names:
+        monkeypatch.delenv(name, raising=False)
     if updated:
         assert f"updated from {found.source}" in printed.err
         return
@@ -211,7 +213,8 @@ def test_a_second_process_waits_its_turn_and_only_reexecutes_on_the_install_it_w
     )
 
     Refresh(found).run()
-    monkeypatch.delenv(staleness.REFRESHED, raising=False)
+    for name in staleness.REFRESHED.names:
+        monkeypatch.delenv(name, raising=False)
     assert len(linux) == 1
 
     monkeypatch.setattr("mainboard.staleness._LOCK_SECONDS", 0.01)
@@ -288,12 +291,12 @@ def test_every_invocation_starts_on_its_sources_newest_code(
     ran: list[Snapshot] = []
     monkeypatch.setattr(Refresh, "run", lambda self: ran.append(self.found))
     if again:
-        monkeypatch.setenv(staleness.REFRESHED, "1")
+        monkeypatch.setenv(staleness.REFRESHED.names[0], "1")
 
     staleness.current()
 
     assert bool(ran) is refreshed
-    assert staleness.REFRESHED not in os.environ
+    assert not staleness.REFRESHED.present()
     printed = capsys.readouterr()
     assert printed.out == ""
     assert said in printed.err

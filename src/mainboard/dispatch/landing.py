@@ -244,7 +244,7 @@ class Landing:
         """Render the job script this rental runs and stage it for the mirror to carry.
 
         The same job an ssh host runs, so a rented run's receipts, walltime cap and
-        `MAINBOARD_SOURCE` stamp match one measured on gold. It activates from the tree this
+        `MB_SOURCE` stamp match one measured on gold. It activates from the tree this
         dispatch is about to pin, a path computed here and materialised on the machine later.
 
         root: the workspace root on the machine.

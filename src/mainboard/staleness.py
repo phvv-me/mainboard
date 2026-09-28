@@ -52,7 +52,7 @@ _DEFERRED_SPECS = ("python=3.14", "psutil=7.2.2", "cyclopts=4.23")
 
 # Set in the environment of the process a refresh re-executes, so an update that did not take
 # answers from the snapshot it has rather than reinstalling in a loop.
-REFRESHED = "MAINBOARD_REFRESHED"
+REFRESHED = Project().variable("REFRESHED")
 
 # How long one process waits for another's reinstall of the same snapshot, which is a wheel
 # build from a local tree, before answering from the snapshot it already has.
@@ -126,7 +126,7 @@ class Refresh:
             say(f"{self.found.detail} and could not update itself ({failure})")
             return
         say(f"updated from {self.found.source}")
-        os.environ[REFRESHED] = "1"
+        os.environ.update(REFRESHED.exported("1"))
         os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
 
     def replaced(self) -> bool:
@@ -177,7 +177,9 @@ def current() -> None:
     re-execution itself never refreshes again: still stale means the update did not take, and it
     says so instead of looping.
     """
-    again = os.environ.pop(REFRESHED, None) is not None
+    again = REFRESHED.present()
+    for name in REFRESHED.names:
+        os.environ.pop(name, None)
     found = check()
     if not found.stale:
         return

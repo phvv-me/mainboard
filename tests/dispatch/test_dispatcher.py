@@ -530,12 +530,17 @@ def test_a_sealed_job_ships_its_listing_pins_exactly_that_and_exports_where_it_i
     assert ["data/corpus"] not in dispatcher.required[0]
     job = recorded((workdir / staged).read_text(encoding="utf-8"))
     assert job.pythonpath == f"{pinned}/research/camp:{pinned}/packages/core/src"
+    facts = {
+        "SOURCE": captured.identity,
+        "SOURCE_DIGEST": captured.digest,
+        "CLOSURE": f"{pinned}/{CLOSURE}",
+        "FIRST_PARTY": "core:experiments",
+        "DEFERRED": "cutoken",
+    }
     assert job.variables == {
-        "MAINBOARD_SOURCE": captured.identity,
-        "MAINBOARD_SOURCE_DIGEST": captured.digest,
-        "MAINBOARD_CLOSURE": f"{pinned}/{CLOSURE}",
-        "MAINBOARD_FIRST_PARTY": "core:experiments",
-        "MAINBOARD_DEFERRED": "cutoken",
+        name: value
+        for key, value in facts.items()
+        for name, value in Project().variable(key).exported(value).items()
     }
     assert job.root == pinned
     [request] = dispatcher.pins.requests

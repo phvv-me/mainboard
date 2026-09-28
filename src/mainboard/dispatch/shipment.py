@@ -132,7 +132,9 @@ class Shipment(FrozenModel):
             FIRST_PARTY_VAR: ":".join(self.first_party),
             DEFERRED_VAR: ":".join(self.deferred),
         }
-        return {name: value for name, value in carried.items() if value}
+        return {
+            name: value for variable, value in carried.items() if value for name in variable.names
+        }
 
     def locally(self, root: Path, *, closure: str = "") -> list[str]:
         """The POSIX argv for a local shell or container, with imports and provenance.

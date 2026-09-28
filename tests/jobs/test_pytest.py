@@ -139,13 +139,13 @@ def sealed(lab: Lab, spelling: str, *args: str) -> subprocess.CompletedProcess[s
     env = {
         name: value
         for name, value in os.environ.items()
-        if name not in {CLOSURE_VAR, FIRST_PARTY_VAR, DEFERRED_VAR}
+        if name not in {*CLOSURE_VAR.names, *FIRST_PARTY_VAR.names, *DEFERRED_VAR.names}
     }
     env.update(
         {
             "PYTHONPATH": ":".join(str(lab.root / place) for place in closure.roots),
-            CLOSURE_VAR: str(written),
-            FIRST_PARTY_VAR: ":".join(closure.first_party),
+            CLOSURE_VAR.names[0]: str(written),
+            FIRST_PARTY_VAR.names[-1]: ":".join(closure.first_party),
         }
     )
     return subprocess.run(
@@ -365,9 +365,10 @@ def test_the_judged_hook_refuses_an_unshipped_test_module_and_leaves_nothing_ins
     )
     listed = pytester.path / "closure.tsv"
     listed.write_text("probe/__init__.py\nprobe/test_shipped.py\n", encoding="utf-8")
-    monkeypatch.setenv(CLOSURE_VAR, str(listed))
-    monkeypatch.setenv(FIRST_PARTY_VAR, "probe")
-    monkeypatch.delenv(DEFERRED_VAR, raising=False)
+    monkeypatch.setenv(CLOSURE_VAR.names[0], str(listed))
+    monkeypatch.setenv(FIRST_PARTY_VAR.names[0], "probe")
+    for name in DEFERRED_VAR.names:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
     installer = assertion.install_importhook
 
@@ -390,7 +391,8 @@ def test_a_test_target_without_a_listing_runs_under_pytests_hook_and_reads_stage
         "    assert os.environ['HF_HUB_CACHE'].endswith('pins')\n"
     )
     (pytester.path / staging(pytester.path)).mkdir(parents=True)
-    monkeypatch.delenv(CLOSURE_VAR, raising=False)
+    for name in CLOSURE_VAR.names:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
     before = list(sys.meta_path)

@@ -18,12 +18,13 @@ import base64
 import re
 import string
 
+from ..core.project import Project
 from ..jobs.beacon import unbeaconed
 
 # A rented machine keeps no workspace, hence `/tmp`. The shell's pid is in the name because a
 # cluster node runs several jobs out of one `/tmp`, and a shared file would hand each other's
 # trials to whichever settled first.
-RECEIPTS_VAR = "MAINBOARD_RECEIPTS"
+RECEIPTS_VAR = Project().variable("RECEIPTS")
 RECEIPTS_FILE = "/tmp/mainboard-receipts.$$.ndjson"
 
 # Spelled here rather than imported so harvesting never drags the lab machinery in (as `verdicts`).
@@ -46,7 +47,8 @@ def staging() -> str:
     Emptying matters on a provider that restarts an exited container, which would otherwise frame
     the first run's receipts again alongside the second's.
     """
-    return f"export {RECEIPTS_VAR}={RECEIPTS_FILE}; : > ${RECEIPTS_VAR}"
+    exported = " ".join(f"{name}={RECEIPTS_FILE}" for name in RECEIPTS_VAR.names)
+    return f"export {exported}; : > ${RECEIPTS_VAR.names[0]}"
 
 
 def framing() -> str:
@@ -63,7 +65,7 @@ def framing() -> str:
     a caller redirecting this into a log redirects the `if`, and an outer `|| true` would capture
     that redirect instead.
     """
-    file = f'"${RECEIPTS_VAR}"'
+    file = f'"${RECEIPTS_VAR.names[0]}"'
     return (
         f"if [ -s {file} ]; then echo {_BEGIN}; "
         f'{{ base64 < {file} | tr -d "\\n"; echo; }} | fold -w {_CHUNK_WIDTH} '

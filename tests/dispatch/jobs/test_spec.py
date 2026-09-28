@@ -12,7 +12,7 @@ from hypothesis import strategies as st
 from mainboard import Project
 from mainboard.dispatch.evidence import receipts_in
 from mainboard.dispatch.jobs import JobSpec
-from mainboard.dispatch.shared import state_dir
+from mainboard.dispatch.shared import SOURCE_VAR, state_dir
 from mainboard.runtime.job import PrefixActivation, ToolCall, WorkspaceActivation, walltime_seconds
 
 from ..support import FieldValue, plan, recorded
@@ -149,26 +149,35 @@ def test_a_dispatched_job_carries_the_provenance_a_mirror_cannot_derive_and_noth
     is no history to ask. A dispatch that could read neither says neither, rather than exporting
     an empty claim, and a host's exports come after every fact about the run.
     """
+    closure = f"/repo/{Project().out_dirs[0]}/dispatch/sources/k/.mainboard-closure"
     sealed = spec(
         source="e975499",
         commit="e975499f" * 5,
         digest="9a" * 32,
-        closure="/repo/.mainboard/dispatch/sources/k/.mainboard-closure",
+        closure=closure,
         first_party="core:experiments",
         deferred="cutoken",
         exports={"HF_HUB_OFFLINE": "1", "NOTE": "two words"},
     ).job(pbs=False)
+    # Each fact under every name, since the job may import an older release than this one.
+    facts = [
+        ("SOURCE", "e975499"),
+        ("SOURCE_COMMIT", "e975499f" * 5),
+        ("SOURCE_DIGEST", "9a" * 32),
+        ("CLOSURE", closure),
+        ("FIRST_PARTY", "core:experiments"),
+        ("DEFERRED", "cutoken"),
+    ]
     assert list(sealed.variables.items()) == [
-        ("MAINBOARD_SOURCE", "e975499"),
-        ("MAINBOARD_SOURCE_COMMIT", "e975499f" * 5),
-        ("MAINBOARD_SOURCE_DIGEST", "9a" * 32),
-        ("MAINBOARD_CLOSURE", "/repo/.mainboard/dispatch/sources/k/.mainboard-closure"),
-        ("MAINBOARD_FIRST_PARTY", "core:experiments"),
-        ("MAINBOARD_DEFERRED", "cutoken"),
+        *(
+            pair
+            for key, value in facts
+            for pair in Project().variable(key).exported(value).items()
+        ),
         ("HF_HUB_OFFLINE", "1"),
         ("NOTE", "two words"),
     ]
-    assert spec(source="e975499").job(pbs=False).variables == {"MAINBOARD_SOURCE": "e975499"}
+    assert spec(source="e975499").job(pbs=False).variables == SOURCE_VAR.exported("e975499")
 
 
 def test_the_calls_around_the_command_travel_as_this_tools_own_verbs() -> None:

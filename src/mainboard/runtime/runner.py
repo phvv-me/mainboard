@@ -59,7 +59,7 @@ class Receipts:
     def stage(self, environment: MutableMapping[str, str]) -> None:
         """Point the command at an empty receipts file, emptied for a restarted container."""
         self.path.write_bytes(b"")
-        environment[RECEIPTS_VAR] = str(self.path)
+        environment.update(RECEIPTS_VAR.exported(str(self.path)))
         self.staged = True
 
     def frame(self) -> str:
@@ -98,7 +98,7 @@ class Runner:
         self.environ = {
             name: value
             for name, value in (os.environ if environ is None else environ).items()
-            if name != RECEIPTS_VAR
+            if name not in RECEIPTS_VAR.names
         }
         self.how = how or entering()
         self.grace = grace

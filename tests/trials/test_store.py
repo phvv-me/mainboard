@@ -32,7 +32,7 @@ def test_a_ledger_appends_its_receipts_and_frames_them_where_a_dispatch_staged_a
     """The framing file is how a rented instance, which returns a log not a directory, hands
     evidence back."""
     framed = tmp_path / "framed.ndjson"
-    monkeypatch.setenv(RECEIPTS_VAR, str(framed))
+    monkeypatch.setenv(RECEIPTS_VAR.names[0], str(framed))
     ledger = Ledger(tmp_path / "raw", {"node": "alpha"})
     ledger.receipt({"run_id": "one", "outcome": "passed"})
     ledger.receipt({"run_id": "two", "outcome": "failed"})
@@ -41,7 +41,7 @@ def test_a_ledger_appends_its_receipts_and_frames_them_where_a_dispatch_staged_a
     assert [json.loads(line)["trial_receipt"]["node"] for line in lines] == ["alpha", "alpha"]
     assert framed.read_text() == (tmp_path / "raw" / "receipts.jsonl").read_text()
 
-    monkeypatch.delenv(RECEIPTS_VAR)
+    monkeypatch.delenv(RECEIPTS_VAR.names[0])
     Ledger(tmp_path / "raw", {"node": "beta"}).receipt({"run_id": "three"})
     assert len(framed.read_text().splitlines()) == 2
     assert len((tmp_path / "raw" / "receipts.jsonl").read_text().splitlines()) == 3
@@ -63,7 +63,7 @@ def test_a_run_that_dies_keeps_every_trial_it_took_and_a_run_that_ends_pays_for_
     """Fragments buy crash safety while a run is alive and cost a footer each after it; a
     second writer on one partition counts what is there rather than overwriting it."""
     framed = tmp_path / "framed.ndjson"
-    monkeypatch.setenv(RECEIPTS_VAR, str(framed))
+    monkeypatch.setenv(RECEIPTS_VAR.names[0], str(framed))
     writer = store.writer("run-1", {"node": "alpha"})
     row = writer.write({"lane": "l", "key": "a", "outcome": "passed", "measured": {"n": 1}})
     assert row["run"] == "run-1" and row["measured"] == {"n": 1}

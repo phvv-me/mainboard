@@ -52,9 +52,9 @@ def sealed(
     written.parent.mkdir(exist_ok=True)
     written.write_text(listing(row for row in rows if row.path != without), encoding="utf-8")
     monkeypatch.chdir(lab.root)
-    monkeypatch.setenv(CLOSURE_VAR, str(written))
-    monkeypatch.setenv(FIRST_PARTY_VAR, ":".join(closure.first_party))
-    monkeypatch.setenv(DEFERRED_VAR, ":".join(closure.deferred))
+    monkeypatch.setenv(CLOSURE_VAR.names[0], str(written))
+    monkeypatch.setenv(FIRST_PARTY_VAR.names[0], ":".join(closure.first_party))
+    monkeypatch.setenv(DEFERRED_VAR.names[0], ":".join(closure.deferred))
     monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
     # What `PYTHONPATH` carries for a job: every import root of the closure, the node's first.
     for place in reversed(closure.roots):
@@ -122,7 +122,8 @@ def test_a_bare_script_is_imported_from_its_own_directory(
 ) -> None:
     script = lab.write("research/camp/lone_script.py", "def main() -> int:\n    return 11\n")
     monkeypatch.chdir(lab.root)
-    monkeypatch.delenv(CLOSURE_VAR, raising=False)
+    for name in CLOSURE_VAR.names:
+        monkeypatch.delenv(name, raising=False)
     try:
         assert call.main([f"{script.relative_to(lab.root)}::main"]) == 11
     finally:
@@ -155,7 +156,7 @@ def test_the_guard_answers_portions_and_paths_outside_the_tree_by_the_listing(
     )
     assert not guard.holds(ModuleSpec("core.util", None, origin="/elsewhere/core/util.py"))
     assert call.Guard.armed(lab.root) is not None
-    monkeypatch.delenv(CLOSURE_VAR)
+    monkeypatch.delenv(CLOSURE_VAR.names[0])
     assert call.Guard.armed(lab.root) is None
 
 
@@ -234,9 +235,10 @@ def test_a_fresh_group_runs_every_cell_as_its_own_process_until_one_fails(
     dispatched job the lane is one session to its waiter: every cell declared up front, a cell
     killed at its timeout reported failed, and the session ended on the lane's own exit code.
     """
-    monkeypatch.delenv(RECEIPTS_VAR, raising=False)
+    for name in RECEIPTS_VAR.names:
+        monkeypatch.delenv(name, raising=False)
     if dispatched:
-        monkeypatch.setenv(RECEIPTS_VAR, "/tmp/receipts")
+        monkeypatch.setenv(RECEIPTS_VAR.names[0], "/tmp/receipts")
     for identity, returncode in zip("abc", outcomes, strict=True):
         cell = [sys.executable, "-m", "mainboard.jobs.call", f"lane.py::test[{identity}]"]
         if returncode is None:

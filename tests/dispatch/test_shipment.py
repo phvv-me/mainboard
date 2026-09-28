@@ -13,6 +13,7 @@ from mainboard.dispatch.shared import (
     DIGEST_VAR,
     FIRST_PARTY_VAR,
     SOURCE_VAR,
+    state_dir,
 )
 from mainboard.dispatch.shipment import Shipment, runner
 from mainboard.jobs.closure import Closure
@@ -42,7 +43,11 @@ def test_a_command_ships_the_mirror_under_the_trees_provenance_and_exports_only_
     shipment = Shipment.of_command("python -m foo", source=source, imports=("src",))
     assert not shipment.sealed
     assert (shipment.command, shipment.spelling) == ("python -m foo", "python -m foo")
-    assert shipment.exports() == {SOURCE_VAR: "v1", COMMIT_VAR: "c" * 40, DIGEST_VAR: "d" * 64}
+    assert shipment.exports() == {
+        **SOURCE_VAR.exported("v1"),
+        **COMMIT_VAR.exported("c" * 40),
+        **DIGEST_VAR.exported("d" * 64),
+    }
     bare = Shipment.of_command("true", source=Source(identity="", key="untracked"), imports=())
     assert bare.exports() == {}
     assert bare.locally(Path("/w")) == ["env", "true"]
@@ -64,16 +69,18 @@ def test_a_job_ships_its_closure_and_runs_through_the_one_runner(lab: Lab) -> No
     assert len(shipment.listing.splitlines()) == len(closure.files)
     assert shipment.listing_name == f"closure-{shipment.source.digest[:12]}.tsv"
     exported = shipment.exports("/pinned/closure.tsv")
-    assert exported[CLOSURE_VAR] == "/pinned/closure.tsv"
-    assert exported[FIRST_PARTY_VAR] == "core:experiments:sub"
-    assert DEFERRED_VAR not in exported
-    assert exported[SOURCE_VAR] == shipment.source.identity
-    local = shipment.locally(lab.root, closure=".mainboard/dispatch/jobs/closure.tsv")
+    # Every variable is exported under each name, since the job may run an older release.
+    assert CLOSURE_VAR.exported("/pinned/closure.tsv").items() <= exported.items()
+    assert FIRST_PARTY_VAR.exported("core:experiments:sub").items() <= exported.items()
+    assert not DEFERRED_VAR.present(exported)
+    assert SOURCE_VAR.read(exported) == shipment.source.identity
+    staged = f"{state_dir(lab.root)}/jobs/closure.tsv"
+    local = shipment.locally(lab.root, closure=staged)
     assert local[:2] == [
         "env",
         "PYTHONPATH=" + ":".join(str(lab.root / place) for place in closure.roots),
     ]
-    assert f"{CLOSURE_VAR}={lab.root / '.mainboard/dispatch/jobs/closure.tsv'}" in local
+    assert all(f"{name}={lab.root / staged}" in local for name in CLOSURE_VAR.names)
     assert local[-7:] == ["python", "-m", runner(), f"{Lab.JOB}::app", "--", "--x", "3"]
 
 
@@ -103,7 +110,7 @@ def test_a_deferred_distribution_rides_the_shipment_and_exports_for_the_runner(
     closure = closure_of(lab, distributions=(*Lab.DISTRIBUTIONS, "packages/ext/src"))
     shipment = Shipment.of_closure(closure, root=lab.root)
     assert shipment.deferred == ("ext",)
-    assert shipment.exports()[DEFERRED_VAR] == "ext"
+    assert DEFERRED_VAR.read(shipment.exports()) == "ext"
     assert not any(line.startswith("packages/ext/src/") for line in shipment.listing.splitlines())
 
 

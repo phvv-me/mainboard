@@ -39,13 +39,14 @@ def since(stamp: str) -> str:
 
 
 # The variables a run reads its provenance from, here because the dispatch exporting them and the
-# receipt reading them sit at opposite ends of the package.
-SOURCE_VAR = "MAINBOARD_SOURCE"
-COMMIT_VAR = "MAINBOARD_SOURCE_COMMIT"
-DIGEST_VAR = "MAINBOARD_SOURCE_DIGEST"
-CLOSURE_VAR = "MAINBOARD_CLOSURE"
-FIRST_PARTY_VAR = "MAINBOARD_FIRST_PARTY"
-DEFERRED_VAR = "MAINBOARD_DEFERRED"
+# receipt reading them sit at opposite ends of the package. Each is exported under every name the
+# tool answers to, since the job may import an older release than the one that dispatched it.
+SOURCE_VAR = Project().variable("SOURCE")
+COMMIT_VAR = Project().variable("SOURCE_COMMIT")
+DIGEST_VAR = Project().variable("SOURCE_DIGEST")
+CLOSURE_VAR = Project().variable("CLOSURE")
+FIRST_PARTY_VAR = Project().variable("FIRST_PARTY")
+DEFERRED_VAR = Project().variable("DEFERRED")
 
 
 # A scheduler job handle, always stored as text: pueue numbers its tasks, so a handle read back

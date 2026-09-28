@@ -1,7 +1,6 @@
 """Capture the exact source and machine before acquisition, without version control."""
 
 import json
-import os
 import platform
 from enum import StrEnum, auto
 from hashlib import blake2b, sha256
@@ -111,8 +110,8 @@ class Source(FrozenModel):
 
 def source(repo: Path) -> Source:
     """Verify a dispatched snapshot or preserve a local source bundle before acquisition."""
-    declared = os.environ.get(CLOSURE_VAR, "")
-    expected = os.environ.get(DIGEST_VAR, "")
+    declared = CLOSURE_VAR.read()
+    expected = DIGEST_VAR.read()
     if declared:
         closure = Path(declared).resolve()
         tree = SourceTree(closure.parent)

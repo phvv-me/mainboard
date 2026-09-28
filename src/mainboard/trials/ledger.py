@@ -9,12 +9,11 @@
 # writes its own fragments.
 #
 # The wire is not the store. The printed `trial_receipt` line is how `mainboard monitor` settles a
-# remote job, so that boundary stays JSON lines, minted by `wire` both for the `MAINBOARD_RECEIPTS`
+# remote job, so that boundary stays JSON lines, minted by `wire` both for the `MB_RECEIPTS`
 # framing file a rented instance hands back and for streaming one run into `mainboard verdict`.
 
 import csv
 import json
-import os
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -49,7 +48,7 @@ class Ledger:
         directory.mkdir(parents=True, exist_ok=True)
         self.directory = directory
         self.common = dict(common)
-        self.framed = os.environ.get(RECEIPTS_VAR, "")
+        self.framed = RECEIPTS_VAR.read()
 
     def receipt(self, body: Mapping[str, JsonValue]) -> None:
         """Append one trial receipt, and frame it home when a dispatch staged a file for it."""
@@ -98,7 +97,7 @@ class TrialReceipts:
         self.directory = directory
         self.common = dict(common)
         self.nested = tuple(nested)
-        self.framed = os.environ.get(RECEIPTS_VAR, "")
+        self.framed = RECEIPTS_VAR.read()
         # Counted, so a second writer on a partition adds to its fragments instead of overwriting.
         self.written = len(self.parts)
 

@@ -1,13 +1,13 @@
 # Command history for a dispatch CLI in the shared state database: one `history` row per
-# subcommand invocation, disabled by `MAINBOARD_NO_HISTORY=1`.
+# subcommand invocation, disabled by `MB_NO_HISTORY=1` (or the legacy `MAINBOARD_NO_HISTORY=1`).
 
-import os
 import time
 import weakref
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ...core.project import Project
 from ..shared import db_file, now
 from .storage import connect
 
@@ -41,10 +41,10 @@ class HistoryEvent(FrozenModel):
 
 
 class History:
-    """The `history` table of the shared state database, a no-op under `MAINBOARD_NO_HISTORY=1`."""
+    """The `history` table of the shared state database, a no-op under `MB_NO_HISTORY=1`."""
 
     def __init__(self, path: Path | None = None) -> None:
-        disabled = os.environ.get("MAINBOARD_NO_HISTORY") == "1"
+        disabled = Project().variable("NO_HISTORY").read() == "1"
         self.connection = None if disabled else connect(path or db_file())
         if self.connection is not None:
             # The collector closes it, as on the cache: a short-lived log has no caller left.

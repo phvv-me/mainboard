@@ -31,7 +31,7 @@ def writing(status: int = 0) -> str:
     """A command writing one receipt to the file it was pointed at, then exiting `status`."""
     return python(
         "import os, sys\n"
-        f"open(os.environ[{RECEIPTS_VAR!r}], 'a').write({_RECEIPT!r} + '\\n')\n"
+        f"open(os.environ[{RECEIPTS_VAR.names[0]!r}], 'a').write({_RECEIPT!r} + '\\n')\n"
         "print('the command ran')\n"
         f"sys.exit({status})"
     )
@@ -109,7 +109,7 @@ def test_a_job_that_wrote_no_receipts_leaves_its_output_as_it_was(
 ) -> None:
     assert runner(tmp_path, python("pass")).run() == 0
     assert "mainboard-receipts" not in capfd.readouterr().out
-    removed = python(f"import os; os.remove(os.environ[{RECEIPTS_VAR!r}])")
+    removed = python(f"import os; os.remove(os.environ[{RECEIPTS_VAR.names[0]!r}])")
     assert runner(tmp_path, removed).run() == 0
     assert "mainboard-receipts" not in capfd.readouterr().out
 
@@ -159,7 +159,7 @@ def test_the_walltime_ends_the_command_and_the_log_says_so(
 ) -> None:
     """A triage view decodes the stop instead of showing a raw SIGTERM backtrace."""
     sleeping = python(
-        f"import os; open(os.environ[{RECEIPTS_VAR!r}], 'w').write({_RECEIPT!r}); "
+        f"import os; open(os.environ[{RECEIPTS_VAR.names[0]!r}], 'w').write({_RECEIPT!r}); "
         "import time; time.sleep(60)"
     )
     assert runner(tmp_path, sleeping, walltime="00:00:01").run() == 124
@@ -186,7 +186,8 @@ def test_a_terminated_job_ends_its_command_frames_its_receipts_and_exits_143(
     """What `trap 'exit 143' TERM` gave a job, whatever the command itself exited with."""
     previous = signal.getsignal(signal.SIGTERM)
     ending = python(
-        f"import os, signal, time; open(os.environ[{RECEIPTS_VAR!r}], 'w').write({_RECEIPT!r}); "
+        f"import os, signal, time; open(os.environ[{RECEIPTS_VAR.names[0]!r}], 'w')"
+        f".write({_RECEIPT!r}); "
         "os.kill(os.getppid(), signal.SIGTERM); time.sleep(60)"
     )
     assert runner(tmp_path, ending).run() == 143
@@ -208,14 +209,14 @@ def test_the_command_sees_its_exports_after_the_environment_and_its_own_pythonpa
     seen = tmp_path / "seen.json"
     dump = python(f"import json, os; json.dump(dict(os.environ), open({str(seen)!r}, 'w'))")
     exports = {"MAINBOARD_SOURCE": "abc", "ENTERED": "overridden by the host"}
-    environ = {**os.environ, "PYTHONPATH": "/inherited", RECEIPTS_VAR: "/stale"}
+    environ = {**os.environ, "PYTHONPATH": "/inherited", **RECEIPTS_VAR.exported("/stale")}
     Runner(job(tmp_path, dump, variables=exports), environ=environ, how=Entered()).run()
     isolated = json.loads(seen.read_text(encoding="utf-8"))
     assert (
         isolated["ENTERED"] == "overridden by the host" and isolated["MAINBOARD_SOURCE"] == "abc"
     )
     assert "PYTHONPATH" not in isolated
-    assert isolated[RECEIPTS_VAR] != "/stale"
+    assert all(isolated[name] not in ("/stale", "") for name in RECEIPTS_VAR.names)
     Runner(job(tmp_path, dump, pythonpath="/pinned/src"), environ=environ, how=Entered()).run()
     assert json.loads(seen.read_text(encoding="utf-8"))["PYTHONPATH"] == "/pinned/src"
     Runner(job(tmp_path, dump, isolate_pythonpath=False), environ=environ, how=Entered()).run()

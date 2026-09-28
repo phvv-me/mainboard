@@ -133,16 +133,22 @@ def test_a_real_session_reports_every_cell_through_the_job_s_own_descriptor(
     ("environment", "beacons"),
     [
         pytest.param({}, [], id="a-run-at-this-terminal"),
-        pytest.param({RECEIPTS_VAR: "/tmp/r"}, [False], id="a-dispatched-job"),
-        pytest.param({RECEIPTS_VAR: "/tmp/r", NESTED: "1"}, [True], id="a-dispatched-fresh-cell"),
+        pytest.param({RECEIPTS_VAR.names[-1]: "/tmp/r"}, [False], id="a-dispatched-job"),
+        pytest.param(
+            {RECEIPTS_VAR.names[0]: "/tmp/r", NESTED.names[-1]: "1"},
+            [True],
+            id="a-dispatched-fresh-cell",
+        ),
     ],
 )
 def test_only_a_dispatched_job_writes_the_markers_its_waiter_reads(
     monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], beacons: list[bool]
 ) -> None:
     """A terminal keeps pytest's output as it always was; only a log a machine reads gets them."""
-    monkeypatch.delenv(RECEIPTS_VAR, raising=False)
-    monkeypatch.delenv(NESTED, raising=False)
+    for name in RECEIPTS_VAR.names:
+        monkeypatch.delenv(name, raising=False)
+    for name in NESTED.names:
+        monkeypatch.delenv(name, raising=False)
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
     assert [plugin.nested for plugin in Runner.plugins()] == beacons

@@ -20,6 +20,8 @@ import re
 
 from patos import FrozenModel
 
+from ..core.project import Project
+
 # The three markers, each followed by one space and its value.
 CELLS = "mainboard-cells:"
 CELL = "mainboard-cell:"
@@ -27,7 +29,7 @@ SESSION = "mainboard-session:"
 
 # Set for each process a fresh-process lane runs a cell in: the lane declares the total and ends
 # the session itself, so a child reports its one cell and nothing else.
-NESTED = "MAINBOARD_FRESH_CELL"
+NESTED = Project().variable("FRESH_CELL")
 
 # Every marker span in a log, from the marker to the end of its line.
 _SPAN = re.compile(rf"(?:{CELLS}|{CELL}|{SESSION}) [^\n]*\n?")

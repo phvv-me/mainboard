@@ -265,7 +265,7 @@ class Dispatcher:
 
         Content-addressed by the closure digest, so a wave off one closure stages one file. The
         mirror carries it beside the script, the pin copies exactly the files it names, and the
-        job reads the same rows through `MAINBOARD_CLOSURE`.
+        job reads the same rows through `MB_CLOSURE`.
         """
         if not shipment.sealed:
             return ""

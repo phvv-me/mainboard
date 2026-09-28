@@ -68,15 +68,15 @@ class Guard(MetaPathFinder):
     @classmethod
     def armed(cls, root: Path) -> Guard | None:
         """The guard the environment describes, first on `sys.meta_path`; None for a command."""
-        listing = os.environ.get(CLOSURE_VAR, "")
+        listing = CLOSURE_VAR.read()
         if not listing:
             return None
         rows = Path(listing).read_text(encoding="utf-8").splitlines()
         guard = cls(
-            os.environ.get(FIRST_PARTY_VAR, "").split(":"),
+            FIRST_PARTY_VAR.read().split(":"),
             [row.split("\t", maxsplit=1)[0] for row in rows if row],
             root,
-            deferred=os.environ.get(DEFERRED_VAR, "").split(":"),
+            deferred=DEFERRED_VAR.read().split(":"),
         )
         sys.meta_path.insert(0, guard)
         return guard
@@ -188,7 +188,7 @@ class Fresh:
         ends the session itself, each child reports only its cell, and the lane reports a cell
         killed at its timeout as failed.
         """
-        dispatched = RECEIPTS_VAR in os.environ
+        dispatched = RECEIPTS_VAR.present()
         if dispatched:
             beacon.say(beacon.CELLS, str(len(self.ids)))
         code = self.cells(spelling, dispatched=dispatched)
@@ -197,7 +197,7 @@ class Fresh:
         return code
 
     def cells(self, spelling: str, *, dispatched: bool) -> int:
-        nested = {**os.environ, beacon.NESTED: "1"}
+        nested = {**os.environ, **beacon.NESTED.exported("1")}
         for identity in self.ids:
             cell = f"{spelling}[{identity}]"
             print(f"mainboard: fresh process for {cell}", flush=True)
