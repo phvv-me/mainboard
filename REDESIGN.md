@@ -48,11 +48,12 @@ Phase 4 (branch `mb-writers`)
 - [x] 4.3 Batch event journal (`events.ndjson`) -> `events` via `Journal` (`f762aae`)
 - [x] 4.4 (`48aaff1`) Drop the wandb mirror: receipts are the record, `[tracking]` is just `interval`; one
       session serves threads by taking turns (a shared DuckDB connection deadlocks otherwise)
-- [x] 4.5 structlog replaces loguru and stdlib loggers; `from mb import logger`; `mb` import alias;
+- [x] 4.5 (`8bd88ee`) structlog replaces loguru and stdlib loggers; `from mb import logger`; `mb` import alias;
       trial-bound events routed to the trial spool; remove loguru
-- [~] 4.6 Harvested receipts (`receipts.ndjson`) -> `receipts`
-- [ ] 4.7 Captured job logs (`<handle>.log`, `monitor.log`) -> `log_lines`
-- [ ] 4.8 Costs ledger -> lake table
+- [x] 4.6 Harvested receipts (`receipts.ndjson`) -> `receipts`
+- [x] 4.7 Captured job logs (`<handle>.log`) -> `log_lines`; the durable pass logs to the systemd
+      journal instead of `monitor.log`
+- [~] 4.8 Costs ledger -> lake table
 - [ ] 4.9 GPU quotes catalog -> lake table
 - [ ] 4.10 Pulse -> lake table
 - [ ] 4.11 Holds -> lake table

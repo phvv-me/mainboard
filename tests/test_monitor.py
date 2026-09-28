@@ -16,7 +16,6 @@ from plumbum.commands.processes import ProcessExecutionError
 from mainboard import Board, Job, MissionError, Project
 from mainboard.batch import Topic
 from mainboard.batch.receipts import Journal
-from mainboard.batch.runner import directory
 from mainboard.cli import build
 from mainboard.costs.catalog import Offer
 from mainboard.dispatch import Handle, SshTransport, vocabulary
@@ -26,6 +25,7 @@ from mainboard.dispatch.lease import Lease
 from mainboard.dispatch.rentals import Identity
 from mainboard.dispatch.schedulers import HostUnreachable
 from mainboard.dispatch.state import Cache, RunRecord
+from mainboard.dispatch.state.captured import Captured
 from mainboard.dispatch.vocabulary import JobState, Resources
 from mainboard.durable import (
     Every,
@@ -545,9 +545,9 @@ def test_a_settled_rentals_output_and_receipts_come_home_before_the_instance_is_
         {"success": True},
     ]
     board.monitor().once()
-    under = directory(board, "trial-a")
-    assert "epoch 1" in (under / "21.log").read_text(encoding="utf-8")
-    assert receipt in (under / "receipts.ndjson").read_text(encoding="utf-8")
+    kept = Captured(board.dispatcher.cache.session)
+    assert "epoch 1" in (kept.transcript("trial-a", "21") or "")
+    assert kept.receipts("trial-a") == [receipt]
     # The read happened while the instance still existed, so the destroy is the last call made.
     assert Rented.calls[-1].get_method() == "DELETE"
 
@@ -560,7 +560,7 @@ def test_a_run_whose_backend_keeps_no_output_captures_nothing_and_still_settles(
     seed("22", target="rented", kind=Instance.name, name="trial-b")
     Instance.replies = [listed("22", "Stopped"), {}, {}]
     assert [item.handle for item in board.monitor().once().finished] == ["22"]
-    assert not (directory(board, "trial-b") / "22.log").exists()
+    assert Captured(board.dispatcher.cache.session).transcript("trial-b", "22") is None
 
 
 def test_a_provider_that_refuses_the_cancel_is_a_warning_not_a_failed_sweep(
@@ -616,7 +616,7 @@ def test_empty_successful_transfer_retains_receipt_referenced_evidence(
     assert released == [record.handle]
     assert board.verdicts().handled(record.handle).code == 0
     assert board.dispatcher.cache.run(record.handle).evidence == "verified"
-    assert (directory(board, "empty-transfer") / "receipts.ndjson").read_text().count(receipt) == 1
+    assert Captured(board.dispatcher.cache.session).receipts("empty-transfer") == [receipt]
 
 
 def test_failed_release_retries_without_refetching_destroyed_evidence(
@@ -1216,11 +1216,10 @@ def test_installing_the_pass_writes_both_units_and_arms_them(root: Path) -> None
     found = settler.install(Every.parse("20m"))
     service = settler.service.read_text(encoding="utf-8")
     timer = settler.timer.read_text(encoding="utf-8")
-    log = root / Project().out_dirs[0] / "monitor.log"
     assert re.fullmatch(r"mainboard-monitor-[0-9a-f]{8}\.service", settler.service.name)
     assert f"WorkingDirectory={root}" in service
     assert "ExecStart=/usr/bin/mainboard monitor --json" in service
-    assert f"StandardOutput=append:{log}" in service
+    assert "StandardOutput" not in service
     assert "OnUnitActiveSec=20m" in timer
     assert f"Unit={settler.service.name}" in timer
     assert "WantedBy=timers.target" in timer
@@ -1229,7 +1228,7 @@ def test_installing_the_pass_writes_both_units_and_arms_them(root: Path) -> None
     assert (found.installed, found.active, found.every) == (True, True, "20m")
     assert (found.last_run, found.log, found.root) == (
         "Thu 2026-09-04 09:20:31 JST",
-        str(log),
+        f"journalctl --user -u {settler.service.name}",
         str(root),
     )
     assert found.fix == f"loginctl enable-linger {getuser()}"

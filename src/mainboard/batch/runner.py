@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.errors import MissionError
-from ..core.project import Project
 from ..dispatch import vocabulary
 from ..dispatch.schedulers import is_quota_refusal
 from ..dispatch.shared import Watcher
@@ -19,15 +18,10 @@ from .spec import Selection
 from .transfer import Transfer, TransferSet
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from ..board import Board
     from .estimate import BatchEstimate
     from .receipts import Bus
     from .spec import BatchJob, BatchSpec
-
-# Where a batch keeps its own directory under the workspace's generated tree, one per batch id.
-_BATCHES = "batches"
 
 # How a batch's jobs are labelled in the run registry, the prefix `labelled_batch` reads back.
 _LABEL = "batch:"
@@ -79,7 +73,6 @@ class Batch:
     ) -> None:
         self.board = board
         self.spec = spec
-        self.dir = directory(board, spec.batch_id)
         self.bus = bus or Journal(board.dispatcher.cache.session, spec.batch_id)
         self.selection = selection or Selection()
         self.jobs = self.selection.chosen(spec.jobs)
@@ -218,8 +211,3 @@ class Batch:
 def labelled_batch(label: str) -> str:
     """The `<batch>/<job>` inside a dispatch `label`, empty when the label names no batch."""
     return label.removeprefix(_LABEL) if label.startswith(_LABEL) else ""
-
-
-def directory(board: Board, batch_id: str) -> Path:
-    """Where `batch_id` keeps its receipts under `board`'s generated tree."""
-    return Project().out(board.root) / _BATCHES / batch_id

@@ -30,8 +30,6 @@ if TYPE_CHECKING:
 _TOOL = Project().package
 # The one pass a period runs, the same line a person types at a terminal.
 _PASS = ("monitor", "--json")
-# Where a pass appends what it settled, beside the rest of the generated state.
-_LOG = "monitor.log"
 # The period a message suggests when nothing is installed, the one the campaign cron ran at.
 _SUGGESTED = "20m"
 # How long a service manager may take to answer before it is read as saying nothing.
@@ -98,7 +96,7 @@ class Settling(FrozenModel):
     root: the workspace the installed pass sweeps, empty when nothing is installed.
     every: the period between passes as the installed unit spells it, empty when none is.
     last_run: when a pass last ran, as the service manager reports it, empty when none ever did.
-    log: where a pass appends what it settled, empty when nothing is installed.
+    log: the command that reads what passes said, empty when nothing is installed.
     detail: the one line behind the answer.
     fix: the single command that gets a durable pass running, empty when one already does.
     """
@@ -185,10 +183,8 @@ class SystemdUser(Settler):
         Idempotent: the units are rewritten from the root and `every` and the enable is repeatable,
         so changing the period is the same command.
         """
-        log = Project().out(self.root) / _LOG
-        log.parent.mkdir(parents=True, exist_ok=True)
         self.units.mkdir(parents=True, exist_ok=True)
-        self.service.write_text(self._service(log), encoding="utf-8")
+        self.service.write_text(self._service(), encoding="utf-8")
         self.timer.write_text(self._timer(every), encoding="utf-8")
         self.shell(("systemctl", "--user", "daemon-reload"))
         status, output = self.shell(("systemctl", "--user", "enable", "--now", self.timer.name))
@@ -224,7 +220,7 @@ class SystemdUser(Settler):
             )
         shown = self._shown()
         every = self._setting(self.timer, "OnUnitActiveSec")
-        log = self._setting(self.service, "StandardOutput").removeprefix("append:")
+        log = f"journalctl --user -u {self.service.name}" if self.service.is_file() else ""
         active = shown.get("ActiveState") == "active"
         triggered = shown.get("LastTriggerUSec", "")
         last_run = "" if triggered in ("", "n/a") else triggered
@@ -239,7 +235,7 @@ class SystemdUser(Settler):
             last_run=last_run,
             log=log,
             detail=(
-                f"{self.timer.name} {state}, one pass every {every} into {log}, "
+                f"{self.timer.name} {state}, one pass every {every}, read with `{log}`, "
                 f"last run {last_run or 'never'}{linger}"
             ),
             fix=self._repair(active=active, lingering=lingering),
@@ -268,8 +264,12 @@ class SystemdUser(Settler):
         pairs = (line.partition("=") for line in output.splitlines() if "=" in line)
         return {key: value.strip() for key, _, value in pairs}
 
-    def _service(self, log: Path) -> str:
-        """The unit for one pass, run from this settler's root, appending what it says to `log`."""
+    def _service(self) -> str:
+        """The unit for one pass, run from this settler's root, what it says kept by the journal.
+
+        What a pass settles is recorded in the workspace lake; its own chatter is the service
+        manager's to keep, where `journalctl` reads it, rather than one more file to grow.
+        """
         found = which(_TOOL)
         if found is None:
             raise MissionError(
@@ -284,8 +284,6 @@ class SystemdUser(Settler):
                 "Type=oneshot",
                 f"WorkingDirectory={self.root}",
                 f"ExecStart={found} {' '.join(_PASS)}",
-                f"StandardOutput=append:{log}",
-                f"StandardError=append:{log}",
                 "",
             )
         )

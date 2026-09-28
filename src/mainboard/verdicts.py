@@ -1,14 +1,15 @@
 # The anti-fabrication read behind `mainboard verdict` and the block behind `mainboard wait`.
-# Everything printed here comes from on-disk receipts and the durable run registry, never from a
+# Everything printed here comes from recorded receipts and the durable run registry, never from a
 # dashboard, a digest or a live session's memory: a notification says a job probably ended, this
 # module reads its outcome.
 #
 # Three targets resolve to one settled view. A receipts file is read line by line in both shapes
 # the workspace writes, the batch `Event` envelope and the printed `trial_receipt` line. A stream
-# id reads that stream's `events.ndjson`. A handle resolves through the run registry to the stream
-# its dispatch was tracked under. Under every target the registry row is the floor: a row the
-# receipts left in flight is re-read from the registry, where the unattended sweep records an
-# outcome nobody was watching for, and a run whose workspace tracks nothing still answers.
+# id reads that stream's events and captured receipts in the lake. A handle resolves through
+# the run registry to the stream its dispatch was tracked under. Under every target the registry
+# row is the floor: a row the receipts left in flight is re-read from the registry, where the
+# unattended sweep records an outcome nobody was watching for, and a run whose workspace tracks
+# nothing still answers.
 
 import json
 from time import monotonic, sleep
@@ -19,11 +20,11 @@ from patos import FrozenModel
 from pydantic import ValidationError
 
 from .batch.receipts import OFFERED, Event, Journal, Receipts, Topic, latest
-from .batch.runner import directory
 from .core.errors import MissionError
 from .diagnosis import reason
 from .dispatch import vocabulary
 from .dispatch.schedulers import short_reason
+from .dispatch.state.captured import Captured
 from .dispatch.vocabulary import JobState
 from .log import logger
 from .pulse import Pulses
@@ -156,6 +157,7 @@ class Verdicts:
 
     def __init__(self, board: Board) -> None:
         self.board = board
+        self.kept = Captured(board.dispatcher.cache.session)
 
     def cancel(self, handle: str, *, host: str = "") -> StreamVerdict:
         """Cancel under the same claim as automatic settlement, preserving cleanup failures.
@@ -289,9 +291,9 @@ class Verdicts:
         """
         record = self.record(handle, host=host)
         stream, _ = streamed(record.name or "", handle=record.handle)
-        stored = directory(self.board, stream) / f"{record.handle}.log"
-        if stored.is_file():
-            return stored.read_text(encoding="utf-8")
+        stored = self.kept.transcript(stream, record.handle)
+        if stored is not None:
+            return stored
         return self.board.job(record.handle, host=record.target).transcript()
 
     def handled(self, handle: str, *, host: str = "") -> StreamVerdict:
@@ -303,14 +305,15 @@ class Verdicts:
                 f"{handle!r} is not a receipts file, a stream, or a recorded handle: {missing}"
             ) from None
         stream, job = streamed(record.name or "", handle=record.handle)
-        under = directory(self.board, stream)
         history = Journal(self.board.dispatcher.cache.session, stream).replay()
         events = self.__events(history, record)
         mine = tuple(trial for trial in eventful(events) if trial.handle == record.handle)
         cases = {
             case for event in events if event.topic == Topic.EVIDENCE for case in _cases(event)
         }
-        harvested = tuple(trial for trial in harvest(under) if (trial.run, trial.job) in cases)
+        harvested = tuple(
+            trial for trial in self.harvest(stream) if (trial.run, trial.job) in cases
+        )
         floor = self.swept(mine) or (self.__floor(record, job=job),)
         return StreamVerdict(stream=stream, trials=qualified((*floor, *harvested), events))
 
@@ -348,9 +351,9 @@ class Verdicts:
         if path.is_file():
             read = lined(path)
             return StreamVerdict(stream=target, trials=read, note=unreadable(path, read))
-        under = directory(self.board, target)
         events = Journal(self.board.dispatcher.cache.session, target).replay()
-        if events or (under / "receipts.ndjson").is_file():
+        harvested = self.harvest(target)
+        if events or harvested:
             recorded = eventful(events)
             seen = {(trial.target, trial.handle) for trial in recorded}
             missing = tuple(
@@ -359,7 +362,7 @@ class Verdicts:
                 for stream, job in [streamed(record.name or "", handle=record.handle)]
                 if stream == target and (record.target, record.handle) not in seen
             )
-            found = (*self.swept(recorded), *missing, *harvest(under))
+            found = (*self.swept(recorded), *missing, *harvested)
             return StreamVerdict(
                 stream=target, trials=qualified(found, events), note=silent(target, events, found)
             )
@@ -396,6 +399,14 @@ class Verdicts:
             else f"{store.root} holds no receipts for run {chosen!r}; it holds {store.runs}"
         )
         return StreamVerdict(stream=f"{stream} run {chosen}", trials=trials, note=note)
+
+    def harvest(self, stream: str) -> tuple[TrialVerdict, ...]:
+        """The trial receipts a settle brought home for `stream`, empty when it brought none.
+
+        They are kept apart from the stream's events, so no reader of the envelopes ever meets a
+        line it was never promised.
+        """
+        return parsed(self.kept.receipts(stream))
 
     def swept(self, trials: tuple[TrialVerdict, ...]) -> tuple[TrialVerdict, ...]:
         """`trials` joined onto the run registry: their provenance, and any in-flight outcome.
@@ -601,16 +612,6 @@ def silent(stream: str, events: list[Event], trials: tuple[TrialVerdict, ...]) -
     )
 
 
-def harvest(under: Path) -> tuple[TrialVerdict, ...]:
-    """The trial receipts a settle brought home for `under`'s stream, empty when it brought none.
-
-    They live in their own file, not the event log, so no reader of the envelopes ever meets a
-    line it was never promised.
-    """
-    path = under / "receipts.ndjson"
-    return lined(path) if path.is_file() else ()
-
-
 def qualified(
     trials: tuple[TrialVerdict, ...], events: Iterable[Event]
 ) -> tuple[TrialVerdict, ...]:
@@ -667,9 +668,21 @@ def lined(path: Path) -> tuple[TrialVerdict, ...]:
     a torn log: another tool's well-formed evidence once reached `Event` and answered with a
     pydantic traceback instead of the empty table the caller could be told about.
     """
+    companion = path.parent / "events.ndjson"
+    corrections = Receipts(companion).replay() if companion != path and companion.is_file() else []
+    return parsed(path.read_text(encoding="utf-8").splitlines(), corrections, source=str(path))
+
+
+def parsed(
+    lines: Iterable[str], corrections: Iterable[Event] = (), *, source: str = "the lake"
+) -> tuple[TrialVerdict, ...]:
+    """Every row `lines` hold, in either written shape, under `corrections` and their own events.
+
+    source: where the lines came from, named when one is neither shape.
+    """
     events: list[Event] = []
     trials: list[TrialVerdict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in lines:
         if not line.strip():
             continue
         try:
@@ -684,9 +697,7 @@ def lined(path: Path) -> tuple[TrialVerdict, ...]:
         try:
             events.append(Event.model_validate(payload))
         except ValidationError:
-            logger.debug("{} carries a line that is neither shape this verb reads", path)
-    companion = path.parent / "events.ndjson"
-    corrections = Receipts(companion).replay() if companion != path and companion.is_file() else []
+            logger.debug("{} carries a line that is neither shape this verb reads", source)
     return qualified((*eventful(events), *trials), [*events, *corrections])
 
 

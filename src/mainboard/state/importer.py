@@ -403,6 +403,7 @@ class Importer:
                 lines += 1
                 staged.append(
                     {
+                        "ts": self.instant,
                         "batch": relative.split("/")[0],
                         "file": relative,
                         "n": number,

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from mainboard import Board, MissionError, Project
+from mainboard import Board, MissionError
 from mainboard.batch import Batch, BatchStatus, Event, Selection, Topic, Watch
 from mainboard.batch.receipts import publish
 from mainboard.batch.watch import _epoch
@@ -242,9 +242,8 @@ def test_the_wave_that_follows_dispatches_what_the_last_one_skipped(
     ]
 
 
-def test_a_batch_keeps_its_receipts_in_its_own_directory(lab: Board) -> None:
+def test_a_batch_and_its_watch_read_one_stream_of_receipts(lab: Board) -> None:
     batch = Batch(lab, spec(_TWO[0]))
-    assert batch.dir == lab.root / Project().out_dirs[0] / "batches" / batch.id
     batch.open()
     assert [event.topic for event in batch.bus.replay()] == ["batch.opened"]
     assert Watch(lab, batch.id).bus.replay() == batch.bus.replay()

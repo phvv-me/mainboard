@@ -6,8 +6,8 @@ from filelock import FileLock
 
 from mainboard import Board, Job, MissionError
 from mainboard.batch.receipts import Event, Journal, Topic, publish
-from mainboard.batch.runner import directory
 from mainboard.dispatch.state import Cache, RunRecord
+from mainboard.dispatch.state.captured import Captured
 from mainboard.monitor import Monitor
 from mainboard.verdicts import (
     STALLED,
@@ -16,6 +16,7 @@ from mainboard.verdicts import (
     Verdicts,
     gated,
     lined,
+    parsed,
     qualified,
     stopped,
 )
@@ -27,12 +28,9 @@ if TYPE_CHECKING:
 _STREAM = "study-receipts"
 
 
-def into(board: Board, stream: str) -> Path:
-    """`stream`'s directory, made first: files a sweep brings home land in it, and nothing
-    publishing a receipt creates it any more now that receipts live in the lake."""
-    under = directory(board, stream)
-    under.mkdir(parents=True, exist_ok=True)
-    return under
+def captured(board: Board) -> Captured:
+    """What the workspace's sweeps brought home, the store a test seeds a capture into."""
+    return Captured(board.dispatcher.cache.session)
 
 
 def receipt(run: str, case: str, **fields: str) -> str:
@@ -51,9 +49,9 @@ def test_a_cached_success_is_not_delivered_before_its_first_evidence_event(
     board.dispatcher.cache.delivery(record, status)
     assert board.verdicts().handled("79").code == 2
     assert board.verdicts().handled("79").trials[0].verdict == "blocked"
-    under = into(board, "crashed-before-event")
-    under.mkdir(parents=True, exist_ok=True)
-    (under / "receipts.ndjson").write_text(receipt("r", "case", verdict="validated") + "\n")
+    captured(board).keep_receipts(
+        "crashed-before-event", [receipt("r", "case", verdict="validated")]
+    )
     assert board.verdicts().of("crashed-before-event").code == 2
 
 
@@ -61,14 +59,10 @@ def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidenc
     board: Board,
 ) -> None:
     recorded(board, "77", name="lost-transfer", verdict="ok")
-    under = into(board, "lost-transfer")
-    under.mkdir(parents=True, exist_ok=True)
-    path = under / "receipts.ndjson"
-    original = "".join(
-        receipt(run, "same-case", verdict="validated") + "\n"
-        for run in ("first-run", "second-run")
-    )
-    path.write_text(original)
+    original = [
+        receipt(run, "same-case", verdict="validated") for run in ("first-run", "second-run")
+    ]
+    captured(board).keep_receipts("lost-transfer", original)
     publish(
         Journal(board.dispatcher.cache.session, "lost-transfer"),
         "lost-transfer",
@@ -87,9 +81,10 @@ def test_delivery_correction_preserves_claim_but_does_not_claim_verified_evidenc
     first = next(trial for trial in result.trials if trial.run)
     assert (first.verdict, first.settled) == ("unverified", "validated")
     assert {trial.run for trial in result.trials if trial.run} == {"first-run"}
-    second = next(trial for trial in lined(path) if trial.run == "second-run")
+    kept = captured(board).receipts("lost-transfer")
+    second = next(trial for trial in parsed(kept) if trial.run == "second-run")
     assert second.verdict == "passed"
-    assert path.read_text() == original
+    assert kept == original
     assert board.dispatcher.cache.run("77").verdict == "ok"
 
 
@@ -478,9 +473,7 @@ def test_a_failed_row_says_what_it_said_on_the_way_out(
     """Thirty two GH200 jobs printed identical `failed` rows while the line that explained each
     sat in the log the sweep had already brought home (2026-09-05)."""
     recorded(board, "9", name="doomed", verdict=verdict)
-    stored = into(board, "doomed") / "9.log"
-    stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_text(log, encoding="utf-8")
+    captured(board).keep_transcript("doomed", "9", log)
     [row] = board.verdicts().of("9").trials
     assert row.cause == cause
 
@@ -548,9 +541,7 @@ def test_same_named_host_jobs_keep_their_own_state_and_child_receipts(
                 "trials": cases,
             },
         )
-    path = into(board, stream) / "receipts.ndjson"
-    original = "\n".join(receipts) + "\n"
-    path.write_text(original)
+    captured(board).keep_receipts(stream, receipts)
 
     for target, handle, code in [("crimson", active, 2), ("miyabi-g", remote, 0)]:
         settled = board.verdicts().handled(handle, host=target)
@@ -560,7 +551,7 @@ def test_same_named_host_jobs_keep_their_own_state_and_child_receipts(
             f"{target}-{i}" for i in range(3)
         }
     assert board.verdicts().of(stream).code == 2
-    assert path.read_text() == original
+    assert captured(board).receipts(stream) == list(receipts)
 
 
 def test_a_target_that_is_nothing_at_all_is_refused_with_the_three_shapes_named(
@@ -692,9 +683,7 @@ def test_the_captured_tail_is_preferred_over_a_backend_that_may_no_longer_exist(
     recorded(board, "5", name="chatty", target="miyabi-g")
     monkeypatch.setattr(Job, "transcript", lambda self: "live output")
     assert board.verdicts().captured("5") == "live output"
-    stored = into(board, "chatty") / "5.log"
-    stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_text("what the sweep brought home\n", encoding="utf-8")
+    captured(board).keep_transcript("chatty", "5", "what the sweep brought home\n")
     assert board.verdicts().captured("5") == "what the sweep brought home\n"
 
 
@@ -793,8 +782,8 @@ def test_a_stream_row_the_sweep_settled_as_failed_says_why(board: Board) -> None
     bus = Journal(board.dispatcher.cache.session, stream)
     publish(bus, stream, Topic.SUBMITTED, job="tex", data={"handle": "3294911", "target": "gold"})
     recorded(board, "3294911", name=f"batch:{stream}/tex", verdict="failed")
-    (into(board, stream) / "3294911.log").write_text(
-        "Traceback (most recent call last):\nMemoryError: CUDA out of memory\n", encoding="utf-8"
+    captured(board).keep_transcript(
+        stream, "3294911", "Traceback (most recent call last):\nMemoryError: CUDA out of memory\n"
     )
     [row] = board.verdicts().of(stream).trials
     assert (row.verdict, row.cause) == ("failed", "MemoryError: CUDA out of memory")

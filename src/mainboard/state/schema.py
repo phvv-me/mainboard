@@ -214,6 +214,7 @@ TABLES: tuple[Table, ...] = (
     Table(
         name="log_lines",
         columns=(
+            ("ts", "TIMESTAMPTZ"),
             ("batch", "VARCHAR"),
             ("file", "VARCHAR"),
             ("n", "BIGINT"),

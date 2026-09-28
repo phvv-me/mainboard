@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from mainboard.cli import build
-from mainboard.core.project import Project
 from mainboard.dispatch import HostSetup
 from mainboard.dispatch.dispatcher import Dispatcher
 from mainboard.dispatch.schedulers import HostUnreachable
 from mainboard.dispatch.state import Cache, RunRecord
+from mainboard.dispatch.state.captured import Captured
 from mainboard.dispatch.vocabulary import JobState
 from mainboard.jobs.beacon import Progress
 from mainboard.probe import system
@@ -170,9 +170,9 @@ def test_a_settled_failure_carries_what_it_said_on_the_way_out(
     that run's receipts, which is what thirty two GH200 jobs were missing on 2026-09-05.
     """
     seed_run("H9", verdict="failed")
-    stored = Project().out(depot) / "batches" / "train" / "H9.log"
-    stored.parent.mkdir(parents=True, exist_ok=True)
-    stored.write_text("Traceback:\n  frame\nRuntimeError: the gate failed\nexit=1\n")
+    Captured(Cache().session).keep_transcript(
+        "train", "H9", "Traceback:\n  frame\nRuntimeError: the gate failed\nexit=1\n"
+    )
 
     with pytest.raises(SystemExit, match="0"):
         build(depot)(["jobs", "--json"])

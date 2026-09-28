@@ -4,7 +4,6 @@
 # agent that dispatched it staying alive to see it end.
 
 import json
-import os
 import shlex
 from pathlib import Path
 from sqlite3 import Error as SQLiteError
@@ -15,7 +14,6 @@ from filelock import Timeout
 from plumbum.commands.processes import ProcessExecutionError
 
 from .batch.receipts import Topic, latest, publish
-from .batch.runner import directory
 from .core.errors import MissionError
 from .dispatch import vocabulary
 from .dispatch.backends.base import route
@@ -23,6 +21,7 @@ from .dispatch.dispatcher import Verdict
 from .dispatch.evidence import covered_in, receipts_in
 from .dispatch.schedulers import HostUnreachable, is_quota_refusal, short_reason
 from .dispatch.state import DownHost, Failed, Finished, Held, MonitorReport, Resumed
+from .dispatch.state.captured import Captured
 from .dispatch.vocabulary import JobState
 from .log import logger
 from .tracking import is_batched, streamed
@@ -136,6 +135,7 @@ class Monitor:
     def __init__(self, board: Board) -> None:
         self.board = board
         self.cache = board.dispatcher.cache
+        self.captured = Captured(self.cache.session)
         self.streams: dict[str, Bus] = {}
         self.quiet: dict[str, str] = {}
 
@@ -146,19 +146,12 @@ class Monitor:
         the delivery checkpoint is published; receipt references are verified separately.
         """
         stream, name = streamed(record.name or "", handle=record.handle)
-        under = directory(self.board, stream)
-        under.mkdir(parents=True, exist_ok=True)
-        log = under / f"{record.handle}.log"
         transcript = job.transcript()
         if not transcript:
-            return receipts_in(log.read_text(encoding="utf-8")) if log.is_file() else ()
-        _synced(log, transcript, "w")
+            return receipts_in(self.captured.transcript(stream, record.handle) or "")
         harvested = receipts_in(transcript)
-        path = under / "receipts.ndjson"
-        known = harvested and path.is_file()
-        seen = set(path.read_text(encoding="utf-8").splitlines()) if known else set()
-        if fresh := [line for line in harvested if line not in seen]:
-            _synced(path, "\n".join(fresh) + "\n", "a")
+        self.captured.keep_transcript(stream, record.handle, transcript)
+        self.captured.keep_receipts(stream, harvested)
         logger.info(
             "captured {} log lines for {} ({})", transcript.count("\n"), record.handle, name
         )
@@ -452,11 +445,11 @@ class Monitor:
             harvested: tuple[str, ...] = ()
             pulled = None
             try:
-                log = directory(self.board, stream) / f"{record.handle}.log"
                 if copied:
-                    if previous is None and not log.is_file():
+                    kept = self.captured.transcript(stream, record.handle)
+                    if previous is None and kept is None:
                         raise MissionError("copied evidence has no recoverable local receipt log")
-                    transcript = log.read_text(encoding="utf-8") if log.is_file() else ""
+                    transcript = kept or ""
                     harvested = receipts_in(transcript)
                     if previous is not None and previous.data.get("trials") and not harvested:
                         raise MissionError("copied trial receipts are missing from the local log")
@@ -466,7 +459,7 @@ class Monitor:
                     pulled = self.pull(job)
                     self.answering(job)
                     harvested = self.capture(record, job)
-                    transcript = log.read_text(encoding="utf-8") if log.is_file() else ""
+                    transcript = self.captured.transcript(stream, record.handle) or ""
                 self.verify(
                     record,
                     job,
@@ -610,14 +603,6 @@ def _identity(record: RunRecord) -> dict[str, JsonValue]:
 def _failed(record: RunRecord, reason: str) -> Failed:
     """`record`'s row in a report's failed list."""
     return Failed(handle=record.handle, target=record.target, reason=reason)
-
-
-def _synced(path: Path, text: str, mode: str) -> None:
-    """Write `text` to `path` and fsync it, so it outlives a rental destroyed right after."""
-    with path.open(mode, encoding="utf-8") as opened:
-        opened.write(text)
-        opened.flush()
-        os.fsync(opened.fileno())
 
 
 def _receipt(line: str) -> JsonValue:
