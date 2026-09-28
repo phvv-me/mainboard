@@ -205,14 +205,17 @@ class Provisioner:
         return self._shard(env).pixi.runs_here()
 
     def recompiled(self, env: str = "default") -> None:
-        """Bring `env`'s generated artifact in line with the manifest, and touch nothing else.
+        """Bring `env`'s generated artifact in line with the manifest and its lock in line with
+        the committed one, and touch nothing else.
 
         All a dispatch needs, without `refreshed`'s local sync: an older compile once moved the
         workstation's address away from the host's and killed a wave at environment prime.
         Unconditional, since `stale` reads nothing compiled as fresh and a no-op write is free.
         """
         with GeneratedFiles(directory=self.out).locked() as files:
-            self._shard(env).compiler.write(files)
+            compiler = self._shard(env).compiler
+            compiler.write(files)
+            compiler.materialize(files)
 
     @contextmanager
     def activated(self, env: str = "default") -> Generator[None]:
@@ -325,6 +328,10 @@ class Provisioner:
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
             shard.compiler.write(files)
+            if resolve or refresh:
+                # A solve starts from the committed lock, so it moves only what the manifest
+                # moved; an install materializes it while vouching for it.
+                shard.compiler.materialize(files)
             if refresh:
                 shard.pixi.update(env)
             shard.compiler.install_locked(files, resolve=resolve or refresh)

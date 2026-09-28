@@ -57,7 +57,8 @@ def installed(pixi: Pixi) -> Path:
 def test_install_requires_a_lock_unless_resolution_was_requested(
     fp: FakeProcess, pixi: Pixi
 ) -> None:
-    with pytest.raises(MissionError, match=r"pixi.lock is missing.*install --resolve"):
+    missing = r"pixi.lock is missing.*install --resolve.*commit the mb\.lock it writes"
+    with pytest.raises(MissionError, match=missing):
         pixi.install("default")
     assert not fp.calls
 

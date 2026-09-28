@@ -136,9 +136,11 @@ class Pixi(Tool):
     def environment_result(self, verb: str, *args: str, resolve: bool = False) -> CommandResult:
         """Run an environment verb and retain its streamed native output."""
         if not resolve and not self.lock.exists():
+            project = Project()
             raise MissionError(
-                f"pixi.lock is missing. Run `{Project().name} install --resolve` on a "
-                "solve-capable machine to create and verify the generated manifest/lock pair."
+                f"pixi.lock is missing. Run `{project.name} install --resolve` on a "
+                "solve-capable machine to create and verify the generated manifest/lock pair, "
+                f"and commit the {project.locks[0]} it writes."
             )
         editable = self._has_editable_paths()
         return self.within_cwd(

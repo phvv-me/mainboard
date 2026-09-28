@@ -14,6 +14,7 @@ from mainboard.engines.compile import Provisioner, SecondStage, task_line
 from mainboard.engines.compile.backend import CommandResult, Pixi
 from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles
+from mainboard.engines.compile.lockfile import Lockfile, Solved
 from mainboard.engines.compile.state import SyncState
 
 if TYPE_CHECKING:
@@ -589,6 +590,37 @@ def test_artifact_ships_the_same_generated_inputs_that_name_the_prefix(
     assert source / "package.json" in expected
 
 
+def _commit(tmp_path: Path, lock: str, solved_from: str = "a" * 64) -> Solved:
+    solved = Solved(solved_from=solved_from, solved_by="0.79.0", lock=lock)
+    with GeneratedFiles(directory=tmp_path / Project().out_dir(tmp_path)).locked() as files:
+        Lockfile(tmp_path).put(files, "default", solved)
+    return solved
+
+
+def test_a_resolve_starts_from_the_committed_lock_and_commits_what_it_solved(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path, fp: FakeProcess, solver_version: str
+) -> None:
+    """A fresh clone's solve moves only what the manifest moved, never every pin at once."""
+    provisioner = Provisioner(
+        tmp_path, manifest_from('[workspace]\nname = "w"\nplatforms = ["linux-ppc64le"]\n')
+    )
+    _commit(tmp_path, "version: 7\ncommitted: true\n", solved_from="0" * 64)
+    seen: list[str] = []
+    fp.register(
+        [fp.any()],
+        stdout="lock solved\n",
+        callback=lambda _: seen.append(provisioner.pixi.lock.read_text(encoding="utf-8")),
+    )
+
+    provisioner.provision(resolve=True)
+
+    assert seen == ["version: 7\ncommitted: true\n"]
+    solved = Lockfile(tmp_path).get("default")
+    assert solved is not None
+    assert solved.solved_from == provisioner.compiler.resolution_digest()
+    assert solved.solved_by == solver_version
+
+
 def test_the_provisioner_says_which_pixi_solves_here(
     manifest_from: Callable[[str], Manifest], tmp_path: Path, solver_version: str
 ) -> None:
@@ -706,6 +738,7 @@ def test_a_resolve_for_a_platform_this_machine_is_not_solves_the_lock_and_instal
 ) -> None:
     foreign = '[workspace]\nname = "w"\nplatforms = ["linux-ppc64le"]\n'
     provisioner = Provisioner(tmp_path, manifest_from(foreign))
+    _solvable(provisioner)
     fp.register([fp.any()], stdout="lock solved\n")
 
     provisioner.provision(resolve=True)
@@ -713,6 +746,10 @@ def test_a_resolve_for_a_platform_this_machine_is_not_solves_the_lock_and_instal
     assert not provisioner.runs_here()
     assert [call[1] for call in fp.calls if call[1] != "--version"] == ["lock"]
     assert SyncState.load(provisioner.environment_dir()).solved_by == solver_version
+    solved = Lockfile(tmp_path).get("default")
+    assert solved is not None
+    assert solved.lock.encode() == provisioner.pixi.lock.read_bytes()
+    assert solved.solved_by == solver_version
 
 
 def test_a_local_run_hands_its_exports_to_pixi(

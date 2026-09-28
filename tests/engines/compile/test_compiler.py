@@ -1,3 +1,4 @@
+import os
 import tomllib
 from threading import Event, Thread
 from typing import TYPE_CHECKING
@@ -9,6 +10,7 @@ from mainboard import MissionError, Project
 from mainboard.core.host import current_platform
 from mainboard.engines.compile.compiler import Compiler
 from mainboard.engines.compile.generated import GeneratedFiles
+from mainboard.engines.compile.lockfile import Lockfile, Solved
 from mainboard.engines.compile.pixi_manifest import PixiManifest
 from mainboard.engines.compile.provisioner import Provisioner
 from mainboard.engines.compile.state import SyncState
@@ -306,7 +308,12 @@ def test_the_resolution_digest_follows_every_local_python_projects_own_metadata(
             r"was not solved from the manifest now compiled at .*pixi\.toml",
             id="a-lock-this-tree-never-solved",
         ),
-        pytest.param(False, r"pixi\.lock is missing", id="no-lock-at-all-is-pixis-own-diagnosis"),
+        pytest.param(
+            False,
+            r"pixi\.lock is missing: .*mb\.lock holds no \[environments\.default\] and .* "
+            r"Run `mb install default --resolve` .* and commit the lock it writes",
+            id="no-lock-anywhere-names-the-committed-one-and-the-solve",
+        ),
     ],
 )
 def test_install_locked_refuses_a_lock_nothing_on_disk_vouches_for(
@@ -435,6 +442,131 @@ def test_install_locked_blesses_the_lock_after_a_successful_resolve(
     assert state.environment == "default"
     assert state.solved_from == compiler.resolution_digest()
     assert state.solved_by == solver_version
+    committed = Lockfile(compiler.root).get("default")
+    assert committed == Solved(
+        solved_from=state.solved_from,
+        solved_by=solver_version,
+        lock=pixi.lock.read_bytes().decode(),
+    )
+
+
+def _committed(compiler: Compiler, lock: str, *, solved_from: str = "") -> Solved:
+    """Commit `lock` for the compiler's environment, blessed for `solved_from` or the current."""
+    solved = Solved(
+        solved_from=solved_from or compiler.resolution_digest(), solved_by="0.79.0", lock=lock
+    )
+    with GeneratedFiles(directory=compiler.out).locked() as files:
+        Lockfile(compiler.root).put(files, compiler.environment, solved)
+    return solved
+
+
+def test_vouch_answers_to_the_committed_lock_and_materializes_it_byte_for_byte(
+    compiler_from: CompilerFrom, pixi: Pixi
+) -> None:
+    """A clone holds only the committed lock; vouching writes the shard the copy that ships."""
+    pixi.manifest.write_text("[workspace]\n", encoding="utf-8")
+    compiler = compiler_from(_BARE)
+    solved = _committed(compiler, "version: 7\r\nno-trailing: newline")
+
+    compiler.vouch()
+
+    assert pixi.lock.read_bytes() == b"version: 7\r\nno-trailing: newline"
+    state = SyncState.load(compiler.out)
+    assert (state.solved_from, state.solved_by) == (solved.solved_from, "0.79.0")
+
+
+def test_vouch_refuses_a_committed_lock_solved_from_another_manifest(
+    compiler_from: CompilerFrom, pixi: Pixi
+) -> None:
+    """The committed blessing wins over whatever the shard's state said."""
+    pixi.manifest.write_text("[workspace]\n", encoding="utf-8")
+    compiler = compiler_from(_BARE)
+    SyncState.path(compiler.out).write_text(
+        SyncState(environment="default", solved_from=compiler.resolution_digest()).render(),
+        encoding="utf-8",
+    )
+    _committed(compiler, "version: 7\n", solved_from="0" * 64)
+
+    with pytest.raises(MissionError) as refused:
+        compiler.vouch()
+
+    said = str(refused.value)
+    assert f"blessed {Lockfile(compiler.root).path} for {'0' * 12}" in said
+    assert f"`{Project().name} install default --resolve`" in said
+    assert SyncState.load(compiler.out).solved_from == "0" * 64
+
+
+def test_vouch_before_anything_compiled_only_materializes(
+    compiler_from: CompilerFrom, pixi: Pixi
+) -> None:
+    """Nothing compiled has no digest to answer to; shipping it refuses by name instead."""
+    compiler = compiler_from(_BARE)
+    _committed(compiler, "version: 7\n", solved_from="0" * 64)
+
+    compiler.vouch()
+
+    assert pixi.lock.read_text(encoding="utf-8") == "version: 7\n"
+
+
+def test_materializing_an_unchanged_lock_leaves_its_modification_time_alone(
+    compiler_from: CompilerFrom, files: Writer, pixi: Pixi
+) -> None:
+    """`Provisioner.synchronized` reads the cached lock's mtime as its revision."""
+    compiler = compiler_from(_BARE)
+    solved = _committed(compiler, "version: 7\n", solved_from="a" * 64)
+    pixi.lock.write_bytes(b"version: 7\n")
+    os.utime(pixi.lock, ns=(10**18, 10**18))
+
+    assert compiler.materialize(files) == solved
+    assert pixi.lock.stat().st_mtime_ns == 10**18
+
+    pixi.lock.write_bytes(b"version: 6\n")
+    os.utime(pixi.lock, ns=(10**18, 10**18))
+    compiler.materialize(files)
+    assert pixi.lock.read_bytes() == b"version: 7\n"
+    assert pixi.lock.stat().st_mtime_ns != 10**18
+
+
+def test_a_blessed_cached_lock_the_committed_one_lacks_is_adopted_once(
+    compiler_from: CompilerFrom, files: Writer, pixi: Pixi, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A workspace older than the committed lock carries its solve into it, and says so."""
+    compiler = compiler_from(_BARE)
+    pixi.lock.write_bytes(b"version: 7\r\nrecovered: true\r\n")
+    SyncState.path(compiler.out).write_text(
+        SyncState(environment="default", solved_from="f" * 64, solved_by="0.78.0").render(),
+        encoding="utf-8",
+    )
+
+    adopted = compiler.materialize(files)
+
+    expected = Solved(
+        solved_from="f" * 64, solved_by="0.78.0", lock="version: 7\r\nrecovered: true\r\n"
+    )
+    assert adopted == expected
+    assert Lockfile(compiler.root).get("default") == expected
+    said = capsys.readouterr().err
+    assert f"adopted {pixi.lock} into {Lockfile(compiler.root).path}" in said
+    assert compiler.materialize(files) == expected
+    assert "adopted" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        pytest.param(SyncState(environment="default"), id="blessed-for-nothing"),
+        pytest.param(SyncState(environment="serving", solved_from="abc"), id="another-env"),
+    ],
+)
+def test_a_cached_lock_no_solve_blessed_for_this_environment_is_not_adopted(
+    state: SyncState, compiler_from: CompilerFrom, files: Writer, pixi: Pixi
+) -> None:
+    compiler = compiler_from(_BARE)
+    pixi.lock.write_text("version: 7\n", encoding="utf-8")
+    SyncState.path(compiler.out).write_text(state.render(), encoding="utf-8")
+
+    assert compiler.materialize(files) is None
+    assert not Lockfile(compiler.root).path.exists()
 
 
 def test_the_resolution_manifest_drops_per_target_activation_and_keeps_the_rest() -> None:

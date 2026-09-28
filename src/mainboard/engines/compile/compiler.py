@@ -1,10 +1,12 @@
 import hashlib
 import json
+import sys
 import tomllib
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
 from .generated import GeneratedFiles
+from .lockfile import Lockfile, Solved
 from .pixi_manifest import PixiManifest, cleared, rerooted, selected_manifest
 from .state import SyncState
 from .vendor import path_deps, relocated
@@ -64,69 +66,124 @@ class Compiler:
         return hashlib.sha256(_canonical(payload)).hexdigest()
 
     def install_locked(self, files: Writer, *, resolve: bool) -> None:
-        """Install this shard, blessing its lock only after a solve returned without raising.
+        """Install this shard, committing its lock only after a solve returned without raising.
 
-        The blessing records the digest solved from and the pixi that wrote the lock, so a host
-        that never solved installs any lock matching what it received, and a host reaching a
+        The commit records the digest solved from and the pixi that wrote the lock, in the
+        workspace's committed lock and in the state beside the shard's copy, so a host that
+        never solved installs any lock matching what it received, and a host reaching a
         different address can name which two pixis disagreed.
         """
         if not resolve:
             self.vouch()
+            if not self.pixi.lock.exists():
+                raise MissionError(self.__missing())
             self.pixi.install(self.environment)
             return
-        # Solved and blessed before any install, so a platform this machine cannot run (a Windows
-        # card, from Linux) still leaves a lock to ship.
+        # Solved and committed before any install, so a platform this machine cannot run (a
+        # Windows card, from Linux) still leaves a lock to ship.
         self.pixi.solve()
-        state = SyncState.load(self.out)
-        self.__persist_state(
-            files,
-            state.model_copy(
-                update={
-                    "solved_from": self.resolution_digest(),
-                    "solved_by": self.pixi.version(),
-                }
-            ),
+        solved = Solved(
+            solved_from=self.resolution_digest(),
+            solved_by=self.pixi.version(),
+            lock=self.pixi.lock.read_bytes().decode("utf-8"),
         )
+        Lockfile(self.root).put(files, self.environment, solved)
+        self.__bless(files, solved)
         if self.pixi.runs_here():
             self.pixi.install(self.environment)
 
-    def vouch(self) -> None:
-        """Refuse unless the lock on disk was solved from this manifest and package metadata.
+    def materialize(self, files: Writer) -> Solved | None:
+        """Bring the shard's lock and blessing in line with the committed lock, returning it.
 
-        A host's own question, asked before the mirror leaves so a stale lock fails in a second.
+        The shard's copy is rewritten only when its bytes differ, since `Provisioner.synchronized`
+        reads its modification time as the lock's revision. A workspace older than the committed
+        lock has the shard's blessed lock adopted into it instead, once. None when neither holds
+        a lock for this environment.
+        """
+        lockfile = Lockfile(self.root)
+        solved = lockfile.get(self.environment)
+        if solved is None:
+            return self.__adopted(files, lockfile)
+        self.pixi.lock.parent.mkdir(parents=True, exist_ok=True)
+        files.write(self.pixi.lock, solved.lock)
+        self.__bless(files, solved)
+        return solved
+
+    def __adopted(self, files: Writer, lockfile: Lockfile) -> Solved | None:
+        """The shard's blessed lock, recorded in the committed lock; None with nothing to adopt.
+
+        A lock blessed for nothing or for another environment has no solve to record.
+        """
+        state = SyncState.load(self.out)
+        if (
+            not self.pixi.lock.is_file()
+            or state.environment != self.environment
+            or not state.solved_from
+        ):
+            return None
+        solved = Solved(
+            solved_from=state.solved_from,
+            solved_by=state.solved_by,
+            lock=self.pixi.lock.read_bytes().decode("utf-8"),
+        )
+        lockfile.put(files, self.environment, solved)
+        sys.stderr.write(
+            f"{Project().name}: adopted {self.pixi.lock} into {lockfile.path} as "
+            f"[environments.{self.environment}]; commit {lockfile.path.name}\n"
+        )
+        return solved
+
+    def vouch(self) -> None:
+        """Refuse unless the committed lock was solved from this manifest and package metadata.
+
+        The shard's copy is materialized from it first, so what ships is what was vouched for. A
+        host's own question, asked before the mirror leaves so a stale lock fails in a second.
         Asked under the (reentrant) workspace-root lock the compile takes, since a compile landing
         between a solve and this read made the refusal name the command that had just succeeded.
+        Nothing compiled yet has nothing to vouch for; shipping it refuses by name.
         """
-        with GeneratedFiles(directory=Project().out(self.root)).locked():
-            state = SyncState.load(self.out)
-            if not self.pixi.lock.exists():
+        with GeneratedFiles(directory=Project().out(self.root)).locked() as files:
+            solved = self.materialize(files)
+            if not self.pixi.lock.exists() or not self.pixi.manifest.exists():
                 return
             current = self.resolution_digest()
-            if state.environment == self.environment and state.solved_from == current:
+            if solved is not None and solved.solved_from == current:
                 return
-        raise MissionError(self.__unvouched(state, current))
+            state = SyncState.load(self.out)
+        raise MissionError(self.__unvouched(state, current, committed=solved is not None))
 
-    def __unvouched(self, state: SyncState, current: str) -> str:
+    def __unvouched(self, state: SyncState, current: str, *, committed: bool) -> str:
         """Why the lock could not be vouched for, naming both ways out of a digest mismatch.
 
         A stale lock and a compile landing since the solve look alike from the file on disk.
 
         current: what the compiled manifest and package metadata hash to now.
+        committed: whether the blessing read is the committed lock's rather than the shard's.
         """
         tool = Project().name
-        if state.environment and state.environment != self.environment:
+        if not committed and state.environment and state.environment != self.environment:
             return (
                 f"{self.pixi.lock} is blessed for environment {state.environment!r}, not "
                 f"{self.environment!r}. Run `{tool} install {self.environment} --resolve`."
             )
+        where = f"{Lockfile(self.root).path} " if committed else ""
         return (
             f"{self.pixi.lock} was not solved from the manifest now compiled at "
             f"{self.pixi.manifest}: that file and the package metadata beside it hash to "
-            f"{current[:12]}, while the lock is blessed for {state.solved_from[:12] or 'nothing'}."
-            f" Either the lock is stale, in which case `{tool} install {self.environment} "
-            "--resolve` on a solve-capable machine settles it, or another process compiled into "
-            "this workspace between that solve and now, in which case run it again with nothing "
-            "else writing here."
+            f"{current[:12]}, while the lock is blessed {where}for "
+            f"{state.solved_from[:12] or 'nothing'}. Either the lock is stale, in which case "
+            f"`{tool} install {self.environment} --resolve` on a solve-capable machine settles "
+            "it, or another process compiled into this workspace between that solve and now, in "
+            "which case run it again with nothing else writing here."
+        )
+
+    def __missing(self) -> str:
+        """Why there is no lock to install from, and the one command that makes one."""
+        return (
+            f"pixi.lock is missing: {Lockfile(self.root).path} holds no "
+            f"[environments.{self.environment}] and {self.pixi.lock} does not exist. Run "
+            f"`{Project().name} install {self.environment} --resolve` on a solve-capable "
+            "machine and commit the lock it writes."
         )
 
     def resolution_digest(self) -> str:
@@ -249,6 +306,12 @@ class Compiler:
             files.remove(self.out / _UNSET_SH_FILE)
             files.remove(self.out / _UNSET_BAT_FILE)
         self.stage.generate(files, self.environment)
+
+    def __bless(self, files: Writer, solved: Solved) -> None:
+        """Record `solved`'s digest and pixi in the shard's state, the rest carried through."""
+        state = SyncState.load(self.out)
+        update = {"solved_from": solved.solved_from, "solved_by": solved.solved_by}
+        self.__persist_state(files, state.model_copy(update=update))
 
     def __persist_state(self, files: Writer, state: SyncState) -> None:
         files.write(SyncState.path(self.out), state.render())
