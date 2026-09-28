@@ -2,8 +2,9 @@
 
 A tokenizer or config read offline at a pinned revision fails on a host whose cache never held
 it, so a need may name the Hub entry: the dispatch stages the locally cached file under the
-workspace state directory's `pins` in the cache's layout, ships it like any need, and the runner
-points the Hub client there, so an offline read finds exactly what was pinned.
+workspace state directory's `pins` in the cache's layout as a link into the cache (never a
+second copy), ships it like any need, and the runner points the Hub client there, so an
+offline read finds exactly what was pinned.
 """
 
 from __future__ import annotations
@@ -94,7 +95,13 @@ def stage(specs: Sequence[str], root: Path, cache: Path | None = None) -> tuple[
         relative = PurePosixPath(staging(root)) / pin.relative
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.is_file() or target.stat().st_size != source.stat().st_size:
-            shutil.copyfile(source, target)
+        if not (target.is_symlink() and target.resolve() == source.resolve()):
+            # A link into the Hub cache, never a second copy of its bytes; the mirror follows it
+            # and ships the file. A copy only where this machine cannot make a link.
+            target.unlink(missing_ok=True)
+            try:
+                target.symlink_to(source.resolve())
+            except OSError:
+                shutil.copyfile(source, target)
         staged.append(relative.as_posix())
     return tuple(staged)
