@@ -17,6 +17,7 @@
 # A process that configured structlog itself keeps its configuration: this one is applied only
 # when nothing else was, so importing the tool never takes over a host application's logging.
 
+import importlib.util
 import sys
 from collections.abc import Callable, MutableMapping
 from typing import Any
@@ -66,6 +67,14 @@ def _braced(level: int) -> type[FilteringBoundLogger]:
     return type("Logger", (base,), {name: method(name) for name in _METHODS})
 
 
+def _colors() -> bool:
+    """Whether console lines are colored: on a terminal, and on Windows only where colorama is
+    installed, since structlog refuses colors there without it rather than falling back."""
+    if not sys.stderr.isatty():
+        return False
+    return sys.platform != "win32" or importlib.util.find_spec("colorama") is not None
+
+
 def configure(level: str = "", output: str = "") -> None:
     """Configure structlog for this process: `level` and `output` (`console` or `json`), each
     read from the environment when empty, else `info` and whatever stderr is (a terminal or not).
@@ -92,7 +101,7 @@ def configure(level: str = "", output: str = "") -> None:
             structlog.processors.JSONRenderer(),
         ]
         if json
-        else [structlog.dev.ConsoleRenderer(colors=sys.stderr.isatty())]
+        else [structlog.dev.ConsoleRenderer(colors=_colors())]
     )
     structlog.configure(
         processors=[*shared, *rendered],
