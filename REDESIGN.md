@@ -53,13 +53,13 @@ Phase 4 (branch `mb-writers`)
 - [x] 4.6 Harvested receipts (`receipts.ndjson`) -> `receipts`
 - [x] 4.7 Captured job logs (`<handle>.log`) -> `log_lines`; the durable pass logs to the systemd
       journal instead of `monitor.log`
-- [x] 4.8 Costs ledger -> `costs`
+- [x] 4.8 (`165e52c`) Costs ledger -> `costs`
 - [x] 4.9 GPU quotes catalog -> `quotes` (each save one stamped roster, the newest is the catalog)
-- [~] 4.10 Pulse -> lake table
-- [ ] 4.11 Holds -> lake table
-- [ ] 4.12 Studies -> lake table
-- [ ] 4.13 Digests (mirror, collection) -> `digests`
-- [ ] 4.14 Job specs / closures -> `job_specs` / `closures` (transient files only for shipping)
+- [x] 4.10 (`3e27892`) Pulse -> `pulse`, a row per growth; one shared session per lake per process
+- [x] 4.11 (`cb5b097`) Holds -> `holds_log`
+- [x] 4.12 (`b3884b9`) Studies -> `studies`
+- [x] 4.13 Digests (mirror, collection) -> `digests`, rows only for moved stamps; the remote agent keeps its file
+- [~] 4.14 Job specs / closures -> `job_specs` / `closures` (transient files only for shipping)
 - [ ] 4.15 Full suite green, merge `mb-writers` into main
 - [ ] 4.16 Run `mb center migrate-state` on `D:\projects` and verify
 
@@ -77,7 +77,7 @@ Phase 7
 - [ ] 7.2 seaborn/pandas out (grouped plots in matplotlib, hex palettes)
 - [ ] 7.3 Remove old file-state paths; regression tests for legacy reads
 - [ ] 7.4 Center setup: `mb install` / `center verify`, PATH
-- [ ] 7.5 Lazy CLI imports; one DuckDB instance per process
+- [ ] 7.5 Lazy CLI imports (one session per lake per process already landed in 4.10)
 
 Owner decisions pending (not blocking): libsass re-solve approach; pushing `main`/branches.
 

@@ -21,7 +21,8 @@ from ..core.errors import MissionError
 from ..log import logger
 from .agent import Digests, Entry, walk
 from .agent.program import CHUNK, DIRECTORY, FILE, LINK, native
-from .shared import state_dir, state_path
+from .shared import state_dir
+from .state.digests import KeptDigests
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -98,7 +99,7 @@ class Mirror:
             exist here and to still exist when the stream reaches it.
         protected: what the target never prunes, whether or not this workspace holds it.
         """
-        digests = Digests(str(state_path(self.workspace) / "digests.json"))
+        digests = KeptDigests(self.workspace, "mirror")
         local = self.__local(scopes, named, digests=digests)
         first, *records = self.agent.ask(
             {

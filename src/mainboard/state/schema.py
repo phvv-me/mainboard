@@ -190,6 +190,7 @@ TABLES: tuple[Table, ...] = (
             ("sha256", "VARCHAR"),
             ("inode", "UBIGINT"),
             ("ctime_ns", "BIGINT"),
+            ("dropped", "BOOLEAN"),
         ),
     ),
     Table(

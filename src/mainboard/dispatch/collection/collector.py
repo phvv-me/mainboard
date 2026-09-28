@@ -11,7 +11,7 @@ from filelock import FileLock
 
 from ...core.project import Project
 from ...trials.artifacts import relative_path
-from ..agent import Digests
+from ..state.digests import KeptDigests
 from ..transport import SshTransport
 
 
@@ -70,7 +70,7 @@ class Collector:
 
     def _known(self, relative: PurePosixPath) -> dict[str, str]:
         """Skip only byte-identical published files; live event snapshots still transfer."""
-        digests = Digests(str(Project().out(self.root) / "collection.digests.json"))
+        digests = KeptDigests(self.root, "collection")
         published = (
             path
             for path in (self.root / relative).rglob("*")
