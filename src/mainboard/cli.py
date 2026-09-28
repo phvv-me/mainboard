@@ -495,7 +495,6 @@ def build(root: Path | None = None) -> App:
         *,
         env: str = "",
         resolve: bool = False,
-        sync_only: bool = False,
         output: Output = _RICH,
     ) -> None:
         """Onboard a host until it can run jobs, then show what it became and what that means.
@@ -509,13 +508,11 @@ def build(root: Path | None = None) -> App:
         env: an environment name overriding the host profile's own.
         resolve: let the host run its own dependency solve instead of installing the shipped
             lock, which puts that host's compiler in the resolution path.
-        sync_only: re-mirror and re-provision a host already set up, skipping the tool
-            reinstall and the hardware probe, what `sync` does.
         fields: a comma-separated projection over the setup record's fields.
         """
         workspace = board(host)
         with progress(f"setting up {host}") as stage:
-            report = workspace.install(env, resolve=resolve, watch=stage, sync_only=sync_only)
+            report = workspace.install(env, resolve=resolve, watch=stage)
         _onboarded(workspace, report, output, title="setup")
 
     @app.command
