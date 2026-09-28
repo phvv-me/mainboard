@@ -18,7 +18,7 @@ from __future__ import annotations
 from enum import StrEnum, auto
 from importlib import import_module
 from statistics import median
-from time import perf_counter
+from time import get_clock_info, perf_counter
 from typing import TYPE_CHECKING, Protocol
 
 from cyclopts import App
@@ -237,7 +237,11 @@ class Stress:
         return Link(path=path, megabytes=self.megabytes, gb_s=moved / seconds / 1e9)
 
     def _timed(self, call: Callable[[], None]) -> float:
-        """The median wall time of `call` over the timed repetitions, device synchronized."""
+        """The median wall time of `call` over the timed repetitions, device synchronized.
+
+        Never below one tick of the clock: a call shorter than that reads as zero on Windows,
+        and a rate divided by it would be infinite rather than merely unmeasurable.
+        """
         for _ in range(self.warmups):
             call()
         self.kernels.synchronize()
@@ -248,7 +252,7 @@ class Stress:
             call()
             self.kernels.synchronize()
             timings.append(perf_counter() - begin)
-        return median(timings)
+        return max(median(timings), get_clock_info("perf_counter").resolution)
 
 
 app = App(name="stress", help="Measure this device's achieved rates and print the report JSON.")
