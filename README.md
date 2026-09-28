@@ -350,7 +350,8 @@ repository.
 One machine holds the monorepo, runs this tool and runs the AI agents: the
 center. Every other machine is a target that receives only what a job needs. The
 verbs that manage the monorepo itself live under `center` (`git`, `paper`,
-`verify`, `migrate`), so the top level stays the work that involves targets.
+`verify`, `migrate`, `migrate-state`), so the top level stays the work that
+involves targets.
 
 ```console
 $ mainboard center verify                      # is this machine ready to be the center
@@ -407,6 +408,17 @@ Secrets travel only on ssh's stdin, never on a command line, and are never
 printed. Every step converges on what is already there, so re-running continues
 after an interruption and re-verifies after success; a destination file that
 differs is kept once as `<name>.migrate-backup`.
+
+`center migrate-state` imports the state directory's record files into the
+workspace's state lake, a DuckLake whose catalog is `lake.sqlite` beside a
+`lake/` Parquet folder. It creates the lake, appends the dispatch registry,
+batch events, receipts and logs, the cost ledger and offer catalog, holds,
+studies, the pulse memory, both digest memories, job scripts and closure
+listings in one transaction, then reads every source back: one row per source
+with its expected and imported counts, and the logs rebuilt byte for byte. It
+exits 1 on any difference, only ever reads the old files, and refuses a second
+import unless `--again` sets the first lake aside under `lake.aside/`. Every
+other verb still writes the old files for now.
 
 ## Portable process chores
 
