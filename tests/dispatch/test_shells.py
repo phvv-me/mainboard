@@ -22,6 +22,7 @@ from mainboard.dispatch.shells import (
     quoted,
 )
 from mainboard.engines.compile.backend import PIXI_VERSION, WINDOWS_INSTALLER
+from mainboard.log import EventDict
 from mainboard.manifest import HostProfile
 
 from .support import Naps, RecordingTransport, cache, machine_with, plan
@@ -222,7 +223,7 @@ def test_a_posix_shell_closes_the_bounded_session_it_was_handed(
 
 
 def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, logged: list[EventDict]
 ) -> None:
     """Probe in PowerShell, mirror by tar, install with uv, provision with the host's own tool."""
     transport = RecordingTransport(
@@ -244,8 +245,7 @@ def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
     dispatcher = FakeDispatcher(cache())
     undeclared = plan(host="homelab", profile=HostProfile(kind="ssh", sync={"include": ["src"]}))
     setup = Onboarding(dispatcher, undeclared, digest="d1")
-    with caplog.at_level("WARNING", logger="mainboard.dispatch"):
-        report = setup.run()
+    report = setup.run()
     assert dispatcher.mirrored == [("homelab", _ROOT)]
     assert transport.ran(
         "uv tool install --force --reinstall --python '>=3.14' --editable packages/mainboard"
@@ -258,7 +258,7 @@ def test_a_windows_host_is_onboarded_through_powershell_without_a_queue_daemon(
         f"$start.Arguments = 'run --env default -- {Project().package} facts --json'"
     )
     assert not transport.ran("pueued -d")
-    assert any("answers no pueue" in message for message in caplog.messages)
+    assert any("answers no pueue" in str(event["event"]) for event in logged)
     assert (report.installer, report.activate, report.tool) == ("uv", "", "0.1.0")
     assert report.capabilities is not None and report.capabilities.pixi_platform == "win-64"
     assert report.hardware is not None and report.hardware.hostname == "homelab"

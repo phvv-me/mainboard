@@ -1,5 +1,4 @@
 import importlib
-import logging
 import os
 import threading
 import time
@@ -12,6 +11,8 @@ from contextlib import ExitStack
 from contextvars import ContextVar
 from types import CodeType, FunctionType, ModuleType, TracebackType
 from typing import TypeAlias
+
+from ..log import logger
 
 # The one place profiling reaches the probe package, to discover the host's devices. The narrow
 # `probe.units.gpu` imports nothing from here, so `probe.gating` -> `profile.bottleneck` cannot
@@ -31,8 +32,6 @@ from .spans import activate, active, deactivate
 from .trace import Activity as NativeActivity
 from .trace import BottleneckReport, RegionWindow, TraceCollector
 from .tracer import Tracer
-
-logger = logging.getLogger(__name__)
 
 
 class Profiler:

@@ -23,9 +23,9 @@ from urllib.error import HTTPError
 from urllib.request import Request
 
 from ...core.errors import MissionError
+from ...log import logger
 from ..evidence import framing, staging
 from ..rentals import Identity, Rental, identity, reachable, waiting
-from ..shared import logger
 from ..transport import Endpoint
 from ..vocabulary import JobState
 from .base import (
@@ -313,7 +313,7 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
             opened = True
         finally:
             if not opened:
-                logger.warning("hpc-ai instance %s could not be opened, ending the rental", handle)
+                logger.warning("hpc-ai instance {} could not be opened, ending the rental", handle)
                 self.cancel(handle)
         return Rental(handle=handle, endpoint=endpoint)
 

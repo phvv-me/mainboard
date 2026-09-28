@@ -1,6 +1,5 @@
 """Resumable, concurrency-safe measurement rows: one immutable part per writer."""
 
-import logging
 import os
 import re
 import socket
@@ -9,7 +8,7 @@ from pathlib import Path
 
 import polars as pl
 
-logger = logging.getLogger("mainboard.experiments")
+from ..log import logger
 
 # The knee of the size against speed curve for zstd on tabular rows.
 _ZSTD_LEVEL = 9
@@ -75,7 +74,7 @@ class RowLog:
         temporary = self.part.with_suffix(".parquet.tmp")
         frame.write_parquet(temporary, compression="zstd", compression_level=_ZSTD_LEVEL)
         temporary.replace(self.part)
-        logger.info("wrote %d rows to %s", len(self.rows), self.part)
+        logger.info("wrote {} rows to {}", len(self.rows), self.part)
 
     def __len__(self) -> int:
         return len(self._keys)

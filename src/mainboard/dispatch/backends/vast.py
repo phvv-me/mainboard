@@ -18,11 +18,11 @@ from urllib.request import Request
 
 from ...core.errors import MissionError
 from ...costs.imports import from_vast
+from ...log import logger
 from ...runtime.job import walltime_seconds
 from ..evidence import framing, staging
 from ..lease import Lease
 from ..rentals import LANDING_SECONDS, Identity, Rental, identity, reachable, seeded, waiting
-from ..shared import logger
 from ..transport import Endpoint
 from ..vocabulary import JobState
 from .base import (
@@ -442,7 +442,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             except OfferTaken:
                 page = [row for row in page if row["id"] != offer["id"]]
                 logger.warning(
-                    "vast offer %s was taken before the create; picking again", offer["id"]
+                    "vast offer {} was taken before the create; picking again", offer["id"]
                 )
                 if not page:
                     self.refuse(
@@ -459,7 +459,7 @@ class VastBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentab
             opened = True
         finally:
             if not opened:
-                logger.warning("vast instance %s could not be opened, ending the rental", handle)
+                logger.warning("vast instance {} could not be opened, ending the rental", handle)
                 self.cancel(handle)
         return Rental(handle=handle, endpoint=endpoint)
 

@@ -22,9 +22,9 @@ from .dispatch.backends.base import route
 from .dispatch.dispatcher import Verdict
 from .dispatch.evidence import covered_in, receipts_in
 from .dispatch.schedulers import HostUnreachable, is_quota_refusal, short_reason
-from .dispatch.shared import logger
 from .dispatch.state import DownHost, Failed, Finished, Held, MonitorReport, Resumed
 from .dispatch.vocabulary import JobState
+from .log import logger
 from .tracking import is_batched, streamed
 
 if TYPE_CHECKING:
@@ -160,7 +160,7 @@ class Monitor:
         if fresh := [line for line in harvested if line not in seen]:
             _synced(path, "\n".join(fresh) + "\n", "a")
         logger.info(
-            "captured %d log lines for %s (%s)", transcript.count("\n"), record.handle, name
+            "captured {} log lines for {} ({})", transcript.count("\n"), record.handle, name
         )
         return harvested
 
@@ -183,7 +183,7 @@ class Monitor:
                 publish(bus, stream, Topic.EVIDENCE, job=job, data=data)
             except OSError as fault:
                 logger.error(
-                    "evidence status is cached but its event could not be saved: %s", fault
+                    "evidence status is cached but its event could not be saved: {}", fault
                 )
 
     def verify(
@@ -251,7 +251,7 @@ class Monitor:
                 self.cache.resolve(record, vocabulary.FAILED, None, vocabulary.FAILED),
                 vocabulary.FAILED,
             )
-            logger.warning("held dispatch for %s refused: %s", record.target, refusal)
+            logger.warning("held dispatch for {} refused: {}", record.target, refusal)
             return _failed(record, f"held dispatch refused: {refusal}")
 
     def held(self) -> tuple[list[Resumed], list[Held], list[Failed]]:
@@ -280,7 +280,7 @@ class Monitor:
             self.cache.forget(record)
             self.submitted(record, run)
             resumed.append(Resumed(handle=run.handle.id, target=record.target, name=record.name))
-            logger.info("held dispatch went through as %s on %s", run.handle.id, record.target)
+            logger.info("held dispatch went through as {} on {}", run.handle.id, record.target)
         return resumed, waiting, refused
 
     def submitted(self, record: RunRecord, run: Run) -> None:
@@ -344,7 +344,7 @@ class Monitor:
                 )
             except (MissionError, OSError, ValueError, SQLiteError) as fault:
                 detail += f"; evidence recording failed: {fault}"
-                logger.error("%s: %s", record.handle, detail)
+                logger.error("{}: {}", record.handle, detail)
             try:
                 backend().cancel(record.handle)
             except (MissionError, OSError, ValueError) as fault:
@@ -478,7 +478,7 @@ class Monitor:
             except (MissionError, OSError, ValueError) as fault:
                 detail = f"settlement pending; remote evidence retained: {fault}"
                 self.evidence(record, harvested, status="pending", detail=detail)
-                logger.error("%s on %s: %s", record.handle, record.target, detail)
+                logger.error("{} on {}: {}", record.handle, record.target, detail)
                 failed.append(_failed(record, detail))
                 continue
             self.evidence(record, harvested, status="copied")
@@ -535,7 +535,7 @@ class Monitor:
         except (HostUnreachable, ProcessExecutionError, MissionError, OSError) as fault:
             if isinstance(fault, HostUnreachable):
                 self.quiet[job.handle.host] = str(fault)
-            logger.warning("could not pull %s from %s: %s", path, job.handle.host, fault)
+            logger.warning("could not pull {} from {}: {}", path, job.handle.host, fault)
             return None
         return path
 
@@ -559,7 +559,7 @@ class Monitor:
         try:
             job.release()
         except (MissionError, OSError) as fault:
-            logger.warning("could not release %s on %s: %s", job.handle.id, job.handle.host, fault)
+            logger.warning("could not release {} on {}: {}", job.handle.id, job.handle.host, fault)
             return False
         return True
 

@@ -24,8 +24,8 @@ from .core.errors import MissionError
 from .diagnosis import reason
 from .dispatch import vocabulary
 from .dispatch.schedulers import short_reason
-from .dispatch.shared import logger
 from .dispatch.vocabulary import JobState
+from .log import logger
 from .pulse import Pulses
 from .tracking import streamed
 from .vigil import STALL_SECONDS, Vigil
@@ -684,7 +684,7 @@ def lined(path: Path) -> tuple[TrialVerdict, ...]:
         try:
             events.append(Event.model_validate(payload))
         except ValidationError:
-            logger.debug("%s carries a line that is neither shape this verb reads", path)
+            logger.debug("{} carries a line that is neither shape this verb reads", path)
     companion = path.parent / "events.ndjson"
     corrections = Receipts(companion).replay() if companion != path and companion.is_file() else []
     return qualified((*eventful(events), *trials), [*events, *corrections])

@@ -20,11 +20,12 @@ from .dispatch.backends.base import route
 from .dispatch.landing import Renter, renter
 from .dispatch.lease import Lease
 from .dispatch.rentals import handoff
-from .dispatch.shared import announce, logger
+from .dispatch.shared import announce
 from .dispatch.shipment import Shipment
 from .dispatch.transport import SshTransport
 from .dispatch.wrapping import connection
 from .engines.compile.provisioner import Provisioner
+from .log import logger
 from .manifest.held import Held, Holdings
 from .manifest.schema.queue import Defaults
 
@@ -98,7 +99,7 @@ class Holds:
         try:
             return self._keep(name, rental, plan=plan, seconds=seconds, watch=watch)
         except BaseException:
-            logger.warning("hold %s failed during setup; releasing rental %s", name, rental.handle)
+            logger.warning("hold {} failed during setup; releasing rental {}", name, rental.handle)
             self._end(name, handle=rental.handle, provider=provider)
             raise
 
@@ -128,7 +129,7 @@ class Holds:
             try:
                 released.append(self.release(held.alias))
             except (MissionError, OSError) as fault:
-                logger.warning("could not release %s yet: %s", held.alias, fault)
+                logger.warning("could not release {} yet: {}", held.alias, fault)
         return released
 
     def _rent(

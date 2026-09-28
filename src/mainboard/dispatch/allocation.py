@@ -3,9 +3,9 @@
 from patos import FrozenModel, Runtime
 
 from ..core.errors import MissionError
+from ..log import logger
 from . import vocabulary
 from .lease import Lease
-from .shared import logger
 from .state.cache import Cache, RunRecord
 
 
@@ -30,7 +30,7 @@ class Allocation(FrozenModel):
             raise MissionError(
                 f"provider returned no handle for {self.label}; reconcile its label"
             )
-        logger.info("provider creation %s -> %s", self.label, handle)
+        logger.info("provider creation {} -> {}", self.label, handle)
         self.cache.bind(self.record, handle)
         return handle
 
@@ -53,7 +53,7 @@ class Allocation(FrozenModel):
             self.cache.leave_prepared(current, vocabulary.FAILED)
         elif current.verdict == vocabulary.SUBMITTING:
             logger.error(
-                "creation %s has no confirmed provider handle; reconcile this exact label "
+                "creation {} has no confirmed provider handle; reconcile this exact label "
                 "before retrying, because the request may have allocated a billable instance",
                 self.label,
             )

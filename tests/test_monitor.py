@@ -1,5 +1,4 @@
 import json
-import logging
 import re
 import sys
 from collections.abc import Callable, Sequence
@@ -39,6 +38,7 @@ from mainboard.durable import (
 )
 from mainboard.experiments import StudyLedger
 from mainboard.experiments.identity import study_label
+from mainboard.log import EventDict
 from mainboard.manifest import HostProfile
 
 from .dispatch.backends.support import FakeTransport, refused
@@ -564,16 +564,15 @@ def test_a_run_whose_backend_keeps_no_output_captures_nothing_and_still_settles(
 
 
 def test_a_provider_that_refuses_the_cancel_is_a_warning_not_a_failed_sweep(
-    board: Board, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    board: Board, monkeypatch: pytest.MonkeyPatch, logged: list[EventDict]
 ) -> None:
     """One rental this pass could not end must not cost every other job its outcome."""
     monkeypatch.setenv("VAST_API_KEY", "key-123")
     seed("16", target="rented", kind=Rented.name)
     Rented.replies = [*rented(exit_code=1), refused(500)]
-    caplog.set_level(logging.WARNING)
     report = board.monitor().once()
     assert [item.handle for item in report.failed] == ["16"]
-    assert "could not release 16" in caplog.text
+    assert any("could not release 16" in str(event["event"]) for event in logged)
     assert board.dispatcher.cache.run("16").reported is None
 
 
@@ -1050,7 +1049,7 @@ def test_evidence_already_copied_is_settled_from_this_machine_or_not_at_all(
 
 
 def test_an_evidence_status_keeps_only_well_formed_trials_and_survives_an_unsaved_event(
-    board: Board, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    board: Board, monkeypatch: pytest.MonkeyPatch, logged: list[EventDict]
 ) -> None:
     """The raw lines stay in the captured log, and the cache is the status the sweep acts on."""
     record = seed("59", name="statused")
@@ -1069,10 +1068,9 @@ def test_an_evidence_status_keeps_only_well_formed_trials_and_survives_an_unsave
         raise OSError("read-only file system")
 
     monkeypatch.setattr("mainboard.monitor.publish", unwritable)
-    caplog.set_level(logging.ERROR)
     monitor.evidence(record, receipts, status="verified")
     assert board.dispatcher.cache.run("59").evidence == "verified"
-    assert "could not be saved" in caplog.text
+    assert any("could not be saved" in str(event["event"]) for event in logged)
 
 
 @pytest.mark.parametrize(

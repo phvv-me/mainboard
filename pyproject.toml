@@ -2,6 +2,10 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# `mb` is the import alias of `mainboard` (see `src/mb/__init__.py`), shipped beside it.
+[tool.hatch.build.targets.wheel]
+packages = ["src/mainboard", "src/mb"]
+
 [tool.hatch.build.targets.wheel.force-include]
 "README.md" = "mainboard/README.md"
 
@@ -28,7 +32,6 @@ dependencies = [
     "cuda-bindings>=13.0; sys_platform == 'linux' or sys_platform == 'win32'",
     "filelock>=3.13",
     "jinja2>=3.1",
-    "loguru>=0.7.3",
     # cuda-bindings 13.3.1 imports NumPy from its NVML extension but does not declare it in the
     # wheel metadata. Mainboard reads that official extension for inventory and sensors, so keep
     # its actual runtime dependency beside the binding until NVIDIA declares it upstream.
@@ -50,6 +53,8 @@ dependencies = [
     # `lint` refuses a YAML file that does not parse, the one syntax check the standard library
     # cannot make beside TOML's.
     "pyyaml>=6.0",
+    # The one logger (`mainboard.log`), loguru's call shape with structured fields.
+    "structlog>=26.1",
 ]
 
 [project.optional-dependencies]

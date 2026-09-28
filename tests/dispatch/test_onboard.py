@@ -19,6 +19,7 @@ from mainboard.dispatch.onboard import (
 from mainboard.dispatch.shells import PosixShell
 from mainboard.dispatch.state import Cache
 from mainboard.engines.compile.backend import PIXI_VERSION
+from mainboard.log import EventDict
 from mainboard.manifest import HostProfile
 
 from .support import RecordingMachine, Rule, cache, machine_with, plan, run_record
@@ -293,7 +294,7 @@ def test_read_facts_starts_at_the_first_brace_and_refuses_output_carrying_no_sna
 
 
 def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, logged: list[EventDict]
 ) -> None:
     """The recorded host carries the manifest digest `doctor` tells a diverged host apart by,
     and the root the profile put the workspace at, the probe recording only the home a `~` root
@@ -301,8 +302,7 @@ def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
     `~/mainboard-managed`)."""
     host = machine_with(rules=_HEALTHY)
     setup, dispatcher = onboarding(host, monkeypatch, digest="deadbeef")
-    with caplog.at_level("INFO", logger="mainboard.dispatch"):
-        report = setup.run()
+    report = setup.run()
     assert dispatcher.mirrored == [("gold", "/repo")]
     assert host.ran("uv tool install")
     assert host.ran(f"{Project().package} install default --profile gold")
@@ -315,7 +315,7 @@ def test_onboarding_probes_mirrors_installs_provisions_then_reads_the_host_back(
     assert report.onboarded_at and report.digest == "deadbeef"
     assert dispatcher.cache.host("gold").digest == "deadbeef"
     assert [record.host for record in dispatcher.cache.hosts()] == ["gold"]
-    assert [message.split()[0] for message in caplog.messages] == [*_STAGES, "onboarded"]
+    assert [str(event["event"]).split()[0] for event in logged] == [*_STAGES, "onboarded"]
     bare = HostSetup(host="gold", root="/repo")
     assert (bare.env, bare.rejected, bare.capabilities, bare.hardware) == (
         "default",

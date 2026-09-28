@@ -16,6 +16,7 @@ import shlex
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..core.errors import MissionError
+from ..log import logger
 from . import vocabulary
 from .agent.program import CLOSURE
 from .backends.base import ProviderBackend
@@ -24,7 +25,7 @@ from .jobs import JobSpec
 from .onboard import Bootstrap
 from .rentals import Rental, handoff
 from .schedulers.base import failure_reason
-from .shared import Watcher, announce, logger
+from .shared import Watcher, announce
 from .shells import PosixShell
 from .snapshots import Snapshots
 from .sync import SyncLock
@@ -139,9 +140,9 @@ class Landing:
         try:
             registered = self.dispatcher.cache.run(handle, self.plan.host)
         except LookupError:
-            logger.warning("registration of rental %s failed before provisioning", handle)
+            logger.warning("registration of rental {} failed before provisioning", handle)
         if registered is not None and registered.evidence != "not_started":
-            logger.warning("launch of %s is uncertain; retaining the tracked rental", handle)
+            logger.warning("launch of {} is uncertain; retaining the tracked rental", handle)
             return
         try:
             if registered is not None:
@@ -149,7 +150,7 @@ class Landing:
                     registered, vocabulary.FAILED, None, vocabulary.FAILED
                 )
         finally:
-            logger.warning("landing on %s failed before launch; ending the rental", handle)
+            logger.warning("landing on {} failed before launch; ending the rental", handle)
             self.backend.cancel(handle)
 
     def equip(self, rental: Rental, *, shipment: Shipment) -> None:

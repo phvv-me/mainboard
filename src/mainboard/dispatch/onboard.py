@@ -21,10 +21,11 @@ from tenacity import (
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.backend import PIXI_VERSION
+from ..log import logger
 from ..probe.snapshot import HostFacts
 from .schedulers.pueue import Pueue
 from .schedulers.registry import pick
-from .shared import Watcher, announce, logger
+from .shared import Watcher, announce
 from .shells import HostShell, is_windows, open_shell
 from .targets import Facts, probe_capabilities, resolve, rooted
 
@@ -465,7 +466,7 @@ class Onboarding:
             return
         if is_windows(self.plan.profile):
             logger.warning(
-                "%s answers no pueue; `submit` cannot queue there until pueue is installed and "
+                "{} answers no pueue; `submit` cannot queue there until pueue is installed and "
                 "`pueued` started, then the host set up again",
                 host,
             )
@@ -556,7 +557,7 @@ class Onboarding:
                 digest=self.digest,
             )
         recorded = self.dispatcher.cache.save_host(setup)
-        logger.info("onboarded %s at %s through %s", host, root, recorded.installer)
+        logger.info("onboarded {} at {} through {}", host, root, recorded.installer)
         return recorded
 
     def resolved(self, facts: Facts) -> ExecutionPlan:
@@ -603,5 +604,5 @@ class Onboarding:
                 }
             )
         )
-        logger.info("synced %s at %s", host, root)
+        logger.info("synced {} at {}", host, root)
         return updated

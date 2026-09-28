@@ -40,7 +40,6 @@
 # published before it settles, so the terminal line is the last one and a sink may close on it.
 
 import json
-import logging
 import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol
@@ -50,14 +49,12 @@ from patos import FrozenModel
 from pydantic import JsonValue, ValidationError
 
 from ..dispatch.shared import now
+from ..log import logger
 from ..state.lake import Session
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from pathlib import Path
-
-# One logger for the flow, so a caller quieting `mainboard.batch` quiets every module in it.
-logger = logging.getLogger("mainboard.batch")
 
 
 class Topic(StrEnum):
@@ -142,7 +139,7 @@ class Receipts:
             try:
                 events.append(Event.model_validate_json(line))
             except ValidationError:
-                logger.warning("unreadable receipt line retained at %s:%d", self.path, number)
+                logger.warning("unreadable receipt line retained at {}:{}", self.path, number)
         return events
 
 
@@ -189,7 +186,7 @@ class Journal:
                     )
                 )
             except ValidationError:
-                logger.warning("unreadable event of %s retained in the lake: %s", batch, topic)
+                logger.warning("unreadable event of {} retained in the lake: {}", batch, topic)
         return events
 
 

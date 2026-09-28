@@ -1,17 +1,15 @@
 import importlib
-import logging
 from functools import cached_property
 from typing import ClassVar
 
 from patos import Registry
 
+from ...log import logger
 from ..enums import UnitKind
 from ..facts.memory import Memory
 from ..facts.telemetry import Telemetry
 from ..facts.utilization import Utilization
 from .unit import Unit
-
-logger = logging.getLogger(__name__)
 
 
 class GPU(Unit, Registry):
@@ -98,7 +96,7 @@ class GPU(Unit, Registry):
             return tuple(provider.all())
         except Exception:
             logger.warning(
-                "GPU provider %s failed to probe, skipping", provider.__name__, exc_info=True
+                "GPU provider {} failed to probe, skipping", provider.__name__, exc_info=True
             )
             return ()
 

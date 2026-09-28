@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from hypothesis import HealthCheck, settings
+from structlog.testing import capture_logs
 
 from mainboard import Board, ComputePath, HostFacts, Project
 from mainboard.compute import Access, Survey
@@ -19,6 +20,7 @@ from mainboard.dispatch.backends import Credentials
 from mainboard.dispatch.dispatcher import Dispatcher
 from mainboard.dispatch.state import DownHost, Failed, Finished, MonitorReport
 from mainboard.doctor import Doctor, Section, Verdict
+from mainboard.log import EventDict
 from mainboard.monitor import Monitor
 from mainboard.scaffold import Scaffold, Scaffolded
 from mainboard.state.lake import Lake
@@ -137,6 +139,13 @@ def outside_any_workspace(tmp_path_factory: pytest.TempPathFactory) -> Iterator[
     os.chdir(tmp_path_factory.mktemp("outside"))
     yield
     os.chdir(here)
+
+
+@pytest.fixture
+def logged() -> Iterator[list[EventDict]]:
+    """Every event the test logs, as the logger hands it to a renderer."""
+    with capture_logs() as events:
+        yield events
 
 
 @pytest.fixture(autouse=True)

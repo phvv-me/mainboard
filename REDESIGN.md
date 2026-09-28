@@ -46,11 +46,11 @@ Phase 4 (branch `mb-writers`)
 - [x] 4.1 Run/host registry (`dispatch/db.sqlite`) -> `runs_log`/`host_facts` + views (`7de5835`)
 - [x] 4.2 Shared lake `Session` (lazy attach, reattach on locked/stale) (`7de5835`)
 - [x] 4.3 Batch event journal (`events.ndjson`) -> `events` via `Journal` (`f762aae`)
-- [x] 4.4 Drop the wandb mirror: receipts are the record, `[tracking]` is just `interval`; one
+- [x] 4.4 (`48aaff1`) Drop the wandb mirror: receipts are the record, `[tracking]` is just `interval`; one
       session serves threads by taking turns (a shared DuckDB connection deadlocks otherwise)
-- [~] 4.5 structlog replaces loguru and stdlib loggers; `from mb import logger`; `mb` import alias;
+- [x] 4.5 structlog replaces loguru and stdlib loggers; `from mb import logger`; `mb` import alias;
       trial-bound events routed to the trial spool; remove loguru
-- [ ] 4.6 Harvested receipts (`receipts.ndjson`) -> `receipts`
+- [~] 4.6 Harvested receipts (`receipts.ndjson`) -> `receipts`
 - [ ] 4.7 Captured job logs (`<handle>.log`, `monitor.log`) -> `log_lines`
 - [ ] 4.8 Costs ledger -> lake table
 - [ ] 4.9 GPU quotes catalog -> lake table

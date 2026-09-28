@@ -1,13 +1,11 @@
 import importlib
-import logging
 from typing import ClassVar
 
 from patos import Registry
 
+from ...log import logger
 from ..enums import UnitKind
 from .unit import Unit
-
-logger = logging.getLogger(__name__)
 
 
 class NPU(Unit, Registry):
@@ -28,6 +26,6 @@ class NPU(Unit, Registry):
             return tuple(provider.all())
         except Exception:
             logger.warning(
-                "NPU provider %s failed to probe, skipping", provider.__name__, exc_info=True
+                "NPU provider {} failed to probe, skipping", provider.__name__, exc_info=True
             )
             return ()

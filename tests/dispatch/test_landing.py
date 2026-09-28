@@ -15,6 +15,7 @@ from mainboard.dispatch.snapshots import SOURCES, Snapshots
 from mainboard.dispatch.state import Cache
 from mainboard.dispatch.transport import Endpoint
 from mainboard.dispatch.vocabulary import Resources
+from mainboard.log import EventDict
 from mainboard.manifest import Container, HostProfile
 from mainboard.state.lake import Lake
 
@@ -266,7 +267,7 @@ def test_a_machine_that_cannot_be_given_python_is_ended_before_any_mirror(
 
 
 def test_a_rental_the_registry_never_recorded_is_still_ended_when_its_landing_fails(
-    workdir: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    workdir: Path, monkeypatch: pytest.MonkeyPatch, logged: list[EventDict]
 ) -> None:
     """With no row to settle, ending the rental is all that stands between it and a bill."""
     host = machine_with("/root\n")
@@ -278,12 +279,11 @@ def test_a_rental_the_registry_never_recorded_is_still_ended_when_its_landing_fa
         lambda execution, resources, *, allocation: Rental(handle="4242", endpoint=_ENDPOINT),
     )
     with (
-        caplog.at_level("WARNING", logger="mainboard.dispatch"),
         pytest.raises(SystemExit, match="could not pin the source tree"),
     ):
         landed.land(shipped(dispatcher, "python train.py"))
     assert backend.cancelled == ["4242"]
-    assert any("failed before provisioning" in message for message in caplog.messages)
+    assert any("failed before provisioning" in str(event["event"]) for event in logged)
 
 
 def test_a_launch_the_entrypoint_refused_names_why_and_keeps_the_rental_tracked(

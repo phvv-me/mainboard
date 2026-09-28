@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from patos import FrozenModel
 
 from ..core.errors import MissionError
-from .shared import logger
+from ..log import logger
 from .transport import Endpoint, HostUnreachable, SshTransport
 
 if TYPE_CHECKING:
@@ -220,7 +220,7 @@ def reachable(
             policy.warm(endpoint.destination)
         except HostUnreachable as refused:
             said = str(refused)
-            logger.debug("%s not answering ssh yet: %s", endpoint.destination, refused)
+            logger.debug("{} not answering ssh yet: {}", endpoint.destination, refused)
             sleeper(_SSH_SECONDS)
         else:
             return endpoint

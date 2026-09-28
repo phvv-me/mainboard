@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 
 from mainboard import span
+from mainboard.log import logger, sinks
 from mainboard.profile import Feature, Profile
 from mainboard.profile.profiler import Collection
 from mainboard.trials import Artifact, Declaration, Log, Session, digested
@@ -78,6 +79,19 @@ def test_log_derives_identity_preserves_verdict_and_records_bound_messages(
     log.close(passed=True)
     rows = session.declared.universe.dataset("alpha").rows(session.run)
     assert rows[0]["measured"] == {"ratio": 1.5}
+
+
+def test_a_trial_keeps_what_any_code_logs_while_it_runs(session: Session, tmp_path: Path) -> None:
+    """A library logging through the shared logger lands in the trial's record, and only
+    while the trial runs."""
+    item = Item("alpha/test_law.py::test_quiet", tmp_path / "alpha/test_law.py", {})
+    log = Log(session.trial(item))
+    logger.info("a library spoke {}", 1, source="lib")
+    [spoken] = [frame.payload["data"] for frame in log.spool.frames_from(0)][1:]
+    assert spoken == {"text": "a library spoke 1", "level": "info", "metadata": {"source": "lib"}}
+    log.close(passed=True)
+    logger.info("after the trial")
+    assert log.identity not in sinks
 
 
 def test_tables_are_parquet_and_refs_reject_changed_or_escaping_inputs(

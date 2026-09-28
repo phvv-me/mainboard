@@ -20,6 +20,7 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.generated import GeneratedFiles
 from ..engines.compile.vendor import vendor_root
+from ..log import logger
 from ..manifest.loading import load
 from ..runtime.job import ToolCall
 from ..state.lake import Lake
@@ -32,7 +33,7 @@ from .jobs import JobSpec
 from .mirror import Mirror
 from .provenance import Source, SourceTree
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
-from .shared import HandleId, Watcher, announce, logger, now, state_path, workspace
+from .shared import HandleId, Watcher, announce, now, state_path, workspace
 from .shipment import Shipment
 from .snapshots import Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
@@ -187,7 +188,7 @@ class Dispatcher:
             )
         except (ValueError, RuntimeError, BadZipFile) as fault:
             raise MissionError(f"collection of {path} from {host} failed: {fault}") from fault
-        logger.info("fetched %s from %s", path, host)
+        logger.info("fetched {} from {}", path, host)
         return published
 
     def hold(self, asked: Request, *, reason: str) -> RunRecord:
@@ -224,7 +225,7 @@ class Dispatcher:
             reason=reason,
         )
         self.cache.record(record)
-        logger.warning("%s held for %s: %s", asked.command, asked.target, reason)
+        logger.warning("{} held for {}: {}", asked.command, asked.target, reason)
         return record
 
     def local(self, path: str) -> Path:
@@ -295,7 +296,7 @@ class Dispatcher:
         try:
             return self.state(handle)
         except HostUnreachable as down:
-            logger.warning("%s unreachable, retrying: %s", handle.id, down)
+            logger.warning("{} unreachable, retrying: {}", handle.id, down)
             return None
 
     def agent(self, plan: ExecutionPlan, *, ssh: SshTransport | None = None) -> Agent:
@@ -363,7 +364,7 @@ class Dispatcher:
         include = [path for path in scope.include if self.local(path).exists()]
         if stale := [path for path in scope.include if path not in include]:
             logger.warning(
-                "skipping %d stale sync include path(s) missing locally: %s",
+                "skipping {} stale sync include path(s) missing locally: {}",
                 len(stale),
                 ", ".join(stale),
             )
@@ -632,7 +633,7 @@ class Dispatcher:
                     digest=dispatched.source.digest,
                 )
             )
-        logger.info("%s -> %s on %s (%s)", prepared, handle, plan.host, dispatched.source.identity)
+        logger.info("{} -> {} on {} ({})", prepared, handle, plan.host, dispatched.source.identity)
         return handle
 
     def allocating(
@@ -796,7 +797,7 @@ class Dispatcher:
                 f"could not build {plan.env} on {plan.host}: {failure_reason(str(err))}"
             )
         told = f"built {plan.env} on {plan.host} for {pinned}"
-        logger.info("%s", told)
+        logger.info(told)
         (watch or announce)(told)
 
     def _verify(

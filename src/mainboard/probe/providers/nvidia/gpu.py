@@ -1,9 +1,9 @@
-import logging
 import os
 from contextlib import suppress
 from functools import cached_property
 from itertools import takewhile
 
+from ....log import logger
 from ...enums import Vendor
 from ...facts.memory import Memory
 from ...facts.telemetry import Energy, Telemetry, Thermal, UnitProcess
@@ -18,8 +18,6 @@ from .protocols import (  # ruff: ignore[typing-only-first-party-import] reason=
     NvmlHandle,
     SystemDevice,
 )
-
-logger = logging.getLogger(__name__)
 
 
 def _bus_key(bus_id: str) -> str:
@@ -132,7 +130,7 @@ class NvidiaGPU(GPU):
         else:
             handle = self.__nvml_handle(nvml)
             bus_id = text(nvml.device_get_pci_info_v3(handle).bus_id)
-        logger.debug("GPU %s: %s (%s)", self.index, nvml.device_get_name(handle), bus_id)
+        logger.debug("GPU {}: {} ({})", self.index, nvml.device_get_name(handle), bus_id)
         return handle
 
     @cached_property

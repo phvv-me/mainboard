@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from .experiments.data import HfDataset, HfModel, Needs, RepoFile
     from .experiments.fleet import Fleet
     from .experiments.study import Study as ExperimentStudy
+    from .log import logger
     from .manifest import Manifest, load
     from .probe.gating import gpu_busy, wait_for_idle
     from .probe.machine import Machine
@@ -56,6 +57,7 @@ _HOMES: dict[str, tuple[str, str]] = {
     "Survey": (".compute", "Survey"),
     "gpu_busy": (".probe.gating", "gpu_busy"),
     "load": (".manifest", "load"),
+    "logger": (".log", "logger"),
     "script": (".core.shell", "script"),
     "sh": (".core.shell", "sh"),
     "span": (".profile.spans", "span"),
@@ -92,6 +94,7 @@ __all__ = [
     "span",
     "ProfileStudy",
     "Results",
+    "logger",
 ]
 
 

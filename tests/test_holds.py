@@ -14,6 +14,7 @@ from mainboard.dispatch.lease import Lease
 from mainboard.dispatch.rentals import Rental
 from mainboard.dispatch.transport import Endpoint
 from mainboard.holds import Holds, duration_seconds
+from mainboard.log import EventDict
 from mainboard.manifest.held import Holdings
 from mainboard.manifest.loading import load
 from mainboard.verdicts import Verdicts
@@ -304,7 +305,7 @@ def test_a_duration_nobody_writes_is_refused(spelled: str) -> None:
 
 
 def test_a_release_the_provider_refuses_stays_held_for_the_next_pass(
-    rental: Holds, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    rental: Holds, monkeypatch: pytest.MonkeyPatch, logged: list[EventDict]
 ) -> None:
     held = rental.hold("rent", duration="1h")
     past = datetime.now(UTC) - timedelta(minutes=1)
@@ -316,4 +317,4 @@ def test_a_release_the_provider_refuses_stays_held_for_the_next_pass(
     monkeypatch.setattr(Verdicts, "cancel", refused)
     assert rental.expire() == []
     assert list(rental.holdings.read()) == [held.alias]
-    assert "could not release rent-rtx-5090 yet" in caplog.text
+    assert any("could not release rent-rtx-5090 yet" in str(event["event"]) for event in logged)

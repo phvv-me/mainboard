@@ -18,9 +18,10 @@ from patos import FrozenModel
 from pydantic import TypeAdapter
 
 from ..core.errors import MissionError
+from ..log import logger
 from .agent import Digests, Entry, walk
 from .agent.program import CHUNK, DIRECTORY, FILE, LINK, native
-from .shared import logger, state_dir, state_path
+from .shared import state_dir, state_path
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -124,7 +125,7 @@ class Mirror:
         }
         delta = Delta.between(local, held, protected=protected, modes=capabilities.modes)
         logger.info(
-            "mirroring %d of %d path(s) to %s:%s",
+            "mirroring {} of {} path(s) to {}:{}",
             len(delta.files),
             len(local),
             self.agent.host,
@@ -137,7 +138,7 @@ class Mirror:
         received = _Received.model_validate(answer)
         if received.deleted:
             logger.warning(
-                "mirror deleted %d path(s): %s", len(received.deleted), ", ".join(received.deleted)
+                "mirror deleted {} path(s): {}", len(received.deleted), ", ".join(received.deleted)
             )
         return Pushed(
             files=sum(entry.kind == FILE for entry in local.values()),
@@ -175,7 +176,7 @@ class Mirror:
             elif os.path.isfile(referent):
                 adapted[path] = self.__hashed(Entry.stated(path, os.stat(referent)), digests)
             else:
-                logger.warning("%s cannot hold the link %s; left behind", self.agent.host, path)
+                logger.warning("{} cannot hold the link {}; left behind", self.agent.host, path)
         return adapted
 
     def __hashed(self, entry: Entry, digests: Digests) -> Entry:
@@ -206,7 +207,7 @@ class Mirror:
                         raise MissionError(
                             f"{entry.path} vanished before it could be sent"
                         ) from vanished
-                    logger.warning("skipping %s, gone before the stream reached it", entry.path)
+                    logger.warning("skipping {}, gone before the stream reached it", entry.path)
 
 
 class Delta(FrozenModel):

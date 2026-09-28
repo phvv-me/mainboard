@@ -1,7 +1,6 @@
 # The leaf every dispatch submodule imports instead of the package root, so nothing inside
 # dispatch depends on `dispatch/__init__.py` and its re-exports.
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Annotated
 from pydantic import BeforeValidator
 
 from ..core.project import Project
+from ..log import logger
 
 
 def now() -> str:
@@ -79,10 +79,6 @@ def state_path(root: Path | None = None) -> Path:
     return here / state_dir(here)
 
 
-# Every module logs here, so configuring `mainboard.dispatch` reaches all of them.
-logger = logging.getLogger("mainboard.dispatch")
-
-
 type Watcher = Callable[[str], None]
 """Announces the stage a long operation has reached, so a long run never stands silent.
 
@@ -93,4 +89,4 @@ environment) sit at three different levels of this package.
 
 def announce(stage: str) -> None:
     """The default `Watcher`, logging each stage for a caller that renders no progress."""
-    logger.info("%s", stage)
+    logger.info(stage)

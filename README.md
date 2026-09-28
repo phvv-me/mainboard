@@ -432,6 +432,24 @@ $ mainboard proc wait --port localhost:8000 --timeout 60
 $ mainboard proc wait --file results/done.json --pid 4242
 ```
 
+## Logging
+
+One logger for the tool and every workspace using it, loguru's call shape on
+structlog: positional arguments format the message, keywords are fields.
+
+```python
+from mb import logger
+
+logger.info("epoch {} done", 3, loss=0.12)
+```
+
+A terminal gets one readable line per event and anything else (a job's
+captured log, CI) one JSON line naming the module and line it came from.
+`MB_LOG_LEVEL` sets the floor (`info` by default) and `MB_LOG_FORMAT`
+(`console` or `json`) overrides the guess. While a pytest trial runs, every
+line logged from any code is also kept in that trial's record. A process that
+configured structlog itself keeps its own configuration.
+
 ## What it replaces
 
 - environment managers that cannot name a host

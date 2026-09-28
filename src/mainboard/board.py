@@ -46,7 +46,6 @@ from .dispatch.onboard import (
 )
 from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
-from .dispatch.shared import logger
 from .dispatch.shells import dialect_for, is_windows, open_shell
 from .dispatch.shipment import Shipment
 from .dispatch.snapshots import Snapshots
@@ -69,6 +68,7 @@ from .git import Tree
 from .jobs.call import Fresh
 from .jobs.closure import Closure
 from .jobs.target import Target
+from .log import logger
 from .manifest.loading import load
 from .manuscript import Manuscript
 from .monitor import Monitor
@@ -137,7 +137,7 @@ class Job:
         try:
             return self.logs()
         except (HostUnreachable, MissionError, OSError, ProcessExecutionError) as quiet:
-            logger.warning("no transcript for %s: %s", self.handle.id, quiet)
+            logger.warning("no transcript for {}: {}", self.handle.id, quiet)
             return ""
 
     def poll(self) -> JobState:
@@ -213,7 +213,7 @@ class ProviderJob:
         try:
             return self.backend.logs(self.handle.id)
         except (MissionError, OSError) as quiet:
-            logger.warning("no transcript for %s: %s", self.handle.id, quiet)
+            logger.warning("no transcript for {}: {}", self.handle.id, quiet)
             return ""
 
     def pull(self) -> None:
@@ -881,7 +881,7 @@ class Board:
         dropped = prefixes.prune(live=prefixes.referenced(Path(Snapshots(str(self.root)).base)))
         if dropped:
             logger.info(
-                "dropped %d unreferenced environment(s): %s", len(dropped), ", ".join(dropped)
+                "dropped {} unreferenced environment(s): {}", len(dropped), ", ".join(dropped)
             )
         return built
 
@@ -971,7 +971,7 @@ class Board:
         try:
             digest = digest_of(where, modules=plan.profile.modules)
         except MissionError as unbuilt:
-            logger.warning("dispatching without an addressed environment: %s", unbuilt)
+            logger.warning("dispatching without an addressed environment: {}", unbuilt)
             return ""
         return prefix_path(root, plan.env, digest, out=Project().out_dir())
 

@@ -1,7 +1,6 @@
 # Vendor code-annotation backends: named timeline ranges + instantaneous marks.
 
 import importlib
-import logging
 import time
 from collections.abc import Sequence
 from enum import StrEnum, auto
@@ -9,12 +8,12 @@ from typing import TYPE_CHECKING, ClassVar
 
 from patos import Registry
 
+from ..log import logger
 from .trace import Activity, CallbackSession, TraceCollector
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-logger = logging.getLogger(__name__)
 type Marker = Callable[[], None]
 
 
@@ -90,7 +89,7 @@ class Tracer(Registry):
         if kinds is Activity.ALL:
             if dropped := kinds & ~supported:
                 logger.info(
-                    "trace: %s unavailable on this device; collecting %s",
+                    "trace: {} unavailable on this device; collecting {}",
                     dropped,
                     kinds & supported,
                 )

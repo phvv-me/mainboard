@@ -7,7 +7,7 @@ only report a vanished post-mortem. The bare fallback: use `Pueue` wherever a da
 import shlex
 from typing import TYPE_CHECKING
 
-from ..shared import logger
+from ...log import logger
 from ..vocabulary import JobState, Resources
 from .base import read_log, within, workspace_session
 
@@ -23,7 +23,7 @@ class Local:
     name = "local"
 
     def cancel(self, remote: Machine, root: str, *, handle: str) -> None:
-        logger.info("local backend has no queue; cannot cancel %s", handle)
+        logger.info("local backend has no queue; cannot cancel {}", handle)
 
     def interactive(self, *, env: str, command: Sequence[str], resources: Resources) -> str:
         return workspace_session(env=env, command=command, resources=resources)

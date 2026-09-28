@@ -1,4 +1,4 @@
-"""The experiment-facing facade over trial receipts, Loguru, artifacts, and profiling."""
+"""The experiment-facing facade over trial receipts, the logger, artifacts, and profiling."""
 
 import hashlib
 import json
@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
-from loguru import logger
+from structlog.contextvars import bind_contextvars, reset_contextvars
 
+from ..log import SINK, EventDict, logger, sinks
 from ..observe.frames import Frame, Kind
 from ..observe.spool import Spool
 from ..profile.profiler import Collection, Profiler
@@ -23,15 +24,14 @@ from .session import params_of
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
-    from loguru import Message, Record
     from pydantic import BaseModel, JsonValue
 
     from .session import Trial
 
-_LEVELS = frozenset(
-    ("trace", "debug", "info", "success", "warning", "error", "critical", "exception")
-)
-_IDENTITY = frozenset(("project", "node", "trial", "run", "params", "mainboard_trial"))
+_LEVELS = frozenset(("debug", "info", "warning", "error", "critical", "exception"))
+_IDENTITY = frozenset(("project", "node", "trial", "run", "params", SINK))
+# What every event carries that is the logger's envelope rather than the caller's metadata.
+_ENVELOPE = frozenset(("event", "level", "timestamp", "exc_info", "stack_info"))
 
 
 class Log:
@@ -65,14 +65,15 @@ class Log:
             "params": params_of(trial.item, universe.axes),
             "manifest": manifest.model_dump(mode="json") if manifest is not None else None,
         }
-        self.logger = logger.bind(mainboard_trial=self.identity)
-        self.sink = logger.add(
-            self._message, filter=self._owned, level=0, catch=False, diagnose=False
-        )
+        # Every line logged while the trial runs is kept with it, whichever library logged it;
+        # the trial's own methods name the sink explicitly, so they are kept from any thread.
+        sinks[self.identity] = self._message
+        self.bound = bind_contextvars(**{SINK: self.identity})
+        self.logger = logger.bind(**{SINK: self.identity})
         self._event("started", self.context, kind=Kind.started)
 
     def __getattr__(self, name: str) -> Callable[..., None]:
-        """Expose Loguru severity methods and the project's existing settlement vocabulary."""
+        """Expose the logger's severity methods and the project's settlement vocabulary."""
         if name.startswith("_"):
             raise AttributeError(name)
         if name in _LEVELS:
@@ -204,28 +205,21 @@ class Log:
                 "ended", {"passed": passed, "verdict": self.trial.settled}, kind=Kind.ended
             )
         finally:
-            logger.remove(self.sink)
+            sinks.pop(self.identity, None)
+            reset_contextvars(**self.bound)
             self.spool.close()
 
     def _name(self, kind: str) -> str:
         self.counts[kind] += 1
         return f"{kind}-{self.counts[kind]}"
 
-    def _owned(self, record: Record) -> bool:
-        return record["extra"].get("mainboard_trial") == self.identity
-
-    def _message(self, message: Message) -> None:
-        record = message.record
+    def _message(self, event: EventDict) -> None:
         self._event(
             "message",
             {
-                "text": record["message"],
-                "level": record["level"].name,
-                "metadata": {
-                    key: value
-                    for key, value in record["extra"].items()
-                    if key != "mainboard_trial"
-                },
+                "text": str(event["event"]),
+                "level": event["level"],
+                "metadata": {key: value for key, value in event.items() if key not in _ENVELOPE},
             },
         )
 
