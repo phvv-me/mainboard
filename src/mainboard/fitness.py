@@ -13,6 +13,7 @@ from packaging.version import Version
 from .core.errors import MissionError
 from .core.host import current_platform
 from .core.section import Section, Verdict
+from .engines.compile.lockfile import Lockfile
 from .engines.compile.pixi_lock import packages
 from .engines.compile.platforms import SystemFloors
 from .engines.compile.provisioner import Provisioner
@@ -313,13 +314,20 @@ class Fitness:
         return own or self.manifest.system
 
     def _locked(self, environment: str) -> dict[str, list[str]] | None:
-        """What `environment`'s lock installs per platform, read once; None when never solved."""
+        """What `environment`'s lock installs per platform, read once; None when never solved.
+
+        The committed lock when it holds one, since an install materializes the cached copy
+        from it; a fresh clone holds nothing else.
+        """
         if environment not in self.locks:
+            committed = Lockfile(self.root).get(environment)
             path = Provisioner(self.root, self.manifest).pixi_for(environment).lock
             try:
-                self.locks[environment] = packages(path.read_text(encoding="utf-8"))
+                text = committed.lock if committed else path.read_text(encoding="utf-8")
             except FileNotFoundError:
                 self.locks[environment] = None
+            else:
+                self.locks[environment] = packages(text)
         return self.locks[environment]
 
     def _built(self, platform: str, environment: str) -> Version | None:

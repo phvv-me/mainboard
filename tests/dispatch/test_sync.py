@@ -11,7 +11,7 @@ from mainboard.dispatch import sync as sync_module
 from mainboard.dispatch.agent import Agent, Rules
 from mainboard.dispatch.mirror import Mirror
 from mainboard.dispatch.shared import state_dir
-from mainboard.dispatch.sync import ALWAYS_EXCLUDE, CARD_LEASES, patterns
+from mainboard.dispatch.sync import ALWAYS_EXCLUDE, CARD_LEASES, denied, patterns
 from mainboard.dispatch.transport import Endpoint
 
 from .support import InProcessLink
@@ -66,6 +66,8 @@ def test_the_denylist_covers_git_env_and_every_generated_directory() -> None:
         "*/evidence/receipts/***",
     ) == ALWAYS_EXCLUDE
     assert CARD_LEASES == (".card.lock", ".card.lock.*")
+    # The committed lock is source a host installs from, never a lease or generated state.
+    assert not any(denied().matches(name, directory=False) for name in Project().locks)
 
 
 @pytest.mark.parametrize(

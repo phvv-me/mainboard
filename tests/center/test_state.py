@@ -23,6 +23,7 @@ from mainboard.center.state import (
     packed,
     snapshot,
 )
+from mainboard.core.project import Project
 from mainboard.core.section import Verdict
 from mainboard.manifest.held import Held, Holdings
 from mainboard.manifest.loading import load
@@ -380,6 +381,18 @@ def test_the_workspace_carries_ledgers_and_locks_and_leaves_machine_local_state(
         ".mainboard/batches/x/receipts.ndjson"
     ]
     assert ".mainboard/dispatch/db.sqlite" not in [parcel.path for parcel in carried.workspace()]
+
+
+def test_the_committed_lock_travels_even_before_it_is_committed(
+    carried: Carried, root: Path
+) -> None:
+    """The clone brings a committed lock; a solve not yet committed would be lost without this.
+
+    It sits at the root, outside the state directory, so no machine-local rule drops it.
+    """
+    write(root / Project().locks[0], "version = 1\n")
+    paths = [parcel.path for parcel in carried.workspace()]
+    assert paths.count(Project().locks[0]) == 1
 
 
 def test_agent_state_moves_rekeyed_to_the_new_workspace_and_history_stays(

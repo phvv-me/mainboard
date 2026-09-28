@@ -178,14 +178,21 @@ class Provisioner:
         return self.artifact_for("default")
 
     def artifact_for(self, environment: str) -> tuple[str, ...]:
-        """Every defining generated input and lock, second-stage locks required locally."""
+        """Every defining generated input and lock, second-stage locks required locally.
+
+        The committed lock rides along once there is one, whatever the host's sync scope says,
+        so a host on this release installs from it; the shard's materialized copy and its state
+        still ship for a host on an older one.
+        """
         shard = self._shard(environment)
+        committed = Project().lock(self.root)
         paths = (
             shard.pixi.manifest,
             shard.pixi.lock,
             SyncState.path(shard.directory),
             *GeneratedFiles(directory=shard.directory).inputs,
             *shard.stage.frozen_inputs(environment),
+            *((committed,) if committed.is_file() else ()),
         )
         return tuple(dict.fromkeys(path.relative_to(self.root).as_posix() for path in paths))
 

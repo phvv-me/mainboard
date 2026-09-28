@@ -597,6 +597,28 @@ def _commit(tmp_path: Path, lock: str, solved_from: str = "a" * 64) -> Solved:
     return solved
 
 
+def test_a_host_receives_the_committed_lock_beside_the_copy_older_releases_read(
+    manifest_from: Callable[[str], Manifest], tmp_path: Path
+) -> None:
+    """The committed lock rides along by name, whatever the host's sync scope covers."""
+    provisioner = Provisioner(tmp_path, manifest_from(_BARE))
+    provisioner.recompiled()
+    shard = f"{Project().out_dirs[0]}/envs/default"
+    assert Project().locks[0] not in provisioner.artifact
+
+    _commit(tmp_path, "version: 7\n")
+    provisioner.recompiled()
+
+    assert provisioner.artifact[:3] == (
+        f"{shard}/pixi.toml",
+        f"{shard}/pixi.lock",
+        f"{shard}/state.toml",
+    )
+    assert provisioner.artifact[-1] == Project().locks[0]
+    # Materialized by the recompile a dispatch runs, so the copy that ships is the committed one.
+    assert (tmp_path / shard / "pixi.lock").read_text(encoding="utf-8") == "version: 7\n"
+
+
 def test_a_resolve_starts_from_the_committed_lock_and_commits_what_it_solved(
     manifest_from: Callable[[str], Manifest], tmp_path: Path, fp: FakeProcess, solver_version: str
 ) -> None:

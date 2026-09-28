@@ -6,6 +6,8 @@ import pytest
 
 from mainboard import Project
 from mainboard.core.section import Section, Verdict
+from mainboard.engines.compile.generated import GeneratedFiles
+from mainboard.engines.compile.lockfile import Lockfile, Solved
 from mainboard.engines.compile.provisioner import Provisioner
 from mainboard.fitness import Fitness, Role
 from mainboard.manifest.loading import load
@@ -232,6 +234,20 @@ def test_a_lock_is_read_once_however_many_questions_ask_about_it(fitness: Fitnes
         fitness.builds(machine(), "default").detail == "no CUDA builds locked for this card to run"
     )
     assert fitness.locks == {"default": None}
+
+
+def test_the_committed_lock_is_judged_over_a_cached_copy(tmp_path: Path) -> None:
+    """An install materializes the cached copy from the committed lock, so that is the truth."""
+    judge = fitness_of(tmp_path)
+    cached = lock(judge, {"linux-64": [_PLAIN]})
+    committed = Solved(solved_from="a", solved_by="0.79.0", lock=cached.read_text("utf-8"))
+    lock(judge, {"win-64": [_PLAIN]})
+    with GeneratedFiles(directory=Project().out(tmp_path)).locked() as files:
+        Lockfile(tmp_path).put(files, "default", committed)
+
+    found = judge.lock(machine(), "default")
+
+    assert (found.verdict, found.detail) == (Verdict.PASS, "default: 1 linux-64 builds locked")
 
 
 @pytest.mark.parametrize("host", ["miyabi", "cluster"])
