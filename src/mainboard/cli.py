@@ -645,7 +645,9 @@ def build(root: Path | None = None) -> App:
     ) -> None:
         """Explore collected results across servers; each query sees newly arrived files.
 
-        Views: runs, trials, events, metrics, artifacts, jobs. Project scopes science views;
+        Views: runs, trials, events, metrics, artifacts, jobs, and every table of the
+        workspace's state lake as `lake.<table>` (lake.events, lake.log_lines, lake.costs...).
+        Project scopes science views;
         jobs always shows the fleet. Monitor refreshes tracked jobs; collect also imports
         results from native remote runs. Neither requires a shared database service.
 

@@ -504,26 +504,38 @@ class Lake(FrozenModel):
             config={"autoinstall_known_extensions": False, "autoload_known_extensions": False}
         )
         try:
-            self._load(connection)
-            connection.execute(f"SET ducklake_max_retry_count = {_RETRIES}")
-            connection.execute("SET enable_progress_bar = false")
-            connection.execute("SET TimeZone = 'UTC'")
-            options = [
-                f"DATA_PATH {_quoted(self.data.as_posix() + '/')}",
-                "OVERRIDE_DATA_PATH true",
-                f"CREATE_IF_NOT_EXISTS {str(create).lower()}",
-                f"META_BUSY_TIMEOUT {_BUSY_MS}",
-            ]
-            if migrate:
-                options.append("AUTOMATIC_MIGRATION true")
-            options.append("META_JOURNAL_MODE 'WAL'" if write else "READ_ONLY")
-            target = _quoted(f"ducklake:sqlite:{self.catalog.as_posix()}")
-            connection.execute(f"ATTACH {target} AS {ALIAS} ({', '.join(options)})")
+            self.attach(connection, write=write, create=create, migrate=migrate)
             yield connection
             connection.execute("USE memory")
             connection.execute(f"DETACH {ALIAS}")
         finally:
             connection.close()
+
+    def attach(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        *,
+        write: bool = False,
+        create: bool = False,
+        migrate: bool = False,
+    ) -> None:
+        """Attach this lake to `connection` as `lake`, read-only unless `write`, so a query that
+        already has its own views (`mb query`) reaches every table beside them."""
+        self._load(connection)
+        connection.execute(f"SET ducklake_max_retry_count = {_RETRIES}")
+        connection.execute("SET enable_progress_bar = false")
+        connection.execute("SET TimeZone = 'UTC'")
+        options = [
+            f"DATA_PATH {_quoted(self.data.as_posix() + '/')}",
+            "OVERRIDE_DATA_PATH true",
+            f"CREATE_IF_NOT_EXISTS {str(create).lower()}",
+            f"META_BUSY_TIMEOUT {_BUSY_MS}",
+        ]
+        if migrate:
+            options.append("AUTOMATIC_MIGRATION true")
+        options.append("META_JOURNAL_MODE 'WAL'" if write else "READ_ONLY")
+        target = _quoted(f"ducklake:sqlite:{self.catalog.as_posix()}")
+        connection.execute(f"ATTACH {target} AS {ALIAS} ({', '.join(options)})")
 
     def _load(self, connection: duckdb.DuckDBPyConnection) -> None:
         """Load the extensions from this tool's directory, installing only what fails to load.

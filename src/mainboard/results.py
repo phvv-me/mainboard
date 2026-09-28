@@ -52,6 +52,10 @@ class Results:
             if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
                 raise ValueError("results queries must be one SELECT statement")
             self._views(connection, project, sql)
+            lake = Lake.at(self.root)
+            if f"{ALIAS}." in sql.lower() and lake.exists():
+                # Everything the workspace recorded, read-only beside the collected results.
+                lake.attach(connection)
             result = connection.execute(sql)
             return pl.DataFrame(
                 result.fetchall(),
