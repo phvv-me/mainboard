@@ -3,6 +3,7 @@
 # 255 with a stderr phrase).
 
 import os
+import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp options), not untrusted input since=2026-08-17
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ from plumbum.machines.session import ShellSession
 from plumbum.machines.ssh_machine import SshMachine
 from pydantic import Field, field_validator
 
+from ..core.host import WINDOWS
 from .keys import adopt
 
 # ssh's own exit status when the transport fails, with the stderr phrases naming the fault. A
@@ -64,6 +66,19 @@ def terminate_process_tree(pid: int, *, force: bool = False) -> None:
     for process in [*reversed(root.children(recursive=True)), root]:
         with suppress(psutil.Error):
             (process.kill if force else process.terminate)()
+
+
+def ssh_null() -> str:
+    """The null device as the ssh this machine runs spells it.
+
+    `os.devnull` is `nul` on Windows, which Windows' own OpenSSH reads as the device and MSYS2's
+    or Git's ssh (the dotfiles' toolbox puts MSYS2's first) reads as a file name: every rental's
+    host key landed in a file called `nul` in the working directory, one git cannot index.
+    """
+    if not WINDOWS:
+        return os.devnull
+    found = shutil.which("ssh") or ""
+    return "/dev/null" if "usr" in Path(found).parts else "NUL"
 
 
 class HostUnreachable(Exception):
@@ -127,7 +142,7 @@ class Endpoint(FrozenModel):
             "-o",
             "StrictHostKeyChecking=accept-new",
             "-o",
-            f"UserKnownHostsFile={os.devnull}",
+            f"UserKnownHostsFile={ssh_null()}",
             "-o",
             "LogLevel=ERROR",
         )

@@ -5,9 +5,10 @@
 # never overrides its address, and removed by its markers on release. Nothing outside a block is
 # ever touched.
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from .transport import ssh_null
 
 if TYPE_CHECKING:
     from .transport import Endpoint
@@ -36,7 +37,7 @@ class SshAliases:
                 else []
             ),
             "  StrictHostKeyChecking accept-new",
-            f"  UserKnownHostsFile {os.devnull}",
+            f"  UserKnownHostsFile {ssh_null()}",
             "  LogLevel ERROR",
         ]
         block = "\n".join([_opening(alias), *lines, _closing(alias)])
