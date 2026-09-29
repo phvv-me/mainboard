@@ -646,6 +646,8 @@ class Onboarding:
             pixi = self.align_pixi(shell, host=host)
             self.watch(f"provisioning {self.env} on {host}")
             Bootstrap(shell, resolve=self.resolve).environment()
+            # A daemon that died or a host cleaned since setup would refuse every submit.
+            self.verify_queue(shell, host=host)
             self.apply_dotfiles(shell, host=host)
             activate = shell.activation_record
         fresh = self.dispatcher.cache.host(host)

@@ -583,7 +583,7 @@ Blackwell when that is wanted; if it earns its place, retire `backends/vast.py` 
 | candidate | size | why it can go | how |
 |---|---|---|---|
 | center `.mainboard/batches`, `source-archives`, `recovery`, `audits`, `collection.digests.json`, `catalog.ndjson`, `pulse.json`, `costs/`, `activate*.sh` | ~4.1 GB | imported into the lake and verified byte for byte (4.16); the generated scripts were retired in Phase 5 | after `mb lake check` passes, delete them |
-| hosts' `~/projects` (old center checkouts) | 123 GB gold, 52 GB crimson, pedro-cvlab too | from when those machines were centers; clean trees (`git status` empty), nothing dispatched uses them since 5.14 | delete per host |
+| ~~hosts' `~/projects` (old center checkouts)~~ | done 6.14 | | |
 | hosts' pixi package caches | 52-56 GB each | mostly packages of retired environments | `pixi clean cache --yes` per host (live environments are hardlinks and survive) |
 | `packages/chefe`, `packages/lote` | 6 MB | retired, absorbed by mainboard; already excluded from members | remove the submodules |
 | `packages/cuda-python-meta`, `packages/sqlalchemy-cockroachdb` | <1 MB | excluded from members: nothing requires them | remove, or keep as archives |
@@ -669,3 +669,49 @@ pixi, environment and pueue steps (~2 min) but adds a pull on a host that has no
 (3.0 GB at ~100 MB/s, under a minute); Vast caches the layers per host, so repeated rentals and
 batches gain most. Needs the owner's registry login once on the building host; wiring `host hold`
 to boot that image (the Vast backend already boots a plan's own image) is the next step.
+
+### SkyPilot on Windows, and its alternatives (6.14, measured)
+
+How SkyPilot is built (0.13.0, 577 files, 228k lines): a Python package holding both a client
+and an API server. The server (FastAPI on uvloop, SQLite or Postgres state, alembic migrations)
+does everything: provisioning through each cloud's SDK, ssh and rsync to clusters, the managed
+jobs controller, a dashboard. The client sends requests over HTTP and streams logs; with no server
+configured it starts one locally in the background. The split exists for teams (one endpoint,
+shared clusters, requests that outlive a laptop), and it is also what makes Windows reachable.
+
+On Windows, tried: the client fails on `import resource`; with three stub modules (`resource`,
+`fcntl`, `termios`) and UTF-8 output, `sky --help`, `sky api info` and `sky gpus list --infra
+vast` all worked against an API server started on gold and reached through `ssh -L`. The server
+itself does not start on Windows (uvloop has no Windows build; it forks, uses ssh
+ControlMaster, rsync). So a Windows fork is small for the client (guard the imports in about
+seven files, force UTF-8) and large for the server; the working shape is a Windows client with
+the server on gold, or in WSL. An upstream PR for the client guards is the cheaper route than a
+fork. Requirements: Python 3.9 to 3.13, a Linux or macOS machine for the server, each cloud's
+credentials on the server.
+
+Alternatives: dstack (MPL-2.0, 0.22.1) is the closest: server and CLI, backends for AWS, GCP,
+Azure, Lambda, RunPod, Vast, Nebius, Kubernetes and ssh fleets. Its CLI and its server both run
+natively on Windows (tried; the server needs `sqlalchemy<2.1` beside its sqlalchemy-utils). Its
+unit is a container: every run is an image, so it assumes the image route mb measured as
+unnecessary for its own use. Others: Ray's cluster launcher (AWS, GCP, Azure, Kubernetes; Linux
+client), Modal (hosted, already an mb backend), RunPod and Vast's own CLIs (single provider).
+
+Is the image route needed now: no. The lean lock installs cold in under a minute on a good
+network and a Vast rental is ready in 3m42s without an image; an image saves ~2 min per rental
+and costs a registry, a build per lock and a pull on every uncached host. It pays when renting
+many machines at once, for offline nodes or HPC (SIF). `mb pack` keeps the capability; no hub
+is set up until a batch needs it.
+
+### Old checkouts deleted (6.15)
+
+`~/projects` removed on gold, crimson and pedro-cvlab (old center checkouts, chefe-era state):
+freed 37, 35 and 88 GB. Kept, since nothing else holds them:
+- pedro-cvlab's 28 unpushed commits (branches `wt/fix-segmentation`, `wt/fix-tokenization`,
+  `wt/fix-transforms`, `wt/mcmr-a`, `wt/mcmr-merged`, 2026-09-04) as a git bundle at
+  `.mainboard/recovery/pedro-cvlab-unpushed.bundle` on the center (`git fetch <bundle>`);
+- in `~/mb-salvage/` per host: gold's `results/dsv4_flash_e8p_full` (83 GB, a quantized
+  DeepSeek V4 Flash checkpoint nothing else holds), `data/` and `outputs/`; pedro-cvlab's
+  `data/cutoken` (70 GB of corpora), `japanese/` (3.5 GB), 13 ignored result dirs (11 MB tar);
+  crimson's `data/` (2.3 GB).
+gold's pueue daemon ran from that old checkout's environment; `host sync` now checks the queue
+and starts it, as setup did.
