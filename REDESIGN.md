@@ -319,3 +319,46 @@ What a week with cutok and reproducibility both near a deadline needs, and where
 | multi-machine terminal | herdr | adopted (4.2) |
 | dotfiles, toolbox | chezmoi, pixi global | adopted |
 | experiment metrics and dashboards | trackio (HF, local-first SQLite and Parquet), Aim, MLflow | the lake already holds receipts; trackio could be a dashboard over them, not a second store |
+
+## Capacity: what breaks first as jobs pile up (measured 2026-09-29)
+
+Lake (scratch lake, synthetic runs and log lines; this Windows center):
+
+| runs | append one run | live() before / after SQL filter | count via view |
+|---|---|---|---|
+| 1,000 | 23 ms | 0.03 s | 0.02 s |
+| 10,000 | 25 ms | 0.08 s | 0.01 s |
+| 100,000 | 25 ms | 0.70 s (linear) / filtered in the lake now (`38b2a26`) | 0.03 s |
+
+- 5 M log lines: a job's tail 0.03-0.25 s, count 0.01 s. Appends stay ~25 ms at any size.
+- Fixed: the catalog grew with every dispatch because source blobs inlined into SQLite (102 MB of
+  104 at 660 runs); now 1.7 MB after `mb lake compact`, blobs go to Parquet (`c2c1430`).
+- Commits serialize (~150 ms each under 8 writers): a 1,000-job batch spends a few minutes in
+  registry commits, fine. Nothing compacts on its own: `lake check` names a catalog past 64 MB.
+
+Hosts (the real limit):
+- Every dispatch of an edited tree pins a new snapshot (~3,700 directories plus hardlinks to
+  ~14,600 files, over a minute to build) and nothing prunes them: ~15 MB of directories each, so
+  a week of 1,000 edit-dispatch cycles is ~15 GB per host. gold has 170 GB free (96% used).
+- Each re-solved lock adds a ~20 GB environment prefix per host until `Prefixes.prune` finds it
+  unreferenced, which waits for the snapshots that name it.
+- PROPOSED (needs the owner): prune a host's snapshots at pin time, keeping every snapshot a run
+  the center still tracks names and anything younger than 7 days (a queued PBS job may wait that
+  long), so the environments behind them become prunable too.
+
+IDs: batch ids are 32-bit (50% chance of a collision around 77k batches), held-run handles
+40-bit, run labels 32-bit display only, environment digests 64-bit, sources SHA-256. Fine at this
+scale; widening the batch id would rename existing batches, so it is left.
+
+## Bug sweep (2026-09-29): what was found and fixed
+- Windows center to Linux host: snapshot named for its source only (`e0332a2`); the center's
+  drive root misread on Linux (`e0332a2`); the pin's silence read as an unreachable host
+  (`951cf4a`); a query reading views an older release left (`951cf4a`).
+- Windows reports NUL as a terminal: `job submit` with stdin redirected died on EOFError
+  (`09cd392`).
+- Nine text-mode subprocess calls decoded with cp1252 (`38b2a26`).
+- All 71 commands and 4 group paths answer --help (integration/test_every_command.py);
+  exercised for real on the fleet today: job submit/list/logs/wait/monitor, host setup/audit/
+  gpus/facts, lake check/compact/serve/query, list/tree/run/doctor/check, center git status.
+- Open: six runs on `blackwell` (a rental no longer declared) stay live until
+  `mb job cancel` settles them; `doctor` fails only on the workspace's own `math` gate.
