@@ -5,6 +5,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from functools import partial
 from importlib import metadata
+from io import TextIOWrapper
 from json import dumps, loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
@@ -2428,6 +2429,11 @@ def main() -> None:
     lines; the ones a dispatched job runs keep the JSON its log readers parse.
     """
     _forget_openssh_descriptors()
+    # A job's log carries whatever it printed (a progress bar's block characters), and a Windows
+    # pipe encodes cp1252, so one such character killed `job logs` mid-print (2026-09-29).
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, TextIOWrapper):
+            stream.reconfigure(errors="replace")
     if not Project().variable("LOG_FORMAT").read() and sys.argv[1:2] != ["execute"]:
         configure(output="line")
     app = build()
