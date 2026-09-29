@@ -125,3 +125,19 @@ tests/dispatch/test_provenance.py (archive test edits the job file).
   0.3 s. Reusing one DuckDB instance per process would halve attach cost (later).
 - `mb --version` 1.8 s warm (eager imports of dispatcher/estimate/lake/polars); lazy CLI imports
   planned for later.
+
+## Round 2 (2026-09-29): simplify, then test
+
+- CLI shaped like pixi/uv (`f1a692c`): `install` (never solves), `lock`, `add`, `remove`,
+  `upgrade`, `run`, `shell`, `shell-hook`; `mb host setup|sync|list|facts|gpus|unlock|hold|
+  release`; `mb job submit|list|logs|wait|cancel|verdict|monitor|collect|batch|lanes`;
+  `mb self update`. Nothing runs on start any more (no self-update, no agent lookup).
+- polars out of mb's dependencies (only in the `plot` extra); DuckDB does query/export.
+- Bulk data reaches DuckDB as staged NDJSON: this DuckDB build binds list parameters at ~2 ms an
+  element (20k rows = 40 s), which hung `mb query`.
+- `integration/` is the default suite (`22f0e7e`): real `mb` processes, no tracebacks allowed;
+  `MB_REMOTE_WORKSPACE=D:/projects pytest integration/test_remote.py` reaches the fleet.
+  Fleet today: gold, crimson, pedro-cvlab answer; macmini, pedro-home, purple need
+  `mb host setup` (blocked by the default lock decision); miyabi-g needs `mb host unlock`.
+- Next: DuckDB Quack (`quack_serve` / `ATTACH 'quack:…'`) prototype on gold+crimson so jobs
+  write into the center's lake directly; needs ssh tunnels for nodes without inbound routes.
