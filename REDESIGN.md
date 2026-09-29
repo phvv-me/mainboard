@@ -266,10 +266,56 @@ Worked in this order, each checked off as it lands:
 - [x] 4.5 (`624464b`) `mb host audit` (what could and should be updated, read-only) and `mb host upgrade`
       (apt update/full-upgrade/autoremove, brew, winget, pixi, uv, chezmoi, mb)
 - [x] 4.6 (4) `tests/` retired: 329 files, 55,227 lines, three dev dependencies
-- [ ] 4.7 (6) Platform branches routed through `core.host`
-- [ ] 4.8 (5) The research layer off the CLI's import path, its dependencies in an extra
-- [ ] 4.9 (3) The rename finished on the center and the hosts
-- [ ] 4.10 (2) Jobs write the center's lake live over Quack
-- [ ] 4.11 (7) conda-forge submissions prepared (m2-zsh; bun's win-64): submitting needs the owner
-- [ ] 4.12 Shell and PowerShell scripts replaced by Python wherever that is shorter
-- [ ] 4.13 The deadline stress case: several projects, many jobs, telling them apart
+- [x] 4.7 (`3e58a11`) (6) The 26 checks of the running OS read `core.host` WINDOWS/MACOS/LINUX;
+      a host's probed system stays data; the three standalone agents keep their own
+- [x] 4.8 (`21cfef6`) (5) `import mainboard.cli` loads no research module (was 13); startup
+      still pays for plumbum (136 ms), structlog (111 ms), importlib.metadata (72 ms)
+- [ ] 4.9 (3) DECISION, recommend defer: the center's `.mainboard/` is 20 GB (16 GB of
+      environments to rebuild at a new path) and every host needs a fresh setup, while mb must
+      read both names forever anyway (3,585 dataset files record old paths): no code shrinks
+- [ ] 4.10 (2) DECISION: live writes need the lake reachable from nodes. The center is a
+      Windows desktop behind NAT, so a tunnel only it can open gives no more reach than the ssh
+      collection has today. Two ways: serve the lake from an always-on Linux host (gold), or a
+      self-hosted mesh VPN (Headscale or NetBird, userspace mode on HPC nodes) so hosts attach
+      `quack:center:9494` directly
+- [ ] 4.11 (7) READY, needs the owner: zsh upstream is one line, `"zsh"` in `to_process` of
+      conda-forge/m2-binary-packages-feedstock `recipe/msys2-pkgs.py` (its deps are already
+      there); then the dotfiles' local channel goes. bun: its feedstock builds from source and
+      has no win-64; npm's `bun` package ships official binaries for every platform, so
+      `[nodejs]` can carry it today
+- [x] 4.12 The dotfiles' two toolbox scripts are one Python script; mainboard keeps none by
+      hand (what it generates is shell by necessity: activation and scheduler job scripts); the
+      workspace's 1,665 lines of project glue are shorter as shell, converted only when touched
+- [~] 4.13 (`09cd392`, `e0332a2`) The deadline stress case: runs record their project (the
+      submit's directory under research/ or packages/, or MB_PROJECT), `mb job list --project`;
+      dispatch from the Windows center to a Linux host fixed twice (snapshot named for its
+      environment; the center's drive root read on Linux). See the plan below.
+
+### A deadline week with several projects (4.13)
+
+What a week with cutok and reproducibility both near a deadline needs, and where mb stands:
+- Tell runs apart: project (new), label (`--name`), study node (`--node`), commit, dirty flag and
+  source digest are on every run; `mb job list --project`, `mb query` over `lake.runs`.
+- Many jobs at once: `mb job batch` (a spec file, priced and watched as one flow), per-host
+  pueue queues, PBS on miyabi-g; `host hold`/`release` for rented capacity.
+- Environments that adapt per OS and architecture: one `mb.lock` solved for linux-64,
+  linux-aarch64, osx-arm64 and win-64; per-platform tables compile to pixi targets. The traps
+  found: a PyPI sdist the center cannot build (take it from conda-forge) and per-platform Node
+  manifests (now refused).
+- Next, in order of payoff: a `project` column in the `runs` view (today it is inside the
+  record JSON); results per project in `mb query` (a `lake.results` view keyed by run);
+  `mb job list --since` for "what did I launch today"; a per-project default host and queue.
+
+## Tools that could do part of mb's job (researched 2026-09-29)
+
+| mb does | open-source tool | verdict |
+|---|---|---|
+| upgrade everything on a machine (`host upgrade`) | topgrade (Rust, apt/brew/winget/pip/cargo/chezmoi/...; PyPI wheels for every OS) | strong candidate: `host upgrade` could hand the upgrade to topgrade and keep only the audit |
+| mirror the workspace to hosts | Mutagen (continuous sync over ssh, Windows native, ignore rules) | candidate for the mirror only; pinned snapshots and provenance stay mb's |
+| ship environments to hosts | pixi-pack (pack a solved env, unpack offline, self-extracting) | candidate for HPC nodes without network or with slow installs |
+| dispatch to ssh hosts, Slurm, clouds | SkyPilot (SSH node pools, Slurm, k8s, clouds), dstack (SSH fleets, Slurm) | not a replacement: neither drives PBS (miyabi-g) nor pueue hosts, and both bring a server; worth borrowing their SSH-pool model |
+| Slurm from Python | submitit | not needed: no Slurm host in the fleet today |
+| reach nodes behind NAT (Quack, 4.10) | Headscale (self-hosted Tailscale control), NetBird (fully open) | the missing piece for a live lake |
+| multi-machine terminal | herdr | adopted (4.2) |
+| dotfiles, toolbox | chezmoi, pixi global | adopted |
+| experiment metrics and dashboards | trackio (HF, local-first SQLite and Parquet), Aim, MLflow | the lake already holds receipts; trackio could be a dashboard over them, not a second store |
