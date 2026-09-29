@@ -10,9 +10,10 @@
 # - Windows keeps a user PATH in the registry, which cmd, PowerShell and Git Bash all start from,
 #   so the directories are prepended there, and every entry an older prefix left is replaced.
 # - macOS and Linux have no such store, only each shell's startup files, so one generated file,
-#   `~/.config/mainboard/path.sh`, puts the directories on PATH, and a marked line sources it from
-#   the startup file every mode of each shell reads: `~/.zshenv` for zsh (login or not,
-#   interactive or not), and `~/.profile` and `~/.bashrc` for bash and sh.
+#   `~/.config/mainboard/path.sh`, puts the directories on PATH. The startup files belong to the
+#   owner's dotfiles, which source it; only a startup file that does not (a machine without them)
+#   gets a marked line appended: `~/.zshenv` for zsh (login or not, interactive or not), and
+#   `~/.profile` and `~/.bashrc` for bash and sh.
 #
 # Each shell kind is then started the way an agent starts it, from a fresh environment, and asked
 # where each tool resolves, which is the only proof that counts.
@@ -316,12 +317,16 @@ def _written(path: Path, text: str) -> bool:
 
 
 def _sourced(startup: Path) -> bool:
-    """Append the marked line sourcing the PATH file to `startup`, answering whether it did."""
+    """Append the marked line sourcing the PATH file to `startup`, answering whether it did.
+
+    A startup file that already names the PATH file (the dotfiles' own line) is left alone, since
+    whatever manages it would only rewrite the appended block away.
+    """
     try:
         text = startup.read_text(encoding="utf-8")
     except FileNotFoundError:
         text = ""
-    if any(begin in text for begin in _BEGINS):
+    if PATH_FILE in text or any(begin in text for begin in _BEGINS):
         return False
     block = f"{_BEGIN}\n{_SOURCE}\n{_END}\n"
     startup.write_text(
