@@ -2205,9 +2205,9 @@ def _hpcai_offers(
     nodes), so a type out of stock still shows what it would cost.
     """
     from .dispatch.arch import arch as spanned  # noqa: PLC0415
-    from .dispatch.arch import capability, card, sm  # noqa: PLC0415
+    from .dispatch.arch import capability, sm  # noqa: PLC0415
     from .dispatch.backends.cloud import keyed  # noqa: PLC0415
-    from .dispatch.backends.hpcai import HpcAiBackend, card_of  # noqa: PLC0415
+    from .dispatch.backends.hpcai import HpcAiBackend, card_of, fits  # noqa: PLC0415
 
     if not keyed("hpc-ai"):
         return []
@@ -2231,12 +2231,7 @@ def _hpcai_offers(
         }
         for row in types
         if row["gpu"]
-        and row["usd_hr"] is not None
-        and (not gpu or card_of(row["gpu"]) == card(gpu))
-        and (not count or row["gpus"] >= count)
-        and (not max_usd_hr or row["usd_hr"] <= max_usd_hr)
-        and (spot is None or row["spot"] == spot)
-        and (span is None or span.holds(capability(card_of(row["gpu"]))))
+        and fits(row, gpu_name=gpu, gpus=count, arch=span, spot=spot, max_usd_hr=max_usd_hr)
     ]
 
 

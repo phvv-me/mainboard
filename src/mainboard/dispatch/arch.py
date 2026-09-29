@@ -11,14 +11,10 @@
 # wrong or not at all corrected below, since a wrong capability rents a card the kernels refuse.
 
 import re
-from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
 from ..core.errors import MissionError
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
 
 type Capability = tuple[int, int]
 
@@ -97,10 +93,6 @@ class Arch(FrozenModel):
     def vast(self) -> tuple[int, int]:
         """The span as Vast's `compute_cap` field counts it (`sm_120` -> 1200)."""
         return self.low[0] * 100 + self.low[1] * 10, self.high[0] * 100 + self.high[1] * 10
-
-    def cards(self, names: Iterable[str]) -> list[str]:
-        """The names among `names` whose card this span holds."""
-        return [name for name in names if self.holds(capability(name))]
 
 
 def arch(spelled: str) -> Arch:

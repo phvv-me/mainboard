@@ -30,7 +30,7 @@ from urllib.request import Request
 from ...core.errors import MissionError
 from ...costs.catalog import Offer
 from ...log import logger
-from ..arch import arch, capability, card
+from ..arch import Arch, arch, capability, card
 from ..evidence import framing, staging
 from ..rentals import LANDING_SECONDS, Identity, Rental, identity, reachable, waiting
 from ..transport import Endpoint
@@ -132,6 +132,29 @@ def card_of(gpu: str) -> str:
     return card(_FORM.sub("", gpu))
 
 
+def fits(
+    row: Mapping,
+    *,
+    gpu_name: str = "",
+    gpus: int = 0,
+    arch: Arch | None = None,
+    spot: bool | None = None,
+    max_usd_hr: float = 0.0,
+) -> bool:
+    """Whether type `row` answers a request: priced, at least `gpus` cards, the card or
+    architecture asked, spot as asked (None for either), and under the hourly ceiling (0 none).
+    """
+    held = card_of(row["gpu"])
+    return (
+        row["usd_hr"] is not None
+        and row["gpus"] >= gpus
+        and (not gpu_name or held == card(gpu_name))
+        and (arch is None or arch.holds(capability(held)))
+        and (spot is None or row["spot"] == spot)
+        and (not max_usd_hr or row["usd_hr"] <= max_usd_hr)
+    )
+
+
 def _rented(item: Mapping) -> Rented:
     """One listed instance row as the rental it is."""
     metadata = item.get("instanceMetadata") or {}
@@ -224,19 +247,20 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Market, Rentable):
             }
         span = arch(resources.arch) if resources.arch else None
         cap = hourly_cap(resources, landing=LANDING_SECONDS)
-        wanted = card(resources.gpu_name) if resources.gpu_name else ""
-        gpu = bool(resources.gpus or wanted or span)
+        gpu = bool(resources.gpus or resources.gpu_name or span)
         fitting = [
             row
             for row in self.types()
             if row["in_stock"]
-            and row["usd_hr"] is not None
             and bool(row["gpu"]) == gpu
-            and row["gpus"] >= resources.gpus
-            and row["spot"] == spot
-            and (not wanted or card_of(row["gpu"]) == wanted)
-            and (span is None or span.holds(capability(card_of(row["gpu"]))))
-            and (not cap or row["usd_hr"] <= cap)
+            and fits(
+                row,
+                gpu_name=resources.gpu_name,
+                gpus=resources.gpus,
+                arch=span,
+                spot=spot,
+                max_usd_hr=cap,
+            )
         ]
         if not fitting:
             asked = (
