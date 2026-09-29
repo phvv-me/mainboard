@@ -20,7 +20,7 @@ from .center.standalone import Standalone
 from .center.verify import Verification
 from .ci import LocalLeg, Matrix, Package
 from .context.resolver import Resolver
-from .core.errors import MissionError
+from .core.errors import MissionError, NoWorkspace
 from .core.project import Project
 from .core.section import Section, Verdict, failed
 from .delimiter import Delimiter
@@ -484,16 +484,15 @@ def build(root: Path | None = None) -> App:
         env: the environment name.
         """
         root = workspace_root()
+        pixi = Provisioner(root, load(project.manifest(root))).pixi_for(env)
+        script = root / Project().activation(env, root)
+        if not pixi.ready(env) or (sys.platform != "win32" and not script.is_file()):
+            raise MissionError(
+                f"environment {env!r} is not installed here; run `{project.name} install {env}`"
+            )
         if sys.platform == "win32":
-            manifest = load(project.manifest(root))
-            pixi = Provisioner(root, manifest).pixi_for(env)
             print(pixi.shell_hook(env, shell="powershell"))
             return
-        script = root / Project().activation(env, root)
-        if not script.is_file():
-            raise MissionError(
-                f"environment {env!r} has no activation here; run `{project.name} install {env}`"
-            )
         print(f". {shlex.quote(script.as_posix())}")
 
     @app.command(version_flags=[])
@@ -2160,6 +2159,6 @@ def main() -> None:
     app = build()
     try:
         app(Delimiter(app).placed(sys.argv[1:]))
-    except MissionError as error:
+    except (MissionError, NoWorkspace) as error:
         print(error, file=sys.stderr)
         raise SystemExit(1) from None

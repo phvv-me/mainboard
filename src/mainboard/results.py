@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import duckdb
 
+from .core.errors import MissionError
 from .dispatch import vocabulary
 from .observe.files import FrameFile
 from .state.lake import ALIAS, Lake, ndjson
@@ -103,11 +104,14 @@ class Results:
             if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
                 raise ValueError("results queries must be one SELECT statement")
             self._views(connection, project, sql)
-            lake = Lake.at(self.root)
-            if f"{ALIAS}." in sql.lower() and lake.exists():
-                # Everything the workspace recorded, read-only beside the collected results.
-                lake.attach(connection)
-            yield connection, sql
+            if f"{ALIAS}." in sql.lower():
+                # Everything the workspace recorded, read-only beside the collected results; a
+                # workspace that recorded nothing yet gets its empty lake, not a missing schema.
+                Lake.at(self.root).ready().attach(connection)
+            try:
+                yield connection, sql
+            except duckdb.Error as fault:
+                raise MissionError(str(fault).strip()) from None
 
     def table(
         self, schema: str, *, project: str = "", runs: Collection[str] | None = None

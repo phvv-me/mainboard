@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
-from .errors import MissionError
+from .errors import MissionError, NoWorkspace
 from .membership import Membership
 
 if TYPE_CHECKING:
@@ -215,7 +215,7 @@ class Project(FrozenModel):
         for directory in (start, *start.parents):
             if self._declared(directory):
                 return directory
-        raise FileNotFoundError(
+        raise NoWorkspace(
             f"no {' or '.join(self.manifests)} found from {start} upward; run inside a workspace"
         )
 

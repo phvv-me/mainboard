@@ -603,6 +603,11 @@ class Board:
                 "this machine."
             )
         plan = self.plan(env=env, container="none")
+        if route(plan.profile.kind) == "ssh-family":
+            try:
+                self.dispatcher.cache.host(self.host)
+            except LookupError as unset:
+                raise MissionError(str(unset).strip("'\"")) from None
         if route(plan.profile.kind) != "ssh-family":
             raise MissionError(
                 f"host {self.host!r} rents instances through {plan.profile.kind!r} and hands "

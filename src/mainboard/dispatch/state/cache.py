@@ -164,12 +164,12 @@ class Cache:
         """`alias`'s recorded onboarding, raising when the host was never set up."""
         rows = self._rows(f"SELECT facts FROM {ALIAS}.hosts WHERE alias = ?", (alias,))
         if not rows:
-            raise LookupError(f"host {alias!r} has never been set up; run `setup {alias}`")
+            raise LookupError(f"host {alias!r} has never been set up; run `mb host setup {alias}`")
         try:
             return HostSetup.model_validate_json(rows[0][0])
         except ValidationError:
             raise LookupError(
-                f"host {alias!r} was set up by an older mainboard; run `setup {alias}`"
+                f"host {alias!r} was set up by an older release; run `mb host setup {alias}`"
             ) from None
 
     def hosts(self) -> list[HostSetup]:

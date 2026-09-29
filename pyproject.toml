@@ -639,8 +639,10 @@ project-includes = ["src/**/*.py"]
 python-version = "3.14"
 
 [tool.pytest.ini_options]
-addopts = "-q -ra --strict-markers --cov=mainboard --cov-branch --import-mode=importlib"
-testpaths = ["tests"]
+# `integration/` runs the real `mb` in throwaway workspaces and is what a bare `pytest` runs.
+# The older unit suite under `tests/` still runs with `pytest tests --cov=mainboard`.
+addopts = "-q -ra --strict-markers --import-mode=importlib"
+testpaths = ["integration"]
 strict_config = true
 strict_parametrization_ids = true
 strict_xfail = true
