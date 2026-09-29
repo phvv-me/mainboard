@@ -369,6 +369,22 @@ class Lake(FrozenModel):
                 raise
         return self
 
+    def current(self) -> Lake:
+        """This lake, ready and at this release's schema, for a reader that attaches read-only.
+
+        Only a write session evolves a lake, so a query right after an upgrade would otherwise
+        read the views an older release left (a `lake.runs` without its `project` column).
+        """
+        self.ready()
+        if self.served:
+            return self
+        with self.open() as connection:
+            if _version(connection) >= VERSION:
+                return self
+        with self.open(write=True) as connection:
+            self.evolve(connection)
+        return self
+
     @contextmanager
     def open(self, *, write: bool = False) -> Generator[duckdb.DuckDBPyConnection]:
         """A fresh connection with the lake attached as `lake`, detached and closed after.

@@ -243,7 +243,9 @@ class _Exchange:
             return
         for line in stdout:
             self.touch()
-            self.records.append(json.loads(line))
+            # A blank line is the agent's pulse while it works: movement, not a record.
+            if line.strip():
+                self.records.append(json.loads(line))
 
     def __listen(self) -> None:
         """Keep the tail of the agent's stderr."""

@@ -107,7 +107,7 @@ class Results:
             if f"{ALIAS}." in sql.lower():
                 # Everything the workspace recorded, read-only beside the collected results; a
                 # workspace that recorded nothing yet gets its empty lake, not a missing schema.
-                Lake.at(self.root).ready().attach(connection)
+                Lake.at(self.root).current().attach(connection)
             try:
                 yield connection, sql
             except duckdb.Error as fault:

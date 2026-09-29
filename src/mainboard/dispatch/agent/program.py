@@ -19,6 +19,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import threading
 from contextlib import contextmanager
 from typing import IO, TYPE_CHECKING, TypedDict
 
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
 
 # How much of a file is read or copied at a time, so no file ever has to fit in memory.
 CHUNK = 1 << 20
+
+# How often a working request tells the center it is alive, well inside its patience.
+PULSE_SECONDS = 10.0
 
 # The tool's names, primary first, and the legacy one every release has named its files by.
 # Spelled here because this module imports nothing beyond the standard library; `core.project`
@@ -588,14 +592,30 @@ def locked(path: str) -> Iterator[None]:
 
 
 class Emitter:
-    """Answer records to the center, one JSON line each, flushed so a quiet link means a stall."""
+    """Answer records to the center, one JSON line each, flushed so a quiet link means a stall.
+
+    While a request works, a blank line goes out every `PULSE_SECONDS`: pinning a whole mirror
+    image can take minutes without a record to send, and the center read the silent link as a
+    dead host (gold, 2026-09-29). The center counts the line as movement and keeps no record.
+    """
 
     def __init__(self, stdout: IO[bytes]) -> None:
         self.stdout = stdout
+        self.lock = threading.Lock()
+        self.done = threading.Event()
 
     def __call__(self, record: Json) -> None:
-        self.stdout.write(json.dumps(record, separators=(",", ":")).encode("utf-8") + b"\n")
-        self.stdout.flush()
+        line = json.dumps(record, separators=(",", ":")).encode("utf-8") + b"\n"
+        with self.lock:
+            self.stdout.write(line)
+            self.stdout.flush()
+
+    def pulse(self) -> None:
+        """Write the blank line every `PULSE_SECONDS` until the request is done."""
+        while not self.done.wait(PULSE_SECONDS):
+            with self.lock:
+                self.stdout.write(b"\n")
+                self.stdout.flush()
 
 
 def survey(spec: SurveySpec, emit: Emitter) -> None:
@@ -1023,6 +1043,7 @@ def run(stdin: IO[bytes], stdout: IO[bytes], stderr: IO[str]) -> int:
     """
     request: Request = json.loads(stdin.readline())
     emit = Emitter(stdout)
+    threading.Thread(target=emit.pulse, daemon=True).start()
     try:
         if "survey" in request:
             survey(request["survey"], emit)
@@ -1034,6 +1055,8 @@ def run(stdin: IO[bytes], stdout: IO[bytes], stderr: IO[str]) -> int:
         stderr.write(f"mainboard: {refusal}\n")
         stderr.flush()
         return 3
+    finally:
+        emit.done.set()
     return 0
 
 
