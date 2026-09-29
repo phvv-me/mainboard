@@ -788,14 +788,19 @@ def build(root: Path | None = None) -> App:
         """Solve the manifest into the committed lock, then install what it pinned here.
 
         `install` never solves: it installs exactly the lock, so a host installs what this
-        machine solved. This is the one verb that moves the lock.
+        machine solved. This is the one verb that moves the lock. With no environment named,
+        every declared one is solved, as `pixi lock` does: a shared input (a workspace
+        package's pyproject.toml) moves them all at once, and a lock left behind fails on the
+        host that installs it.
 
         Args:
-            env: the environment name, this machine's declared profile choice when omitted.
+            env: the environment to solve, every declared one when omitted.
             profile: the declared host profile describing this machine.
         """
-        with progress(f"solving {env or 'the environment'}") as stage:
-            board("local").install(env, resolve=True, profile=profile, watch=stage)
+        names = [env] if env else ["default", *load(project.manifest(workspace_root())).envs]
+        for name in names:
+            with progress(f"solving {name}") as stage:
+                board("local").install(name, resolve=True, profile=profile, watch=stage)
 
     @self_.command
     def update() -> None:

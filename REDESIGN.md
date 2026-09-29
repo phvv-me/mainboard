@@ -611,3 +611,27 @@ Blackwell when that is wanted; if it earns its place, retire `backends/vast.py` 
   conda's sqlalchemy against the workspace fork. Composition should let the root win across
   ecosystems, not only per table; until then reproducibility stays a path dependency.
 - mainboard asks `cyclopts>=4.23` again: aizk caps it below 5, and mb passes on both.
+
+### Experiments on several machines, in the lean environments (6.12)
+
+On crimson (x86-64, RTX 3090) and gold (aarch64, GB10), each set up minimal:
+
+| | cutok (`[envs.cutok]`) | reproducibility (`[envs.repro]`) |
+|---|---|---|
+| collection, first try | 9 tests, 36 errors (no numba, cuda.core) | refused: nothing provisioned; then no mainboard |
+| collection now | 1,036 tests, 0 errors, both hosts | 2,942 tests, 28 errors, both hosts: 24 experiments refuse collection without their registered policy plugin (their tasks pass it), 1 imports compression's package, 3 inside test files |
+| a real run | `pbt_parity`: 89 tests start, each refuses the card ("registered for GH200 or RTX 4090"), the protocol working | `registration_protocol`: 5 pass, 3 need a git checkout, which a mirror host has none of |
+
+What running them found and fixed in mb, each a class of bug:
+- `mainboard.dispatch.shared.git` (removed 2026-09-25) and `schedulers.JobState` were still imported
+  by ten experiments: restored, and `test_consumers.py` now imports every name the workspace takes
+  from mainboard (96).
+- `mb.lock` reached a pinned tree only as a link back to the mirror, which an experiment's source
+  seal refuses: the lock now ships wherever the manifest does (`Sync.shipped`).
+- A trial opening a lake in its pinned tree was refused for `dispatch/digests.json`, the host
+  agent's live memory, mistaken for pre-lake state.
+- A 25 MB source file broke the seal's append (DuckDB's 16 MB JSON object default).
+- A lean environment installed workspace packages it reached transitively as frozen copies, so
+  mb's fixes never reached the job: an environment names the workspace packages it imports.
+- z3-solver has no aarch64 wheel: taken from conda-forge (the standing rule for compiled deps).
+- A `| tail` in a job command hides the exit; `bash -o pipefail` in every such check.
