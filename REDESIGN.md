@@ -715,3 +715,46 @@ freed 37, 35 and 88 GB. Kept, since nothing else holds them:
   crimson's `data/` (2.3 GB).
 gold's pueue daemon ran from that old checkout's environment; `host sync` now checks the queue
 and starts it, as setup did.
+
+### Clouds inside mb, no server (6.16)
+
+What SkyPilot and dstack keep, and what mb takes from each:
+- SkyPilot: a provisioner per cloud of seven functions (run, wait, query, stop, terminate
+  instances; cluster info; ports), 600-800 lines each, called from its API server. Worth taking:
+  the thin lifecycle and how each cloud is started (RunPod's start command installing sshd, Lambda
+  keys registered by name). Not worth taking: the server, its database, the controller.
+- dstack: a `Compute` base (get offers, create instance, terminate, update provisioning data) plus
+  capability mixins (`ComputeWithCreateInstanceSupport`, volumes, multinode, gateways), also
+  behind a server; its offers come from gpuhunt, a standalone library. mb already had the same
+  shape (`ProviderBackend` plus `Account`, `Inventory`, `Market`, `Rentable`, `LogSource`,
+  `Delivery`), so the missing pieces were a catalog across clouds and a template for new ones.
+
+Built:
+- `dispatch/backends/cloud.py`: `CloudBackend`, the template. A cloud names its gpuhunt catalog
+  and key variables and implements `create`, `machine`, `machines`, `terminate`; renting (cheapest
+  on-demand offer under the budget, a priced lease before each create, the next offer on a
+  capacity refusal, waiting for an address and for ssh, ending a machine that never answers),
+  reaching, cancelling and listing are shared. One-shot `job submit` to a cloud is refused in
+  favour of `host hold`, which sets a machine up once.
+- RunPod (`runpod.py`, REST v1: a plain Ubuntu pod whose start command installs sshd and
+  authorizes the key) and Lambda (`lambdacloud.py`: the key registered under a name derived from
+  it, a VM reached as `ubuntu`), about 100 lines each, tested against recorded API answers
+  (`test_clouds.py`); a live rent waits for the owner's key.
+- `mb host offers <card>`: every cloud's offers through gpuhunt, cheapest first, marked with the
+  provider `host hold` rents them through and whether its key is here. gpuhunt joins mb's
+  dependencies (it brings only `requests`).
+
+Which clouds, measured 2026-09-29 (single card, $/h, cheapest):
+
+| cloud | 4090 | 5090 | H100 | B200 | API | in mb |
+|---|---|---|---|---|---|---|
+| Vast | 0.31 | 0.41 | 0.99 | 7.75 | REST, containers | yes (per job and held) |
+| RunPod | 0.34 | 0.99 | - | 6.79 | REST, containers | built, needs a key |
+| Lambda | - | - | 2.49-3.29 | 6.99 | REST, VMs | built, needs a key |
+| Verda (DataCrunch) | - | - | 1.78 | 3.43 spot / 6.85 | REST, VMs | next: cheapest B200 |
+| Nebius | - | - | 2.15 | 3.95 spot | gRPC SDK | later |
+| AWS, GCP | - | - | 1.09-1.26 spot | - | SDKs, quotas, IAM | later, for Blackwell capacity blocks |
+
+Next on this base, in order: Verda (the cheapest B200); stopping instead of ending where a cloud
+keeps the disk (RunPod pods), and persistent volumes (RunPod network volumes, Lambda filesystems)
+so a machine stays set up across rentals; spot machines resumed by `--resume` on preemption.

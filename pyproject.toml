@@ -49,6 +49,9 @@ dependencies = [
     "pyyaml>=6.0",
     # The one logger (`mainboard.log`), loguru's call shape with structured fields.
     "structlog>=26.1",
+    # Every cloud's GPU offers in one catalog (dstack's, MPL-2.0): `mb host offers` and what
+    # `host hold` rents on RunPod and Lambda.
+    "gpuhunt>=0.1.30",
 ]
 
 [project.optional-dependencies]

@@ -1087,6 +1087,63 @@ def build(root: Path | None = None) -> App:
         _held(held, output, title="hold")
 
     @host.command
+    def offers(
+        gpu: str = "",
+        *,
+        count: int = 1,
+        max_usd_hr: float = 0.0,
+        spot: bool = False,
+        on_demand: bool = False,
+        provider: tuple[str, ...] = (),
+        limit: int = 25,
+        output: Output = _COMPACT,
+    ) -> None:
+        """Every cloud's GPU offers, cheapest first, and whether this tool can rent each here.
+
+        Read from gpuhunt, the open catalog dstack publishes: public price lists and live
+        marketplaces (AWS, GCP, Azure, Lambda, RunPod, Vast, Verda, Nebius and more), most
+        readable without an account. `rent` names the `host hold` provider for a cloud mb can
+        rent on, with `keyed` when its API key is present here.
+
+        Args:
+            gpu: the card, as any catalog spells it (`B200`, `RTX 4090`, `H100`).
+            count: cards per machine.
+            max_usd_hr: the most an hour may cost, 0 for any.
+            spot: only interruptible offers.
+            on_demand: only on-demand offers.
+            provider: only these catalogs (`vastai`, `runpod`, `lambdalabs`, `aws`...).
+            limit: how many rows, cheapest first.
+        """
+        from .dispatch.backends.cloud import hunt, keyed  # noqa: PLC0415  (catalogs load on use)
+
+        rentable = {"vastai": "vast", "runpod": "runpod", "lambdalabs": "lambda"}
+        with progress(f"asking every cloud for {count}x {gpu or 'GPU'}"):
+            found = hunt(
+                providers=provider,
+                gpu_name=gpu,
+                gpus=count,
+                max_usd_hr=max_usd_hr,
+                spot=True if spot else False if on_demand else None,
+            )
+        present = {kind: keyed(kind) for kind in rentable.values()}
+        output.print_rows(
+            [
+                {
+                    "provider": item.provider,
+                    "gpu": item.gpu_name,
+                    "count": item.gpu_count,
+                    "usd_hr": round(item.price, 4),
+                    "spot": bool(item.spot),
+                    "region": item.location,
+                    "instance": item.instance_name,
+                    "rent": _rentable_as(rentable.get(item.provider, ""), present),
+                }
+                for item in found[:limit]
+            ],
+            title="offers",
+        )
+
+    @host.command
     def release(alias: str, *, output: Output = _COMPACT) -> None:
         """End a held machine now: stop its billing, settle its record and drop its alias.
 
@@ -2052,6 +2109,11 @@ def _onboarded(workspace: Board, report: HostSetup, output: Output, *, title: st
         return
     output.print_record(report.model_dump(), title=title)
     _judged(findings, mode=output.mode, title=f"findings: {report.host}")
+
+
+def _rentable_as(kind: str, present: Mapping[str, bool]) -> str:
+    """The `host hold` provider an offer rents through, `keyed` when its key is here."""
+    return f"{kind} keyed" if kind and present.get(kind) else kind
 
 
 def _heading(output: Output, title: str) -> None:
