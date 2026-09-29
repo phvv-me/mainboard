@@ -249,3 +249,27 @@ Shell and startup
    and a win-64 bun; then the dotfiles' local channel disappears.
 8. Owner decisions still open: delete the migrated legacy files in D:\projects\.mainboard;
    push; set up macmini, pedro-home, purple; `mb host unlock miyabi-g`.
+
+## Round 4 (2026-09-29): one experience everywhere, and a deadline week
+
+Worked in this order, each checked off as it lands:
+- [x] 4.1 qmd gone wherever it was used (skills, vault conventions, atpx roadmap, chefe docs and
+      tests, the QMD_ variables); history (changelogs, archives, aizk's prior-art page) kept
+- [x] 4.2 (dotfiles `9f0e6d8`) Toolbox: herdr (Apache-2.0, conda-forge on all four platforms, native Windows,
+      persistent ssh per machine) as the one multiplexer; pwsh 7 everywhere; the Windows tmux
+      and libevent recipes retired; the two toolbox scripts become one Python script
+- [x] 4.3 (`3399b2e`, dotfiles `15c53a3`) (1) One owner for shell startup: mb writes only its PATH file, the dotfiles source it
+- [x] 4.4 (`dfcf169`) Every host gets the dotfiles (same commands, lvim) from `mb host setup`; `mb shell
+      --on <host> --keep` stays tmux (it must wrap a queued allocation); herdr, saved per host
+      by setup, is the everyday multi-machine window. Needs the dotfiles pushed and
+      `[workspace] dotfiles = "Pedrexus/dotfiles"`
+- [x] 4.5 (`624464b`) `mb host audit` (what could and should be updated, read-only) and `mb host upgrade`
+      (apt update/full-upgrade/autoremove, brew, winget, pixi, uv, chezmoi, mb)
+- [x] 4.6 (4) `tests/` retired: 329 files, 55,227 lines, three dev dependencies
+- [ ] 4.7 (6) Platform branches routed through `core.host`
+- [ ] 4.8 (5) The research layer off the CLI's import path, its dependencies in an extra
+- [ ] 4.9 (3) The rename finished on the center and the hosts
+- [ ] 4.10 (2) Jobs write the center's lake live over Quack
+- [ ] 4.11 (7) conda-forge submissions prepared (m2-zsh; bun's win-64): submitting needs the owner
+- [ ] 4.12 Shell and PowerShell scripts replaced by Python wherever that is shorter
+- [ ] 4.13 The deadline stress case: several projects, many jobs, telling them apart
