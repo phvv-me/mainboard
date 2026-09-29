@@ -156,6 +156,32 @@ than out of memory. The topics and payloads are written down in one place,
 `batch/receipts.py`, so the file transport can become a broker without anything
 downstream noticing.
 
+## Resuming a run that failed
+
+Every job gets `MB_CHECKPOINT`, a directory on its host that outlives the run (one per run
+name, beside the mirror), and `MB_ATTEMPT`. Save there, and a failed or cancelled run continues:
+
+```console
+$ mb job submit --on gold --name sweep-7 -- python train.py   # saves to $MB_CHECKPOINT
+$ mb job submit --resume sweep-7          # same command, name and host; attempt 2; today's code
+$ mb query "SELECT handle, verdict FROM lake.runs WHERE name = 'sweep-7'"
+```
+
+## Shipping an environment instead of installing it
+
+A lean environment per experiment (`[envs.<name>]` with `no-default = true`) is what makes a
+fresh machine fast: 5.7 GB for Python, CUDA torch and cutok against `default`'s 18 GB, installed
+cold from the lock in under a minute on a well-connected host. Where a machine should not install
+at all (offline, billed by the minute, booted from an image), build the environment into files
+on a Linux host, named by the environment's digest:
+
+```console
+$ mb pack gpu --on crimson                  # a self-extracting executable (pixi-pack)
+$ mb pack gpu --on crimson --image          # plus an OCI image: slim Debian + the environment
+$ mb pack gpu --on pedro-cvlab --sif        # plus an Apptainer file for HPC
+$ mb pack gpu --on crimson --push ghcr.io/<owner>/mb-gpu   # and to a registry
+```
+
 ## Holding a rented machine
 
 A rental per job rebuilds the environment every time. A held machine is rented,

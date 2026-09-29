@@ -148,6 +148,8 @@ _BOX_DRAWING = re.compile(r"[─-▟]+")
 _SIGNAL_EXITS = {
     124: "timed out (walltime exceeded)",
     125: "timeout failed to start the job",
+    126: "the command is not executable (exit 126)",
+    127: "command not found (exit 127)",
     137: "killed by SIGKILL (out of memory or walltime, exit 137)",
     139: "crashed with SIGSEGV (segfault, exit 139)",
     143: "terminated by SIGTERM (walltime or cancel, exit 143)",
@@ -193,11 +195,13 @@ def failure_reason(log: str, exit_code: int | None = None) -> str:
 
 
 def meaningful_lines(log: str) -> list[str]:
-    """The log's content lines: ANSI codes and rich panel borders stripped, blanks dropped."""
+    """The log's content lines: ANSI codes and rich panel borders stripped, blanks dropped, and
+    OpenSSH's own `** ` warnings left out (its post-quantum notice rides every connection's
+    stderr and was named as the reason a remote command failed)."""
     stripped = (
         _BOX_DRAWING.sub(" ", _ANSI_CODES.sub("", raw)).strip() for raw in log.splitlines()
     )
-    return [line for line in stripped if line]
+    return [line for line in stripped if line and not line.startswith("** ")]
 
 
 def log_excerpt(log: str, limit: int = 10) -> list[str]:

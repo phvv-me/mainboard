@@ -12,10 +12,11 @@
 import hashlib
 import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=git argv built from typed fields, not untrusted input since=2026-09-25
+from concurrent.futures import ThreadPoolExecutor
 from fnmatch import fnmatchcase
 from functools import cached_property
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import pathspec
 from filelock import FileLock
@@ -89,6 +90,10 @@ def denied(excluded: Sequence[str] = (), *, paths: Sequence[str] = ()) -> Rules:
     return patterns([*ALWAYS_EXCLUDE, *excluded, *CARD_LEASES], paths=paths)
 
 
+# How many repositories are listed at once.
+_GIT_WORKERS = 8
+
+
 class Listing(FrozenModel):
     """What version control says a tree holds.
 
@@ -146,6 +151,10 @@ class GitignoreFilter:
 
     root: the repo whose ignore files decide, the current working directory by default.
     """
+
+    # Every listing this process asked git for, shared by the dispatch's and the provenance's
+    # filters over one workspace (see `__listed`).
+    _listings: ClassVar[dict[tuple[str, str, tuple[str, ...], tuple[str, ...]], list[str]]] = {}
 
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or Path.cwd()
@@ -212,15 +221,23 @@ class GitignoreFilter:
             return None
         found: list[str] = []
         kept: list[str] = []
-        pending = [""]
-        while pending:
-            repository = pending.pop()
-            specs = _within(repository, roots)
-            if specs is not None and not (deny and deny.matches(repository, directory=True)):
-                files, ignored, nested = self.__repository(repository, specs)
-                found += files
-                kept += ignored
-                pending += nested
+        level = [""]
+        # One nesting level at a time, its repositories asked at once: each is a few git starts,
+        # ~0.2 s apiece on Windows, and a workspace of seventy submodules paid them in series.
+        with ThreadPoolExecutor(max_workers=_GIT_WORKERS) as pool:
+            while level:
+                asked = [
+                    (repository, specs)
+                    for repository in level
+                    if (specs := _within(repository, roots)) is not None
+                    and not (deny and deny.matches(repository, directory=True))
+                ]
+                answers = pool.map(lambda pair: self.__repository(*pair), asked)
+                level = []
+                for files, ignored, nested in answers:
+                    found += files
+                    kept += ignored
+                    level += nested
         return Listing(files=_under(found, roots), kept=_under(kept, roots))
 
     def __repository(
@@ -297,10 +314,22 @@ class GitignoreFilter:
     def __listed(
         self, repository: str, options: Sequence[str], specs: Sequence[str] = ()
     ) -> list[str]:
-        """`git ls-files` in `repository` under `specs`, one entry per NUL-separated record."""
+        """`git ls-files` in `repository` under `specs`, one entry per NUL-separated record.
+
+        Remembered for this command's life: one dispatch computes its scope a dozen times over
+        some eighty repositories, and a git start costs ~0.4 s on Windows, which made a submit
+        spend 75 s listing files (2026-09-29). The index listing (`--stage`) is left to
+        `__indexed`, which checks the index's stamp.
+        """
+        key = (str(self.root), repository, tuple(options), tuple(specs))
+        if "--stage" not in options and key in self._listings:
+            return self._listings[key]
         where = str(self.root / repository)
         output = self.__run(["-C", where, "ls-files", "-z", *options, "--", *specs])
-        return [record for record in output.split("\0") if record]
+        listed = [record for record in output.split("\0") if record]
+        if "--stage" not in options:
+            self._listings[key] = listed
+        return listed
 
     def __run(self, arguments: list[str], *, check: bool = True) -> str:
         """One git command's output; a failing one refuses by what git said, unless unchecked."""

@@ -173,6 +173,8 @@ class SshTransport(FrozenModel):
             f"ServerAliveCountMax={self.server_alive_count}",
             "-o",
             f"BatchMode={'yes' if self.batch_mode else 'no'}",
+            "-o",
+            "LogLevel=ERROR",
         )
 
     @property

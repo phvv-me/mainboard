@@ -305,12 +305,12 @@ class Dispatcher:
                 if (self.root / token).is_file() and (self.root / token).is_relative_to(self.root)
             ),
         ]
-        files = [
-            file
-            for path in roots
-            for file in ([path] if (self.root / path).is_file() else tree.kept(path))
-        ]
-        return tree.seal(files)[0]
+        # The directories are listed in one pass: one listing per root re-asked git about every
+        # repository fourteen times a dispatch (36 s on Windows).
+        directories = [path for path in roots if not (self.root / path).is_file()]
+        files = [path for path in roots if (self.root / path).is_file()]
+        files += tree.filter.files(directories) if directories else []
+        return tree.seal(sorted(dict.fromkeys(files)))[0]
 
     def stage_listing(self, shipment: Shipment) -> str:
         """Stage `shipment`'s closure listing under the jobs directory, empty for a command.

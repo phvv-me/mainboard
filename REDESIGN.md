@@ -416,7 +416,25 @@ Owner's asks, worked in order, each checked off as it lands:
       it again as the next attempt with today's code; a name resolves to its newest attempt.
       Checked on gold: 319 failed at step 1, 320 resumed at step 2, settled ok. Open: a
       checkpoint on a rented disk dies with the rental (5.15)
-- [ ] 5.14 Wipe mainboard from every host and set it up again, measuring size and time
+- [x] 5.14 Every mainboard directory on gold, pedro-cvlab and crimson moved aside (`*.aside-r5`,
+      nothing deleted: they hold pre-lake registries and batch evidence from when those machines
+      were centers) and each set up again `--minimal --env gpu`. Before: 73-103 GB per host
+      (`~/.mainboard-jobs` 25-41 GB plus an old checkout's `~/projects/.mainboard` 48-62 GB,
+      whose pueue daemons the fleet was still using). After: 6.6 GB (environment 5.6, source
+      mirror 1.0, tool 0.2), in 1m40s-2m01s from nothing (84 s of it the mirror uploaded from
+      this PC), 46 s again. A fresh minimal host runs CUDA jobs (crimson, RTX 3090).
+      Fixed on the way: a lean environment has no pueue, so setup now installs it with pixi
+      global where the host has none; mb's PATH now includes the dotfiles' per-architecture pixi
+      home (`~/.pixi/<arch>/bin`); dangling `~/.local/bin/pueue` links an old release left;
+      OpenSSH's post-quantum warning was reported as the reason a remote command failed (and
+      `LogLevel=ERROR` now rides every connection); exit 127 reads as "command not found".
+      Dispatch latency, profiled: 96 s before a job started, 25 s now. The center asked git
+      about ~70 repositories sixteen times per submit (listings cached per command, the
+      fingerprint's roots listed in one pass, repositories listed in parallel), and one
+      repository's `info/exclude` held 7,558 single paths from the LFS removal, which cost git
+      itself 20 s; rewritten as 255 directories and 515 paths with byte-identical `git
+      ls-files` results (the original kept beside it). The owner deletes the `*.aside-r5`
+      directories once their old registries are imported or declared unneeded
 - [ ] 5.15 Rented GPUs that stay set up (Vast, HPC-AI, AWS Blackwell): images and volumes
 - [ ] 5.16 Monorepo layout proposal
 - [ ] 5.17 Try the researched tools (topgrade, Mutagen, pixi-pack) on the real fleet

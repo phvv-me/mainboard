@@ -488,6 +488,11 @@ class Onboarding:
             "pueue status", activate=True
         ):
             return
+        if not is_windows(self.plan.profile) and not shell.ok("command -v pueued", activate=True):
+            # A host-level tool, never an environment's (a lean one has none): a host without
+            # the dotfiles' toolbox gets it from pixi, which this setup just aligned.
+            self.watch(f"installing pueue on {host}")
+            shell.run("pixi global install pueue")
         if is_windows(self.plan.profile):
             logger.warning(
                 "{} answers no pueue; `submit` cannot queue there until pueue is installed and "

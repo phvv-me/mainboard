@@ -17,8 +17,15 @@ if TYPE_CHECKING:
     from ..context.plan import ExecutionPlan
 
 # Per-user install dirs prepended to PATH first, so an already-installed `mainboard` is found
-# on a fresh host before any env is even activated.
-USER_BINS = ("$HOME/.local/bin", "$HOME/.pixi/bin", "$HOME/.cargo/bin")
+# on a fresh host before any env is even activated. pixi's global tools live in either home: its
+# own `~/.pixi`, or the dotfiles' one per architecture (`~/.pixi/<uname -m>`, so an HPC home
+# shared by x86-64 and aarch64 nodes works), which is where `pixi global install` writes there.
+USER_BINS = (
+    "$HOME/.local/bin",
+    "$HOME/.pixi/$(uname -m)/bin",
+    "$HOME/.pixi/bin",
+    "$HOME/.cargo/bin",
+)
 
 # A connect-time transport blip is the transient fault a wait loop rides out, so it is retried.
 _CONNECT_ATTEMPTS = 4
@@ -150,6 +157,9 @@ def _open(host: str, ssh: SshTransport) -> BoundedSshMachine:
     """One attempt: warm the master, key-check, then build the session."""
     ssh.warm(host)
     remote = ssh.machine(host)
+    arch = remote["uname"]("-m").strip()
     for bindir in reversed(USER_BINS):
-        remote.env.path.insert(0, remote.cwd / bindir.removeprefix("$HOME/"))
+        remote.env.path.insert(
+            0, remote.cwd / bindir.removeprefix("$HOME/").replace("$(uname -m)", arch)
+        )
     return remote
