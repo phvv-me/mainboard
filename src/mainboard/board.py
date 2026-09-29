@@ -1329,7 +1329,7 @@ class Board:
             )
         return Shipment.of_command(
             command,
-            source=self.dispatcher.source(command, paths=plan.profile.sync.include),
+            source=self.dispatcher.source(command, paths=plan.profile.sync.shipped(self.root)),
             imports=self.imports(plan),
         )
 

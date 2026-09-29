@@ -98,11 +98,11 @@ _UNINLINED = ("blobs",)
 _CATALOG_FLOOR_BYTES = 64 << 20
 
 # The files a workspace kept its state in before the lake, which `ready` refuses to bury under a
-# fresh empty lake until `mb lake import` has imported them.
+# fresh empty lake until `mb lake import` has imported them. Not `dispatch/digests.json`: a host's
+# agent still keeps its mirror memory there, and a job's tree on that host must open a lake.
 _LEGACY = (
     "dispatch/db.sqlite",
     "dispatch/holds.json",
-    "dispatch/digests.json",
     "batches",
     "costs",
     "studies",

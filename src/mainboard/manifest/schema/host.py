@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Self
 
 from ...core.base import Declared
@@ -12,6 +13,16 @@ class Sync(Declared):
     include: list[str] = []
     exclude: list[str] = []
     protect: list[str] = []
+
+    def shipped(self, root: Path) -> list[str]:
+        """What a mirror ships from workspace `root`: the include, plus the committed lock
+        wherever the manifest goes, since a host installs nothing without it and a lock reached
+        only through a link back to the mirror reads as source escaping the pinned tree."""
+        project = Project()
+        lock = project.lock(root).name
+        if lock in self.include or not any(name in self.include for name in project.manifests):
+            return list(self.include)
+        return [*self.include, lock] if (root / lock).is_file() else list(self.include)
 
     def merged(self, over: Self) -> Self:
         """This sync scope layered over `over`: a declared include replaces, the rest add.

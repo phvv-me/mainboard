@@ -410,8 +410,9 @@ class Dispatcher:
                 f"nothing to sync to {plan.host!r}; declare [hosts.{plan.host}.sync].include "
                 "(or [hosts.defaults.sync].include) before dispatching"
             )
-        include = [path for path in scope.include if self.local(path).exists()]
-        if stale := [path for path in scope.include if path not in include]:
+        shipped = scope.shipped(self.root)
+        include = [path for path in shipped if self.local(path).exists()]
+        if stale := [path for path in shipped if path not in include]:
             logger.warning(
                 "skipping {} stale sync include path(s) missing locally: {}",
                 len(stale),
@@ -633,7 +634,9 @@ class Dispatcher:
             mem_gb=resources.mem_gb or 0,
         )
         dispatched = shipment or Shipment.of_command(
-            script, source=self.source(script, paths=plan.profile.sync.include), imports=()
+            script,
+            source=self.source(script, paths=plan.profile.sync.shipped(self.root)),
+            imports=(),
         )
         dispatched.admit(self.root)
         prepared, staged = self._prepare_script(script)
