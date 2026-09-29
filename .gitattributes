@@ -1,4 +1,28 @@
-*.py text eol=lf
-*.toml text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
+# Every text file is stored and checked out with LF on every platform, in UTF-8; binaries are named.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.parquet binary
+*.npz binary
+*.npy binary
+*.pt binary
+*.safetensors binary
+*.gz binary
+*.zip binary
+*.tar binary
+*.bundle binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.mp4 binary
+*.mp3 binary
+*.wav binary
+
+# Mirrored third-party sources stay byte for byte.
+**/references/** -text
