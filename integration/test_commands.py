@@ -110,3 +110,9 @@ def test_an_upgrade_dry_run_only_prints_its_steps(mb) -> None:
     ran = mb("host", "upgrade", "--dry-run")
     assert ran.code == 0
     assert ran.out.startswith("$ ") and "self update" in ran.out
+
+
+def test_runs_are_queryable_by_project_without_reading_json(mb) -> None:
+    ran = mb("query", "SELECT project, name, verdict FROM lake.runs", "--json")
+    assert ran.code == 0, ran.said
+    assert json.loads(ran.out) == []

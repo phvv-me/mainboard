@@ -16,7 +16,7 @@ from patos import FrozenModel
 
 # The schema's own version, recorded in `schema_log` by `Lake.create` beside the DuckLake spec
 # and by `Lake.evolve` when an older lake gains what this one added. 2 added `blobs`.
-VERSION = 2
+VERSION = 3
 
 
 class Table(FrozenModel):
@@ -244,7 +244,16 @@ TABLES: tuple[Table, ...] = (
 )
 
 VIEWS: tuple[View, ...] = (
-    View(name="runs", select=_latest("runs_log", "target", "handle", "submitted_at")),
+    # The record's everyday fields as columns, so a query filters by project or verdict without
+    # reaching into its JSON: `SELECT name, verdict FROM lake.runs WHERE project = 'cutok'`.
+    View(
+        name="runs",
+        select=(
+            "SELECT *, record->>'project' AS project, record->>'name' AS name, "
+            "record->>'verdict' AS verdict FROM "
+            f"({_latest('runs_log', 'target', 'handle', 'submitted_at')})"
+        ),
+    ),
     View(name="hosts", select=_latest("host_facts", "alias")),
     View(name="holds", select=_latest("holds_log", "alias")),
     View(
