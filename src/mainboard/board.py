@@ -73,6 +73,7 @@ from .log import logger
 from .manifest.loading import load
 from .monitor import Monitor
 from .nodes import evidence_of
+from .pack import Packed, pack
 from .probe.occupancy import Occupancy
 from .probe.snapshot import HostFacts
 from .runtime.activation import Runtime
@@ -481,6 +482,21 @@ class Board:
             raise MissionError(f"{self.host} answered no audit: {said.strip()[-240:]}")
         return [Section.model_validate(row) for row in json.loads(said[start:])]
 
+    def pack(self, env: str, *, image: bool, sif: bool, push: str) -> Packed:
+        """`env` built into artifacts on this host, by its own tool (`mb pack`), where the
+        package mirrors are close; nothing crosses from this machine but the request."""
+        if self.local:
+            return pack(self.root, env, image=image, sif=sif, push=push)
+        flags = [*(["--image"] if image else []), *(["--sif"] if sif else [])]
+        flags += ["--push", push] if push else []
+        line = shlex.join([self.project.name, "pack", env, *flags, "--json"])
+        with open_shell(self.plan(container="none"), self.remote_root()) as shell:
+            said = shell.run(line, activate=True)
+        answer = next((row for row in reversed(said.splitlines()) if row.startswith("{")), "")
+        if not answer:
+            raise MissionError(f"{self.host} answered no pack: {said.strip()[-240:]}")
+        return Packed.model_validate_json(answer)
+
     def findings(self, system: System) -> list[Section]:
         """What this host's software census means for this workspace, one judged row each.
 
@@ -575,7 +591,7 @@ class Board:
                 digest=compiler.digest(),
                 floor=self.floor,
                 dotfiles=""
-                if minimal or not plan.profile.dotfiles
+                if minimal or not plan.profile.dotfiles or (sync_only and self._minimal())
                 else self.manifest.workspace.dotfiles,
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
@@ -794,6 +810,13 @@ class Board:
         stream: the receipts stream, a batch id, a study id, or one run's own name.
         """
         return Journal(self.dispatcher.cache.session, stream)
+
+    def _minimal(self) -> bool:
+        """Whether this host was set up `--minimal`, which a sync keeps; False if never set up."""
+        try:
+            return self.dispatcher.cache.host(self.host).minimal
+        except LookupError:
+            return False
 
     def remote_root(self) -> str:
         """The workspace root on the bound host, refusing one its setup never placed."""

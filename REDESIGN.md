@@ -411,7 +411,11 @@ Owner's asks, worked in order, each checked off as it lands:
       --env gpu` took 3m05s (warm caches). Fixed on the way: a `no-default` environment lost the
       member pins, so cutoken's `mainboard` came from PyPI (0.4.8, months old) and shadowed the
       tool on PATH; members are now pinned (without `default`'s extras) in every such env
-- [ ] 5.13 Resume a failed job from its last checkpoint, recorded in the lake
+- [x] 5.13 (`ed8c6b6`) Every job exports `MB_CHECKPOINT` (one directory per run name under the
+      mirror, outliving pinned trees) and `MB_ATTEMPT`; `job submit --resume <handle|name>` runs
+      it again as the next attempt with today's code; a name resolves to its newest attempt.
+      Checked on gold: 319 failed at step 1, 320 resumed at step 2, settled ok. Open: a
+      checkpoint on a rented disk dies with the rental (5.15)
 - [ ] 5.14 Wipe mainboard from every host and set it up again, measuring size and time
 - [ ] 5.15 Rented GPUs that stay set up (Vast, HPC-AI, AWS Blackwell): images and volumes
 - [ ] 5.16 Monorepo layout proposal
@@ -460,3 +464,49 @@ member of the family is caught by a test or a stage line rather than found on a 
 | cost that only shows at scale | a 7,662-way regex per path per depth; linear scans of every run; catalog inlining | every multi-stage verb prints each stage with its elapsed seconds and a total, so the slow stage is named in every log |
 | text that differs by platform | CRLF from Windows writes, cp1252 decoding, heredoc backslashes | `test_source_rules.py`: every text write names its newline (26 fixed); `PLW1514` already requires an encoding |
 | an action that "succeeded" | a pipe hid pytest's exit; setup kept an old tool | verify the outcome, not the exit: setup reads the host back through its new activation (it caught the old tool today) |
+
+### Rented GPUs that stay set up (5.15, proposal)
+
+Today a rental is set up from nothing each time (pixi, the tool, the environment) and its disk,
+checkpoints included, dies with it. In order of payoff:
+1. Boot from the environment's image: `mb pack <env> --on <linux host> --image --push
+   ghcr.io/<owner>/mb-<env>` once per lock; `host hold` passes that image to Vast (and any
+   provider that boots from an image) and skips provisioning, so a rental ships only code. The
+   provider caches the layers, so a second rental of the same lock starts in seconds. Needs the
+   owner's registry login on the building host (`gh auth token | docker login ghcr.io -u
+   <user> --password-stdin`); a private package needs the provider's registry credentials too.
+2. Checkpoints off the node: a rental's `MB_CHECKPOINT` synced to object storage (R2 or S3,
+   rclone) every few minutes and restored by `--resume` on whatever machine takes the next
+   attempt, so a preempted or released rental loses minutes, not the run.
+3. One provisioning layer for clouds: SkyPilot (Apache-2.0) launches the same image on AWS,
+   GCP, Lambda, RunPod, Vast and Kubernetes with autostop and spot recovery, which is exactly
+   the part of mb that is provider-specific (`backends/vast.py` and `hpcai.py`, 1,076 lines).
+   mb keeps pueue, PBS and ssh hosts, the lake, the receipts and `--resume`. Blackwell to try:
+   RTX 5090 and RTX PRO 6000 (sm_120) on Vast and RunPod by the hour; B200 on Lambda, RunPod and
+   AWS (`p6-b200`, 8 GPUs, capacity blocks).
+Decision needed: adopt (3), or keep mb's own provider backends and do (1) and (2) inside them.
+
+### Monorepo layout (5.16, proposal)
+
+Today's root mixes projects, tool configs and personal folders: `apps/`, `career/`,
+`finances/`, `health/`, `packages/`, `personal/`, `remaster-lab/` (a project at the root),
+`research/` (24 entries: projects, a Lean toolchain's `lakefile.toml`, `common/`, `stubs/`,
+`scripts/`), `scripts/`, `templates/`, `tmp/`, `vault/`, `writing/`, plus `atpx.toml`,
+`pgrls.toml` and `maskfile.md` beside the manifest. Proposed, one kind of thing per top folder:
+
+| folder | holds | from |
+|---|---|---|
+| `packages/` | libraries and tools anyone can install (mainboard, patos, rls, aizk, atpx, mcmr, the sqlalchemy fork, a new `research-common` from `research/common` and `research/stubs`) | as today |
+| `research/<project>/` | one member per project, each with its own `pyproject.toml`, `mb.toml` (its tasks and its lean experiment environment, `[envs.<project>]`), papers and experiments | the projects under `research/`, `remaster-lab/`, the root's per-project tasks |
+| `research/math/` | the Lean project with its `lakefile.toml`, `lean-toolchain`, `lake-manifest.json` | `research/`'s root |
+| `apps/` | end-user apps | as today |
+| `life/` | career, finances, health, writing, vault | five root folders |
+| `personal/` | dotfiles and profile repos | as today |
+
+The root keeps `mb.toml`, `mb.lock`, `AGENTS.md`, `README.md`, `.gitignore`, `.gitattributes`;
+tool configs move beside what they configure (`atpx.toml` to `research/math`, `pgrls.toml` to
+`packages/aizk`, `maskfile.md` to the project it serves). The root manifest then only composes
+members, and each project's lean environment lives with the project. Cost: paths in datasets,
+receipts and host mirrors (3,585 dataset files record old paths), every host re-mirrored.
+Recommendation: move projects one at a time, each with its own environment, after the cutok
+deadline; `life/` and the root configs any time.

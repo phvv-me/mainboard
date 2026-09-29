@@ -90,6 +90,7 @@ class HostSetup(FrozenModel):
         the onboarding that first mirrored it.
     digest: the manifest digest this host was last provisioned from, empty for a host onboarded
         before this field existed; `doctor` compares it with the manifest to spot drift.
+    minimal: set up with `--minimal` (no dotfiles), which every later sync keeps.
     """
 
     host: str
@@ -105,6 +106,7 @@ class HostSetup(FrozenModel):
     onboarded_at: str = ""
     synced_at: str = ""
     digest: str = ""
+    minimal: bool = False
 
     @property
     def mirrored_at(self) -> str:
@@ -602,6 +604,7 @@ class Onboarding:
                 capabilities=capabilities,
                 hardware=hardware,
                 digest=self.digest,
+                minimal=not self.dotfiles,
             )
         recorded = self.dispatcher.cache.save_host(setup)
         logger.info("onboarded {} at {} through {}", host, root, recorded.installer)

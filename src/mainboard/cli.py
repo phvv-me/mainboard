@@ -877,6 +877,37 @@ def build(root: Path | None = None) -> App:
                 raise MissionError(f"{host} still refuses a silent login (exit {status})")
             print(f"{host}: reachable without a prompt")
 
+    @app.command(name="pack")
+    def pack_(
+        env: str = "default",
+        *,
+        on: str = "local",
+        image: bool = False,
+        sif: bool = False,
+        push: str = "",
+        output: Output = _COMPACT,
+    ) -> None:
+        """Build an environment into files a machine runs without installing anything.
+
+        Always a self-extracting executable (pixi-pack: `./file` unpacks `env/` and
+        `activate.sh`, no pixi or network needed); `--image` adds an OCI image (slim Debian plus
+        the environment, CUDA from its own wheels, the driver from `--gpus all`), `--sif` an
+        Apptainer file for HPC, `--push` the image to a registry. Each is named by the
+        environment's digest, so an unchanged lock is never built twice. Built on the machine
+        `--on` names, whose package mirrors are close, never uploaded from here. The workspace's
+        own code is not inside: a dispatch ships it, as always.
+
+        Args:
+            env: the environment, installed on that machine already (`host setup --env`).
+            on: the host to build on, `local` for this machine (Linux or macOS).
+            image: also build an OCI image (docker).
+            sif: also build an Apptainer SIF from the image.
+            push: also push the image to this repository, `ghcr.io/<owner>/<name>`.
+        """
+        with progress(f"packing {env} on {on}"):
+            packed = board(on).pack(env, image=image, sif=sif, push=push)
+        output.print_record(packed.model_dump(), title="pack")
+
     @app.command(name="list", version_flags=[])
     def list_(*command: str, env: str = "default") -> NoReturn:
         """List the packages installed in an environment, through `pixi list`.
