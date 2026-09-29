@@ -179,7 +179,7 @@ class Holds:
             profile=profile,
         )
         self._record(held)
-        setup = self.board.on(name).install(plan.env, watch=watch, minimal=True)
+        setup = self.board.on(name).install(plan.env, watch=watch)
         self._park(name, watch=watch)
         ready = held.model_copy(
             update={

@@ -172,7 +172,7 @@ class Cache:
         if not rows:
             raise LookupError(f"host {alias!r} has never been set up; run `mb host setup {alias}`")
         try:
-            return HostSetup.model_validate_json(rows[0][0])
+            return HostSetup.model_validate_json(rows[0][0], extra="ignore")
         except ValidationError:
             raise LookupError(
                 f"host {alias!r} was set up by an older release; run `mb host setup {alias}`"
@@ -219,13 +219,13 @@ class Cache:
             f"SELECT record FROM {ALIAS}.runs WHERE {clause} ORDER BY submitted_at DESC{bound}",
             (project,) if project else (),
         )
-        return [RunRecord.model_validate_json(record) for (record,) in rows]
+        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
 
     def recent(self, limit: int | None = 20) -> list[RunRecord]:
         """Dispatched runs, newest first; None retains all historical declarations."""
         bound = "" if limit is None else f" LIMIT {int(limit)}"
         rows = self._rows(f"SELECT record FROM {ALIAS}.runs ORDER BY submitted_at DESC{bound}")
-        return [RunRecord.model_validate_json(record) for (record,) in rows]
+        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
 
     def record(self, run: RunRecord) -> None:
         """Record a dispatched run, replacing whatever its identity recorded before."""
@@ -431,7 +431,7 @@ class Cache:
             "WHERE target = ? AND handle = ? AND submitted_at = ?",
             (run.target, run.handle, run.submitted_at),
         )
-        return RunRecord.model_validate_json(rows[0][0]) if rows else None
+        return RunRecord.model_validate_json(rows[0][0], extra="ignore") if rows else None
 
     def _on(self, target: str | None) -> list[RunRecord]:
         """Every current run, on `target` when given, newest first."""
@@ -440,7 +440,7 @@ class Cache:
             "ORDER BY submitted_at DESC",
             (target,),
         )
-        return [RunRecord.model_validate_json(record) for (record,) in rows]
+        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
 
     def _lock(self, name: str) -> FileLock:
         """The process-reentrant file lock `name` under the lake's run directory."""
@@ -493,6 +493,6 @@ def _unregistered(run: RunRecord) -> LookupError:
 def _current(facts: object) -> HostSetup | None:
     """A recorded setup, None when an older mainboard wrote it and `setup` must record it anew."""
     try:
-        return HostSetup.model_validate_json(str(facts))
+        return HostSetup.model_validate_json(str(facts), extra="ignore")
     except ValidationError:
         return None

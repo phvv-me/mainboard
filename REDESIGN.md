@@ -528,3 +528,13 @@ members, and each project's lean environment lives with the project. Cost: paths
 receipts and host mirrors (3,585 dataset files record old paths), every host re-mirrored.
 Recommendation: move projects one at a time, each with its own environment, after the cutok
 deadline; `life/` and the root configs any time.
+
+## Round 6 (2026-09-29): minimal by default, a cleaner manifest and layout
+
+- [x] 6.1 The stale `mainboard-monitor` timer on pedro-cvlab disabled and its units removed
+- [x] 6.2 Source snapshots pruned on the host whenever a job builds its environment: kept are
+      the newest three, any used in the last seven days (re-pinning counts as use) and any a
+      queued or running pueue task names; the environment prefixes only those name go next
+- [x] 6.3 `host setup` is minimal by default (tool, pixi, pueue, the environment); `--dotfiles`
+      adds the shell, editor and toolbox, and every later sync keeps what setup chose. The
+      per-host `dotfiles` switch is gone

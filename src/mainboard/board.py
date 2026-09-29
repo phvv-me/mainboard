@@ -51,7 +51,7 @@ from .dispatch.rentals import identity
 from .dispatch.schedulers import HostUnreachable, pick, registry
 from .dispatch.shells import dialect_for, is_windows, open_shell
 from .dispatch.shipment import Shipment
-from .dispatch.snapshots import Snapshots
+from .dispatch.snapshots import Snapshots, queued_here
 from .dispatch.targets import home_of, placed, rooted
 from .dispatch.targets import resolve as resolved_profile
 from .dispatch.transport import SshTransport
@@ -546,7 +546,7 @@ class Board:
         profile: str = "",
         watch: Watcher | None = None,
         sync_only: bool = False,
-        minimal: bool = False,
+        dotfiles: bool = False,
     ) -> HostSetup:
         """Install an environment for this board's host, in place here or by onboarding over ssh.
 
@@ -566,8 +566,8 @@ class Board:
         sync_only: re-mirror and re-provision an onboarded host without reinstalling the tool or
             re-probing its hardware, neither of which changed when only the manifest moved;
             refused on this machine, which has no onboarding to skip parts of.
-        minimal: only what jobs need (the tool, pixi, the environment), no dotfiles: a rented
-            machine billed by the minute.
+        dotfiles: also apply the workspace's dotfiles; a setup is minimal otherwise, and a sync
+            keeps whatever the setup chose.
         """
         if sync_only and self.local:
             raise MissionError(
@@ -591,7 +591,7 @@ class Board:
                 digest=compiler.digest(),
                 floor=self.floor,
                 dotfiles=""
-                if minimal or not plan.profile.dotfiles or (sync_only and self._minimal())
+                if not (self._dotfiles() if sync_only else dotfiles)
                 else self.manifest.workspace.dotfiles,
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
@@ -811,10 +811,10 @@ class Board:
         """
         return Journal(self.dispatcher.cache.session, stream)
 
-    def _minimal(self) -> bool:
-        """Whether this host was set up `--minimal`, which a sync keeps; False if never set up."""
+    def _dotfiles(self) -> bool:
+        """Whether this host was set up `--dotfiles`, which a sync keeps; False if never set up."""
         try:
-            return self.dispatcher.cache.host(self.host).minimal
+            return self.dispatcher.cache.host(self.host).dotfiles
         except LookupError:
             return False
 
@@ -931,7 +931,10 @@ class Board:
         built = prefixes.materialize(where, modules=plan.profile.modules)
         # This machine holds both the prefixes and the trees that point at them, so building is
         # the moment to let go of what nothing names any more.
-        dropped = prefixes.prune(live=prefixes.referenced(Path(Snapshots(str(self.root)).base)))
+        snapshots = Snapshots(str(self.root))
+        if (busy := queued_here()) is not None and (gone := snapshots.prune(busy=busy)):
+            logger.info("dropped {} unused source snapshot(s)", len(gone))
+        dropped = prefixes.prune(live=prefixes.referenced(Path(snapshots.base)))
         if dropped:
             logger.info(
                 "dropped {} unreferenced environment(s): {}", len(dropped), ", ".join(dropped)

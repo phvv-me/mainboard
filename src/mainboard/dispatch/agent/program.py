@@ -980,6 +980,8 @@ class Snapshot:
                 raise Refusal("snapshot stamp mismatch")
         self.image.verify(self.final)
         self.__live(self.final)
+        # Used again now: pruning measures a tree's age from its last dispatch, not its first.
+        os.utime(self.final)
 
     def __live(self, snap: str) -> None:
         self.image.link(self.root, snap)

@@ -987,7 +987,7 @@ def build(root: Path | None = None) -> App:
         *,
         env: str = "",
         resolve: bool = False,
-        minimal: bool = False,
+        dotfiles: bool = False,
         center: bool = False,
         root: str = "",
         output: Output = _COMPACT,
@@ -1007,9 +1007,9 @@ def build(root: Path | None = None) -> App:
         Args:
             env: an environment name overriding the host profile's own.
             resolve: let the host solve for itself instead of installing the shipped lock.
-            minimal: only what jobs need (this tool, pixi, the environment); no dotfiles or
-                toolbox, for a machine rented by the minute. A host declaring `dotfiles = false`
-                always gets this.
+            dotfiles: also apply the workspace's dotfiles (zsh, lvim, the pixi toolbox, herdr);
+                every later sync keeps them. Without it a host gets only what jobs need: this
+                tool, pixi, pueue and the environment.
             center: make this host the workspace's center instead of a job host.
             root: with `--center`, where the workspace goes there, `~/projects` when omitted.
         """
@@ -1019,7 +1019,7 @@ def build(root: Path | None = None) -> App:
             return _sectioned(sections, output, title="center")
         workspace = board(host)
         with progress(f"setting up {host}") as stage:
-            report = workspace.install(env, resolve=resolve, watch=stage, minimal=minimal)
+            report = workspace.install(env, resolve=resolve, watch=stage, dotfiles=dotfiles)
         _onboarded(workspace, report, output, title="setup")
         return 0
 
@@ -2240,8 +2240,37 @@ def main() -> None:
     if not Project().variable("LOG_FORMAT").read() and sys.argv[1:2] != ["execute"]:
         configure(output="line")
     app = build()
+    profiled = Project().variable("PROFILE").read()
     try:
-        app(Delimiter(app).placed(sys.argv[1:]))
+        if profiled:
+            _profiled(Path(profiled), lambda: app(Delimiter(app).placed(sys.argv[1:])))
+        else:
+            app(Delimiter(app).placed(sys.argv[1:]))
     except (MissionError, NoWorkspace) as error:
         print(error, file=sys.stderr)
         raise SystemExit(1) from None
+
+
+def _profiled(report: Path, command: Callable[[], object]) -> None:
+    """Run `command` under this tool's own profiler, every one of its modules instrumented, and
+    write the span report to `report`: `MB_PROFILE=prof.txt mb job submit ...` names the slow
+    function of any verb, on any machine, with nothing else installed."""
+    import pkgutil  # noqa: PLC0415  (only a profiled run pays for walking the package)
+
+    from . import __path__ as package  # noqa: PLC0415
+    from .profile import Feature, Profiler  # noqa: PLC0415
+
+    # Entry points and the standard-library agents are left out: importing them runs them.
+    skipped = ("__main__", "_refresh", "agent.program", "center.remote", ".profile")
+    modules = [
+        found.name
+        for found in pkgutil.walk_packages(package, f"{__package__}.")
+        if not any(skip in found.name for skip in skipped)
+    ]
+    profiler = Profiler(features=Feature.SPANS, gpus=(), auto=modules)
+    try:
+        with profiler:
+            command()
+    finally:
+        report.write_text(profiler.report(), encoding="utf-8", newline="\n")
+        print(f"profile written to {report}", file=sys.stderr)

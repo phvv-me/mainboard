@@ -21,8 +21,13 @@
 # The pin runs in the target's standard-library agent under its own kernel file lock, so it needs
 # no POSIX shell or tool beyond Python. Everything a caller typed is refused here first.
 
+import json
+import re
+import shutil
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=asks the host's own pueue what is queued, fixed argv since=2026-09-29
+import time
 from abc import ABC, abstractmethod
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
@@ -39,6 +44,13 @@ if TYPE_CHECKING:
 
 # Under the state directory every transfer excludes, so a sync neither ships nor prunes one.
 SOURCES = "sources"
+
+# A snapshot unused this long, not among the newest `_KEPT_SNAPSHOTS` and named by no queued or
+# running task goes: a PBS job rarely waits a week, and a week of edit-dispatch cycles was 15 GB.
+_SNAPSHOT_DAYS = 7
+_KEPT_SNAPSHOTS = 3
+# A snapshot key as it appears in a job script or a task's command.
+_KEY = re.compile(rf"/{SOURCES}/([^/\s'\"]+)")
 
 
 def stamped(key: str, *, commit: str, digest: str) -> str:
@@ -159,6 +171,36 @@ class Snapshots:
         the job script that runs from it before opening the connection that creates it."""
         return f"{self.base}/{key}"
 
+    def prune(self, *, busy: str = "") -> list[str]:
+        """Remove, on this host, the snapshots nothing needs any more, and name them.
+
+        Kept: the newest few, any used (pinned or re-pinned) within `_SNAPSHOT_DAYS`, and any
+        whose key `busy` mentions (the scripts of queued and running tasks). Only the tree goes:
+        its files are hardlinks and its links point into the mirror, which stays whole. The
+        environments the survivors activate are then all `Prefixes.prune` keeps.
+
+        busy: text naming what is still queued or running, searched for snapshot keys.
+        """
+        base = Path(self.base)
+        try:
+            trees = sorted(
+                (entry for entry in base.iterdir() if entry.is_dir() and entry.name[0] != "."),
+                key=lambda entry: entry.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return []
+        needed = set(_KEY.findall(busy))
+        horizon = time.time() - _SNAPSHOT_DAYS * 86400
+        doomed = [
+            tree
+            for tree in trees[_KEPT_SNAPSHOTS:]
+            if tree.name not in needed and tree.stat().st_mtime < horizon
+        ]
+        for tree in doomed:
+            shutil.rmtree(tree, ignore_errors=True)
+        return [tree.name for tree in doomed]
+
     @staticmethod
     def script(staged: str) -> str:
         """The frozen path of a generated wrapper, whose filename carries its complete digest."""
@@ -235,3 +277,36 @@ class Snapshots:
         except AgentRefused as refused:
             raise SystemExit(f"could not pin the source tree at {path}: {refused}") from None
         return path
+
+
+def queued_here() -> str | None:
+    """The scripts of every task this host's pueue has not finished, what pruning must spare;
+    None when pueue cannot be asked, and then nothing is pruned."""
+    pueue = shutil.which("pueue")
+    if pueue is None:
+        return ""
+    try:
+        said = subprocess.run(
+            [pueue, "status", "--json"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=True,
+        ).stdout
+        tasks = json.loads(said).get("tasks", {}).values()
+    except OSError, subprocess.SubprocessError, ValueError:
+        return None
+    texts = []
+    for task in tasks:
+        state = task.get("status")
+        if isinstance(state, dict) and "Done" in state:
+            continue
+        command = str(task.get("command", ""))
+        texts.append(command)
+        for word in command.split():
+            script = Path(task.get("path", ".")) / word
+            if word.endswith(".sh") and script.is_file():
+                texts.append(script.read_text(encoding="utf-8", errors="replace"))
+    return "\n".join(texts)
