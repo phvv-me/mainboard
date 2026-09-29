@@ -123,6 +123,8 @@ def _exec(command: str) -> str:
             shlex.split(command),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_EXEC_TIMEOUT,
             check=True,
         )

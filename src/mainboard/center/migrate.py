@@ -494,7 +494,13 @@ def _gh(*arguments: str) -> str:
     """What `gh arguments` prints, empty when gh is absent or refuses."""
     try:
         done = subprocess.run(
-            ["gh", *arguments], capture_output=True, text=True, check=False, timeout=30
+            ["gh", *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
         )
     except OSError, subprocess.SubprocessError:
         return ""

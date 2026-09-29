@@ -63,7 +63,13 @@ def started() -> str:
 def identities(host: str) -> list[str]:
     """The key files ssh would offer `host`, as its own config resolves them, those that exist."""
     resolved = subprocess.run(
-        ["ssh", "-G", host], capture_output=True, text=True, timeout=10, check=True
+        ["ssh", "-G", host],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        check=True,
     ).stdout
     files = (
         Path(line.split(maxsplit=1)[1]).expanduser()

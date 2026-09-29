@@ -52,6 +52,8 @@ def junction(link: Path, target: Path) -> str:
         ["cmd", "/d", "/c", "mklink", "/J", str(link), str(target)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     return "" if done.returncode == 0 else (done.stdout + done.stderr).strip()

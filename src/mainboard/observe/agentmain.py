@@ -82,7 +82,12 @@ def wrap(
     now, rss: the clock and memory reader, overridden by a test to stay deterministic.
     """
     process = subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=argv is the job wrapper's own command, not untrusted input since=2026-08-17
-        list(argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        list(argv),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert process.stdout is not None  # ruff:ignore[assert]  reason=guaranteed by stdout=PIPE just above since=2026-08-17
     arguments: list[JSONValue] = [*argv]

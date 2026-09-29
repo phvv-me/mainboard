@@ -140,6 +140,8 @@ def _ask(argv: Sequence[str]) -> str:
             list(argv),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_ASK_SECONDS,
             check=False,
             env={**os.environ, "PIXI_HOME": str(pixi_home())},

@@ -111,6 +111,8 @@ def _derived(private: Path) -> subprocess.CompletedProcess[str]:
         ["ssh-keygen", "-y", "-P", "", "-f", str(private)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
 
@@ -139,10 +141,20 @@ def unlocked(private: Path) -> bool:
     if _derived(private).returncode == 0:
         return True
     printed = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=a constant argv over a path this module chose since=2026-09-21
-        ["ssh-keygen", "-lf", f"{private}.pub"], capture_output=True, text=True, check=False
+        ["ssh-keygen", "-lf", f"{private}.pub"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     held = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=a constant argv, no input since=2026-09-21
-        ["ssh-add", "-l"], capture_output=True, text=True, check=False
+        ["ssh-add", "-l"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
     fingerprint = printed.stdout.split()[1:2]
     return bool(fingerprint) and fingerprint[0] in held.stdout

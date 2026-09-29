@@ -5,7 +5,6 @@
 # whole new record, a removal appends a drop, and the views read the last record per key.
 
 import weakref
-from itertools import islice
 from pathlib import Path
 from shutil import rmtree
 from tempfile import mkdtemp
@@ -24,6 +23,9 @@ from ..vocabulary import Request
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+# The terminal verdicts as SQL literals, fixed vocabulary words, for the lake to filter on.
+_TERMINAL = ", ".join(f"'{verdict}'" for verdict in sorted(vocabulary.TERMINAL))
 
 
 class RunRecord(FrozenModel):
@@ -201,11 +203,23 @@ class Cache:
 
         project: only the runs dispatched from this project; every run when empty.
         """
-        return [
-            run
-            for run in self.recent(None)
-            if run.verdict not in vocabulary.TERMINAL and project in ("", run.project)
-        ]
+        return self._matching(f"coalesce(verdict, '') NOT IN ({_TERMINAL})", project=project)
+
+    def _matching(
+        self, where: str, *, project: str = "", limit: int | None = None
+    ) -> list[RunRecord]:
+        """The current runs `where` holds, newest first, filtered in the lake rather than here.
+
+        A registry of a hundred thousand runs cost 0.7 s a listing when every record was parsed
+        to keep a few; the view's columns let the lake answer only those.
+        """
+        clause = f"({where})" + (" AND project = ?" if project else "")
+        bound = "" if limit is None else f" LIMIT {int(limit)}"
+        rows = self._rows(
+            f"SELECT record FROM {ALIAS}.runs WHERE {clause} ORDER BY submitted_at DESC{bound}",
+            (project,) if project else (),
+        )
+        return [RunRecord.model_validate_json(record) for (record,) in rows]
 
     def recent(self, limit: int | None = 20) -> list[RunRecord]:
         """Dispatched runs, newest first; None retains all historical declarations."""
@@ -347,12 +361,7 @@ class Cache:
 
         project: only the runs dispatched from this project; every run when empty.
         """
-        landed = (
-            run
-            for run in self.recent(None)
-            if run.verdict in vocabulary.TERMINAL and project in ("", run.project)
-        )
-        return list(islice(landed, limit))
+        return self._matching(f"verdict IN ({_TERMINAL})", project=project, limit=limit)
 
     def total(self) -> int:
         """How many runs this registry holds, the count a truncated listing measures against."""
@@ -364,11 +373,10 @@ class Cache:
         A run leaves only once its terminal verdict has been reported, so a sweep never announces
         a settled run twice nor drops one whose dispatching agent died before recording it.
         """
-        return [
-            run
-            for run in self.recent(None)
-            if run.verdict not in vocabulary.TERMINAL or run.reported != run.verdict
-        ]
+        return self._matching(
+            f"coalesce(verdict, '') NOT IN ({_TERMINAL}) "
+            "OR (record->>'reported') IS DISTINCT FROM verdict"
+        )
 
     def _change(self, run: RunRecord, **fields: str | int | None) -> RunRecord:
         """Update one registered identity atomically and answer its complete current record.
