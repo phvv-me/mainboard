@@ -95,6 +95,6 @@ class CardLease:
             handle = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             return False
-        with os.fdopen(handle, "w", encoding="utf-8") as opened:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as opened:
             opened.write(f"{os.getpid()} {time.time()}")
         return True

@@ -87,7 +87,14 @@ class Compiler:
             solved_by=self.pixi.version(),
             lock=self.pixi.lock.read_bytes().decode("utf-8"),
         )
-        Lockfile(self.root).put(files, self.environment, solved)
+        committed = Lockfile(self.root)
+        committed.put(files, self.environment, solved)
+        if mixed := committed.mixed_sources():
+            raise MissionError(
+                "the lock takes a workspace package from an index in one environment: "
+                + "; ".join(mixed)
+                + ". Pin it to its source in that environment (a `no-default` one included)."
+            )
         self.__bless(files, solved)
         if self.pixi.runs_here():
             self.pixi.install(self.environment)

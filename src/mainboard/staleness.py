@@ -153,7 +153,9 @@ def update(found: Snapshot) -> str:
 def record(found: Snapshot) -> None:
     """Record that the snapshot in `found.tool` was just installed from `found.digest`."""
     if found.tool is not None:
-        (found.tool / _STATE).write_text(json.dumps({"digest": found.digest}), encoding="utf-8")
+        (found.tool / _STATE).write_text(
+            json.dumps({"digest": found.digest}), encoding="utf-8", newline="\n"
+        )
 
 
 def _defer(found: Snapshot) -> None:

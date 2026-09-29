@@ -176,7 +176,7 @@ def merge(path: str, key: str, entries: Mapping[str, Json]) -> dict[str, Json]:
     if changed:
         target.parent.mkdir(parents=True, exist_ok=True)
         staged = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-        staged.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        staged.write_text(json.dumps(document, indent=2), encoding="utf-8", newline="\n")
         _restrict(staged)
         staged.replace(target)
     return {"changed": len(changed)}

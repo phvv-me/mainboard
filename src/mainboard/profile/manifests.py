@@ -68,4 +68,4 @@ class MergeManifest(FrozenModel):
 
     def write(self, path: str | PathLike[str]) -> None:
         """Write the rendered manifest as JSON to `path`."""
-        Path(path).write_text(json.dumps(self.render(), indent=2), encoding="utf-8")
+        Path(path).write_text(json.dumps(self.render(), indent=2), encoding="utf-8", newline="\n")

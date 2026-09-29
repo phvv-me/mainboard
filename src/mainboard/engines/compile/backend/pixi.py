@@ -303,7 +303,9 @@ class Pixi(Tool):
         variables = recorded["environment_variables"]
         path = next((name for name in variables if name.upper() == "PATH"), "PATH")
         prepended(variables, path, binaries)
-        self.windows_activation_cache.write_text(json.dumps(recorded), encoding="utf-8")
+        self.windows_activation_cache.write_text(
+            json.dumps(recorded), encoding="utf-8", newline="\n"
+        )
 
     def recorded_environment(self, env: str, base: Mapping[str, str]) -> dict[str, str]:
         """`base` entered into `env` the way a restricted command enters it, as a plain mapping.

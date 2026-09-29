@@ -112,7 +112,7 @@ class Seal:
             stand_in.write_text(_STAND_IN, encoding="utf-8", newline="\n")
             stand_in.chmod(0o755)
         sealed = cls(directory)
-        sealed.gitconfig.write_text("", encoding="utf-8")
+        sealed.gitconfig.write_text("", encoding="utf-8", newline="\n")
         return sealed
 
     @property
@@ -127,7 +127,7 @@ class Seal:
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Refuse remote spawns and connections for as long as `monkeypatch` holds."""
-        self.log.write_text("", encoding="utf-8")
+        self.log.write_text("", encoding="utf-8", newline="\n")
         monkeypatch.setenv(_LOG_VAR, os.fspath(self.log))
         monkeypatch.setenv(
             "PATH", os.pathsep.join([os.fspath(self.stand_ins), os.environ["PATH"]])

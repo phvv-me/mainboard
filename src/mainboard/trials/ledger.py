@@ -56,7 +56,7 @@ class Ledger:
         with (self.directory / "receipts.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(text)
         if self.framed:
-            with open(self.framed, "a", encoding="utf-8") as handle:
+            with open(self.framed, "a", encoding="utf-8", newline="\n") as handle:
                 handle.write(text)
 
     def table(self, name: str, rows: Sequence[Mapping[str, JsonValue]]) -> None:
@@ -137,6 +137,6 @@ class TrialReceipts:
         staged.replace(staged.with_suffix(""))
         self.written += 1
         if self.framed:
-            with open(self.framed, "a", encoding="utf-8") as handle:
+            with open(self.framed, "a", encoding="utf-8", newline="\n") as handle:
                 handle.write(wire(row))
         return row

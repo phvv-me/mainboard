@@ -139,7 +139,7 @@ def source(repo: Path) -> Source:
         Project().out(tree.root) / "dispatch" / "jobs" / f"closure-{captured.digest[:12]}.tsv"
     )
     closure.parent.mkdir(parents=True, exist_ok=True)
-    closure.write_text(manifest, encoding="utf-8")
+    closure.write_text(manifest, encoding="utf-8", newline="\n")
     return Source(digest=captured.digest, closure=str(closure), root=tree.root)
 
 

@@ -255,7 +255,7 @@ class Digests:
             self.held = {key: value for key, value in self.held.items() if key in self.seen}
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         staged = f"{self.path}.{os.getpid()}.tmp"
-        with open(staged, "w", encoding="utf-8") as out:
+        with open(staged, "w", encoding="utf-8", newline="\n") as out:
             json.dump(self.held, out)
         os.replace(staged, self.path)
 

@@ -13,6 +13,7 @@ import re
 import tomllib
 from typing import TYPE_CHECKING
 
+import yaml
 from patos import FrozenModel
 
 from ...core import MissionError, Project
@@ -96,6 +97,27 @@ class Lockfile:
                 lock=text,
             )
         return found
+
+    def mixed_sources(self) -> list[str]:
+        """Each package one environment builds from the workspace and another takes from an index.
+
+        A lean environment once lost the workspace's pins, so cutoken's `mainboard` came from
+        PyPI (a months-old 0.4.8) and shadowed the tool on the host's PATH, a skew no version
+        number showed. Whatever the workspace builds from source, it builds everywhere.
+        """
+        local: dict[str, str] = {}
+        indexed: dict[str, str] = {}
+        for name, solved in self.environments().items():
+            for entry in yaml.safe_load(solved.lock).get("packages", []):
+                url, package = entry.get("pypi"), entry.get("name")
+                if url and package:
+                    remote = str(url).startswith(("http://", "https://"))
+                    (indexed if remote else local).setdefault(str(package), name)
+        return [
+            f"{package}: `{indexed[package]}` takes it from an index, `{local[package]}` from "
+            "the workspace"
+            for package in sorted(local.keys() & indexed.keys())
+        ]
 
     def get(self, environment: str) -> Solved | None:
         """`environment`'s committed solve, None when the file holds none."""

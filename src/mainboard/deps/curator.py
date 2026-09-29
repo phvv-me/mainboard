@@ -172,7 +172,7 @@ class Dependencies:
         self, manifest: ManifestText, change: Change, *, env: str, resolve: bool
     ) -> list[Change]:
         """Write the edited manifest, reload it (failing fast on a bad edit), then re-solve."""
-        self.path.write_text(manifest.text(), encoding="utf-8")
+        self.path.write_text(manifest.text(), encoding="utf-8", newline="\n")
         self.board.shared.pop("manifest", None)
         self.board.shared.pop("resolver", None)
         reloaded = self.board.manifest

@@ -189,7 +189,7 @@ class Census:
         """Whether two names differing only in case are two files where the workspace lives."""
         try:
             with tempfile.TemporaryDirectory(dir=anchor) as scratch:
-                (Path(scratch) / "Probe").write_text("", encoding="utf-8")
+                (Path(scratch) / "Probe").write_text("", encoding="utf-8", newline="\n")
                 return not (Path(scratch) / "probe").exists()
         except OSError:
             return True

@@ -304,7 +304,9 @@ class Provisioner:
                 return
         shard.pixi.sync(env)
         with suppress(OSError):
-            (shard.directory / Project().marker(_SYNCED)).write_text(current, encoding="utf-8")
+            (shard.directory / Project().marker(_SYNCED)).write_text(
+                current, encoding="utf-8", newline="\n"
+            )
 
     def binaries(self, env: str) -> list[Path]:
         """The existing second-stage binary directories in PATH order, never a dead entry."""

@@ -431,7 +431,32 @@ node is downloading and linking a few GB of packages, and what costs space is ev
 | Apptainer/Singularity SIF | one file | apptainer (miyabi has singularity) | the HPC form of the image; one file, runs without root |
 | single-binary Python (PyInstaller, Nuitka, PyApp) | one executable | nothing | fine for the mb tool itself; not for CUDA stacks (torch + NVIDIA wheels are 3+ GB of shared libraries a binary cannot shrink, and freezing them is fragile) |
 
+Measured on crimson (RTX 3090, a university network), the lean `gpu` environment (5.7 GB):
+
+| route | time to a working `import torch` on CUDA | size moved |
+|---|---|---|
+| install the lock, cold (bare Debian container, no caches, pixi fetched first) | 5 s pixi + 43 s install | from the CDNs |
+| pixi-pack executable pushed from this PC, then unpacked | 4m55s copy (about 14 MB/s upload) + 37 s unpack | 3.96 GB |
+| minimal OCI image (slim Debian + the unpacked pack) | built in 5m46s on the host; starts in 4 s | 3.0 GB zstd, 6.07 GB unpacked |
+
+So on a well-connected machine the lock itself is as fast as any artifact; what made it fast is
+the lean environment (18 GB to 5.7 GB). An artifact pays off where the node is slow, offline
+or billed while it installs, and on providers that boot from an image and cache its layers.
+
 Recommendation: keep the lock as the one truth, and derive two artifacts from it, content
 addressed by the environment digest: a pixi-pack executable (HPC and ssh hosts, offline nodes)
 and an OCI image (rented GPUs, 5.15). The lean per-experiment environment is what makes either
 small; packing `default` would still move 18 GB.
+
+### Guards instead of fixes (asked 2026-09-29: "look for general ways to fix them")
+
+The gotchas keep coming in five families. Each now has one guard that fails early, so the next
+member of the family is caught by a test or a stage line rather than found on a host:
+
+| family | met as | guard |
+|---|---|---|
+| docs drift from the CLI | no parameter description ever reached `--help`; skills naming verbs removed rounds ago | `test_every_command.py`: every parameter of every command is described, and every `mb ...` a README or skill spells in code resolves to a real command |
+| one package, two sources | a lean env took `mainboard` from PyPI and shadowed the tool | `mb lock` refuses a lock where a package the workspace builds from source comes from an index in any environment (`Lockfile.mixed_sources`) |
+| cost that only shows at scale | a 7,662-way regex per path per depth; linear scans of every run; catalog inlining | every multi-stage verb prints each stage with its elapsed seconds and a total, so the slow stage is named in every log |
+| text that differs by platform | CRLF from Windows writes, cp1252 decoding, heredoc backslashes | `test_source_rules.py`: every text write names its newline (26 fixed); `PLW1514` already requires an encoding |
+| an action that "succeeded" | a pipe hid pytest's exit; setup kept an old tool | verify the outcome, not the exit: setup reads the host back through its new activation (it caught the old tool today) |

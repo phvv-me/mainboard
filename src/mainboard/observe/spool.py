@@ -82,7 +82,7 @@ class Spool:
             "base": self.segment_start,
         }
         tmp = self.dir / f"{_STATUS_NAME}.tmp"
-        tmp.write_text(json.dumps(payload))
+        tmp.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
         tmp.replace(self.dir / _STATUS_NAME)
 
     def status(self) -> dict[str, JSONValue] | None:

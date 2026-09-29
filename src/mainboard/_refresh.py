@@ -27,7 +27,7 @@ def after_parent(parent: int, command: Sequence[str], log: Path, state: Path, di
     """
     _wait(parent)
     log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text("", encoding="utf-8")
+    log.write_text("", encoding="utf-8", newline="\n")
     for attempt, delay in enumerate(_WINDOWS_UV_RETRY_DELAYS, start=1):
         result = _attempt(command, log, attempt)
         if not _windows_uv_tool_lock(result):
@@ -36,7 +36,7 @@ def after_parent(parent: int, command: Sequence[str], log: Path, state: Path, di
     else:
         result = _attempt(command, log, len(_WINDOWS_UV_RETRY_DELAYS) + 1)
     if result.returncode == 0:
-        state.write_text(json.dumps({"digest": digest}), encoding="utf-8")
+        state.write_text(json.dumps({"digest": digest}), encoding="utf-8", newline="\n")
     return result.returncode
 
 

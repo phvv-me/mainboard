@@ -695,7 +695,7 @@ class Lake(FrozenModel):
         """The token this lake is served with, made and kept on first use."""
         if not self.token.is_file():
             self.token.parent.mkdir(parents=True, exist_ok=True)
-            self.token.write_text(secrets.token_urlsafe(24), encoding="utf-8")
+            self.token.write_text(secrets.token_urlsafe(24), encoding="utf-8", newline="\n")
         return self.token.read_text(encoding="utf-8").strip()
 
     def _rehome(self) -> None:

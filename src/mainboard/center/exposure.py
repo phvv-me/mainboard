@@ -312,7 +312,7 @@ def _written(path: Path, text: str) -> bool:
             return False
     except FileNotFoundError:
         path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8", newline="\n")
     return True
 
 
@@ -330,7 +330,9 @@ def _sourced(startup: Path) -> bool:
         return False
     block = f"{_BEGIN}\n{_SOURCE}\n{_END}\n"
     startup.write_text(
-        text + ("\n" if text and not text.endswith("\n") else "") + block, encoding="utf-8"
+        text + ("\n" if text and not text.endswith("\n") else "") + block,
+        encoding="utf-8",
+        newline="\n",
     )
     return True
 

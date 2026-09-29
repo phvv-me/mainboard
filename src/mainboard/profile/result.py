@@ -167,7 +167,7 @@ class Profile(FrozenModel):
 
     def save(self, path: str | PathLike[str]) -> None:
         """Persist to JSON so a later run can :meth:`load` and :meth:`diff` it."""
-        Path(path).write_text(self.model_dump_json(), encoding="utf-8")
+        Path(path).write_text(self.model_dump_json(), encoding="utf-8", newline="\n")
 
     def stats(self) -> list[RegionStat]:
         """Per-name aggregates (calls/total/avg/peak), slowest total first."""

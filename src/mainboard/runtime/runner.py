@@ -113,7 +113,7 @@ class Runner:
             self.say(self.receipts.frame())
             if self.job.logs:
                 self.say(f"exit={status}")
-                self.exit_artifact().write_text(f"exit={status}\n", encoding="utf-8")
+                self.exit_artifact().write_text(f"exit={status}\n", encoding="utf-8", newline="\n")
         return status
 
     def outcome(self) -> int:

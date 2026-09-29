@@ -200,7 +200,7 @@ class Dataset:
     def as_jsonl(self, target: Path, run: str = "") -> int:
         """Write one run, the newest when empty, as `trial_receipt` lines; returns the rows."""
         lines = [wire(row) for row in self.rows(run)]
-        target.write_text("".join(lines), encoding="utf-8")
+        target.write_text("".join(lines), encoding="utf-8", newline="\n")
         return len(lines)
 
     def full(self, run: str) -> bool:

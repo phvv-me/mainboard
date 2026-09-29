@@ -69,7 +69,7 @@ class SshAliases:
     def _write(self, text: str) -> None:
         """Write the config with the owner-only mode ssh insists on."""
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.path.write_text(text, encoding="utf-8")
+        self.path.write_text(text, encoding="utf-8", newline="\n")
         self.path.chmod(0o600)
 
 

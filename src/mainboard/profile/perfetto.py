@@ -92,5 +92,7 @@ def write_trace(profile: Profile, path: str | PathLike[str]) -> None:
             events.append(_span(summary.name, _REGIONS, clock, summary.wall_ms * _NS_PER_US, {}))
             clock += summary.wall_ms * _NS_PER_US
     Path(path).write_text(
-        json.dumps({"traceEvents": events, "displayTimeUnit": "ns"}), encoding="utf-8"
+        json.dumps({"traceEvents": events, "displayTimeUnit": "ns"}),
+        encoding="utf-8",
+        newline="\n",
     )

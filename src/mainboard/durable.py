@@ -185,8 +185,8 @@ class SystemdUser(Settler):
         so changing the period is the same command.
         """
         self.units.mkdir(parents=True, exist_ok=True)
-        self.service.write_text(self._service(), encoding="utf-8")
-        self.timer.write_text(self._timer(every), encoding="utf-8")
+        self.service.write_text(self._service(), encoding="utf-8", newline="\n")
+        self.timer.write_text(self._timer(every), encoding="utf-8", newline="\n")
         self.shell(("systemctl", "--user", "daemon-reload"))
         status, output = self.shell(("systemctl", "--user", "enable", "--now", self.timer.name))
         if status:

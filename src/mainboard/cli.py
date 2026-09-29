@@ -276,6 +276,12 @@ def build(root: Path | None = None) -> App:
             command: the command tokens, from the first token that is not an option of this verb,
                 or `path/to/file.py::name` and, after `--`, the arguments its application takes.
             on: the host alias; comma-separated for a lane.
+            queue: a queued host's queue, the profile's default when empty.
+            walltime: the wall-clock limit, `HH:MM:SS`, the profile's default when empty.
+            mem_gb: system memory to ask the scheduler for, the profile's default when 0.
+            gpus: cards per job, the profile's default when 0.
+            env: the environment the job enters, the host profile's own when empty.
+            container: a container override, `none` forcing bare.
             resume: a failed or cancelled run to continue, by handle or name, as its next attempt.
             batch: a batch spec file, relative to the workspace root.
             split: a lane's parametrize name; each of its values becomes one job.
@@ -589,7 +595,11 @@ def build(root: Path | None = None) -> App:
 
     @job.command(show=False)
     def monitor(*, json: bool = False) -> None:
-        """The settling pass periodic runners installed before `job list --every` call."""
+        """The settling pass periodic runners installed before `job list --every` call.
+
+        Args:
+            json: print the listing and the sweep as JSON, what those runners read.
+        """
         jobs(output=Output(json=json))
 
     @app.command
@@ -639,6 +649,11 @@ def build(root: Path | None = None) -> App:
         declared in more than one table is told apart.
 
         Args:
+            name: the dependency to drop.
+            lang: only this ecosystem's tables (`python`, `conda`, `nodejs`, ...).
+            env: only this environment's tables.
+            dev: only the development-only tables.
+            resolve: `--no-resolve` stages several edits to solve once.
         """
         with progress(f"removing {name}"):
             changes = (
@@ -666,6 +681,10 @@ def build(root: Path | None = None) -> App:
         to one ecosystem's, one environment's or the development-only tables.
 
         Args:
+            name: the dependency to move to its newest release; the whole lock when omitted.
+            lang: only this ecosystem's tables.
+            env: only this environment's tables.
+            dev: only the development-only tables.
         """
         with progress(f"upgrading {name or 'the lock'}"):
             changes = board("local").deps().upgrade(name, ecosystem=lang, env=env, dev=dev)

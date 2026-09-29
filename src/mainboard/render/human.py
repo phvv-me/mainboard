@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from contextlib import contextmanager, redirect_stdout
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,8 @@ from rich.table import Table
 from .values import columns_of
 
 _UNBOUNDED = 1 << 16
+# A block shorter than this prints no closing total.
+_WORTH_A_TOTAL = 2.0
 _STDOUT_FD = 1
 _STDERR_FD = 2
 
@@ -49,18 +52,21 @@ def render_table(
 def progress(description: str) -> Iterator[Callable[[str], None]]:
     """A stderr progress reporter around a block of unknown duration, yielding the stage setter.
 
-    A terminal gets a transient spinner. Off a terminal `Console.status` stays silent until the
-    end, which reads as a hang in a log, so each stage prints as its own line instead. Stdout is
-    `diverted` for the whole block.
+    Each stage prints as its own line, led by the seconds since the block began, and a block
+    that took a while ends with its total, so the slow stage of a setup or a dispatch is named in
+    every log without anyone profiling it (a pin spent a minute in regex unnoticed that way).
+    Stdout is `diverted` for the whole block.
     """
-    console = Console(stderr=True, markup=False)
+    start = time.monotonic()
+
+    def stage(line: str) -> None:
+        print(f"{time.monotonic() - start:6.1f}s {line}", file=sys.stderr, flush=True)
+
     with diverted():
-        if not console.is_terminal:
-            console.print(description)
-            yield console.print
-            return
-        with console.status(description) as status:
-            yield status.update
+        stage(description)
+        yield stage
+    if (total := time.monotonic() - start) >= _WORTH_A_TOTAL:
+        print(f"{total:6.1f}s done: {description}", file=sys.stderr, flush=True)
 
 
 @contextmanager
