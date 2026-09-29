@@ -8,7 +8,6 @@
 
 import json
 import os
-import platform
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs this machine's own generated activation, not untrusted input since=2026-09-25
 import sys
 from abc import ABC, abstractmethod
@@ -16,6 +15,7 @@ from pathlib import Path
 from tempfile import mkstemp
 from typing import TYPE_CHECKING
 
+from ..core.host import WINDOWS
 from ..engines.compile.backend.pixi import Pixi
 
 if TYPE_CHECKING:
@@ -118,4 +118,4 @@ class Recorded(Entering):
 
 def entering() -> Entering:
     """How this machine enters an environment: from its record on Windows, a shell elsewhere."""
-    return Recorded() if platform.system() == "Windows" else Sourcing()
+    return Recorded() if WINDOWS else Sourcing()

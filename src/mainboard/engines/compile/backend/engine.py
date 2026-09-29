@@ -1,5 +1,4 @@
 import os
-import platform
 import shutil
 import sys
 from functools import cached_property
@@ -10,6 +9,7 @@ from plumbum import local
 from plumbum.commands.processes import CommandNotFound
 
 from ....core import MissionError, Project
+from ....core.host import WINDOWS
 from .process import Process
 from .tool import Tool
 
@@ -57,7 +57,7 @@ class PixiEngine(Tool):
             command = local["pixi"]
         except CommandNotFound:
             command = local[str(self.installed_binary())]
-        if platform.system() == "Windows":
+        if WINDOWS:
             return command.with_env(HOME=str(Path.home()))
         return command
 
@@ -80,7 +80,7 @@ class PixiEngine(Tool):
     @staticmethod
     def appended_shell_file() -> str:
         """The startup file pixi's installer will append a PATH line to, else empty."""
-        if os.environ.get("PIXI_NO_PATH_UPDATE") or platform.system() == "Windows":
+        if os.environ.get("PIXI_NO_PATH_UPDATE") or WINDOWS:
             return ""
         return _SHELL_RC.get(PurePath(os.environ.get("SHELL", "")).name, "")
 
@@ -102,7 +102,7 @@ class PixiEngine(Tool):
     @staticmethod
     def installer() -> BaseCommand:
         """Pixi's official installer command for this operating system."""
-        if platform.system() == "Windows":
+        if WINDOWS:
             executable = shutil.which("powershell") or shutil.which("pwsh")
             if executable is None:
                 raise MissionError("PowerShell is required to install pixi on Windows")
@@ -128,5 +128,5 @@ class PixiEngine(Tool):
     @staticmethod
     def binary_path() -> Path:
         """The fallback Pixi executable path for this operating system."""
-        name = "pixi.exe" if platform.system() == "Windows" else "pixi"
+        name = "pixi.exe" if WINDOWS else "pixi"
         return PixiEngine.home() / "bin" / name

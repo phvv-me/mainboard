@@ -6,6 +6,7 @@ from pathlib import Path
 
 import psutil
 
+from ..core.host import MACOS
 from .enums import Vendor
 from .facts.cgroup_memory import CgroupMemory
 from .facts.host_disk import HostDisk
@@ -72,7 +73,7 @@ class Host:
     @cached_property
     def cpu(self) -> str:
         """CPU model name: macOS `sysctl`, the cpuinfo model line, the ARM core mix, `platform`."""
-        if platform.system() == "Darwin" and (brand := sysctl("machdep.cpu.brand_string")):
+        if MACOS and (brand := sysctl("machdep.cpu.brand_string")):
             return brand
         if m := _CPU_MODEL_RE.search(self.cpuinfo_text):
             return m.group(1).strip()
@@ -93,7 +94,7 @@ class Host:
     @cached_property
     def cpu_vendor(self) -> Vendor:
         """CPU core vendor from the x86 `vendor_id` or the ARM MIDR implementer; Apple on macOS."""
-        if platform.system() == "Darwin":
+        if MACOS:
             return Vendor.APPLE
         for record in self.cpuinfo_records:
             if vendor := _VENDOR_BY_VENDOR_ID.get(record.get("vendor_id", "")):

@@ -23,6 +23,7 @@ from .center.verify import Verification
 from .ci import LocalLeg, Matrix, Package
 from .context.resolver import Resolver
 from .core.errors import MissionError, NoWorkspace
+from .core.host import WINDOWS
 from .core.project import Project
 from .core.section import Section, Verdict, failed
 from .core.shell import become
@@ -546,7 +547,7 @@ def build(root: Path | None = None) -> App:
         env: the environment name.
         """
         pixi = installed(env)
-        if sys.platform == "win32":
+        if WINDOWS:
             print(pixi.shell_hook(env, shell="powershell"))
             return
         script = workspace_root() / project.activation(env, workspace_root())

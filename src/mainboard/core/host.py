@@ -1,4 +1,11 @@
 import platform
+import sys
+
+# This machine's operating system, the one spelling every branch on it uses. A host's system,
+# probed or recorded, is data and stays a string compared where it is read.
+WINDOWS = sys.platform == "win32"
+MACOS = sys.platform == "darwin"
+LINUX = sys.platform.startswith("linux")
 
 _UNIX_FAMILIES = frozenset({"linux", "osx"})
 

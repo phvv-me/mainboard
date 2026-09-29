@@ -26,6 +26,7 @@ import structlog
 from structlog.processors import CallsiteParameter
 from structlog.typing import FilteringBoundLogger
 
+from .core.host import WINDOWS
 from .core.project import Project
 
 type EventDict = MutableMapping[str, Any]
@@ -72,7 +73,7 @@ def _colors() -> bool:
     installed, since structlog refuses colors there without it rather than falling back."""
     if not sys.stderr.isatty():
         return False
-    return sys.platform != "win32" or importlib.util.find_spec("colorama") is not None
+    return not WINDOWS or importlib.util.find_spec("colorama") is not None
 
 
 def configure(level: str = "", output: str = "") -> None:

@@ -13,7 +13,6 @@
 import hashlib
 import json
 import os
-import platform
 import sys
 import tomllib
 from contextlib import suppress
@@ -25,6 +24,7 @@ from plumbum import CommandNotFound
 from plumbum.commands.processes import ProcessTimedOut
 
 from .core.errors import MissionError
+from .core.host import WINDOWS
 from .core.project import Project
 from .engines.compile.backend.engine import PixiEngine
 from .engines.compile.backend.process import Process
@@ -134,7 +134,7 @@ def update(found: Snapshot) -> str:
     POSIX reinstalls now and records the digest. Windows hands the reinstall to a worker that
     waits for this process to exit, since the running interpreter holds the tool directory.
     """
-    if platform.system() == "Windows":
+    if WINDOWS:
         _defer(found)
         return "updates once this command exits"
     try:

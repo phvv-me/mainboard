@@ -1,6 +1,5 @@
 import json
 import os
-import platform
 import sys
 import tomllib
 from contextlib import contextmanager
@@ -13,7 +12,7 @@ from plumbum import local
 from plumbum.commands.base import BoundEnvCommand
 
 from ....core import MissionError, Project
-from ....core.host import current_platform
+from ....core.host import WINDOWS, current_platform
 from ....runtime.activation import prepended
 from .engine import PixiEngine
 from .process import Process
@@ -102,7 +101,7 @@ class Pixi(Tool):
     @contextmanager
     def activated(self, env: str = "default") -> Generator[None]:
         """Prepend the environment's existing executable directories to PATH for the block."""
-        windows = platform.system() == "Windows"
+        windows = WINDOWS
         binaries = _executable_dirs(self.env_prefix(env), windows=windows)
         with local.env(PATH=os.pathsep.join([*binaries, str(local.env["PATH"])])):
             yield
@@ -278,11 +277,7 @@ class Pixi(Tool):
 
     def _restricted_windows_command(self, command: Sequence[str]) -> bool:
         """Whether a Windows command can use cached activation and explicit auth storage."""
-        return (
-            platform.system() == "Windows"
-            and bool(command)
-            and self.windows_activation_cache.is_file()
-        )
+        return WINDOWS and bool(command) and self.windows_activation_cache.is_file()
 
     @property
     def windows_activation_cache(self) -> Path:
@@ -294,7 +289,7 @@ class Pixi(Tool):
         binaries: the second-stage executable directories, recorded leading the activated `PATH`
             the way `activate.sh` puts them, since every Windows entry reads this record instead.
         """
-        if platform.system() != "Windows":
+        if not WINDOWS:
             return
         text = self.within_cwd(
             lambda command: Process.output(command, "pixi shell-hook --json"),
@@ -484,7 +479,7 @@ class Pixi(Tool):
         failure = f"{result.stdout}\n{result.stderr}".casefold()
         if (
             result.returncode
-            and platform.system() == "Windows"
+            and WINDOWS
             and "filestorageerror" in failure
             and "could not determine the home directory" in failure
         ):

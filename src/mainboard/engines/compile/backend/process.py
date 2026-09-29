@@ -1,11 +1,11 @@
 import codecs
-import platform
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from subprocess import DEVNULL, PIPE
 from typing import TYPE_CHECKING, TextIO, cast
 
 from ....core import MissionError
+from ....core.host import WINDOWS
 from .result import CommandResult
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ class Process:
         inherited handles and returns, letting this process exit before Pixi's uv child replaces
         the tool directory.
         """
-        if platform.system() == "Windows":
+        if WINDOWS:
             command.popen(
                 stdin=DEVNULL,
                 stdout=DEVNULL,

@@ -1,6 +1,5 @@
 import json
 import os
-import platform
 import shlex
 import time
 from copy import copy
@@ -25,6 +24,7 @@ from .context.admission import admit
 from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
+from .core.host import WINDOWS
 from .core.project import Project
 from .core.section import Section
 from .core.shell import become, foreground
@@ -576,7 +576,7 @@ class Board:
         # activates through the activation pixi cached at provisioning, so none is named.
         activate = (
             str(provisioner.activate(plan.env, modules=plan.profile.modules))
-            if provisioner.runs_here(plan.env) and platform.system() != "Windows"
+            if provisioner.runs_here(plan.env) and not WINDOWS
             else ""
         )
         return HostSetup(
@@ -1055,7 +1055,7 @@ class Board:
                 )
             shipment = self.sealed(target, plan)
             listing = self.dispatcher.stage_listing(shipment)
-            if platform.system() == "Windows" and not plan.containerized:
+            if WINDOWS and not plan.containerized:
                 exported = shipment.local_exports(self.root, closure=listing)
                 command = shlex.split(shipment.command)
             else:

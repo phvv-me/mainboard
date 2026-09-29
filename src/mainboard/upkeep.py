@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import staleness
+from .core.host import LINUX
 from .core.project import Project
 from .core.section import Section, Verdict
 
@@ -158,7 +159,7 @@ def audit() -> list[Section]:
     A row that warns names the command that fixes it; `host upgrade` runs every such command
     except firmware, which is the owner's to schedule.
     """
-    rows = [_system()]
+    rows: list[Section | None] = [_system()]
     for manager in _present():
         pending = manager.count(_ask(manager.pending))
         fix = " && ".join(manager.steps)
@@ -227,7 +228,7 @@ def _system() -> Section:
         # Windows 11 still reports itself as 10.0; its builds start at 22000.
         build = int(platform.win32_ver()[1].rsplit(".", 1)[-1] or 0)
         name = f"Windows {11 if build >= 22000 else 10} build {build}"
-    if platform.system() == "Linux":
+    if LINUX:
         name += f", kernel {platform.release()}"
     return Section(section="system", verdict=Verdict.PASS, detail=f"{name}, {platform.machine()}")
 

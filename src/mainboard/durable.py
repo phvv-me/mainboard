@@ -19,6 +19,7 @@ from plumbum import CommandNotFound, local
 from plumbum.commands.processes import ProcessTimedOut
 
 from .core.errors import MissionError
+from .core.host import LINUX
 from .core.project import Project
 
 if TYPE_CHECKING:
@@ -175,7 +176,7 @@ class SystemdUser(Settler):
     @staticmethod
     def available() -> bool:
         """Whether this machine runs systemd, which is what makes a user timer installable."""
-        return platform.system() == "Linux" and which("systemctl") is not None
+        return LINUX and which("systemctl") is not None
 
     def install(self, every: Every) -> Settling:
         """Write both units, reload the user manager and arm the timer.

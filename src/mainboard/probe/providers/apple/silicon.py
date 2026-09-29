@@ -2,6 +2,7 @@ import platform
 from functools import cached_property
 from typing import ClassVar
 
+from ....core.host import MACOS
 from ...facts.memory import Memory
 from ...shell import sysctl
 
@@ -35,4 +36,4 @@ class AppleSilicon:
     @classmethod
     def is_available(cls) -> bool:
         """Whether this host is an Apple Silicon Mac."""
-        return platform.system() == "Darwin" and platform.machine() == "arm64"
+        return MACOS and platform.machine() == "arm64"

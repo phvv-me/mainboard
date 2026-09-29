@@ -9,7 +9,6 @@
 # is the command's own, a signal's `128 + N`, or the walltime's `124`/`137`.
 
 import os
-import platform
 import shlex
 import shutil
 import signal
@@ -21,6 +20,7 @@ from tempfile import gettempdir
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from ..core.host import WINDOWS
 from ..core.project import Project
 from ..dispatch.evidence import RECEIPTS_VAR, framed
 from .entry import Refusal, entering
@@ -176,7 +176,7 @@ class Runner:
         the program looked up on the environment's `PATH` as a shell would."""
         if self.job.container:
             return list(self.job.container)
-        if platform.system() != "Windows":
+        if not WINDOWS:
             return ["bash", "-c", self.job.command]
         words = shlex.split(self.job.command)
         program = shutil.which(words[0], path=environment.get("PATH")) or words[0]

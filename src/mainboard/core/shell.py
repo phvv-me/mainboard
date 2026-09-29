@@ -1,12 +1,13 @@
 import os
 import shlex
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the argv a verb hands over, the Windows stand-in for exec since=2026-09-28
-import sys
 from collections.abc import Callable, Mapping
 from string.templatelib import Interpolation, Template
 from typing import TYPE_CHECKING, NoReturn
 
 from plumbum import FG, ProcessExecutionError
+
+from ..core.host import WINDOWS
 
 if TYPE_CHECKING:
     from plumbum.commands.base import BaseCommand
@@ -61,7 +62,7 @@ def become(program: str, argv: list[str], env: Mapping[str, str] | None = None) 
     shell and the rest from the home directory. There the child is run to completion instead,
     its arguments quoted the way Windows parses them, and its exit status becomes this one's.
     """
-    if sys.platform != "win32":
+    if not WINDOWS:
         if env is None:
             os.execvp(program, argv)
         os.execvpe(program, argv, dict(env))

@@ -1,11 +1,11 @@
 import os
-import platform
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from ....core import MissionError
+from ....core.host import WINDOWS
 
 if TYPE_CHECKING:
     from io import IOBase
@@ -79,5 +79,5 @@ class Writer:
         There Python 3.14's chmod turns 0644 into a protected owner-only DACL instead of the
         inherited one, leaving the file unreadable to another process identity.
         """
-        if platform.system() != "Windows":
+        if not WINDOWS:
             os.fchmod(stream.fileno(), 0o644)

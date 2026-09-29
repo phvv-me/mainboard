@@ -1,4 +1,3 @@
-import platform
 from contextlib import nullcontext
 from functools import cached_property
 from pathlib import Path
@@ -7,6 +6,7 @@ from typing import TYPE_CHECKING
 from plumbum import local
 
 from ....core import MissionError
+from ....core.host import WINDOWS
 from .process import Process
 
 if TYPE_CHECKING:
@@ -67,7 +67,7 @@ class Tool:
         """
         if not self.name:
             raise MissionError(f"{type(self).__name__} names no command of its own to run")
-        if platform.system() == "Windows":
+        if WINDOWS:
             return windows_launcher(self.name)
         return local[self.name]
 

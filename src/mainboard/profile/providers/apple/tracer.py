@@ -1,10 +1,10 @@
 # macOS annotation backend: `os_signpost` intervals, shown in Instruments.
 
-import platform
 from contextlib import suppress
 from importlib import import_module
 from typing import TYPE_CHECKING, ClassVar, cast
 
+from ....core.host import MACOS
 from ...tracer import Marker, Tracer, Vendor
 
 if TYPE_CHECKING:
@@ -30,7 +30,7 @@ class SignpostTracer(Tracer):
 
     @classmethod
     def is_available(cls) -> bool:
-        return _signpost is not None and platform.system() == "Darwin"
+        return _signpost is not None and MACOS
 
     def mark(self, name: str) -> None:
         self._signposter.emit_event(name)
