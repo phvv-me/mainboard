@@ -18,7 +18,7 @@ requires-python = ">=3.14"
 license = "Apache-2.0"
 authors = [{ name = "Pedro Valois" }]
 dependencies = [
-    "cyclopts>=5.0",
+    "cyclopts>=4.23",
     # The state lake is a DuckLake at the ducklake extension's latest spec, which this engine
     # (v2.0.0-alpha43385) writes and an older engine refuses. The pin is exact because a
     # pre-release promises nothing between builds, and naming the pre-release outright is what

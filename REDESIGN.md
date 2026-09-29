@@ -538,3 +538,76 @@ deadline; `life/` and the root configs any time.
 - [x] 6.3 `host setup` is minimal by default (tool, pixi, pueue, the environment); `--dotfiles`
       adds the shell, editor and toolbox, and every later sync keeps what setup chose. The
       per-host `dotfiles` switch is gone
+- [x] 6.4 The `*.aside-r5` directories deleted on gold, pedro-cvlab and crimson (owner's go). Freed
+      19, 18 and 52 GB: the rest of their bytes were hardlinks into pixi's package cache, which
+      still holds 52-56 GB per host, mostly packages of old `default` environments
+- [x] 6.5 `MB_PROFILE=<file> mb <verb>` runs any verb under mb's own profiler with every module
+      instrumented (`job list`: 0.7 s, 0.39 s of it reading three failed runs' transcripts for a
+      cause). The report names regions by their whole nesting path, which reads poorly for a
+      deep call tree; a flat per-function table would serve this use better
+- [x] 6.6 Records read back from the lake ignore fields a release added or removed (renaming one
+      field made crimson read as never set up); pydantic 2.13 applies it to nested models too
+
+### Where a minimal host's bytes are (6.7)
+
+| what | size | verdict |
+|---|---|---|
+| the `gpu` environment | 5.6 GB | the floor for CUDA torch: `libtorch_cuda` links cuBLAS, cuDNN, cuFFT, cuRAND, cuSPARSE, NCCL, NVRTC and cuFile; only cusparselt and nvshmem (0.3 GB) are optional. A CPU-only experiment environment would be ~1 GB |
+| the source mirror | 1.0 GB | shrinkable: a minimal host needs only its environment's members and the job's code |
+| the tool | 0.2 GB | fine |
+| pixi's package cache | 52-56 GB | every package ever installed; the environment is hardlinked from it, so only stale packages are waste. `pixi clean cache` on a host frees them |
+| old checkouts `~/projects` | 123 GB gold, 52 GB crimson | from when those machines were centers; candidates for deletion (owner) |
+
+### SkyPilot, compared (6.8)
+
+| | mb | SkyPilot |
+|---|---|---|
+| machines | ssh hosts (pueue), PBS, Slurm, Vast, HPC-AI, Modal | 20+ clouds and marketplaces (AWS, GCP, Azure, Lambda, RunPod, Vast, Nebius...), Kubernetes, Slurm, ssh node pools |
+| picks the machine | the host you name; `host hold` rents on Vast | an optimizer over price and availability, failover across regions and clouds |
+| survives preemption | `--resume` from `MB_CHECKPOINT` (a rental's disk dies with it) | managed jobs relaunch preempted spot work; checkpoints to a bucket mount |
+| environment | lock solved once for four platforms, installed or packed per digest | a `setup:` script or an image per task |
+| record | the lake: runs, receipts, verdicts, logs, costs, queryable | its own state database; logs per cluster |
+| runs on the center | Windows, macOS, Linux | Linux and macOS only: the client imports `resource` and fails on Windows (tried); Python <= 3.13 while mb is on 3.14 |
+
+Fit: SkyPilot is best at the part mb does worst (getting a machine anywhere, cheaply, and
+getting it back after preemption) and does none of what mb is for (the lock, the lake, the
+receipts, PBS and pueue hosts). The clean seam is acquisition: SkyPilot launches the machine from
+the environment's image and writes an ssh alias for it; from there it is an ssh host to mb. Cost
+of that seam: a Linux launcher (gold, or WSL here), SkyPilot's own state beside the lake, a
+second Python. Recommendation: keep mb's Vast backend for now (it works and is measured), move it
+to boot from the environment's image (6.9), and try SkyPilot from gold for AWS or Lambda
+Blackwell when that is wanted; if it earns its place, retire `backends/vast.py` and `hpcai.py`.
+
+### Cleanup and deletion candidates (6.10, marked for the owner; nothing here is deleted yet)
+
+| candidate | size | why it can go | how |
+|---|---|---|---|
+| center `.mainboard/batches`, `source-archives`, `recovery`, `audits`, `collection.digests.json`, `catalog.ndjson`, `pulse.json`, `costs/`, `activate*.sh` | ~4.1 GB | imported into the lake and verified byte for byte (4.16); the generated scripts were retired in Phase 5 | after `mb lake check` passes, delete them |
+| hosts' `~/projects` (old center checkouts) | 123 GB gold, 52 GB crimson, pedro-cvlab too | from when those machines were centers; clean trees (`git status` empty), nothing dispatched uses them since 5.14 | delete per host |
+| hosts' pixi package caches | 52-56 GB each | mostly packages of retired environments | `pixi clean cache --yes` per host (live environments are hardlinks and survive) |
+| `packages/chefe`, `packages/lote` | 6 MB | retired, absorbed by mainboard; already excluded from members | remove the submodules |
+| `packages/cuda-python-meta`, `packages/sqlalchemy-cockroachdb` | <1 MB | excluded from members: nothing requires them | remove, or keep as archives |
+| `research/llm` | 284 MB | its nested `transformer_engine/3rdparty/googletest` submodule is broken, and every `git status` in the workspace prints two errors for it | fix or remove the submodule |
+| `research/compression/references` (24 submodules) | 1.3 GB | vendored reference repos read once; every git listing walks them | keep the few still cited, drop the rest |
+| `maskfile.md` | 16 KB | old HPC singularity recipes; mb runs jobs now | delete |
+| `tmp/` | 4 MB | untracked scratch | delete |
+| manifest deps no code, task or doc mentions: gallery-dl, instaloader, yt-dlp, youtube-transcript-api, imageio-ffmpeg, libcst, linkify-it-py, pytorch-ignite | - | maybe tools run by hand; the owner's call | remove from `[python.deps]` |
+| `remaster-lab/` (untracked, 136 GB of data) | - | a project at the root; belongs under `research/` once committed | move when it is committed |
+
+### Layout and manifest, done (6.11)
+
+- `life/` holds career, finances, health, writing and the vault (the vault and career-ops
+  submodules re-registered; Obsidian opens the vault at `life/vault` now); tasks, lint and git
+  rules, nine skills and the finances dashboard follow; `life` joins `research` on PYTHONPATH.
+- `mainboard.toml` is one manifest in seven sections (workspace, dependencies, environments,
+  hosts, tasks and gates, quality, research output), every table moved whole with its comments
+  and the parsed document proven equal; the chefe-era header rewritten; 8 dead tasks removed.
+- One lean environment per project: `cutok` (torch, cutoken, cupy, polars, gigatoken, pytest)
+  and `repro` (torch, transformers, the numerics stack at reproducibility's pins), both Linux.
+  `doctor` no longer reports an environment declared for other platforms as never installed.
+- Kept apart on purpose: `research/reproducibility`, `research/llm-head`, `research/bale` and
+  `packages/mcmr` keep their own manifests for people who clone them alone. Found: making
+  reproducibility a member folded its conda `optuna` beside the root's PyPI one, which dragged
+  conda's sqlalchemy against the workspace fork. Composition should let the root win across
+  ecosystems, not only per table; until then reproducibility stays a path dependency.
+- mainboard asks `cyclopts>=4.23` again: aizk caps it below 5, and mb passes on both.

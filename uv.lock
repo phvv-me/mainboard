@@ -829,7 +829,7 @@ dev = [
 requires-dist = [
     { name = "cuda-bindings", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=13.0" },
     { name = "cuda-core", marker = "(sys_platform == 'linux' and extra == 'cuda') or (sys_platform == 'win32' and extra == 'cuda')", specifier = ">=1.1" },
-    { name = "cyclopts", specifier = ">=5.0" },
+    { name = "cyclopts", specifier = ">=4.23" },
     { name = "duckdb", specifier = "==2.0.0.dev2609250715" },
     { name = "filelock", specifier = ">=4.0" },
     { name = "hypothesis", marker = "extra == 'adversarial'", specifier = ">=6.100" },

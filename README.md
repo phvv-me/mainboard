@@ -176,10 +176,10 @@ at all (offline, billed by the minute, booted from an image), build the environm
 on a Linux host, named by the environment's digest:
 
 ```console
-$ mb pack gpu --on crimson                  # a self-extracting executable (pixi-pack)
-$ mb pack gpu --on crimson --image          # plus an OCI image: slim Debian + the environment
-$ mb pack gpu --on pedro-cvlab --sif        # plus an Apptainer file for HPC
-$ mb pack gpu --on crimson --push ghcr.io/<owner>/mb-gpu   # and to a registry
+$ mb pack cutok --on crimson                  # a self-extracting executable (pixi-pack)
+$ mb pack cutok --on crimson --image          # plus an OCI image: slim Debian + the environment
+$ mb pack cutok --on pedro-cvlab --sif        # plus an Apptainer file for HPC
+$ mb pack cutok --on crimson --push ghcr.io/<owner>/mb-cutok   # and to a registry
 ```
 
 ## Holding a rented machine

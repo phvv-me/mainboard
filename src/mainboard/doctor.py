@@ -14,6 +14,7 @@ from plumbum.commands.processes import ProcessTimedOut
 from . import durable, staleness
 from .compute import Access, Survey
 from .core.errors import MissionError
+from .core.host import current_platform
 from .core.project import Project
 from .core.section import Section, Verdict
 from .engines.compile.backend import PIXI_VERSION, POSIX_INSTALLER, EnvironmentAudit
@@ -375,7 +376,19 @@ class Doctor:
         A report on `default` alone says nothing about the one a serving host runs, which stays
         invisible until a command asks it for an interpreter.
         """
-        return (self.env,) if self.env else ("default", *self.board.manifest.envs)
+        if self.env:
+            return (self.env,)
+        # An environment declared for other platforms (a Linux-only experiment one, on a Windows
+        # center) is never installed here, and saying so every time is noise.
+        here = current_platform()
+        return (
+            "default",
+            *(
+                name
+                for name, spec in self.board.manifest.envs.items()
+                if not spec.platforms or here in spec.platforms
+            ),
+        )
 
     def settling(self) -> Section:
         """Whether a periodic pass settles dispatched jobs with no session holding it open.
