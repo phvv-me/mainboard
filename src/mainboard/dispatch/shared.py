@@ -1,6 +1,7 @@
 # The leaf every dispatch submodule imports instead of the package root, so nothing inside
 # dispatch depends on `dispatch/__init__.py` and its re-exports.
 
+import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=fixed local git invocation off PATH, not untrusted input since=2026-08-18
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +52,36 @@ DEFERRED_VAR = Project().variable("DEFERRED")
 # and which attempt this is (1 first).
 CHECKPOINT_VAR = Project().variable("CHECKPOINT")
 ATTEMPT_VAR = Project().variable("ATTEMPT")
+
+
+def git(*args: str, exact: bool = False) -> str:
+    """Stripped stdout of a local `git` command, the provenance of whatever is being recorded.
+
+    Public: experiments in cutok and reproducibility import it to stamp their registrations.
+
+    On `/dev/null` for the same reason every ssh this tool runs is: a dispatch is routinely
+    called from inside a shell loop reading handles, and a child left on the caller's stdin can
+    eat the rest of that loop's input. Nothing asked for here reads any.
+
+    Here in the leaf rather than beside the one dispatch that first needed it, because a trial
+    receipt asks git the same two questions a submit does and neither should drag the other's
+    module in to do it.
+
+    exact: keep the output byte for byte. A porcelain status line starts with the space that
+        means `unstaged`, and stripping it turns ` M src/x.py` into `M src/x.py`, a staged
+        change to a file called `rc/x.py`.
+    """
+    argv = ["git", *args]  # fixed local invocation off PATH, not untrusted input
+    read = subprocess.run(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed local invocation off PATH, not untrusted input since=2026-08-16
+        argv,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return read.stdout if exact else read.stdout.strip()
 
 
 # A scheduler job handle, always stored as text: pueue numbers its tasks, so a handle read back

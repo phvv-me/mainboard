@@ -1,4 +1,5 @@
 from ..transport import HostUnreachable
+from ..vocabulary import JobState  # re-exported: experiments import it from here
 from .base import (
     Scheduler,
     exit_reason,
@@ -19,6 +20,7 @@ from .slurm import Slurm, build_sbatch_flags, slurm_verdict
 
 __all__ = [
     "HostUnreachable",
+    "JobState",
     "Local",
     "Pbs",
     "Pueue",
