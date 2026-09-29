@@ -1,3 +1,4 @@
+import json
 import platform
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=executes the fixed uv argv Mainboard generated, never a shell string
 from collections.abc import Sequence
@@ -15,27 +16,28 @@ app = App()
 _WINDOWS_UV_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0)
 
 
-def after_parent(parent: int, command: Sequence[str], log: Path) -> int:
-    """Wait for the running launcher to unlock, then replace its uv tool snapshot.
+def after_parent(parent: int, command: Sequence[str], log: Path, state: Path, digest: str) -> int:
+    """Wait for the running launcher to unlock, replace its uv tool snapshot, record the digest.
 
     parent: process holding the Windows launcher open.
     command: exact uv install argv generated from the installed receipt.
     log: durable stdout/stderr record beside the source workspace.
+    state: where the new snapshot records the source digest it was installed from.
+    digest: that digest.
     """
     _wait(parent)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("", encoding="utf-8")
-    try:
-        for attempt, delay in enumerate(_WINDOWS_UV_RETRY_DELAYS, start=1):
-            result = _attempt(command, log, attempt)
-            if not _windows_uv_tool_lock(result):
-                return result.returncode
-            sleep(delay)
-        return _attempt(command, log, len(_WINDOWS_UV_RETRY_DELAYS) + 1).returncode
-    finally:
-        # The marker the scheduling process left says an update is on its way; this one is done
-        # with it however it ended, so the next stale command may schedule another.
-        log.with_suffix(".pending").unlink(missing_ok=True)
+    for attempt, delay in enumerate(_WINDOWS_UV_RETRY_DELAYS, start=1):
+        result = _attempt(command, log, attempt)
+        if not _windows_uv_tool_lock(result):
+            break
+        sleep(delay)
+    else:
+        result = _attempt(command, log, len(_WINDOWS_UV_RETRY_DELAYS) + 1)
+    if result.returncode == 0:
+        state.write_text(json.dumps({"digest": digest}), encoding="utf-8")
+    return result.returncode
 
 
 def _attempt(command: Sequence[str], log: Path, attempt: int) -> subprocess.CompletedProcess[str]:
@@ -74,9 +76,9 @@ def _wait(parent: int) -> None:
 
 
 @app.default
-def main(parent: int, log: Path, *command: str) -> int:
+def main(parent: int, log: Path, state: Path, digest: str, *command: str) -> int:
     """Perform one deferred self-update after its parent Mainboard process exits."""
-    return after_parent(parent, command, log)
+    return after_parent(parent, command, log, state, digest)
 
 
 if __name__ == "__main__":  # pragma: no cover - console-script fallback

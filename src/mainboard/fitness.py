@@ -127,7 +127,7 @@ class Fitness:
 
     def lock(self, system: System, environment: str) -> Section:
         """Whether the lock this workspace solved holds builds for this machine's platform."""
-        install = f"mainboard install {environment} --resolve"
+        install = f"mb lock {environment}"
         held = self._locked(environment)
         if held is None:
             return _row("lock", Verdict.WARN, f"{environment}: nothing solved yet", install)
@@ -192,8 +192,7 @@ class Fitness:
                 Verdict.FAIL,
                 f"compute capability {capability} needs CUDA {needed} builds, "
                 f"the lock holds CUDA {built}",
-                f"raise the CUDA of the locked builds, then mainboard install {environment} "
-                "--resolve",
+                f"raise the CUDA of the locked builds, then mb lock {environment}",
             )
         detail = f"CUDA {built} builds run on this driver and card"
         if driver is not None and driver < built:

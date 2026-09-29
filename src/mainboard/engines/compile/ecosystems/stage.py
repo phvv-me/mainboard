@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from ....core.errors import MissionError
 from ....core.host import current_platform, platform_selectors
 from ....manifest.schema.toolchain import Toolchain
 from ..pixi_manifest import normalized
@@ -127,8 +128,19 @@ class SecondStage:
         return merged
 
     def overlays(self, scope: Manifest | Env) -> list[Scope]:
-        """``scope`` followed by the platform overlays under it that this machine matches."""
+        """``scope`` followed by the platform overlays under it that this machine matches.
+
+        A Node table is refused in any overlay: it would give each platform its own
+        `package.json`, while the one lock solved on the center must match every platform's.
+        """
         selectors = platform_selectors(current_platform())
+        for key, over in scope.on.items():
+            if "nodejs" in over.toolchains():
+                raise MissionError(
+                    f"[on.{key}.nodejs] makes package.json differ per platform, which no single "
+                    "lock can match; declare the package in [nodejs] instead, or under "
+                    "[nodejs.package] optionalDependencies where it cannot build everywhere"
+                )
         return [scope, *(over for key, over in scope.on.items() if key in selectors)]
 
     def scopes(self, env: str) -> list[Scope]:

@@ -489,10 +489,10 @@ class Pixi(Tool):
             and "could not determine the home directory" in failure
         ):
             environment = "" if env == "default" else f" {env}"
-            resolution = " --resolve" if resolve else ""
+            verb = "lock" if resolve else "install"
             raise MissionError(
                 "Pixi could not access the Windows home/profile required for provisioning. "
-                f"Run `{Project().name} install{environment}{resolution}` from a regular "
+                f"Run `{Project().name} {verb}{environment}` from a regular "
                 "terminal outside the restricted application sandbox."
             )
 

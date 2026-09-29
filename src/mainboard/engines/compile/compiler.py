@@ -164,7 +164,7 @@ class Compiler:
         if not committed and state.environment and state.environment != self.environment:
             return (
                 f"{self.pixi.lock} is blessed for environment {state.environment!r}, not "
-                f"{self.environment!r}. Run `{tool} install {self.environment} --resolve`."
+                f"{self.environment!r}. Run `{tool} lock {self.environment}`."
             )
         where = f"{Lockfile(self.root).path} " if committed else ""
         return (
@@ -172,7 +172,7 @@ class Compiler:
             f"{self.pixi.manifest}: that file and the package metadata beside it hash to "
             f"{current[:12]}, while the lock is blessed {where}for "
             f"{state.solved_from[:12] or 'nothing'}. Either the lock is stale, in which case "
-            f"`{tool} install {self.environment} --resolve` on a solve-capable machine settles "
+            f"`{tool} lock {self.environment}` on a solve-capable machine settles "
             "it, or another process compiled into this workspace between that solve and now, in "
             "which case run it again with nothing else writing here."
         )

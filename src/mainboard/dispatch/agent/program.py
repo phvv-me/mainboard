@@ -257,8 +257,13 @@ class Digests:
 
 
 def _stamp(status: os.stat_result) -> list[int | str]:
-    """What a file's digest is remembered by."""
-    return [status.st_size, status.st_ino, status.st_mtime_ns, status.st_ctime_ns]
+    """What a file's digest is remembered by.
+
+    Windows reports 128-bit file ids on some volumes; the id is folded to the 64 bits the lake
+    keeps, since it only tells a replaced file from an edited one beside size and times.
+    """
+    inode = (status.st_ino >> 64) ^ (status.st_ino & 0xFFFFFFFFFFFFFFFF)
+    return [status.st_size, inode, status.st_mtime_ns, status.st_ctime_ns]
 
 
 class Rules:

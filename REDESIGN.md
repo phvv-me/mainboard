@@ -158,3 +158,20 @@ tests/dispatch/test_provenance.py (archive test edits the job file).
     atomicity FIXMEs); not used.
 - Next (after hosts run this release): open the tunnel from `mb job submit`/`monitor` so a job's
   receipts and log lines land in the center's lake live instead of being collected over ssh.
+
+## Round 3 (2026-09-29): three hosts on this release, Quack across the fleet
+
+- Default lock re-solved on Windows (owner decision 1 settled): `libsass` from conda-forge on
+  Unix (PyPI has no linux-aarch64 wheel and its sdist cannot build under a Windows solve).
+- Node: pnpm is the default manager (conda-forge builds it for all four platforms; bun has no
+  win-64 build there); `[nodejs] builds` writes pnpm's `allowBuilds`; `[on.<platform>.nodejs]`
+  is refused, since a per-platform package.json broke `npm ci` on every Linux host. qmd dropped.
+- Fixed on the way: 128-bit Windows file ids overflowed `digests.inode` (folded to 64 bits);
+  `self update` recorded its baseline on first check, so an install made before a source edit
+  read as current (now recorded after a successful reinstall; the dead startup refresh removed);
+  hints naming `install --resolve` now name `mb lock`.
+- gold, crimson, pedro-cvlab set up (DuckDB 2.0.0.dev2609250715 everywhere). Through `ssh -R`,
+  each read the center's real lake (659 runs, matching) and all three wrote a served scratch lake
+  at once: 20 appends each at 62-120 ms, 60/60 rows, parameterized reads included.
+  `MB_REMOTE_WORKSPACE=D:/projects pytest integration/test_remote.py`: those three pass;
+  macmini, pedro-home, purple still need `mb host setup`.

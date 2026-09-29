@@ -87,7 +87,7 @@ class Doctor:
         The lock may have been solved from a manifest this one no longer is, the environment
         provisioned before an edit nobody re-installed, or a wheel may have lost its files
         underneath pixi, which no lock notices. Each finding names the command that repairs THAT
-        finding (a stale lock needs `--resolve`, the others the install the lock describes), since
+        finding (a stale lock needs `lock`, the others the install the lock describes), since
         one command for the row left the reader guessing which findings it covered. The row names
         its environment, since the report carries one row per declared environment.
 
@@ -104,7 +104,7 @@ class Doctor:
             return row(
                 verdict=Verdict.WARN,
                 detail=f"{environment}: nothing compiled yet",
-                fix=f"{install} --resolve",
+                fix=f"{_TOOL} lock {environment}",
             )
         state = SyncState.load(directory)
         installed = pixi.ready(environment)
@@ -133,7 +133,7 @@ class Doctor:
             )
         if lock_stale:
             findings.append(
-                ("pixi.lock was not solved from this manifest", f"{install} --resolve")
+                ("pixi.lock was not solved from this manifest", f"{_TOOL} lock {environment}")
             )
         findings += Doctor._committed(pixi, state, solved, lockfile, environment)
         if installed and state.compiled_from != compiler.digest():
@@ -172,7 +172,7 @@ class Doctor:
                 (
                     f"{lockfile.path.name} holds no lock for {environment}, only the untracked "
                     f"{pixi.lock} does",
-                    install if adoptable else f"{install} --resolve",
+                    install if adoptable else f"{_TOOL} lock {environment}",
                 )
             ]
         if (

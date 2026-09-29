@@ -452,16 +452,10 @@ def build(root: Path | None = None) -> App:
         Nothing checks or updates on its own: every other verb runs the code installed.
         """
         found = staleness.check()
-        if found.source is None:
-            print(f"{project.name} is not installed from a source tree; nothing to update")
+        if found.source is None or not found.stale:
+            print(f"{project.name}: {found.detail}")
             return
-        if not found.stale:
-            print(f"{project.name} is current with {found.source}")
-            return
-        failure = staleness.Refresh(found).reinstall()
-        if failure:
-            raise MissionError(f"could not update: {failure}")
-        print(f"{project.name} updated from {found.source}")
+        print(f"{project.name}: {found.detail}; {staleness.update(found)}")
 
     @self_.command
     def version(*, output: Output = _RICH) -> None:

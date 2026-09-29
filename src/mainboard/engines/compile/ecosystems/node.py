@@ -1,3 +1,4 @@
+import json
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar
 
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
     from ..generated import Writer
 
 _MANIFEST = "package.json"
+_PNPM_WORKSPACE = "pnpm-workspace.yaml"
 _MODULES = "node_modules"
 _PACKAGE_FIELDS = "package"
 _LOCKS = {
@@ -28,13 +30,18 @@ _LOCKS = {
 class NodeOptions(FrozenOpenModel):
     """The `[nodejs]` settings beside its dependency tables.
 
-    manager: the package manager binary that installs and links `node_modules`.
+    manager: the package manager binary that installs and links `node_modules`: pnpm by
+        default, conda-forge building it for every platform and its one content-addressed store
+        sharing each package across environments.
     app: whether this workspace is itself the JavaScript application, so its `package.json`
         and `node_modules` belong at the workspace root where a bundler resolves them.
+    builds: which dependencies may run their install scripts, pnpm's `allowBuilds`; pnpm stops
+        on a dependency with a script this leaves undecided.
     """
 
-    manager: str = "npm"
+    manager: str = "pnpm"
     app: bool = False
+    builds: dict[str, bool] = {}
 
 
 class NodeManager(Tool):
@@ -102,10 +109,21 @@ class Node(Ecosystem):
 
         A surviving one would keep reinstalling the last dependency removed.
         """
+        policy = self.directory / _PNPM_WORKSPACE
         if not (self.deps or self.fields):
             files.remove(self.manifest)
+            files.remove(policy)
             return
         files.write(self.manifest, self.compiled().to_json())
+        if self.options.manager == "pnpm":
+            # YAML reads a JSON string as a key, which keeps a scoped `@org/name` intact.
+            allowed = "".join(
+                f"  {json.dumps(name)}: {str(allow).lower()}\n"
+                for name, allow in sorted(self.options.builds.items())
+            )
+            files.write(policy, f"allowBuilds:\n{allowed}" if allowed else "allowBuilds: {}\n")
+        else:
+            files.remove(policy)
 
     def frozen_inputs(self) -> tuple[Path, ...]:
         """Require a shard-local manifest and native lock before remote transfer or pinning."""
@@ -116,7 +134,8 @@ class Node(Ecosystem):
                 "[nodejs] app=true installs into the mutable workspace, not an isolated "
                 "prefix; frozen remote setup/dispatch for this mode is not implemented"
             )
-        return self.manifest, self.lock()
+        policy = (self.directory / _PNPM_WORKSPACE,) if self.options.manager == "pnpm" else ()
+        return self.manifest, self.lock(), *policy
 
     def lock(self) -> Path:
         """The selected manager's existing lock, preserving npm shrinkwrap precedence."""
