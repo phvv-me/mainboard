@@ -2,7 +2,7 @@
 # here probes anything of its own. Each section asks the subsystem that already owns the
 # question, the manifest loader, the compile state and the wheel audit, the compute survey, and
 # every verification gate the workspace declares, then turns its answer into one line with the
-# command that repairs it. The center's own tooling is `center verify`'s question, not this one.
+# command that repairs it. The center's own tooling is `doctor --center`'s question, not this one.
 
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial

@@ -362,3 +362,49 @@ scale; widening the batch id would rename existing batches, so it is left.
   gpus/facts, lake check/compact/serve/query, list/tree/run/doctor/check, center git status.
 - Open: six runs on `blackwell` (a rental no longer declared) stay live until
   `mb job cancel` settles them; `doctor` fails only on the workspace's own `math` gate.
+
+## Round 5 (2026-09-29): leaner surface, minimal hosts, experiments that survive failure
+
+Owner's asks, worked in order, each checked off as it lands:
+- [x] 5.1 The six stale `blackwell` runs deleted from the lake (runs, host record, 88 log lines,
+      30 events); the vast batches that ran a job named `blackwell` keep their history
+- [x] 5.2 The research `math` gate and `math-doctor` task removed from the workspace manifest
+- [x] 5.3 mainboard, dotfiles and the workspace's manifest, lock and pointers pushed (the
+      owner's unrelated work in liereadout, remaster-lab, reverse-lab, glinet left uncommitted)
+- [x] 5.4 Output for agents by default: a header line then tab-separated rows, columns empty in
+      every row and empty record fields left out, compact JSON, plain help (no boxes, no
+      colour, no `--no-<flag>` twins), plain tracebacks, stderr logs as short lines (dispatched
+      jobs keep JSON); `--human` for rich tables. Found on the way: no verb's parameter
+      descriptions ever reached `--help` (the docstrings lacked `Args:`); 47 fixed
+- [x] 5.5 `host list [HOSTS] [--facts] [--gpus] [--audit] [--plan]`: one verb, each flag one
+      more table keyed by host; `facts`, `gpus`, `audit` and `check` gone (the far side answers
+      `host list local --facts --json`, so hosts need this release)
+- [x] 5.6 `job` is six verbs: `submit` (one job, `--batch spec`, a lane with `--split`/`--per-job`
+      over `--on a,b`, `--estimate`, `--wait`), `list` (settles what ended, then lists;
+      `--batch`, `--watch`, `--every`), `show` (the receipts' verdict, `--wait`), `logs`,
+      `cancel`, `collect`. Gone: `wait`, `verdict`, `monitor` (kept hidden for installed
+      timers), `batch prepare|estimate|run|watch|wait`, `lanes run`. Checked live: job 318 on
+      gold, submitted with `--wait`, settled ok
+- [x] 5.7 No `center` group: `center verify` is `doctor --center`, `center members` is
+      `doctor --members`, `center migrate` is `host setup <dest> --center`, `center git` is
+      `mb git`. `plot` and `center paper` are one `paper` group (`paper build`, `paper plot`); the
+      cutok ICLR artifact vendors mainboard and runs `mainboard plot`, kept hidden until it is
+      frozen. DECISION later: move `plots/` and `manuscript/` (1.4k lines, 2 external imports)
+      into their own package once the artifact freezes
+- [x] 5.8 `mb shell` starts your own shell (zsh, bash, fish, pwsh, cmd) with the environment
+      entered: pixi's own `shell` refused zsh on Windows. `shell-hook` gone (nothing used it).
+      `mb completion powershell` added (a static table, no Python per keystroke), so bash, zsh,
+      fish and PowerShell complete on every system
+- [x] 5.9 `proc` works on any process by pid; added `proc list [pattern]` (pid, parent, user,
+      cpu, memory, age, command; everyone's when a pattern is given), `proc kill --match`, and
+      `--on HOST` for both
+- [x] 5.10 `host setup --minimal` (tool, pixi, environment; no dotfiles); `dotfiles = false` per
+      host (purple, a shared server); `host hold` rentals always minimal; `[workspace] dotfiles =
+      "Pedrexus/dotfiles"` declared
+- [ ] 5.11 One multiplexer: herdr or tmux, not both
+- [ ] 5.12 Experiment environments: small and fast to land on a fresh rented node
+- [ ] 5.13 Resume a failed job from its last checkpoint, recorded in the lake
+- [ ] 5.14 Wipe mainboard from every host and set it up again, measuring size and time
+- [ ] 5.15 Rented GPUs that stay set up (Vast, HPC-AI, AWS Blackwell): images and volumes
+- [ ] 5.16 Monorepo layout proposal
+- [ ] 5.17 Try the researched tools (topgrade, Mutagen, pixi-pack) on the real fleet

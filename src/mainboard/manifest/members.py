@@ -16,7 +16,7 @@
 # WHAT STAYS OUT. How to solve and where to run belong to the root alone: `[workspace]`,
 # `[system]`, each ecosystem's solve settings (`[python] index-strategy`, overrides), hosts,
 # admission, containers, CI, git, gates, templates, tracking and plot styles. A member keeps
-# them for when it stands alone; composed, they are not read, and `center members` names them.
+# them for when it stands alone; composed, they are not read, and `doctor --members` names them.
 #
 # NAMES. A member is named after its directory. Its tasks and papers are reachable as
 # `<member>:<name>`, and bare as well when neither the root nor another member takes the name;

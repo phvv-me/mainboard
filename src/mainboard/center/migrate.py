@@ -7,7 +7,7 @@
 # changes nothing. Nothing the center knows is typed twice: the tree comes from the `git`
 # module's ownership rules, the environment from the lock this center solved, the machine
 # findings from the same census and judge `facts` uses, and the final word from the destination
-# running `center verify` on itself.
+# running `doctor --center` on itself.
 
 import re
 import subprocess
@@ -70,13 +70,13 @@ _UNHOLDABLE = re.compile(
     re.IGNORECASE,
 )
 
-# How long the destination's own `center verify` may run, a torch and CUDA smoke and every lint
+# How long the destination's own `doctor --center` may run, a torch and CUDA smoke and every lint
 # tool's probe included, and the silence its ssh rides out while that smoke loads the machine:
 # the default 45 s dropped it with `Timeout, server not responding` (pedro-home, 2026-09-26).
 _VERIFY_SECONDS = 1800.0
 _PATIENT = {"server_alive_interval": 30.0, "server_alive_count": 10}
 
-# A readiness report as `center verify --json` prints it.
+# A readiness report as `doctor --center --json` prints it.
 _SECTIONS = TypeAdapter(list[Section])
 
 
@@ -195,7 +195,7 @@ class Migration:
                         section=f"publish {state.repo}",
                         verdict=Verdict.FAIL,
                         detail=f"HEAD {state.head} is on no remote branch, so no clone fetches it",
-                        fix=f"{_NAME} center git push",
+                        fix=f"{_NAME} git push",
                     )
                 )
             if state.changed or state.untracked:
@@ -207,7 +207,7 @@ class Migration:
                             f"{state.changed} changed and {state.untracked} untracked paths stay "
                             "on this machine"
                         ),
-                        fix=f'{_NAME} center git commit -m "..." && {_NAME} center git push',
+                        fix=f'{_NAME} git commit -m "..." && {_NAME} git push',
                     )
                 )
         return rows or [
@@ -299,7 +299,7 @@ class Migration:
                 section="carry ssh config",
                 verdict=Verdict.WARN,
                 detail=f"{detail}; GitHub's host keys unknown here and gh could not fetch them",
-                fix=f"gh auth login, then {_NAME} center migrate {self.destination}",
+                fix=f"gh auth login, then {_NAME} host setup {self.destination} --center",
             )
         return Section(section="carry ssh config", verdict=Verdict.PASS, detail=detail)
 
@@ -338,7 +338,7 @@ class Migration:
             },
             list[Cloned],
         )
-        again = f"{_NAME} center migrate {self.destination} --root <an empty directory>"
+        again = f"{_NAME} host setup {self.destination} --center --root <an empty directory>"
         rows = [
             Section(
                 section=f"clone {step.repo}",
@@ -409,7 +409,7 @@ class Migration:
                             section=name,
                             verdict=Verdict.FAIL,
                             detail=str(refusal).splitlines()[0][:240],
-                            fix=f"{_NAME} center migrate {self.destination}",
+                            fix=f"{_NAME} host setup {self.destination} --center",
                         )
                     )
                     break
@@ -417,7 +417,7 @@ class Migration:
         return rows
 
     def verify(self, plan: ExecutionPlan, root: str) -> list[Section]:
-        """The destination's own `center verify`, which is the readiness suite run there.
+        """The destination's own `doctor --center`, which is the readiness suite run there.
 
         It rides one ssh process whose keepalives are patient enough for the smoke that loads
         the machine, bounded by a wall clock past any full verify.
@@ -425,7 +425,7 @@ class Migration:
         self.watch(f"verifying {self.destination}")
         dialect = dialect_for(plan.profile)
         ssh = self.transport.model_copy(update=_PATIENT)
-        line = dialect.stage(plan, root, command=f"{_TOOL} center verify --json", activate=False)
+        line = dialect.stage(plan, root, command=f"{_TOOL} doctor --center --json", activate=False)
         argv = dialect.one_shot(ssh, self.destination, line)
         try:
             _, out, err = ssh.invoke(
@@ -443,7 +443,7 @@ class Migration:
                     section="verify",
                     verdict=Verdict.FAIL,
                     detail=f"no readiness report came back: {said}",
-                    fix=f"{_NAME} center verify (on {self.destination})",
+                    fix=f"{_NAME} doctor --center (on {self.destination})",
                 )
             ]
         return [staged("verify", row) for row in sections]

@@ -76,9 +76,20 @@ def _colors() -> bool:
     return not WINDOWS or importlib.util.find_spec("colorama") is not None
 
 
+def _line(_: object, __: str, event: EventDict) -> str:
+    """One short line: the event, its fields as `key=value`, a level word only above info."""
+    level = event.pop("level", "info")
+    event.pop("timestamp", None)
+    text = str(event.pop("event", ""))
+    fields = "".join(f" {key}={value}" for key, value in event.items())
+    return f"{'' if level in {'debug', 'info'} else level + ': '}{text}{fields}"
+
+
 def configure(level: str = "", output: str = "") -> None:
-    """Configure structlog for this process: `level` and `output` (`console` or `json`), each
-    read from the environment when empty, else `info` and whatever stderr is (a terminal or not).
+    """Configure structlog for this process: `level` and `output` (`console`, `json` or `line`),
+    each read from the environment when empty, else `info` and whatever stderr is (a terminal or
+    not). `line` is what the CLI's own verbs print for an agent reading stderr: no timestamp,
+    module or JSON braces.
     """
     project = Project()
     level = (level or project.variable("LOG_LEVEL").read() or "info").lower()
@@ -93,7 +104,9 @@ def configure(level: str = "", output: str = "") -> None:
         structlog.dev.set_exc_info,
     ]
     rendered: list[Any] = (
-        [
+        [structlog.processors.format_exc_info, _line]
+        if output == "line"
+        else [
             structlog.processors.CallsiteParameterAdder(
                 [CallsiteParameter.QUAL_MODULE, CallsiteParameter.LINENO],
                 additional_ignores=[__name__],

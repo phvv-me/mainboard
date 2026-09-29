@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.table import Table
-from rich.traceback import install as install_rich_traceback
 
 from .values import columns_of
 
@@ -82,8 +81,3 @@ def diverted() -> Iterator[None]:
         sys.stdout.flush()
         os.dup2(held, _STDOUT_FD)
         os.close(held)
-
-
-def install_traceback() -> None:
-    """Install rich's traceback handler for readable uncaught errors, the CLI error boundary."""
-    install_rich_traceback(show_locals=False)

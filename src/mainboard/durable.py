@@ -1,4 +1,4 @@
-# The durable form of `mainboard job monitor`: the periodic settling pass installed into the
+# The durable form of `mb job list`: the periodic settling pass installed into the
 # machine's own service manager, not a session's terminal. A cron an agent starts dies with that
 # agent, and thirty five PBS jobs owed to it died unsettled, so the pass belongs to the machine.
 # Linux answers with a user systemd timer, which needs no root and survives every terminal.
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 # doubled beside a renamed one, and the script it runs exists in every release.
 _TOOL = Project().package
 # The one pass a period runs, the same line a person types at a terminal.
-_PASS = ("job", "monitor", "--json")
+_PASS = ("job", "list", "--json")
 # The period a message suggests when nothing is installed, the one the campaign cron ran at.
 _SUGGESTED = "20m"
 # How long a service manager may take to answer before it is read as saying nothing.
@@ -84,7 +84,7 @@ class Every(FrozenModel):
         if found is None:
             raise MissionError(
                 f"a period is written like 20m, 1h or 90s, not {written!r}; "
-                f"`{Project().name} job monitor --every 0` removes the pass"
+                f"`{Project().name} job list --every 0` removes the pass"
             )
         return cls(seconds=int(found[1]) * _UNITS[found[2]], written=said)
 
@@ -217,7 +217,7 @@ class SystemdUser(Settler):
                     "no periodic pass installed, so a dispatched job settles only while a "
                     "session sweeps it"
                 ),
-                fix=f"{Project().name} job monitor --every {_SUGGESTED}",
+                fix=f"{Project().name} job list --every {_SUGGESTED}",
             )
         shown = self._shown()
         every = self._setting(self.timer, "OnUnitActiveSec")
@@ -357,7 +357,7 @@ class Unsupported(Settler):
         """The one sentence a platform with no implementation here is refused with."""
         return (
             f"{platform.system()} has no service manager {_TOOL} can install a periodic pass "
-            f"into; sweep with `{Project().name} job monitor` from a scheduler this machine "
+            f"into; sweep with `{Project().name} job list` from a scheduler this machine "
             "already runs"
         )
 

@@ -27,7 +27,7 @@ from .core.errors import MissionError
 from .core.host import WINDOWS
 from .core.project import Project
 from .core.section import Section
-from .core.shell import become, foreground
+from .core.shell import become, foreground, interactive_shell
 from .deps import Dependencies
 from .dispatch import keys, vocabulary
 from .dispatch.backends.base import (
@@ -471,11 +471,11 @@ class Board:
             return read_facts(shell.run(facts_command(), activate=True))
 
     def audit(self) -> list[Section]:
-        """What this host could and should update, as its own tool judges it (`host audit`)."""
+        """What this host could and should update, as its own tool judges it."""
         if self.local:
             return upkeep.audit()
         with open_shell(self.plan(container="none"), self.remote_root()) as shell:
-            said = shell.run(f"{self.project.name} host audit --json")
+            said = shell.run(f"{self.project.name} host list local --audit --json")
         start = said.find("[")
         if start < 0:
             raise MissionError(f"{self.host} answered no audit: {said.strip()[-240:]}")
@@ -484,7 +484,7 @@ class Board:
     def findings(self, system: System) -> list[Section]:
         """What this host's software census means for this workspace, one judged row each.
 
-        The judge `compute`, `setup` and `center verify` share, so a driver below the CUDA floor
+        The judge `compute`, `setup` and `doctor --center` share, so a driver below the CUDA floor
         is the same row whichever verb found it.
         """
         return Fitness(self.root, self.manifest).judge(system, host=self.host)
@@ -502,7 +502,9 @@ class Board:
         line = next((line for line in reversed(text.splitlines()) if line.startswith("{")), "")
         if not line:
             raise MissionError(f"no occupancy in the probe output: {text.strip()[-240:]}")
-        return Occupancy.model_validate_json(line)
+        readings = json.loads(line)
+        # This release keys the readings by host (`local` on the far side); an older one did not.
+        return Occupancy.model_validate(readings.get("local", readings))
 
     @property
     def floor(self) -> str:
@@ -528,6 +530,7 @@ class Board:
         profile: str = "",
         watch: Watcher | None = None,
         sync_only: bool = False,
+        minimal: bool = False,
     ) -> HostSetup:
         """Install an environment for this board's host, in place here or by onboarding over ssh.
 
@@ -547,6 +550,8 @@ class Board:
         sync_only: re-mirror and re-provision an onboarded host without reinstalling the tool or
             re-probing its hardware, neither of which changed when only the manifest moved;
             refused on this machine, which has no onboarding to skip parts of.
+        minimal: only what jobs need (the tool, pixi, the environment), no dotfiles: a rented
+            machine billed by the minute.
         """
         if sync_only and self.local:
             raise MissionError(
@@ -569,7 +574,9 @@ class Board:
                 watch=watch,
                 digest=compiler.digest(),
                 floor=self.floor,
-                dotfiles=self.manifest.workspace.dotfiles,
+                dotfiles=""
+                if minimal or not plan.profile.dotfiles
+                else self.manifest.workspace.dotfiles,
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
         # A platform this machine cannot run has no prefix to activate here; its lock ships with
@@ -1054,7 +1061,7 @@ class Board:
                 raise MissionError(
                     "remote file targets require submission for source transfer and allocation; "
                     f"use mainboard job submit --on {plan.host} -- {target.spelling}, then "
-                    "mainboard job wait or mainboard monitor. Run collection and help locally."
+                    "`mb job show --wait` or `mb job list`. Run collection and help locally."
                 )
             shipment = self.sealed(target, plan)
             listing = self.dispatcher.stage_listing(shipment)
@@ -1127,17 +1134,15 @@ class Board:
         *,
         replace: Callable[[str, list[str], Mapping[str, str]], NoReturn] = become,
     ) -> NoReturn:
-        """Hand this terminal to an interactive `pixi shell` inside the workspace environment.
+        """Hand this terminal to the user's own shell with the workspace environment entered.
 
-        pixi owns interactive activation, so there is no second activation here. This process
-        is replaced rather than wrapped, so the shell owns the terminal and its signals and
-        leaving it lands where the user began. An unprovisioned environment is refused naming
-        the fix, since a shell on the machine's own interpreter is what staging prevents. The
-        shell enters `--frozen`: pixi would otherwise treat entering as a reason to re-solve the
-        lock, and `lock` is the one deliberate door for that. Exec drops what a
-        spawned child would inherit, so the declared floors and the runtime step's changes are
-        passed explicitly; without the floors a host lacking the virtual package fails on
-        `shell` alone.
+        The activation `install` computed from the manifest is applied here, then this process
+        becomes the shell, so it owns the terminal and leaving it lands where the user began.
+        Any shell works (zsh, bash, fish, pwsh, cmd): pixi's own `shell` refuses zsh on Windows.
+        On Linux and macOS the environment's `activate.sh` (modules, pixi, second-stage tools)
+        is sourced by `sh`, which then becomes the shell; on Windows the activation pixi
+        recorded at install is applied as variables. An unprovisioned environment is refused
+        naming the fix.
 
         env: the environment name, the host profile's own when empty.
         replace: the process-replacing exec, injectable so a test can read what it was handed.
@@ -1151,10 +1156,18 @@ class Board:
         pixi = Provisioner(self.root, self.manifest).pixi_for(plan.env)
         if not pixi.ready(plan.env):
             raise MissionError(missing(plan, plan.prefix(str(self.root))))
-        binary = str(pixi.executable)
-        argv = [binary, "shell", *pixi.scope(), "--frozen", "-e", plan.env]
-        environ = os.environ | pixi.overrides
-        replace(binary, argv, environ | Runtime(pixi.env_prefix(plan.env)).changes(environ))
+        shell = interactive_shell()
+        base = os.environ | pixi.overrides
+        if WINDOWS:
+            entered = pixi.recorded_environment(plan.env, base)
+            entered |= Runtime(pixi.env_prefix(plan.env)).changes(entered)
+            replace(shell[0], shell, entered)
+        script = self.root / self.project.activation(plan.env, self.root)
+        if not script.is_file():
+            tool = self.project.name
+            raise MissionError(f"{plan.env!r} has no activation; run `{tool} install`")
+        entering = ["/bin/sh", "-c", '. "$1" && shift && exec "$@"', "mb-shell", str(script)]
+        replace(entering[0], [*entering, *shell], base)
 
     def submit(
         self,

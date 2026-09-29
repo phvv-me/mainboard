@@ -49,7 +49,7 @@ class HostFacts(FrozenOpenModel):
         about a machine that decides whether the environments it builds are the ones a dispatch
         addressed, and until it was printed here nobody could see two hosts disagreeing.
     system: the operating system, filesystem, git settings, tools and NVIDIA driver, read by the
-        same census `center migrate` sends to a machine with no tool on it yet, so a finding
+        same census `host setup --center` sends to a machine with no tool on it yet, so a finding
         about a host never depends on which verb looked. Empty from a host whose tool predates it.
     """
 

@@ -38,6 +38,8 @@ class HostProfile(Declared):
     vars: read by this machine's backends (an API key, rental parameters), never shipped.
     exports: set for every job after its environment is entered, for facts about the host's
         world (`HF_HUB_OFFLINE = "1"` where compute nodes must never ask the Hub).
+    dotfiles: apply the workspace's `[workspace] dotfiles` at setup (shell, editor, toolbox);
+        off for a host that only runs jobs. A rented machine never gets them.
     """
 
     kind: str = "auto"
@@ -56,6 +58,7 @@ class HostProfile(Declared):
     queues: dict[str, QueuePolicy] = {}
     defaults: Defaults = Defaults()
     observe: Observe = Observe()
+    dotfiles: bool = True
 
     def inheriting(self, base: Self) -> Self:
         """This profile with `base` filling every unset field and merging the tables."""

@@ -1,5 +1,4 @@
 import os
-import shlex
 import sys
 import time
 from contextlib import suppress
@@ -13,6 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 from cyclopts import App, Parameter
 from plumbum import local as localhost
 from pydantic import JsonValue
+from rich.console import Console
 
 from . import staleness, upkeep
 from .batch.spec import BatchSpec, Selection
@@ -21,9 +21,9 @@ from .center.migrate import Migration
 from .center.standalone import Standalone
 from .center.verify import Verification
 from .ci import LocalLeg, Matrix, Package
+from .completion import powershell
 from .context.resolver import Resolver
 from .core.errors import MissionError, NoWorkspace
-from .core.host import WINDOWS
 from .core.project import Project
 from .core.section import Section, Verdict, failed
 from .core.shell import become
@@ -39,12 +39,14 @@ from .holds import Holds
 from .jobs import lanes as lanes_module
 from .lint import Inventory, Linter
 from .listing import Listing
+from .log import configure
 from .manifest.loading import composition, load, load_plot_config
 from .manifest.schema.plot import PlotStyle
 from .probe.occupancy import rows as occupancy_rows
 from .probe.system import System
 from .proc import Processes
-from .render import diverted, install_traceback, mode_of, plain, progress, record, rows, totals
+from .render import diverted, mode_of, plain, progress, record, rows, totals
+from .render.values import to_row
 from .runtime.job import Job
 from .runtime.runner import Runner
 from .state import Importer, Lake
@@ -69,26 +71,34 @@ if TYPE_CHECKING:
     from .verdicts import StreamVerdict
 
 
+# The values a compact record leaves out: they say nothing an absent field does not.
+_EMPTY: tuple[object, ...] = (None, "", [], {}, ())
+
+
 @Parameter(name="*")
 @dataclass(frozen=True, kw_only=True)
 class Output:
-    """How a verb prints its document: the default rich table or one of two compact modes."""
+    """How a verb prints its document: compact rows for agents by default, JSON, or rich tables.
+
+    The default is what an agent reads cheapest: a header line of field names, then one
+    tab-separated line per row, no colour, no box drawing.
+    """
 
     json: bool = False
-    """print canonical JSON instead of the default rich table."""
-    agent: bool = False
-    """print the compact tabular mode instead of the default rich table."""
+    """print canonical JSON instead of the compact rows."""
+    human: bool = False
+    """print rich tables for a person at a terminal instead of the compact rows."""
     fields: str = ""
     """a comma-separated projection over the printed fields."""
 
     def __post_init__(self) -> None:
-        """Refuse both compact modes at once before the verb does any work."""
-        mode_of(json_mode=self.json, agent=self.agent)
+        """Refuse both modes at once before the verb does any work."""
+        mode_of(json_mode=self.json, human=self.human)
 
     @property
     def mode(self) -> str | None:
-        """The render key, `None` for the default rich table."""
-        return mode_of(json_mode=self.json, agent=self.agent)
+        """The render key, `None` for the compact default."""
+        return mode_of(json_mode=self.json, human=self.human)
 
     def projection(self, default: Sequence[str] = ()) -> Sequence[str]:
         """The `--fields` names, trimmed and blanks dropped, `default` when none were given."""
@@ -97,15 +107,29 @@ class Output:
     def print_rows(
         self, payloads: Sequence[Mapping[str, Node]], *, title: str, columns: Sequence[str] = ()
     ) -> None:
-        """Print many entities, `columns` keeping an empty table's heading unless projected."""
-        rows(payloads, mode=self.mode, fields=self.projection(columns), title=title)
+        """Print many entities, `columns` keeping an empty table's heading unless projected.
+
+        The compact default leaves out a column empty in every row: it tells an agent nothing
+        and costs a tab per row. `--fields` keeps exactly the columns it names.
+        """
+        fields = self.projection(columns)
+        if self.mode is None and not self.fields and payloads:
+            flat = [to_row(payload) for payload in payloads]
+            fields = [
+                name
+                for name in fields or flat[0]
+                if any(row.get(name) not in (None, "") for row in flat)
+            ]
+        rows(payloads, mode=self.mode, fields=fields, title=title)
 
     def print_record(self, payload: Mapping[str, Node], *, title: str) -> None:
-        """Print one entity."""
+        """Print one entity; the compact default leaves out its empty fields."""
+        if self.mode is None and not self.fields:
+            payload = {key: value for key, value in payload.items() if value not in _EMPTY}
         record(payload, mode=self.mode, fields=self.projection(), title=title)
 
 
-_RICH = Output()
+_COMPACT = Output()
 
 
 @Parameter(name="*")
@@ -115,25 +139,23 @@ class Declared:
 
     job: tuple[str, ...] = ()
     """a `target:command` job, repeatable, for a batch declared without a file."""
-    name: str = ""
-    """the batch's name when declared with `--job` rather than a file."""
     only: str = ""
     """the plan's jobs to act on, names or `kind-*` globs, comma-separated; all when unset."""
     set_: Annotated[tuple[str, ...], Parameter(name="--set", negative="")] = ()
     """a `name=value` filling one of the spec file's `[vars]`, repeatable."""
 
-    def batch(self, board: Board, spec: str) -> Batch:
+    def batch(self, board: Board, spec: str, *, name: str = "") -> Batch:
         """The declared batch over `board`'s workspace, `spec` relative to its root."""
-        return board.batch(self._spec(board.root, spec), selection=Selection.of(self.only))
+        return board.batch(self._spec(board.root, spec, name), selection=Selection.of(self.only))
 
-    def _spec(self, root: Path, spec: str) -> BatchSpec:
+    def _spec(self, root: Path, spec: str, name: str) -> BatchSpec:
         if spec:
             return BatchSpec.load(root / spec, _answers(self.set_))
         if self.set_:
             raise MissionError("--set fills a spec file's [vars]; a --job batch declares none")
         if not self.job:
-            raise MissionError("declare a batch: a spec file, or --job target:command")
-        return BatchSpec.inline(self.name or "batch", self.job)
+            raise MissionError("declare a batch: --batch <spec file>, or --job target:command")
+        return BatchSpec.inline(name or "batch", self.job)
 
 
 _SPEC_ONLY = Declared()
@@ -145,14 +167,26 @@ def build(root: Path | None = None) -> App:
     root: an explicit workspace root, discovered from the cwd when None.
     """
     project = Project()
-    app = App(name=project.name, help="One interface for environments, dispatch, and hardware.")
+    # Plain help: box drawing and colour cost an agent tokens and tell a person nothing more.
+    app = App(
+        name=project.name,
+        help="One interface for environments, dispatch, and hardware.",
+        help_formatter="plain",
+        # No `--no-<flag>` twin for every boolean: every flag here defaults to off.
+        default_parameter=Parameter(negative=()),
+        console=Console(
+            color_system=None, highlight=False, width=None if sys.stdout.isatty() else 160
+        ),
+    )
     host = App(name="host", help="Set up, list, inspect and reach the machines jobs run on.")
     job = App(name="job", help="Dispatch jobs to hosts and follow them until they settle.")
     self_ = App(name="self", help=f"Manage the {project.name} installation itself.")
     lake = App(name="lake", help="Keep the workspace's state lake: check, compact, serve.")
     app.command(host)
     app.command(job)
+    paper = App(name="paper", help="Build a declared manuscript and plot figures from results.")
     app.command(lake)
+    app.command(paper)
     app.command(self_)
 
     def workspace_root() -> Path:
@@ -165,7 +199,8 @@ def build(root: Path | None = None) -> App:
     def help_(*query: str) -> None:
         """Show command help or search shipped docs and Python docstrings without a workspace.
 
-        query: an exact command path such as `batch run`, or words such as `Log.read_table`.
+        Args:
+            query: an exact command path such as `batch run`, or words such as `Log.read_table`.
         """
         Help(app).show(" ".join(query))
 
@@ -183,18 +218,22 @@ def build(root: Path | None = None) -> App:
         remote diagnostic commands execute over SSH, on a cluster's login endpoint rather than in
         a batch allocation. The exit code is the command's own.
 
-        command: the command tokens, from the first token that is not an option of this verb,
-            passed on verbatim with its own flags; a job's arguments follow `--`.
-        on: the host alias, `local` for this machine.
-        env: an environment name overriding the profile's choice.
-        container: a container override, `none` forcing bare.
+        Args:
+            command: the command tokens, from the first token that is not an option of this verb,
+                passed on verbatim with its own flags; a job's arguments follow `--`.
+            on: the host alias, `local` for this machine.
+            env: an environment name overriding the profile's choice.
+            container: a container override, `none` forcing bare.
         """
         return board(on).run(command, env=env, container=container)
 
     @job.command(version_flags=[])
     def submit(
         *command: str,
-        on: str,
+        on: str = "",
+        batch: str = "",
+        split: str = "",
+        per_job: int = 0,
         name: str = "",
         queue: str = "",
         walltime: str = "",
@@ -208,37 +247,70 @@ def build(root: Path | None = None) -> App:
         needs: tuple[str, ...] = (),
         env: str = "",
         container: str = "",
+        estimate: bool = False,
+        wait: bool = False,
         yes: bool = False,
-        output: Output = _RICH,
-    ) -> None:
-        """Dispatch a command, or a job spelled `path/to/file.py::name`, on a host.
+        declared: Declared = _SPEC_ONLY,
+        output: Output = _COMPACT,
+    ) -> int:
+        """Dispatch one job, a batch, or a test lane split over hosts, and print the handles.
 
-        A job ships exactly the code it imports and the directory it lives in, runs through the
-        one runner in the host's environment, and stamps its receipts with a provenance scoped
-        to those files. A command ships the mirror and keeps the whole-tree provenance. Either
-        way the handle is printed, bare unless a compact mode asks for the whole record.
+        One job: a command, or `path/to/file.py::name` (which ships only the code it imports),
+        on `--on HOST`. A batch: `--batch spec.toml`, or `--job target:command` repeated, each
+        job to its own target; a target refusing is that job's row and the rest still go. A
+        lane: `path/to/test.py::test --on a,b --split model` runs the test's cells as one job
+        per `model` value on every named host (`--per-job N` slices instead).
 
-        The expectation prints first, the same manners a batch has: the resolved target, the
-        queue policy's admission, and what the meter will say, a provider's rate for a rented
-        host and zero for owned hardware. At a terminal the dispatch then asks once; in a
-        script or under `--yes` it proceeds, and the line is printed either way.
+        What it will cost prints first (target, queue admission, the meter); at a terminal it
+        asks once, and `--yes` or a script proceeds. `--estimate` stops there, dispatching
+        nothing. `--wait` blocks until everything submitted settles and exits its verdict.
 
-        command: the command tokens, from the first token that is not an option of this verb,
-            or `path/to/file.py::name` and, after `--`, the arguments its application takes.
-        gpu_name: the GPU type to rent, for a metered provider host.
-        max_usd: the spend cap a provider host refuses to submit without.
-        attempt: the 1-based try number feeding expression defaults.
-        fetch: a results path recorded for later `pull`, the node's own evidence directory when
-            unset and `--node` names one.
-        node: the ledger slug this run serves, carried into its record and receipts.
-        needs: a workspace-relative data path the job reads on the host, repeatable, joining
-            the ones the job file declares; refused for a command, which reaches the mirror.
-        yes: dispatch without asking, what a script passes.
+        Args:
+            command: the command tokens, from the first token that is not an option of this verb,
+                or `path/to/file.py::name` and, after `--`, the arguments its application takes.
+            on: the host alias; comma-separated for a lane.
+            batch: a batch spec file, relative to the workspace root.
+            split: a lane's parametrize name; each of its values becomes one job.
+            per_job: a lane's cells per job when no name groups them, 0 for all in one.
+            name: the run's label, or the batch's name for a `--job` batch.
+            gpu_name: the GPU type to rent, for a metered provider host.
+            max_usd: the spend cap a provider host refuses to submit without.
+            attempt: the 1-based try number feeding expression defaults.
+            fetch: a results path recorded for later collection, the node's evidence directory
+                when unset and `--node` names one.
+            node: the ledger slug this run serves, carried into its record and receipts.
+            needs: a workspace-relative data path the job reads on the host, repeatable.
+            estimate: price the plan and print it; dispatch nothing.
+            wait: block until every submitted job settles; exit 0 clean, 1 failed, 2 timeout.
+            yes: dispatch without asking, what a script passes.
         """
-        line = joined(command)
+        if batch or declared.job:
+            return _submit_batch(batch, declared, name=name, estimate=estimate, wait=wait)
+        target = joined(command)
+        if not on:
+            raise MissionError("name a host: --on <alias>, or a batch with --batch")
+        if split or per_job or "," in on:
+            return _submit_lane(
+                target,
+                hosts=[alias.strip() for alias in on.split(",") if alias.strip()],
+                split=split,
+                per_job=per_job,
+                resources={
+                    "queue": queue,
+                    "walltime": walltime,
+                    "mem_gb": mem_gb,
+                    "gpus": gpus,
+                    "gpu_name": gpu_name,
+                    "max_usd": max_usd,
+                },
+                node=node,
+                estimate=estimate,
+                wait=wait,
+                yes=yes,
+            )
         workspace = board(on)
         priced = workspace.expectation(
-            line,
+            target,
             queue=queue,
             walltime=walltime,
             mem_gb=mem_gb,
@@ -247,13 +319,15 @@ def build(root: Path | None = None) -> App:
             max_usd=max_usd,
             attempt=attempt,
         )
-        pulled = workspace.results(fetch, node=node, command=line)
+        pulled = workspace.results(fetch, node=node, command=target)
         print(_expected(priced, results=pulled), file=sys.stderr)
+        if estimate:
+            return 0
         if not yes and sys.stdin.isatty() and not _agreed():
             raise SystemExit(1)
         with progress(f"submitting on {on}") as stage:
-            job = workspace.submit(
-                line,
+            submitted = workspace.submit(
+                target,
                 watch=stage,
                 name=name,
                 queue=queue,
@@ -270,9 +344,232 @@ def build(root: Path | None = None) -> App:
                 container=container,
             )
         if output.mode is None:
-            print(job.handle.id)
+            print(submitted.handle.id)
+        else:
+            output.print_record(submitted.handle.model_dump(), title="handle")
+        if not wait:
+            return 0
+        return show(submitted.handle.id, on=on, wait=True)
+
+    def _submit_batch(
+        spec: str, declared: Declared, *, name: str, estimate: bool, wait: bool
+    ) -> int:
+        """Price, or dispatch, every job a batch declares; print the batch id and each row."""
+        batched = declared.batch(board("local"), spec, name=name)
+        if estimate:
+            with progress(f"pricing {batched.id}"):
+                priced = [row.model_dump() for row in batched.estimate().jobs]
+            _tabled(
+                priced,
+                _ESTIMATE_COLUMNS,
+                summing=("wire_bytes", "runtime_s", "expected_usd", "p90_usd"),
+                output=_COMPACT,
+                title=f"estimate: {batched.id}",
+            )
+            return 0
+        with progress(f"dispatching {batched.id}") as stage:
+            dispatched = batched.run(watch=stage)
+        print(f"# batch {batched.id}")
+        _COMPACT.print_rows(
+            [entry.model_dump() for entry in dispatched],
+            title=f"run: {batched.id}",
+            columns=_DISPATCH_COLUMNS,
+        )
+        return show(batched.id, wait=True) if wait else 0
+
+    def _submit_lane(
+        target: str,
+        *,
+        hosts: list[str],
+        split: str,
+        per_job: int,
+        resources: dict[str, str | int | float],
+        node: str,
+        estimate: bool,
+        wait: bool,
+        yes: bool,
+    ) -> int:
+        """Run a test lane's cells on each host, one job per group; `local` runs them in place.
+
+        The lane's parametrization is the plan: its cells are collected here, grouped by the
+        `split` value or sliced, and each group runs its cells as fresh processes.
+        """
+        manifest = load(project.manifest(workspace_root()))
+        if windows := [
+            h for h in hosts if h in manifest.hosts and manifest.hosts[h].platform == "win-64"
+        ]:
+            raise MissionError(f"a lane cannot be queued on Windows hosts: {', '.join(windows)}")
+        with progress(f"collecting {target}"):
+            probe = ["run", "--", "python", "-m", "mainboard.jobs.lanes", "collect", target]
+            cells = lanes_module.parsed(localhost[project.package][probe]())
+        if not cells:
+            raise MissionError(f"{target} collected no cells")
+        groups = lanes_module.grouped(cells, by=split, per_job=per_job)
+        served = node or lanes_module.node_of(target)
+        fresh = ["--fresh", "--timeout", "900"]
+        pytest_args = ["-p", "no:randomly", "-q", "--no-header"]
+        _COMPACT.print_rows(lanes_module.summary(hosts, groups), title="lane")
+        if estimate:
+            return 0
+        if not yes and sys.stdin.isatty() and not _agreed():
+            raise SystemExit(1)
+        dispatched: list[tuple[str, str, str]] = []
+        code = 0
+        for host in hosts:
+            for chosen in groups:
+                line = [target, "--", *fresh, *chosen.ids, "--", *pytest_args]
+                if host == "local":
+                    ran = board("local").run(line)
+                    code = code or ran
+                    dispatched.append((host, chosen.name, f"local exit {ran}"))
+                    continue
+                with progress(f"submitting {chosen.name} on {host}") as stage:
+                    submitted = board(host).submit(
+                        joined(line),
+                        watch=stage,
+                        name=f"lane-{host}-{chosen.name}",
+                        node=served,
+                        **resources,  # type: ignore[arg-type]
+                    )
+                dispatched.append((host, chosen.name, submitted.handle.id))
+        _COMPACT.print_rows(
+            [{"host": h, "group": g, "handle": i} for h, g, i in dispatched], title="dispatched"
+        )
+        for host, _, identity in dispatched if wait else ():
+            if not identity.startswith("local exit"):
+                code = code or show(identity, on=host, wait=True, quiet=True)
+        return code
+
+    @job.command
+    def show(
+        target: str,
+        *,
+        on: str = "",
+        run: str = "",
+        wait: bool = False,
+        timeout: float = vocabulary.WAIT_SECONDS,
+        stall: float = STALL_SECONDS,
+        quiet: Annotated[bool, Parameter(show=False)] = False,
+        output: Output = _COMPACT,
+    ) -> int:
+        """Print a job's or a batch's settled outcome, read only from its receipts; exit with it.
+
+        One row per trial: its outcome, its gate sweep and the ledger node it serves, never a
+        scheduler's or a session's memory. Exit 0 when every row settled clean, 1 on a failure,
+        2 while anything is in flight (or `--wait` timed out), 3 when the receipts prove
+        nothing, 4 when `--wait` saw a job stall.
+
+        `--wait` blocks until it settles, sweeping exactly as `job list` does (results pulled
+        back, rentals released), with each test cell and a heartbeat on stderr.
+
+        Args:
+            target: a handle or name as `submit`/`list` print it, a batch id, a receipts stream id,
+                directory or file.
+            on: the host alias narrowing a handle recorded on several hosts.
+            run: which run of a receipts store to score, its newest when unset.
+            wait: block until the target settles.
+            timeout: with `--wait`, give up after this many seconds (exit 2); 0 waits forever.
+            stall: with `--wait`, seconds a running job may print nothing on an idle card before
+                the wait stops and exits 4; 0 never calls a job stalled.
+        """
+        verdicts = board("local").verdicts()
+        if not wait:
+            with progress(f"reading {target}"):
+                settled = verdicts.of(target, host=on, run=run)
+            return _settled(settled, output)
+        if not quiet:
+            print(f"waiting on {target}", file=sys.stderr, flush=True)
+        with diverted():
+            settled = verdicts.wait(
+                target,
+                host=on,
+                timeout=timeout,
+                interval=vocabulary.POLL_SECONDS,
+                stall=stall,
+                say=_said,
+            )
+        return _settled(settled, output)
+
+    @job.command(name="list")
+    def jobs(
+        *,
+        limit: int = 20,
+        project: str = "",
+        batch: str = "",
+        watch: float = 0.0,
+        every: str = "",
+        output: Output = _COMPACT,
+    ) -> None:
+        """Settle every job that ended, then list the live ones and the newest settled ones.
+
+        Each host is asked once about every run it still owes (one `qstat`, `squeue` or `pueue
+        status`), so a wave of thirty says which run and which queue, since when, and when the
+        scheduler expects a start. A run that ended is settled on the way: its results pulled
+        back, its verdict recorded, its rental released. Live runs are never cut by `--limit`;
+        what the listing left out is said on stderr, beside what settled this pass.
+
+        Args:
+            limit: how many settled runs to show behind the live ones, newest first.
+            project: only the runs dispatched from this project (its directory under `research/`
+                or `packages/`, or `MB_PROJECT`).
+            batch: one batch's jobs instead, as `submit --batch` printed its id.
+            watch: repeat every this many seconds until interrupted.
+            every: install the settling pass into this machine's service manager at this period
+                (`20m`), so jobs settle with no session open; `0` removes it.
+        """
+        if every:
+            settling = schedule(workspace_root(), every)
+            print(f"{Project().name}: {settling.detail}")
+            if settling.fix:
+                print(f"{Project().name}: run `{settling.fix}`")
             return
-        output.print_record(job.handle.model_dump(), title="handle")
+        if batch:
+            watcher = board("local").watch(batch)
+            show_status = partial(_status, output=output)
+            if not watch:
+                with progress(f"sweeping {batch}"):
+                    status = watcher.once()
+                show_status(status)
+                return
+            _followed(watcher.follow(watch), f"sweeping {batch}", show_status)
+            return
+
+        def listed() -> None:
+            workspace = board("local")
+            with progress("settling and asking every host about its live jobs"):
+                report = workspace.monitor().once()
+                taken = Listing(workspace, limit=limit, project=project).taken()
+            if output.json and not watch:
+                # The periodic pass reads this document: the rows and what the sweep moved.
+                sweep = {**report.model_dump(), "changed": report.changed}
+                print(
+                    dumps(
+                        {"jobs": [row.model_dump() for row in taken.rows], "sweep": sweep},
+                        default=str,
+                    )
+                )
+                return
+            for change in _changes(report):
+                print(
+                    "settled " + " ".join(value for value in change.values() if value),
+                    file=sys.stderr,
+                )
+            output.print_rows(
+                [row.model_dump() for row in taken.rows], title="jobs", columns=_JOB_COLUMNS
+            )
+            if taken.note:
+                print(taken.note, file=sys.stderr)
+
+        listed()
+        with suppress(KeyboardInterrupt):
+            while watch:
+                time.sleep(watch)
+                listed()
+
+    @job.command(show=False)
+    def monitor(*, json: bool = False) -> None:
+        """The settling pass periodic runners installed before `job list --every` call."""
+        jobs(output=Output(json=json))
 
     @app.command
     def add(
@@ -282,7 +579,7 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         dev: bool = False,
         resolve: bool = True,
-        output: Output = _RICH,
+        output: Output = _COMPACT,
     ) -> None:
         """Declare a dependency in the manifest and re-solve, showing what the lock did.
 
@@ -291,11 +588,11 @@ def build(root: Path | None = None) -> App:
         one the flags name, and where the manifest already writes that kind of requirement in a
         particular table, the edit joins it there.
 
-        lang: the ecosystem whose resolver installs it.
-        env: an environment name, the workspace-wide table when omitted.
-        dev: declare it as a development-only requirement.
-        resolve: `--no-resolve` stages several edits to solve once.
-        fields: a comma-separated projection over name/where/before/after.
+        Args:
+            lang: the ecosystem whose resolver installs it.
+            env: an environment name, the workspace-wide table when omitted.
+            dev: declare it as a development-only requirement.
+            resolve: `--no-resolve` stages several edits to solve once.
         """
         with progress(f"adding {spec}"):
             changes = (
@@ -311,7 +608,7 @@ def build(root: Path | None = None) -> App:
         env: str = "",
         dev: bool = False,
         resolve: bool = True,
-        output: Output = _RICH,
+        output: Output = _COMPACT,
     ) -> None:
         """Drop a dependency from the manifest and re-solve, showing what the lock did.
 
@@ -320,7 +617,7 @@ def build(root: Path | None = None) -> App:
         ecosystem's, one environment's or the development-only tables, which is also how a name
         declared in more than one table is told apart.
 
-        fields: a comma-separated projection over name/where/before/after.
+        Args:
         """
         with progress(f"removing {name}"):
             changes = (
@@ -337,7 +634,7 @@ def build(root: Path | None = None) -> App:
         lang: Annotated[str, Parameter(name=["--lang", "-l"])] = "",
         env: str = "",
         dev: bool = False,
-        output: Output = _RICH,
+        output: Output = _COMPACT,
     ) -> None:
         """Move one dependency to its newest release, or the whole lock forward in its bounds.
 
@@ -347,7 +644,7 @@ def build(root: Path | None = None) -> App:
         constraints already allow. `--lang`, `--env` and `--dev` narrow the search for the name
         to one ecosystem's, one environment's or the development-only tables.
 
-        fields: a comma-separated projection over name/where/before/after.
+        Args:
         """
         with progress(f"upgrading {name or 'the lock'}"):
             changes = board("local").deps().upgrade(name, ecosystem=lang, env=env, dev=dev)
@@ -361,7 +658,7 @@ def build(root: Path | None = None) -> App:
         description: str = "",
         dest: str = "",
         answer: tuple[str, ...] = (),
-        output: Output = _RICH,
+        output: Output = _COMPACT,
     ) -> None:
         """Scaffold a project from one of this workspace's declared templates.
 
@@ -373,12 +670,12 @@ def build(root: Path | None = None) -> App:
         is hand-curated and the same project has to reach the type checker's search path beside
         it, and half of that edit landing on its own is worse than none of it.
 
-        name: the project name, which becomes its slug, its package and its task prefix.
-        template: a declared template name or any location copier accepts.
-        description: the one sentence the README and the task rows carry.
-        dest: where to render it, under the template's own declared home when omitted.
-        answer: a further `question=value` for the template, repeatable.
-        fields: a comma-separated projection over project/path/tasks/paste/snippet.
+        Args:
+            name: the project name, which becomes its slug, its package and its task prefix.
+            template: a declared template name or any location copier accepts.
+            description: the one sentence the README and the task rows carry.
+            dest: where to render it, under the template's own declared home when omitted.
+            answer: a further `question=value` for the template, repeatable.
         """
         with progress(f"rendering {name}"):
             made = (
@@ -402,23 +699,35 @@ def build(root: Path | None = None) -> App:
         output.print_record(payload, title="new")
 
     @app.command
-    def doctor(env: str = "", *, output: Output = _RICH) -> int:
+    def doctor(
+        env: str = "", *, center: bool = False, members: bool = False, output: Output = _COMPACT
+    ) -> int:
         """Say whether this workspace is fit to work in, and exit nonzero when it is not.
 
-        The questions asked at once and bounded: does the manifest still say something
-        coherent, is what is installed the environment it describes, what compute answers right
-        now, do onboarded hosts still match the manifest, does a periodic pass settle jobs, and
-        does every declared gate still hold. A section reports the one command that repairs it,
-        and only a genuinely broken workspace fails, so a sleeping host or a provider nobody has
-        a key for is a word rather than a nonzero exit. Whether this machine can be the center
-        is `center verify`'s question.
+        Asked at once and bounded: is the manifest coherent, is what is installed the
+        environment it describes, what compute answers, do onboarded hosts match the manifest,
+        does a periodic pass settle jobs, does every declared gate hold. Each row names the one
+        command that repairs it; a sleeping host or a provider with no key is a word, not a
+        failure.
 
-        env: the environment to examine, the local profile's own when omitted.
-        fields: a comma-separated projection over section/verdict/detail/fix.
+        Args:
+            env: the environment to examine, the local profile's own when omitted.
+            center: also judge this machine as the workspace's center: git tooling (lfs, symlinks,
+                long paths), agent configuration, the default environment on every shell's PATH, a
+                torch and CUDA smoke run, scripts that behave differently here.
+            members: also check every `[workspace] members` project works cloned alone: no import,
+                path or task that only the monorepo satisfies, and a clean `uv` install.
         """
         with progress("examining the workspace"):
-            sections = board("local").doctor(env).sections()
-        return _sectioned(sections, output, title="doctor")
+            local = board("local")
+            sections = Verification(local).sections() if center else local.doctor(env).sections()
+        code = _sectioned(sections, output, title="doctor")
+        if members:
+            standalone = Standalone(composition(project.manifest(workspace_root())))
+            with progress("checking the members alone"):
+                alone = standalone.sections(())
+            code |= _sectioned(alone, output, title="members", heading=True)
+        return code
 
     @app.command
     def install(env: str = "", *, profile: str = "") -> None:
@@ -426,9 +735,10 @@ def build(root: Path | None = None) -> App:
 
         Another machine is onboarded with `setup`, which ends by running this verb there.
 
-        env: the environment name, this machine's declared profile choice when omitted.
-        profile: the declared host profile describing this machine, so the environment's
-            activation carries that host's modules; what `setup` passes when a host installs.
+        Args:
+            env: the environment name, this machine's declared profile choice when omitted.
+            profile: the declared host profile describing this machine, so the environment's
+                activation carries that host's modules; what `setup` passes when a host installs.
         """
         with progress(f"installing {env or 'the environment'}") as stage:
             board("local").install(env, profile=profile, watch=stage)
@@ -440,8 +750,9 @@ def build(root: Path | None = None) -> App:
         `install` never solves: it installs exactly the lock, so a host installs what this
         machine solved. This is the one verb that moves the lock.
 
-        env: the environment name, this machine's declared profile choice when omitted.
-        profile: the declared host profile describing this machine.
+        Args:
+            env: the environment name, this machine's declared profile choice when omitted.
+            profile: the declared host profile describing this machine.
         """
         with progress(f"solving {env or 'the environment'}") as stage:
             board("local").install(env, resolve=True, profile=profile, watch=stage)
@@ -459,7 +770,7 @@ def build(root: Path | None = None) -> App:
         print(f"{project.name}: {found.detail}; {staleness.update(found)}")
 
     @self_.command
-    def version(*, output: Output = _RICH) -> None:
+    def version(*, output: Output = _COMPACT) -> None:
         """Show this installation: its version, where it runs from, and the engines it pins.
 
         DuckDB is named because a served lake needs the same release at both ends.
@@ -477,31 +788,20 @@ def build(root: Path | None = None) -> App:
         )
 
     @app.command
-    def completion(shell: Literal["bash", "zsh", "fish"]) -> None:
-        """Print the shell completion script, as `pixi completion` does.
+    def completion(shell: Literal["bash", "zsh", "fish", "powershell"]) -> None:
+        """Print the script that completes this tool's commands and options in a shell.
 
-        `eval "$(mb completion zsh)"` in the shell's rc file keeps it. PowerShell has none yet
-        (cyclopts generates only these three).
+        Keep it in the shell's startup: `eval "$(mb completion zsh)"` (zsh, bash; `mb
+        completion fish | source` in fish) or `mb completion powershell | Out-String |
+        Invoke-Expression` in `$PROFILE`. The same four shells on Linux, macOS and Windows.
 
-        shell: the shell the script is for.
+        Args:
+            shell: the shell the script is for.
         """
+        if shell == "powershell":
+            print(powershell(app, (project.name, project.package)))
+            return
         print(app.generate_completion(prog_name=project.name, shell=shell))
-
-    @host.command(name="audit")
-    def host_audit(on: str = "local", *, output: Output = _RICH) -> int:
-        """Say what this machine or a host could and should update, read-only.
-
-        Each package manager present (apt, dnf, brew, snap, winget, and firmware through fwupd)
-        is asked what is pending, beside a waiting reboot, stale apt lists, disk, drift from the
-        dotfiles and this tool's own snapshot. Every warning names its fix; `host upgrade` runs
-        them. A host answers with its own copy of this tool.
-
-        on: the host alias, `local` for this machine.
-        fields: a comma-separated projection over section/verdict/detail/fix.
-        """
-        with progress(f"auditing {on}"):
-            rows = board(on).audit()
-        return _sectioned(rows, output, title=f"audit {on}")
 
     @host.command(name="upgrade")
     def host_upgrade(on: str = "local", *, dry_run: bool = False) -> int:
@@ -511,8 +811,9 @@ def build(root: Path | None = None) -> App:
         snap, winget), then the pixi global toolbox, the dotfiles and this tool. Firmware is only
         audited. A host runs its own copy over a terminal, so `sudo` can ask for its password.
 
-        on: the host alias, `local` for this machine.
-        dry_run: print the steps without running them.
+        Args:
+            on: the host alias, `local` for this machine.
+            dry_run: print the steps without running them.
         """
         if on != "local":
             flags = ("--dry-run",) if dry_run else ()
@@ -528,39 +829,21 @@ def build(root: Path | None = None) -> App:
         can share a connection, so this is what makes a passphrase-protected host (miyabi-g)
         reachable without a prompt per connection. Asks each key's passphrase once per boot.
 
-        hosts: the ssh aliases whose keys to add.
+        Args:
+            hosts: the ssh aliases whose keys to add.
         """
         for host in hosts:
             if status := keys.unlock(host):
                 raise MissionError(f"{host} still refuses a silent login (exit {status})")
             print(f"{host}: reachable without a prompt")
 
-    @app.command(name="shell-hook")
-    def shell_hook(env: str = "default") -> None:
-        """Print what enters `env` in the current shell, as `pixi shell-hook` does.
-
-        bash/zsh: `eval "$(mb shell-hook)"`. PowerShell: `mb shell-hook | Out-String |
-        Invoke-Expression`. On POSIX it sources the activation `install` wrote into the
-        environment's own directory (modules, pixi, second-stage tools); on Windows it is pixi's
-        own PowerShell hook, since nothing there sources bash.
-
-        env: the environment name.
-        """
-        pixi = installed(env)
-        if WINDOWS:
-            print(pixi.shell_hook(env, shell="powershell"))
-            return
-        script = workspace_root() / project.activation(env, workspace_root())
-        if not script.is_file():
-            raise MissionError(f"environment {env!r} has no activation; run `mb install {env}`")
-        print(f". {shlex.quote(script.as_posix())}")
-
     @app.command(name="list", version_flags=[])
     def list_(*command: str, env: str = "default") -> NoReturn:
         """List the packages installed in an environment, through `pixi list`.
 
-        command: pixi's own arguments, a package regex first (`mb list torch --json`).
-        env: the environment name.
+        Args:
+            command: pixi's own arguments, a package regex first (`mb list torch --json`).
+            env: the environment name.
         """
         pixi_verb("list", env, command)
 
@@ -568,8 +851,9 @@ def build(root: Path | None = None) -> App:
     def tree(*command: str, env: str = "default") -> NoReturn:
         """Show an environment's dependency tree, through `pixi tree`.
 
-        command: pixi's own arguments, a package regex first (`mb tree numpy --invert`).
-        env: the environment name.
+        Args:
+            command: pixi's own arguments, a package regex first (`mb tree numpy --invert`).
+            env: the environment name.
         """
         pixi_verb("tree", env, command)
 
@@ -606,14 +890,15 @@ def build(root: Path | None = None) -> App:
         is asked for an interactive allocation first, so the terminal lands on a compute node
         rather than on the login node the request was made from.
 
-        command: on a host, a command to run instead of handing over the terminal, from the
-            first token that is not an option of this verb.
-        on: the host alias, `local` for this machine.
-        env: the environment name, the profile's declared choice when omitted.
-        queue: on a queued host, the queue the allocation targets, the profile's when omitted.
-        walltime: on a queued host, the session's wall-clock limit, the profile's when omitted.
-        keep: on a host, hold the session in tmux on the far side so a dropped terminal leaves
-            the allocation up, and reattach to one already held.
+        Args:
+            command: on a host, a command to run instead of handing over the terminal, from the
+                first token that is not an option of this verb.
+            on: the host alias, `local` for this machine.
+            env: the environment name, the profile's declared choice when omitted.
+            queue: on a queued host, the queue the allocation targets, the profile's when omitted.
+            walltime: on a queued host, the session's wall-clock limit, the profile's when omitted.
+            keep: on a host, hold the session in tmux on the far side so a dropped terminal leaves
+                the allocation up, and reattach to one already held.
         """
         if on != "local":
             board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
@@ -631,36 +916,52 @@ def build(root: Path | None = None) -> App:
         *,
         env: str = "",
         resolve: bool = False,
-        output: Output = _RICH,
-    ) -> None:
+        minimal: bool = False,
+        center: bool = False,
+        root: str = "",
+        output: Output = _COMPACT,
+    ) -> int:
         """Onboard a host until it can run jobs, then show what it became and what that means.
 
-        The host is provisioned with the environment its declared profile names, so a host that
-        runs `serving` is set up for serving without repeating the name here. The lock this
-        workspace solved ships with the mirror and the host installs from it. The record is
-        followed by the findings `facts` shows, judged from the software census read back
-        through the new activation.
+        The host installs the environment its declared profile names from the lock this
+        workspace solved, shipped with the mirror. Then the findings `host list --facts` shows,
+        judged from the census read back through the new activation.
 
-        env: an environment name overriding the host profile's own.
-        resolve: let the host run its own dependency solve instead of installing the shipped
-            lock, which puts that host's compiler in the resolution path.
-        fields: a comma-separated projection over the setup record's fields.
+        `--center` instead moves the center there (Windows, macOS or Linux): probes it, signs gh
+        in, carries ssh config and keys, clones the monorepo at this HEAD with every owned
+        submodule, carries what git does not hold (`.env`, the lake, agent configuration and
+        memory), installs this tool and the default environment, and ends with `doctor --center`
+        run there. Secrets ride ssh's stdin only. Running it again continues or re-verifies.
+
+        Args:
+            env: an environment name overriding the host profile's own.
+            resolve: let the host solve for itself instead of installing the shipped lock.
+            minimal: only what jobs need (this tool, pixi, the environment); no dotfiles or
+                toolbox, for a machine rented by the minute. A host declaring `dotfiles = false`
+                always gets this.
+            center: make this host the workspace's center instead of a job host.
+            root: with `--center`, where the workspace goes there, `~/projects` when omitted.
         """
+        if center:
+            with progress(f"moving the center to {host}") as stage:
+                sections = Migration(board("local"), host, root=root, watch=stage).run()
+            return _sectioned(sections, output, title="center")
         workspace = board(host)
         with progress(f"setting up {host}") as stage:
-            report = workspace.install(env, resolve=resolve, watch=stage)
+            report = workspace.install(env, resolve=resolve, watch=stage, minimal=minimal)
         _onboarded(workspace, report, output, title="setup")
+        return 0
 
     @host.command
-    def sync(host: str, *, env: str = "", output: Output = _RICH) -> None:
+    def sync(host: str, *, env: str = "", output: Output = _COMPACT) -> None:
         """Re-mirror a host already set up and re-provision it from the shipped lock.
 
         The fast path back after source moved: the tool is not reinstalled and the hardware is
         not probed again, so a Python edit reaches the host in the time the mirror takes. A
         host never set up needs `setup` first, which is where the probe and the tool come from.
 
-        env: an environment name overriding the host profile's own.
-        fields: a comma-separated projection over the setup record's fields.
+        Args:
+            env: an environment name overriding the host profile's own.
         """
         workspace = board(host)
         with progress(f"syncing {host}") as stage:
@@ -677,7 +978,7 @@ def build(root: Path | None = None) -> App:
         gpus: int = 0,
         max_usd: float = 0.0,
         env: str = "",
-        output: Output = _RICH,
+        output: Output = _COMPACT,
     ) -> None:
         """Rent a machine and keep it as an ssh host until a deadline, set up and ready for jobs.
 
@@ -686,15 +987,15 @@ def build(root: Path | None = None) -> App:
         onboards like `setup`, and is recorded with its deadline, which `monitor` and `compute`
         both enforce by releasing it, so a forgotten hold stops billing on time.
 
-        provider: the provider host to rent through, `vast` say.
-        for_: how long to keep it once it is ready, `3h`, `90m` or `1h30m`.
-        as_: the alias to reach it by, `<provider>-<card>` when omitted.
-        gpu_name: the card to rent, in the provider's own spelling.
-        gpus: cards per machine, the provider profile's default when 0.
-        max_usd: the spend cap over the whole hold, landing included, the provider's default
-            when 0.
-        env: the environment to set up, the provider profile's own when omitted.
-        fields: a comma-separated projection over the hold's fields.
+        Args:
+            provider: the provider host to rent through, `vast` say.
+            for_: how long to keep it once it is ready, `3h`, `90m` or `1h30m`.
+            as_: the alias to reach it by, `<provider>-<card>` when omitted.
+            gpu_name: the card to rent, in the provider's own spelling.
+            gpus: cards per machine, the provider profile's default when 0.
+            max_usd: the spend cap over the whole hold, landing included, the provider's default
+                when 0.
+            env: the environment to set up, the provider profile's own when omitted.
         """
         with progress(f"holding a {gpu_name or provider} machine") as stage:
             held = Holds(board("local")).hold(
@@ -710,43 +1011,75 @@ def build(root: Path | None = None) -> App:
         _held(held, output, title="hold")
 
     @host.command
-    def release(alias: str, *, output: Output = _RICH) -> None:
+    def release(alias: str, *, output: Output = _COMPACT) -> None:
         """End a held machine now: stop its billing, settle its record and drop its alias.
 
-        alias: the held machine's alias, as `hold` printed it.
-        fields: a comma-separated projection over the hold's fields.
+        Args:
+            alias: the held machine's alias, as `hold` printed it.
         """
         with progress(f"releasing {alias}"):
             held = Holds(board("local")).release(alias)
         _held(held, output, title="release")
 
     @host.command(name="list")
-    def compute(*, output: Output = _RICH) -> None:
-        """List every compute path this workspace can reach, with prices and credit where cheap.
+    def compute(
+        *hosts: str,
+        facts: bool = False,
+        gpus: bool = False,
+        audit: bool = False,
+        plan: bool = False,
+        env: str = "",
+        output: Output = _COMPACT,
+    ) -> int:
+        """List every compute path this workspace can reach; flags add detail per host.
 
-        Held machines past their deadline are released first. Then this machine, then each
-        declared host with whether it answers and whether it was ever set up, then each provider
-        backend with whether its credentials are present here, what the account has left to
-        spend, and a live rate where asking for one is cheap, followed by every machine the
-        provider says this account is renting, named by its hold when this workspace holds it.
-        Every probe is bounded and runs beside the others, so the whole fleet answers in the
-        time the slowest one takes, and a host that is down or a provider with no key is a row
-        rather than a failure. No credential is ever printed, only whether one was found.
+        One row per path: this machine, each declared host (answering? set up?), each provider
+        (credentials here? credit left? a live rate where cheap). Held machines past their
+        deadline are released first. Probes run in parallel, so the fleet answers in the time
+        the slowest host takes; a host that is down is a row, not a failure. No credential is
+        ever printed. Each flag prints one more table keyed by host, for the hosts named or,
+        when none is named, this machine (`--gpus` reads every ssh host).
 
-        Provisioned means cached setup, not current job readiness. Hardware may be stale;
-        cached_at names its onboarding observation and observed_at names this live survey.
-        GPU availability is not checked. PBS/Slurm reachability concerns the login endpoint,
-        not an allocated compute node. Inspect jobs and facts before scheduling experiments.
-
-        fields: comma-separated name/kind/access/detail/usd_hr/credit_usd/observed_at/cached_at.
+        Args:
+            hosts: narrow the listing to these aliases, `local` for this machine.
+            facts: each host's probed hardware and software, then what they mean for this
+                workspace (platform, lock, CUDA floor, card memory), each finding with its fix.
+            gpus: who holds each card now: utilization, memory and the processes on it.
+            audit: what each host could and should update, read-only; `host upgrade` applies it.
+                Exits 1 when an audit row fails.
+            plan: the execution plan each host resolves to: root, environment, container,
+                scheduler, modules, exports.
+            env: with `--plan`, an environment overriding the host profile's own.
         """
         workspace = board("local")
         for released in Holds(workspace).expire():
             gone = f"{released.provider} {released.handle}"
             print(f"released {released.alias}, {gone}", file=sys.stderr)
-        with progress("probing every compute path"):
-            paths = workspace.compute().paths()
-        output.print_rows([path.model_dump() for path in paths], title="compute")
+        if not (facts or gpus or audit or plan):
+            with progress("probing every compute path"):
+                paths = workspace.compute().paths()
+            chosen = [path for path in paths if not hosts or path.name in hosts]
+            output.print_rows([path.model_dump() for path in chosen], title="compute")
+            return 0
+        named = list(hosts) or ["local"]
+        failed = False
+        for alias in named if plan else ():
+            resolved = Resolver(load(project.manifest(workspace_root()))).plan(alias, env=env)
+            _heading(output, f"plan: {alias}")
+            output.print_record(resolved.model_dump(), title=f"plan: {alias}")
+        for alias in named if facts else ():
+            _facts(board(alias), alias, output)
+        if gpus:
+            _gpus(board, named if hosts else _ssh_hosts(), output)
+        for alias in named if audit else ():
+            with progress(f"auditing {alias}"):
+                sections = board(alias).audit()
+            failed |= bool(_sectioned(sections, output, title=f"audit: {alias}", heading=True))
+        return 1 if failed else 0
+
+    def _ssh_hosts() -> list[str]:
+        manifest = load(project.manifest(workspace_root()))
+        return ["local", *(alias for alias, spec in manifest.hosts.items() if spec.kind == "ssh")]
 
     @job.command
     def collect(path: str, *, on: str, json: bool = False) -> None:
@@ -756,12 +1089,13 @@ def build(root: Path | None = None) -> App:
         Live event snapshots exclude incomplete records; queries deduplicate overlapping frames.
         A new query sees published files. Collection is not one transaction across servers.
 
-        path: workspace-relative results file or directory, using forward slashes on every OS.
-        on: declared SSH host; root and bootstrap Python come from its profile, a `~` root
-            expanded by that Python when no setup has placed it yet. Python is a command in that
-            host's SSH login shell, usually python3; quote an absolute interpreter path as that
-            shell requires. No remote Mainboard is needed.
-        json: print a machine-readable collection summary.
+        Args:
+            path: workspace-relative results file or directory, using forward slashes on every OS.
+            on: declared SSH host; root and bootstrap Python come from its profile, a `~` root
+                expanded by that Python when no setup has placed it yet. Python is a command in
+                that host's SSH login shell, usually python3; quote an absolute interpreter path as
+                that shell requires. No remote Mainboard is needed.
+            json: print a machine-readable collection summary.
         """
         workspace = board(on)
         root = workspace.plan(container="none").profile.root
@@ -787,12 +1121,13 @@ def build(root: Path | None = None) -> App:
         jobs always shows the fleet. Monitor refreshes tracked jobs; collect also imports
         results from native remote runs. Neither requires a shared database service.
 
-        sql: one DuckDB SELECT statement; defaults to SELECT * FROM runs without --file.
-        file: read SQL from a UTF-8 file instead of the positional statement.
-            Both the file and paths inside SQL resolve from the caller's current directory.
-        project: restrict scientific rows to this research project.
-        json: print JSON when no output file is requested.
-        out: export to a new .csv, .parquet, or .json file instead of printing rows.
+        Args:
+            sql: one DuckDB SELECT statement; defaults to SELECT * FROM runs without --file.
+            file: read SQL from a UTF-8 file instead of the positional statement.
+                Both the file and paths inside SQL resolve from the caller's current directory.
+            project: restrict scientific rows to this research project.
+            json: print JSON when no output file is requested.
+            out: export to a new .csv, .parquet, or .json file instead of printing rows.
         """
         source = _query_source(sql, file)
         if source is None:
@@ -808,7 +1143,7 @@ def build(root: Path | None = None) -> App:
         rows = loads(dumps(results.rows(source, project=project), default=str))
         Output(json=json).print_rows(rows, title="results")
 
-    @app.command
+    @paper.command
     def plot(
         sql: str | None = None,
         *,
@@ -827,20 +1162,23 @@ def build(root: Path | None = None) -> App:
     ) -> None:
         """Plot a local SELECT using Seaborn and Matplotlib, without implicit aggregation.
 
-        sql: define the table, including any filtering, grouping, and ordering.
-        file: read a UTF-8 SQL file instead of the positional statement.
-            Both the file and paths inside SQL resolve from the caller's current directory.
-        config: overlay project styles and figures from this manifest-format TOML file.
-            It does not select an environment or change path resolution.
-        figure: render a named [figures.<name>] specification; omit SQL, x, and y.
-            Panels use native Seaborn marks and Matplotlib settings, without estimation.
-        x, y, hue: column names; omit hue for one series.
-        out: a new output path; repeat for multiple formats, such as .pdf and .png.
-        project: restrict scientific rows to this research project.
-        kind: bar requires one row per x/hue group.
-        style: a named [plots.<name>] entry; defaults to paper when declared.
-        dpi: raster resolution, overriding the style's DPI when supplied.
-        title: the chart title, including the measurement scope when appropriate.
+        Args:
+            sql: define the table, including any filtering, grouping, and ordering.
+            file: read a UTF-8 SQL file instead of the positional statement.
+                Both the file and paths inside SQL resolve from the caller's current directory.
+            config: overlay project styles and figures from this manifest-format TOML file.
+                It does not select an environment or change path resolution.
+            figure: render a named [figures.<name>] specification; omit SQL, x, and y.
+                Panels use native Seaborn marks and Matplotlib settings, without estimation.
+            x: column names; omit hue for one series.
+            y: column names; omit hue for one series.
+            hue: column names; omit hue for one series.
+            out: a new output path; repeat for multiple formats, such as .pdf and .png.
+            project: restrict scientific rows to this research project.
+            kind: bar requires one row per x/hue group.
+            style: a named [plots.<name>] entry; defaults to paper when declared.
+            dpi: raster resolution, overriding the style's DPI when supplied.
+            title: the chart title, including the measurement scope when appropriate.
         """
         source = _query_source(sql, file)
         if figure and (source is not None or x or y or hue or title):
@@ -897,135 +1235,8 @@ def build(root: Path | None = None) -> App:
         for path in saved:
             print(path)
 
-    @job.command
-    def monitor(*, every: str = "", watch: float = 0.0, output: Output = _RICH) -> None:
-        """Settle every dispatched job that ended since the last pass, then exit.
-
-        The durable sweep a periodic cron runs. It resolves every job the dispatch cache still
-        owes an outcome for, pulls back the results of the ones that just finished, records their
-        verdicts in the study ledgers that own them, and reports only what changed, so a second
-        pass with nothing new says exactly that. A host that cannot be reached is reported with
-        why and its jobs are left for the next pass, so no outcome ever depends on the process
-        that dispatched the job still being alive. A compact mode prints the whole report.
-
-        `--every` is what makes that last sentence true of the schedule as well as of the pass.
-        It hands the sweep to this machine's own service manager, so the period outlives the
-        session that asked for it, and `--every 0` hands it back.
-
-        every: install the periodic pass at this period (`20m`), `0` removing what is installed.
-        watch: seconds between repeated passes in the foreground, one pass and exit when 0.
-        fields: a comma-separated projection over the report's fields.
-        """
-        if every:
-            settling = schedule(workspace_root(), every)
-            print(f"{project.name}: {settling.detail}")
-            if settling.fix:
-                print(f"{project.name}: run `{settling.fix}`")
-            return
-        sweep = board("local").monitor()
-        label = "sweeping dispatched jobs"
-        show = partial(_present, output=output)
-        if not watch:
-            with progress(label):
-                report = sweep.once()
-            show(report)
-            return
-        _followed(sweep.watch(watch), label, show)
-
-    @host.command
-    def facts(on: str = "local", *, output: Output = _RICH) -> None:
-        """Show the host's probed hardware and software facts, then what they mean here.
-
-        The facts are the hardware inventory beside the software census: operating system and
-        version, shells, filesystem case sensitivity, symbolic link and long path support, the
-        git settings a clone inherits, every tool with its version, and the NVIDIA driver, its
-        CUDA, each card's compute capability and memory. The findings table below them judges
-        that machine against this workspace, its platforms, its lock, the CUDA floor and the
-        card memory its profile declares, one row each with the command that repairs it.
-        `--json` prints the facts alone, the wire snapshot one machine answers another with.
-
-        on: the host alias to probe, `local` for this machine.
-        fields: a comma-separated projection over the fact fields.
-        """
-        workspace = board(on)
-        with progress(f"probing {on}"):
-            found = workspace.facts()
-        output.print_record(found.model_dump(), title="facts")
-        if output.mode != "json":
-            _judged(workspace.findings(found.system), mode=output.mode, title=f"findings: {on}")
-
-    @host.command
-    def gpus(
-        on: str = "local", *, every: bool = False, json: bool = False, agent: bool = False
-    ) -> None:
-        """Show who holds each card right now: utilization, memory and the processes on it.
-
-        The screen that says whether a card can take an acquisition. `facts` describes the
-        hardware and `jobs` what this workspace dispatched; a resident server or another user's
-        run appears only here. `--json` prints the readings keyed by host, one line for a single
-        host, which is what a remote read parses.
-
-        on: the host alias to read, `local` for this machine.
-        every: read this machine and every declared ssh host instead of one host.
-        json: print the readings as JSON instead of the table.
-        agent: print the compact tabular mode instead of the default rich table.
-        """
-        manifest = load(project.manifest(workspace_root()))
-        remote = [alias for alias, profile in manifest.hosts.items() if profile.kind == "ssh"]
-        names = ["local", *remote] if every else [on]
-        listed: list[dict[str, str | int | float | bool]] = []
-        readings: dict[str, JsonValue] = {}
-        for name in names:
-            try:
-                with progress(f"reading the cards of {name}"):
-                    occupancy = board(name).occupancy()
-            except (MissionError, OSError, ValueError) as error:
-                why = str(error).splitlines()[0][:80]
-                listed.append(
-                    {
-                        "host": name,
-                        "card": "",
-                        "util_pct": 0,
-                        "memory_gb": 0.0,
-                        "of_gb": 0.0,
-                        "free": False,
-                        "holders": f"unreachable: {why}",
-                    }
-                )
-                continue
-            readings[name] = occupancy.model_dump(mode="json")
-            listed.extend(occupancy_rows(name, occupancy))
-        if json:
-            print(dumps(readings, indent=2) if every else dumps(readings.get(on, {})))
-            return
-        Output(agent=agent).print_rows(listed, title="gpus")
-
-    @app.command
-    def check(*, on: str = "", env: str = "", container: str = "", output: Output = _RICH) -> None:
-        """Validate the workspace manifest, showing what it declares or what a host resolves to.
-
-        on: a host alias, `local` for this machine, to show the execution plan it resolves to
-            instead of the manifest's declarations.
-        env: with `--on`, an environment name overriding the profile's choice.
-        container: with `--on`, a container name overriding the profile's, `none` for bare.
-        fields: a comma-separated projection over the declared or planned fields.
-        """
-        manifest = load(project.manifest(workspace_root()))
-        if on:
-            resolved = Resolver(manifest).plan(on, env=env, container=container)
-            output.print_record(resolved.model_dump(), title="plan")
-            return
-        if env or container:
-            raise MissionError("--env and --container override a host's plan; pass --on too")
-        payload: dict[str, Node] = {
-            "workspace": manifest.workspace.name,
-            "environments": tuple(sorted(manifest.envs)),
-            "containers": tuple(sorted(manifest.containers)),
-            "hosts": tuple(sorted(manifest.profiles())),
-            "papers": tuple(sorted(manifest.papers)),
-            "tasks": tuple(sorted(manifest.tasks)),
-        }
-        output.print_record(payload, title="check")
+    # The cutok artifact's README runs `mainboard plot`; kept until that artifact is frozen.
+    app.command(plot, name="plot", show=False)
 
     @app.command
     def lint(*paths: Path, check: bool = False, only: str = "", json: bool = False) -> int:
@@ -1037,12 +1248,13 @@ def build(root: Path | None = None) -> App:
         root reads the whole workspace. The exit is nonzero when a file was rewritten or a step
         failed, the one answer a person, an agent, a hook and a CI job all act on.
 
-        paths: files or directories, relative to the working directory.
-        check: write nothing: run each tool's read-only `check` command and report what the
-            text hygiene would repair, the mode for CI and for verifying a tree.
-        only: the steps to run, comma-separated tool names with `text` for the built-in
-            hygiene; every step when empty, so `--only ruff-format` is a formatter alone.
-        json: print the report as canonical JSON instead of the findings and a summary line.
+        Args:
+            paths: files or directories, relative to the working directory.
+            check: write nothing: run each tool's read-only `check` command and report what the
+                text hygiene would repair, the mode for CI and for verifying a tree.
+            only: the steps to run, comma-separated tool names with `text` for the built-in
+                hygiene; every step when empty, so `--only ruff-format` is a formatter alone.
+            json: print the report as canonical JSON instead of the findings and a summary line.
         """
         root = workspace_root()
         inventory = Inventory(root)
@@ -1064,7 +1276,7 @@ def build(root: Path | None = None) -> App:
 
     @ci.default
     def ci_run(
-        package: Path | None = None, *, matrix: bool = False, output: Output = _RICH
+        package: Path | None = None, *, matrix: bool = False, output: Output = _COMPACT
     ) -> int:
         """Run the gate `[tool.mainboard.ci]` declares, exactly as the package's CI job runs it.
 
@@ -1075,9 +1287,9 @@ def build(root: Path | None = None) -> App:
         of a supported platform this machine is not, the working tree shipped there as it
         stands, and only failing steps print their output. Exits 1 when any step failed.
 
-        package: a directory inside the package, the working directory when omitted.
-        matrix: also run on one declared host per other platform, the check before a push.
-        fields: a comma-separated projection over leg/os/step/verdict/seconds.
+        Args:
+            package: a directory inside the package, the working directory when omitted.
+            matrix: also run on one declared host per other platform, the check before a push.
         """
         found = Package.found((package or Path.cwd()).resolve())
         if matrix:
@@ -1098,256 +1310,6 @@ def build(root: Path | None = None) -> App:
         output.print_rows([result.row() for result in results], title="ci", columns=_CI_COLUMNS)
         return 1 if any(result.failed for result in results) else 0
 
-    batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
-    job.command(batch)
-
-    lanes = App(name="lanes", help="Run one pytest lane on many hosts, a job per group of cells.")
-    job.command(lanes)
-
-    @lanes.command(name="run")
-    def lanes_run(
-        target: str,
-        *,
-        on: str = "local",
-        group: str = "",
-        per_job: int = 0,
-        rerun: bool = False,
-        timeout: float = 900.0,
-        queue: str = "",
-        walltime: str = "",
-        mem_gb: int = 0,
-        gpus: int = 0,
-        gpu_name: str = "",
-        max_usd: float = 0.0,
-        node: str = "",
-        dry_run: bool = False,
-        wait: bool = False,
-        yes: bool = False,
-        agent: bool = False,
-    ) -> int:
-        """Run every cell of a lane on each named host, one dispatched job per group of cells.
-
-        The lane's own parametrization is the plan: its cells are collected here, grouped by a
-        parametrize value or sliced, and each group becomes one job that runs its cells as
-        fresh processes through the runner's `--fresh` mode. `local` runs the groups in place;
-        every other host gets a submission with the lane's declared needs and pins shipped, and
-        `--wait` blocks on every handle through the same durable sweep `wait` runs, which
-        pulls the receipts home. A Windows host cannot take a submission yet; a roster
-        containing one is refused before any host is dispatched.
-
-        target: the lane, `path/to/file.py::test`.
-        on: comma-separated host aliases, `local` for this machine.
-        group: a parametrize name whose value names each job's cells, `model` say.
-        per_job: how many cells one job takes when no name groups them, 0 for all in one.
-        rerun: run cells whose data is already complete.
-        timeout: seconds one cell may take before its process is killed.
-        queue, walltime, mem_gb: what a queued host's scheduler is asked for.
-        gpus: cards per job, the host profile's default when 0.
-        gpu_name: the card a provider host rents, in the provider's own spelling.
-        max_usd: the spend cap of one rental on a provider host; one group is one rental.
-        node: the ledger slug the receipts serve, the directory under `experiments` when unset.
-        dry_run: print the plan and dispatch nothing.
-        wait: block until every dispatched job settles.
-        yes: dispatch without asking.
-        agent: print the compact tabular mode instead of the default rich table.
-        """
-        manifest = load(project.manifest(workspace_root()))
-        hosts = [alias.strip() for alias in on.split(",") if alias.strip()]
-        if unsupported := [
-            host
-            for host in hosts
-            if host in manifest.hosts and manifest.hosts[host].platform == "win-64"
-        ]:
-            raise MissionError(
-                f"queued lanes do not support Windows hosts: {', '.join(unsupported)}; "
-                "no jobs were dispatched. Use a bounded native run there and collect its receipts."
-            )
-        with progress(f"collecting {target}"):
-            probe = ["run", "--", "python", "-m", "mainboard.jobs.lanes", "collect", target]
-            cells = lanes_module.parsed(localhost[project.package][probe]())
-        if not cells:
-            raise MissionError(f"{target} collected no cells")
-        groups = lanes_module.grouped(cells, by=group, per_job=per_job)
-        served = node or lanes_module.node_of(target)
-        fresh = ["--fresh", "--timeout", str(timeout)]
-        pytest_args = ["-p", "no:randomly", "-q", "--no-header", *(["--rerun"] if rerun else [])]
-        shown = Output(agent=agent)
-        shown.print_rows(lanes_module.summary(hosts, groups), title="lanes")
-        if dry_run:
-            return 0
-        if not yes and sys.stdin.isatty() and not _agreed():
-            raise SystemExit(1)
-        dispatched: list[tuple[str, str, str]] = []
-        exit_code = 0
-        for host in hosts:
-            for chosen in groups:
-                line = [target, "--", *fresh, *chosen.ids, "--", *pytest_args]
-                if host == "local":
-                    code = board("local").run(line)
-                    exit_code = exit_code or code
-                    dispatched.append((host, chosen.name, f"local exit {code}"))
-                    continue
-                with progress(f"submitting {chosen.name} on {host}") as stage:
-                    job = board(host).submit(
-                        joined(line),
-                        watch=stage,
-                        name=f"lanes-{host}-{chosen.name}",
-                        queue=queue,
-                        walltime=walltime,
-                        mem_gb=mem_gb,
-                        gpus=gpus,
-                        gpu_name=gpu_name,
-                        max_usd=max_usd,
-                        node=served,
-                    )
-                dispatched.append((host, chosen.name, job.handle.id))
-        shown.print_rows(
-            [{"host": h, "group": g, "handle": i} for h, g, i in dispatched], title="dispatched"
-        )
-        if not wait:
-            return exit_code
-        for host, name, identity in dispatched:
-            if identity.startswith("local exit"):
-                continue
-            with progress(f"waiting on {identity} ({host}, {name})"):
-                settled = board("local").verdicts().wait(identity, host=host, say=_said)
-            exit_code = exit_code or settled.code
-        return exit_code
-
-    @batch.command(name="prepare")
-    def batch_prepare(
-        spec: str = "", *, declared: Declared = _SPEC_ONLY, output: Output = _RICH
-    ) -> None:
-        """Measure what each job must still put on its target, and record the measurement.
-
-        The mirror a host already carries is not shipped again, so what a job actually sends is
-        the workspace's changes since that mirror plus whatever data the job itself names. Both
-        sizes are reported, on disk and compressed, because compressed is what crosses the wire.
-        Nothing is dispatched.
-
-        spec: the batch spec file, relative to the workspace root.
-        fields: a comma-separated projection over the transfer columns.
-        """
-        batched = declared.batch(board("local"), spec)
-        with progress(f"measuring {batched.id}"):
-            measured = [transfer.model_dump() for transfer in batched.prepare()]
-        _tabled(
-            measured,
-            _TRANSFER_COLUMNS,
-            summing=("files", "raw_bytes", "wire_bytes"),
-            output=output,
-            title=f"prepare: {batched.id}",
-        )
-
-    @batch.command(name="estimate")
-    def batch_estimate(
-        spec: str = "", *, declared: Declared = _SPEC_ONLY, output: Output = _RICH
-    ) -> None:
-        """Price every job of a batch before any of it runs, one row each and a total.
-
-        What each job ships, what hardware it lands on, how long that target has actually taken
-        to start work, and what the meter says about that. The setup times are fitted from this
-        workspace's own recorded dispatches, so a target nobody has measured is priced with a
-        deliberately pessimistic assumption and says so in its sample count. Nothing is
-        dispatched, nothing is rented, and no target is even contacted.
-
-        spec: the batch spec file, relative to the workspace root.
-        fields: a comma-separated projection over the estimate columns.
-        """
-        batched = declared.batch(board("local"), spec)
-        with progress(f"pricing {batched.id}"):
-            priced = [row.model_dump() for row in batched.estimate().jobs]
-        _tabled(
-            priced,
-            _ESTIMATE_COLUMNS,
-            summing=("wire_bytes", "runtime_s", "expected_usd", "p90_usd"),
-            output=output,
-            title=f"estimate: {batched.id}",
-        )
-
-    @batch.command(name="run")
-    def batch_run(
-        spec: str = "", *, declared: Declared = _SPEC_ONLY, output: Output = _RICH
-    ) -> None:
-        """Dispatch every job of a batch to its own target, printing the batch id and each handle.
-
-        One target refusing is that job's row and the rest still go, since a batch spread over a
-        fleet routinely meets one machine that is asleep or was never declared. Watch the batch
-        by the id printed here.
-
-        A target that refuses on its own count quota is the one refusal that is not final: the
-        row says `held`, the request stays in the run registry, and the durable sweep offers it
-        again every pass until the queue has room, so a wave is never quietly shorter than the
-        plan.
-
-        `--only` dispatches part of the plan, which is what a plan worked through in waves needs:
-        the nine jobs whose data is ready go now, and the four that are not are recorded as
-        skipped so neither `batch watch` nor `monitor` ever waits for them. The batch keeps its
-        identity, so tomorrow's wave writes to the same receipts stream.
-
-        spec: the batch spec file, relative to the workspace root.
-        fields: a comma-separated projection over job/target/state/handle/kind/reason.
-        """
-        batched = declared.batch(board("local"), spec)
-        with progress(f"dispatching {batched.id}") as stage:
-            dispatched = batched.run(watch=stage)
-        if output.mode is None:
-            print(batched.id)
-        output.print_rows(
-            [entry.model_dump() for entry in dispatched],
-            title=f"run: {batched.id}",
-            columns=_DISPATCH_COLUMNS,
-        )
-
-    @batch.command(name="watch")
-    def batch_watch(batch_id: str, *, interval: float = 0.0, output: Output = _RICH) -> None:
-        """Show every job of a dispatched batch, on every target, as the durable sweep settles it.
-
-        Each pass runs the same sweep a cron runs, so results are pulled back and provider
-        rentals are cancelled whether or not anyone is watching, and every change becomes a line
-        in the batch's own receipts. One pass and exit by default.
-
-        batch_id: the batch to watch, as `run` printed it.
-        interval: seconds between passes, following until every job settles; one pass when 0.
-        fields: a comma-separated projection over job/target/handle/state/verdict/detail.
-        """
-        watcher = board("local").watch(batch_id)
-        label = f"sweeping {batch_id}"
-        show = partial(_status, output=output)
-        if not interval:
-            with progress(label):
-                status = watcher.once()
-            show(status)
-            return
-        _followed(watcher.follow(interval), label, show)
-
-    @batch.command(name="wait")
-    def batch_wait(
-        batch_id: str,
-        *,
-        timeout: float = vocabulary.WAIT_SECONDS,
-        interval: float = 0.0,
-        stall: float = STALL_SECONDS,
-        output: Output = _RICH,
-    ) -> int:
-        """Block until every job of a batch settles, print the batch's verdict, exit its code.
-
-        The same durable sweep `wait` runs on one handle, over the whole batch: results are
-        pulled back and rentals released as each job lands, cells and a heartbeat stream to
-        stderr, and the answer is read off the batch's receipts, 0 when every job settled
-        clean, 1 on any failure, 2 at the timeout with work still in flight, 4 when a job
-        stalled.
-
-        batch_id: the batch to wait on, as `run` printed it.
-        timeout: give up after this many seconds, exiting 2 with jobs still in flight, an hour
-            unless said otherwise; 0 waits as long as it takes.
-        interval: seconds between sweeps, the dispatch default when 0.
-        stall: seconds a running job may print nothing on an idle card before the wait stops
-            and exits 4; 0 never calls a job stalled.
-        fields: a comma-separated projection over the verdict columns.
-        """
-        return wait(batch_id, timeout=timeout, interval=interval, stall=stall, output=output)
-
     @app.command(show=False)
     def provide(env: str = "", *, source: str = "", expect: str = "", json: bool = False) -> None:
         """Build the immutable environment a dispatched job activates, and print where it is.
@@ -1360,12 +1322,13 @@ def build(root: Path | None = None) -> App:
         Building one that already exists touches nothing and prints the same path, which is
         what lets every job of a wave ask and one of them build.
 
-        env: the environment to build, the host profile's own when empty.
-        source: the directory holding the compiled artifact, workspace-relative or absolute;
-            this workspace's own generated environment when empty.
-        expect: the digest a dispatch pinned, refused when this machine reads the artifact as a
-            different environment rather than building one no queued job will activate.
-        json: print the path as canonical JSON instead of a bare line.
+        Args:
+            env: the environment to build, the host profile's own when empty.
+            source: the directory holding the compiled artifact, workspace-relative or absolute;
+                this workspace's own generated environment when empty.
+            expect: the digest a dispatch pinned, refused when this machine reads the artifact as a
+                different environment rather than building one no queued job will activate.
+            json: print the path as canonical JSON instead of a bare line.
         """
         with progress(f"building the environment for {env or 'default'}"):
             built = board("local").provide(env, source, expect)
@@ -1384,7 +1347,8 @@ def build(root: Path | None = None) -> App:
         environment, run the command under its walltime, frame its receipts back and answer its
         exit status.
 
-        record: the job record as JSON, or the path of the job script that carries one.
+        Args:
+            record: the job record as JSON, or the path of the job script that carries one.
         """
         return Runner(Job.read(record)).run()
 
@@ -1401,8 +1365,9 @@ def build(root: Path | None = None) -> App:
         A dispatched job runs this for itself before its command starts, so the verb is here for
         a measurement somebody takes by hand and for the job scripts that already call it.
 
-        stream: the receipts stream, a batch id or a run's name.
-        job: the job inside that stream, the stream itself when omitted.
+        Args:
+            stream: the receipts stream, a batch id or a run's name.
+            job: the job inside that stream, the stream itself when omitted.
         """
         board("local").attest(stream, job=job or stream)
 
@@ -1425,66 +1390,18 @@ def build(root: Path | None = None) -> App:
         A dispatched job starts this for itself, so this verb is here for a command somebody
         runs by hand and for the job scripts that already call it.
 
-        stream: the receipts stream, a batch id or a run's name.
-        job: the job inside that stream, the stream itself when omitted.
-        interval: seconds between readings, the manifest's own when 0.
-        seconds: stop after this long, 0 to run until interrupted.
-        parent: stop when this process does, 0 for none.
+        Args:
+            stream: the receipts stream, a batch id or a run's name.
+            job: the job inside that stream, the stream itself when omitted.
+            interval: seconds between readings, the manifest's own when 0.
+            seconds: stop after this long, 0 to run until interrupted.
+            parent: stop when this process does, 0 for none.
         """
         sampler = board("local").samples(
             stream, job=job or stream, interval=interval, seconds=seconds, parent=parent
         )
         with suppress(KeyboardInterrupt), sampler:
             sampler.thread.join()
-
-    @job.command
-    def wait(
-        handle: str,
-        *,
-        on: str = "",
-        timeout: float = vocabulary.WAIT_SECONDS,
-        interval: float = 0.0,
-        stall: float = STALL_SECONDS,
-        output: Output = _RICH,
-    ) -> int:
-        """Block until a dispatched job settles, print its receipts-derived outcome, exit its code.
-
-        Every poll is the same durable pass `monitor` runs, so waiting here pulls results back,
-        cancels rentals and writes receipts exactly as the cron would, and a wait killed halfway
-        loses nothing. What prints at the end is read back off the on-disk receipts rather than
-        remembered from the loop, which is what makes this the sanctioned completion check.
-
-        While it blocks, stderr carries each test cell's outcome as it lands and a heartbeat:
-        cells done, failures, how long since the output last grew, and the busiest card where
-        that is cheap to read. A job whose pytest session ended while its process lingers is
-        settled on the session's own outcome, and a running job silent past `--stall` on an idle
-        card ends the wait with exit 4 rather than holding it to the timeout.
-
-        handle: the job to wait on, as `submit` printed it or by the name `jobs` prints, or a
-            batch id as `batch run` printed it, which waits for every job of the batch.
-        on: the host alias narrowing a handle recorded on several hosts.
-        timeout: give up after this many seconds, exiting 2 with the job still in flight, an
-            hour unless said otherwise; 0 waits as long as it takes.
-        interval: seconds between polls, the dispatch default when 0.
-        stall: seconds a running job may print nothing on an idle card before the wait stops
-            and exits 4; 0 never calls a job stalled.
-        fields: a comma-separated projection over the verdict columns.
-        """
-        print(f"waiting on {handle}", file=sys.stderr, flush=True)
-        with diverted():
-            settled = (
-                board("local")
-                .verdicts()
-                .wait(
-                    handle,
-                    host=on,
-                    timeout=timeout,
-                    interval=interval or vocabulary.POLL_SECONDS,
-                    stall=stall,
-                    say=_said,
-                )
-            )
-        return _settled(settled, output)
 
     @job.command
     def logs(handle: str, *, on: str = "") -> int:
@@ -1506,8 +1423,9 @@ def build(root: Path | None = None) -> App:
         Exits 0 having printed output, 2 for a run still in flight that has printed none, and 1
         when nothing was captured and nothing is coming, so a script can tell the three apart.
 
-        handle: the job to read, as `submit` printed it or by the name `jobs` prints.
-        on: the host alias narrowing a handle recorded on several hosts.
+        Args:
+            handle: the job to read, as `submit` printed it or by the name `jobs` prints.
+            on: the host alias narrowing a handle recorded on several hosts.
         """
         workspace = board("local")
         captured = printed(workspace.verdicts().captured(handle, host=on))
@@ -1520,7 +1438,7 @@ def build(root: Path | None = None) -> App:
         return 0
 
     @job.command
-    def cancel(handle: str, *, on: str = "", output: Output = _RICH) -> int:
+    def cancel(handle: str, *, on: str = "", output: Output = _COMPACT) -> int:
         """Stop a dispatched job on whatever took it and settle its record in the same pass.
 
         The verb a provably doomed run needs. Without it a job could only die at its own
@@ -1535,65 +1453,13 @@ def build(root: Path | None = None) -> App:
         Exits the settled code, so a cancelled run exits 1: the stop was deliberate, and a
         completion check must still never call a stopped run complete.
 
-        handle: the job to cancel, as `submit` printed it or by the name `jobs` prints.
-        on: the host alias narrowing a handle recorded on several hosts.
-        fields: a comma-separated projection over the verdict columns.
+        Args:
+            handle: the job to cancel, as `submit` printed it or by the name `jobs` prints.
+            on: the host alias narrowing a handle recorded on several hosts.
         """
         with progress(f"cancelling {handle}"):
             settled = board("local").verdicts().cancel(handle, host=on)
         return _settled(settled, output)
-
-    @job.command
-    def verdict(target: str, *, on: str = "", run: str = "", output: Output = _RICH) -> int:
-        """Print the settled truth the on-disk receipts hold, and exit with what it adds up to.
-
-        The anti-fabrication verb. Dashboards, notification digests and progress summaries are
-        sinks; this reads only the receipts they point at, one row per trial with its outcome,
-        its gate sweep and the ledger node it serves, and never a scheduler, a service or a
-        memory of the session that dispatched. The exit status is the completion check: 0 when
-        every row settled clean, 1 on any failure, 2 while anything is still in flight, 3 when
-        the receipts prove nothing.
-
-        A receipts STORE is scored one run at a time, its newest by default, because a store
-        holds every run a harness ever took and reading them as one stream lets a failure from
-        months ago condemn a clean re-run today.
-
-        target: a receipts store directory, a stream id, a receipts file, or a dispatched handle
-            or job name.
-        on: the host alias narrowing a handle recorded on several hosts.
-        run: which run of a receipts store to score, its newest when unset.
-        fields: a comma-separated projection over the verdict columns.
-        """
-        with progress(f"reading {target}"):
-            settled = board("local").verdicts().of(target, host=on, run=run)
-        return _settled(settled, output)
-
-    @job.command(name="list")
-    def jobs(*, limit: int = 20, project: str = "", output: Output = _RICH) -> None:
-        """List every dispatched job still in flight, then the most recently settled ones.
-
-        A live job is never left out and never answered from memory. Each host is asked once
-        about every run it still owes an answer on, one `qstat`, one `squeue`, one `pueue
-        status`, so a wave of thirty five says which of them are running and which are queued
-        behind them, since when, and where the scheduler estimates a start. A running job also
-        shows its test cells landed out of its total, the seconds since its output last grew, and
-        the busiest card on its host where that is one cheap command away. The limit bounds only
-        the settled tail, and a listing that had to leave anything out says so on stderr rather
-        than stopping quietly at twenty rows.
-
-        limit: how many settled runs to show behind the live ones, newest first.
-        project: only the runs dispatched from this project (the directory under `research/` or
-            `packages/` a submit ran in, or `MB_PROJECT`); every run when empty.
-        fields: a comma-separated projection over the row's columns, cells/quiet_s/gpu_pct
-            among them.
-        """
-        with progress("asking every host about its live jobs"):
-            listed = Listing(board("local"), limit=limit, project=project).taken()
-        output.print_rows(
-            [row.model_dump() for row in listed.rows], title="jobs", columns=_JOB_COLUMNS
-        )
-        if listed.note:
-            print(listed.note, file=sys.stderr)
 
     proc = App(
         name="proc",
@@ -1601,16 +1467,49 @@ def build(root: Path | None = None) -> App:
     )
     app.command(proc)
 
+    @proc.command(name="list")
+    def proc_list(pattern: str = "", *, on: str = "local", output: Output = _COMPACT) -> None:
+        """List processes, started by this tool or not: pid, parent, user, cpu, memory, age.
+
+        Args:
+            pattern: a substring of the command line (`train.py`, `vllm`); your own processes
+                when empty, everyone's when given.
+            on: the host alias, `local` for this machine; a host answers with its own copy.
+        """
+        if on != "local":
+            board(on).interact(project.name, "proc", "list", pattern)
+        output.print_rows(Processes().matching(pattern), title="proc")
+
     @proc.command(name="kill")
-    def proc_kill(pids: list[int], *, force: bool = False) -> int:
+    def proc_kill(
+        pids: list[int] | None = None,
+        *,
+        match: str = "",
+        on: str = "local",
+        force: bool = False,
+    ) -> int:
         """Stop each process and everything it started, children first, on any system.
 
-        What `pkill -P`, `kill -- -pgid` and `taskkill /T` each do on one system. Exits 1 when a
-        process was already gone, naming it.
+        What `pkill -P`, `kill -- -pgid` and `taskkill /T` each do on one system, for any
+        process, a job somebody started by hand included. Exits 1 when a process was gone.
 
-        force: kill at once instead of asking each process to terminate first.
+        Args:
+            pids: the processes to stop.
+            match: also stop every process whose command line contains this (see `proc list`).
+            on: the host alias, `local` for this machine; a host runs its own copy.
+            force: kill at once instead of asking each process to terminate first.
         """
-        gone = Processes().kill(pids, force=force)
+        if on != "local":
+            flags = [*(["--match", match] if match else []), *(["--force"] if force else [])]
+            board(on).interact(project.name, "proc", "kill", *map(str, pids or ()), *flags)
+        chosen = (
+            [*(pids or ()), *(int(row["pid"]) for row in Processes().matching(match))]
+            if match
+            else list(pids or ())
+        )
+        if not chosen:
+            raise MissionError("name a process: a pid, or --match <text> (see `proc list`)")
+        gone = Processes().kill(chosen, force=force)
         for pid in gone:
             print(f"no process {pid}", file=sys.stderr)
         return 1 if gone else 0
@@ -1623,7 +1522,8 @@ def build(root: Path | None = None) -> App:
         and exits with its own status, or 124 when it had to be stopped, as GNU `timeout` does.
         A tree that ignores the request to stop is killed after a short grace.
 
-        command: the program and its arguments, from the first token after the limit.
+        Args:
+            command: the program and its arguments, from the first token after the limit.
         """
         return Processes().timeout(seconds, command)
 
@@ -1636,75 +1536,21 @@ def build(root: Path | None = None) -> App:
         The loop around `sleep`, `test` and `nc` that no Windows shell runs. Exits 0 once every
         named condition holds and 1 when the timeout passed first.
 
-        port: a `host:port` that must accept a TCP connection.
-        pid: a process that must have exited.
-        timeout: seconds to wait at most, 0 for as long as it takes.
+        Args:
+            port: a `host:port` that must accept a TCP connection.
+            pid: a process that must have exited.
+            timeout: seconds to wait at most, 0 for as long as it takes.
         """
         return 0 if Processes().wait(file=file, port=port, pid=pid, seconds=timeout) else 1
 
-    center = App(
-        name="center",
-        help="Manage the monorepo from the one machine that holds it; targets never need these.",
-    )
-    app.command(center)
-
-    @center.command
-    def verify(*, output: Output = _RICH) -> int:
-        """Say whether this machine is ready to be the center, and exit 1 when it is not.
-
-        Every question at once, each row with the one command that repairs it: this machine's
-        git tooling (git, git-lfs and its filters, a credential helper, and on Windows symlinks
-        and long paths, the safe settings applied in place), the machine judged against the
-        workspace the way `facts` judges any host, the `doctor` report, the plan `check`
-        resolves here, a smoke run of Python, torch and CUDA in the default environment,
-        whether every lint tool can start, the repository tree, every agent's configuration
-        (AGENTS.md, CLAUDE.md, the `.claude` and `.codex` links, `.mcp.json`, `opencode.json`),
-        the default environment put on the PATH every agent shell starts from and proven from
-        each shell kind, and the tracked scripts that would behave differently here, each named
-        with its portable replacement.
-
-        fields: a comma-separated projection over section/verdict/detail/fix.
-        """
-        with progress("verifying this center"):
-            sections = Verification(board("local")).sections()
-        return _sectioned(sections, output, title="verify")
-
-    @center.command
-    def migrate(destination: str, *, root: str = "", output: Output = _RICH) -> int:
-        """Move the center to another machine ssh reaches, Windows, macOS or Linux.
-
-        Probes the destination (operating system, shells, filesystem, links, long paths, disk,
-        git, git-lfs, gh, pixi, the NVIDIA driver and its CUDA) and stops early on a platform
-        the workspace or its lock cannot serve. Then signs gh in with this machine's login,
-        carries the ssh config blocks and keys the host profiles use, clones the monorepo at
-        this HEAD with every owned submodule at its recorded pointer, carries what git does not
-        hold (the `.env`, the state directory's registry and ledgers and every environment's lock,
-        Claude Code's memory re-keyed to the new workspace path and its project settings,
-        Codex's and opencode's config, credentials and memories), installs this tool and the
-        default environment from the lock this center solved, and ends with the destination
-        running `center verify` on itself. Secrets ride ssh's stdin only and are never printed.
-
-        Every step converges on what is already there, so running it again after an
-        interruption continues, and running it after it finished re-verifies and changes
-        nothing. Exits 1 when any row fails.
-
-        destination: the ssh alias of the machine becoming the center.
-        root: where the workspace goes there, `~/projects` when omitted; an existing directory
-            is used only when it is empty or already this repository.
-        fields: a comma-separated projection over section/verdict/detail/fix.
-        """
-        with progress(f"moving the center to {destination}") as stage:
-            sections = Migration(board("local"), destination, root=root, watch=stage).run()
-        return _sectioned(sections, output, title="migrate")
-
     @lake.command(name="check")
-    def lake_check(*, output: Output = _RICH) -> int:
+    def lake_check(*, output: Output = _COMPACT) -> int:
         """Compare what the lake's catalog references with what is on disk; exit 1 on a loss.
 
         A deleted data file breaks only its table and `count(*)` hides it, so this is what finds
         one; a catalog WAL lost after a crash is named too.
 
-        fields: a comma-separated projection over table/kind/detail.
+        Args:
         """
         health = Lake.at(workspace_root()).ready().check()
         output.print_rows(
@@ -1745,8 +1591,9 @@ def build(root: Path | None = None) -> App:
         there then reads and writes this lake, while commands here keep using its files. Both
         ends must run the same DuckDB release (`mb self version` names it).
 
-        port: the local port to listen on.
-        token: what clients must present; the one kept in the state directory when omitted.
+        Args:
+            port: the local port to listen on.
+            token: what clients must present; the one kept in the state directory when omitted.
         """
         lake_ = Lake.at(workspace_root())
         with lake_.serving(port, token) as (uri, _):
@@ -1758,7 +1605,7 @@ def build(root: Path | None = None) -> App:
                     time.sleep(3600)
 
     @lake.command(name="import")
-    def import_(*, again: bool = False, output: Output = _RICH) -> int:
+    def import_(*, again: bool = False, output: Output = _COMPACT) -> int:
         """Import this workspace's file state into its state lake once, and prove it landed.
 
         Creates the lake (`lake.sqlite` beside a `lake/` data folder in the state directory) and
@@ -1769,23 +1616,22 @@ def build(root: Path | None = None) -> App:
         1 when any differs. The files are only read: nothing is moved, rewritten or deleted, and
         wandb folders, pins, source archives, recovery and environments are left out.
 
-        again: import even though the lake already holds an import, setting that lake aside
-            under `lake.aside/` first rather than appending the same records twice.
-        fields: a comma-separated projection over source/table/expected/imported/strays/ok/detail.
+        Args:
+            again: import even though the lake already holds an import, setting that lake aside
+                under `lake.aside/` first rather than appending the same records twice.
         """
         with progress("importing the state directory into the lake"):
             tallies = Importer(Lake.at(workspace_root())).run(again=again)
         output.print_rows([tally.model_dump() for tally in tallies], title="lake import")
         return 0 if all(tally.ok for tally in tallies) else 1
 
-    @center.command
-    def paper(
+    @paper.command(name="build")
+    def paper_build(
         name: str,
         *,
         show: tuple[str, ...] = (),
         dpi: int = 110,
-        json: bool = False,
-        agent: bool = False,
+        output: Output = _COMPACT,
     ) -> int:
         """Build a declared manuscript and report everything wrong with it, exiting 1 on any.
 
@@ -1794,51 +1640,28 @@ def build(root: Path | None = None) -> App:
         line each comes from, the page count, the page every section starts on, and whether
         the section `[papers.<name>] ends` names ends by page `limit`.
 
-        name: the `[papers.<name>]` manuscript.
-        show: a phrase from the manuscript, repeatable; the page it appears on is rendered to a
-            PNG beside the build and its path printed.
-        dpi: the resolution a shown page renders at.
-        json: print the whole report as canonical JSON instead of the default rich tables.
-        agent: print the compact tabular mode instead of the default rich tables.
+        Args:
+            name: the `[papers.<name>]` manuscript.
+            show: a phrase from the manuscript, repeatable; the page it appears on is rendered to a
+                PNG beside the build and its path printed.
+            dpi: the resolution a shown page renders at.
         """
         manuscript = board("local").paper(name)
         with progress(f"building {name}"):
             report = manuscript.check()
-        _report(report, mode=Output(json=json, agent=agent).mode)
+        _report(report, mode=output.mode)
         for phrase in show:
             print(manuscript.show(phrase, dpi=dpi).as_posix())
         return 1 if report.problems else 0
-
-    @center.command
-    def members(*names: str, output: Output = _RICH) -> int:
-        """Check that every member works for somebody who clones it alone; exit 1 on a failure.
-
-        A member is a project `[workspace] members` composes into this workspace. Each one is
-        read for what ties it to the monorepo: no installable `pyproject.toml`, no repository
-        of its own, a path in its own files climbing out of it, a task depending on one it does
-        not declare, and an import only the monorepo satisfies, from a sibling member it does
-        not require, a directory on the root's `PYTHONPATH` or, under a `src/` layout, beside
-        the package it installs, each a `fail`. Root-only
-        settings it declares, and root tasks, papers or variables reaching into it, are a
-        `warn`. Then it is cloned alone into a temporary directory, installed by `uv` into an
-        empty environment and every package it installs imported, the one `pass`.
-
-        names: the members to check, by name or path; every member when omitted.
-        fields: a comma-separated projection over section/verdict/detail/fix.
-        """
-        standalone = Standalone(composition(project.manifest(workspace_root())))
-        with progress("checking the members alone"):
-            sections = standalone.sections(names)
-        return _sectioned(sections, output, title="members")
 
     git = App(
         name="git",
         help="Operate the workspace repository and its owned submodules as one tree.",
     )
-    center.command(git)
+    app.command(git)
 
     @git.command(name="status")
-    def git_status(*, output: Output = _RICH) -> None:
+    def git_status(*, output: Output = _COMPACT) -> None:
         """Show every owned repository in the tree on one table, without touching the network.
 
         Owned means the owner in the remote URL is the workspace root's own or one `[git]
@@ -1847,7 +1670,7 @@ def build(root: Path | None = None) -> App:
         fetched, how many paths are changed and untracked, and which remote branch already
         holds HEAD, empty for a commit a parent pointer could not yet be cloned at.
 
-        fields: a comma-separated projection over the status columns.
+        Args:
         """
         with progress("reading the repository tree"):
             states = board("local").git().status()
@@ -1858,7 +1681,7 @@ def build(root: Path | None = None) -> App:
         )
 
     @git.command(name="pull")
-    def git_pull(*, output: Output = _RICH) -> int:
+    def git_pull(*, output: Output = _COMPACT) -> int:
         """Fast-forward every owned repository and bring submodule checkouts along, root first.
 
         Every owned remote is fetched at once, then the tree is walked from the root down.
@@ -1868,7 +1691,7 @@ def build(root: Path | None = None) -> App:
         only when it sat on the old one, and one never checked out is cloned at the recorded
         pointer. Exits 1 when any repository was held or failed.
 
-        fields: a comma-separated projection over repo/outcome/detail.
+        Args:
         """
         with progress("pulling the repository tree"):
             steps = board("local").git().pull()
@@ -1876,7 +1699,7 @@ def build(root: Path | None = None) -> App:
 
     @git.command(name="commit")
     def git_commit(
-        *, message: Annotated[str, Parameter(name=["--message", "-m"])], output: Output = _RICH
+        *, message: Annotated[str, Parameter(name=["--message", "-m"])], output: Output = _COMPACT
     ) -> int:
         """Commit every dirty owned repository, submodules first, then the pointers to them.
 
@@ -1887,15 +1710,15 @@ def build(root: Path | None = None) -> App:
         commit, unstaged; the row names the oversized ones and any never-commit path that was
         staged by hand. Exits 1 when any repository was held or failed.
 
-        message: the commit message, the same for every repository committed.
-        fields: a comma-separated projection over repo/outcome/detail.
+        Args:
+            message: the commit message, the same for every repository committed.
         """
         with progress("committing the repository tree"):
             steps = board("local").git().commit(message)
         return _stepped(steps, output, title="git commit")
 
     @git.command(name="push")
-    def git_push(*, output: Output = _RICH) -> int:
+    def git_push(*, output: Output = _COMPACT) -> int:
         """Push every owned repository, submodules before the parents that point at them.
 
         A parent is pushed only once every submodule pointer its HEAD records is held by a
@@ -1904,14 +1727,14 @@ def build(root: Path | None = None) -> App:
         this tool instead, and the row asks for the pull request. HTTPS pushes to GitHub can
         use the `gh` login as a credential. Exits 1 when any repository was held or failed.
 
-        fields: a comma-separated projection over repo/outcome/detail.
+        Args:
         """
         with progress("pushing the repository tree"):
             steps = board("local").git().push()
         return _stepped(steps, output, title="git push")
 
     @git.command(name="check")
-    def git_check(*, output: Output = _RICH) -> int:
+    def git_check(*, output: Output = _COMPACT) -> int:
         """Verify the tree is safe to clone and push, and exit 1 when anything fails.
 
         Fetches every owned repository and the foreign submodules they point at, then reports
@@ -1920,7 +1743,7 @@ def build(root: Path | None = None) -> App:
         HEAD, unpushed or missing commits, and a checkout off its recorded pointer as `warn`.
         An empty table is a consistent tree.
 
-        fields: a comma-separated projection over repo/check/verdict/detail.
+        Args:
         """
         with progress("checking the repository tree"):
             findings = board("local").git().check()
@@ -1968,7 +1791,6 @@ _JOB_COLUMNS = (
     "submitted_at",
     "cause",
 )
-_TRANSFER_COLUMNS = ("job", "target", "files", "raw_bytes", "wire_bytes", "since")
 _ESTIMATE_COLUMNS = (
     "job",
     "target",
@@ -2130,6 +1952,8 @@ def _followed[T](passes: Iterator[T], label: str, show: Callable[[T], None]) -> 
 
 def _judged(sections: list[Section], *, mode: str | None, title: str) -> None:
     """Print a machine's findings as a table of their own, under the record they judge."""
+    if mode is None:
+        print(f"\n# {title}")
     rows(
         [section.model_dump() for section in sections], mode=mode, fields=_SECTION_ROW, title=title
     )
@@ -2154,8 +1978,50 @@ def _onboarded(workspace: Board, report: HostSetup, output: Output, *, title: st
     _judged(findings, mode=output.mode, title=f"findings: {report.host}")
 
 
-def _sectioned(sections: list[Section], output: Output, *, title: str) -> int:
+def _heading(output: Output, title: str) -> None:
+    """Name the next compact table when a verb prints several (rich tables carry their title)."""
+    if output.mode is None:
+        print(f"\n# {title}")
+
+
+def _facts(workspace: Board, alias: str, output: Output) -> None:
+    """Print one host's probed facts, then the findings that judge it against the workspace."""
+    with progress(f"probing {alias}"):
+        found = workspace.facts()
+    _heading(output, f"facts: {alias}")
+    output.print_record(found.model_dump(), title=f"facts: {alias}")
+    if output.mode != "json":
+        _judged(workspace.findings(found.system), mode=output.mode, title=f"findings: {alias}")
+
+
+def _gpus(board: Callable[[str], Board], names: Sequence[str], output: Output) -> None:
+    """Print who holds each card on each named host; an unreachable host is a row saying why."""
+    listed: list[dict[str, str | int | float | bool]] = []
+    readings: dict[str, JsonValue] = {}
+    for name in names:
+        try:
+            with progress(f"reading the cards of {name}"):
+                occupancy = board(name).occupancy()
+        except (MissionError, OSError, ValueError) as error:
+            why = str(error).splitlines()[0][:80]
+            listed.append({"host": name, "card": "", "holders": f"unreachable: {why}"})
+            continue
+        readings[name] = occupancy.model_dump(mode="json")
+        listed.extend(occupancy_rows(name, occupancy))
+    if output.json:
+        # The wire form a remote read parses: readings keyed by host.
+        print(dumps(readings))
+        return
+    _heading(output, "gpus")
+    output.print_rows(listed, title="gpus")
+
+
+def _sectioned(
+    sections: list[Section], output: Output, *, title: str, heading: bool = False
+) -> int:
     """Print a report's rows and answer its exit status: 1 when any row failed."""
+    if heading:
+        _heading(output, title)
     output.print_rows(
         [section.model_dump() for section in sections], title=title, columns=_SECTION_ROW
     )
@@ -2261,25 +2127,6 @@ def _answers(given: Sequence[str]) -> dict[str, str]:
     return {question: answer for question, _, answer in split}
 
 
-def _present(report: MonitorReport, output: Output) -> None:
-    """Print one sweep's report, the whole document in the compact modes, else what moved.
-
-    A cron reads the full report, counts and `changed` flag included, and branches on it; a
-    person at a terminal wants the jobs that actually settled this pass, one row each, with the
-    still-running count in the heading and the columns named even when nothing moved.
-    """
-    if output.mode is not None:
-        output.print_record({**report.model_dump(), "changed": report.changed}, title="monitor")
-        return
-    output.print_rows(
-        _changes(report),
-        title="monitor: sweep skipped; another monitor owns settlement"
-        if report.running is None
-        else f"monitor: {report.running} running",
-        columns=_CHANGE_COLUMNS,
-    )
-
-
 def _changes(report: MonitorReport) -> list[dict[str, str]]:
     """What moved this pass, one row each: every job that settled or was re-dispatched, every
     dispatch a quota is still holding, and every host that could not be reached.
@@ -2314,12 +2161,13 @@ def _forget_openssh_descriptors() -> None:
 def main() -> None:
     """Console entry point, `MissionError` printed to stderr without a traceback, exit 1.
 
-    The snapshot is brought up to its source first, which re-executes this same command on the
-    new code when the source moved, and says so on stderr only. A trailing-command verb then gets
-    the `--` its command implies, so nothing typed after the command is ever read as this tool's.
+    A trailing-command verb gets the `--` its command implies, so nothing typed after the
+    command is ever read as this tool's. The verbs a person or an agent types log short plain
+    lines; the ones a dispatched job runs keep the JSON its log readers parse.
     """
     _forget_openssh_descriptors()
-    install_traceback()
+    if not Project().variable("LOG_FORMAT").read() and sys.argv[1:2] != ["execute"]:
+        configure(output="line")
     app = build()
     try:
         app(Delimiter(app).placed(sys.argv[1:]))

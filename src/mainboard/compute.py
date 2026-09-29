@@ -204,7 +204,7 @@ class Survey:
         else:
             access = Access.PROVISIONED
             endpoint = "login endpoint only; " if profile.kind in {"pbs", "slurm"} else ""
-            action = note or f"inspect mainboard job list and mainboard host facts --on {alias}"
+            action = note or f"inspect `mb job list` and `mb host list {alias} --facts`"
             detail = (
                 f"{cached}; {endpoint}job readiness and GPU availability not checked; {action}"
             )

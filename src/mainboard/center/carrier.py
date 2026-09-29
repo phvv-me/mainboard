@@ -1,6 +1,6 @@
 # How the local tool runs one function of the destination agent on a machine that has no tool.
 #
-# The destination has uv, which `center migrate` puts there first, and uv has a Python. That
+# The destination has uv, which `host setup --center` puts there first, and uv has a Python. That
 # Python is started with a one-line bootstrap in its argv, the only thing that rides the command
 # line, and everything else comes down ssh's stdin: a loader, then one JSON header naming the
 # modules to load and the function to call with its arguments, then whatever byte stream that

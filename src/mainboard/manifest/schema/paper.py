@@ -2,7 +2,7 @@ from ...core.base import Declared
 
 
 class Paper(Declared):
-    """One manuscript `center paper` builds and checks against its venue's page rule.
+    """One manuscript `paper build` builds and checks against its venue's page rule.
 
     dir: workspace-relative; the build lands in its `build/`.
     main: the root `.tex` file inside `dir`.

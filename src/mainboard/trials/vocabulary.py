@@ -1,6 +1,6 @@
 # The two words a receipt carries, and only one of them is ours.
 #
-# `Outcome` is fixed: whether the instrument worked, the word `mb job verdict` branches an exit
+# `Outcome` is fixed: whether the instrument worked, the word `mb job show` branches an exit
 # code on. The settled word beside it is the consumer's vocabulary, whose meaning this module does
 # not know; each word carries only the letter and terminal markup a progress line prints.
 #

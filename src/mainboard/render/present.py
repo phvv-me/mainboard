@@ -13,23 +13,24 @@ if TYPE_CHECKING:
     from .values import Node
 
 
-def mode_of(*, json_mode: bool, agent: bool) -> str | None:
-    """The dispatch key `--json`/`--agent` select, `None` for the human render; not both."""
-    if json_mode and agent:
-        raise MissionError("pass only one of --json or --agent")
-    return "json" if json_mode else ("agent" if agent else None)
+def mode_of(*, json_mode: bool, human: bool) -> str | None:
+    """The dispatch key `--json`/`--human` select, `None` for the compact default; not both."""
+    if json_mode and human:
+        raise MissionError("pass only one of --json or --human")
+    return "json" if json_mode else ("human" if human else None)
 
 
 def _record(
     payload: Mapping[str, Node], *, fields: Sequence[str], title: str, mode: str | None = None
 ) -> None:
-    """Print one entity as a rich field/value table, the default when `mode` is unset.
+    """Print one entity as `field<TAB>value` lines, the default: the reader is usually an agent.
 
     payload: the entity's fields, typically a model's `model_dump()`.
     fields: the field names to keep, every field when empty.
     """
-    del mode
-    human.render_table(pairs_of(to_row(payload), fields=fields or None), title=title)
+    del mode, title
+    # A record's `field value` header line says nothing its pairs do not.
+    print(tabular.encode(pairs_of(to_row(payload), fields=fields or None)).partition("\n")[2])
 
 
 record = value_dispatch(_record, kind="mode")
@@ -37,12 +38,12 @@ record = value_dispatch(_record, kind="mode")
 
 @record.register("json")
 def _record_json(payload: Mapping[str, Node], *, fields: Sequence[str], title: str) -> None:
-    print(json.dumps(_project(payload, fields), indent=2))
+    print(json.dumps(_project(payload, fields), separators=(",", ":")))
 
 
-@record.register("agent")
-def _record_agent(payload: Mapping[str, Node], *, fields: Sequence[str], title: str) -> None:
-    print(tabular.encode(pairs_of(to_row(payload), fields=fields or None)))
+@record.register("human")
+def _record_human(payload: Mapping[str, Node], *, fields: Sequence[str], title: str) -> None:
+    human.render_table(pairs_of(to_row(payload), fields=fields or None), title=title)
 
 
 def _rows(
@@ -52,14 +53,12 @@ def _rows(
     title: str,
     mode: str | None = None,
 ) -> None:
-    """Print many entities as a rich table, the default when `mode` is unset.
+    """Print many entities as a header line then tab-separated rows, the default.
 
     fields: the column names to keep, every field when empty.
     """
-    del mode
-    human.render_table(
-        [to_row(payload) for payload in payloads], fields=fields or None, title=title
-    )
+    del mode, title
+    print(tabular.encode([to_row(payload) for payload in payloads], fields=fields or None))
 
 
 rows = value_dispatch(_rows, kind="mode")
@@ -69,14 +68,16 @@ rows = value_dispatch(_rows, kind="mode")
 def _rows_json(
     payloads: Sequence[Mapping[str, Node]], *, fields: Sequence[str], title: str
 ) -> None:
-    print(json.dumps([_project(payload, fields) for payload in payloads], indent=2))
+    print(json.dumps([_project(payload, fields) for payload in payloads], separators=(",", ":")))
 
 
-@rows.register("agent")
-def _rows_agent(
+@rows.register("human")
+def _rows_human(
     payloads: Sequence[Mapping[str, Node]], *, fields: Sequence[str], title: str
 ) -> None:
-    print(tabular.encode([to_row(payload) for payload in payloads], fields=fields or None))
+    human.render_table(
+        [to_row(payload) for payload in payloads], fields=fields or None, title=title
+    )
 
 
 def _project(payload: Mapping[str, Node], fields: Sequence[str]) -> dict[str, Node]:

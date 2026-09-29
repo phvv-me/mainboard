@@ -1,7 +1,7 @@
 """Standard-library machine census, run here and sent to a remote Python over SSH stdin.
 
 The one place a machine's operating system, shells, filesystem, git settings, tools and NVIDIA
-driver are read. `facts` runs it in-process and `center migrate` sends this same file to a
+driver are read. `facts` runs it in-process and `host setup --center` sends this same file to a
 destination with no Mainboard yet, so what a machine is found to be never depends on which verb
 asked. Hence it imports only the standard library, and every answer is plain JSON data.
 """

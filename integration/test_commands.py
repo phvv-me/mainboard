@@ -16,9 +16,9 @@ from .conftest import MB
         ["host", "--help"],
         ["job", "--help"],
         ["self", "--help"],
-        ["check"],
+        ["doctor"],
         ["job", "list"],
-        ["host", "facts"],
+        ["host", "list", "--facts"],
         ["self", "update"],
     ],
     ids=lambda args: " ".join(args),
@@ -28,10 +28,11 @@ def test_a_verb_answers_in_a_fresh_workspace(mb, args: list[str]) -> None:
 
 
 def test_the_help_names_the_groups_and_pixis_environment_verbs(mb) -> None:
-    listed = {line.strip("|+ ").split(" ")[0] for line in mb("--help").out.splitlines()}
-    for verb in ("install", "lock", "add", "remove", "run", "shell", "shell-hook", "host", "job"):
+    listed = {line.strip().split(":")[0] for line in mb("--help").out.splitlines()}
+    for verb in ("install", "lock", "add", "remove", "run", "shell", "host", "job", "git"):
         assert verb in listed, verb
-    assert not {"activate", "compute", "jobs", "monitor", "setup", "submit"} & listed
+    gone = {"activate", "check", "compute", "center", "jobs", "plot", "shell-hook", "submit"}
+    assert not gone & listed
 
 
 def test_a_bad_query_is_said_without_a_traceback(mb) -> None:
@@ -52,9 +53,9 @@ def test_a_query_exports_through_duckdb(mb, workspace) -> None:
 
 
 def test_an_environment_never_installed_is_named_not_crashed_on(mb) -> None:
-    ran = mb("shell-hook")
+    ran = mb("shell")
     assert ran.code == 1
-    assert "not installed here" in ran.err and "install" in ran.err
+    assert "no default environment" in ran.err and "mb install" in ran.err
 
 
 def test_an_explicit_delimiter_is_respected(mb) -> None:
@@ -69,7 +70,7 @@ def test_a_bounded_command_is_stopped_at_its_bound(mb) -> None:
 
 def test_a_workspace_is_required_and_said_to_be(mb, tmp_path_factory) -> None:
     elsewhere = tmp_path_factory.mktemp("nowhere")
-    ran = mb("check", cwd=elsewhere)
+    ran = mb("doctor", cwd=elsewhere)
     assert ran.code != 0
     assert "mb.toml" in ran.said or "mainboard.toml" in ran.said
 
@@ -99,7 +100,7 @@ def test_a_real_terminal_gets_the_same_answers(workspace) -> None:
 
 
 def test_the_audit_reads_this_machine_and_names_every_fix(mb) -> None:
-    ran = mb("host", "audit", "--json", timeout=600)
+    ran = mb("host", "list", "--audit", "--json", timeout=600)
     assert ran.code == 0, ran.said
     rows = {row["section"]: row for row in json.loads(ran.out)}
     assert "system" in rows and "disk" in rows

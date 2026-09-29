@@ -1,6 +1,6 @@
 # The value objects a durable monitor sweep builds: one pass resolves every tracked job on every
 # host (a dead host never crashes it) and harvests those newly terminal since the last sweep.
-# `mainboard.monitor.Monitor` runs the pass and `mainboard job monitor` prints it.
+# `mainboard.monitor.Monitor` runs the pass and `mb job list` prints it.
 
 from patos import FrozenModel
 from pydantic import Field

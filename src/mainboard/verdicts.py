@@ -1,4 +1,4 @@
-# The anti-fabrication read behind `mb job verdict` and the block behind `mb job wait`.
+# The anti-fabrication read behind `mb job show` and the block behind `mb job show --wait`.
 # Everything printed here comes from recorded receipts and the durable run registry, never from a
 # dashboard, a digest or a live session's memory: a notification says a job probably ended, this
 # module reads its outcome.
@@ -393,7 +393,7 @@ class Verdicts:
         except ModuleNotFoundError as missing:
             raise MissionError(
                 f"{path} is a trials store, read with {missing.name}, which this environment "
-                f"lacks; run it inside the workspace's: `mb run -- mb job verdict {path}`"
+                f"lacks; run it inside the workspace's: `mb run -- mb job show {path}`"
             ) from None
         store = Dataset.holding(path)
         if store is None:
@@ -481,7 +481,7 @@ class Verdicts:
         pytest session ended while its process lingers, and stops with `STALLED` on a job silent
         past `stall` on an idle card.
 
-        handle: the dispatched run, or a batch id as `batch run` printed it, which waits for
+        handle: the dispatched run, or a batch id as `submit --batch` printed it, which waits for
             every job of the batch and answers with the batch's verdict.
         timeout: wall seconds before giving up with the run reported in flight (exit 2), 0 never.
         interval: seconds between sweeps.

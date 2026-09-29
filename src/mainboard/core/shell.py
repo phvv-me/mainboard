@@ -1,7 +1,9 @@
 import os
 import shlex
+import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the argv a verb hands over, the Windows stand-in for exec since=2026-09-28
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from string.templatelib import Interpolation, Template
 from typing import TYPE_CHECKING, NoReturn
 
@@ -67,3 +69,25 @@ def become(program: str, argv: list[str], env: Mapping[str, str] | None = None) 
             os.execvp(program, argv)
         os.execvpe(program, argv, dict(env))
     raise SystemExit(subprocess.call(argv, env=None if env is None else dict(env)))
+
+
+# Shells that need `-i` to read their interactive startup when not started by a terminal.
+_POSIX_SHELLS = frozenset({"zsh", "bash", "fish", "sh", "dash", "ksh"})
+
+
+def interactive_shell() -> list[str]:
+    """The user's own interactive shell as an argv, found the same way on every system.
+
+    `$SHELL` where it names a shell this machine runs (zsh, bash and fish, MSYS zsh on Windows
+    included, whose `/usr/bin/zsh` is found by name), else PowerShell 7, Windows PowerShell or
+    cmd on Windows, else `sh`.
+    """
+    named = os.environ.get("SHELL", "")
+    if named and (found := shutil.which(named) or shutil.which(Path(named).name)):
+        return [found, "-i"] if Path(found).stem in _POSIX_SHELLS else [found]
+    if WINDOWS:
+        for name in ("pwsh", "powershell"):
+            if found := shutil.which(name):
+                return [found, "-NoLogo"]
+        return [os.environ.get("COMSPEC", "cmd.exe")]
+    return ["/bin/sh", "-i"]

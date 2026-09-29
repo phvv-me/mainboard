@@ -42,7 +42,7 @@ class Results:
             the file or inside SQL, use the caller's current directory, not this root or the
             SQL file's parent.
         project: a research directory name; omitted means all projects, still labeled.
-        Network refresh belongs to `mb job monitor`, never an SQL side effect.
+        Network refresh belongs to `mb job list`, never an SQL side effect.
         """
         with self._connected(sql, project) as (connection, text):
             result = connection.execute(text)

@@ -1,6 +1,6 @@
 # Whether one machine, as its census describes it, can serve this workspace: the census read
 # against what the manifest and its lock ask for. It is the single judge behind the findings
-# `facts`, `compute`, `setup`, `center verify` and `center migrate` show, so a driver too old for
+# `host list`, `host setup` and `doctor --center` show, so a driver too old for
 # the lock is the same sentence wherever it surfaces.
 
 import re

@@ -180,7 +180,8 @@ class Agents:
             verdict=Verdict.WARN,
             detail=f"no Claude Code memory under {folder.parent.name}",
             fix=(
-                f"run `{Project().name} center migrate` from the previous center, which re-keys it"
+                f"run `{Project().name} host setup --center` from the previous center, "
+                "which re-keys it"
             ),
         )
 

@@ -1,4 +1,4 @@
-"""The standard-library agent `center migrate` runs on the destination, sent over SSH stdin.
+"""The standard-library agent `host setup --center` runs on the destination, sent over SSH stdin.
 
 A machine about to become the center has no Mainboard yet, often no Bash, and may
 be Windows, macOS or Linux. Everything done there before the tool is installed is therefore

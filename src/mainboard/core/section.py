@@ -14,8 +14,8 @@ class Verdict(StrEnum):
 class Section(FrozenModel):
     """One area judged, with the single command that repairs it.
 
-    The row every report is made of (`doctor`, `center verify`, `center migrate`, and the machine
-    findings of `facts`, `compute` and `setup`), so a reader learns one shape.
+    The row every report is made of (`doctor`, `host setup --center`, and the machine
+    findings of `host list` and `host setup`), so a reader learns one shape.
 
     detail: the one line behind the verdict.
     fix: the repairing command, empty when nothing needs repairing.

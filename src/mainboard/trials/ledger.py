@@ -8,9 +8,9 @@
 # purpose: the rename is the commit, and concurrency belongs to the dispatch layer, where each job
 # writes its own fragments.
 #
-# The wire is not the store. The printed `trial_receipt` line is how `mb job monitor` settles a
+# The wire is not the store. The printed `trial_receipt` line is how `mb job list` settles a
 # remote job, so that boundary stays JSON lines, minted by `wire` both for the `MB_RECEIPTS`
-# framing file a rented instance hands back and for streaming one run into `mb job verdict`.
+# framing file a rented instance hands back and for streaming one run into `mb job show`.
 
 import csv
 import json

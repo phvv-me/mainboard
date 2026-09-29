@@ -179,7 +179,7 @@ class Exposure:
         """Write the PATH file and source it from each present shell's startup files."""
         path_file = self.home / PATH_FILE
         lines = [
-            f"# Written by `{Project().name} center verify`: the default environment and the "
+            f"# Written by `{Project().name} doctor --center`: the default environment and the "
             "tool on PATH",
             *(
                 _prepended(folder)

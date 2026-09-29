@@ -31,7 +31,7 @@ class Defaults(Declared):
     mem_gb: an expression over `attempt` (1-based retry), so a retry escalates; so is `walltime`.
     gpu_name: the GPU type a metered provider rents; owned hosts ignore it.
     max_usd: the spend cap every provider backend refuses to submit without.
-    vram_gb: card memory a job needs, flagged by `facts`, `compute`, `setup` and `center verify`
+    vram_gb: card memory a job needs, flagged by `facts`, `compute`, `setup` and `doctor --center`
         on a host whose largest card holds less; zero declares no need.
     interact_queue: where `interact` goes instead of `queue`, for a site routing interactive
         allocations elsewhere (Miyabi's `interact-g` router).

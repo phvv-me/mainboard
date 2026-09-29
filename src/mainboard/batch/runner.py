@@ -13,9 +13,9 @@ from ..dispatch.shared import Watcher
 from ..dispatch.transport import HostUnreachable
 from ..dispatch.vocabulary import Request
 from .estimate import Estimator
-from .receipts import Journal, Topic, latest, payload, publish
+from .receipts import Journal, Topic, payload, publish
 from .spec import Selection
-from .transfer import Transfer, TransferSet
+from .transfer import Transfer
 
 if TYPE_CHECKING:
     from ..board import Board
@@ -115,16 +115,10 @@ class Batch:
         return Dispatched(job=job.name, target=job.target, handle=run.handle.id, kind=kind)
 
     def estimate(self) -> BatchEstimate:
-        """Price every job from what `prepare` measured, measuring the rest. Nothing runs."""
+        """Price every job from what it must still ship to its target. Nothing runs."""
         self.open()
-        prepared = latest(self.bus.replay(), Topic.PREPARED)
         transfer = Transfer(self.board)
-        measured = [
-            TransferSet.model_validate(prepared[job.name].data)
-            if job.name in prepared
-            else transfer.set_for(job)
-            for job in self.jobs
-        ]
+        measured = [transfer.set_for(job) for job in self.jobs]
         table = Estimator(self.board).table(self.id, self.jobs, measured)
         for row in table.jobs:
             publish(self.bus, self.id, Topic.ESTIMATED, job=row.job, data=payload(row))
@@ -152,18 +146,6 @@ class Batch:
                 "root": str(self.board.root),
             },
         )
-
-    def prepare(self) -> list[TransferSet]:
-        """Measure what each job must still put on its target, and publish each measurement.
-
-        Missing data fails a job after the queue wait, and a drifted mirror is unplanned transfer.
-        """
-        self.open()
-        transfer = Transfer(self.board)
-        measured = [transfer.set_for(job) for job in self.jobs]
-        for prepared in measured:
-            publish(self.bus, self.id, Topic.PREPARED, job=prepared.job, data=payload(prepared))
-        return measured
 
     def held(self, job: BatchJob, refusal: BaseException) -> Dispatched:
         """Keep one job whose target had no room in the run registry, durable for the cron sweep

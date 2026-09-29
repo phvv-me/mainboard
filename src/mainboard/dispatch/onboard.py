@@ -58,12 +58,12 @@ _PAUSE = 5.0
 
 def gpus_command() -> str:
     """The command a remote host runs to say who holds each of its cards, as JSON."""
-    return f"{_TOOL} host gpus --json"
+    return f"{_TOOL} host list local --gpus --json"
 
 
 def facts_command() -> str:
     """The command a machine answers with its own hardware snapshot as JSON."""
-    return f"{_TOOL} host facts --json"
+    return f"{_TOOL} host list local --facts --json"
 
 
 class HostSetup(FrozenModel):

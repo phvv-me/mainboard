@@ -1,4 +1,4 @@
-# `mainboard center paper`: build a declared manuscript and say, in one pass that exits nonzero on
+# `mainboard paper build`: build a declared manuscript and say, in one pass that exits nonzero on
 # any of it, everything a reviewer would catch: errors, unresolved references and citations,
 # labels defined twice, overfull boxes, the page count, where each section starts, and whether
 # the section closing the main text ends inside the venue's limit.

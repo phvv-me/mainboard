@@ -1,7 +1,8 @@
-# `center verify`: is this machine ready to be the center, asked of the machine itself.
+# `doctor --center`: is this machine ready to be the center, asked of the machine itself.
 #
-# The readiness suite a center answers on its own, and the last step of `center migrate`, which
-# runs this same verb on the destination and reports what it says. It is every question at once:
+# The readiness suite a center answers on its own, and the last step of
+# `host setup --center`, which runs this same verb on the destination and reports what it says.
+# It is every question at once:
 # this machine's git tooling (with its safe settings applied), the machine against the workspace
 # (the census judged the way `facts` judges any host), the workspace doctor, the plan the manifest
 # resolves to here, a smoke run of Python, torch and CUDA in the default environment, whether
@@ -220,7 +221,7 @@ class Verification:
                     section="git: checkout",
                     verdict=Verdict.WARN,
                     detail=f"owned submodules not checked out: {', '.join(absent)}",
-                    fix="mainboard center git pull",
+                    fix="mainboard git pull",
                 )
             )
         if behind:
@@ -229,7 +230,7 @@ class Verification:
                     section="git: behind",
                     verdict=Verdict.WARN,
                     detail=f"behind upstream: {', '.join(behind)}",
-                    fix="mainboard center git pull",
+                    fix="mainboard git pull",
                 )
             )
         rows.append(

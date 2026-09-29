@@ -27,18 +27,16 @@ The same surface as a CLI:
 ```console
 $ mainboard run --on gold nvidia-smi -L   # everything from the command on is its own
 GPU 0: NVIDIA GB10 (UUID: GPU-6a5c...)
-$ mainboard host facts --on gold | head -4
-{
-  "schema_version": 1,
-  "hostname": "gold",
-  "cpu_name": "10x Arm Cortex-A725 + 10x Arm Cortex-X925",
+$ mainboard host list gold --facts | head -4
+
+# facts: gold
+hostname	gold
+cpu_name	10x Arm Cortex-A725 + 10x Arm Cortex-X925
 $ mainboard job submit --on miyabi-g --attempt 2 python -m experiments.run
 2231259
-$ mainboard job monitor --json          # one durable pass, what a cron runs
-{"running": 1, "finished": [], "failed": [], "unreachable_hosts": [], "changed": false}
-$ mainboard job list                    # every live job as its queue sees it, cells, silence, GPU%
-$ mainboard job wait 2231259            # cells and a heartbeat on stderr; exit 4 on a stalled job
-$ mainboard host list --agent         # every path this workspace can run on
+$ mainboard job list                    # settles what ended, then every live job as its queue sees it
+$ mainboard job show 2231259 --wait     # cells and a heartbeat on stderr; exit 4 on a stalled job
+$ mainboard host list                   # every path this workspace can run on
 name      kind      access       detail                 usd_hr  credit_usd
 local     local     here         1x RTX 4090, 135 GB RAM
 gold      ssh       provisioned  cached default: hardware from onboarding
@@ -46,7 +44,7 @@ miyabi-g  pbs       unreachable  ssh connect timed out
 vast      provider  keyed        1x RTX 4090 Sweden, SE  0.2978  99.9968
 ```
 
-`mainboard help batch run` opens that command's help. Other queries, such as
+`mainboard help job submit` opens that command's help. Other queries, such as
 `mainboard help Log.read_table` or `mainboard help separate trace pass`, search
 command descriptions, this README, and Python API docstrings. Results name their
 source locations. The wheel includes the README. API search never imports
@@ -61,7 +59,7 @@ platform the manifest or its lock does not cover, a driver below `[system] cuda`
 locked CUDA builds the driver cannot run or that carry no kernels for the card,
 fewer cards or less memory than the profile's `defaults.gpus` and
 `defaults.vram-gb` declare, too little disk. `setup`, `compute` (its `issues`
-column) and `center verify` print the same findings from the same census.
+column) and `doctor --center` print the same findings from the same census.
 
 `compute` answers what there is to run on before anything is dispatched: this
 machine, every declared host with whether it answers and whether it was set up,
@@ -73,7 +71,7 @@ facts, which may be stale. An SSH echo probe works with POSIX shells, cmd, and
 PowerShell without requiring an installed environment. Neither cached hardware nor
 a successful login proves GPU availability. For PBS/Slurm, the reachable endpoint
 is the login host, not an allocated compute node. Inspect `mainboard job list` and
-`mainboard host facts --on <host>` before choosing a target.
+`mainboard host list <host> --facts` before choosing a target.
 A host's `[hosts.<name>.vars]` may contain `status-note` to describe a supported
 route or known restriction. This replaces generic setup advice, not the observed
 access state, and never makes a host job-ready.
@@ -96,7 +94,7 @@ Windows diagnostic arguments preserve embedded quotes and empty strings through 
 creation, including `python -c` source. Native Windows collection and direct runs are supported;
 queued submissions remain unsupported. HPC-AI catalog prices absent from the provider response
 are unknown (`null`), never interpreted as free compute.
-`lanes run` refuses a roster containing a Windows host before starting any job; it never
+A lane (`job submit --split`) refuses a roster containing a Windows host before starting any job; it never
 silently omits that host and returns a misleading success for partial coverage.
 Onboarding selects Python from the tool's declared runtime requirement, not the host's
 older system interpreter. Workspace dependencies still install from the shipped frozen lock.
@@ -135,19 +133,14 @@ command = "python -m experiments.run --shard 1"
 ```
 
 ```console
-$ mainboard batch prepare fleet.toml --agent      # what must ship, nothing runs
-job       target    files  raw_bytes  wire_bytes  since
-sweep-a   miyabi-g  1440   9400549    2435370     2026-08-19T02:03:53+00:00
-gold-2    gold      19     106701     33053       2026-08-20T15:49:32+00:00
-total               1459   9507250    2468423
-$ mainboard batch estimate fleet.toml --agent     # what it will cost, nothing runs
+$ mainboard job submit --batch fleet.toml --estimate   # what it ships and costs, nothing runs
 job      target  kind  hardware     wire_bytes  runtime_s  setup_p50_s  setup_p90_s  setup_samples  rate_usd_hr  expected_usd  p90_usd
 sweep-a  gold    ssh   129 GB RAM   33053       25.0       2.49         7.53         3              0.0          0.0           0.0
-$ mainboard batch run fleet.toml --set repetition=3   # every job to its own target, one knob typed
-fleet-db4af53f
-$ mainboard batch run fleet.toml --only "sweep-*"    # the jobs that are ready, the rest recorded skipped
-fleet-db4af53f
-$ mainboard batch wait fleet-db4af53f             # block until every job settles, exit its verdict
+$ mainboard job submit --batch fleet.toml --set repetition=3   # every job to its own target
+# batch fleet-db4af53f
+$ mainboard job submit --batch fleet.toml --only "sweep-*"     # the ready jobs; the rest skipped
+$ mainboard job list --batch fleet-db4af53f                    # one batch's jobs, as they settle
+$ mainboard job show fleet-db4af53f --wait                     # block until all settle, exit the verdict
 $ mainboard shell --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
 ```
 
@@ -194,8 +187,8 @@ ends = "Conclusion"     # the section that must end by that page
 ```
 
 ```console
-$ mainboard center paper head                        # build, report, exit 1 on any problem
-$ mainboard center paper head --show "Pareto front"  # and render that phrase's page to PNG
+$ mainboard paper build head                        # build, report, exit 1 on any problem
+$ mainboard paper build head --show "Pareto front"  # and render that phrase's page to PNG
 ```
 
 The build is tectonic from the workspace environment. The report names every
@@ -285,8 +278,8 @@ hosts apply only when it stands alone. From inside a member, the workspace
 composing it is the root, the way cargo finds one.
 
 ```console
-$ mainboard center members              # every member, as somebody who clones it alone sees it
-$ mainboard center members llm-head     # one: imports, paths, tasks, then a clone installed by uv
+$ mainboard doctor --members              # every member, as somebody who clones it alone sees it
+$ mainboard doctor --members llm-head     # one: imports, paths, tasks, then a clone installed by uv
 ```
 
 ## One repository tree
@@ -304,11 +297,11 @@ never-commit = ["**/evidence/artifacts/**"]  # the default; git glob pathspecs
 ```
 
 ```console
-$ mainboard center git status          # branch or detached, ahead/behind, dirty, published
-$ mainboard center git pull            # fast-forward only, submodules follow their pointers
-$ mainboard center git commit -m "…"   # submodules first, then the parents' pointers
-$ mainboard center git push            # children first, pointers verified, protected main → branch
-$ mainboard center git check           # everything a clone or the next push would trip on
+$ mainboard git status          # branch or detached, ahead/behind, dirty, published
+$ mainboard git pull            # fast-forward only, submodules follow their pointers
+$ mainboard git commit -m "…"   # submodules first, then the parents' pointers
+$ mainboard git push            # children first, pointers verified, protected main → branch
+$ mainboard git check           # everything a clone or the next push would trip on
 ```
 
 ## One lint pass
@@ -354,11 +347,11 @@ verbs that manage the monorepo itself live under `center` (`git`, `paper`,
 targets.
 
 ```console
-$ mainboard center verify                      # is this machine ready to be the center
-$ mainboard center migrate pedro-home --root C:/Users/vazva/life   # move it there
+$ mainboard doctor --center                      # is this machine ready to be the center
+$ mainboard host setup --center pedro-home --root C:/Users/vazva/life   # move it there
 ```
 
-`center verify` is one report, each row with the command that repairs it: this
+`doctor --center` is one report, each row with the command that repairs it: this
 machine's git tooling (safe git settings applied in place), the machine judged
 against the workspace, the `doctor` report, the plan `check` resolves, a smoke run
 of Python, torch and CUDA in the default environment, whether every lint tool can
@@ -378,7 +371,7 @@ line sources it from `~/.zshenv` (every zsh, login or not) and `~/.profile` and
 PowerShell alias shadowing a tool (`ls`, `cat`, `sort`...) is named with the
 `$PROFILE` line that removes it.
 
-`center migrate <alias>` moves the center to any machine ssh reaches, Windows
+`host setup --center <alias>` moves the center to any machine ssh reaches, Windows
 included with no WSL. It refuses to start while an owned HEAD is on no remote,
 puts uv there when missing, runs the same census `facts` uses and stops early on
 a platform the workspace or its lock cannot serve, then:
@@ -401,7 +394,7 @@ a platform the workspace or its lock cannot serve, then:
    OAuth store;
 5. installs this tool from the cloned source with the extras installed here, the
    fleet's pixi, and the default environment from the carried lock, never solving;
-6. runs `center verify` on the destination and folds its rows into the report.
+6. runs `doctor --center` on the destination and folds its rows into the report.
 
 Environment prefixes, the hub pin cache and ignored data stay behind by design.
 Secrets travel only on ssh's stdin, never on a command line, and are never
@@ -455,11 +448,11 @@ $ mainboard proc wait --file results/done.json --pid 4242
 
 ## Entering an environment
 
-`mb shell` opens a shell inside the workspace's environment and `mb run -- <cmd>`
-runs one command there. To enter it in the shell you already have:
+`mb shell` opens your own shell (zsh, bash, fish, pwsh, on every system) inside
+the workspace's environment, and `mb run -- <cmd>` runs one command there:
 
 ```console
-$ eval "$(mb shell-hook)"             # or: eval "$(mb shell-hook --env serving)"
+$ mb shell                            # or: mb shell --env serving
 $ mb list torch                       # what is installed, through pixi list
 $ mb tree numpy --invert              # who pulls it in, through pixi tree
 ```
@@ -608,7 +601,7 @@ Mainboard's remote result mounts and after fetching.
 ### One query surface across machines
 
 ```console
-mainboard job monitor --json
+mainboard job list --json
 mainboard job collect research/reproducibility/datasets/experiments/architecture_error_census --on pedro-home
 mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
 mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
@@ -616,7 +609,7 @@ mainboard query "SELECT server, handle, backend_state, verdict, evidence, settle
 mainboard query "SELECT * FROM runs" --out /tmp/runs.parquet
 mainboard query --file queries/inventory.sql --out /tmp/inventory.parquet
 mainboard help artifacts
-mainboard help batch run
+mainboard help job submit
 ```
 
 `monitor` pulls published results from running jobs as well as finished ones. Run
@@ -658,7 +651,7 @@ Plot the same SELECT with optional Seaborn and Matplotlib:
 
 ```console
 uv tool install --reinstall --python 3.14 --from './packages/mainboard[plot]' mainboard --force
-mainboard plot "SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware" --project reproducibility --x hardware --y runs --kind bar --out /tmp/run-inventory.png --out /tmp/run-inventory.pdf --dpi 300
+mainboard paper plot "SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware" --project reproducibility --x hardware --y runs --kind bar --out /tmp/run-inventory.png --out /tmp/run-inventory.pdf --dpi 300
 ```
 
 This example charts the collected run inventory, not comparative GPU performance.
@@ -721,8 +714,8 @@ The corresponding `queries/inventory.sql` contains
 `SELECT hardware, count(*) AS runs FROM runs GROUP BY hardware ORDER BY hardware`.
 
 ```console
-mainboard plot --config plots.toml --figure inventory
-mainboard plot --config plots.toml --figure inventory --out /tmp/inventory.svg
+mainboard paper plot --config plots.toml --figure inventory
+mainboard paper plot --config plots.toml --figure inventory --out /tmp/inventory.svg
 ```
 
 Layers use native Seaborn marks and moves. SQL supplies aggregates and interval

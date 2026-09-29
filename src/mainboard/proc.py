@@ -38,6 +38,37 @@ class Processes:
         self.clock = clock
         self.sleep = sleep
 
+    def matching(self, pattern: str) -> list[dict[str, str | int | float]]:
+        """Every process whose command line contains `pattern`, started by this tool or not.
+
+        An empty pattern lists this user's processes only; a pattern searches everyone's, so a
+        job somebody started by hand on a shared host is found too. This process is left out.
+        """
+        me = psutil.Process()
+        user = me.username()
+        found = []
+        attributes = ["pid", "ppid", "username", "cpu_percent", "memory_info", "create_time"]
+        for process in psutil.process_iter([*attributes, "cmdline", "name"]):
+            info = process.info
+            line = " ".join(info["cmdline"] or []) or info["name"] or ""
+            if process.pid == me.pid or (pattern and pattern not in line):
+                continue
+            if not pattern and info["username"] != user:
+                continue
+            memory = info["memory_info"]
+            found.append(
+                {
+                    "pid": process.pid,
+                    "ppid": info["ppid"] or 0,
+                    "user": info["username"] or "",
+                    "cpu_pct": info["cpu_percent"] or 0.0,
+                    "rss_mb": round(memory.rss / 2**20) if memory else 0,
+                    "age_s": round(time.time() - (info["create_time"] or time.time())),
+                    "command": line[:200],
+                }
+            )
+        return found
+
     def kill(self, pids: Sequence[int], *, force: bool = False) -> list[int]:
         """Stop each process and everything it started, children first, answering who was gone.
 
