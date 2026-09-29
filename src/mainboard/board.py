@@ -1,3 +1,4 @@
+import json
 import os
 import platform
 import shlex
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, NoReturn, cast
 from plumbum import ProcessExecutionError
 from plumbum import local as localhost
 
+from . import upkeep
 from .batch.estimate import Estimator, JobEstimate
 from .batch.receipts import Journal, Topic, publish
 from .batch.runner import Batch
@@ -24,6 +26,7 @@ from .context.expressions import evaluate
 from .context.resolver import Resolver
 from .core.errors import MissionError
 from .core.project import Project
+from .core.section import Section
 from .core.shell import become, foreground
 from .deps import Dependencies
 from .dispatch import keys, vocabulary
@@ -87,7 +90,6 @@ if TYPE_CHECKING:
     from .batch.receipts import Bus
     from .batch.spec import BatchSpec
     from .context.plan import ExecutionPlan
-    from .core.section import Section
     from .dispatch.schedulers import Scheduler
     from .dispatch.shared import Watcher
     from .dispatch.vocabulary import JobState
@@ -468,6 +470,17 @@ class Board:
             return HostFacts.collected(self.root)
         with open_shell(self.plan(container="none"), self.remote_root()) as shell:
             return read_facts(shell.run(facts_command(), activate=True))
+
+    def audit(self) -> list[Section]:
+        """What this host could and should update, as its own tool judges it (`host audit`)."""
+        if self.local:
+            return upkeep.audit()
+        with open_shell(self.plan(container="none"), self.remote_root()) as shell:
+            said = shell.run(f"{self.project.name} host audit --json")
+        start = said.find("[")
+        if start < 0:
+            raise MissionError(f"{self.host} answered no audit: {said.strip()[-240:]}")
+        return [Section.model_validate(row) for row in json.loads(said[start:])]
 
     def findings(self, system: System) -> list[Section]:
         """What this host's software census means for this workspace, one judged row each.

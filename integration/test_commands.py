@@ -96,3 +96,17 @@ def test_a_real_terminal_gets_the_same_answers(workspace) -> None:
     os.close(primary)
     assert done.returncode == 0, said
     assert "Traceback" not in said
+
+
+def test_the_audit_reads_this_machine_and_names_every_fix(mb) -> None:
+    ran = mb("host", "audit", "--json", timeout=600)
+    assert ran.code == 0, ran.said
+    rows = {row["section"]: row for row in json.loads(ran.out)}
+    assert "system" in rows and "disk" in rows
+    assert all(row["fix"] for row in rows.values() if row["verdict"] == "warn")
+
+
+def test_an_upgrade_dry_run_only_prints_its_steps(mb) -> None:
+    ran = mb("host", "upgrade", "--dry-run")
+    assert ran.code == 0
+    assert ran.out.startswith("$ ") and "self update" in ran.out

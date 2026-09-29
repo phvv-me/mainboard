@@ -14,7 +14,7 @@ from cyclopts import App, Parameter
 from plumbum import local as localhost
 from pydantic import JsonValue
 
-from . import staleness
+from . import staleness, upkeep
 from .batch.spec import BatchSpec, Selection
 from .board import Board
 from .center.migrate import Migration
@@ -485,6 +485,38 @@ def build(root: Path | None = None) -> App:
         shell: the shell the script is for.
         """
         print(app.generate_completion(prog_name=project.name, shell=shell))
+
+    @host.command(name="audit")
+    def host_audit(on: str = "local", *, output: Output = _RICH) -> int:
+        """Say what this machine or a host could and should update, read-only.
+
+        Each package manager present (apt, dnf, brew, snap, winget, and firmware through fwupd)
+        is asked what is pending, beside a waiting reboot, stale apt lists, disk, drift from the
+        dotfiles and this tool's own snapshot. Every warning names its fix; `host upgrade` runs
+        them. A host answers with its own copy of this tool.
+
+        on: the host alias, `local` for this machine.
+        fields: a comma-separated projection over section/verdict/detail/fix.
+        """
+        with progress(f"auditing {on}"):
+            rows = board(on).audit()
+        return _sectioned(rows, output, title=f"audit {on}")
+
+    @host.command(name="upgrade")
+    def host_upgrade(on: str = "local", *, dry_run: bool = False) -> int:
+        """Bring this machine or a host up to date in one pass, printing each step as it runs.
+
+        The system's managers first (apt: update, full-upgrade, autoremove, autoclean; dnf, brew,
+        snap, winget), then the pixi global toolbox, the dotfiles and this tool. Firmware is only
+        audited. A host runs its own copy over a terminal, so `sudo` can ask for its password.
+
+        on: the host alias, `local` for this machine.
+        dry_run: print the steps without running them.
+        """
+        if on != "local":
+            flags = ("--dry-run",) if dry_run else ()
+            board(on).interact(project.name, "host", "upgrade", *flags)
+        return upkeep.upgrade(dry_run=dry_run)
 
     @host.command
     def unlock(*hosts: str) -> None:
