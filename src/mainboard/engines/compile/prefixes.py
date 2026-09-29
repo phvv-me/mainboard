@@ -13,8 +13,9 @@
 
 import hashlib
 import json
+import re
 import shutil
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from ...core import MissionError, Project
@@ -75,8 +76,7 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
     """
     shard = environment_shard(source.name, root=source.parents[2])
     state = SyncState.load(source)
-    # The machine's own path flavor; `normalized` matches its forward-slash spelling.
-    root = PurePath(state.compiled_at or _standing(source, shard))
+    root = recorded_root(state.compiled_at or _standing(source, shard))
     payload = []
     for name in (MANIFEST, LOCK):
         text = normalized(_defining(source, name), root=root, generated_dir=shard)
@@ -99,6 +99,19 @@ def digest_of(source: Path, *, modules: Mapping[str, str] = {}) -> str:
         [payload, state.runtime_from, list(modules.items())], separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def recorded_root(spelled: str) -> PurePath:
+    """A recorded workspace root in the flavor of the machine that wrote it.
+
+    `normalized` matches a root by its forward-slash spelling. A Windows center records a drive
+    root with backslashes, which a Linux host read as one POSIX component whose spelling kept
+    them, so the host never matched the root the center's files carry and the two sides pinned
+    different environments for byte-identical artifacts (gold, 2026-09-29).
+    """
+    if re.match(r"^[A-Za-z]:[\\/]", spelled) or spelled.startswith("\\\\"):
+        return PureWindowsPath(spelled)
+    return PurePath(spelled)
 
 
 def _standing(source: Path, shard: PurePosixPath) -> str:

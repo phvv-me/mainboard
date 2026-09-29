@@ -83,6 +83,19 @@ def providing(plan: ExecutionPlan, *, root: str, pinned: str, prefix: str = "") 
     return ToolCall(args=("provide", plan.env, "--source", artifact, *expect), cwd=root)
 
 
+def pin_key(source: Source, prefix: str = "") -> str:
+    """The snapshot a dispatch of `source` activating the built environment `prefix` runs from.
+
+    A snapshot freezes its generated tree and its environment link when it is first pinned, so
+    two dispatches of one tree share it only while they activate one environment. The
+    environment's digest (the prefix's last segment) joins the name: a re-solved lock pins a fresh
+    snapshot instead of finding one frozen to the environment before it, which refused every
+    later dispatch of an unchanged tree (gold, 2026-09-29).
+    """
+    digest = prefix.rpartition("/")[2]
+    return f"{source.key}-{digest[:12]}" if digest else source.key
+
+
 # A verdict's process exit code: 0 ok, 1 failed, 2 still running, 3 vanished or unknown.
 _VERDICT_EXITS = {"ok": 0, "failed": 1, "running": 2}
 
@@ -260,13 +273,15 @@ class Dispatcher:
         given = Path(path).expanduser()
         return given if given.is_absolute() else self.root / given
 
-    def pinned(self, root: str, *, source: Source) -> str:
+    def pinned(self, root: str, *, source: Source, prefix: str = "") -> str:
         """The snapshot of the mirror at `root` a job dispatched from `source` runs in.
 
         Path arithmetic alone, so the job script can be rendered before the connection that
         materialises the snapshot opens; `submit` creates it from this very key, not a later one.
+
+        prefix: the built environment the snapshot activates, which names it too (`pin_key`).
         """
-        return Snapshots(root).path(source.key)
+        return Snapshots(root).path(pin_key(source, prefix))
 
     def source(self, command: str = "", *, paths: Sequence[str] = ()) -> Source:
         """Fingerprint the mirror scope and explicit command files without version control."""
@@ -471,7 +486,7 @@ class Dispatcher:
                     "builder was given"
                 )
             container = tuple(containerize(["bash", "-c", shipment.command]))
-        pinned = self.pinned(root, source=shipment.source)
+        pinned = self.pinned(root, source=shipment.source, prefix=prefix)
         listing = self.stage_listing(shipment)
         spec = JobSpec(
             cmd=shipment.command,
@@ -620,7 +635,7 @@ class Dispatcher:
             self._verify(remote, plan, root, verify=verify, containerize=containerize)
             pinned = Snapshots(root).pin(
                 self.agent(plan),
-                key=dispatched.source.key,
+                key=pin_key(dispatched.source, prefix),
                 image=self.image(plan, dispatched, listing=listing, shipped=shipped),
                 results=fetch or "",
                 prefix=prefix,
@@ -651,7 +666,7 @@ class Dispatcher:
                     fetch_path=fetch,
                     name=name,
                     node=node,
-                    source=dispatched.source.key,
+                    source=pin_key(dispatched.source, prefix),
                     commit=dispatched.source.commit,
                     digest=dispatched.source.digest,
                     project=self.project,
