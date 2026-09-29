@@ -175,3 +175,77 @@ tests/dispatch/test_provenance.py (archive test edits the job file).
   at once: 20 appends each at 62-120 ms, 60/60 rows, parameterized reads included.
   `MB_REMOTE_WORKSPACE=D:/projects pytest integration/test_remote.py`: those three pass;
   macmini, pedro-home, purple still need `mb host setup`.
+
+## Gotchas met so far, and the one standard each should follow
+
+Status: [x] standardized, [~] worked around (one place, not yet the rule), [ ] open.
+
+Packages and locks
+- [x] conda-forge lacks some tools on win-64 (zsh, tmux, jq, btop, aria2, bun). Standard: one
+      source, pixi from conda-forge everywhere; a gap is filled by a repackaged build
+      (dotfiles `recipes/`), a cross-platform alternative (jaq, bottom), or dropped.
+- [~] A PyPI sdist the center cannot build blocks every platform's solve (libsass). Standard:
+      compiled dependencies come from conda-forge; `mb lock` could say which sdist broke.
+- [x] A per-platform manifest cannot share one lock (npm). Standard: identical package.json
+      everywhere, `[on.<platform>.nodejs]` refused.
+- [x] pnpm stops on an undecided build script. Standard: `[nodejs] builds` decides each.
+- [x] `pixi global sync` exposes nothing without `exposed`. Standard: the manifest lists them.
+- [x] conda orders `3.7c` below `3.7`. Standard: no lower bound on a letter-suffixed version.
+
+Windows
+- [x] `os.exec*` drops argument quoting. Standard: `core.shell.become`.
+- [~] Windows PowerShell 5.1 mangles quotes in native arguments and writes UTF-16 on `>`.
+      Standard (proposed): pwsh 7 in the toolbox (conda-forge `powershell` 7.6, all platforms),
+      hints printed for pwsh; every multi-command example a script, never `&&`.
+- [x] CRLF checkouts broke bash, tmux and MSYS zsh. Standard: `* text=auto eol=lf` in every owned
+      repository (D:\projects and dotfiles have it); `mb center git check` could enforce it.
+- [~] 260-character paths: cmd.exe cannot start in a longer cwd (rattler-build in a deep temp
+      dir). Standard: build and cache directories stay short (`~/.cache/...`).
+- [x] 128-bit file ids overflow a 64-bit column. Standard: fold at the one place stamps are made.
+- [ ] Two MSYS runtimes in one process tree (Git Bash launching pixi's MSYS tools) fail to fork.
+      Standard (proposed): MSYS tools only from zsh; agents and scripts call Windows-native ones.
+- [x] MSYS takes home from nsswitch, not HOME; its /etc/profile resets PATH and fails on /dev/shm
+      in a pixi prefix. Standard: `db_home: windows`, zsh started non-login, ~/.zshenv sets PATH.
+- [x] No ssh can multiplex on Windows (Win32-OpenSSH, Git's and MSYS2's alike, measured).
+      Standard: key-less hosts through one agent (`mb host unlock`); Quack over one tunnel.
+- [ ] Machine PATH wins over user PATH, and `center verify` wrote user-PATH entries for an old
+      center (C:\Users\vazva\Documents\projects\.mainboard\...) that are still there.
+- [ ] Localized OS error text (Portuguese here). Standard: match error codes, never messages.
+
+DuckDB and the lake
+- [x] List parameters bind at ~2 ms per element. Standard: bulk data staged as NDJSON.
+- [x] Quack drops bound parameters; resolves only the server's default database; `query()` runs a
+      write twice; both ends need one DuckDB release. Standard: `Lake.execute` inlines, serving
+      opens DuckDB on the catalog, writes go through tables, `mb self version` names DuckDB.
+- [x] `at` is reserved in DuckDB 2.0. Standard: timestamps are `ts`.
+
+Shell and startup
+- [x] zsh's `(#q)` qualifier is a plain string without extendedglob (compinit rebuilt every time).
+- [x] Per-shell init commands cost a process each (900 ms on Windows). Standard: cached init.
+- [ ] Two owners of the shell's startup files: `center/exposure.py` appends marked lines to
+      ~/.zshenv, ~/.profile and ~/.bashrc, which chezmoi now owns and rewrites on every apply.
+- [ ] gold's /etc/bash.bashrc execs zsh unconditionally, so bash cannot be kept there.
+
+## What else to unify and clean up in mainboard (proposed, by payoff)
+
+1. One owner for shell startup: dotfiles source `~/.config/mb/path.sh` when present; mainboard
+   writes only that file (and the Windows user PATH, replacing stale entries), never rc files.
+   Removes the fight above and most of `center/exposure.py`'s rc editing.
+2. Jobs write the center's lake live over Quack: `mb job submit`/`monitor` open the tunnel, the
+   remote agent appends receipts and log lines, and the ssh collection path (`collect`, harvest,
+   `KeptDigests` mirror of the agent's JSON) shrinks to a fallback for offline hosts.
+3. Finish the rename: the center still uses `mainboard.toml`, `.mainboard/` and
+   `~/.mainboard-jobs`; move them to `mb.toml`, `.mb/`, `~/.mb-jobs` once every host runs this
+   release (both are read anyway), so new files and docs speak one name.
+4. Retire `tests/` (327 files, unmaintained, one known failure) now that `integration/` runs the
+   real CLI; port the few cases worth keeping (lake check, importer, delimiter) first.
+5. Split the research layer from the tool: `profile/` (3.9k lines), `trials/` (3.5k, the only
+   polars user), `experiments/`, `lab/`, `manuscript/`, `plots/` are libraries experiments
+   import, not CLI plumbing; one optional `mb[research]` extra (or a member package) keeps the
+   core (env, hosts, jobs, lake: ~25k lines) small and fast to import.
+6. Platform branches: 68 in 30 files (workstation 12, census 7, exposure 5, pixi 4, engine 4).
+   Route each through `core.host` so the difference is stated once per concern.
+7. Upstream what was built here: m2-zsh, m2-tmux, m2-libevent to conda-forge's MSYS2 recipes,
+   and a win-64 bun; then the dotfiles' local channel disappears.
+8. Owner decisions still open: delete the migrated legacy files in D:\projects\.mainboard;
+   push; set up macmini, pedro-home, purple; `mb host unlock miyabi-g`.
