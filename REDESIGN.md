@@ -1,6 +1,6 @@
 # mainboard state redesign: objectives, phases, status
 
-Living tracker, updated as each step lands. Last update: 2026-09-28.
+Living tracker, updated as each step lands. Last update: 2026-09-29.
 
 ## Objectives (from the owner)
 
@@ -139,5 +139,22 @@ tests/dispatch/test_provenance.py (archive test edits the job file).
   `MB_REMOTE_WORKSPACE=D:/projects pytest integration/test_remote.py` reaches the fleet.
   Fleet today: gold, crimson, pedro-cvlab answer; macmini, pedro-home, purple need
   `mb host setup` (blocked by the default lock decision); miyabi-g needs `mb host unlock`.
-- Next: DuckDB Quack (`quack_serve` / `ATTACH 'quack:…'`) prototype on gold+crimson so jobs
-  write into the center's lake directly; needs ssh tunnels for nodes without inbound routes.
+- Command groups completed the pixi/uv way: `mb list` / `mb tree` (pixi's, frozen, no
+  re-implementation), `mb completion bash|zsh|fish`, `mb self version`, and a `mb lake` group
+  (`check`, `compact`, `upgrade`, `import` = the old `center migrate-state`, `serve`), the lake's
+  maintenance having had no verb at all.
+- Quack studied and measured (DuckDB 2.0.0.dev2609250715, quack 974927a394):
+  - `mb lake serve` opens DuckDB on the lake's catalog and serves it on localhost:9494;
+    `MB_LAKE=quack:localhost:9494` + `MB_LAKE_TOKEN` makes every attach that lake, same `lake`
+    alias, so all SQL and appends (NDJSON staged on the client) run unchanged.
+  - Measured: 8 writers x 50 commits, 0 failures, ~150 ms/commit, the same as 8 writers on the
+    SQLite catalog directly (DuckLake commits serialize; Quack adds reach, not speed). From gold
+    through `ssh -R` to this PC: attach 156 ms, 200-row append 105 ms, one-row insert 75 ms.
+  - Limits found: a Quack client resolves only the server's default database (so DuckDB opens
+    on the lake, not attaches it); bound parameters are dropped (inlined at `Lake.execute`);
+    `query()` runs writes twice (duckdb-quack#282, never used); a 1.5.5 client cannot read a 2.0
+    server, so every host needs the same DuckDB (hosts still run 1.5.5 until `mb host setup`).
+  - DuckLake-with-a-Quack-catalog (ducklake#1151) exists but is experimental (rollback, commit
+    atomicity FIXMEs); not used.
+- Next (after hosts run this release): open the tunnel from `mb job submit`/`monitor` so a job's
+  receipts and log lines land in the center's lake live instead of being collected over ssh.

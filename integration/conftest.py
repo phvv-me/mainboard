@@ -43,7 +43,12 @@ def mb(workspace: Path):
     if MB is None:
         pytest.skip("the mb console script is not installed beside this interpreter")
 
-    def run(*args: str, cwd: Path | None = None, timeout: float = 120) -> Ran:
+    def run(
+        *args: str,
+        cwd: Path | None = None,
+        timeout: float = 120,
+        env: dict[str, str] | None = None,
+    ) -> Ran:
         done = subprocess.run(
             [MB, *args],
             cwd=cwd or workspace,
@@ -52,7 +57,7 @@ def mb(workspace: Path):
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env={**os.environ, "NO_COLOR": "1"},
+            env={**os.environ, "NO_COLOR": "1", **(env or {})},
             check=False,
         )
         ran = Ran(done.returncode, done.stdout, done.stderr)

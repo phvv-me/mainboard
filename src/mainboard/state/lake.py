@@ -27,17 +27,30 @@
 # never the workspace and never DuckDB's default shared with every other program. Loading comes
 # first and installing only when loading fails, so a machine with no network still opens a lake
 # once the extensions are there.
+#
+# SERVED. `serving` opens DuckDB on the lake itself and serves it over Quack, DuckDB's own
+# client-server protocol, on localhost only; another machine reaches it through an ssh tunnel.
+# With `MB_LAKE=quack:host:port` (and `MB_LAKE_TOKEN`) set, every attach here is that served
+# lake instead of the workspace's files, under the same `lake` alias, so every query and append
+# runs unchanged. Learned against DuckDB 2.0.0.dev2609250715: a Quack client resolves names in
+# the server's default database only (hence DuckDB opened on the lake, not attached to memory);
+# bound parameters are dropped on the way to the server (hence `inlined`); a table macro's
+# `query()` runs a statement twice (duckdb-quack#282), so writes go through tables only; and
+# both ends must run the same DuckDB release. Maintenance stays with the machine holding the
+# files.
 
 import base64
 import json
 import os
+import secrets
+import sqlite3
 import struct
 import sys
 import tempfile
 import weakref
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -60,8 +73,12 @@ from .schema import BY_NAME, TABLES, VERSION, VIEWS
 # The alias every attach uses, so view definitions and callers' SQL name one catalog.
 ALIAS = "lake"
 
-# The DuckDB extensions an attach needs.
+# The DuckDB extensions an attach needs, and the ones reaching or serving a lake over Quack.
 _EXTENSIONS = ("ducklake", "sqlite")
+_QUACK = ("httpfs", "quack")
+
+# Quack's own default port.
+PORT = 9494
 
 # The options a lake is created with: zstd Parquet at a cheap level, snapshots kept a month for
 # time travel, and files a snapshot stopped referencing kept a week before cleanup deletes them.
@@ -73,7 +90,7 @@ _OPTIONS = (
 )
 
 # The files a workspace kept its state in before the lake, which `ready` refuses to bury under a
-# fresh empty lake until `mb center migrate-state` has imported them.
+# fresh empty lake until `mb lake import` has imported them.
 _LEGACY = (
     "dispatch/db.sqlite",
     "dispatch/holds.json",
@@ -100,7 +117,7 @@ _LOCKED_ATTEMPTS = 30
 _LOCKED_WAIT_S = 1.0
 
 # The live session on each catalog, gone when its last holder is, and the lock creating one.
-_SESSIONS: weakref.WeakValueDictionary[tuple[Path, int], Session] = weakref.WeakValueDictionary()
+_SESSIONS: weakref.WeakValueDictionary[tuple[str, int], Session] = weakref.WeakValueDictionary()
 _SHARING = RLock()
 
 # The SQLite WAL-index header fields `check` reads from the catalog's `-shm` file: `mxFrame`, the
@@ -135,6 +152,39 @@ def _extensions() -> Path:
 def _quoted(text: str) -> str:
     """`text` as a SQL string literal."""
     return "'" + text.replace("'", "''") + "'"
+
+
+def _literal(value: object) -> str:
+    """`value` as a SQL literal."""
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int | float):
+        return repr(value)
+    if isinstance(value, datetime):
+        return f"TIMESTAMPTZ {_quoted(value.isoformat())}"
+    if isinstance(value, date):
+        return f"DATE {_quoted(value.isoformat())}"
+    return _quoted(str(value))
+
+
+def inlined(sql: str, parameters: Sequence[object]) -> str:
+    """`sql` with each `?` outside a string literal replaced by its parameter as a literal.
+
+    What a served lake is sent, since a Quack attach drops bound parameters. Splitting on quotes
+    leaves literals at the odd pieces, an escaped `''` included.
+    """
+    pieces = sql.split("'")
+    outside = range(0, len(pieces), 2)
+    marks = sum(pieces[index].count("?") for index in outside)
+    if marks != len(parameters):
+        raise ValueError(f"{len(parameters)} parameters for {marks} placeholders in {sql!r}")
+    values = iter(parameters)
+    for index in outside:
+        head, *rest = pieces[index].split("?")
+        pieces[index] = head + "".join(_literal(next(values)) + tail for tail in rest)
+    return "'".join(pieces)
 
 
 def _cell(kind: str, value: object) -> object:
@@ -234,11 +284,14 @@ class Lake(FrozenModel):
     root: the workspace root; the catalog, data and lock paths all derive from it.
     extensions: where DuckDB's extensions are loaded from and installed to.
     repository: an extension repository URL or directory, DuckDB's core repository when empty.
+    served: the `quack:host:port` a lake is served at, attached instead of the workspace's own
+        files when set; `MB_LAKE` by default, its token `MB_LAKE_TOKEN`.
     """
 
     root: Path
     extensions: Path = Field(default_factory=_extensions)
     repository: str = ""
+    served: str = Field(default_factory=lambda: Project().variable("LAKE").read())
 
     @classmethod
     def at(cls, root: Path) -> Lake:
@@ -263,8 +316,13 @@ class Lake(FrozenModel):
         """The maintenance lock, which creation also takes and an append never does."""
         return self.out / "run" / "lake.maint.lock"
 
+    @property
+    def token(self) -> Path:
+        """Where `serving` keeps the token it hands clients, so a restart keeps theirs valid."""
+        return self.out / "run" / "lake.token"
+
     def exists(self) -> bool:
-        return self.catalog.is_file()
+        return bool(self.served) or self.catalog.is_file()
 
     def session(self) -> Session:
         """This process's one session on this lake, shared by every holder while any holds it.
@@ -275,9 +333,9 @@ class Lake(FrozenModel):
         session of its own, since an attach keeps reading the file it opened.
         """
         try:
-            identity = (self.catalog, self.catalog.stat().st_ino)
+            identity = (self.served or str(self.catalog), self.catalog.stat().st_ino)
         except FileNotFoundError:
-            identity = (self.catalog, 0)
+            identity = (self.served or str(self.catalog), 0)
         with _SHARING:
             shared = _SESSIONS.get(identity)
             if shared is None:
@@ -302,7 +360,7 @@ class Lake(FrozenModel):
         if legacy:
             raise MissionError(
                 f"{self.out} keeps state from before the lake ({', '.join(legacy)}); import it "
-                "once with `mb center migrate-state`"
+                "once with `mb lake import`"
             )
         try:
             self.create()
@@ -327,6 +385,7 @@ class Lake(FrozenModel):
         Raises MissionError when one already exists, since a second create would be a no-op at
         best and a silently different lake at worst.
         """
+        self._held("create")
         self.lock.parent.mkdir(parents=True, exist_ok=True)
         with FileLock(self.lock):
             if self.exists():
@@ -352,7 +411,7 @@ class Lake(FrozenModel):
         version loses nothing; the step is recorded in `schema_log` and taken under the
         maintenance lock so two processes never race it.
         """
-        if _version(connection) >= VERSION:
+        if self.served or _version(connection) >= VERSION:
             return
         with FileLock(self.lock):
             if _version(connection) >= VERSION:
@@ -384,6 +443,7 @@ class Lake(FrozenModel):
 
         Recorded in `schema_log` when the spec moved, so the lake says which releases wrote it.
         """
+        self._held("upgrade")
         with self._attached(write=True, create=False, migrate=True) as connection:
             spec = _spec(connection)
             recorded = connection.execute(
@@ -412,7 +472,16 @@ class Lake(FrozenModel):
     def query(self, sql: str, parameters: Iterable[object] = ()) -> list[tuple[Any, ...]]:
         """One read-only query's rows; tables and views are named `lake.<name>`."""
         with self.open() as connection:
-            return connection.execute(sql, list(parameters)).fetchall()
+            return self.execute(connection, sql, parameters).fetchall()
+
+    def execute(
+        self, connection: duckdb.DuckDBPyConnection, sql: str, parameters: Iterable[object] = ()
+    ) -> duckdb.DuckDBPyConnection:
+        """`sql` run on `connection` with `parameters` bound, inlined for a served lake."""
+        bound = list(parameters)
+        if self.served and bound:
+            return connection.execute(inlined(sql, bound))
+        return connection.execute(sql, bound)
 
     def maintain(self) -> bool:
         """Checkpoint the lake under the maintenance lock, False when another holds it.
@@ -421,6 +490,7 @@ class Lake(FrozenModel):
         files, deletes files past their retention and removes orphans a killed writer left.
         Appends do not take the lock, so they keep committing beside it and retry on conflict.
         """
+        self._held("compact")
         self.lock.parent.mkdir(parents=True, exist_ok=True)
         try:
             with FileLock(self.lock, timeout=0):
@@ -438,6 +508,7 @@ class Lake(FrozenModel):
         it hides the loss; this is what finds it. A lost catalog WAL is reported only when the
         WAL index proves frames were committed there and never copied into the catalog.
         """
+        self._held("check")
         if not self.exists():
             return Health(findings=(Finding(kind="catalog", detail=f"{self.catalog} missing"),))
         findings = list(self._wal())
@@ -492,7 +563,7 @@ class Lake(FrozenModel):
         """
         if not create and not self.exists():
             raise MissionError(
-                f"no state lake at {self.catalog}; create one with `mb center migrate-state`"
+                f"no state lake at {self.catalog}; create one with `mb lake import`"
             )
         connection = duckdb.connect(
             config={"autoinstall_known_extensions": False, "autoload_known_extensions": False}
@@ -514,11 +585,18 @@ class Lake(FrozenModel):
         migrate: bool = False,
     ) -> None:
         """Attach this lake to `connection` as `lake`, read-only unless `write`, so a query that
-        already has its own views (`mb query`) reaches every table beside them."""
-        self._load(connection)
-        connection.execute(f"SET ducklake_max_retry_count = {_RETRIES}")
+        already has its own views (`mb query`) reaches every table beside them.
+
+        A served lake is attached over Quack instead, read-write whatever `write` says: what a
+        client may do there is the server's to decide.
+        """
         connection.execute("SET enable_progress_bar = false")
         connection.execute("SET TimeZone = 'UTC'")
+        if self.served:
+            self._reach(connection)
+            return
+        self._load(connection, _EXTENSIONS)
+        connection.execute(f"SET ducklake_max_retry_count = {_RETRIES}")
         options = [
             f"DATA_PATH {_quoted(self.data.as_posix() + '/')}",
             "OVERRIDE_DATA_PATH true",
@@ -531,14 +609,99 @@ class Lake(FrozenModel):
         target = _quoted(f"ducklake:sqlite:{self.catalog.as_posix()}")
         connection.execute(f"ATTACH {target} AS {ALIAS} ({', '.join(options)})")
 
-    def _load(self, connection: duckdb.DuckDBPyConnection) -> None:
+    @contextmanager
+    def serving(self, port: int = PORT, token: str = "") -> Generator[tuple[str, str]]:
+        """This lake served over Quack on localhost `port` while the block runs, yielding the
+        URI and the token a client attaches with.
+
+        token: what clients must present; the kept one (else a fresh one, then kept) when empty.
+        DuckDB is opened on the catalog itself, the one database a Quack client resolves names
+        in, after an ordinary attach brought the schema up to date. Appends from this machine
+        keep going straight to the files beside it, as they always do.
+        """
+        self._held("serve")
+        with self.ready().open(write=True) as connection:
+            self.evolve(connection)
+            self._load(connection, _QUACK)
+        self._rehome()
+        token = token or self._kept_token()
+        uri = f"quack:localhost:{port}"
+        served = duckdb.connect(
+            f"ducklake:sqlite:{self.catalog.as_posix()}",
+            config={
+                "extension_directory": self.extensions.as_posix(),
+                "autoinstall_known_extensions": False,
+            },
+        )
+        try:
+            served.execute(f"SET GLOBAL ducklake_max_retry_count = {_RETRIES}")
+            served.execute("SET GLOBAL TimeZone = 'UTC'")
+            self._load(served, _QUACK)
+            served.execute(f"CALL quack_serve({_quoted(uri)}, token => {_quoted(token)})")
+            yield uri, token
+            served.execute(f"CALL quack_stop({_quoted(uri)})")
+        except duckdb.Error as fault:
+            raise MissionError(f"could not serve the lake at {uri}: {_first(fault)}") from fault
+        finally:
+            served.close()
+
+    def _kept_token(self) -> str:
+        """The token this lake is served with, made and kept on first use."""
+        if not self.token.is_file():
+            self.token.parent.mkdir(parents=True, exist_ok=True)
+            self.token.write_text(secrets.token_urlsafe(24), encoding="utf-8")
+        return self.token.read_text(encoding="utf-8").strip()
+
+    def _rehome(self) -> None:
+        """Point the catalog's recorded data path at this workspace's data folder.
+
+        Serving opens the catalog as it is, and a catalog carried from another machine records
+        that machine's folder, which an ordinary attach overrides and serving cannot. Files are
+        recorded relative to the data path, so this one row is all that moves.
+        """
+        here = self.data.as_posix() + "/"
+        with FileLock(self.lock), sqlite3.connect(self.catalog) as catalog:
+            catalog.execute(
+                "UPDATE ducklake_metadata SET value = ? "
+                "WHERE key = 'data_path' AND scope IS NULL AND value <> ?",
+                (here, here),
+            )
+        catalog.close()
+
+    def _reach(self, connection: duckdb.DuckDBPyConnection) -> None:
+        """Attach the lake served at `served` as `lake`, saying plainly why when it cannot be."""
+        self._load(connection, _QUACK)
+        token = Project().variable("LAKE_TOKEN").read()
+        options = f" (TOKEN {_quoted(token)})" if token else ""
+        try:
+            connection.execute(f"ATTACH {_quoted(self.served)} AS {ALIAS}{options}")
+        except duckdb.Error as fault:
+            said = _first(fault)
+            if "deserialize" in said.lower():
+                said = (
+                    f"it answers in a protocol DuckDB {duckdb.__version__} here cannot read; "
+                    "both ends must run the same DuckDB release"
+                )
+            elif "connect" in said.lower():
+                said = "nothing answers there; start `mb lake serve` and the ssh tunnel to it"
+            raise MissionError(f"cannot reach the lake at {self.served}: {said}") from fault
+
+    def _held(self, verb: str) -> None:
+        """Refuse `verb` on a served lake: it works on the files, on the machine holding them."""
+        if self.served:
+            raise MissionError(
+                f"the lake is served from {self.served}; `{verb}` works on its files, so run it "
+                "on the machine holding them"
+            )
+
+    def _load(self, connection: duckdb.DuckDBPyConnection, names: Sequence[str]) -> None:
         """Load the extensions from this tool's directory, installing only what fails to load.
 
         Raises MissionError naming the directory when an extension is neither there nor
         installable, as on a machine that never went online.
         """
         connection.execute(f"SET extension_directory = {_quoted(self.extensions.as_posix())}")
-        for name in _EXTENSIONS:
+        for name in names:
             try:
                 connection.load_extension(name)
             except duckdb.IOException:
@@ -550,6 +713,11 @@ class Lake(FrozenModel):
                         f"DuckDB extension {name} is not in {self.extensions} and could not be "
                         f"installed: {str(fault).splitlines()[0]}"
                     ) from fault
+
+
+def _first(fault: BaseException) -> str:
+    """The first line of what `fault` says."""
+    return (str(fault).splitlines() or [""])[0]
 
 
 def locked(fault: BaseException) -> bool:
@@ -593,7 +761,7 @@ class Session:
     def rows(self, sql: str, parameters: Iterable[object] = ()) -> list[tuple[Any, ...]]:
         """What `sql` answers in this session."""
         bound = list(parameters)
-        return self.run(lambda connection: connection.execute(sql, bound).fetchall())
+        return self.run(lambda connection: self.lake.execute(connection, sql, bound).fetchall())
 
     def append(self, table: str, rows: Iterable[Mapping[str, object]]) -> int:
         """Append `rows` to `table` in one commit, returning how many were appended."""

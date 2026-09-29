@@ -1,9 +1,11 @@
 import os
 import shlex
 import sys
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import partial
+from importlib import metadata
 from json import dumps, loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
@@ -23,6 +25,7 @@ from .context.resolver import Resolver
 from .core.errors import MissionError, NoWorkspace
 from .core.project import Project
 from .core.section import Section, Verdict, failed
+from .core.shell import become
 from .delimiter import Delimiter
 from .dispatch import keys, vocabulary
 from .dispatch.commandline import joined
@@ -44,6 +47,7 @@ from .render import diverted, install_traceback, mode_of, plain, progress, recor
 from .runtime.job import Job
 from .runtime.runner import Runner
 from .state import Importer, Lake
+from .state.lake import PORT
 from .vigil import STALL_SECONDS
 
 if TYPE_CHECKING:
@@ -56,6 +60,7 @@ if TYPE_CHECKING:
     from .deps import Change
     from .dispatch.onboard import HostSetup
     from .dispatch.state import MonitorReport
+    from .engines.compile.backend.pixi import Pixi
     from .git import Step
     from .manifest.held import Held
     from .manuscript import Report as PaperReport
@@ -143,8 +148,10 @@ def build(root: Path | None = None) -> App:
     host = App(name="host", help="Set up, list, inspect and reach the machines jobs run on.")
     job = App(name="job", help="Dispatch jobs to hosts and follow them until they settle.")
     self_ = App(name="self", help=f"Manage the {project.name} installation itself.")
+    lake = App(name="lake", help="Keep the workspace's state lake: check, compact, serve.")
     app.command(host)
     app.command(job)
+    app.command(lake)
     app.command(self_)
 
     def workspace_root() -> Path:
@@ -456,6 +463,35 @@ def build(root: Path | None = None) -> App:
             raise MissionError(f"could not update: {failure}")
         print(f"{project.name} updated from {found.source}")
 
+    @self_.command
+    def version(*, output: Output = _RICH) -> None:
+        """Show this installation: its version, where it runs from, and the engines it pins.
+
+        DuckDB is named because a served lake needs the same release at both ends.
+        """
+        import duckdb  # noqa: PLC0415  (only this verb and the lake need it)
+
+        output.print_record(
+            {
+                "version": metadata.version(project.package),
+                "python": sys.executable,
+                "source": str(staleness.check().source or ""),
+                "duckdb": duckdb.__version__,
+            },
+            title="self version",
+        )
+
+    @app.command
+    def completion(shell: Literal["bash", "zsh", "fish"]) -> None:
+        """Print the shell completion script, as `pixi completion` does.
+
+        `eval "$(mb completion zsh)"` in the shell's rc file keeps it. PowerShell has none yet
+        (cyclopts generates only these three).
+
+        shell: the shell the script is for.
+        """
+        print(app.generate_completion(prog_name=project.name, shell=shell))
+
     @host.command
     def unlock(*hosts: str) -> None:
         """Unlock each host's ssh key once, so every later connection this tool opens is silent.
@@ -483,17 +519,48 @@ def build(root: Path | None = None) -> App:
 
         env: the environment name.
         """
-        root = workspace_root()
-        pixi = Provisioner(root, load(project.manifest(root))).pixi_for(env)
-        script = root / Project().activation(env, root)
-        if not pixi.ready(env) or (sys.platform != "win32" and not script.is_file()):
-            raise MissionError(
-                f"environment {env!r} is not installed here; run `{project.name} install {env}`"
-            )
+        pixi = installed(env)
         if sys.platform == "win32":
             print(pixi.shell_hook(env, shell="powershell"))
             return
+        script = workspace_root() / project.activation(env, workspace_root())
+        if not script.is_file():
+            raise MissionError(f"environment {env!r} has no activation; run `mb install {env}`")
         print(f". {shlex.quote(script.as_posix())}")
+
+    @app.command(name="list", version_flags=[])
+    def list_(*command: str, env: str = "default") -> NoReturn:
+        """List the packages installed in an environment, through `pixi list`.
+
+        command: pixi's own arguments, a package regex first (`mb list torch --json`).
+        env: the environment name.
+        """
+        pixi_verb("list", env, command)
+
+    @app.command(version_flags=[])
+    def tree(*command: str, env: str = "default") -> NoReturn:
+        """Show an environment's dependency tree, through `pixi tree`.
+
+        command: pixi's own arguments, a package regex first (`mb tree numpy --invert`).
+        env: the environment name.
+        """
+        pixi_verb("tree", env, command)
+
+    def installed(env: str) -> Pixi:
+        """The pixi holding `env` here, refused when `env` was never installed on this machine."""
+        root = workspace_root()
+        pixi = Provisioner(root, load(project.manifest(root))).pixi_for(env)
+        if not pixi.ready(env):
+            raise MissionError(
+                f"environment {env!r} is not installed here; run `mb install {env}`"
+            )
+        return pixi
+
+    def pixi_verb(verb: str, env: str, arguments: Sequence[str]) -> NoReturn:
+        """Hand this process to pixi's `verb` over the installed `env`, frozen to its lock."""
+        pixi = installed(env)
+        argv = [str(pixi.executable), verb, "--frozen", "-e", env, *pixi.scope(), *arguments]
+        become(argv[0], argv, env={**os.environ, **pixi.overrides})
 
     @app.command(version_flags=[])
     def shell(
@@ -1601,8 +1668,68 @@ def build(root: Path | None = None) -> App:
             sections = Migration(board("local"), destination, root=root, watch=stage).run()
         return _sectioned(sections, output, title="migrate")
 
-    @center.command(name="migrate-state")
-    def migrate_state(*, again: bool = False, output: Output = _RICH) -> int:
+    @lake.command(name="check")
+    def lake_check(*, output: Output = _RICH) -> int:
+        """Compare what the lake's catalog references with what is on disk; exit 1 on a loss.
+
+        A deleted data file breaks only its table and `count(*)` hides it, so this is what finds
+        one; a catalog WAL lost after a crash is named too.
+
+        fields: a comma-separated projection over table/kind/detail.
+        """
+        health = Lake.at(workspace_root()).ready().check()
+        output.print_rows(
+            [finding.model_dump() for finding in health.findings],
+            title="lake check",
+            columns=("table", "kind", "detail"),
+        )
+        return 0 if health.ok else 1
+
+    @lake.command
+    def compact() -> int:
+        """Compact the lake: inlined rows to Parquet, small files merged, old snapshots expired.
+
+        Files past their retention are deleted too. Appends keep committing meanwhile; exits 1
+        when another process is already compacting.
+        """
+        if Lake.at(workspace_root()).ready().maintain():
+            print("compacted")
+            return 0
+        print("another process is compacting this lake", file=sys.stderr)
+        return 1
+
+    @lake.command(name="upgrade")
+    def lake_upgrade() -> None:
+        """Migrate the lake's catalog to the newest DuckLake spec this DuckDB writes.
+
+        One way: run it once every machine reading the lake runs a release that reads that spec.
+        """
+        print(Lake.at(workspace_root()).upgrade())
+
+    @lake.command
+    def serve(*, port: int = PORT, token: str = "") -> None:
+        """Serve this workspace's lake over DuckDB's Quack protocol until interrupted.
+
+        Listens on localhost only; another machine reaches it through an ssh tunnel (`ssh -R
+        <port>:localhost:<port> <host>` from here, or `-L` from there) and attaches it by setting
+        `MB_LAKE=quack:localhost:<port>` and `MB_LAKE_TOKEN`. Every query, listing and append
+        there then reads and writes this lake, while commands here keep using its files. Both
+        ends must run the same DuckDB release (`mb self version` names it).
+
+        port: the local port to listen on.
+        token: what clients must present; the one kept in the state directory when omitted.
+        """
+        lake_ = Lake.at(workspace_root())
+        with lake_.serving(port, token) as (uri, _):
+            kept = "the one given" if token else str(lake_.token)
+            said = f"serving {lake_.catalog} at {uri} (token: {kept}); Ctrl-C stops it"
+            print(said, flush=True)
+            with suppress(KeyboardInterrupt):
+                while True:
+                    time.sleep(3600)
+
+    @lake.command(name="import")
+    def import_(*, again: bool = False, output: Output = _RICH) -> int:
         """Import this workspace's file state into its state lake once, and prove it landed.
 
         Creates the lake (`lake.sqlite` beside a `lake/` data folder in the state directory) and
@@ -1619,7 +1746,7 @@ def build(root: Path | None = None) -> App:
         """
         with progress("importing the state directory into the lake"):
             tallies = Importer(Lake.at(workspace_root())).run(again=again)
-        output.print_rows([tally.model_dump() for tally in tallies], title="migrate-state")
+        output.print_rows([tally.model_dump() for tally in tallies], title="lake import")
         return 0 if all(tally.ok for tally in tallies) else 1
 
     @center.command

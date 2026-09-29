@@ -350,8 +350,8 @@ repository.
 One machine holds the monorepo, runs this tool and runs the AI agents: the
 center. Every other machine is a target that receives only what a job needs. The
 verbs that manage the monorepo itself live under `center` (`git`, `paper`,
-`verify`, `migrate`, `migrate-state`), so the top level stays the work that
-involves targets.
+`verify`, `migrate`, `members`), so the top level stays the work that involves
+targets.
 
 ```console
 $ mainboard center verify                      # is this machine ready to be the center
@@ -409,21 +409,37 @@ printed. Every step converges on what is already there, so re-running continues
 after an interruption and re-verifies after success; a destination file that
 differs is kept once as `<name>.migrate-backup`.
 
-`center migrate-state` imports the state directory's record files into the
-workspace's state lake, a DuckLake whose catalog is `lake.sqlite` beside a
-`lake/` Parquet folder. It creates the lake, appends the dispatch registry,
-batch events, receipts and logs, the cost ledger and offer catalog, holds,
-studies, the pulse memory, both digest memories, job scripts and closure
-listings in one transaction, then reads every source back: one row per source
-with its expected and imported counts, and the logs rebuilt byte for byte. It
-exits 1 on any difference, only ever reads the old files, and refuses a second
-import unless `--again` sets the first lake aside under `lake.aside/`.
+## The state lake
 
-Every verb reads and writes that lake: runs and hosts, batch events, captured
-transcripts and receipts, costs and offers, holds, studies, the pulse memory,
-digests and staged job scripts. A workspace that still holds the old files is
-refused until it is imported, so nothing reads as a workspace that never
-dispatched anything.
+Every verb reads and writes one DuckLake per workspace, its catalog
+`.mb/lake.sqlite` beside a `.mb/lake/` Parquet folder: runs and hosts, batch
+events, captured transcripts and receipts, costs and offers, holds, studies, the
+pulse memory, digests, source blobs and staged job scripts. `mb query` reads it
+as `lake.<table>`. The `lake` group keeps it, the way `uv cache` keeps uv's:
+
+```console
+$ mb lake check        # every data file the catalog references is on disk
+$ mb lake compact      # inlined rows to Parquet, small files merged, old snapshots expired
+$ mb lake upgrade      # the catalog to the newest DuckLake spec
+$ mb lake import       # a workspace from before the lake, imported once and proven
+$ mb lake serve        # this lake over DuckDB's Quack protocol, on localhost:9494
+```
+
+`lake import` appends the old record files in one transaction, then reads every
+source back and rebuilds the logs byte for byte, exiting 1 on any difference; a
+workspace still holding them is refused until it is imported.
+
+`lake serve` lets other machines use this lake directly. It listens on localhost
+only, so another machine comes in through ssh, then points `mb` at it:
+
+```console
+$ ssh -R 9494:localhost:9494 gold                  # from the center
+gold$ export MB_LAKE=quack:localhost:9494 MB_LAKE_TOKEN=<.mb/run/lake.token>
+gold$ mb job list                                  # the center's runs, read and written live
+```
+
+Both ends must run the same DuckDB release (`mb self version`). Maintenance
+(`check`, `compact`, `upgrade`) stays on the machine holding the files.
 
 ## Portable process chores
 
@@ -444,6 +460,8 @@ runs one command there. To enter it in the shell you already have:
 
 ```console
 $ eval "$(mb shell-hook)"             # or: eval "$(mb shell-hook --env serving)"
+$ mb list torch                       # what is installed, through pixi list
+$ mb tree numpy --invert              # who pulls it in, through pixi tree
 ```
 
 The activation (the host's modules, pixi's own activation, second-stage
