@@ -401,10 +401,37 @@ Owner's asks, worked in order, each checked off as it lands:
 - [x] 5.10 `host setup --minimal` (tool, pixi, environment; no dotfiles); `dotfiles = false` per
       host (purple, a shared server); `host hold` rentals always minimal; `[workspace] dotfiles =
       "Pedrexus/dotfiles"` declared
-- [ ] 5.11 One multiplexer: herdr or tmux, not both
-- [ ] 5.12 Experiment environments: small and fast to land on a fresh rented node
+- [x] 5.11 (dotfiles `44a85b8`) herdr is the one multiplexer: tmux, tpm and `.tmux.conf` left the
+      dotfiles. herdr keeps a server per machine, but none of the fleet has it and a `--minimal`
+      host never will, while `/usr/bin/tmux` is on every Linux host; so `mb shell --on <host>
+      --keep` still wraps a queued allocation in the host's own tmux, installed and configured
+      by nobody
+- [~] 5.12 Experiment environments: `[envs.gpu]` (`no-default`, Linux only: Python, CUDA torch,
+      cutoken) is 5.7 GB on crimson against `default`'s 18 GB; `host setup crimson --minimal
+      --env gpu` took 3m05s (warm caches). Fixed on the way: a `no-default` environment lost the
+      member pins, so cutoken's `mainboard` came from PyPI (0.4.8, months old) and shadowed the
+      tool on PATH; members are now pinned (without `default`'s extras) in every such env
 - [ ] 5.13 Resume a failed job from its last checkpoint, recorded in the lake
 - [ ] 5.14 Wipe mainboard from every host and set it up again, measuring size and time
 - [ ] 5.15 Rented GPUs that stay set up (Vast, HPC-AI, AWS Blackwell): images and volumes
 - [ ] 5.16 Monorepo layout proposal
 - [ ] 5.17 Try the researched tools (topgrade, Mutagen, pixi-pack) on the real fleet
+
+### Ship a built environment instead of installing one (asked 2026-09-29)
+
+Hosts never solve today: they install the lock the center solved. What costs time on a fresh
+node is downloading and linking a few GB of packages, and what costs space is everything the one
+`default` environment carries. Options, measured where possible:
+
+| way | what moves | fresh node needs | trade-offs |
+|---|---|---|---|
+| install the lock (today) | nothing from the center; the node pulls from conda-forge/PyPI CDNs | pixi, network | datacenter CDN bandwidth is usually the fastest source; every node repeats the download |
+| pixi-pack `--create-executable` | one self-extracting file per platform and lock (`gpu`: 3.96 GB, packed here in 1m45s) | nothing (no pixi, no network) | editable workspace code is not packed (mb ships it in the pinned tree anyway); from this PC the upload is the bottleneck, so the file belongs in object storage near the providers, keyed by the environment digest mb already computes |
+| OCI image (Docker) from the lock | an image in a registry | docker; Vast/RunPod/AWS start from an image directly | the only form a rented GPU can boot already set up; layers cache on providers; build needs Linux (a host or CI) |
+| Apptainer/Singularity SIF | one file | apptainer (miyabi has singularity) | the HPC form of the image; one file, runs without root |
+| single-binary Python (PyInstaller, Nuitka, PyApp) | one executable | nothing | fine for the mb tool itself; not for CUDA stacks (torch + NVIDIA wheels are 3+ GB of shared libraries a binary cannot shrink, and freezing them is fragile) |
+
+Recommendation: keep the lock as the one truth, and derive two artifacts from it, content
+addressed by the environment digest: a pixi-pack executable (HPC and ssh hosts, offline nodes)
+and an OCI image (rented GPUs, 5.15). The lean per-experiment environment is what makes either
+small; packing `default` would still move 18 GB.

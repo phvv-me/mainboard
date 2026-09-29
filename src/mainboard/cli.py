@@ -29,7 +29,7 @@ from .core.section import Section, Verdict, failed
 from .core.shell import become
 from .delimiter import Delimiter
 from .dispatch import keys, vocabulary
-from .dispatch.commandline import joined
+from .dispatch.commandline import joined, vetted
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
 from .durable import schedule
@@ -231,9 +231,11 @@ def build(root: Path | None = None) -> App:
     def submit(
         *command: str,
         on: str = "",
+        resume: str = "",
         batch: str = "",
         split: str = "",
         per_job: int = 0,
+        cell_timeout: float = 900.0,
         name: str = "",
         queue: str = "",
         walltime: str = "",
@@ -265,13 +267,20 @@ def build(root: Path | None = None) -> App:
         asks once, and `--yes` or a script proceeds. `--estimate` stops there, dispatching
         nothing. `--wait` blocks until everything submitted settles and exits its verdict.
 
+        Every job gets `MB_CHECKPOINT`, a directory on its host that outlives the run, and
+        `MB_ATTEMPT`. `--resume <handle|name>` submits that run again (same command, name, host,
+        node and results path, today's code) as its next attempt, so the job finds in
+        `MB_CHECKPOINT` whatever the failed attempt saved there; the lake keeps every attempt.
+
         Args:
             command: the command tokens, from the first token that is not an option of this verb,
                 or `path/to/file.py::name` and, after `--`, the arguments its application takes.
             on: the host alias; comma-separated for a lane.
+            resume: a failed or cancelled run to continue, by handle or name, as its next attempt.
             batch: a batch spec file, relative to the workspace root.
             split: a lane's parametrize name; each of its values becomes one job.
             per_job: a lane's cells per job when no name groups them, 0 for all in one.
+            cell_timeout: seconds one lane cell may take before its process is killed.
             name: the run's label, or the batch's name for a `--job` batch.
             gpu_name: the GPU type to rent, for a metered provider host.
             max_usd: the spend cap a provider host refuses to submit without.
@@ -286,7 +295,17 @@ def build(root: Path | None = None) -> App:
         """
         if batch or declared.job:
             return _submit_batch(batch, declared, name=name, estimate=estimate, wait=wait)
-        target = joined(command)
+        if resume:
+            cache = board("local").dispatcher.cache
+            previous = cache.run(resume, on or None)
+            on = on or previous.target
+            name = previous.label
+            node = node or previous.node
+            fetch = fetch or previous.fetch_path or ""
+            attempt = cache.attempts(name, on) + 1
+            target = joined(command) if command else vetted(previous.script)
+        else:
+            target = joined(command)
         if not on:
             raise MissionError("name a host: --on <alias>, or a batch with --batch")
         if split or per_job or "," in on:
@@ -295,6 +314,7 @@ def build(root: Path | None = None) -> App:
                 hosts=[alias.strip() for alias in on.split(",") if alias.strip()],
                 split=split,
                 per_job=per_job,
+                cell_timeout=cell_timeout,
                 resources={
                     "queue": queue,
                     "walltime": walltime,
@@ -383,6 +403,7 @@ def build(root: Path | None = None) -> App:
         hosts: list[str],
         split: str,
         per_job: int,
+        cell_timeout: float,
         resources: dict[str, str | int | float],
         node: str,
         estimate: bool,
@@ -406,7 +427,7 @@ def build(root: Path | None = None) -> App:
             raise MissionError(f"{target} collected no cells")
         groups = lanes_module.grouped(cells, by=split, per_job=per_job)
         served = node or lanes_module.node_of(target)
-        fresh = ["--fresh", "--timeout", "900"]
+        fresh = ["--fresh", "--timeout", str(cell_timeout)]
         pytest_args = ["-p", "no:randomly", "-q", "--no-header"]
         _COMPACT.print_rows(lanes_module.summary(hosts, groups), title="lane")
         if estimate:

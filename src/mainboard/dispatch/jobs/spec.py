@@ -10,6 +10,8 @@ from ...context.plan import ExecutionPlan
 from ...core.project import Project
 from ...runtime.job import Job, PrefixActivation, ToolCall, WorkspaceActivation
 from ..shared import (
+    ATTEMPT_VAR,
+    CHECKPOINT_VAR,
     CLOSURE_VAR,
     COMMIT_VAR,
     DEFERRED_VAR,
@@ -61,6 +63,10 @@ class JobSpec(FrozenModel):
         `MB_FIRST_PARTY` for the runner's finder.
     deferred: colon-joined top-level names whose whole distribution the closure left to the
         environment, exported as `MB_DEFERRED` so the runner's finder admits them.
+    checkpoint: the directory the job keeps what it resumes from, exported as `MB_CHECKPOINT`:
+        under the mirror, outside the pinned tree, one per run name, so every attempt of a run
+        (`job submit --resume`) finds what the last one saved.
+    attempt: which try of that run this is, 1 first, exported as `MB_ATTEMPT`.
     exports: the host profile's `[hosts.<name>.exports]`, set last so every job on that host
         runs in the world its profile declares.
     """
@@ -87,6 +93,8 @@ class JobSpec(FrozenModel):
     closure: str = ""
     first_party: str = ""
     deferred: str = ""
+    checkpoint: str = ""
+    attempt: int = 1
     exports: dict[str, str] = {}
 
     def render(self, *, pbs: bool, gpu_in_select: bool = True) -> str:
@@ -157,6 +165,8 @@ class JobSpec(FrozenModel):
             CLOSURE_VAR: self.closure,
             FIRST_PARTY_VAR: self.first_party,
             DEFERRED_VAR: self.deferred,
+            CHECKPOINT_VAR: self.checkpoint,
+            ATTEMPT_VAR: str(self.attempt) if self.checkpoint else "",
         }
         exported = {
             name: value

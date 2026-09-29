@@ -176,7 +176,8 @@ class Composition:
         body["env"] = {
             name: value for _, manifest in self._declared() for name, value in manifest.env.items()
         } | self.manifest.env
-        body["envs"] = self._environments()
+        pins = (_python(top).model_extra or {}).get(_OVERRIDES, {})
+        body["envs"] = self._environments(pins)
         body["tasks"] = _namespaced(
             {
                 member.name: _moved(member, manifest.tasks, siblings=manifest.tasks)
@@ -359,9 +360,19 @@ class Composition:
             for platform in platforms
         }
 
-    def _environments(self) -> dict[str, Env]:
-        """The root's named environments and every member's, a name declared twice refused."""
-        environments = dict(self.manifest.envs)
+    def _environments(self, pins: Mapping[str, Json]) -> dict[str, Env]:
+        """The root's named environments and every member's, a name declared twice refused.
+
+        An environment that starts from nothing (`no-default`) leaves the default feature out,
+        and the member pins with it, so each gets them again: a member it names, or one its
+        closure reaches (cutoken needs mainboard), comes from the workspace, never an index.
+
+        pins: the member overrides the top level carries.
+        """
+        environments = {
+            name: self._alone(env, pins) if env.no_default else env
+            for name, env in self.manifest.envs.items()
+        }
         owners = dict.fromkeys(environments, "the root")
         for member, manifest in self._declared():
             for name, env in manifest.envs.items():
@@ -375,6 +386,21 @@ class Composition:
                 tasks = _namespaced({member.name: moved}, root={})
                 environments[name] = env.model_copy(update={"tasks": tasks})
         return environments
+
+    def _alone(self, env: Env, pins: Mapping[str, Json]) -> Env:
+        """`env` with its member requirements sourced and every member pinned to its directory."""
+        if not pins:
+            return env
+        sourced = self._sourced(env)
+        chain = _python(sourced).model_dump(mode="python", round_trip=True)
+        # The extras the top level unions are what `default` asks; a lean environment asks only
+        # through its own requirements, so it pins each member's directory alone.
+        bare = {
+            name: {"path": pin["path"]} if isinstance(pin, dict) and "path" in pin else pin
+            for name, pin in pins.items()
+        }
+        chain[_OVERRIDES] = bare | chain.get(_OVERRIDES, {})
+        return sourced.model_copy(update={_PYTHON: chain})
 
     def _lint(self) -> Lint:
         """The root's lint table, owning each member and taking its exclusions and new tools."""

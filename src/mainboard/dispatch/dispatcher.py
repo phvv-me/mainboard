@@ -2,6 +2,7 @@
 # can poll, await, or fetch.
 
 import hashlib
+import re
 import shlex
 from collections.abc import (
     Sequence,  # ruff:ignore[typing-only-standard-library-import]  reason=await_many is inspect.signature()'d in tests, so its Sequence[Handle] annotation must resolve at runtime since=2026-08-17
@@ -33,7 +34,7 @@ from .jobs import JobSpec
 from .mirror import Mirror
 from .provenance import Source, SourceTree
 from .schedulers import HostUnreachable, failure_reason, pick, read_log, registry
-from .shared import HandleId, Watcher, announce, now, state_path, workspace
+from .shared import HandleId, Watcher, announce, now, state_dir, state_path, workspace
 from .shipment import Shipment
 from .snapshots import Image, Mirrored, Sealed, Snapshots, writable
 from .state.cache import Cache, RunRecord
@@ -98,6 +99,16 @@ def pin_key(source: Source, prefix: str = "") -> str:
 
 # A verdict's process exit code: 0 ok, 1 failed, 2 still running, 3 vanished or unknown.
 _VERDICT_EXITS = {"ok": 0, "failed": 1, "running": 2}
+
+
+def checkpoint_dir(root: str, name: str) -> str:
+    """Where every attempt of the run named `name` keeps what it resumes from, on its host.
+
+    Under the mirror's state directory rather than the pinned tree, which is immutable and
+    replaced when the code changes; a resumed run usually runs fixed code.
+    """
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "run"
+    return f"{root}/{state_dir()}/checkpoints/{slug}"
 
 
 class Handle(FrozenModel):
@@ -510,6 +521,8 @@ class Dispatcher:
             closure=f"{pinned}/{CLOSURE}" if listing else "",
             first_party=":".join(shipment.first_party),
             deferred=":".join(shipment.deferred),
+            checkpoint=checkpoint_dir(root, name) if name else "",
+            attempt=resources.attempt,
             exports=plan.exports,
         )
         script = self.write_job_script(

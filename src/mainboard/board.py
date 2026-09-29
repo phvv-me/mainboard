@@ -1038,6 +1038,7 @@ class Board:
             max_usd=max_usd or defaults.max_usd,
             nodes=nodes,
             account=resolved.profile.account,
+            attempt=attempt,
         )
 
     def run(self, command: Sequence[str], *, env: str = "", container: str = "") -> int:

@@ -281,7 +281,10 @@ class Rules:
     it, which is how a results path holding glob characters still names exactly one tree.
 
     Each directory's patterns are joined into one expression, last pattern first, so one match
-    finds the deciding pattern and a hundred-line ignore file costs one match per path.
+    finds the deciding pattern and a hundred-line ignore file costs one match per path. A pattern
+    that names one exact path is kept out of the expression and looked up by path instead: an
+    ignore file listing thousands of files one by one (research/reproducibility, 7,662) made
+    the joined expression cost a pin over a minute of matching.
 
     patterns: base directory, "" for the root, to its ordered `(regex, verdict)` pairs.
     repositories: the bases where a repository of its own begins.
@@ -298,7 +301,7 @@ class Rules:
         discover: Callable[[str], tuple[list[tuple[str, bool]], bool]] | None = None,
     ) -> None:
         self.patterns: dict[str, list[tuple[str, bool]]] = {}
-        self.joined: dict[str, tuple[re.Pattern[str] | None, list[bool]]] = {}
+        self.joined: dict[str, tuple[re.Pattern[str] | None, list[bool], dict[str, int]]] = {}
         for base, rows in (patterns or {}).items():
             self.__learn(base, rows)
         self.paths = tuple(paths)
@@ -327,21 +330,26 @@ class Rules:
         verdict = False
         for depth in range(len(parts)):
             base = "/".join(parts[:depth])
-            joined, verdicts = self.__declared(base)
+            joined, verdicts, literals = self.__declared(base)
             if base in self.repositories:
                 verdict = False
-            found = (
-                joined.match(candidate[len(base) + 1 :] if base else candidate) if joined else None
-            )
-            if found is not None and found.lastgroup is not None:
-                verdict = verdicts[int(found.lastgroup[1:])]
+            relative = candidate[len(base) + 1 :] if base else candidate
+            found = joined.match(relative) if joined else None
+            deciding = int(found.lastgroup[1:]) if found and found.lastgroup else -1
+            if literals:
+                # A literal names itself and every path beneath it; the last rule still decides.
+                steps = relative.rstrip("/").split("/")
+                for length in range(1, len(steps) + 1):
+                    deciding = max(deciding, literals.get("/".join(steps[:length]), -1))
+            if deciding >= 0:
+                verdict = verdicts[deciding]
         return verdict
 
     def read(self, base: str) -> None:
         """Learn `base`'s rules now, so a spec sent before any walk reaches it carries them."""
         self.__declared(base)
 
-    def __declared(self, base: str) -> tuple[re.Pattern[str] | None, list[bool]]:
+    def __declared(self, base: str) -> tuple[re.Pattern[str] | None, list[bool], dict[str, int]]:
         if base not in self.joined:
             rows, repository = self.discover(base) if self.discover is not None else ([], False)
             self.__learn(base, rows)
@@ -352,14 +360,46 @@ class Rules:
     def __learn(self, base: str, rows: Sequence[tuple[str, bool]]) -> None:
         """Keep `base`'s pairs as sent, and join them last first into one expression."""
         self.patterns[base] = [(regex, verdict) for regex, verdict in rows]
-        alternatives = [
-            f"(?P<r{index}>{_NAMED.sub('(?:', regex)})"
-            for index, (regex, _) in reversed(list(enumerate(rows)))
-        ]
+        literals: dict[str, int] = {}
+        alternatives = []
+        for index, (regex, _) in reversed(list(enumerate(rows))):
+            literal = _literal(regex)
+            if literal is not None:
+                literals.setdefault(literal, index)
+            else:
+                alternatives.append(f"(?P<r{index}>{_NAMED.sub('(?:', regex)})")
         self.joined[base] = (
             re.compile("|".join(alternatives)) if alternatives else None,
             [verdict for _, verdict in rows],
+            literals,
         )
+
+
+# How the center spells an ignore line naming one exact path, file or directory, in `Rules`.
+_LITERAL_TAIL = "(?:(?P<ps_d>/)|$)"
+_SPECIAL = frozenset(".^$*+?{}[]|()")
+
+
+def _literal(regex: str) -> str | None:
+    """The path a pattern names exactly, None when it can match more than one spelling."""
+    if not (regex.startswith("^") and regex.endswith(_LITERAL_TAIL)):
+        return None
+    body = regex[1 : -len(_LITERAL_TAIL)]
+    path: list[str] = []
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char == "\\":
+            if index + 1 >= len(body) or body[index + 1].isalnum():
+                return None
+            path.append(body[index + 1])
+            index += 2
+            continue
+        if char in _SPECIAL:
+            return None
+        path.append(char)
+        index += 1
+    return "".join(path) or None
 
 
 class Scope:

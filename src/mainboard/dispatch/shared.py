@@ -47,6 +47,10 @@ DIGEST_VAR = Project().variable("SOURCE_DIGEST")
 CLOSURE_VAR = Project().variable("CLOSURE")
 FIRST_PARTY_VAR = Project().variable("FIRST_PARTY")
 DEFERRED_VAR = Project().variable("DEFERRED")
+# Where a job keeps what it resumes from, the same directory on every attempt of one run name,
+# and which attempt this is (1 first).
+CHECKPOINT_VAR = Project().variable("CHECKPOINT")
+ATTEMPT_VAR = Project().variable("ATTEMPT")
 
 
 # A scheduler job handle, always stored as text: pueue numbers its tasks, so a handle read back

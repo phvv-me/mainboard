@@ -328,14 +328,15 @@ class Cache:
         """The newest run dispatched as `handle` (older records are history), narrowed to `target`.
 
         `handle` may also be the name `jobs` prints for a run, its label or else its script, the
-        spelling an operator copies off that table; a handle wins where both match. A handle
-        recorded on several targets, or a name on several runs, raises with the candidates
-        rather than guessing one.
+        spelling an operator copies off that table; a handle wins where both match. A name
+        answers its newest run, since the attempts of one run (`job submit --resume`) share it;
+        a handle recorded on several targets raises with the candidates rather than guessing.
         """
         every = self._on(target)
-        runs = [run for run in every if run.handle == handle] or [
-            run for run in every if run.label == handle
-        ]
+        runs = [run for run in every if run.handle == handle]
+        if not runs:
+            named = [run for run in every if run.label == handle]
+            runs = sorted(named, key=lambda run: run.submitted_at)[-1:]
         if not runs:
             where = f" on {target!r}" if target else ""
             raise LookupError(f"no recorded run {handle!r}{where}")
@@ -345,6 +346,13 @@ class Cache:
                 f"{handle!r} names runs {', '.join(candidates)}; pass one handle and its host"
             )
         return runs[0]
+
+    def attempts(self, name: str, target: str) -> int:
+        """How many runs named `name` were dispatched to `target`: every attempt of that run."""
+        rows = self._rows(
+            f"SELECT count(*) FROM {ALIAS}.runs WHERE target = ? AND name = ?", (target, name)
+        )
+        return int(rows[0][0])
 
     def save_host(self, setup: HostSetup) -> HostSetup:
         """Stamp `setup` with the current time and record it as `setup.host`'s onboarding.

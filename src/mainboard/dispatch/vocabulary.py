@@ -77,6 +77,7 @@ class Resources(FrozenModel):
     account: charging account / group list.
     container: the container the job runs under, when the profile is containerized.
     mem_gb: system (not GPU) memory.
+    attempt: the 1-based try number of this run name, exported to the job as `MB_ATTEMPT`.
     max_usd: the spend cap a provider backend requires before submitting (0.0 means unset);
         ssh-family schedulers, on owned hardware, ignore it.
     """
@@ -90,6 +91,7 @@ class Resources(FrozenModel):
     container: str = ""
     mem_gb: int | None = None
     max_usd: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
+    attempt: int = 1
 
 
 class Request(FrozenModel):
