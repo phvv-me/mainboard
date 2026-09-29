@@ -148,7 +148,7 @@ class Estimator:
     def refresh(self, job: BatchJob, *, backend: type[ProviderBackend], card: str) -> None:
         """Ask `backend`'s market what `card` rents for, as `mb host list` does, and keep it.
 
-        A backend with no market (hpc-ai, modal) leaves the roster alone and the row unpriced.
+        A backend with no market (modal) leaves the roster alone and the row unpriced.
         """
         market = backend()
         if not isinstance(market, Market):
@@ -167,9 +167,13 @@ class Estimator:
         """
         profile = self.board.on(job.target).plan().profile
         key = platform(alias=job.target, kind=profile.kind)
-        card = job.gpu_name or profile.defaults.gpu_name
+        card = job.gpu_name or ("" if job.arch else profile.defaults.gpu_name)
         fit = SetupFit.from_ledger(self.ledger, provider=key, gpu=card)
-        quote, source = self.quote(job, kind=profile.kind, card=card)
+        quote, source = (
+            (None, f"unpriced: the cheapest {job.arch} card is chosen when rented")
+            if job.arch and not card
+            else self.quote(job, kind=profile.kind, card=card)
+        )
         return JobEstimate(
             job=job.name,
             target=job.target,
@@ -200,6 +204,7 @@ class Estimator:
 
 def _requested(job: BatchJob, card: str) -> str:
     """The hardware `job` will rent (`card` resolved), empty when it asked for nothing."""
-    if not job.gpus and not card:
+    asked = card or (f"{job.arch} card" if job.arch else "")
+    if not job.gpus and not asked:
         return ""
-    return f"{job.gpus or 1}x {card}".strip()
+    return f"{job.gpus or 1}x {asked}".strip()

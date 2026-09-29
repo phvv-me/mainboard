@@ -242,7 +242,9 @@ def build(root: Path | None = None) -> App:
         mem_gb: int = 0,
         gpus: int = 0,
         gpu_name: str = "",
+        arch: str = "",
         max_usd: float = 0.0,
+        spot: bool = False,
         attempt: int = 1,
         fetch: str = "",
         node: str = "",
@@ -289,7 +291,11 @@ def build(root: Path | None = None) -> App:
             cell_timeout: seconds one lane cell may take before its process is killed.
             name: the run's label, or the batch's name for a `--job` batch.
             gpu_name: the GPU type to rent, for a metered provider host.
+            arch: rent the cheapest card of these compute capabilities (`sm_120`, `sm_90+`,
+                `hopper`) instead of a named card, for a metered provider host.
             max_usd: the spend cap a provider host refuses to submit without.
+            spot: rent interruptible capacity; a job taken back reads `vanished`, and
+                `--resume <name> --spot` continues it from its `MB_CHECKPOINT`.
             attempt: the 1-based try number feeding expression defaults.
             fetch: a results path recorded for later collection, the node's evidence directory
                 when unset and `--node` names one.
@@ -328,6 +334,8 @@ def build(root: Path | None = None) -> App:
                     "gpus": gpus,
                     "gpu_name": gpu_name,
                     "max_usd": max_usd,
+                    "spot": spot,
+                    "arch": arch,
                 },
                 node=node,
                 estimate=estimate,
@@ -344,6 +352,8 @@ def build(root: Path | None = None) -> App:
             gpu_name=gpu_name,
             max_usd=max_usd,
             attempt=attempt,
+            spot=spot,
+            arch=arch,
         )
         pulled = workspace.results(fetch, node=node, command=target)
         print(_expected(priced, results=pulled), file=sys.stderr)
@@ -362,6 +372,8 @@ def build(root: Path | None = None) -> App:
                 gpus=gpus,
                 gpu_name=gpu_name,
                 max_usd=max_usd,
+                spot=spot,
+                arch=arch,
                 attempt=attempt,
                 fetch=fetch or None,
                 node=node,
@@ -1051,8 +1063,10 @@ def build(root: Path | None = None) -> App:
         for_: Annotated[str, Parameter(name="--for")],
         as_: Annotated[str, Parameter(name="--as")] = "",
         gpu_name: str = "",
+        arch: str = "",
         gpus: int = 0,
         max_usd: float = 0.0,
+        spot: bool = False,
         env: str = "",
         output: Output = _COMPACT,
     ) -> None:
@@ -1068,19 +1082,24 @@ def build(root: Path | None = None) -> App:
             for_: how long to keep it once it is ready, `3h`, `90m` or `1h30m`.
             as_: the alias to reach it by, `<provider>-<card>` when omitted.
             gpu_name: the card to rent, in the provider's own spelling.
+            arch: rent the cheapest card of these compute capabilities instead of a named one:
+                `sm_120` (RTX 5090, RTX PRO 4500/6000), `sm_100` (B200), `sm_90+`, `hopper`.
             gpus: cards per machine, the provider profile's default when 0.
             max_usd: the spend cap over the whole hold, landing included, the provider's default
                 when 0.
+            spot: rent interruptible capacity, cheaper and taken back at the provider's will.
             env: the environment to set up, the provider profile's own when omitted.
         """
-        with progress(f"holding a {gpu_name or provider} machine") as stage:
+        with progress(f"holding a {gpu_name or arch or provider} machine") as stage:
             held = Holds(board("local")).hold(
                 provider,
                 duration=for_,
                 alias=as_,
                 gpu_name=gpu_name,
+                arch=arch,
                 gpus=gpus,
                 max_usd=max_usd,
+                spot=spot,
                 env=env,
                 watch=stage,
             )
@@ -1090,6 +1109,7 @@ def build(root: Path | None = None) -> App:
     def offers(
         gpu: str = "",
         *,
+        arch: str = "",
         count: int = 1,
         max_usd_hr: float = 0.0,
         spot: bool = False,
@@ -1102,11 +1122,18 @@ def build(root: Path | None = None) -> App:
 
         Read from gpuhunt, the open catalog dstack publishes: public price lists and live
         marketplaces (AWS, GCP, Azure, Lambda, RunPod, Vast, Verda, Nebius and more), most
-        readable without an account. `rent` names the `host hold` provider for a cloud mb can
-        rent on, with `keyed` when its API key is present here.
+        readable without an account, plus HPC-AI's own catalog when its key is here. `rent`
+        names the `host hold` provider for a cloud mb can rent on, with `keyed` when its API key
+        is present here. `sm` is the card's compute capability: `--arch sm_120` finds the
+        cheapest card whose kernels match an RTX 5090's, which is not a B200's (sm_100).
+        `delivered` is the share of the last 30 days' dispatches to that provider whose job
+        started and ran to an exit (`host list --reliability` breaks it down).
 
         Args:
             gpu: the card, as any catalog spells it (`B200`, `RTX 4090`, `H100`).
+            arch: only cards of these compute capabilities: `sm_120`, `sm_100`, `sm_90+` (that
+                or newer), `8.9`, or a family (`ampere`, `ada`, `hopper`, `blackwell`,
+                `blackwell-dc` for sm_100/103, `blackwell-rtx` for sm_120/121).
             count: cards per machine.
             max_usd_hr: the most an hour may cost, 0 for any.
             spot: only interruptible offers.
@@ -1114,31 +1141,63 @@ def build(root: Path | None = None) -> App:
             provider: only these catalogs (`vastai`, `runpod`, `lambdalabs`, `aws`...).
             limit: how many rows, cheapest first.
         """
+        from .dispatch.arch import arch as spanned  # noqa: PLC0415
+        from .dispatch.arch import capability, sm  # noqa: PLC0415
         from .dispatch.backends.cloud import hunt, keyed  # noqa: PLC0415  (catalogs load on use)
+        from .reliability import by_kind, reliability, window  # noqa: PLC0415
 
-        rentable = {"vastai": "vast", "runpod": "runpod", "lambdalabs": "lambda"}
-        with progress(f"asking every cloud for {count}x {gpu or 'GPU'}"):
-            found = hunt(
-                providers=provider,
-                gpu_name=gpu,
-                gpus=count,
-                max_usd_hr=max_usd_hr,
-                spot=True if spot else False if on_demand else None,
+        rentable = {
+            "vastai": "vast",
+            "runpod": "runpod",
+            "lambdalabs": "lambda",
+            "hpc-ai": "hpc-ai",
+        }
+        span = spanned(arch) if arch else None
+        asking = [part for part in (f"{count}x", gpu, span and span.spelled) if part]
+        wanted = True if spot else False if on_demand else None
+        with progress(f"asking every cloud for {' '.join(asking)} GPUs"):
+            others = [name for name in provider if name != "hpc-ai"]
+            found = (
+                []
+                if provider and not others
+                else hunt(
+                    providers=others,
+                    gpu_name=gpu,
+                    gpus=count,
+                    max_usd_hr=max_usd_hr,
+                    spot=wanted,
+                    arch=span,
+                )
             )
-        present = {kind: keyed(kind) for kind in rentable.values()}
-        output.print_rows(
-            [
+            rows = [
                 {
                     "provider": item.provider,
                     "gpu": item.gpu_name,
+                    "sm": sm(capability(item.gpu_name)),
                     "count": item.gpu_count,
                     "usd_hr": round(item.price, 4),
                     "spot": bool(item.spot),
                     "region": item.location,
                     "instance": item.instance_name,
-                    "rent": _rentable_as(rentable.get(item.provider, ""), present),
                 }
-                for item in found[:limit]
+                for item in found
+                if item.provider != "hpc-ai"
+            ]
+            if not provider or "hpc-ai" in provider:
+                rows += _hpcai_offers(
+                    gpu=gpu, count=count, max_usd_hr=max_usd_hr, spot=wanted, arch=arch
+                )
+        present = {kind: keyed(kind) for kind in rentable.values()}
+        delivered = by_kind(reliability(board("local").dispatcher.cache.since(window(30))))
+        rows.sort(key=lambda row: row["usd_hr"])
+        output.print_rows(
+            [
+                {
+                    **row,
+                    "rent": _rentable_as(rentable.get(row["provider"], ""), present),
+                    "delivered": delivered.get(rentable.get(row["provider"], "")),
+                }
+                for row in rows[:limit]
             ],
             title="offers",
         )
@@ -1162,6 +1221,8 @@ def build(root: Path | None = None) -> App:
         audit: bool = False,
         plan: bool = False,
         env: str = "",
+        reliability: bool = False,
+        days: int = 30,
         output: Output = _COMPACT,
     ) -> int:
         """List every compute path this workspace can reach; flags add detail per host.
@@ -1183,15 +1244,39 @@ def build(root: Path | None = None) -> App:
             plan: the execution plan each host resolves to: root, environment, container,
                 scheduler, modules, exports.
             env: with `--plan`, an environment overriding the host profile's own.
+            reliability: how often each host or provider ran what was dispatched to it, from
+                the run registry: `ran` (the command reached an exit, its own failures
+                included), `unstarted` (a landing or setup that never started the job), `lost`
+                (the machine vanished, or no exit code), `delivered` = ran / judged. Least
+                reliable first.
+            days: with `--reliability`, how far back the registry is read.
         """
         workspace = board("local")
         for released in Holds(workspace).expire():
             gone = f"{released.provider} {released.handle}"
             print(f"released {released.alias}, {gone}", file=sys.stderr)
+        if reliability:
+            from .reliability import reliability as measured  # noqa: PLC0415
+            from .reliability import window  # noqa: PLC0415
+
+            scored = measured(workspace.dispatcher.cache.since(window(days)))
+            asked = [
+                row for row in scored if not hosts or row.target in hosts or row.kind in hosts
+            ]
+            output.print_rows([row.model_dump() for row in asked], title="reliability")
+            return 0
         if not (facts or gpus or audit or plan):
             with progress("probing every compute path"):
                 paths = workspace.compute().paths()
-            chosen = [path for path in paths if not hosts or path.name in hosts]
+            # A provider host's rows are named by its kind (`hpcai` is kind `hpc-ai`), its rentals
+            # `<kind>:<handle>`, so naming the host names them too.
+            declared = workspace.manifest.hosts
+            wanted = {*hosts, *(declared[alias].kind for alias in hosts if alias in declared)}
+            chosen = [
+                path
+                for path in paths
+                if not hosts or path.name in wanted or path.name.split(":")[0] in wanted
+            ]
             output.print_rows([path.model_dump() for path in chosen], title="compute")
             return 0
         named = list(hosts) or ["local"]
@@ -2109,6 +2194,50 @@ def _onboarded(workspace: Board, report: HostSetup, output: Output, *, title: st
         return
     output.print_record(report.model_dump(), title=title)
     _judged(findings, mode=output.mode, title=f"findings: {report.host}")
+
+
+def _hpcai_offers(
+    *, gpu: str, count: int, max_usd_hr: float, spot: bool | None, arch: str
+) -> list[dict]:
+    """HPC-AI's GPU types as offer rows, out-of-stock ones marked; none without its key.
+
+    gpuhunt carries no HPC-AI catalog, and theirs is small enough to list whole (whole 8-card
+    nodes), so a type out of stock still shows what it would cost.
+    """
+    from .dispatch.arch import arch as spanned  # noqa: PLC0415
+    from .dispatch.arch import capability, card, sm  # noqa: PLC0415
+    from .dispatch.backends.cloud import keyed  # noqa: PLC0415
+    from .dispatch.backends.hpcai import HpcAiBackend, card_of  # noqa: PLC0415
+
+    if not keyed("hpc-ai"):
+        return []
+    span = spanned(arch) if arch else None
+    try:
+        types = HpcAiBackend().types()
+    except (MissionError, OSError) as unlisted:
+        print(f"hpc-ai did not list its types: {unlisted}", file=sys.stderr)
+        return []
+    return [
+        {
+            "provider": "hpc-ai",
+            "gpu": card_of(row["gpu"]),
+            "sm": sm(capability(card_of(row["gpu"]))),
+            "count": row["gpus"],
+            "usd_hr": row["usd_hr"],
+            "spot": row["spot"],
+            "region": row["region"],
+            "instance": row["instance_type_id"],
+            "stock": "" if row["in_stock"] else "out",
+        }
+        for row in types
+        if row["gpu"]
+        and row["usd_hr"] is not None
+        and (not gpu or card_of(row["gpu"]) == card(gpu))
+        and (not count or row["gpus"] >= count)
+        and (not max_usd_hr or row["usd_hr"] <= max_usd_hr)
+        and (spot is None or row["spot"] == spot)
+        and (span is None or span.holds(capability(card_of(row["gpu"]))))
+    ]
 
 
 def _rentable_as(kind: str, present: Mapping[str, bool]) -> str:

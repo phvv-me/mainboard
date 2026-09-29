@@ -227,6 +227,14 @@ class Cache:
         rows = self._rows(f"SELECT record FROM {ALIAS}.runs ORDER BY submitted_at DESC{bound}")
         return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
 
+    def since(self, stamp: str) -> list[RunRecord]:
+        """Every run dispatched at or after the ISO instant `stamp`, newest first."""
+        rows = self._rows(
+            f"SELECT record FROM {ALIAS}.runs WHERE submitted_at >= ? ORDER BY submitted_at DESC",
+            (stamp,),
+        )
+        return [RunRecord.model_validate_json(record, extra="ignore") for (record,) in rows]
+
     def record(self, run: RunRecord) -> None:
         """Record a dispatched run, replacing whatever its identity recorded before."""
         with self._registry:

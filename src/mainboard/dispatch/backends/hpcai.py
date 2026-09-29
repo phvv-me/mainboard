@@ -12,9 +12,14 @@
 # `instanceMetadata.instanceUsername`: the `ssh -p <nodePort> <user>@<address>` line their console
 # prints. Unlike vast, no endpoint attaches a key to a running instance, so the landing connects
 # with a key the account already registered in the console.
+#
+# The instance type is chosen from that catalog by the request (card, architecture, spot, count)
+# unless the host pins one in `[hosts.<name>.vars] instance-type-id`. Their GPU types are whole
+# 8-card nodes as of 2026-09-29, and interruptible capacity is a type of its own (`B200-...-SPOT`).
 
 import json
 import os
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import suppress
 from time import sleep
@@ -23,9 +28,11 @@ from urllib.error import HTTPError
 from urllib.request import Request
 
 from ...core.errors import MissionError
+from ...costs.catalog import Offer
 from ...log import logger
+from ..arch import arch, capability, card
 from ..evidence import framing, staging
-from ..rentals import Identity, Rental, identity, reachable, waiting
+from ..rentals import LANDING_SECONDS, Identity, Rental, identity, reachable, waiting
 from ..transport import Endpoint
 from ..vocabulary import JobState
 from .base import (
@@ -34,11 +41,13 @@ from .base import (
     Delivery,
     Inventory,
     LogSource,
+    Market,
     ProviderBackend,
     Rentable,
     Rented,
     Standing,
     forgotten,
+    hourly_cap,
     http_transport,
 )
 
@@ -64,9 +73,14 @@ _RUNNING = "Running"
 # Fifteen minutes for an instance to pull its image and come up.
 _ADDRESS_ATTEMPTS = 90
 _ADDRESS_SECONDS = 10.0
+# Polls in a row a start may sit in a back-off before it is read as never starting: an image that
+# will not pull backs off for good (`DownloadImage` / `BackOff`, a pinned image id, 2026-09-29).
+_BACKOFF_POLLS = 18
 # `instanceRuntimeInfo.status` onto our verdicts, keyed in lower case since HPC-AI spells states
 # in camel case (`StartingFailed`). The set their list-instances doc publishes; any other status
 # reads as "unknown".
+# What a type's GPU name carries beyond the card (`B200-SXM-180GB-SPOT`, `H200-SXM-141GB-US`).
+_FORM = re.compile(r"-(?:SXM|PCIE|NVL|\d+GB|SPOT|US|EU)\b.*$", re.IGNORECASE)
 _VERDICTS = {
     "initializing": "running",
     "pullingimage": "running",
@@ -113,6 +127,11 @@ def _mapped_port(rows: Sequence[Mapping]) -> int:
     )
 
 
+def card_of(gpu: str) -> str:
+    """An HPC-AI GPU name as the card it is (`B200-SXM-180GB-SPOT` -> `B200`)."""
+    return card(_FORM.sub("", gpu))
+
+
 def _rented(item: Mapping) -> Rented:
     """One listed instance row as the rental it is."""
     metadata = item.get("instanceMetadata") or {}
@@ -123,7 +142,7 @@ def _rented(item: Mapping) -> Rented:
     )
 
 
-class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
+class HpcAiBackend(ProviderBackend, Account, Inventory, Market, Rentable):
     """Run a command on an HPC-AI instance, its own REST API standing in for a scheduler.
 
     HPC-AI reports instance status only, never a process exit code, so the initScript writes the
@@ -170,7 +189,78 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
         except HTTPError as error:
             forgotten(error)
 
-    def catalog(self) -> list[dict]:
+    def catalog(self, *, gpu_name: str = "", gpus: int = 0, limit: int = 0) -> list[Offer]:
+        """The types in stock as offers, cheapest first, CPU ones only when no card is asked."""
+        rows = [
+            Offer(
+                provider=self.name,
+                gpu=card_of(row["gpu"]) or "cpu",
+                gpu_count=row["gpus"],
+                spot=row["spot"],
+                region=row["region"],
+                rate_usd_hr=row["usd_hr"],
+                source=f"hpc-ai:{row['instance_type_id']}",
+            )
+            for row in self.types()
+            if row["in_stock"]
+            and row["usd_hr"] is not None
+            and (card_of(row["gpu"]) == card(gpu_name) if gpu_name else True)
+            and (not gpus or row["gpus"] == gpus)
+        ]
+        return rows[:limit] if limit else rows
+
+    def chosen(self, plan: ExecutionPlan, resources: Resources) -> dict:
+        """The type row this request rents: the host's pinned one, else the cheapest that fits.
+
+        Fits means in stock, at least the cards asked, the card or architecture asked, spot
+        exactly when asked, and an hourly rate the spend cap covers over the walltime.
+        """
+        spot = self.spot or resources.spot
+        if declared := plan.profile.vars.get("instance-type-id", ""):
+            return {
+                "instance_type_id": declared,
+                "region_id": _required_var(plan.profile, "region"),
+                "spot": spot,
+            }
+        span = arch(resources.arch) if resources.arch else None
+        cap = hourly_cap(resources, landing=LANDING_SECONDS)
+        wanted = card(resources.gpu_name) if resources.gpu_name else ""
+        gpu = bool(resources.gpus or wanted or span)
+        fitting = [
+            row
+            for row in self.types()
+            if row["in_stock"]
+            and row["usd_hr"] is not None
+            and bool(row["gpu"]) == gpu
+            and row["gpus"] >= resources.gpus
+            and row["spot"] == spot
+            and (not wanted or card_of(row["gpu"]) == wanted)
+            and (span is None or span.holds(capability(card_of(row["gpu"]))))
+            and (not cap or row["usd_hr"] <= cap)
+        ]
+        if not fitting:
+            asked = (
+                " ".join(
+                    part
+                    for part in (
+                        f"{resources.gpus}x" if resources.gpus else "",
+                        resources.gpu_name,
+                        span.spelled if span else "",
+                        "spot" if spot else "",
+                        f"under ${cap:.2f}/h" if cap else "",
+                    )
+                    if part
+                )
+                or "CPU"
+            )
+            listed = sorted({f"{row['gpus']}x {row['gpu']}" for row in self.types() if row["gpu"]})
+            raise MissionError(
+                f"hpc-ai has no {asked} type in stock right now; it lists {', '.join(listed)} "
+                "(`mb host offers --provider hpc-ai` shows which are in stock)"
+            )
+        return fitting[0]
+
+    def types(self) -> list[dict]:
         """Every rentable instance type, one row per type per region, in stock and cheapest first.
 
         The console's launch-form feed is the only place HPC-AI publishes a price, a GPU name or
@@ -186,6 +276,8 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
                 "region_id": region.get("regionId") or "",
                 "instance_type_id": kind.get("instanceTypeId") or "",
                 "in_stock": kind.get("stockStatus") == "InStock",
+                "spot": bool(family.get("isSpotInstance"))
+                or "SPOT" in str(family.get("gpuName") or "").upper(),
             }
             for family in payload.get("instanceInfos") or []
             for region in family.get("regionInfos") or []
@@ -230,7 +322,14 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
         """Every instance on the account, whoever created it."""
         return [_rented(item) for item in self.instances()]
 
-    def create(self, plan: ExecutionPlan, *, script: str, allocation: Allocation) -> str:
+    def create(
+        self,
+        plan: ExecutionPlan,
+        resources: Resources,
+        *,
+        script: str,
+        allocation: Allocation,
+    ) -> str:
         """Create an instance whose initScript runs `script`, returning HPC-AI's `instanceId`.
 
         Every field their create endpoint calls required is sent (`billing`, `nodePorts`), since
@@ -238,15 +337,17 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
         address. `script` runs inside one redirect into the sentinel pair, followed by whatever
         it leaves in `$status`, the only place a post-mortem can read either.
 
-        plan: whose `vars` name the type, image and region.
+        plan: whose `vars` name the image, and may pin the type and region.
+        resources: the request a type is chosen by when the host pins none.
         script: a command for a prebuilt image, or the waiting entrypoint for a landing.
         """
+        row = self.chosen(plan, resources)
         body = {
             "name": allocation.label,
-            "isSpotInstance": self.spot,
-            "instanceTypeId": _required_var(plan.profile, "instance-type-id"),
+            "isSpotInstance": row["spot"],
+            "instanceTypeId": row["instance_type_id"],
             "imageId": _required_var(plan.profile, "image-id"),
-            "region": _required_var(plan.profile, "region"),
+            "region": row["region_id"],
             "billing": {"chargeMode": "perHour", "duration": 1},
             "remoteStorages": [],
             "instanceConfiguration": {
@@ -272,19 +373,32 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
 
         key: the private key file the connection uses, empty to leave that to ssh's own config.
         """
+        backing_off, said = 0, ""
         for _ in range(_ADDRESS_ATTEMPTS):
             entry = self.instance(handle)
             spec = entry.get("instanceSpecInfo") or {}
+            runtime = entry.get("instanceRuntimeInfo") or {}
             address = str((spec.get("regionInfo") or {}).get("sshAddress") or "")
             port = _mapped_port(spec.get("nodePorts") or [])
-            running = str((entry.get("instanceRuntimeInfo") or {}).get("status") or "") == _RUNNING
-            if running and address and port:
+            if str(runtime.get("status") or "") == _RUNNING and address and port:
                 user = str((entry.get("instanceMetadata") or {}).get("instanceUsername") or "")
                 return Endpoint(address=address, port=port, user=user, identity=key)
+            reason = str(runtime.get("diagnosisReason") or "")
+            said = (
+                f"{runtime.get('phase') or runtime.get('status') or 'unlisted'} {reason}".strip()
+            )
+            backing_off = backing_off + 1 if reason == "BackOff" else 0
+            if backing_off >= _BACKOFF_POLLS:
+                raise MissionError(
+                    f"hpc-ai instance {handle} is stuck in {said}: "
+                    f"{str(runtime.get('diagnosisMessage') or '')[:200]}. In `DownloadImage` the "
+                    "image will not pull; pick an image the console offers for this type and set "
+                    "its id as [hosts.<name>.vars] image-id"
+                )
             self.sleeper(_ADDRESS_SECONDS)
         raise MissionError(
-            f"hpc-ai instance {handle} never published an ssh endpoint; look it up in the "
-            "console and terminate it if it is still billing"
+            f"hpc-ai instance {handle} never published an ssh endpoint (last: {said}); look it "
+            "up in the console and terminate it if it is still billing"
         )
 
     def opened(self, handle: str, *, key: Identity) -> Endpoint:
@@ -293,8 +407,9 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
         A machine that answers nothing is almost always this workspace's key missing from the
         account's list, since HPC-AI attaches no key at create time.
         """
+        endpoint = self.endpoint(handle, key=key.private)
         try:
-            return reachable(self.endpoint(handle, key=key.private), sleeper=self.sleeper)
+            return reachable(endpoint, sleeper=self.sleeper)
         except MissionError as refused:
             raise MissionError(
                 f"{refused}. Add the public half of {key.private} to the ssh keys in the HPC-AI "
@@ -306,7 +421,7 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
         """Rent an instance whose initScript waits for a landing; end it if it cannot be opened."""
         self.admit(plan, resources)
         key = identity(plan.profile.vars.get("ssh-key", ""))
-        handle = self.create(plan, script=f"{waiting()}\n", allocation=allocation)
+        handle = self.create(plan, resources, script=f"{waiting()}\n", allocation=allocation)
         opened = False
         try:
             endpoint = self.opened(handle, key=key)
@@ -358,7 +473,10 @@ class HpcAiBackend(ProviderBackend, Account, Inventory, Rentable):
         # `status=$?` comes first, else the framing's own status is what `$?` reports. The
         # receipts are framed into the same captured log, so a reader of that file gets both.
         return self.create(
-            plan, script=f"{staging()}\n{command}\nstatus=$?\n{framing()}\n", allocation=allocation
+            plan,
+            resources,
+            script=f"{staging()}\n{command}\nstatus=$?\n{framing()}\n",
+            allocation=allocation,
         )
 
     @staticmethod

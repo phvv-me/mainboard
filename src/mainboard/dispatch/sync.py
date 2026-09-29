@@ -94,6 +94,20 @@ def denied(excluded: Sequence[str] = (), *, paths: Sequence[str] = ()) -> Rules:
 _GIT_WORKERS = 8
 
 
+def outermost(roots: Sequence[str]) -> list[str]:
+    """`roots` in their order without any that lies under another (`a/b` under `a`)."""
+    spelled = [root.strip("/") for root in roots]
+    return [
+        root
+        for index, root in enumerate(spelled)
+        if root not in spelled[:index]
+        and not any(
+            other != root and (other in {"", "."} or root.startswith(f"{other}/"))
+            for other in spelled
+        )
+    ]
+
+
 class Listing(FrozenModel):
     """What version control says a tree holds.
 
@@ -187,9 +201,11 @@ class GitignoreFilter:
     def scope(self, roots: Sequence[str], *, deny: Rules) -> Scope:
         """The workspace tree under `roots`, as a mirror ships it and a host prunes it.
 
-        roots: the workspace-relative paths the tree starts from.
+        roots: the workspace-relative paths the tree starts from; one under another is dropped,
+            since listing a file twice made the snapshot link it twice and refuse the pin.
         deny: what is excluded whatever the repositories say.
         """
+        roots = outermost(roots)
         listing = self.tracked(roots, deny=deny)
         if listing is None:
             return Scope(roots, ignore=self.rules, deny=deny)

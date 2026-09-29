@@ -8,8 +8,14 @@ from urllib.error import HTTPError
 
 import pytest
 
-from mainboard.dispatch.backends import LambdaBackend, RunPodBackend
-from mainboard.dispatch.backends.cloud import CapacityGone, card
+from mainboard.core.errors import MissionError
+from mainboard.dispatch.arch import arch, capability, card, sm
+from mainboard.dispatch.backends import HpcAiBackend, LambdaBackend, RunPodBackend, VastBackend
+from mainboard.dispatch.backends.cloud import CapacityGone, _waiter
+from mainboard.dispatch.rentals import LAUNCH
+from mainboard.dispatch.sync import outermost
+from mainboard.dispatch.vocabulary import Resources
+from mainboard.reliability import reliability
 
 
 class Recorded:
@@ -158,3 +164,160 @@ def test_offers_list_every_cloud_and_mark_what_mb_rents(mb) -> None:
     assert ran.code == 0, ran.said
     rows = ran.out.splitlines()
     assert rows[0].startswith("provider") and any("vast" in row for row in rows[1:])
+
+
+def test_an_architecture_matches_the_capability_its_kernels_load_on() -> None:
+    rtx = arch("sm_120")
+    assert {(each.low, each.high) for each in (rtx, arch("12.0"), arch("SM120"))} == {
+        ((12, 0), (12, 0))
+    }
+    assert rtx.holds(capability("RTX PRO 4500")) and rtx.holds(capability("RTX 5090"))
+    assert not rtx.holds(capability("B200")) and not rtx.holds(capability("GB10"))
+    assert arch("blackwell-dc").holds(capability("B300"))  # sm_103, which gpuhunt lists as sm_100
+    assert arch("sm_90+").holds(capability("B200")) and not arch("sm_90+").holds(
+        capability("L40S")
+    )
+    assert sm(capability("RTX 4090")) == "sm_89" and capability("no such card") is None
+    with pytest.raises(MissionError):
+        arch("volta-ish")
+
+
+def test_vast_asks_its_own_capability_field_for_an_architecture(monkeypatch) -> None:
+    monkeypatch.setenv("VAST_API_KEY", "test-vast")
+    wire = Recorded({("POST", "/bundles/"): {"offers": []}})
+    VastBackend(transport=wire).search(gpus=1, arch=arch("sm_120"))
+    query = wire.sent[0][2]
+    assert query["compute_cap"] == {"gte": 1200, "lte": 1200} and "gpu_name" not in query
+
+
+def hpcai_types(*rows: tuple[str, int, float, bool]) -> dict:
+    """A `/resource/user/instance/list` answer, one family per (gpu, count, rate, in stock)."""
+    return {
+        "instanceInfos": [
+            {
+                "gpuName": gpu,
+                "regionInfos": [
+                    {
+                        "regionName": "us-west-1",
+                        "regionId": f"region-{gpu}",
+                        "instanceTypeInfos": [
+                            {
+                                "gpuNum": count,
+                                "instanceTypeId": f"type-{gpu}",
+                                "stockStatus": "InStock" if stocked else "OutOfStock",
+                                "price": [{"chargeMode": "perHour", "price": rate}],
+                            }
+                        ],
+                    }
+                ],
+            }
+            for gpu, count, rate, stocked in rows
+        ]
+    }
+
+
+def test_hpcai_picks_the_cheapest_type_in_stock_for_the_architecture(monkeypatch) -> None:
+    monkeypatch.setenv("HPCAI_API_KEY", "test-hpcai")
+    catalog = hpcai_types(
+        ("", 0, 0.24, True),
+        ("RTX-5090", 8, 5.2, True),
+        ("B200-SXM-180GB-SPOT", 8, 11.92, True),
+        ("B200-SXM-180GB", 8, 24.4, True),
+    )
+    backend = HpcAiBackend(transport=Recorded({("POST", "/resource/user/instance/list"): catalog}))
+    plan = SimpleNamespace(profile=SimpleNamespace(vars={"image-id": "img"}))
+    spot_dc = backend.chosen(plan, Resources(gpus=8, arch="sm_100", spot=True))
+    assert (spot_dc["instance_type_id"], spot_dc["spot"]) == ("type-B200-SXM-180GB-SPOT", True)
+    assert backend.chosen(plan, Resources(gpus=1, arch="sm_120"))["instance_type_id"] == (
+        "type-RTX-5090"
+    )
+    assert backend.chosen(plan, Resources())["instance_type_id"] == "type-"
+    with pytest.raises(MissionError, match="no 8x H100"):
+        backend.chosen(plan, Resources(gpus=8, gpu_name="H100"))
+
+
+def test_a_cloud_job_reads_its_verdict_from_the_exit_file_the_waiter_leaves(monkeypatch) -> None:
+    running = {
+        "id": "pod-1",
+        "desiredStatus": "RUNNING",
+        "publicIp": "1.2.3.4",
+        "portMappings": {"22": 1},
+    }
+    backend = RunPodBackend(transport=Recorded({("GET", "/pods/pod-1"): running}))
+    monkeypatch.setattr(backend, "read", lambda handle, path: "")
+    assert backend.state("pod-1").verdict == "running"
+    monkeypatch.setattr(backend, "read", lambda handle, path: "3\n")
+    finished = backend.state("pod-1")
+    assert (finished.verdict, finished.exit_code) == ("failed", 3)
+    assert LAUNCH in _waiter() and "/tmp/mainboard.exit" in _waiter()
+
+
+def test_hpcai_gives_up_on_an_image_that_will_not_pull(monkeypatch) -> None:
+    monkeypatch.setenv("HPCAI_API_KEY", "test-hpcai")
+    stuck = {
+        "instanceMetadata": {"instanceId": "nb-1"},
+        "instanceRuntimeInfo": {
+            "status": "Starting",
+            "phase": "DownloadImage",
+            "diagnosisReason": "BackOff",
+            "diagnosisMessage": "Back-off restarting failed container download-image",
+        },
+        "instanceSpecInfo": {"nodePorts": [{"port": 22, "nodePort": 0}]},
+    }
+    listing = {"instances": [stuck], "pager": {"totalEntries": 1}}
+    slept: list[float] = []
+    backend = HpcAiBackend(
+        transport=Recorded({("POST", "/instance/list"): listing}), sleeper=slept.append
+    )
+    with pytest.raises(MissionError, match="DownloadImage BackOff.*image-id"):
+        backend.endpoint("nb-1")
+    assert len(slept) < 20  # minutes of back-off, not the whole quarter hour
+
+
+def test_a_rate_limited_vast_create_waits_and_asks_again(monkeypatch) -> None:
+    monkeypatch.setenv("VAST_API_KEY", "test-vast")
+    answers = iter([refusal(429, "{}"), refusal(429, "{}"), {"new_contract": 7}])
+
+    def wire(request):
+        answer = next(answers)
+        if isinstance(answer, HTTPError):
+            raise answer
+        return SimpleNamespace(status=200, read=lambda: json.dumps(answer).encode())
+
+    slept: list[float] = []
+    created = VastBackend(transport=wire, sleeper=slept.append).created({"id": 1}, {})
+    assert created == {"new_contract": 7} and slept == [2.0, 5.0]
+
+
+def test_reliability_charges_the_machine_not_the_job() -> None:
+    def run(
+        target: str, verdict: str, *, exit_code: int | None = None, evidence: str = ""
+    ) -> object:
+        return SimpleNamespace(
+            target=target, kind="vast", verdict=verdict, exit_code=exit_code, evidence=evidence
+        )
+
+    rows = reliability(
+        [
+            run("vast", "ok", exit_code=0),
+            run("vast", "failed", exit_code=1),  # the job's own failure: the machine delivered
+            run("vast", "failed", evidence="not_started"),  # the landing never started it
+            run("vast", "vanished"),  # taken back under it
+            run("vast", "cancelled"),  # judges nothing
+            run("held", "running"),
+        ]
+    )
+    vast = next(row for row in rows if row.target == "vast")
+    assert (vast.ran, vast.unstarted, vast.lost, vast.unsettled) == (2, 1, 1, 1)
+    assert vast.delivered == 0.5 and rows[-1].target == "held" and rows[-1].delivered is None
+
+
+def test_a_path_under_another_root_is_listed_once() -> None:
+    roots = [
+        "mb.toml",
+        "research/x/cutoken",
+        "research/x/cutoken/pyproject.toml",
+        "pkg/pyproject.toml",
+    ]
+    assert outermost(roots) == ["mb.toml", "research/x/cutoken", "pkg/pyproject.toml"]
+    assert outermost([".", "a/b"]) == ["."]

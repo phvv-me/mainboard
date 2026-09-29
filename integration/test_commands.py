@@ -117,3 +117,28 @@ def test_runs_are_queryable_by_project_without_reading_json(mb) -> None:
     ran = mb("query", "SELECT project, name, verdict FROM lake.runs", "--json")
     assert ran.code == 0, ran.said
     assert json.loads(ran.out) == []
+
+
+def test_an_environment_narrowing_the_mirror_still_ships_every_lock_input(mb, workspace) -> None:
+    """The lock's digest reads every local project's metadata, so a host must receive each one."""
+    (workspace / "mb.toml").write_text(
+        "\n".join(
+            (
+                "[workspace]",
+                'name = "it"',
+                "[python.deps]",
+                'lib = { path = "packages/lib" }',
+                "[envs.lean]",
+                "no-default = true",
+                'sources = ["src"]',
+                "[hosts.box]",
+                'kind = "ssh"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    ran = mb("host", "list", "box", "--plan", "--env", "lean")
+    assert ran.code == 0, ran.said
+    assert '"src"' in ran.out and "packages/lib/pyproject.toml" in ran.out

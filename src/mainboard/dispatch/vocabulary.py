@@ -80,6 +80,9 @@ class Resources(FrozenModel):
     attempt: the 1-based try number of this run name, exported to the job as `MB_ATTEMPT`.
     max_usd: the spend cap a provider backend requires before submitting (0.0 means unset);
         ssh-family schedulers, on owned hardware, ignore it.
+    spot: rent interruptible capacity, cheaper and taken back at the provider's will.
+    arch: the compute capabilities a rented card must have (`sm_120`, `hopper`, `sm_90+`), the
+        cheapest card of them rented when `gpu_name` is empty.
     """
 
     gpus: int = 0
@@ -92,6 +95,8 @@ class Resources(FrozenModel):
     mem_gb: int | None = None
     max_usd: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
     attempt: int = 1
+    spot: bool = False
+    arch: str = ""
 
 
 class Request(FrozenModel):
@@ -106,8 +111,8 @@ class Request(FrozenModel):
     name / node / fetch: the run's label, the ledger slug it serves, and the results path to
         pull back.
     needs: the data paths a job spelled by file was asked to reach on the host.
-    queue / walltime / mem_gb / gpus / gpu_name / max_usd / nodes: unset fields fall back to the
-        host profile's defaults at retry time.
+    queue / walltime / mem_gb / gpus / gpu_name / max_usd / nodes / spot / arch: unset fields fall
+        back to the host profile's defaults at retry time.
     attempt: the 1-based try number the profile's expression defaults are evaluated against.
     """
 
@@ -127,6 +132,8 @@ class Request(FrozenModel):
     max_usd: float = Field(default=0.0, ge=0.0, allow_inf_nan=False)
     nodes: int = 1
     attempt: int = 1
+    spot: bool = False
+    arch: str = ""
 
 
 class JobState(FrozenModel):

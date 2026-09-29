@@ -720,6 +720,8 @@ class Dispatcher:
             gpu_name=resources.gpu_name,
             max_usd=resources.max_usd,
             nodes=resources.nodes,
+            spot=resources.spot,
+            arch=resources.arch,
         )
         record = RunRecord(
             handle=label,

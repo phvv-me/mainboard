@@ -66,6 +66,8 @@ class Holds:
         gpu_name: str = "",
         gpus: int = 0,
         max_usd: float = 0.0,
+        spot: bool = False,
+        arch: str = "",
         env: str = "",
         watch: Watcher | None = None,
     ) -> Held:
@@ -80,6 +82,9 @@ class Holds:
         gpu_name: the card to rent, in the provider's own spelling.
         gpus: cards per machine, the provider profile's default when 0.
         max_usd: the spend cap over the whole hold, landing included.
+        spot: rent interruptible capacity; a machine taken back reads as released.
+        arch: the compute capabilities the card must have, the cheapest such card when
+            `gpu_name` is empty.
         env: the environment to set up, the provider profile's own when empty.
         watch: announces each stage as it begins.
         """
@@ -88,11 +93,18 @@ class Holds:
         rented = self.board.on(provider)
         plan = rented.plan(env=env, container="none")
         backend = _rentable(plan)
-        name = alias or _slug(f"{provider}-{gpu_name or plan.profile.defaults.gpu_name}")
+        card = gpu_name or (arch and arch.replace("+", "-up")) or plan.profile.defaults.gpu_name
+        name = alias or _slug(f"{provider}-{card}")
         if name in self.board.manifest.hosts:
             raise MissionError(f"{name!r} already names a host; hold it under another --as")
         resources = rented.resources(
-            walltime=_walltime(seconds), gpus=gpus, gpu_name=gpu_name, max_usd=max_usd, plan=plan
+            walltime=_walltime(seconds),
+            gpus=gpus,
+            gpu_name=gpu_name,
+            max_usd=max_usd,
+            spot=spot,
+            arch=arch,
+            plan=plan,
         )
         Provisioner(self.board.root, self.board.manifest).compiler_for(plan.env).vouch()
         rental = self._rent(backend, plan, resources, name=name, duration=duration)

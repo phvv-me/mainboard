@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from patos import FrozenModel
 from pydantic import ValidationError, model_validator
+from pydantic_core import to_json
 
 from ..core.errors import MissionError
 from ..manifest.render.interpolate import Interpolator, Json
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
 
 # `--job gold:python -m foo`: the first colon splits, since a host alias never carries one.
 _INLINE = ":"
+# Job fields added after batches were first declared, digested only once set.
+_LATER_FIELDS = ("spot", "arch")
 
 
 class Submission(TypedDict, total=False):
@@ -30,6 +33,8 @@ class Submission(TypedDict, total=False):
     gpus: int
     gpu_name: str
     max_usd: float
+    spot: bool
+    arch: str
     nodes: int
     env: str
     container: str
@@ -60,6 +65,8 @@ class BatchJob(FrozenModel):
     gpus: int = 0
     gpu_name: str = ""
     max_usd: float = 0.0
+    spot: bool = False
+    arch: str = ""
     nodes: int = 1
     env: str = ""
     container: str = ""
@@ -75,6 +82,8 @@ class BatchJob(FrozenModel):
             gpus=self.gpus,
             gpu_name=self.gpu_name,
             max_usd=self.max_usd,
+            spot=self.spot,
+            arch=self.arch,
             nodes=self.nodes,
             env=self.env,
             container=self.container,
@@ -148,9 +157,15 @@ class BatchSpec(FrozenModel):
         """This batch's name and a digest over every job it declares.
 
         Content-addressed so `prepare`, `estimate` and `run` write one stream `watch` later finds
-        by id alone; changing what a job runs is a different batch.
+        by id alone; changing what a job runs is a different batch. A field added since a job
+        was first declared counts only once set, so an upgrade keeps every batch's id.
         """
-        digest = hashlib.blake2s(self.model_dump_json().encode(), digest_size=4).hexdigest()
+        dumped = self.model_dump(mode="json")
+        for job in dumped["jobs"]:
+            for field in _LATER_FIELDS:
+                if not job[field]:
+                    del job[field]
+        digest = hashlib.blake2s(to_json(dumped), digest_size=4).hexdigest()
         return f"{self.name}-{digest}"
 
     @classmethod

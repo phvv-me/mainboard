@@ -420,6 +420,8 @@ class Board:
         gpu_name: str = "",
         max_usd: float = 0.0,
         attempt: int = 1,
+        spot: bool = False,
+        arch: str = "",
     ) -> JobEstimate:
         """What one submit on this host is expected to cost, admitted and priced before dispatch.
 
@@ -438,6 +440,8 @@ class Board:
             gpu_name=gpu_name,
             max_usd=max_usd,
             attempt=attempt,
+            spot=spot,
+            arch=arch,
             plan=plan,
         )
         admit(
@@ -457,6 +461,8 @@ class Board:
             gpus=resources.gpus,
             gpu_name=resources.gpu_name,
             max_usd=resources.max_usd,
+            spot=resources.spot,
+            arch=resources.arch,
         )
         return Estimator(self).row(job, TransferSet(job=self.host, target=self.host))
 
@@ -898,6 +904,8 @@ class Board:
             gpus=asked.gpus,
             gpu_name=asked.gpu_name,
             max_usd=asked.max_usd,
+            spot=asked.spot,
+            arch=asked.arch,
             nodes=asked.nodes,
             attempt=asked.attempt,
             fetch=asked.fetch,
@@ -1042,6 +1050,8 @@ class Board:
         max_usd: float = 0.0,
         nodes: int = 1,
         attempt: int = 1,
+        spot: bool = False,
+        arch: str = "",
         plan: ExecutionPlan | None = None,
     ) -> Resources:
         """The resolved resource request for this host, profile defaults filling what is unset.
@@ -1060,11 +1070,14 @@ class Board:
             walltime=walltime or defaults.walltime,
             mem_gb=memory,
             gpus=gpus or defaults.gpus,
-            gpu_name=gpu_name or defaults.gpu_name,
+            # An asked card or architecture replaces the profile's default of the other kind.
+            gpu_name=gpu_name or ("" if arch else defaults.gpu_name),
             max_usd=max_usd or defaults.max_usd,
             nodes=nodes,
             account=resolved.profile.account,
             attempt=attempt,
+            spot=spot or defaults.spot,
+            arch=arch or ("" if gpu_name else defaults.arch),
         )
 
     def run(self, command: Sequence[str], *, env: str = "", container: str = "") -> int:
@@ -1209,6 +1222,8 @@ class Board:
         max_usd: float = 0.0,
         nodes: int = 1,
         attempt: int = 1,
+        spot: bool = False,
+        arch: str = "",
         fetch: str | None = None,
         node: str = "",
         needs: Sequence[str] = (),
@@ -1234,6 +1249,8 @@ class Board:
         gpu_name: the GPU type a provider backend rents, ignored by the ssh family.
         max_usd: the spend cap a provider backend refuses to submit without.
         attempt: the 1-based try number, feeding the default expressions.
+        spot: rent interruptible capacity on a metered provider.
+        arch: the compute capabilities a metered provider's card must have.
         fetch: a results path recorded for `Job.pull`, the job file's own declaration when
             unset, then the node's own evidence directory when the run serves one.
         node: the ledger slug this run serves, carried into its record and receipts.
@@ -1258,6 +1275,8 @@ class Board:
             max_usd=max_usd,
             nodes=nodes,
             attempt=attempt,
+            spot=spot,
+            arch=arch,
             plan=plan,
         )
         # Content-addressed over the target, the command and this instant, so the receipts

@@ -758,3 +758,66 @@ Which clouds, measured 2026-09-29 (single card, $/h, cheapest):
 Next on this base, in order: Verda (the cheapest B200); stopping instead of ending where a cloud
 keeps the disk (RunPod pods), and persistent volumes (RunPod network volumes, Lambda filesystems)
 so a machine stays set up across rentals; spot machines resumed by `--resume` on preemption.
+
+### Spot, per-job clouds, HPC-AI, and renting by architecture (6.17)
+
+Asked: spot and batch jobs on clouds, HPC-AI working, and "look for arch and then get the
+cheapest with that arch" (an RTX PRO 4500 shares the RTX 5090's instruction set, not the B200's).
+
+- Architecture is the compute capability, not the generation (`dispatch/arch.py`). Blackwell is
+  two instruction sets: datacenter B200/GB200 are sm_100 and B300/GB300 sm_103 (tcgen05, tensor
+  memory); RTX 50xx and RTX PRO 4000/4500/6000 are sm_120, DGX Spark's GB10 sm_121. An `sm_100a`
+  cubin loads on sm_100 alone, so `--arch sm_120` matches exactly, `sm_90+` asks for at least,
+  and families (`ampere`, `ada`, `hopper`, `blackwell`, `blackwell-dc`, `blackwell-rtx`) span.
+  Cards come from gpuhunt's table with its gaps corrected (it lists B300 as sm_100).
+- `--arch` on `host offers`, `host hold` and `job submit` (and `arch` in a host's defaults or a
+  batch job): the cheapest card of that capability when no card is named. Offers print an `sm`
+  column. Vast is asked through its own `compute_cap` field; the other clouds filter gpuhunt's
+  rows. Measured: the cheapest sm_120 is an RTX 5060 Ti at $0.10/h spot on Vast, an RTX PRO 4500
+  $0.30/h; the cheapest sm_100 a B200 at $3.43/h spot on Verda.
+- Spot is part of the request (`Resources.spot`, `--spot`, `spot = true` in defaults), which
+  every backend now reads: backends were always built with no arguments, so Vast's and HPC-AI's
+  existing spot switches could never turn on. A machine taken back reads `vanished`, and
+  `mb job submit --resume <name> --spot` continues from `MB_CHECKPOINT`. Held requests and
+  creation intents record both fields; batch ids digest them only when set, so no id moved.
+- Per-job cloud machines: RunPod and Lambda take `job submit` and batch jobs like Vast does. A
+  cloud VM has no entrypoint mb can rely on, so once ssh answers the rent starts the landing's
+  waiter detached over ssh, writing `/tmp/mainboard.log` and `/tmp/mainboard.exit`; `state` and
+  `logs` read them, and the settle path ends the machine. Holds park the same waiter.
+- HPC-AI picks its instance type from its own catalog by the request (card, architecture,
+  spot, count, the spend cap over walltime plus landing) unless the host pins one; its offers
+  join `host offers` with out-of-stock types marked, and it is a `Market`, so estimates price it.
+  Its GPU types are whole 8-card nodes (8x 4090 $4, 8x 5090 $5.20, 8x B200 spot $11.92,
+  8x H200 $15.92/h) and every one was out of stock on 2026-09-29; only CPU types were in stock.
+  Live, 2026-09-29: a landing on the CPU type ($0.24, the one-hour floor) sat in
+  `DownloadImage` / `BackOff`: the pinned `image-id` no longer pulls, and the API lists no
+  public images (`/image/list` answers the account's own, none). mb ended it at the address
+  deadline and nothing was left billing. Now a start stuck in back-off for three minutes is
+  refused naming the image, and the ssh-key hint is kept for ssh failures only. HPC-AI needs a
+  current image id from the console (owner) before it can run anything.
+- Live on Vast, 2026-09-29: `mb job submit --on vast --env cutok --spot --arch sm_120` rented
+  an RTX 5060 Ti (sm_120) as a spot bid, landed cutok and ran torch on it, ok, in about four
+  minutes for cents. Getting there found four faults, each now fixed and tested:
+  - a bid of exactly `min_bid` is refused as `no_such_ask` (six offers in a row read as
+    "taken"); a bid 5% above the floor rents the same machine, and the lease is priced at it;
+  - Vast rate-limits creates after a few quick refusals (HTTP 429); the create now waits and
+    asks again;
+  - `[envs] sources` narrowed the mirror below the lock's inputs: the digest reads every local
+    project's `pyproject.toml`, the host lacked six of them and refused the lock. A narrowed
+    plan now ships each one;
+  - that made one file listed twice (under a source directory and by name), and the snapshot
+    refused to link it twice; `Sync.scope` drops a root lying under another.
+  Before the fix the arch search also lost to the host's default card (Vast's RTX 4090): an
+  asked arch now replaces a default card and an asked card a default arch.
+- Reliability per provider (`mb host list --reliability [--days N]`, and a `delivered` column in
+  `host offers`), read from the run registry, which already records every dispatch however it
+  ended. A run counts as `ran` when its command reached an exit (its own failure included),
+  `unstarted` when the landing never started it, `lost` when the machine vanished or it ended
+  with no exit code; `delivered` = ran / judged. Over 90 days: owned hosts and Miyabi 100%, a
+  held Vast machine 2/2, per-job Vast 10% (2 of 20: 15 unstarted, 3 lost), hpc-ai 0/1. Most of
+  the Vast losses were mb's own landing faults of that period, which the number is meant to
+  expose: it measures what a dispatch there costs, whoever is at fault.
+- Smaller: `host list hpcai` now lists the `hpc-ai` row (rows are named by kind); Modal's
+  Python 3.14 warning is filtered process-wide, since `catch_warnings` is not thread-safe and
+  leaked during parallel probes; gpuhunt's "offline provider" notice is silenced; the spend cap
+  a cloud rent searches under is the hourly one (`hourly_cap`, shared with Vast), not the total.

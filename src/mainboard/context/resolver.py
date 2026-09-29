@@ -1,5 +1,6 @@
 from ..core.errors import MissionError
 from ..core.project import Project
+from ..engines.compile.vendor import path_deps, relocated
 from ..manifest.schema.container import Container
 from ..manifest.schema.root import Manifest
 from .plan import ExecutionPlan
@@ -22,8 +23,14 @@ class Resolver:
         spec = self.manifest.environment(chosen_env)
         if spec.sources:
             # The environment names the code it runs, so the mirror carries that and no more,
-            # beside whichever manifest name this workspace uses (a missing one is skipped).
-            include = [*Project().manifests, *spec.sources]
+            # beside whichever manifest name this workspace uses (a missing one is skipped), and
+            # every local project's metadata: the lock's digest reads each one, and a host
+            # missing one refused the lock the workstation had just vouched for (2026-09-29).
+            metadata = [
+                f"{relocated(name, path)}/pyproject.toml"
+                for name, path in sorted(path_deps(self.manifest).items())
+            ]
+            include = [*Project().manifests, *spec.sources, *metadata]
             narrowed = profile.sync.model_copy(update={"include": include})
             profile = profile.model_copy(update={"sync": narrowed})
         return ExecutionPlan(

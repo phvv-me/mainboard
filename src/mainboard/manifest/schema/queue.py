@@ -35,6 +35,8 @@ class Defaults(Declared):
         on a host whose largest card holds less; zero declares no need.
     interact_queue: where `interact` goes instead of `queue`, for a site routing interactive
         allocations elsewhere (Miyabi's `interact-g` router).
+    spot: rent interruptible capacity on a metered provider; owned hosts ignore it.
+    arch: the compute capabilities a metered provider's card must have (`sm_120`, `hopper`).
     """
 
     queue: str = ""
@@ -45,6 +47,8 @@ class Defaults(Declared):
     vram_gb: int = Field(default=0, ge=0)
     gpu_name: str = ""
     max_usd: float = Field(default=0.0, ge=0.0)
+    spot: bool = False
+    arch: str = ""
 
 
 def _seconds(walltime: str) -> int:

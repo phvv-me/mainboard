@@ -9,6 +9,11 @@
 # catalog name. Everything after ssh answers is mb's ordinary host path (mirror, tool, lock,
 # pueue), which is why a held machine is set up once and then takes jobs like any host.
 #
+# A cloud machine has no entrypoint mb can rely on (a Lambda VM has none at all), so once ssh
+# answers the rent starts the landing's waiter itself, detached, its output and exit status
+# written beside the launch script. A held machine parks that waiter on an idle command; a
+# one-shot `job submit` hands it the job, and `state` and `logs` read the two files over ssh.
+#
 # Offers come from gpuhunt, the catalog dstack publishes as its own library (MPL-2.0): public
 # price lists and live marketplaces across AWS, GCP, Azure, Lambda, RunPod, Vast, Verda, Nebius
 # and more, most of them readable without an account. It is the same row whichever cloud rents
@@ -16,7 +21,9 @@
 
 import abc
 import json
+import logging
 import os
+import shlex
 from time import monotonic, sleep
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.request import Request
@@ -26,9 +33,10 @@ from patos import FrozenModel
 from ...core.errors import MissionError
 from ...costs.catalog import Offer
 from ...log import logger
+from ..arch import Arch, arch, capability, card
 from ..lease import Lease
-from ..rentals import LANDING_SECONDS, Rental, identity, reachable
-from ..transport import Endpoint
+from ..rentals import LANDING_SECONDS, Rental, identity, reachable, waiting
+from ..transport import Endpoint, HostUnreachable, SshTransport
 from ..vocabulary import JobState
 from .base import (
     Account,
@@ -41,6 +49,7 @@ from .base import (
     Rentable,
     Rented,
     Standing,
+    hourly_cap,
     http_transport,
 )
 
@@ -57,8 +66,9 @@ _BOOT_SECONDS = 900
 _POLL_SECONDS = 10.0
 # How many offers a rent tries when the first ones are taken or out of capacity.
 _OFFERS_TRIED = 5
-# The words a card is spelled with that no catalog keys on.
-_NOISE = ("NVIDIA", "GEFORCE", " ", "_", "-")
+# Where the detached waiter leaves the job's output and exit status, beside the launch script.
+_LOG_PATH = "/tmp/mainboard.log"
+_EXIT_PATH = "/tmp/mainboard.exit"
 
 
 class Machine(FrozenModel):
@@ -82,14 +92,6 @@ class CapacityGone(MissionError):
     """The offer chosen was taken or has no capacity left; another one may still rent."""
 
 
-def card(name: str) -> str:
-    """`name` as the catalogs key a card (`RTX 4090`, `NVIDIA_GeForce_RTX_4090` -> `RTX4090`)."""
-    spelled = name.upper()
-    for noise in _NOISE:
-        spelled = spelled.replace(noise, "")
-    return spelled
-
-
 def hunt(
     *,
     providers: Sequence[str] = (),
@@ -97,14 +99,20 @@ def hunt(
     gpus: int = 0,
     max_usd_hr: float = 0.0,
     spot: bool | None = None,
+    arch: Arch | None = None,
 ) -> list[Any]:
     """gpuhunt's offers for the filters, cheapest first; providers with no key are skipped.
 
     Imported here: listing the market is the one thing that needs it, and it reads a dozen
-    catalogs, so a command that never asks pays nothing.
+    catalogs, so a command that never asks pays nothing. The architecture is filtered here
+    rather than by gpuhunt, whose table has B300 at sm_100.
+
+    arch: the capabilities a card must have, any card of them when `gpu_name` is empty.
     """
     import gpuhunt  # type: ignore[import-untyped]  # noqa: PLC0415
 
+    # It logs a warning per catalog it cannot read offline (azure), which says nothing to act on.
+    logging.getLogger("gpuhunt").setLevel(logging.ERROR)
     query: dict[str, Any] = {}
     if providers:
         query["provider"] = list(providers)
@@ -116,7 +124,10 @@ def hunt(
         query["max_price"] = max_usd_hr
     if spot is not None:
         query["spot"] = spot
-    return sorted(gpuhunt.query(**query), key=lambda item: item.price)
+    found = gpuhunt.query(**query)
+    if arch is not None:
+        found = [item for item in found if item.gpu_name and arch.holds(capability(item.gpu_name))]
+    return sorted(found, key=lambda item: item.price)
 
 
 def as_offer(item: Any) -> Offer:
@@ -132,12 +143,13 @@ def as_offer(item: Any) -> Offer:
     )
 
 
-class CloudBackend(ProviderBackend, Account, Inventory, Market, Rentable):
-    """A cloud that rents ssh machines by the hour, for `mb host hold`.
+class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Rentable):
+    """A cloud that rents ssh machines by the hour, held (`mb host hold`) or one per job.
 
     A subclass names its gpuhunt catalog and its key variables and implements the primitives
-    below; renting, leasing, reaching and ending a machine are shared. One-shot `job submit`
-    to a cloud is refused: hold a machine, then submit to its alias, which is set up once.
+    below; renting, leasing, reaching, reporting and ending a machine are shared. A job
+    submitted to a cloud host lands on a machine rented for it, ended once the job settles; a
+    held machine is set up once and takes any number of jobs through its alias.
     """
 
     # The name gpuhunt lists this cloud under, and the variables its key may be set in.
@@ -148,8 +160,7 @@ class CloudBackend(ProviderBackend, Account, Inventory, Market, Rentable):
     image: ClassVar[str] = "ubuntu:24.04"
 
     lacks = {
-        Delivery: "a held cloud machine is an ssh host: `mb job collect <path> --on <alias>`",
-        LogSource: "a held cloud machine is an ssh host: `mb job logs <handle>` on its alias",
+        Delivery: "a cloud machine is an ssh host: `mb job collect {path} --on <alias>`",
     }
 
     def __init__(
@@ -251,18 +262,28 @@ class CloudBackend(ProviderBackend, Account, Inventory, Market, Rentable):
         self.admit(plan, resources)
         key = identity(plan.profile.vars.get("ssh-key", ""))
         gpus = max(resources.gpus, 1)
+        span = arch(resources.arch) if resources.arch else None
+        cap = hourly_cap(resources, landing=LANDING_SECONDS)
         found = hunt(
             providers=[self.catalog_name],
             gpu_name=resources.gpu_name,
             gpus=gpus,
-            # On-demand unless the host declares `spot = "true"`: a held machine is set up once,
-            # and an interruptible one can be taken back mid-run.
-            spot=plan.profile.vars.get("spot", "").lower() in {"1", "true", "yes"},
+            max_usd_hr=cap,
+            # On-demand unless asked: an interruptible machine can be taken back mid-run, which
+            # a job survives only through its checkpoint (`mb job submit --resume`).
+            spot=resources.spot,
+            arch=span,
         )
         if not found:
+            asked = " ".join(
+                part
+                for part in (resources.gpu_name, span and span.spelled, resources.spot and "spot")
+                if part
+            )
             raise MissionError(
-                f"{self.name} lists no {gpus}x {resources.gpu_name or 'GPU'} offer right now; "
-                "`mb host offers` shows every cloud's"
+                f"{self.name} lists no {gpus}x {asked or 'GPU'} offer"
+                + (f" under ${cap:.2f}/h" if cap else "")
+                + " right now; `mb host offers` shows every cloud's"
             )
         for offer in found[:_OFFERS_TRIED]:
             allocation.begin(
@@ -288,10 +309,9 @@ class CloudBackend(ProviderBackend, Account, Inventory, Market, Rentable):
                 f"{self.name} had no capacity for the {len(found[:_OFFERS_TRIED])} cheapest offers"
             )
         try:
-            return Rental(
-                handle=handle,
-                endpoint=reachable(self.booted(handle, key.private), sleeper=self.sleeper),
-            )
+            endpoint = reachable(self.booted(handle, key.private), sleeper=self.sleeper)
+            self.shell(endpoint, _detached(_waiter()), operation="start the waiter")
+            return Rental(handle=handle, endpoint=endpoint)
         except BaseException:
             logger.warning("{} machine {} never became reachable; ending it", self.name, handle)
             self.terminate(handle)
@@ -322,18 +342,72 @@ class CloudBackend(ProviderBackend, Account, Inventory, Market, Rentable):
     def cancel(self, handle: str) -> None:
         self.terminate(handle)
 
+    def logs(self, handle: str) -> str:
+        return self.read(handle, _LOG_PATH)
+
+    def read(self, handle: str, path: str) -> str:
+        """The file at `path` on `handle`, empty while it is not there yet."""
+        endpoint = self.endpoint(handle, key=identity().private)
+        return self.shell(
+            endpoint, f"cat {shlex.quote(path)} 2>/dev/null || true\n", operation="read"
+        )
+
+    def shell(self, endpoint: Endpoint, script: str, *, operation: str) -> str:
+        """Run `script` under bash on `endpoint`, answering its stdout; a failure is refused."""
+        policy = SshTransport(endpoint=endpoint)
+        where = endpoint.destination
+        code, out, err = policy.invoke(
+            ("ssh", *policy.options, where, "bash -s"),
+            where,
+            operation=operation,
+            input_text=script,
+        )
+        if code:
+            raise MissionError(f"{self.name} {operation} on {where} exited {code}: {err.strip()}")
+        return out
+
     def state(self, handle: str) -> JobState:
+        """The machine's status, then the job's own exit file once the machine runs.
+
+        A machine the cloud ended reads `vanished`, which is also what an interruptible machine
+        taken back reads as; its job resumes from its checkpoint with `mb job submit --resume`.
+        """
         found = self.machine(handle)
-        verdict = "vanished" if found.status == "gone" else "running"
-        return JobState(handle=handle, state=found.status, verdict=verdict)
+        if found.status == "gone":
+            return JobState(handle=handle, state=found.status, verdict="vanished")
+        if found.status != "running" or not found.host:
+            return JobState(handle=handle, state=found.status, verdict="running")
+        try:
+            said = self.read(handle, _EXIT_PATH).strip()
+        except (HostUnreachable, MissionError) as unanswered:
+            logger.debug("{} {} gave no exit file: {}", self.name, handle, unanswered)
+            said = ""
+        if not said.lstrip("-").isdigit():
+            return JobState(handle=handle, state=found.status, verdict="running")
+        code = int(said)
+        verdict = "ok" if code == 0 else "failed"
+        return JobState(handle=handle, state=found.status, exit_code=code, verdict=verdict)
 
     def submit(
         self, plan: ExecutionPlan, command: str, resources: Resources, *, allocation: Allocation
     ) -> str:
         raise MissionError(
-            f"{self.name} rents machines to hold, not one command: `mb host hold {plan.host} "
-            f"--for 2h ...`, then `mb job submit --on <alias> ...`"
+            f"{self.name} runs no prebuilt image: drop the container from {plan.host!r} so the "
+            "job lands on a machine rented for it, or hold one with `mb host hold`"
         )
+
+
+def _waiter() -> str:
+    """The landing's waiter, its output and exit status kept where `state` and `logs` read."""
+    return (
+        f"{{\n{waiting()}\n}} > {_LOG_PATH} 2>&1\n"
+        f"echo $status > {_EXIT_PATH}.part && mv {_EXIT_PATH}.part {_EXIT_PATH}\n"
+    )
+
+
+def _detached(script: str) -> str:
+    """`script` started so it outlives the ssh session that starts it."""
+    return f"nohup setsid bash -c {shlex.quote(script)} >/dev/null 2>&1 </dev/null &\n"
 
 
 def keyed(kind: str) -> bool:

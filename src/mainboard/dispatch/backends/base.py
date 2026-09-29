@@ -24,6 +24,7 @@ from pydantic import field_validator
 
 from ...core.errors import MissionError
 from ...core.project import Project
+from ...runtime.job import walltime_seconds
 from ..rentals import Rental
 
 if TYPE_CHECKING:
@@ -312,6 +313,19 @@ def forgotten(error: HTTPError) -> dict:
     if error.status != 404:
         raise error
     return {}
+
+
+def hourly_cap(resources: Resources, *, landing: int = 0) -> float:
+    """The hourly ceiling `resources` implies, 0 for a walltime-less request.
+
+    A spend cap bounds an hourly rental only once the job says how long it runs; without a
+    walltime the search takes the whole market and leans on `max_usd` alone.
+
+    landing: seconds billed before the job starts (mirror, tool install, environment), 0 for
+        a prebuilt container that runs the command the moment it boots.
+    """
+    seconds = walltime_seconds(resources.walltime) if resources.walltime else 0
+    return resources.max_usd * 3600.0 / (seconds + landing) if seconds else 0.0
 
 
 def http_transport(request: Request) -> HttpResponse:
