@@ -635,3 +635,37 @@ What running them found and fixed in mb, each a class of bug:
   mb's fixes never reached the job: an environment names the workspace packages it imports.
 - z3-solver has no aarch64 wheel: taken from conda-forge (the standing rule for compiled deps).
 - A `| tail` in a job command hides the exit; `bash -o pipefail` in every such check.
+
+### Vast.ai with the new systems (6.13)
+
+`mb host hold vast --gpu-name "RTX 4090" --for 1h --max-usd 2 --env cutok`, from nothing to a
+parked, set-up machine in 3m42s ($0.56/h, NL):
+
+| stage | s |
+|---|---|
+| rent until ssh answers | 49 |
+| probe | 18 |
+| mirror (8,007 files; `[envs.cutok] sources` now cuts the roots from 16 to 8) | 34 |
+| install mainboard (uv) | 22 |
+| pixi | 11 |
+| the `cutok` environment, cold from the CDNs | 42 |
+| pueue, read back, park | 46 |
+
+cutok's `pbt_parity`, registered for the RTX 4090, ran there end to end (22.5 min, refused on
+the 3090 and GB10): 88 of 89 failed because I ran it as a plain `pytest` command, which ships no
+pins, and each trial loads its tokenizer offline (`local_files_only`) from a pinned revision. The
+job spelling (`mb job submit --on <rental> --env cutok .../test_pbt.py::test_pbt_parity`) stages
+those pins; that run is the next one. The whole trial cost $0.60 (credit 84.83 to 84.24), and the
+rental was released and its alias removed. `job submit --wait` called the run stalled after 20
+minutes of a CPU-only phase with its output held by `| tail`, a false positive of the stall rule
+(no output and an idle card) that a CPU-bound job will always meet.
+Found on the way: `UserKnownHostsFile=nul` wrote every rental's host key into a file called
+`nul` wherever mb ran (MSYS2's ssh reads `nul` as a name); fixed per ssh flavor.
+
+Image hub (asked 2026-09-29): the environment's image lives in a registry near the providers
+(GHCR or Docker Hub; both CDN-backed), built by `mb pack <env> --on <linux host> --image --push
+<repo>` and named by the environment's digest. From the stages above an image saves the tool,
+pixi, environment and pueue steps (~2 min) but adds a pull on a host that has not cached it
+(3.0 GB at ~100 MB/s, under a minute); Vast caches the layers per host, so repeated rentals and
+batches gain most. Needs the owner's registry login once on the building host; wiring `host hold`
+to boot that image (the Vast backend already boots a plan's own image) is the next step.
