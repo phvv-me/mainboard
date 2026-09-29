@@ -64,6 +64,9 @@ class RunRecord(FrozenModel):
         provider creation. Only held requests are retried automatically; a lost create reply
         requires reconciliation with the provider.
     lease: accepted rental quote and release deadline, retained before provider creation.
+    project: the workspace project the run was dispatched from (the directory under
+        `research/` or `packages/` the command ran in, or `MB_PROJECT`), empty for runs
+        recorded before it was kept.
     reason: why the row is in its state when the state cannot say it alone, i.e. the refusal a
         target's quota answered a held dispatch with. Empty for every run that was taken.
     """
@@ -91,6 +94,7 @@ class RunRecord(FrozenModel):
     request: Request | None = None
     lease: Lease | None = None
     reason: str = ""
+    project: str = ""
 
     @property
     def label(self) -> str:
@@ -190,12 +194,18 @@ class Cache:
             synced = setup.model_copy(update={"synced_at": now()})
             self._append("host_facts", [_host(synced, probed_at=setup.onboarded_at)])
 
-    def live(self) -> list[RunRecord]:
+    def live(self, project: str = "") -> list[RunRecord]:
         """Every run without a terminal verdict, newest first, never truncated by a limit.
 
         A listing that hides half a dispatched wave sends an operator to `qstat` by hand.
+
+        project: only the runs dispatched from this project; every run when empty.
         """
-        return [run for run in self.recent(None) if run.verdict not in vocabulary.TERMINAL]
+        return [
+            run
+            for run in self.recent(None)
+            if run.verdict not in vocabulary.TERMINAL and project in ("", run.project)
+        ]
 
     def recent(self, limit: int | None = 20) -> list[RunRecord]:
         """Dispatched runs, newest first; None retains all historical declarations."""
@@ -332,9 +342,16 @@ class Cache:
             self._append("host_facts", [_host(stamped, probed_at=stamped.onboarded_at)])
         return stamped
 
-    def settled(self, limit: int) -> list[RunRecord]:
-        """The `limit` most recently dispatched runs whose verdict is terminal, newest first."""
-        landed = (run for run in self.recent(None) if run.verdict in vocabulary.TERMINAL)
+    def settled(self, limit: int, project: str = "") -> list[RunRecord]:
+        """The `limit` most recently dispatched runs whose verdict is terminal, newest first.
+
+        project: only the runs dispatched from this project; every run when empty.
+        """
+        landed = (
+            run
+            for run in self.recent(None)
+            if run.verdict in vocabulary.TERMINAL and project in ("", run.project)
+        )
         return list(islice(landed, limit))
 
     def total(self) -> int:

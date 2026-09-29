@@ -1569,7 +1569,7 @@ def build(root: Path | None = None) -> App:
         return _settled(settled, output)
 
     @job.command(name="list")
-    def jobs(*, limit: int = 20, output: Output = _RICH) -> None:
+    def jobs(*, limit: int = 20, project: str = "", output: Output = _RICH) -> None:
         """List every dispatched job still in flight, then the most recently settled ones.
 
         A live job is never left out and never answered from memory. Each host is asked once
@@ -1582,11 +1582,13 @@ def build(root: Path | None = None) -> App:
         than stopping quietly at twenty rows.
 
         limit: how many settled runs to show behind the live ones, newest first.
+        project: only the runs dispatched from this project (the directory under `research/` or
+            `packages/` a submit ran in, or `MB_PROJECT`); every run when empty.
         fields: a comma-separated projection over the row's columns, cells/quiet_s/gpu_pct
             among them.
         """
         with progress("asking every host about its live jobs"):
-            listed = Listing(board("local"), limit=limit).taken()
+            listed = Listing(board("local"), limit=limit, project=project).taken()
         output.print_rows(
             [row.model_dump() for row in listed.rows], title="jobs", columns=_JOB_COLUMNS
         )
@@ -1955,6 +1957,7 @@ _GIT_CHECK_COLUMNS = ("repo", "check", "verdict", "detail")
 _JOB_COLUMNS = (
     "state",
     "host",
+    "project",
     "name",
     "handle",
     "cells",
@@ -2099,10 +2102,17 @@ def _agreed() -> bool:
     """Ask once at the terminal whether to dispatch, and say what was typed back.
 
     The question shares stderr with the expectation line it follows, since stdout belongs to the
-    handle or the document this verb prints once the dispatch has actually happened.
+    handle or the document this verb prints once the dispatch has actually happened. An input
+    that ends unanswered is a no: Windows reports its null device as a terminal, so a script that
+    redirected stdin there reaches this question too, and should pass `--yes`.
     """
     print("dispatch? [y/N] ", end="", file=sys.stderr, flush=True)
-    return input().strip().lower() in {"y", "yes"}
+    try:
+        answer = input()
+    except EOFError:
+        print("no answer; pass --yes to dispatch without asking", file=sys.stderr)
+        return False
+    return answer.strip().lower() in {"y", "yes"}
 
 
 def _followed[T](passes: Iterator[T], label: str, show: Callable[[T], None]) -> None:

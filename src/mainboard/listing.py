@@ -49,6 +49,7 @@ class JobRow(FrozenModel):
 
     state: str
     host: str
+    project: str = ""
     name: str
     handle: str
     since: str = ""
@@ -80,19 +81,24 @@ class Listing:
     only its own runs their live state: they fall back to the cache and the note names the host.
     """
 
-    def __init__(self, board: Board, *, limit: int, pulses: Pulses | None = None) -> None:
+    def __init__(
+        self, board: Board, *, limit: int, project: str = "", pulses: Pulses | None = None
+    ) -> None:
         """limit: how many settled runs to show behind the live ones.
+
+        project: only the runs dispatched from this project; every run when empty.
 
         pulses: the look at running jobs' output and cards, the workspace's own when None.
         """
         self.board = board
         self.limit = limit
+        self.project = project
         self.cache = board.dispatcher.cache
         self.pulses = pulses or Pulses(board)
 
     def taken(self) -> Listed:
         """The listing as it stands: every live run resolved now, then the settled tail."""
-        live = self.cache.live()
+        live = self.cache.live(self.project)
         resolved = Sweep(self.board, live)
         running = [
             record
@@ -107,7 +113,7 @@ class Listing:
                 self.flying(record, resolved.states.get(record), pulses.get(record))
                 for record in live
             ),
-            *(self.landed(record) for record in self.cache.settled(self.limit)),
+            *(self.landed(record) for record in self.cache.settled(self.limit, self.project)),
         ]
         return Listed(rows=tuple(rows), note=self.note(shown=len(rows), quiet=resolved.down))
 
@@ -126,6 +132,7 @@ class Listing:
         return JobRow(
             state=live or record.state or vocabulary.UNKNOWN,
             host=record.target,
+            project=record.project,
             name=record.name or record.script,
             handle=record.handle,
             since=(state.since if state else "") or record.submitted_at,
@@ -145,6 +152,7 @@ class Listing:
         return JobRow(
             state=verdict,
             host=record.target,
+            project=record.project,
             name=record.name or record.script,
             handle=record.handle,
             submitted_at=record.submitted_at,

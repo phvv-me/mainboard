@@ -131,6 +131,27 @@ class Verdict(FrozenModel):
         return self.verdict == "ok"
 
 
+# The directories whose children are projects: `research/cutok` is the project `cutok`.
+_PROJECT_PARENTS = frozenset({"research", "packages", "personal"})
+
+
+def dispatched_from(root: Path, here: Path | None = None) -> str:
+    """The project a command typed in `here` (the working directory) dispatches for.
+
+    `MB_PROJECT` names it outright; otherwise it is the directory under `research/` or
+    `packages/` holding `here`, or the top-level one, and empty at the root or outside it.
+    """
+    if named := Project().variable("PROJECT").read():
+        return named
+    try:
+        parts = (here or Path.cwd()).resolve().relative_to(root.resolve()).parts
+    except ValueError:
+        return ""
+    if len(parts) > 1 and parts[0] in _PROJECT_PARENTS:
+        return parts[1]
+    return parts[0] if parts else ""
+
+
 class Dispatcher:
     """Dispatch a job to a resolved host and hand back a `Handle` to poll, await or fetch.
 
@@ -149,6 +170,7 @@ class Dispatcher:
         self.sync = sync or GitignoreFilter(root or workspace())
         self.root = self.sync.root
         self.cache = cache or Cache(Lake.at(self.root))
+        self.project = dispatched_from(self.root)
 
     def await_many(
         self, handles: Sequence[Handle], *, interval: float = vocabulary.POLL_SECONDS
@@ -223,6 +245,7 @@ class Dispatcher:
             verdict=vocabulary.HELD,
             request=asked,
             reason=reason,
+            project=self.project,
         )
         self.cache.record(record)
         logger.warning("{} held for {}: {}", asked.command, asked.target, reason)
@@ -631,6 +654,7 @@ class Dispatcher:
                     source=dispatched.source.key,
                     commit=dispatched.source.commit,
                     digest=dispatched.source.digest,
+                    project=self.project,
                 )
             )
         logger.info("{} -> {} on {} ({})", prepared, handle, plan.host, dispatched.source.identity)
@@ -683,6 +707,7 @@ class Dispatcher:
             evidence=evidence,
             creation=label,
             request=request,
+            project=self.project,
         )
         try:
             self.cache.reserve(record)
