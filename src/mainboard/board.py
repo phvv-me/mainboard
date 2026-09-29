@@ -26,7 +26,7 @@ from .core.errors import MissionError
 from .core.project import Project
 from .core.shell import become, foreground
 from .deps import Dependencies
-from .dispatch import vocabulary
+from .dispatch import keys, vocabulary
 from .dispatch.backends.base import (
     Delivery,
     LogSource,
@@ -606,7 +606,7 @@ class Board:
         if route(plan.profile.kind) != "ssh-family":
             raise MissionError(
                 f"host {self.host!r} rents instances through {plan.profile.kind!r} and hands "
-                f"out no terminal. Run `{self.project.name} submit --on {self.host}` instead."
+                f"out no terminal. Run `{self.project.name} job submit --on {self.host}` instead."
             )
         defaults = plan.profile.defaults
         resources = Resources(
@@ -633,6 +633,7 @@ class Board:
             held = f"{self.project.package}-{self.host}"
             staged = f"tmux new-session -A -s {shlex.quote(held)} {shlex.quote(staged)}"
         # A bounded transport suits a poll, not a session, so the user's ssh config owns this one.
+        keys.adopt()
         replace("ssh", dialect.session(self.host, staged))
 
     def job(self, handle: str | int, *, host: str = "") -> Run:
@@ -924,7 +925,7 @@ class Board:
             f"was solved by pixi {solved} while this machine runs pixi "
             f"{provisioner.solver_version() or 'none'}: a pixi that is not the one the fleet is "
             f"pinned to ({PIXI_VERSION}) rewrites the lock while provisioning and moves the "
-            f"address with it too. Run `{self.project.name} setup {self.host}` from the "
+            f"address with it too. Run `{self.project.name} host setup {self.host}` from the "
             "dispatching workspace, which ships this machine both the pinned pixi and the "
             "compile the dispatch addressed."
         )
@@ -1030,8 +1031,8 @@ class Board:
             if not self.local:
                 raise MissionError(
                     "remote file targets require submission for source transfer and allocation; "
-                    f"use mainboard submit --on {plan.host} -- {target.spelling}, then "
-                    "mainboard wait or mainboard monitor. Run collection and help locally."
+                    f"use mainboard job submit --on {plan.host} -- {target.spelling}, then "
+                    "mainboard job wait or mainboard monitor. Run collection and help locally."
                 )
             shipment = self.sealed(target, plan)
             listing = self.dispatcher.stage_listing(shipment)
@@ -1111,7 +1112,7 @@ class Board:
         leaving it lands where the user began. An unprovisioned environment is refused naming
         the fix, since a shell on the machine's own interpreter is what staging prevents. The
         shell enters `--frozen`: pixi would otherwise treat entering as a reason to re-solve the
-        lock, and `install --resolve` is the one deliberate door for that. Exec drops what a
+        lock, and `lock` is the one deliberate door for that. Exec drops what a
         spawned child would inherit, so the declared floors and the runtime step's changes are
         passed explicitly; without the floors a host lacking the virtual package fails on
         `shell` alone.
@@ -1198,7 +1199,7 @@ class Board:
             plan=plan,
         )
         # Content-addressed over the target, the command and this instant, so the receipts
-        # stream has a durable key and `mainboard jobs` reads better for it too.
+        # stream has a durable key and `mainboard job list` reads better for it too.
         fingerprint = run_id({"host": plan.host, "command": shipment.spelling, "at": time.time()})
         label = name or f"{plan.host}-{fingerprint[:8]}"
         tracked = streamed(label, handle="")

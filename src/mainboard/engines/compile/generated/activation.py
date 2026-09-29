@@ -2,7 +2,7 @@
 # second-stage binaries and what `runtime.activation` adds. It is part of the environment it
 # enters, written into that environment's own directory by the install that built it (a
 # content-addressed prefix, or `<state>/envs/<env>/`), never into the state directory itself;
-# `mb activate` names it for a shell to source.
+# `mb shell-hook` names it for a shell to source.
 
 import shlex
 import sys

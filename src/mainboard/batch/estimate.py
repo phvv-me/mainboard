@@ -3,7 +3,7 @@
 # executes, dispatches or rents.
 #
 # It does read a provider's market, and has to. Prices once came from a stored roster nothing ever
-# wrote, so every rate read $0.00 while `mainboard compute` priced the same card live, and since
+# wrote, so every rate read $0.00 while `mainboard host list` priced the same card live, and since
 # no paid dispatch happens before this table is read, that silently closed the paid lane (found
 # 2026-08-25, a campaign unable to price Volta, Turing, A100 or Blackwell against a $40 cap). A
 # target with no stored price is quoted from the provider's live market (the survey's read, which
@@ -146,7 +146,7 @@ class Estimator:
         return None, f"unpriced: {kind} quotes no {card or 'matching'} offer right now"
 
     def refresh(self, job: BatchJob, *, backend: type[ProviderBackend], card: str) -> None:
-        """Ask `backend`'s market what `card` rents for, as `mainboard compute` does, and keep it.
+        """Ask `backend`'s market what `card` rents for, as `mb host list` does, and keep it.
 
         A backend with no market (hpc-ai, modal) leaves the roster alone and the row unpriced.
         """

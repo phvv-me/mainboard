@@ -108,7 +108,7 @@ class JobSpec(FrozenModel):
                 "defaults before rendering"
             )
         record = shlex.quote(self.job(pbs=pbs).model_dump_json())
-        handover = f'PATH="{":".join(USER_BINS)}:$PATH" exec {Project().package} job {record}'
+        handover = f'PATH="{":".join(USER_BINS)}:$PATH" exec {Project().package} execute {record}'
         lines = [
             "#!/bin/sh",
             *(self.directives(gpu_in_select=gpu_in_select) if pbs else ()),

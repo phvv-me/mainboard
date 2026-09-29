@@ -74,8 +74,8 @@ class SshAliases:
 
 
 def _opening(alias: str) -> str:
-    return f"# >>> mainboard hold {alias} >>>"
+    return f"# >>> mainboard host hold {alias} >>>"
 
 
 def _closing(alias: str) -> str:
-    return f"# <<< mainboard hold {alias} <<<"
+    return f"# <<< mainboard host hold {alias} <<<"

@@ -1,4 +1,4 @@
-# What `mainboard jobs` shows: every run still in flight with its scheduler's word on it now,
+# What `mainboard job list` shows: every run still in flight with its scheduler's word on it now,
 # then the most recently settled ones.
 #
 # The verb used to print the cache's twenty newest rows with their memoized state, so a wave of

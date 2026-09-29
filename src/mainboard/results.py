@@ -2,19 +2,22 @@
 
 import json
 import os
-from collections.abc import Callable, Collection
+from collections.abc import Collection, Generator
+from contextlib import contextmanager
 from datetime import UTC
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING
 
 import duckdb
-import polars as pl
 
 from .dispatch import vocabulary
 from .observe.files import FrameFile
-from .state.lake import ALIAS, Lake
-from .trials.artifacts import Artifact
+from .state.lake import ALIAS, Lake, ndjson
+
+if TYPE_CHECKING:
+    import polars as pl
 
 
 class Results:
@@ -30,18 +33,66 @@ class Results:
         self.root = root.resolve()
         self.experiment = experiment
 
-    def query(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> pl.DataFrame:
-        """Query a fresh local snapshot of runs, trials, events, artifacts, and dispatch jobs.
+    def rows(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> list[dict]:
+        """Query a fresh local snapshot of runs, trials, events, artifacts, dispatch jobs and
+        the workspace's state lake (`lake.<table>`), one mapping per row.
 
         sql: SELECT text or a UTF-8 file Path; strings are never filenames. Relative paths, of
             the file or inside SQL, use the caller's current directory, not this root or the
             SQL file's parent.
         project: a research directory name; omitted means all projects, still labeled.
-        Network refresh belongs to Mainboard monitor, never an SQL side effect. Jobs separate
-        the last backend_state from the command verdict; `settled` reads the monitor's
-        completion cursor, not provider liveness. Event recorded_at is naive UTC, so a query
-        never installs extensions or needs ICU.
+        Network refresh belongs to `mb job monitor`, never an SQL side effect.
         """
+        with self._connected(sql, project) as (connection, text):
+            result = connection.execute(text)
+            names = [column[0] for column in result.description]
+            return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+
+    def query(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> pl.DataFrame:
+        """`rows` as a polars frame, for plotting and experiments; polars comes from the
+        environment that calls this, never from this tool's own dependencies."""
+        import polars as pl
+
+        with self._connected(sql, project) as (connection, text):
+            result = connection.execute(text)
+            return pl.DataFrame(
+                result.fetchall(),
+                schema=[column[0] for column in result.description],
+                orient="row",
+                infer_schema_length=None,
+            )
+
+    def export(self, sql: str | Path, path: Path, *, project: str = "") -> Path:
+        """Export one SELECT to a new CSV, Parquet, or JSON file, inferred from its suffix.
+
+        Only a complete file is published and an existing destination is never overwritten.
+        """
+        formats = {
+            ".csv": "FORMAT csv, HEADER",
+            ".parquet": "FORMAT parquet, COMPRESSION zstd",
+            ".json": "FORMAT json, ARRAY true",
+        }
+        try:
+            options = formats[path.suffix.casefold()]
+        except KeyError:
+            raise ValueError("output suffix must be .csv, .parquet, or .json") from None
+        path = path.expanduser().absolute()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=path.parent) as staged:
+            temporary = Path(staged) / path.name
+            with self._connected(sql, project) as (connection, text):
+                target = temporary.as_posix().replace("'", "''")
+                connection.execute(f"COPY ({text}) TO '{target}' ({options})")
+            with temporary.open("rb+") as completed:
+                os.fsync(completed.fileno())
+            os.link(temporary, path)
+        return path
+
+    @contextmanager
+    def _connected(
+        self, sql: str | Path, project: str
+    ) -> Generator[tuple[duckdb.DuckDBPyConnection, str]]:
+        """A connection holding every results view, and the lake when the SQL names it."""
         if isinstance(sql, Path):
             try:
                 sql = sql.expanduser().read_text(encoding="utf-8")
@@ -56,42 +107,15 @@ class Results:
             if f"{ALIAS}." in sql.lower() and lake.exists():
                 # Everything the workspace recorded, read-only beside the collected results.
                 lake.attach(connection)
-            result = connection.execute(sql)
-            return pl.DataFrame(
-                result.fetchall(),
-                schema=[column[0] for column in result.description],
-                orient="row",
-                infer_schema_length=None,
-            )
-
-    def export(self, sql: str | Path, path: Path, *, project: str = "") -> Path:
-        """Export one SELECT to a new CSV, Parquet, or JSON file, inferred from its suffix.
-
-        Only a complete file is published and an existing destination is never overwritten.
-        """
-        frame = self.query(sql, project=project)
-        writers: dict[str, Callable[[Path], None]] = {
-            ".csv": frame.write_csv,
-            ".parquet": frame.write_parquet,
-            ".json": frame.write_json,
-        }
-        try:
-            write = writers[path.suffix.casefold()]
-        except KeyError:
-            raise ValueError("output suffix must be .csv, .parquet, or .json") from None
-        path = path.expanduser().absolute()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(dir=path.parent) as staged:
-            temporary = Path(staged) / path.name
-            write(temporary)
-            with temporary.open("rb+") as completed:
-                os.fsync(completed.fileno())
-            os.link(temporary, path)
-        return path
+            yield connection, sql
 
     def table(
         self, schema: str, *, project: str = "", runs: Collection[str] | None = None
     ) -> pl.DataFrame:
+        import polars as pl
+
+        from .trials.artifacts import Artifact
+
         """Read verified Parquet tables from collected storage, never a source host's path.
 
         Original repository and machine metadata remain in the _trial provenance column.
@@ -145,7 +169,9 @@ class Results:
             "jobs": set(),
         }
         try:
-            requested = {name.casefold() for name in connection.get_table_names(sql)}
+            # A qualified name (`lake.runs`) is a table somewhere else, never one of these views.
+            named = connection.get_table_names(sql, qualified=True)
+            requested = {name.casefold() for name in named if "." not in name}
         except duckdb.BinderException:
             # DuckDB cannot discover some joins before their column schemas exist.
             # Build the catalog in that case and let execution report real SQL errors.
@@ -231,20 +257,18 @@ class Results:
                             f"conflicting event snapshots for project {owner.name!r}, "
                             f"stream {frame.job!r}, offset {frame.offset}"
                         )
-        connection.execute(
-            """
-            CREATE TABLE events AS SELECT DISTINCT
-                row->>'project' AS project, row->>'root' AS root,
-                row->>'job' AS stream, (row->>'offset')::UBIGINT AS offset,
-                (row->>'at')::TIMESTAMP AS recorded_at,
-                row->'payload'->>'trial' AS trial,
-                row->'payload'->>'topic' AS topic,
-                row->'payload'->'metadata' AS metadata,
-                row->'payload'->'data' AS data
-            FROM unnest(?::JSON[]) AS records(row)
-        """,
-            [list(events.values())],
-        )
+        with ndjson(events.values()) as staged:
+            connection.execute(f"""
+                CREATE TABLE events AS SELECT DISTINCT
+                    row->>'project' AS project, row->>'root' AS root,
+                    row->>'job' AS stream, (row->>'offset')::UBIGINT AS offset,
+                    (row->>'at')::TIMESTAMP AS recorded_at,
+                    row->'payload'->>'trial' AS trial,
+                    row->'payload'->>'topic' AS topic,
+                    row->'payload'->'metadata' AS metadata,
+                    row->'payload'->'data' AS data
+                FROM (SELECT json AS row FROM read_ndjson_objects({staged}))
+            """)
 
     @staticmethod
     def _artifacts(connection: duckdb.DuckDBPyConnection, roots: list[Path]) -> None:
@@ -306,20 +330,19 @@ class Results:
         """)
 
     def _jobs(self, connection: duckdb.DuckDBPyConnection) -> None:
-        jobs: list[object] = []
+        jobs: list[str] = []
         lake = Lake.at(self.root)
         if lake.exists():
             jobs = [record for (record,) in lake.query(f"SELECT record FROM {ALIAS}.runs")]
-        connection.execute(
-            """
-            CREATE TABLE jobs AS SELECT row->>'target' AS server,
-                row->>'handle' AS handle, row->>'submitted_at' AS submitted_at,
-                row->>'state' AS backend_state, row->>'verdict' AS verdict,
-                row->>'evidence' AS evidence,
-                coalesce((row->>'reported') = (row->>'verdict')
-                    AND (row->>'verdict') = ANY(?::VARCHAR[]), false) AS settled,
-                row->>'fetch_path' AS results, row AS metadata
-            FROM unnest(?::JSON[]) AS records(row)
-        """,
-            [sorted(vocabulary.TERMINAL), jobs],
-        )
+        terminal = ", ".join(f"'{word}'" for word in sorted(vocabulary.TERMINAL))
+        with ndjson(jobs) as staged:
+            connection.execute(f"""
+                CREATE TABLE jobs AS SELECT row->>'target' AS server,
+                    row->>'handle' AS handle, row->>'submitted_at' AS submitted_at,
+                    row->>'state' AS backend_state, row->>'verdict' AS verdict,
+                    row->>'evidence' AS evidence,
+                    coalesce((row->>'reported') = (row->>'verdict')
+                        AND (row->>'verdict') IN ({terminal}), false) AS settled,
+                    row->>'fetch_path' AS results, row AS metadata
+                FROM (SELECT json AS row FROM read_ndjson_objects({staged}))
+            """)

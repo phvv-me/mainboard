@@ -4,7 +4,7 @@
 # dispatched `mainboard run` died on vast instance 49861190 with `bash: line 2: mainboard: command
 # not found`, exit 127, three times over, billing every boot. So a rental is an ssh host that
 # exists for one job: the dispatch mirrors the workspace, installs the tool from the mirror,
-# provisions from the lock this workspace already solved and pins the tree, as `mainboard setup`
+# provisions from the lock this workspace already solved and pins the tree, as `mb host setup`
 # does on gold.
 #
 # That happens on the meter after the boot. The entrypoint waits for a launch script, the landing

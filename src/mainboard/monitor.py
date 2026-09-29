@@ -1,4 +1,4 @@
-# The durable sweep behind `mainboard monitor`: one pass over every dispatched job the shared
+# The durable sweep behind `mainboard job monitor`: one pass over every dispatched job the shared
 # cache still owes an outcome for. Everything it reads is durable state, so a periodic cron
 # closes out jobs this process never submitted and a remote job's result never depends on the
 # agent that dispatched it staying alive to see it end.

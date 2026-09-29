@@ -1,4 +1,4 @@
-# `mainboard hold` and `mainboard release`: a rented machine kept for a session and reached as
+# `mb host hold` and `mb host release`: a rented machine kept for a session and reached as
 # an ordinary ssh host, so it is set up once and then takes any number of jobs in seconds each.
 #
 # A rental per job rebuilds the whole environment every time: of a 17.5 minute landing on

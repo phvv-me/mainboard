@@ -27,18 +27,18 @@ The same surface as a CLI:
 ```console
 $ mainboard run --on gold nvidia-smi -L   # everything from the command on is its own
 GPU 0: NVIDIA GB10 (UUID: GPU-6a5c...)
-$ mainboard facts --on gold | head -4
+$ mainboard host facts --on gold | head -4
 {
   "schema_version": 1,
   "hostname": "gold",
   "cpu_name": "10x Arm Cortex-A725 + 10x Arm Cortex-X925",
-$ mainboard submit --on miyabi-g --attempt 2 python -m experiments.run
+$ mainboard job submit --on miyabi-g --attempt 2 python -m experiments.run
 2231259
-$ mainboard monitor --json          # one durable pass, what a cron runs
+$ mainboard job monitor --json          # one durable pass, what a cron runs
 {"running": 1, "finished": [], "failed": [], "unreachable_hosts": [], "changed": false}
-$ mainboard jobs                    # every live job as its queue sees it, cells, silence, GPU%
-$ mainboard wait 2231259            # cells and a heartbeat on stderr; exit 4 on a stalled job
-$ mainboard compute --agent         # every path this workspace can run on
+$ mainboard job list                    # every live job as its queue sees it, cells, silence, GPU%
+$ mainboard job wait 2231259            # cells and a heartbeat on stderr; exit 4 on a stalled job
+$ mainboard host list --agent         # every path this workspace can run on
 name      kind      access       detail                 usd_hr  credit_usd
 local     local     here         1x RTX 4090, 135 GB RAM
 gold      ssh       provisioned  cached default: hardware from onboarding
@@ -72,8 +72,8 @@ has left. No credential is ever printed, only whether one was found.
 facts, which may be stale. An SSH echo probe works with POSIX shells, cmd, and
 PowerShell without requiring an installed environment. Neither cached hardware nor
 a successful login proves GPU availability. For PBS/Slurm, the reachable endpoint
-is the login host, not an allocated compute node. Inspect `mainboard jobs` and
-`mainboard facts --on <host>` before choosing a target.
+is the login host, not an allocated compute node. Inspect `mainboard job list` and
+`mainboard host facts --on <host>` before choosing a target.
 A host's `[hosts.<name>.vars]` may contain `status-note` to describe a supported
 route or known restriction. This replaces generic setup advice, not the observed
 access state, and never makes a host job-ready.
@@ -169,10 +169,10 @@ A rental per job rebuilds the environment every time. A held machine is rented,
 named, set up once, and then takes jobs in seconds until its deadline:
 
 ```console
-$ mainboard hold vast --gpu-name "RTX 5090" --for 3h --max-usd 4   # rent, alias, onboard, park
-$ mainboard submit --on vast-rtx-5090 --walltime 00:20:00 -- path/to/test_x.py::test_y
-$ mainboard compute                                                  # every live rental, held or not
-$ mainboard release vast-rtx-5090                                    # stop billing now
+$ mainboard host hold vast --gpu-name "RTX 5090" --for 3h --max-usd 4   # rent, alias, onboard, park
+$ mainboard job submit --on vast-rtx-5090 --walltime 00:20:00 -- path/to/test_x.py::test_y
+$ mainboard host list                                                  # every live rental, held or not
+$ mainboard host release vast-rtx-5090                                    # stop billing now
 ```
 
 The alias is a marked block at the top of `~/.ssh/config`, the host profile is the
@@ -239,7 +239,7 @@ Profiles inherit `[hosts.defaults]`, values interpolate (`{{ env('LOCALDIR') }}`
 `{{ num_cpus() }}`), and queue policies are data the tool enforces at submit
 time with the error you wish the scheduler gave you.
 
-The solve is source: `install --resolve` (and `add`, `remove`, `upgrade`) writes
+The solve is source: `lock` (and `add`, `remove`, `upgrade`) writes
 each environment's pixi lock byte for byte into `mb.lock` beside the manifest,
 one sorted section per environment with the digest it was solved from and the
 pixi that solved it. Commit it. `install` copies a section into the ignored
@@ -443,7 +443,7 @@ $ mainboard proc wait --file results/done.json --pid 4242
 runs one command there. To enter it in the shell you already have:
 
 ```console
-$ eval "$(mb activate)"             # or: eval "$(mb activate --env serving)"
+$ eval "$(mb shell-hook)"             # or: eval "$(mb shell-hook --env serving)"
 ```
 
 The activation (the host's modules, pixi's own activation, second-stage
@@ -493,7 +493,7 @@ A pytest experiment is a native job target:
 
 ```console
 mainboard run path/to/test_experiment.py::test_measurement -- --collect-only
-mainboard submit --on gold path/to/test_experiment.py::test_measurement
+mainboard job submit --on gold path/to/test_experiment.py::test_measurement
 ```
 
 Pytest owns fixtures, parametrization, assertions, and per-case failures. The
@@ -554,7 +554,7 @@ Select Python regions with `auto` or `span`. Neither is statistical sampling.
 The unused `PYTHON` flag was removed. Existing feature bit values are unchanged.
 Historical policies containing that unsupported bit require their original source.
 Launch work through `mainboard run` or
-`mainboard submit`, with the profiling context inside the target. There is no
+`mainboard job submit`, with the profiling context inside the target. There is no
 profiler attach API. Render the returned `Profile`, not the active `Profiler`.
 
 The `mainboard.trials.pytest_plugin` also injects `log`, backed by the existing
@@ -590,8 +590,8 @@ Mainboard's remote result mounts and after fetching.
 ### One query surface across machines
 
 ```console
-mainboard monitor --json
-mainboard collect research/reproducibility/datasets/experiments/architecture_error_census --on pedro-home
+mainboard job monitor --json
+mainboard job collect research/reproducibility/datasets/experiments/architecture_error_census --on pedro-home
 mainboard query "SELECT project, hardware, count(*) AS runs FROM runs GROUP BY ALL"
 mainboard query --project reproducibility "SELECT * FROM metrics ORDER BY recorded_at DESC LIMIT 20"
 mainboard query "SELECT server, handle, backend_state, verdict, evidence, settled FROM jobs"

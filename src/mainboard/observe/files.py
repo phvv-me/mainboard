@@ -3,7 +3,7 @@
 from compression import zstd
 from pathlib import Path
 
-import polars as pl
+import duckdb
 
 from .frames import Frame, parse_tail
 
@@ -20,10 +20,13 @@ class FrameFile:
     def read_bytes(self) -> bytes:
         """Return the original wire file, including a possible incomplete final frame."""
         if self.path.is_dir():
-            rows = pl.read_parquet(self.path / "part-*.parquet").sort("ordinal")
-            if rows["ordinal"].to_list() != list(range(rows.height)):
+            parts = (self.path / "part-*.parquet").as_posix()
+            rows = duckdb.execute(
+                "SELECT ordinal, wire FROM read_parquet(?) ORDER BY ordinal", [parts]
+            ).fetchall()
+            if [ordinal for ordinal, _ in rows] != list(range(len(rows))):
                 raise ValueError(f"incomplete event archive: {self.path}")
-            return b"".join(rows["wire"].to_list())
+            return b"".join(wire for _, wire in rows)
         return self.path.read_bytes()
 
     def frames(self) -> list[Frame]:
@@ -46,11 +49,11 @@ class FrameFile:
                 for offset in range(start, min(start + _PART_BYTES, size), _CHUNK_BYTES)
             ]
             first = start // _CHUNK_BYTES
-            pl.DataFrame(
-                {"ordinal": range(first, first + len(chunks)), "wire": chunks},
-                schema={"ordinal": pl.UInt32, "wire": pl.Binary},
-            ).write_parquet(
-                target / f"part-{part:05d}.parquet", compression="zstd", compression_level=19
+            written = (target / f"part-{part:05d}.parquet").as_posix().replace("'", "''")
+            duckdb.execute(
+                "COPY (SELECT unnest(?::UINTEGER[]) AS ordinal, unnest(?::BLOB[]) AS wire) "
+                f"TO '{written}' (FORMAT parquet, COMPRESSION zstd, COMPRESSION_LEVEL 19)",
+                [list(range(first, first + len(chunks))), chunks],
             )
         if FrameFile(target).read_bytes() != raw:
             raise ValueError(f"event archive changed bytes: {self.path}")

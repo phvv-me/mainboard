@@ -180,7 +180,7 @@ class Project(FrozenModel):
 
         It lives in the environment's own directory beside the prefix it activates, as a
         content-addressed prefix keeps its own, so the state directory holds none;
-        `mb activate` names it for a shell to source.
+        `mb shell-hook` names it for a shell to source.
         """
         return f"{self.out_dir(root)}/envs/{env}/activate.sh"
 

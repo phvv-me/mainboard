@@ -55,12 +55,12 @@ _PAUSE = 5.0
 
 def gpus_command() -> str:
     """The command a remote host runs to say who holds each of its cards, as JSON."""
-    return f"{_TOOL} gpus --json"
+    return f"{_TOOL} host gpus --json"
 
 
 def facts_command() -> str:
     """The command a machine answers with its own hardware snapshot as JSON."""
-    return f"{_TOOL} facts --json"
+    return f"{_TOOL} host facts --json"
 
 
 class HostSetup(FrozenModel):
@@ -344,10 +344,8 @@ class Bootstrap:
         that profile's module stack rather than this machine's.
         """
         host = self.shell.plan.host
-        resolving = " --resolve" if self.resolve else ""
-        self.shell.run(
-            f"{_TOOL} install {shlex.quote(self.env)}{resolving} --profile {shlex.quote(host)}"
-        )
+        verb = "lock" if self.resolve else "install"
+        self.shell.run(f"{_TOOL} {verb} {shlex.quote(self.env)} --profile {shlex.quote(host)}")
         if not self.shell.ok(self.shell.provisioned):
             raise MissionError(
                 f"{host!r} has no {self.shell.proof} after installing {self.env!r}; "
@@ -511,9 +509,9 @@ class Onboarding:
             f"{host!r} still owes {len(owed)} run(s) an outcome ({named}{more}) and this "
             f"workspace's environment has changed since {host!r} was set up. Every one of those "
             "runs activates the environment this would replace, so shipping it now would change "
-            f"what they run in while they wait. Let them settle (`{Project().name} jobs`), or "
-            f"`{Project().name} cancel <handle>` the ones you no longer need, then set the host "
-            "up again."
+            "what they run in while they wait. Let them settle "
+            f"(`{Project().name} job list`), or `{Project().name} job cancel <handle>` the ones "
+            "you no longer need, then set the host up again."
         )
 
     def run(self, *, sync_only: bool = False) -> HostSetup:

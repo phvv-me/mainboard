@@ -157,13 +157,8 @@ class SourceTree:
         digest = hashlib.sha256(manifest.encode()).hexdigest()
         session = Lake.at(self.root).session()
         wanted = sorted({row.blob for row in rows})
-        held = {
-            blob
-            for (blob,) in session.rows(
-                f"SELECT DISTINCT sha256 FROM {ALIAS}.blobs WHERE list_contains(?, sha256)",
-                [wanted],
-            )
-        }
+        held = {blob for (blob,) in session.rows(f"SELECT DISTINCT sha256 FROM {ALIAS}.blobs")}
+        held &= set(wanted)
         staged: list[dict[str, object]] = []
         size = 0
         for row in rows:

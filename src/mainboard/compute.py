@@ -1,4 +1,4 @@
-# The survey behind `mainboard compute`: every place this workspace can run work, in one list.
+# The survey behind `mainboard host list`: every place this workspace can run work, in one list.
 # This machine, the hosts the manifest declares and the machines it is holding, every registered
 # provider backend, and every machine a provider says this account is renting right now, each
 # answered by one bounded probe. A host that will not answer and a provider with no key are row
@@ -199,12 +199,12 @@ class Survey:
             access = Access.REACHABLE
             detail = (
                 "SSH answered; no cached setup or hardware; "
-                f"{note or f'run mainboard setup {alias}'}"
+                f"{note or f'run mainboard host setup {alias}'}"
             )
         else:
             access = Access.PROVISIONED
             endpoint = "login endpoint only; " if profile.kind in {"pbs", "slurm"} else ""
-            action = note or f"inspect mainboard jobs and mainboard facts --on {alias}"
+            action = note or f"inspect mainboard job list and mainboard host facts --on {alias}"
             detail = (
                 f"{cached}; {endpoint}job readiness and GPU availability not checked; {action}"
             )
@@ -281,7 +281,7 @@ class Survey:
         """One live rental `backend` reported, named by its hold when this workspace holds it."""
         where = f"{backend.name} {rented.handle}, {rented.gpu or 'unknown card'}, {rented.status}"
         owner = (
-            f"held until {held.deadline.isoformat()}; mainboard release {held.alias}"
+            f"held until {held.deadline.isoformat()}; mainboard host release {held.alias}"
             if held is not None
             else f"not held here, label {rented.label or 'none'}"
         )

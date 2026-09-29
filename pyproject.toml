@@ -39,11 +39,6 @@ dependencies = [
     "patos>=0.0.13",
     "plumbum>=1.8",
     "pathspec>=0.12",
-    # The trials subsystem stores receipts as parquet and `mainboard verdict` reads that store,
-    # so the reader ships with the tool rather than behind an extra. polars carries no
-    # dependencies of its own and is imported only by `mainboard.trials`, which no other verb
-    # touches, so a `doctor` or a `submit` still pays nothing for it.
-    "polars>=1.20",
     "psutil>=6.0",
     "pydantic>=2.9",
     "rich>=13.0",
@@ -69,7 +64,9 @@ search = ["optuna>=4.0"]
 # functionality on NVIDIA's supported platforms, so the extra contains only this richer layer.
 cuda = ["cuda-core>=1.1; sys_platform == 'linux' or sys_platform == 'win32'"]
 modal = ["modal>=1.0"]
-plot = ["matplotlib>=3.9", "seaborn>=0.13.2"]
+# Plotting and the trials API hand polars frames to seaborn; a workspace declares all three in
+# its own environment, so the tool installs them only when asked for `mb plot`.
+plot = ["matplotlib>=3.9", "seaborn>=0.13.2", "polars>=1.20"]
 
 [project.scripts]
 # Every script pointing at the CLI is a name the tool answers to, and `core.project.Project`

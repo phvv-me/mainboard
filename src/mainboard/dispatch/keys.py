@@ -10,6 +10,7 @@
 
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the ssh client's own agent tools with fixed argv since=2026-09-28
+from functools import cache
 from pathlib import Path
 from shutil import which
 
@@ -36,10 +37,15 @@ def serving(socket: str = SOCKET) -> bool:
     return listed.returncode in _LISTENING
 
 
-def adopt(environ: dict[str, str] | os._Environ[str] = os.environ) -> None:
-    """Point every ssh this process starts at the tool's agent, unless the user runs their own."""
-    if not environ.get("SSH_AUTH_SOCK") and serving():
-        environ["SSH_AUTH_SOCK"] = SOCKET
+@cache
+def adopt() -> None:
+    """Point every ssh this process starts at the tool's agent, unless the user runs their own.
+
+    Asked by whatever is about to start ssh, once per process, so a command that never reaches
+    another machine never looks for an agent.
+    """
+    if not os.environ.get("SSH_AUTH_SOCK") and serving():
+        os.environ["SSH_AUTH_SOCK"] = SOCKET
 
 
 def started() -> str:

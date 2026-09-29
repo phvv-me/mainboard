@@ -834,13 +834,14 @@ class Dispatcher:
         # An unknown verb's `--help` prints the root help and succeeds, so the usage line the
         # verb's own help opens with is what tells the two tools apart, under whichever name the
         # host's release titles its help.
-        usage = shlex.quote(f"Usage: ({'|'.join(Project().names)}) job ")
-        runs = wrap(plan, root, command=f"{_TOOL} job --help | grep -qE {usage}", activate=False)
+        usage = shlex.quote(f"Usage: ({'|'.join(Project().names)}) execute ")
+        check = f"{_TOOL} execute --help | grep -qE {usage}"
+        runs = wrap(plan, root, command=check, activate=False)
         retcode, _, err = remote["bash"][["-lc", runs]].run(retcode=None)
         if retcode != 0:
             raise SystemExit(
                 f"{_TOOL} on {plan.host!r} cannot run a job ({failure_reason(err)}); run "
-                f"`{Project().name} setup {plan.host}` to install this version there"
+                f"`{Project().name} host setup {plan.host}` to install this version there"
             )
 
 

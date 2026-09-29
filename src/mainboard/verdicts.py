@@ -1,4 +1,4 @@
-# The anti-fabrication read behind `mainboard verdict` and the block behind `mainboard wait`.
+# The anti-fabrication read behind `mb job verdict` and the block behind `mb job wait`.
 # Everything printed here comes from recorded receipts and the durable run registry, never from a
 # dashboard, a digest or a live session's memory: a notification says a job probably ended, this
 # module reads its outcome.
@@ -386,8 +386,15 @@ class Verdicts:
         path: the partition root or the evidence directory above it.
         stream: what the caller asked for, which the heading names.
         """
-        from .trials.dataset import Dataset
-
+        if not path.is_dir() or not any(path.rglob("*.parquet")):
+            return None
+        try:
+            from .trials.dataset import Dataset
+        except ModuleNotFoundError as missing:
+            raise MissionError(
+                f"{path} is a trials store, read with {missing.name}, which this environment "
+                f"lacks; run it inside the workspace's: `mb run -- mb job verdict {path}`"
+            ) from None
         store = Dataset.holding(path)
         if store is None:
             return None

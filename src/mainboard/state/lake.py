@@ -28,10 +28,12 @@
 # first and installing only when loading fails, so a machine with no network still opens a lake
 # once the extensions are there.
 
+import base64
 import json
 import os
 import struct
 import sys
+import tempfile
 import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
@@ -136,16 +138,39 @@ def _quoted(text: str) -> str:
 
 
 def _cell(kind: str, value: object) -> object:
-    """`value` as a column of SQL type `kind` stages it, None kept as SQL NULL.
+    """`value` as one NDJSON field of a column of SQL type `kind`, None kept as SQL NULL.
 
-    A JSON column takes a string as already JSON and serializes anything else; a timestamp
-    travels as its text, which the insert casts.
+    A JSON column takes a string as already JSON and embeds anything else as it is; bytes travel
+    as base64 and a timestamp as its text, both of which the insert decodes.
     """
-    if value is None or kind not in {"JSON", "TIMESTAMPTZ"}:
-        return value
-    if kind == "TIMESTAMPTZ" or isinstance(value, str):
+    if value is None:
+        return None
+    if kind == "JSON":
+        return json.loads(value) if isinstance(value, str) else value
+    if kind == "BLOB":
+        return base64.b64encode(value).decode("ascii")  # type: ignore[arg-type]
+    if kind == "TIMESTAMPTZ":
         return str(value)
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return value
+
+
+@contextmanager
+def ndjson(records: Iterable[Mapping[str, object] | str]) -> Generator[str]:
+    """`records` (mappings, or lines already JSON) as a temporary NDJSON file, answered as a
+    quoted SQL string of its path.
+
+    DuckDB reads a file like this in a fraction of a second, while this build binds a list
+    parameter at two milliseconds an element: twenty thousand rows took forty seconds.
+    """
+    descriptor, name = tempfile.mkstemp(prefix="mb-", suffix=".ndjson")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as staged:
+            for record in records:
+                line = record if isinstance(record, str) else json.dumps(record, default=str)
+                staged.write(line + "\n")
+        yield _quoted(Path(name).as_posix())
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def insert(
@@ -154,17 +179,29 @@ def insert(
     """Append `rows` to the attached lake's `table` in one statement, returning how many.
 
     Each row maps column names to values; a column a row leaves out is NULL. Timestamps may be
-    ISO strings or datetimes, JSON columns documents or Python values. The batch travels as one
-    typed list per column, unnested side by side by DuckDB itself, never row by row.
+    ISO strings or datetimes, JSON columns documents or Python values, BLOB columns bytes. The
+    batch travels as one NDJSON file DuckDB reads itself, never row by row.
     """
     schema = BY_NAME[table]
-    staged = list(rows)
+    staged = [
+        {column: _cell(kind, row.get(column)) for column, kind in schema.columns} for row in rows
+    ]
     if not staged:
         return 0
-    columns = ", ".join(f"unnest(?::{kind}[]) AS {column}" for column, kind in schema.columns)
-    values = [[_cell(kind, row.get(column)) for row in staged] for column, kind in schema.columns]
-    connection.execute(f"INSERT INTO {ALIAS}.{table} BY NAME SELECT {columns}", values)
+    columns = ", ".join(_decoded(column, kind) for column, kind in schema.columns)
+    with ndjson(staged) as path:
+        source = f"read_ndjson_objects({path})"
+        connection.execute(f"INSERT INTO {ALIAS}.{table} BY NAME SELECT {columns} FROM {source}")
     return len(staged)
+
+
+def _decoded(column: str, kind: str) -> str:
+    """The SQL reading `column` of SQL type `kind` back out of a staged NDJSON object."""
+    if kind == "JSON":
+        return f"json->'{column}' AS {column}"
+    if kind == "BLOB":
+        return f"from_base64(json->>'{column}') AS {column}"
+    return f"CAST(json->>'{column}' AS {kind}) AS {column}"
 
 
 class Finding(FrozenModel):

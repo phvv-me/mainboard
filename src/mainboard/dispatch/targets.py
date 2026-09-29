@@ -211,7 +211,7 @@ def rooted(profile: HostProfile, *, host: str) -> str:
     if profile.root.startswith("~"):
         raise MissionError(
             f"{host!r} has no probed home to place {profile.root} under; "
-            f"run `{Project().name} setup {host}`"
+            f"run `{Project().name} host setup {host}`"
         )
     return profile.root
 

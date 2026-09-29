@@ -18,6 +18,8 @@ from plumbum.machines.session import ShellSession
 from plumbum.machines.ssh_machine import SshMachine
 from pydantic import Field, field_validator
 
+from .keys import adopt
+
 # ssh's own exit status when the transport fails, with the stderr phrases naming the fault. A
 # name that does not resolve belongs here too: the host cannot be reached right now (a dropped
 # VPN, a DNS outage, an alias that lost its record), which a poll retries and a durable sweep
@@ -202,6 +204,7 @@ class SshTransport(FrozenModel):
 
     def machine(self, host: str) -> BoundedSshMachine:
         """A persistent SSH session with a dedicated local process group."""
+        adopt()
         return BoundedSshMachine(
             host, ssh_opts=self.options, connect_timeout=self.deadline, new_session=True
         )
@@ -226,6 +229,7 @@ class SshTransport(FrozenModel):
         timeout: seconds, the control deadline when None; `math.inf` lets an install run its
             course.
         """
+        adopt()
         returncode, stdout, stderr = self.__communicate(
             command,
             host,
@@ -377,7 +381,7 @@ def _detail(stderr: str, returncode: int) -> str:
     the agent does not hold yet."""
     said = stderr.strip().splitlines()[-1] if stderr.strip() else f"exit {returncode}"
     if "permission denied (publickey" in said.lower():
-        said += "; unlock its key once with `mb unlock <host>`"
+        said += "; unlock its key once with `mb host unlock <host>`"
     return said
 
 

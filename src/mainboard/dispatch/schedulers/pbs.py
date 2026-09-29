@@ -177,7 +177,7 @@ class Pbs:
         if command:
             raise MissionError(
                 "a PBS interactive session hands over a terminal and runs no command of its "
-                f"own. Run `{Project().name} submit` to dispatch one as a job."
+                f"own. Run `{Project().name} job submit` to dispatch one as a job."
             )
         return shlex.join(["qsub", "-I", *build_qsub_flags(resources)])
 

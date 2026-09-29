@@ -1,4 +1,4 @@
-# Landing a dispatch on a machine rented for one job: the same thing `mainboard setup` does to a
+# Landing a dispatch on a machine rented for one job: the same thing `mb host setup` does to a
 # declared host, done to a box that will exist for the next half hour.
 #
 # A rented container has no workspace, tool or environment, so the command comes last: mirror

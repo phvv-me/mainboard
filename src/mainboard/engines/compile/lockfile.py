@@ -151,7 +151,7 @@ class Lockfile:
     def _malformed(self, why: str) -> MissionError:
         return MissionError(
             f"{self.path} cannot be read: {why}. Restore it from git (`git checkout -- "
-            f"{self.path.name}`), or solve it again with `{Project().name} install --resolve`."
+            f"{self.path.name}`), or solve it again with `{Project().name} lock `."
         )
 
 

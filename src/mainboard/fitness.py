@@ -88,7 +88,7 @@ class Fitness:
         host: the alias whose profile says which environment and card the machine serves.
         """
         if not system.surveyed:
-            fix = f"mainboard setup {host}" if host != "local" else ""
+            fix = f"mainboard host setup {host}" if host != "local" else ""
             return [
                 _row("census", Verdict.WARN, "no software census recorded for this machine", fix)
             ]
@@ -122,7 +122,7 @@ class Fitness:
             "platform",
             Verdict.FAIL,
             f"{system.platform} is not among the declared platforms {declared}",
-            f'add "{system.platform}" to [workspace] platforms, then mainboard install --resolve',
+            f'add "{system.platform}" to [workspace] platforms, then mainboard lock',
         )
 
     def lock(self, system: System, environment: str) -> Section:

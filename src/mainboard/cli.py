@@ -29,6 +29,7 @@ from .dispatch.commandline import joined
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
 from .durable import schedule
+from .engines.compile.provisioner import Provisioner
 from .help import Help
 from .holds import Holds
 from .jobs import lanes as lanes_module
@@ -139,6 +140,12 @@ def build(root: Path | None = None) -> App:
     """
     project = Project()
     app = App(name=project.name, help="One interface for environments, dispatch, and hardware.")
+    host = App(name="host", help="Set up, list, inspect and reach the machines jobs run on.")
+    job = App(name="job", help="Dispatch jobs to hosts and follow them until they settle.")
+    self_ = App(name="self", help=f"Manage the {project.name} installation itself.")
+    app.command(host)
+    app.command(job)
+    app.command(self_)
 
     def workspace_root() -> Path:
         return root or project.find_root(Path.cwd())
@@ -176,7 +183,7 @@ def build(root: Path | None = None) -> App:
         """
         return board(on).run(command, env=env, container=container)
 
-    @app.command(version_flags=[])
+    @job.command(version_flags=[])
     def submit(
         *command: str,
         on: str,
@@ -406,20 +413,50 @@ def build(root: Path | None = None) -> App:
         return _sectioned(sections, output, title="doctor")
 
     @app.command
-    def install(env: str = "", *, resolve: bool = False, profile: str = "") -> None:
+    def install(env: str = "", *, profile: str = "") -> None:
         """Compile the manifest and install the environment on this machine.
 
         Another machine is onboarded with `setup`, which ends by running this verb there.
 
         env: the environment name, this machine's declared profile choice when omitted.
-        resolve: allow a fresh dependency solve when the lock is stale.
         profile: the declared host profile describing this machine, so the environment's
             activation carries that host's modules; what `setup` passes when a host installs.
         """
         with progress(f"installing {env or 'the environment'}") as stage:
-            board("local").install(env, resolve=resolve, profile=profile, watch=stage)
+            board("local").install(env, profile=profile, watch=stage)
 
     @app.command
+    def lock(env: str = "", *, profile: str = "") -> None:
+        """Solve the manifest into the committed lock, then install what it pinned here.
+
+        `install` never solves: it installs exactly the lock, so a host installs what this
+        machine solved. This is the one verb that moves the lock.
+
+        env: the environment name, this machine's declared profile choice when omitted.
+        profile: the declared host profile describing this machine.
+        """
+        with progress(f"solving {env or 'the environment'}") as stage:
+            board("local").install(env, resolve=True, profile=profile, watch=stage)
+
+    @self_.command
+    def update() -> None:
+        """Reinstall this tool from its source when the source moved, as `uv self update` does.
+
+        Nothing checks or updates on its own: every other verb runs the code installed.
+        """
+        found = staleness.check()
+        if found.source is None:
+            print(f"{project.name} is not installed from a source tree; nothing to update")
+            return
+        if not found.stale:
+            print(f"{project.name} is current with {found.source}")
+            return
+        failure = staleness.Refresh(found).reinstall()
+        if failure:
+            raise MissionError(f"could not update: {failure}")
+        print(f"{project.name} updated from {found.source}")
+
+    @host.command
     def unlock(*hosts: str) -> None:
         """Unlock each host's ssh key once, so every later connection this tool opens is silent.
 
@@ -435,16 +472,23 @@ def build(root: Path | None = None) -> App:
                 raise MissionError(f"{host} still refuses a silent login (exit {status})")
             print(f"{host}: reachable without a prompt")
 
-    @app.command
-    def activate(env: str = "default") -> None:
-        """Print the line that enters `env` in the current shell: `eval "$(mb activate)"`.
+    @app.command(name="shell-hook")
+    def shell_hook(env: str = "default") -> None:
+        """Print what enters `env` in the current shell, as `pixi shell-hook` does.
 
-        The activation lives in the environment's own directory, written by `install`, so the
-        state directory keeps none; this names it, refusing an environment never installed here.
+        bash/zsh: `eval "$(mb shell-hook)"`. PowerShell: `mb shell-hook | Out-String |
+        Invoke-Expression`. On POSIX it sources the activation `install` wrote into the
+        environment's own directory (modules, pixi, second-stage tools); on Windows it is pixi's
+        own PowerShell hook, since nothing there sources bash.
 
         env: the environment name.
         """
         root = workspace_root()
+        if sys.platform == "win32":
+            manifest = load(project.manifest(root))
+            pixi = Provisioner(root, manifest).pixi_for(env)
+            print(pixi.shell_hook(env, shell="powershell"))
+            return
         script = root / Project().activation(env, root)
         if not script.is_file():
             raise MissionError(
@@ -488,7 +532,7 @@ def build(root: Path | None = None) -> App:
         else:
             board("local").shell(env)
 
-    @app.command
+    @host.command
     def setup(
         host: str,
         *,
@@ -514,7 +558,7 @@ def build(root: Path | None = None) -> App:
             report = workspace.install(env, resolve=resolve, watch=stage)
         _onboarded(workspace, report, output, title="setup")
 
-    @app.command
+    @host.command
     def sync(host: str, *, env: str = "", output: Output = _RICH) -> None:
         """Re-mirror a host already set up and re-provision it from the shipped lock.
 
@@ -530,7 +574,7 @@ def build(root: Path | None = None) -> App:
             report = workspace.install(env, resolve=False, watch=stage, sync_only=True)
         _onboarded(workspace, report, output, title="sync")
 
-    @app.command
+    @host.command
     def hold(
         provider: str,
         *,
@@ -572,7 +616,7 @@ def build(root: Path | None = None) -> App:
             )
         _held(held, output, title="hold")
 
-    @app.command
+    @host.command
     def release(alias: str, *, output: Output = _RICH) -> None:
         """End a held machine now: stop its billing, settle its record and drop its alias.
 
@@ -583,7 +627,7 @@ def build(root: Path | None = None) -> App:
             held = Holds(board("local")).release(alias)
         _held(held, output, title="release")
 
-    @app.command
+    @host.command(name="list")
     def compute(*, output: Output = _RICH) -> None:
         """List every compute path this workspace can reach, with prices and credit where cheap.
 
@@ -611,7 +655,7 @@ def build(root: Path | None = None) -> App:
             paths = workspace.compute().paths()
         output.print_rows([path.model_dump() for path in paths], title="compute")
 
-    @app.command
+    @job.command
     def collect(path: str, *, on: str, json: bool = False) -> None:
         """Collect remote evidence for queries, including runs started directly on that node.
 
@@ -668,8 +712,8 @@ def build(root: Path | None = None) -> App:
         if out is not None:
             print(results.export(source, out, project=project))
             return
-        frame = results.query(source, project=project)
-        Output(json=json).print_rows(loads(frame.write_json()), title="results")
+        rows = loads(dumps(results.rows(source, project=project), default=str))
+        Output(json=json).print_rows(rows, title="results")
 
     @app.command
     def plot(
@@ -760,7 +804,7 @@ def build(root: Path | None = None) -> App:
         for path in saved:
             print(path)
 
-    @app.command
+    @job.command
     def monitor(*, every: str = "", watch: float = 0.0, output: Output = _RICH) -> None:
         """Settle every dispatched job that ended since the last pass, then exit.
 
@@ -795,7 +839,7 @@ def build(root: Path | None = None) -> App:
             return
         _followed(sweep.watch(watch), label, show)
 
-    @app.command
+    @host.command
     def facts(on: str = "local", *, output: Output = _RICH) -> None:
         """Show the host's probed hardware and software facts, then what they mean here.
 
@@ -817,7 +861,7 @@ def build(root: Path | None = None) -> App:
         if output.mode != "json":
             _judged(workspace.findings(found.system), mode=output.mode, title=f"findings: {on}")
 
-    @app.command
+    @host.command
     def gpus(
         on: str = "local", *, every: bool = False, json: bool = False, agent: bool = False
     ) -> None:
@@ -962,10 +1006,10 @@ def build(root: Path | None = None) -> App:
         return 1 if any(result.failed for result in results) else 0
 
     batch = App(name="batch", help="Prepare, price, dispatch and watch many jobs as one flow.")
-    app.command(batch)
+    job.command(batch)
 
     lanes = App(name="lanes", help="Run one pytest lane on many hosts, a job per group of cells.")
-    app.command(lanes)
+    job.command(lanes)
 
     @lanes.command(name="run")
     def lanes_run(
@@ -1237,7 +1281,7 @@ def build(root: Path | None = None) -> App:
             return
         record({"prefix": str(built)}, mode="json", fields=(), title="prefix")
 
-    @app.command(name="job", show=False)
+    @app.command(name="execute", show=False)
     def job_(record: str) -> int:
         """Run a dispatched job from its record, which every generated job script hands over.
 
@@ -1300,7 +1344,7 @@ def build(root: Path | None = None) -> App:
         with suppress(KeyboardInterrupt), sampler:
             sampler.thread.join()
 
-    @app.command
+    @job.command
     def wait(
         handle: str,
         *,
@@ -1349,7 +1393,7 @@ def build(root: Path | None = None) -> App:
             )
         return _settled(settled, output)
 
-    @app.command
+    @job.command
     def logs(handle: str, *, on: str = "") -> int:
         """Print only what a dispatched job printed, whether or not its host still exists.
 
@@ -1382,7 +1426,7 @@ def build(root: Path | None = None) -> App:
         print(shown, end="" if shown.endswith("\n") else "\n")
         return 0
 
-    @app.command
+    @job.command
     def cancel(handle: str, *, on: str = "", output: Output = _RICH) -> int:
         """Stop a dispatched job on whatever took it and settle its record in the same pass.
 
@@ -1406,7 +1450,7 @@ def build(root: Path | None = None) -> App:
             settled = board("local").verdicts().cancel(handle, host=on)
         return _settled(settled, output)
 
-    @app.command
+    @job.command
     def verdict(target: str, *, on: str = "", run: str = "", output: Output = _RICH) -> int:
         """Print the settled truth the on-disk receipts hold, and exit with what it adds up to.
 
@@ -1431,7 +1475,7 @@ def build(root: Path | None = None) -> App:
             settled = board("local").verdicts().of(target, host=on, run=run)
         return _settled(settled, output)
 
-    @app.command
+    @job.command(name="list")
     def jobs(*, limit: int = 20, output: Output = _RICH) -> None:
         """List every dispatched job still in flight, then the most recently settled ones.
 
@@ -2113,8 +2157,6 @@ def main() -> None:
     """
     _forget_openssh_descriptors()
     install_traceback()
-    staleness.current()
-    keys.adopt()
     app = build()
     try:
         app(Delimiter(app).placed(sys.argv[1:]))

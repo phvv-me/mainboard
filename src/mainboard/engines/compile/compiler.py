@@ -182,7 +182,7 @@ class Compiler:
         return (
             f"pixi.lock is missing: {Lockfile(self.root).path} holds no "
             f"[environments.{self.environment}] and {self.pixi.lock} does not exist. Run "
-            f"`{Project().name} install {self.environment} --resolve` on a solve-capable "
+            f"`{Project().name} lock {self.environment}` on a solve-capable "
             "machine and commit the lock it writes."
         )
 

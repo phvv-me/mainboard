@@ -133,7 +133,7 @@ class Node(Ecosystem):
                 return path
         raise MissionError(
             f"{self.directory} has no {manager} lock ({', '.join(names)}); "
-            f"run `{Project().name} install {self.env} --resolve` locally before shipping"
+            f"run `{Project().name} lock {self.env}` locally before shipping"
         )
 
     def sync(self, *, resolve: bool = False) -> None:

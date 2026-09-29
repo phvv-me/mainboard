@@ -205,7 +205,7 @@ class Doctor:
             section="fleet",
             verdict=Verdict.WARN,
             detail=f"{len(ready)} usable, {'; '.join(notes)}",
-            fix=f"{_TOOL} compute",
+            fix=f"{_TOOL} host list",
         )
 
     def hosts(self, setups: Mapping[str, HostSetup] | None = None) -> Section:
@@ -235,7 +235,7 @@ class Doctor:
             section="hosts",
             verdict=Verdict.WARN,
             detail=f"diverged from the current manifest: {', '.join(diverged)}",
-            fix=f"{_TOOL} setup {diverged[0]} --sync-only",
+            fix=f"{_TOOL} host sync {diverged[0]}",
         )
 
     def gate(self, name: str) -> Section:

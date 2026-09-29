@@ -93,7 +93,7 @@ class Profiler:
         if self.gpu is None and self._demands_activity():
             raise RuntimeError(
                 "GPU activity collection was requested and no device is visible here, so "
-                "this session would collect nothing. Run `mainboard facts` to see what the "
+                "this session would collect nothing. Run `mainboard host facts` to see what the "
                 "host probe finds, or drop `Profiler.Feature.ACTIVITY` to profile the host "
                 "alone."
             )

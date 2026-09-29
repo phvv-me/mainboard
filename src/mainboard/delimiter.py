@@ -80,6 +80,9 @@ def _delimited(rest: Sequence[str], widths: Mapping[str, int]) -> list[str]:
     rest: the verb's own tokens, options first.
     widths: the verb's option names and the values each takes.
     """
+    if DELIMITER in rest:
+        # Delimited by the caller already, wherever it put the delimiter.
+        return list(rest)
     at = 0
     while at < len(rest):
         token = rest[at]

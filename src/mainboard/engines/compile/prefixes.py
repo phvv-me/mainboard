@@ -116,7 +116,7 @@ def _defining(source: Path, name: str) -> str:
     except OSError as missing:
         raise MissionError(
             f"{source / name} is missing, so the environment it describes has no identity; "
-            f"run `{Project().name} install --resolve` where that artifact is built"
+            f"run `{Project().name} lock ` where that artifact is built"
         ) from missing
 
 
