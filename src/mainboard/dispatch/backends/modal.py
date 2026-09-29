@@ -19,6 +19,7 @@
 # derived rather than reported.
 
 import os
+import warnings
 from contextlib import suppress
 from datetime import UTC, datetime
 from importlib import import_module
@@ -53,7 +54,9 @@ _CREDIT_VAR = "MODAL_CREDIT_USD"
 def _modal() -> ModuleType:
     """The imported `modal` module, raising a clear fix when the optional extra is missing."""
     try:
-        return import_module("modal")
+        # Modal sets a Windows event-loop policy Python 3.14 deprecates, warning on every import.
+        with warnings.catch_warnings(action="ignore", category=DeprecationWarning):
+            return import_module("modal")
     except ModuleNotFoundError:
         raise MissionError(
             "the installed Mainboard tool needs its `modal` extra; reinstall Mainboard "
