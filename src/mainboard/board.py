@@ -555,6 +555,7 @@ class Board:
                 watch=watch,
                 digest=compiler.digest(),
                 floor=self.floor,
+                dotfiles=self.manifest.workspace.dotfiles,
             ).run(sync_only=sync_only)
         provisioner.provision(plan.env, resolve=resolve)
         # A platform this machine cannot run has no prefix to activate here; its lock ships with

@@ -4,12 +4,14 @@
 # host, and succeeds the shell script the previous generation shipped.
 
 import shlex
+import shutil
 from importlib.metadata import metadata
 from typing import TYPE_CHECKING
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from patos import FrozenModel, Resolution, Strategy, StrategyError
+from plumbum import local
 from tenacity import (
     Retrying,
     retry_if_exception,
@@ -21,6 +23,7 @@ from tenacity import (
 from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.backend import PIXI_VERSION
+from ..engines.compile.backend.process import Process
 from ..log import logger
 from ..probe.snapshot import HostFacts
 from .schedulers.pueue import Pueue
@@ -369,6 +372,24 @@ def read_facts(text: str) -> HostFacts:
     return HostFacts.model_validate_json(text[start:])
 
 
+def herded(host: str) -> None:
+    """Save `host` in this machine's herdr, so its sessions sit beside the local ones.
+
+    Quiet when herdr is not here or already lists the host. herdr asks before installing anything
+    on the far side, and with its input closed the answer is no, so a host needing that is left
+    to a `herdr machine add` in a terminal, which is said.
+    """
+    herdr = shutil.which("herdr")
+    if herdr is None:
+        return
+    listed = Process.capture(local[herdr]["machine", "list", "--json"], timeout=60)
+    if f'"{host}"' in listed.stdout:
+        return
+    added = Process.capture(local[herdr]["machine", "add", host, "--label", host], timeout=300)
+    if not added.succeeded:
+        logger.warning("herdr does not list {} yet; run `herdr machine add {}` once", host, host)
+
+
 class Onboarding:
     """Brings one host from bare ssh access to a workspace that runs jobs.
 
@@ -396,6 +417,7 @@ class Onboarding:
     digest: the manifest digest stamped onto the recorded `HostSetup`, for `doctor`.
     floor: the version this workspace declares for the tool, which a host with no vendored
         source installs from an index; empty when none is declared.
+    dotfiles: the owner's chezmoi repository, applied on the host; empty applies none.
     """
 
     def __init__(
@@ -408,6 +430,7 @@ class Onboarding:
         watch: Watcher | None = None,
         digest: str = "",
         floor: str = "",
+        dotfiles: str = "",
     ) -> None:
         self.dispatcher = dispatcher
         self.plan = plan
@@ -416,6 +439,7 @@ class Onboarding:
         self.watch = watch or announce
         self.digest = digest
         self.floor = floor
+        self.dotfiles = dotfiles
 
     @property
     def env(self) -> str:
@@ -514,6 +538,30 @@ class Onboarding:
             "you no longer need, then set the host up again."
         )
 
+    def apply_dotfiles(self, shell: HostShell, *, host: str) -> None:
+        """Apply the owner's dotfiles on `host`: the same shell, commands and editor everywhere.
+
+        chezmoi runs through the pixi `align_pixi` put there, cloning on the first setup and
+        pulling on every later one. A host keeping its own shell still runs jobs, so a failure is
+        said and the setup goes on.
+        """
+        if not self.dotfiles or is_windows(self.plan.profile):
+            return
+        self.watch(f"applying the dotfiles on {host}")
+        # The source is named, since a host's own chezmoi config may point anywhere.
+        repository = shlex.quote(self.dotfiles)
+        chezmoi = 'pixi exec chezmoi --force --source "$HOME/.local/share/chezmoi"'
+        command = (
+            f'if [ -d "$HOME/.local/share/chezmoi/.git" ]; then {chezmoi} update; '
+            f"else {chezmoi} init --apply {repository}; fi"
+        )
+        try:
+            shell.run(command)
+        except MissionError as fault:
+            logger.warning("{} keeps its own shell setup: {}", host, fault)
+            return
+        herded(host)
+
     def run(self, *, sync_only: bool = False) -> HostSetup:
         """Onboard the host and return (and record) what it became.
 
@@ -539,6 +587,7 @@ class Onboarding:
             bootstrap.environment()
             self.watch(f"checking the queue on {host}")
             self.verify_queue(shell, host=host)
+            self.apply_dotfiles(shell, host=host)
             self.watch(f"reading {host} back through its activation")
             hardware = read_facts(shell.run(facts_command(), activate=True))
             setup = HostSetup(
@@ -589,6 +638,7 @@ class Onboarding:
             pixi = self.align_pixi(shell, host=host)
             self.watch(f"provisioning {self.env} on {host}")
             Bootstrap(shell, resolve=self.resolve).environment()
+            self.apply_dotfiles(shell, host=host)
             activate = shell.activation_record
         fresh = self.dispatcher.cache.host(host)
         updated = self.dispatcher.cache.save_host(
