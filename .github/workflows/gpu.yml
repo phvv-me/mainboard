@@ -20,7 +20,7 @@ jobs:
           python-version: "3.14"
       - run: uv sync --locked
       # the hermetic suite first, so a real-hardware failure below is unambiguous
-      - run: uv run pytest --no-cov
+      - run: uv run pytest
       # then assert a GPU was actually detected on this box
       - run: |
           uv run python - <<'PY'
