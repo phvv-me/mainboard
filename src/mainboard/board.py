@@ -64,8 +64,6 @@ from .engines.compile.prefixes import MANIFEST, Prefixes, digest_of, prefix_path
 from .engines.compile.provisioner import Provisioner, environment_shard, task_line
 from .engines.compile.state import SyncState
 from .engines.runtimes import resolve
-from .experiments.fleet import Fleet
-from .experiments.identity import run_id
 from .fitness import Fitness
 from .git import Tree
 from .jobs.call import Fresh
@@ -73,7 +71,6 @@ from .jobs.closure import Closure
 from .jobs.target import Target
 from .log import logger
 from .manifest.loading import load
-from .manuscript import Manuscript
 from .monitor import Monitor
 from .nodes import evidence_of
 from .probe.occupancy import Occupancy
@@ -93,7 +90,9 @@ if TYPE_CHECKING:
     from .dispatch.schedulers import Scheduler
     from .dispatch.shared import Watcher
     from .dispatch.vocabulary import JobState
+    from .experiments.fleet import Fleet
     from .manifest.schema.root import Manifest
+    from .manuscript import Manuscript
     from .probe.system import System
     from .runtime.job import ToolCall
 
@@ -517,6 +516,8 @@ class Board:
 
     def fleet(self) -> Fleet:
         """The many-jobs surface for simultaneous studies over this board."""
+        from .experiments.fleet import Fleet  # noqa: PLC0415  (the research layer loads on use)
+
         return Fleet(self)
 
     def install(
@@ -751,6 +752,8 @@ class Board:
             raise MissionError(
                 f"no paper {name!r}; declared papers are {sorted(self.manifest.papers)}"
             ) from None
+        from .manuscript import Manuscript  # noqa: PLC0415  (the paper layer loads on use)
+
         provisioner = Provisioner(self.root, self.manifest)
         return Manuscript(
             name,
@@ -1219,6 +1222,8 @@ class Board:
         )
         # Content-addressed over the target, the command and this instant, so the receipts
         # stream has a durable key and `mainboard job list` reads better for it too.
+        from .experiments.identity import run_id  # noqa: PLC0415  (research layer, on use)
+
         fingerprint = run_id({"host": plan.host, "command": shipment.spelling, "at": time.time()})
         label = name or f"{plan.host}-{fingerprint[:8]}"
         tracked = streamed(label, handle="")

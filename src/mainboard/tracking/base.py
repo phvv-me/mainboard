@@ -1,7 +1,6 @@
 # Which stream and job a dispatched run's receipts belong to, the one router from a dispatch label.
 
 from ..batch.runner import labelled_batch
-from ..experiments.identity import labelled_study, labelled_trial
 
 
 def streamed(name: str, *, handle: str) -> tuple[str, str]:
@@ -15,6 +14,9 @@ def streamed(name: str, *, handle: str) -> tuple[str, str]:
     if inside := labelled_batch(name):
         stream, _, job = inside.partition("/")
         return stream, job or stream
+    # The study labels live in the research layer, which the CLI only loads on use.
+    from ..experiments.identity import labelled_study, labelled_trial  # noqa: PLC0415
+
     if study := labelled_study(name):
         return study, labelled_trial(name) or study
     return (name, name) if name else (f"run-{handle}", handle)
