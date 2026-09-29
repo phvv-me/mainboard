@@ -111,6 +111,9 @@ _LEGACY = (
     "pulse.json",
 )
 
+# The largest staged row, a base64 source file among them, that an append accepts.
+_MAX_ROW_BYTES = 1 << 31
+
 # How many times a commit that lost a race to another writer's snapshot is retried.
 _RETRIES = 100
 
@@ -248,7 +251,9 @@ def insert(
         return 0
     columns = ", ".join(_decoded(column, kind) for column, kind in schema.columns)
     with ndjson(staged) as path:
-        source = f"read_ndjson_objects({path})"
+        # A row carries a source file base64-encoded, and DuckDB refuses a JSON object over 16 MB
+        # by default: a 25 MB file in an experiment's tree failed its seal (2026-09-29).
+        source = f"read_ndjson_objects({path}, maximum_object_size = {_MAX_ROW_BYTES})"
         connection.execute(f"INSERT INTO {ALIAS}.{table} BY NAME SELECT {columns} FROM {source}")
     return len(staged)
 
