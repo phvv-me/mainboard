@@ -16,7 +16,7 @@ from patos import FrozenModel
 
 # The schema's own version, recorded in `schema_log` by `Lake.create` beside the DuckLake spec
 # and by `Lake.evolve` when an older lake gains what this one added. 2 added `blobs`.
-VERSION = 3
+VERSION = 4
 
 
 class Table(FrozenModel):

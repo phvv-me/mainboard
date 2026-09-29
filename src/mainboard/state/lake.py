@@ -49,7 +49,7 @@ import sys
 import tempfile
 import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager, suppress
 from datetime import UTC, date, datetime
 from pathlib import Path
 from threading import RLock
@@ -88,6 +88,14 @@ _OPTIONS = (
     ("expire_older_than", "'30 days'"),
     ("delete_older_than", "'7 days'"),
 )
+
+# Tables whose rows never inline into the catalog. DuckLake keeps a small insert (ten rows or
+# fewer) inside the SQLite catalog until a checkpoint, which suits log rows and costs a catalog
+# its size for source-file bytes: 598 blobs made D:\projects' catalog 102 MB of its 104.
+_UNINLINED = ("blobs",)
+
+# The catalog size past which `check` suggests a compaction.
+_CATALOG_FLOOR_BYTES = 64 << 20
 
 # The files a workspace kept its state in before the lake, which `ready` refuses to bury under a
 # fresh empty lake until `mb lake import` has imported them.
@@ -258,8 +266,9 @@ class Finding(FrozenModel):
     """One thing `check` found wrong.
 
     table: the table it breaks, empty for the catalog as a whole.
-    kind: `catalog` (missing or unreadable), `wal` (committed catalog frames lost), or
-        `missing` (a data or delete file the catalog references is not on disk).
+    kind: `catalog` (missing or unreadable), `wal` (committed catalog frames lost), `missing`
+        (a data or delete file the catalog references is not on disk), or `bloat` (a catalog
+        grown past what a compaction would leave).
     detail: what exactly, a path or the error.
     """
 
@@ -418,6 +427,8 @@ class Lake(FrozenModel):
                 spec = _spec(connection)
                 _record(connection, spec)
                 connection.execute("COMMIT")
+                # A table's settings wait for the table to exist outside its transaction.
+                _uninline(connection)
         return spec
 
     def evolve(self, connection: duckdb.DuckDBPyConnection) -> None:
@@ -448,6 +459,10 @@ class Lake(FrozenModel):
                 for column, kind in table.columns:
                     if (table.name, column) not in held:
                         connection.execute(f"ALTER TABLE {table.name} ADD COLUMN {column} {kind}")
+            # A table's settings wait for the table to exist outside its transaction.
+            connection.execute("COMMIT")
+            connection.execute("BEGIN")
+            _uninline(connection)
             for view in VIEWS:
                 connection.execute(view.ddl.replace("CREATE VIEW", "CREATE OR REPLACE VIEW", 1))
             _record(connection, _spec(connection))
@@ -505,6 +520,8 @@ class Lake(FrozenModel):
         One `CHECKPOINT` flushes inlined rows to Parquet, expires old snapshots, merges small
         files, deletes files past their retention and removes orphans a killed writer left.
         Appends do not take the lock, so they keep committing beside it and retry on conflict.
+        The catalog file keeps the pages the flush freed until a `VACUUM` gives them back, which
+        waits for no one: another process holding the catalog just leaves them for next time.
         """
         self._held("compact")
         self.lock.parent.mkdir(parents=True, exist_ok=True)
@@ -513,6 +530,11 @@ class Lake(FrozenModel):
                 for attempt in _patiently():
                     with attempt, self.open(write=True) as connection:
                         connection.execute(f"CHECKPOINT {ALIAS}")
+                with (
+                    suppress(sqlite3.OperationalError),
+                    closing(sqlite3.connect(self.catalog, timeout=0)) as catalog,
+                ):
+                    catalog.execute("VACUUM")
         except Timeout:
             return False
         return True
@@ -528,6 +550,14 @@ class Lake(FrozenModel):
         if not self.exists():
             return Health(findings=(Finding(kind="catalog", detail=f"{self.catalog} missing"),))
         findings = list(self._wal())
+        if (size := self.catalog.stat().st_size) > _CATALOG_FLOOR_BYTES:
+            findings.append(
+                Finding(
+                    kind="bloat",
+                    detail=f"the catalog holds {size >> 20} MB; `mb lake compact` flushes it to "
+                    "Parquet and gives the space back",
+                )
+            )
         try:
             with self.open() as connection:
                 tables = connection.execute(
@@ -832,6 +862,14 @@ def _spec(connection: duckdb.DuckDBPyConnection) -> str:
         f"SELECT value FROM {ALIAS}.options() WHERE option_name = 'version'"
     ).fetchone()
     return str(row[0]) if row else ""
+
+
+def _uninline(connection: duckdb.DuckDBPyConnection) -> None:
+    """Keep every `_UNINLINED` table's rows in Parquet, never inside the catalog."""
+    for table in _UNINLINED:
+        connection.execute(
+            f"CALL {ALIAS}.set_option('data_inlining_row_limit', 0, table_name => '{table}')"
+        )
 
 
 def _record(connection: duckdb.DuckDBPyConnection, spec: str) -> None:
