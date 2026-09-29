@@ -310,7 +310,7 @@ What a week with cutok and reproducibility both near a deadline needs, and where
 
 | mb does | open-source tool | verdict |
 |---|---|---|
-| upgrade everything on a machine (`host upgrade`) | topgrade (Rust, apt/brew/winget/pip/cargo/chezmoi/...; PyPI wheels for every OS) | strong candidate: `host upgrade` could hand the upgrade to topgrade and keep only the audit |
+| upgrade everything on a machine (`host upgrade`) | topgrade 17.12 (Rust; `uvx topgrade` runs on Windows from PyPI) | strong candidate: its dry run here covered winget, VS Code extensions, pixi global, npm globals, gh extensions, uv and chezmoi. Before it takes over `host upgrade` (keeping the audit), a dotfiles `topgrade.toml` must disable pixi's self-update (the fleet pins pixi) and chezmoi's pull on the center (a working checkout) |
 | mirror the workspace to hosts | Mutagen (continuous sync over ssh, Windows native, ignore rules) | candidate for the mirror only; pinned snapshots and provenance stay mb's |
 | ship environments to hosts | pixi-pack (pack a solved env, unpack offline, self-extracting) | candidate for HPC nodes without network or with slow installs |
 | dispatch to ssh hosts, Slurm, clouds | SkyPilot (SSH node pools, Slurm, k8s, clouds), dstack (SSH fleets, Slurm) | not a replacement: neither drives PBS (miyabi-g) nor pueue hosts, and both bring a server; worth borrowing their SSH-pool model |
