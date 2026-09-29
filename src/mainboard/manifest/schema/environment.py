@@ -18,3 +18,7 @@ class Env(Scope):
     no_default: bool = Field(default=False)
     platforms: list[str] = []
     system: dict[str, str] = {}
+    # The workspace paths this environment's code lives in. A host running it mirrors these
+    # (with the manifest and lock) instead of its sync include: a rented machine running cutok
+    # needs cutok's sources and the workspace packages it imports, not every project's.
+    sources: list[str] = []

@@ -412,7 +412,8 @@ class Dispatcher:
             )
         shipped = scope.shipped(self.root)
         include = [path for path in shipped if self.local(path).exists()]
-        if stale := [path for path in shipped if path not in include]:
+        manifests = set(Project().manifests)
+        if stale := [path for path in shipped if path not in include and path not in manifests]:
             logger.warning(
                 "skipping {} stale sync include path(s) missing locally: {}",
                 len(stale),

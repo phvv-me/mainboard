@@ -1,4 +1,5 @@
 from ..core.errors import MissionError
+from ..core.project import Project
 from ..manifest.schema.container import Container
 from ..manifest.schema.root import Manifest
 from .plan import ExecutionPlan
@@ -18,7 +19,13 @@ class Resolver:
         """
         profile = self.manifest.profile(host)
         chosen_env = env or profile.env
-        self.manifest.environment(chosen_env)
+        spec = self.manifest.environment(chosen_env)
+        if spec.sources:
+            # The environment names the code it runs, so the mirror carries that and no more,
+            # beside whichever manifest name this workspace uses (a missing one is skipped).
+            include = [*Project().manifests, *spec.sources]
+            narrowed = profile.sync.model_copy(update={"include": include})
+            profile = profile.model_copy(update={"sync": narrowed})
         return ExecutionPlan(
             host=host,
             profile=profile,
