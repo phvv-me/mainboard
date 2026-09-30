@@ -196,7 +196,7 @@ def probe_capabilities(host: str, *, ssh: SshTransport | None = None) -> Facts:
     policy = ssh or SshTransport()
     refusals: list[str] = []
     for shell in _PROBES:
-        argv = ("ssh", *policy.options, policy.destination(host), *shell)
+        argv = (*policy.command(host), *shell)
         _, out, err = policy.invoke(argv, host, operation="probe")
         if "platform=" in out:
             return Facts.parsed(host, out)

@@ -67,7 +67,7 @@ class Collector:
         with TemporaryDirectory(prefix=f".{Project().name}-collect-", dir=self.root) as temporary:
             archive = Path(temporary) / "transfer.zip"
             self.transport.run(
-                ("ssh", *self.transport.options, self.transport.destination(host), f"{python} -"),
+                (*self.transport.command(host), f"{python} -"),
                 host,
                 operation="collect",
                 input_text=script,

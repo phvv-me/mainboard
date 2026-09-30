@@ -105,7 +105,7 @@ def reachable(host: str, ssh: SshTransport = _PROBE_SSH) -> str:
     """
     try:
         reply = ssh.run(
-            ("ssh", *ssh.options, ssh.destination(host), "echo", "mainboard-reachable"),
+            (*ssh.command(host), "echo", "mainboard-reachable"),
             host,
             operation="survey",
         )

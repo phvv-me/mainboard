@@ -134,8 +134,9 @@ def connection(host: str, ssh: SshTransport | None = None) -> BoundedSshMachine:
 
     A throwaway one-shot `ssh` first warms the host's `ControlMaster` from `~/.ssh/config`, so an
     expired master relogs on a robust channel and plumbum's persistent session rides a live one
-    instead of dying mid-handshake. We never set `ControlMaster`/`ControlPath`: the user's config
-    owns multiplexing, and overriding it would open a second, unauthenticated master.
+    instead of dying mid-handshake. We never open a master here: the user's config owns
+    multiplexing, and the only master this tool opens is the one `mb host unlock` logs into by
+    hand, which every ssh then rides in proxy mode.
 
     The warm-up doubles as a host-key check: a failed verification (a rotated key on the host or
     its ProxyJump, a missing entry) raises a clear `ConnectionError` instead of an opaque plumbum

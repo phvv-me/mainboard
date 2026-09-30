@@ -83,7 +83,7 @@ class Carrier:
     def argv(self) -> tuple[str, ...]:
         """The ssh command line, the one part of a call a process listing shows."""
         line = f'"{self.uv}" run --no-project --quiet --python {PYTHON} python -c "{_BOOTSTRAP}"'
-        return ("ssh", *self.transport.options, self.transport.destination(self.host), line)
+        return (*self.transport.command(self.host), line)
 
     def call[Answer](
         self,

@@ -357,7 +357,7 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
         policy = SshTransport(endpoint=endpoint)
         where = endpoint.destination
         code, out, err = policy.invoke(
-            ("ssh", *policy.options, where, "bash -s"),
+            (*policy.command(where), "bash -s"),
             where,
             operation=operation,
             input_text=script,

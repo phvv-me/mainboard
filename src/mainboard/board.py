@@ -683,7 +683,8 @@ class Board:
             staged = f"tmux new-session -A -s {shlex.quote(held)} {shlex.quote(staged)}"
         # A bounded transport suits a poll, not a session, so the user's ssh config owns this one.
         keys.adopt()
-        replace("ssh", dialect.session(self.host, staged))
+        argv = dialect.session(self.host, staged)
+        replace(argv[0], argv)
 
     def job(self, handle: str | int, *, host: str = "") -> Run:
         """The dispatched run `handle`, rebuilt from the dispatch cache as whichever kind it is.

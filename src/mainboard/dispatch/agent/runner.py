@@ -88,7 +88,7 @@ class SshLink(Link):
 
     def spawn(self, command: str) -> Process:
         """One ssh process in its own session, so a stall can end its whole process group."""
-        argv = ["ssh", *self.ssh.options, self.ssh.destination(self.host), command]
+        argv = [*self.ssh.command(self.host), command]
         try:
             return subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=ssh argv built from typed fields since=2026-09-25
                 argv,

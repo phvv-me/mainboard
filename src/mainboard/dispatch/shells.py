@@ -19,6 +19,7 @@ from ..core.host import platform_family
 from ..core.project import Project
 from ..core.shell import foreground
 from ..engines.compile.backend import POSIX_INSTALLER, WINDOWS_INSTALLER
+from .keys import client, shared
 from .schedulers.base import failure_reason
 from .transport import BoundedSshMachine, SshTransport
 from .wrapping import activation, connection, wrap
@@ -167,10 +168,10 @@ class Posix(Dialect):
     # `-t` forces the pty the far side needs, and the staged line is quoted whole because ssh
     # joins its argv back into one string for the remote login shell to parse.
     def session(self, host: str, line: str) -> list[str]:
-        return ["ssh", "-t", host, f"bash -lc {shlex.quote(line)}"]
+        return [str(client()), *shared(host), "-t", host, f"bash -lc {shlex.quote(line)}"]
 
     def one_shot(self, ssh: SshTransport, host: str, line: str) -> tuple[str, ...]:
-        return ("ssh", *ssh.options, ssh.destination(host), f"bash -lc {shlex.quote(line)}")
+        return (*ssh.command(host), f"bash -lc {shlex.quote(line)}")
 
     def invocation(self, argv: Sequence[str]) -> str:
         return shlex.join(argv)
@@ -243,10 +244,19 @@ class Windows(Dialect):
         return "; ".join([*steps, command, "exit $LASTEXITCODE"])
 
     def session(self, host: str, line: str) -> list[str]:
-        return ["ssh", "-t", host, *POWERSHELL[:1], "-NoProfile", "-EncodedCommand", encoded(line)]
+        return [
+            str(client()),
+            *shared(host),
+            "-t",
+            host,
+            *POWERSHELL[:1],
+            "-NoProfile",
+            "-EncodedCommand",
+            encoded(line),
+        ]
 
     def one_shot(self, ssh: SshTransport, host: str, line: str) -> tuple[str, ...]:
-        return ("ssh", *ssh.options, ssh.destination(host), *POWERSHELL, encoded(line))
+        return (*ssh.command(host), *POWERSHELL, encoded(line))
 
     def invocation(self, argv: Sequence[str]) -> str:
         # The call operator runs a program named by a string, and each word rides as a literal.

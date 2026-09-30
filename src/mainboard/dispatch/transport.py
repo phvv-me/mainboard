@@ -3,7 +3,6 @@
 # 255 with a stderr phrase).
 
 import os
-import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=argv built from typed fields (ssh/scp options), not untrusted input since=2026-08-17
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -14,13 +13,14 @@ from typing import IO
 
 import psutil
 from patos import FrozenModel
+from plumbum import local
 from plumbum.machines.local import LocalMachine
 from plumbum.machines.session import ShellSession
 from plumbum.machines.ssh_machine import SshMachine
 from pydantic import Field, field_validator
 
 from ..core.host import WINDOWS
-from .keys import adopt
+from .keys import adopt, client, microsoft, shared
 
 # ssh's own exit status when the transport fails, with the stderr phrases naming the fault. A
 # name that does not resolve belongs here too: the host cannot be reached right now (a dropped
@@ -77,8 +77,7 @@ def ssh_null() -> str:
     """
     if not WINDOWS:
         return os.devnull
-    found = shutil.which("ssh") or ""
-    return "/dev/null" if "usr" in Path(found).parts else "NUL"
+    return "NUL" if microsoft() else "/dev/null"
 
 
 class HostUnreachable(Exception):
@@ -128,7 +127,7 @@ class Endpoint(FrozenModel):
 
     @property
     def destination(self) -> str:
-        """The `user@address` every ssh and scp command names this machine by."""
+        """The `user@address` every ssh command names this machine by."""
         return f"{self.user}@{self.address}" if self.user else self.address
 
     @property
@@ -146,11 +145,6 @@ class Endpoint(FrozenModel):
             "-o",
             "LogLevel=ERROR",
         )
-
-    @property
-    def scp_options(self) -> tuple[str, ...]:
-        """`options` as scp spells them: its port flag is `-P`."""
-        return tuple("-P" if option == "-p" else option for option in self.options)
 
 
 class SshTransport(FrozenModel):
@@ -201,6 +195,11 @@ class SshTransport(FrozenModel):
         """`host` as ssh must spell it: the bound machine when there is one, else the alias."""
         return self.endpoint.destination if self.endpoint else host
 
+    def command(self, host: str) -> tuple[str, ...]:
+        """The argv that reaches `host` under this policy, up to the remote command: the tool's
+        ssh, riding `host`'s shared login when one answers."""
+        return (str(client()), *shared(host), *self.options, self.destination(host))
+
     @staticmethod
     def terminate(process: subprocess.Popen[bytes]) -> None:
         """Terminate the whole SSH process group so ProxyJump children cannot remain, killing it
@@ -214,16 +213,15 @@ class SshTransport(FrozenModel):
                 terminate_process_tree(process.pid, force=True)
             process.wait()
 
-    def transfer(self, source: str, *, destination: str, host: str) -> None:
-        """Copy one file through the bounded SSH policy."""
-        scp = (*self.liveness, *(self.endpoint.scp_options if self.endpoint else ()))
-        self.run(("scp", *scp, source, destination), host, operation="copy")
-
     def machine(self, host: str) -> BoundedSshMachine:
         """A persistent SSH session with a dedicated local process group."""
         adopt()
         return BoundedSshMachine(
-            host, ssh_opts=self.options, connect_timeout=self.deadline, new_session=True
+            host,
+            ssh_command=local[str(client())],
+            ssh_opts=(*shared(host), *self.options),
+            connect_timeout=self.deadline,
+            new_session=True,
         )
 
     def invoke(
@@ -382,7 +380,7 @@ class SshTransport(FrozenModel):
     def warm(self, host: str) -> None:
         """Validate one bounded SSH connection before Plumbum opens its persistent session."""
         marker = "mainboard-reachable"
-        output = self.run(("ssh", *self.options, host, "echo", marker), host, operation="connect")
+        output = self.run((*self.command(host), "echo", marker), host, operation="connect")
         if marker not in output.splitlines():
             raise RuntimeError(f"ssh connect to {host!r} returned without the expected marker")
 
