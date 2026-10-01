@@ -10,9 +10,13 @@
 # scan walks only the options the verb declares, each with the number of values it takes, and
 # stops at the first token that is neither: a word is the command and gets its `--`, while an
 # unknown option is left in place for the parser to refuse by name.
+#
+# A `--` further on is the command's own (`proc timeout 900 mb job submit --on gold -- python
+# x.py`, `git log -- path`) and travels with it, except in the one spelling where it ends this
+# verb's options written after a job target: `job submit x.py::t --on gold -- --fresh a`.
 
 from inspect import Parameter, signature
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -42,15 +46,26 @@ class Delimiter:
         the verb does not declare, which the parser then refuses with that name.
         """
         _, apps, rest = self.app.parse_commands(tokens)
-        widths = _widths(apps[-1])
-        if widths is None:
+        tail = _tail(apps[-1])
+        if tail is None:
             return list(tokens)
         verb = list(tokens[: len(tokens) - len(rest)])
-        return [*verb, *_delimited(rest, widths)]
+        return [*verb, *_delimited(rest, tail)]
 
 
-def _widths(verb: App) -> Mapping[str, int] | None:
-    """Every option name `verb` declares and how many values it takes, None without a command.
+class _Tail(NamedTuple):
+    """What a trailing-command verb reads for itself ahead of the command it hands on.
+
+    widths: every option name it declares and how many values each takes.
+    leading: how many positional arguments come before the command, `proc timeout`'s seconds.
+    """
+
+    widths: Mapping[str, int]
+    leading: int
+
+
+def _tail(verb: App) -> _Tail | None:
+    """What `verb` reads ahead of its trailing command, None for a verb that takes none.
 
     A verb takes a trailing command exactly when its function collects a variadic positional
     named in `TAILS`, which is how `run`, `submit`, `shell`, `proc timeout` and `help` spell
@@ -59,10 +74,10 @@ def _widths(verb: App) -> Mapping[str, int] | None:
     command = verb.default_command
     if command is None:
         return None
-    if not any(
-        parameter.kind is Parameter.VAR_POSITIONAL and parameter.name in TAILS
-        for parameter in signature(command).parameters.values()
-    ):
+    kinds = [
+        (parameter.kind, parameter.name) for parameter in signature(command).parameters.values()
+    ]
+    if not any(kind is Parameter.VAR_POSITIONAL and name in TAILS for kind, name in kinds):
         return None
     widths = dict.fromkeys((*verb.help_flags, *verb.version_flags), 0)
     for argument in verb.assemble_argument_collection():
@@ -71,27 +86,49 @@ def _widths(verb: App) -> Mapping[str, int] | None:
         taken, _ = argument.token_count()
         positive = set(argument.parameter.name or ())
         widths.update({name: taken if name in positive else 0 for name in argument.names})
-    return widths
+    leading = [kind for kind, _ in kinds].index(Parameter.VAR_POSITIONAL)
+    return _Tail(widths, leading)
 
 
-def _delimited(rest: Sequence[str], widths: Mapping[str, int]) -> list[str]:
+def _delimited(rest: Sequence[str], tail: _Tail) -> list[str]:
     """`rest` with the delimiter in front of its first command token, when it has one.
 
-    rest: the verb's own tokens, options first.
-    widths: the verb's option names and the values each takes.
+    rest: the verb's own tokens, options and leading arguments first.
     """
-    if DELIMITER in rest:
-        # Delimited by the caller already, wherever it put the delimiter.
-        return list(rest)
     at = 0
+    leading = tail.leading
     while at < len(rest):
         token = rest[at]
         if token == DELIMITER:
             break
-        if not token.startswith("-") or token == "-":
-            return [*rest[:at], DELIMITER, *rest[at:]]
-        name, inline, _ = token.partition("=")
-        if name not in widths:
+        if _option(token):
+            name, inline, _ = token.partition("=")
+            if name not in tail.widths:
+                break
+            at += 1 if inline else 1 + tail.widths[name]
+        elif leading:
+            leading -= 1
+            at += 1
+        elif _delimits_itself(rest[at:], tail.widths):
             break
-        at += 1 if inline else 1 + widths[name]
+        else:
+            return [*rest[:at], DELIMITER, *rest[at:]]
     return list(rest)
+
+
+def _option(token: str) -> bool:
+    return token.startswith("-") and token != "-"
+
+
+def _delimits_itself(command: Sequence[str], widths: Mapping[str, int]) -> bool:
+    """Whether a `--` further on in `command` is this verb's own: `target --on host -- args`.
+
+    Only when the tokens before it hold options of this verb and no other. Otherwise the `--`
+    belongs to the command being handed on, which keeps it with its own flags: `proc timeout 900
+    mb job submit --on gold -- python train.py` once died on `--on`, read as this tool's.
+    """
+    if DELIMITER not in command:
+        return False
+    own = command[: command.index(DELIMITER)]
+    options = [token.partition("=")[0] for token in own if _option(token)]
+    return bool(options) and all(name in widths for name in options)

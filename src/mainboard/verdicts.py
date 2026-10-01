@@ -23,7 +23,7 @@ from .batch.receipts import OFFERED, Event, Journal, Topic, latest
 from .core.errors import MissionError
 from .diagnosis import reason
 from .dispatch import vocabulary
-from .dispatch.schedulers import short_reason
+from .dispatch.schedulers import HostUnreachable, short_reason
 from .dispatch.state.captured import Captured
 from .dispatch.vocabulary import JobState
 from .log import logger
@@ -37,8 +37,9 @@ if TYPE_CHECKING:
 
     from pydantic import JsonValue
 
-    from .board import Board
+    from .board import Board, Run
     from .dispatch.state import RunRecord
+    from .monitor import Monitor
 
 # The key a printed trial receipt carries its payload under, spelled here rather than imported so
 # reading a receipt never drags the lab machinery in.
@@ -257,13 +258,41 @@ class Verdicts:
         word = vocabulary.CANCELLED if ended == vocabulary.CANCELLED else vocabulary.FINISHED
         state = JobState(handle=record.handle, state=word, exit_code=code, verdict=verdict)
         stored = cache.resolve(record, word, code, verdict)
-        run.kill()
+        unheard = self._killed(run, monitor)
         if monitor.release(run):
             if cache.run(handle, record.target).evidence == "copied":
                 monitor.evidence(record, receipts, status="verified")
-            monitor.track(record, state, detail=stopped(ended, code))
+            monitor.track(record, state, detail=stopped(ended, code) + unheard)
             cache.report(stored, verdict)
         return self.handled(handle, host=host)
+
+    @staticmethod
+    def _killed(run: Run, monitor: Monitor) -> str:
+        """Stop `run` on its host, answering what to add to its record when the host is silent.
+
+        A run on a host that does not answer still settles here, which is all a cancel can do
+        about it, and the record and a warning say the job was never stopped there: the fault
+        used to leave this verb as a traceback with the run half settled (gold, 2026-09-30). A
+        host that went quiet while the evidence was pulled is not knocked on again.
+        """
+        target = run.handle.host
+        quiet = monitor.quiet.get(target, "")
+        if not quiet:
+            try:
+                run.kill()
+            except HostUnreachable as fault:
+                quiet = str(fault)
+        if not quiet:
+            return ""
+        logger.warning(
+            "{} did not answer, so {} settles here but was not stopped there and may still be "
+            "running; stop it on {} by hand once it answers: {}",
+            target,
+            run.handle.id,
+            target,
+            quiet,
+        )
+        return f"; {target} did not answer, so the job was not stopped there"
 
     def _abandon(self, record: RunRecord) -> None:
         """Settle a run whose host the manifest no longer declares, asking that host nothing.
@@ -492,12 +521,19 @@ class Verdicts:
         monitor = self.board.monitor()
         stream = bool(Journal(self.board.dispatcher.cache.session, handle).replay())
         vigil = Vigil(Pulses(self.board), stall=stall, say=say)
+        silent: set[str] = set()
         # What already settled answers before any pass runs, since a pass settles the whole
         # workspace and a caller re-reading a finished batch owes it nothing.
         while (settled := self.__settled(handle, host=host, stream=stream)) is None:
             if deadline is not None and monotonic() >= deadline:
                 return self.__standing(handle, host=host, stream=stream)
-            monitor.once()
+            # Said once: a wait on a run whose host went silent otherwise reads as a job that
+            # is merely slow, until the timeout.
+            for down in monitor.once().unreachable_hosts:
+                if down.host not in silent:
+                    silent.add(down.host)
+                    asked = self.board.declares(down.host)
+                    say(f"{down.host} is not answering: {down.reason}" if asked else down.reason)
             if self.__settled(handle, host=host, stream=stream) is not None:
                 continue
             look = vigil.look(self.__running(handle, host=host, stream=stream))

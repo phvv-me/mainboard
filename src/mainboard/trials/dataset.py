@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from ..state.evidence import EvidenceTree
 from .artifacts import Artifact
 from .coverage import PROBED, Cell, LaneStatus
 from .ledger import NESTED, TrialReceipts, wire
@@ -41,6 +42,9 @@ if TYPE_CHECKING:
 
 # The two columns every receipt carries, which a coverage read and a current view both group on.
 _LANE, _KEY = "lane", "key"
+
+# Where each run's committed fragments sit under a store.
+_PARTS = "run=*/part-*.parquet"
 
 # The creation coordinate every recency question reads, and the field deciding evidence or scratch.
 OPENED, ADMISSIBILITY = "opened_at_ns", "admissibility"
@@ -163,8 +167,9 @@ class Dataset:
 
     @property
     def parts(self) -> list[Path]:
-        """Every committed fragment of every run, in run then write order."""
-        return sorted(self.root.glob("run=*/part-*.parquet"))
+        """Every committed fragment of every run, in run then write order, those that left the
+        tree read back from the lake that keeps them."""
+        return EvidenceTree(self.root).files(_PARTS)
 
     @property
     def runs(self) -> tuple[str, ...]:
@@ -193,7 +198,7 @@ class Dataset:
     ) -> Dataset | None:
         """The dataset at `path` itself or at `receipts/` below it, None when neither holds one."""
         for candidate in (path, path / "receipts"):
-            if next(candidate.glob("run=*/part-*.parquet"), None) is not None:
+            if EvidenceTree(candidate).files(_PARTS):
                 return cls(candidate, axes=axes, nested=nested)
         return None
 

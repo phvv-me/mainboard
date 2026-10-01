@@ -2,6 +2,7 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 from ..core.section import Verdict
+from .commit import NO_IDENTITY
 from .report import Finding
 
 if TYPE_CHECKING:
@@ -22,9 +23,10 @@ class Check:
     next push: a pointer whose commit the submodule's remote does not hold while the parent that
     records it is published (or the commit exists nowhere this machine can see), a branch that
     diverged from its upstream, a file in HEAD over the size ceiling, LFS content with no
-    git-lfs to move it. A `warn` is the ordinary state of work in progress: detached, unpushed,
-    behind, a checkout off its recorded pointer, a pointer the next push will carry, or a stale
-    `.gitmodules` entry every verb skips.
+    git-lfs to move it, no commit author configured. A `warn` is the ordinary state of work in
+    progress: detached, unpushed, behind, a checkout off its recorded pointer, a pointer the
+    next push will carry, a stale `.gitmodules` entry every verb skips, or files under a
+    `never-commit` pattern still tracked, whose bytes belong in the lake.
     """
 
     def __init__(self, tree: Tree) -> None:
@@ -50,10 +52,13 @@ class Check:
     def _findings(self, repo: Repo) -> list[Finding]:
         return [
             *self._fetched(repo),
+            *self._identity(repo),
             *self._stale(repo),
+            *self._readable(repo),
             *self._line(repo),
             *self._pointers(repo),
             *self._sizes(repo),
+            *self._tracked(repo),
             *self._lfs(repo),
         ]
 
@@ -64,10 +69,24 @@ class Check:
         return []
 
     @staticmethod
+    def _identity(repo: Repo) -> list[Finding]:
+        """No author configured, so the next commit here fails."""
+        return [] if repo.identified() else [_fail(repo, "identity", NO_IDENTITY)]
+
+    @staticmethod
     def _stale(repo: Repo) -> list[Finding]:
         """A `.gitmodules` entry with no gitlink, which git refuses as a pathspec."""
         detail = "stale .gitmodules entry with no gitlink; remove it"
         return [_warn(repo, "gitmodules", f"{path}: {detail}") for path in repo.stale]
+
+    @staticmethod
+    def _readable(repo: Repo) -> list[Finding]:
+        """A submodule checkout git cannot read, which aborts a bare `git status` here and in
+        every repository above."""
+        if not (said := repo.unreadable()):
+            return []
+        fix = "restore that checkout (`git submodule update --init`) or drop it (`deinit -f`)"
+        return [_warn(repo, "submodule", f"a bare `git status` aborts here: {said}; {fix}")]
 
     @staticmethod
     def _line(repo: Repo) -> list[Finding]:
@@ -138,6 +157,18 @@ class Check:
             for _, kind, _, size in [meta.split()]
             if kind == "blob" and int(size) > ceiling
         ]
+
+    def _tracked(self, repo: Repo) -> list[Finding]:
+        """Files HEAD still tracks under a `never-commit` pattern: data whose home is the lake."""
+        tracked = repo.git.out("ls-files", *self.tree.policy.inside).splitlines()
+        count = sum(bool(path) for path in tracked)
+        if not count:
+            return []
+        detail = (
+            f"{count} files under never-commit patterns are tracked; keep them with "
+            "`mb lake ingest <dir>`, then `git rm -r --cached <dir>`"
+        )
+        return [_warn(repo, "data", detail)]
 
     def _lfs(self, repo: Repo) -> list[Finding]:
         """LFS content this machine has no git-lfs to fetch or push."""

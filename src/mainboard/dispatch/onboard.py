@@ -590,13 +590,15 @@ class Onboarding:
             winner = bootstrap.tool()
             self.watch(f"checking pixi on {host}")
             pixi = self.align_pixi(shell, host=host)
-            self.watch(f"provisioning {self.env} on {host}")
+            self.watch(self._installing(host))
             bootstrap.environment()
             self.watch(f"checking the queue on {host}")
             self.verify_queue(shell, host=host)
             self.apply_dotfiles(shell, host=host)
             self.watch(f"reading {host} back through its activation")
             hardware = read_facts(shell.run(facts_command(), activate=True))
+            if not self.plan.containerized:
+                self.watch(self._pinned_later(host))
             setup = HostSetup(
                 host=host,
                 root=root,
@@ -614,6 +616,23 @@ class Onboarding:
         recorded = self.dispatcher.cache.save_host(setup)
         logger.info("onboarded {} at {} through {}", host, root, recorded.installer)
         return recorded
+
+    def _installing(self, host: str) -> str:
+        """The stage that installs the environment, named for what it installs.
+
+        This is the mirror's own environment, the one `run --on`, `shell --on` and every
+        dispatch's preflight enter, brought in line with the shipped lock: seconds when it
+        already is. It was announced as `provisioning`, which read as the job's environment
+        being built and then finished in four seconds (crimson, 2026-09-30).
+        """
+        return f"installing {self.env} in {host}'s mirror from the shipped lock"
+
+    def _pinned_later(self, host: str) -> str:
+        """What a setup leaves for the first dispatch, said so its minutes are expected there."""
+        return (
+            f"{host} runs commands in {self.env}; a job activates its own pinned copy, which "
+            f"the first dispatch of each lock builds there (`built {self.env} on {host}`)"
+        )
 
     def resolved(self, facts: Facts) -> ExecutionPlan:
         """The plan with every gap its profile left open filled from what the probe found."""
@@ -644,7 +663,7 @@ class Onboarding:
         with open_shell(self.plan, root) as shell:
             self._mirror(host, root)
             pixi = self.align_pixi(shell, host=host)
-            self.watch(f"provisioning {self.env} on {host}")
+            self.watch(self._installing(host))
             Bootstrap(shell, resolve=self.resolve).environment()
             # A daemon that died or a host cleaned since setup would refuse every submit.
             self.verify_queue(shell, host=host)

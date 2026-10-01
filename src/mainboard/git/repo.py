@@ -191,6 +191,11 @@ class Repo:
         """`commit` abbreviated the way git would print it here."""
         return self.git.line("rev-parse", "--short", commit)
 
+    def identified(self) -> bool:
+        """Whether git knows who authors a commit here (`user.name` and `user.email`), which a
+        freshly set-up machine does not."""
+        return self.git.ok("var", "GIT_AUTHOR_IDENT")
+
     def branch(self) -> str:
         """The checked-out branch, empty when HEAD is detached."""
         found = self.git.run("symbolic-ref", "-q", "--short", "HEAD")
@@ -267,6 +272,18 @@ class Repo:
             *(("--", ".", *outside) if outside else ()),
         )
         return [Change(entry[:2], entry[3:]) for entry in listing.split("\0") if entry]
+
+    def unreadable(self) -> str:
+        """Git's own words when a plain `git status` here aborts on a submodule checkout it
+        cannot read, empty when none does.
+
+        Every other question this tree asks passes `--ignore-submodules` and survives a checkout
+        whose `.git` names a directory that is gone, so nothing else would ever name the path a
+        bare `git status` dies on. Owned submodules are left out: each answers on its own row.
+        """
+        owned = [f":(exclude){self.relative(child)}" for child in self.children if child.owned]
+        found = self.git.run("status", "--porcelain=v1", "--untracked-files=no", "--", ".", *owned)
+        return "" if found.succeeded else "; ".join(filter(None, found.stderr.splitlines()))
 
     def exists(self, ref: str) -> bool:
         """Whether `ref` names a commit this repository has."""

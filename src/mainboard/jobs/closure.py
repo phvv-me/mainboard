@@ -45,6 +45,7 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..dispatch.provenance import SourceTree
 from ..engines.compile.backend.repair import recorded_extensions
+from ..state.evidence import EvidenceTree
 from .pins import Pin, split
 from .target import Target, dotted, home_of, parsed
 
@@ -233,6 +234,9 @@ class Closure(FrozenModel):
             files.add(config)
         wanted, pinned = split(dict.fromkeys([*declared.needs, *needs]))
         cls.__admissible(wanted, files)
+        # A need is data the mirror carries to the host, so one only the lake still keeps comes
+        # back into the tree before the sync.
+        EvidenceTree(root).restore(root / need for need in wanted if not (root / need).exists())
         for pin in pinned:
             Pin.parse(pin)
         roster = tuple(dict.fromkeys(places))
@@ -265,10 +269,13 @@ class Closure(FrozenModel):
 
     @staticmethod
     def __pinned(resource: str, root: Path, sources: SourceTree) -> list[str]:
-        """The files a declared resource pins: itself, or everything kept under it."""
+        """The files a declared resource pins: itself, or everything kept under it, brought back
+        from the lake first when the tree no longer holds it."""
         posix = PurePosixPath(resource)
         if posix.is_absolute() or ".." in posix.parts:
             raise MissionError(f"a resource must be a workspace-relative path, not {resource!r}")
+        if not (root / resource).exists():
+            EvidenceTree(root).restore([root / resource])
         if (root / resource).is_dir():
             return sources.kept(resource)
         if (root / resource).is_file():

@@ -11,7 +11,7 @@ import pytest
 from mainboard.core.errors import MissionError
 from mainboard.dispatch.arch import arch, capability, card, sm
 from mainboard.dispatch.backends import HpcAiBackend, LambdaBackend, RunPodBackend, VastBackend
-from mainboard.dispatch.backends.cloud import CapacityGone, _waiter
+from mainboard.dispatch.backends.cloud import CapacityGone, _waiter, hunt
 from mainboard.dispatch.rentals import LAUNCH
 from mainboard.dispatch.sync import outermost
 from mainboard.dispatch.vocabulary import Resources
@@ -164,6 +164,23 @@ def test_offers_list_every_cloud_and_mark_what_mb_rents(mb) -> None:
     assert ran.code == 0, ran.said
     rows = ran.out.splitlines()
     assert rows[0].startswith("provider") and any("vast" in row for row in rows[1:])
+
+
+def test_one_catalog_failing_leaves_every_other_clouds_offers(monkeypatch) -> None:
+    """A 502 from one cloud's API once ended `host offers` as a traceback."""
+    gpuhunt = pytest.importorskip("gpuhunt")
+
+    def answered(*, provider: list[str] | None = None, **_filters) -> list[SimpleNamespace]:
+        if provider is None or provider == ["vultr"]:
+            raise OSError("502 Server Error: Bad Gateway")
+        return [SimpleNamespace(provider=provider[0], gpu_name="RTX4090", price=0.5)]
+
+    loaded = SimpleNamespace(providers=[SimpleNamespace(NAME="vultr"), SimpleNamespace(NAME="x")])
+    monkeypatch.setattr(gpuhunt, "query", answered)
+    monkeypatch.setattr(gpuhunt, "default_catalog", lambda: loaded)
+    found = {item.provider for item in hunt(gpu_name="RTX 4090")}
+    assert "x" in found and "runpod" in found and "vultr" not in found
+    assert hunt(providers=["vultr"]) == []
 
 
 def test_an_architecture_matches_the_capability_its_kernels_load_on() -> None:

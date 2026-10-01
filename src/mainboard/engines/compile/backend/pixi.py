@@ -17,7 +17,7 @@ from ....runtime.activation import prepended
 from .engine import PixiEngine
 from .process import Process
 from .repair import EnvironmentAudit
-from .tool import Tool
+from .tool import Tool, windows_launcher
 from .windows_task import WindowsTaskRunner
 
 if TYPE_CHECKING:
@@ -237,7 +237,7 @@ class Pixi(Tool):
             with self.direct_windows_environment(env), local.env(**(exports or {})):
                 if command[0] in runner.tasks:
                     return runner.run(command, Process.stream).returncode
-                return Process.passthrough(local[command[0]][command[1:]])
+                return Process.passthrough(windows_launcher(command[0])[command[1:]])
         if exports:
             command = ["env", *(f"{name}={value}" for name, value in exports.items()), *command]
         return self.within_cwd(Process.passthrough, "run", "--frozen", "-e", env, *command)
@@ -257,7 +257,7 @@ class Pixi(Tool):
                         return Process.capture(argv, timeout=remaining)
 
                     return runner.run(command, capture_task)
-                return Process.capture(local[command[0]][command[1:]], timeout=timeout)
+                return Process.capture(windows_launcher(command[0])[command[1:]], timeout=timeout)
         return self.within_cwd(
             lambda argv: Process.capture(argv, timeout=timeout),
             "run",

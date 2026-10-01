@@ -147,7 +147,8 @@ class Probe:
         """One ssh host's runs, read over a single connection, its cards read on the way out."""
         try:
             root = self.board.on(target).remote_root()
-            with connection(target) as remote:
+            # One knock: the next look asks again, and a wait's every pass would pay for four.
+            with connection(target, attempts=1) as remote:
                 outputs = {record: logged(remote, root, record) for record in records}
                 on_host = any(record.kind in _ON_HOST for record in records)
                 busiest = utilization(remote) if on_host else None

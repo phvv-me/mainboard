@@ -15,8 +15,9 @@
 from patos import FrozenModel
 
 # The schema's own version, recorded in `schema_log` by `Lake.create` beside the DuckLake spec
-# and by `Lake.evolve` when an older lake gains what this one added. 2 added `blobs`.
-VERSION = 4
+# and by `Lake.evolve` when an older lake gains what this one added. 2 added `blobs`, 5 chunked
+# them (`ordinal`) and added `evidence_log`, 6 added `checksums`.
+VERSION = 6
 
 
 class Table(FrozenModel):
@@ -213,11 +214,42 @@ TABLES: tuple[Table, ...] = (
             ("status", "VARCHAR"),
         ),
     ),
+    # Content-addressed objects in ordered chunks (`state.blobs`); a row from before chunking
+    # has no ordinal and is the whole object.
     Table(
         name="blobs",
         columns=(
             ("sha256", "VARCHAR"),
             ("bytes", "BLOB"),
+            ("ordinal", "BIGINT"),
+        ),
+    ),
+    # Each chunk's MD5, recorded from bytes whose SHA-256 was just verified (`state.blobs`), so
+    # `mb lake check` proves every chunk intact inside DuckDB. A side table rather than a column
+    # of `blobs`, so gaining it never rewrote a byte of the chunks it vouches for.
+    Table(
+        name="checksums",
+        columns=(
+            ("sha256", "VARCHAR"),
+            ("ordinal", "BIGINT"),
+            ("md5", "VARCHAR"),
+        ),
+    ),
+    # Which workspace-relative evidence file held which object (`state.evidence`), so the file
+    # can leave the tree and every reader still finds its bytes; project, node and run are read
+    # off the path for querying.
+    Table(
+        name="evidence_log",
+        columns=(
+            ("ts", "TIMESTAMPTZ"),
+            ("path", "VARCHAR"),
+            ("sha256", "VARCHAR"),
+            ("size", "BIGINT"),
+            ("media_type", "VARCHAR"),
+            ("project", "VARCHAR"),
+            ("node", "VARCHAR"),
+            ("run", "VARCHAR"),
+            ("dropped", "BOOLEAN"),
         ),
     ),
     Table(
@@ -256,6 +288,7 @@ VIEWS: tuple[View, ...] = (
     ),
     View(name="hosts", select=_latest("host_facts", "alias")),
     View(name="holds", select=_latest("holds_log", "alias")),
+    View(name="evidence", select=_latest("evidence_log", "path")),
     View(
         name="offers",
         select="SELECT * EXCLUDE (ts) FROM quotes WHERE ts = (SELECT max(ts) FROM quotes)",

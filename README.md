@@ -50,7 +50,22 @@ command descriptions, this README, and Python API docstrings. Results name their
 source locations. The wheel includes the README. API search never imports
 the scanned modules. Broad searches show twenty hits and the full match count.
 
-`facts` pairs the hardware with a software census (operating system and version,
+
+`mainboard diagnose --days 7` captures recent Windows incidents into a new
+`.mainboard/diagnostics/` directory, even when no workspace manifest works.
+`--out <directory>` chooses where to retain the evidence. Each read-only probe
+has a 45-second deadline; unavailable permissions, failed probes and collection
+limits remain visible. The versioned report retains raw event records, updates,
+service and driver identities, drive counters, network routes, PCIe parent paths
+and dump metadata. WER submissions are deduplicated by report ID; original dump
+times stay separate from submission times. A restart event does not establish its
+cause, and Healthy drive status or missing counters never exclude intermittent
+faults. Storage stalls and actual corruption appear before generic warnings.
+Protected dump inventory and component-store health require an elevated terminal;
+the command never elevates, repairs or restarts the machine. Incident collection
+currently supports Windows; other platforms explicitly report unavailable.
+
+`host list --facts` pairs the hardware with a software census (operating system and version,
 shells, filesystem case sensitivity, symlink and long-path support, the git
 settings a clone inherits, git, git-lfs, gh, ssh, uv, pixi, tectonic, node,
 cargo and nvcc versions, the NVIDIA driver with its CUDA, each
@@ -58,10 +73,10 @@ card's compute capability and memory) and judges it against the workspace: a
 platform the manifest or its lock does not cover, a driver below `[system] cuda`,
 locked CUDA builds the driver cannot run or that carry no kernels for the card,
 fewer cards or less memory than the profile's `defaults.gpus` and
-`defaults.vram-gb` declare, too little disk. `setup`, `compute` (its `issues`
+`defaults.vram-gb` declare, too little disk. `host setup`, `host list` (its `issues`
 column) and `doctor --center` print the same findings from the same census.
 
-`compute` answers what there is to run on before anything is dispatched: this
+`host list` answers what there is to run on before anything is dispatched: this
 machine, every declared host with whether it answers and whether it was set up,
 and every provider with whether its credentials are here and what the account
 has left. No credential is ever printed, only whether one was found.
@@ -77,17 +92,24 @@ route or known restriction. This replaces generic setup advice, not the observed
 access state, and never makes a host job-ready.
 
 
-`jobs` shows every dispatched job still in flight before it shows any that
+`job list` shows every dispatched job still in flight before it shows any that
 settled, each with what its own scheduler says about it right now, and asks each
 host once for all of them: one `qstat`, one `squeue`, one `pueue status`. A
 listing that had to leave anything out says so rather than stopping quietly at a
 limit, and `--limit` bounds only the settled tail.
 
-`monitor` collects outstanding results into durable job records and study ledgers.
-Its reports identify changes and unreachable hosts without repeating unchanged
-outcomes on later passes.
+It settles first: outstanding results are collected into durable job records and
+study ledgers, and a pass reports changes without repeating unchanged outcomes on
+later passes. A host that does not answer is knocked on once per command; its runs
+keep what was last recorded, a note names it with what to do about them, and a
+wait on another host's job asks it again only every half minute. `job cancel`
+settles a run on such a host without stopping it there, and says so.
 
-`run` executes native file targets locally. Use `submit` for remote jobs.
+`run` executes native file targets locally. Use `job submit` for remote jobs.
+From Git Bash or MSYS2, an argument that looks like an absolute POSIX path is
+rewritten by the shell into a Windows one before this tool sees it; a command bound
+for a host refuses such an argument and names `MSYS_NO_PATHCONV=1`, which hands
+every argument on as typed.
 Collection and help stay local. Plain diagnostic commands use SSH.
 On a cluster, SSH reaches the login endpoint. It provides no batch allocation.
 Windows diagnostic arguments preserve embedded quotes and empty strings through native process
@@ -100,7 +122,10 @@ Onboarding selects Python from the tool's declared runtime requirement, not the 
 older system interpreter. Workspace dependencies still install from the shipped frozen lock.
 The environment is installed before starting its queue service. Startup detaches its streams
 and waits briefly for readiness, so a fresh host need not have a separate global queue install.
-Stopping `wait` does not cancel a job or stop rental billing.
+Stopping `job show --wait` does not cancel a job or stop rental billing.
+`host setup` installs the mirror's own environment, the one `run --on` and every
+dispatch's preflight enter; the pinned copy a job activates is built by the first
+dispatch of each lock (`built <env> on <host>`), from the packages setup fetched.
 
 Source snapshots are not deleted automatically. A local job cache cannot prove
 that another workstation has no job using a remote snapshot. Monitor inode
@@ -144,10 +169,12 @@ $ mainboard job show fleet-db4af53f --wait                     # block until all
 $ mainboard shell --on miyabi-g --keep --walltime 02:00:00   # hold a GH200 in tmux, reattach with the same line
 ```
 
-`prepare` measures compressed changes from the host's workspace mirror, plus
-declared input data. `estimate` uses recorded setup times. Its sample count
-identifies targets with no timing history. `watch` repeats the monitor sweep.
-Automatic result collection and rental release require a running monitor.
+`job submit --batch <spec> --estimate` measures compressed changes from the host's
+workspace mirror, plus declared input data, and prices them with recorded setup
+times. Its sample count identifies targets with no timing history. `job list
+--batch <id> --watch <seconds>` repeats the sweep. Automatic result collection and
+rental release require a sweep to run: a `job list`, a `job show --wait`, or the
+periodic pass `job list --every 20m` installs.
 Provider outages can delay release. A local execution timeout does not stop billing.
 
 Every state change and cost observation is one NDJSON line under the batch's
@@ -196,8 +223,8 @@ $ mainboard host release vast-rtx-5090                                    # stop
 
 The alias is a marked block at the top of `~/.ssh/config`, the host profile is the
 provider's own (its sync scope and variables) as an ssh host, and the deadline is
-the rental's lease in the run registry, so `monitor` releases it on time and
-`compute` releases anything past due before it lists. `--max-usd` caps the whole
+the rental's lease in the run registry, so `job list` releases it on time and
+`host list` releases anything past due before it lists. `--max-usd` caps the whole
 hold, landing included.
 
 ## Papers
@@ -236,7 +263,7 @@ image = "nvcr.io/nvidia/pytorch:25.06-py3"   # fixed off-the-shelf image, never 
                                              # your env lives on a bound host path inside it
 
 [hosts.gold]
-kind = "ssh"                    # root defaults to ~/.mainboard-jobs
+kind = "ssh"                    # root defaults to ~/.mb-jobs
 
 [hosts.miyabi-g]
 kind = "pbs"
@@ -272,7 +299,8 @@ repairs it. `setup` and dispatch ship `mb.lock` to a host beside the cached
 copy an older release installs from.
 
 A target never holds a human checkout: Mainboard keeps everything there in one
-folder, `~/.mainboard-jobs` unless the profile names another `root`. `setup` reads
+folder, `~/.mb-jobs` unless the profile names another `root` (a host set up under
+the older name keeps its `~/.mainboard-jobs`, so nothing is built twice). `host setup` reads
 the home in the host's own shell (`$HOME`, `%USERPROFILE%` on Windows) and places
 a leading `~` under it, so every consumer uses one absolute path; a host never set
 up is refused with the command that fixes it, and a rental's home is read on landing.
@@ -319,8 +347,11 @@ anybody else is read to verify the pointers that name it and otherwise left alon
 [git]
 owners = ["phvv-me", "ComputerVisionLaboratory"]
 ceiling-mb = 50                              # the default; LFS files are exempt
-never-commit = ["**/evidence/artifacts/**"]  # the default; git glob pathspecs
+never-commit = ["**/evidence/**", "**/datasets/**"]  # the default; data lives in the lake
 ```
+
+Experiment data never enters a commit: `mainboard lake ingest` keeps it, and
+`git check` warns while any is still tracked and fails when git knows no author.
 
 ```console
 $ mainboard git status          # branch or detached, ahead/behind, dirty, published
@@ -368,9 +399,8 @@ repository.
 
 One machine holds the monorepo, runs this tool and runs the AI agents: the
 center. Every other machine is a target that receives only what a job needs. The
-verbs that manage the monorepo itself live under `center` (`git`, `paper`,
-`verify`, `migrate`, `members`), so the top level stays the work that involves
-targets.
+verbs that manage the monorepo itself are `git`, `paper`, `doctor --center`,
+`doctor --members` and `host setup --center`.
 
 ```console
 $ mainboard doctor --center                      # is this machine ready to be the center
@@ -379,7 +409,7 @@ $ mainboard host setup --center pedro-home --root C:/Users/vazva/life   # move i
 
 `doctor --center` is one report, each row with the command that repairs it: this
 machine's git tooling (safe git settings applied in place), the machine judged
-against the workspace, the `doctor` report, the plan `check` resolves, a smoke run
+against the workspace, the `doctor` report, the plan `host list --plan` resolves, a smoke run
 of Python, torch and CUDA in the default environment, whether every lint tool can
 start, the repository tree, every agent's configuration (AGENTS.md, CLAUDE.md,
 `.claude -> .agents`, `.codex/config.toml`, `.mcp.json`, `opencode.json`), and
@@ -399,7 +429,7 @@ PowerShell alias shadowing a tool (`ls`, `cat`, `sort`...) is named with the
 
 `host setup --center <alias>` moves the center to any machine ssh reaches, Windows
 included with no WSL. It refuses to start while an owned HEAD is on no remote,
-puts uv there when missing, runs the same census `facts` uses and stops early on
+puts uv there when missing, runs the same census `host list --facts` uses and stops early on
 a platform the workspace or its lock cannot serve, then:
 
 1. signs `gh` in with this machine's login and makes it git's https credential;
@@ -437,16 +467,37 @@ pulse memory, digests, source blobs and staged job scripts. `mb query` reads it
 as `lake.<table>`. The `lake` group keeps it, the way `uv cache` keeps uv's:
 
 ```console
-$ mb lake check        # every data file the catalog references is on disk
+$ mb lake check        # every data file on disk, every evidence object hashed back
 $ mb lake compact      # inlined rows to Parquet, small files merged, old snapshots expired
 $ mb lake upgrade      # the catalog to the newest DuckLake spec
 $ mb lake import       # a workspace from before the lake, imported once and proven
+$ mb lake ingest DIR   # evidence files kept byte for byte, so they can leave git
+$ mb lake materialize DIR  # kept evidence written back where it stood
+$ mb lake replicate DIR    # every evidence object and the path index, copied to another disk
 $ mb lake serve        # this lake over DuckDB's Quack protocol, on localhost:9494
 ```
 
 `lake import` appends the old record files in one transaction, then reads every
 source back and rebuilds the logs byte for byte, exiting 1 on any difference; a
 workspace still holding them is refused until it is imported.
+
+`lake ingest` keeps each evidence file once per content in `blobs` (8 MiB
+chunks, so a multi-gigabyte object fits) and its path in `lake.evidence`. The
+bytes are never re-encoded, so every digest a `receipts.json` or an artifact
+reference pins still verifies. Once the files are gone from disk, an artifact
+read finds its object by digest, and receipt stores, events and node lookups
+list what the lake indexes, materialized on first use into `.mb/evidence/`.
+
+Experiment data therefore lives in the lake, not in git, and gets there on its
+own: a trial session keeps its run's receipts and artifacts when it closes, and
+collection keeps what it fetches from a job host, which has no lake. Files are
+read once, in parallel, and every window of up to 256 MiB lands as one insert,
+one data file; a `md5` per chunk lets `lake check` verify everything inside
+DuckDB. The tree's copies are a cache and may be deleted: a pytest session
+restores from the lake each `@job` resource and each file a node's
+`receipts.json` pins before its tests run, and dispatch restores declared
+resources and needs before shipping them. Run `lake replicate` after ingesting
+data that is leaving git, until which the lake is its only copy.
 
 `lake serve` lets other machines use this lake directly. It listens on localhost
 only, so another machine comes in through ssh, then points `mb` at it:
@@ -471,6 +522,9 @@ $ mainboard proc kill 4242                       # the process and everything it
 $ mainboard proc wait --port localhost:8000 --timeout 60
 $ mainboard proc wait --file results/done.json --pid 4242
 ```
+
+Everything after the limit is the command's own, its options and any `--` included:
+`mb proc timeout 900 mb job submit --on gold -- python train.py` bounds a submit.
 
 ## Entering an environment
 
@@ -579,7 +633,7 @@ An empty window is absent evidence, not proof that a kernel ran.
 | Process device telemetry | `Feature.DEVICE` | Sampled GPU usage, not kernel execution time |
 | Callable timing | `benchmark(fn, sync=barrier)` | Synchronized wall time, not CUDA-event time |
 | Stage comparison | `profile_stages(cases, trace=True)` | Untraced timing pass followed by a separate trace pass |
-| Fleet telemetry | `mainboard sample`, `facts`, `compute` | Job/machine observations, not a replacement for in-process profiling |
+| Fleet telemetry | `mainboard sample`, `host list --facts`, `host list` | Job/machine observations, not a replacement for in-process profiling |
 
 Keep profiling separate from uninstrumented throughput measurements, and keep
 the requested collection policy beside each saved profile. An invalid device
@@ -638,14 +692,14 @@ mainboard help artifacts
 mainboard help job submit
 ```
 
-`monitor` pulls published results from running jobs as well as finished ones. Run
+`job list` pulls published results from running jobs as well as finished ones. Run
 repeated passes to refresh remote data. A query itself has no network side effects.
 DuckDB reads the collected Parquet fragments and event journals directly. There is
 no shared database file for different servers to lock, and no database service to deploy.
 Each query sees a fresh inventory. It is not a transaction across all servers.
 
-`collect` also imports runs started directly on a node, using the same collection
-path as monitor. Remote filesystem operations use Python's standard library and
+`job collect` also imports runs started directly on a node, using the same collection
+path as the settling pass. Remote filesystem operations use Python's standard library and
 native `Path`; OpenSSH carries the bytes without remote rsync, tar, Bash, or an
 installed Mainboard. The host profile supplies `root` and `python` (default
 `python3`). The latter is a trusted interpreter command in the SSH login shell;

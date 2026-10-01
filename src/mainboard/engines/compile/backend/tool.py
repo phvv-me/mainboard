@@ -26,7 +26,7 @@ def windows_launcher(name: str) -> BaseCommand:
     name: `npm`, or a spelling already carrying its extension (`C:/Python/python.exe`), which is
         looked up as it stands.
     """
-    extensions = local.env.get("PATHEXT", ".EXE;.CMD;.BAT").lower().split(";")
+    extensions = (local.env.get("PATHEXT") or ".COM;.EXE;.CMD;.BAT").lower().split(";")
     suffix = Path(name).suffix.lower()
     spellings = [name] if suffix and suffix in extensions else [name + ext for ext in extensions]
     for directory in local.env.path:

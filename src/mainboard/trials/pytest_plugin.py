@@ -19,14 +19,19 @@
 # signatures at registration. Only `Declaration` stays deferred, in a never-evaluated local
 # annotation, because importing it pulls a dataframe engine into every pytest session.
 
+import json
 import sys
 from collections.abc import Generator, Iterator, Mapping, Sequence
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 from pydantic import JsonValue
 
+from ..core.project import Project
+from ..jobs.declare import MARK
+from ..state.evidence import EvidenceTree
 from . import hookspecs
 from .adaptive import DRIVERS, driver
 from .flags import held
@@ -47,6 +52,9 @@ SESSION = pytest.StashKey[Session]()
 
 # Whether one item's call phase passed, so a trial that already failed is never failed twice.
 PASSED = pytest.StashKey[bool]()
+
+# The file in a node naming the evidence its settlement reads, by path and SHA-256.
+PINS = "receipts.json"
 
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
@@ -88,6 +96,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         return
     root = session.declared.universe.root.resolve()
     mine = [item for item in items if root in Path(str(item.path)).resolve().parents]
+    _restored(session, mine)
     _warmed(mine)
     _unrunnable(session, mine, paid=bool(config.getoption("--paid")))
     if not config.option.collectonly and any("gpu" in item.keywords for item in mine):
@@ -98,6 +107,36 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     session.lanes = _surveyed(session, mine)
     if not config.getoption("--rerun"):
         _satisfied(session, mine)
+
+
+def _restored(session: Session, items: Sequence[pytest.Item]) -> None:
+    """Bring back from the lake what the collected trials read by path and the tree no longer
+    holds: each `@job` resource a trial declares, and each file its node's `receipts.json` pins
+    (a list of `{path, sha256}` relative to the directory above the node tree). Data leaves the
+    tree once the lake keeps it, so a sealed settle test reading a pinned path still finds it."""
+    universe = session.declared.universe
+    workspace = Project().workspace(universe.root)
+    wanted: set[Path] = set()
+    for item in items:
+        declared = getattr(getattr(item, "function", None), MARK, None)
+        if declared is not None:
+            wanted.update(workspace / resource for resource in declared.resources)
+        node = universe.root / universe.node_of(Path(str(item.path)))
+        wanted.update(_pinned(node / PINS, universe.root.parent))
+    EvidenceTree(universe.root).restore(sorted(path for path in wanted if not path.exists()))
+
+
+@cache
+def _pinned(pins: Path, base: Path) -> tuple[Path, ...]:
+    """The files `pins` names, resolved under `base`; none when the node pins nothing."""
+    try:
+        listed = json.loads(pins.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ()
+    entries = listed if isinstance(listed, list) else []
+    return tuple(
+        base / entry["path"] for entry in entries if isinstance(entry, dict) and "path" in entry
+    )
 
 
 def _warmed(items: Sequence[pytest.Item]) -> None:

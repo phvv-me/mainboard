@@ -15,6 +15,7 @@ import duckdb
 from .core.errors import MissionError
 from .dispatch import vocabulary
 from .observe.files import FrameFile
+from .state.evidence import EvidenceTree
 from .state.lake import ALIAS, Lake, ndjson
 
 if TYPE_CHECKING:
@@ -156,10 +157,11 @@ class Results:
         return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
 
     def _projects(self, project: str) -> list[Path]:
-        candidates = sorted((self.root / "research").glob("*/datasets/experiments"))
-        own = self.root / "datasets/experiments"
-        if own.is_dir():
-            candidates.append(own)
+        tree = EvidenceTree(self.root)
+        candidates = [
+            *tree.directories("research/*/datasets/experiments"),
+            *tree.directories("datasets/experiments"),
+        ]
         return [path for path in candidates if not project or path.parents[1].name == project]
 
     def _views(self, connection: duckdb.DuckDBPyConnection, project: str, sql: str) -> None:
@@ -220,7 +222,7 @@ class Results:
         for root in roots:
             parts = [
                 str(path)
-                for path in root.glob(
+                for path in EvidenceTree(root).files(
                     f"{self.experiment or '*'}/evidence/receipts/run=*/part-*.parquet"
                 )
             ]
@@ -242,8 +244,8 @@ class Results:
         events: dict[tuple[str, str, int], str] = {}
         for root in roots:
             owner = root.parents[1]
-            for path in sorted(
-                root.glob(f"{self.experiment or '*'}/evidence/artifacts/*/*/events/*.ndjson*")
+            for path in EvidenceTree(root).files(
+                f"{self.experiment or '*'}/evidence/artifacts/*/*/events/*.ndjson*"
             ):
                 for frame in FrameFile(path).frames():
                     record = json.dumps(

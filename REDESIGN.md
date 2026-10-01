@@ -821,3 +821,22 @@ cheapest with that arch" (an RTX PRO 4500 shares the RTX 5090's instruction set,
   Python 3.14 warning is filtered process-wide, since `catch_warnings` is not thread-safe and
   leaked during parallel probes; gpuhunt's "offline provider" notice is silenced; the spend cap
   a cloud rent searches under is the hourly one (`hourly_cap`, shared with Vast), not the total.
+
+## Round 7 (2026-09-30): what a deadline day on the Windows center broke
+
+The full account, with the designs left open, is `FIXES-2026-09-30.md`. Uncommitted.
+
+- [x] A wrapped command keeps its own flags and `--` (`proc timeout 900 mb job submit --on
+      gold -- python x.py` died on `--on`); `proc timeout` knows its seconds come first
+- [x] A command bound for a host refuses an argument Git Bash rewrote under its own folder
+      (`/home/crimson/y` arrived as `C:/Program Files/Git/home/crimson/y`), naming
+      `MSYS_NO_PATHCONV=1`
+- [x] A dead host costs one knock per command and per half minute of a wait, never a
+      traceback: `job list` 34 s to 6 s with gold down; its runs say so, a dropped host names
+      the commands that settle its runs, and `job cancel` settles a run the host never heard
+- [x] `git status` (a `broken` column) and `git check` (a `submodule` warning) name the
+      checkout a bare `git status` aborts on
+- [x] `host offers` survives one catalog failing; `doctor` names no fix for a dropped alias;
+      setup says it installs the mirror's environment, not the job's pinned copy
+- [ ] Setup builds the pinned environment; the landing ships the closure plus what installs;
+      a Task Scheduler settler for the Windows center (each designed in the fixes file)

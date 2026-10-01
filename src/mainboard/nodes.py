@@ -9,11 +9,13 @@
 # the root than any store mirroring it: a workspace keeping a central copy under
 # `datasets/experiments/<node>/evidence` writes its runs to `experiments/<node>/evidence`, and
 # the run is what a dispatch pulls back. No layout is declared, so nodes anywhere answer, and a
-# tree without the node answers empty rather than inventing a path.
+# tree without the node answers empty rather than inventing a path. Evidence a lake keeps counts
+# as on disk, so a node whose evidence left the tree still answers where it did.
 
 from typing import TYPE_CHECKING
 
 from .core.project import Project
+from .state.evidence import EvidenceTree
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,11 +40,33 @@ def evidence_of(root: Path, node: str) -> str:
     """
     if not node:
         return ""
-    found = sorted(_candidates(root, node), key=lambda path: (len(path.parts), path.as_posix()))
-    settled = [path for path in found if (path / EVIDENCE).is_dir()] or found
+    held = _kept(root, node)
+    found = sorted(
+        {*_candidates(root, node), *(path.parent for path in held)},
+        key=lambda path: (len(path.parts), path.as_posix()),
+    )
+    settled = [path for path in found if (path / EVIDENCE).is_dir() or path / EVIDENCE in held]
+    settled = settled or found
     if not settled:
         return ""
     return f"{settled[0].relative_to(root).as_posix()}/{EVIDENCE}"
+
+
+def _kept(root: Path, node: str) -> set[Path]:
+    """`node`'s evidence directories within `DEPTH` of `root` that a lake keeps, so a node whose
+    evidence left the tree still settles where it did; generated trees left out."""
+    tree = EvidenceTree(root)
+    kept = {
+        path.relative_to(tree.base)
+        for depth in range(DEPTH)
+        for path in tree.directories("/".join(["*"] * depth + [node, EVIDENCE]))
+    }
+    return {root / path for path in kept if not any(_hidden(part) for part in path.parts)}
+
+
+def _hidden(name: str) -> bool:
+    """Whether a directory named `name` is never a node's: hidden, a cache or generated."""
+    return name.startswith(".") or name in _SKIPPED or name in Project().out_dirs
 
 
 def _candidates(root: Path, node: str) -> list[Path]:
@@ -62,11 +86,4 @@ def _children(directory: Path) -> list[Path]:
         entries = sorted(directory.iterdir())
     except OSError:
         return []
-    return [
-        entry
-        for entry in entries
-        if entry.is_dir()
-        and not entry.name.startswith(".")
-        and entry.name not in _SKIPPED
-        and entry.name not in Project().out_dirs
-    ]
+    return [entry for entry in entries if entry.is_dir() and not _hidden(entry.name)]

@@ -124,10 +124,33 @@ def hunt(
         query["max_price"] = max_usd_hr
     if spot is not None:
         query["spot"] = spot
-    found = gpuhunt.query(**query)
+    try:
+        found = gpuhunt.query(**query)
+    except OSError:
+        found = _answering(gpuhunt, query)
     if arch is not None:
         found = [item for item in found if item.gpu_name and arch.holds(capability(item.gpu_name))]
     return sorted(found, key=lambda item: item.price)
+
+
+def _answering(gpuhunt: Any, query: dict[str, Any]) -> list[Any]:
+    """The offers of every catalog that answers, asked one at a time, each silent one named.
+
+    gpuhunt asks its catalogs together and one failing fails them all: a 502 from Vultr's API
+    ended `host offers` as a traceback and hid every other cloud's prices (2026-09-30).
+    """
+    from gpuhunt._internal.catalog import (  # type: ignore[import-untyped]  # noqa: PLC0415
+        OFFLINE_PROVIDERS,
+    )
+
+    loaded = (provider.NAME for provider in gpuhunt.default_catalog().providers)
+    found: list[Any] = []
+    for name in query.get("provider") or [*OFFLINE_PROVIDERS, *loaded]:
+        try:
+            found += gpuhunt.query(**{**query, "provider": [name]})
+        except OSError as silent:
+            logger.warning("{} listed no offers: {}", name, silent)
+    return found
 
 
 def as_offer(item: Any) -> Offer:

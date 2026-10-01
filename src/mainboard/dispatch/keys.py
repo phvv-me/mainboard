@@ -21,11 +21,13 @@
 # from its own environment, never from an argv.
 
 import os
+import shutil
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the ssh client's own agent tools with fixed argv since=2026-09-28
 from functools import cache
 from getpass import getpass
 from pathlib import Path
 from shutil import which
+from time import sleep
 
 import keyring
 from keyring.errors import KeyringError
@@ -44,9 +46,6 @@ SOCKET = (CONTROL / "agent.sock").as_posix()
 # Where Microsoft's agent service listens.
 SERVICE_PIPE = r"\\.\pipe\openssh-ssh-agent"
 
-# How long a shared login outlives its last session, as the Mac's own config keeps miyabi's.
-PERSIST = "72h"
-
 # `ssh-add -l`'s answers: 0 lists keys, 1 holds none; anything else means no agent listens.
 _LISTENING = frozenset({0, 1})
 
@@ -64,6 +63,37 @@ _ANSWER = f"""#!/bin/sh
 [ -e "${_ASKED}" ] && exit 0
 : > "${_ASKED}"
 printf '%s\\n' "${_PASSPHRASE}"
+"""
+
+# What a keystore raises when this session has none to offer: keyring's own refusals and, on
+# Windows, the credential API's error, raised unwrapped from a logon session that holds no
+# credential store (error 1312 in a login over ssh, 2026-10-01).
+_REFUSED: tuple[type[Exception], ...] = (KeyringError,)
+if WINDOWS:
+    from win32ctypes.pywin32.pywintypes import error as _CredentialError
+
+    _REFUSED = (KeyringError, _CredentialError)
+
+# Windows ends a process with the console window it was started from, and Git's ssh does not
+# detach from it as a POSIX daemon does: closing the window `unlock` ran in took miyabi-g's
+# shared login down twice on 2026-10-01, and the agent with it. The agent and every shared login
+# start with no console and outside the window's job, as `_daemon` does.
+_BREAKAWAY = subprocess.CREATE_BREAKAWAY_FROM_JOB if WINDOWS else 0
+_DETACHED = (
+    subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | _BREAKAWAY
+    if WINDOWS
+    else 0
+)
+
+# The script a detached master asks through: it leaves the prompt in the folder `_RELAY` names
+# and waits for the answer `unlock` writes there after asking in the terminal.
+_RELAYER = CONTROL / "relay.sh"
+_RELAY = "MB_SSH_RELAY"
+_RELAY_SCRIPT = f"""#!/bin/sh
+printf '%s' "$1" > "${_RELAY}/prompt.part" && mv "${_RELAY}/prompt.part" "${_RELAY}/prompt"
+while [ ! -e "${_RELAY}/answer" ]; do sleep 0.2; done
+cat "${_RELAY}/answer"
+rm -f "${_RELAY}/answer"
 """
 
 
@@ -90,8 +120,15 @@ def address() -> str:
 
 def shared(host: str) -> tuple[str, ...]:
     """The options that route an ssh to `host` through the login `unlock` opened for it, none
-    when no such login answers."""
-    return (*_control(host), "-O", "proxy") if _live(host) else ()
+    when no such login answers; they go ahead of every other option, since ssh keeps the first
+    value an option is given.
+
+    A client in proxy mode sends no keepalives of its own: they go unanswered through the shared
+    login and end the client's session after one interval of silence (miyabi-g, 2026-10-01),
+    while the master keeps the login itself alive.
+    """
+    riding = (*_control(host), "-O", "proxy", "-o", "ServerAliveInterval=0")
+    return riding if _live(host) else ()
 
 
 def serving(socket: str | None = None) -> bool:
@@ -133,8 +170,12 @@ def started() -> str:
         )
     Path(SOCKET).unlink(missing_ok=True)
     CONTROL.mkdir(parents=True, exist_ok=True)
-    subprocess.run([_tool("ssh-agent"), "-a", SOCKET], capture_output=True, timeout=10, check=True)
-    if not serving():
+    _daemon([_tool("ssh-agent"), "-D", "-a", SOCKET], dict(os.environ), CONTROL / "agent.log")
+    for _ in range(50):
+        if serving():
+            break
+        sleep(0.1)
+    else:
         raise MissionError(f"ssh-agent did not start listening on {SOCKET}")
     for key in _kept():
         passphrase = _keystore(key)
@@ -178,46 +219,114 @@ def unlock(host: str) -> int:
         _remember(key, socket)
     if not _silent(host, environ):
         return 0
-    CONTROL.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            str(client()),
-            *_control(host),
-            *("-o", "ControlMaster=yes", "-o", f"ControlPersist={PERSIST}", "-fN", host),
-        ],
-        env=environ,
-        check=False,
-    )
-    _live.cache_clear()
+    _login(host, environ)
     return _silent(host, environ)
+
+
+def _login(host: str, environ: dict[str, str]) -> None:
+    """Open `host`'s shared login as a daemon, relaying each question it asks to this terminal.
+
+    The master has no console to ask in, so `ssh` hands every prompt (a passphrase, a one-time
+    code) to the `_RELAY` script, which leaves it in a folder this process watches and waits for
+    the answer typed here. It runs until the site ends the login or `ssh -O exit` does.
+    """
+    relay = CONTROL / f"relay-{os.getpid()}"
+    relay.mkdir(parents=True, exist_ok=True)
+    _RELAYER.write_text(_RELAY_SCRIPT, newline="\n")
+    _RELAYER.chmod(0o700)
+    master = _daemon(
+        [str(client()), *_control(host), "-o", "ControlMaster=yes", "-N", host],
+        {
+            **environ,
+            "SSH_ASKPASS": _RELAYER.as_posix(),
+            "SSH_ASKPASS_REQUIRE": "force",
+            _RELAY: relay.as_posix(),
+        },
+        CONTROL / f"mb-{host}.log",
+    )
+    try:
+        while master.poll() is None and not _answering(host):
+            try:
+                prompt = (relay / "prompt").read_text(encoding="utf-8")
+            except FileNotFoundError:
+                sleep(0.2)
+                continue
+            (relay / "prompt").unlink()
+            (relay / "answer.part").write_text(getpass(prompt) + "\n", newline="\n")
+            (relay / "answer.part").replace(relay / "answer")
+    finally:
+        shutil.rmtree(relay, ignore_errors=True)
+
+
+def _answering(host: str) -> bool:
+    """Whether `host`'s shared login answers now, read afresh rather than from the cache."""
+    _live.cache_clear()
+    return _live(host)
+
+
+def _daemon(argv: list[str], environ: dict[str, str], log: Path) -> subprocess.Popen[bytes]:
+    """`argv` started as a daemon, its output appended to `log`: on Windows with no console and,
+    where the window's job allows it, outside that job; elsewhere in a session of its own."""
+    with log.open("ab") as sink:
+        try:
+            return subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed argv of the ssh client's own tools since=2026-10-01
+                argv,
+                env=environ,
+                stdin=subprocess.DEVNULL,
+                stdout=sink,
+                stderr=sink,
+                creationflags=_DETACHED,
+                start_new_session=not WINDOWS,
+            )
+        except PermissionError:
+            return subprocess.Popen(  # ruff:ignore[subprocess-without-shell-equals-true]  reason=fixed argv of the ssh client's own tools since=2026-10-01
+                argv,
+                env=environ,
+                stdin=subprocess.DEVNULL,
+                stdout=sink,
+                stderr=sink,
+                creationflags=_DETACHED & ~_BREAKAWAY,
+            )
 
 
 def _remember(key: str, socket: str) -> None:
     """Add `key` to the agent at `socket` from the keystore, asking for its passphrase only when
     the keystore holds none that opens it, then keeping the one that did.
 
-    Windows' agent service keeps what it is given across reboots on its own, so a key added
-    there is asked for once by `ssh-add` itself and never filed.
+    Where nothing can be filed, `ssh-add` asks by itself: Windows' agent service keeps what it is
+    given across reboots on its own, and a session with no keystore (a Windows login over ssh
+    holds no credentials) has nowhere to keep it.
     """
     if microsoft():
-        subprocess.run(
-            [_tool("ssh-add"), key], env={**os.environ, "SSH_AUTH_SOCK": socket}, check=False
+        return _asked(key, socket)
+    try:
+        kept = keyring.get_password(_KEYSTORE, key)
+    except _REFUSED as refusal:
+        logger.warning(
+            "this session has no system keystore ({}); ssh-add asks for {}", refusal, key
         )
-        return
-    kept = _keystore(key)
+        return _asked(key, socket)
     if kept is not None and _add(key, kept, socket):
-        return
+        return None
     passphrase = getpass(f"passphrase for {key} (kept in the system keystore): ")
     if not _add(key, passphrase, socket):
         raise MissionError(f"ssh-add refused {key}; was the passphrase right?")
     try:
         keyring.set_password(_KEYSTORE, key, passphrase)
-    except KeyringError as refusal:
+    except _REFUSED as refusal:
         logger.warning(
             "the system keystore refused {}, so a new agent asks again: {}", key, refusal
         )
-        return
+        return None
     _KEPT.write_text("".join(f"{path}\n" for path in sorted({*_kept(), key})), newline="\n")
+    return None
+
+
+def _asked(key: str, socket: str) -> None:
+    """`key` added to the agent at `socket` by `ssh-add`, which asks for its passphrase itself."""
+    subprocess.run(
+        [_tool("ssh-add"), key], env={**os.environ, "SSH_AUTH_SOCK": socket}, check=False
+    )
 
 
 def _kept() -> list[str]:
@@ -232,7 +341,7 @@ def _keystore(key: str) -> str | None:
     """`key`'s passphrase as the keystore keeps it, None when it keeps none or cannot be read."""
     try:
         return keyring.get_password(_KEYSTORE, key)
-    except KeyringError as refusal:
+    except _REFUSED as refusal:
         logger.warning("the system keystore could not be read for {}: {}", key, refusal)
         return None
 
@@ -282,17 +391,22 @@ def _control(host: str) -> tuple[str, str]:
 
 @cache
 def _live(host: str) -> bool:
-    """Whether a shared login to `host` answers, clearing the socket one that died left behind."""
+    """Whether a shared login to `host` answers, clearing the socket one that died left behind.
+
+    Only a socket nothing listens on is cleared (a new master would refuse to replace it), never
+    one whose check failed otherwise, which would cut a living login off from every later ssh.
+    """
     socket = CONTROL / f"mb-{host}"
     if not socket.exists():
         return False
     checked = subprocess.run(
         [str(client()), *_control(host), "-O", "check", host],
         capture_output=True,
+        text=True,
         timeout=10,
         check=False,
     )
-    if checked.returncode:
+    if "connection refused" in checked.stderr.lower():
         socket.unlink(missing_ok=True)
     return not checked.returncode
 

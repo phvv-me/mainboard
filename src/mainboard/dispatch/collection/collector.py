@@ -10,6 +10,7 @@ from zipfile import ZipFile
 from filelock import FileLock
 
 from ...core.project import Project
+from ...state.evidence import EvidenceTree
 from ..state.digests import KeptDigests
 from ..transport import SshTransport
 
@@ -27,7 +28,8 @@ class Collector:
 
     Each transfer is staged before publication, so interrupted downloads cannot appear as
     complete results and an older node cannot replace newer evidence merely by changing a
-    file's timestamp. Collection never deletes evidence.
+    file's timestamp. Collection never deletes evidence, and what it publishes is kept in the
+    workspace lake at once.
     """
 
     def __init__(self, root: Path, transport: SshTransport | None = None) -> None:
@@ -48,8 +50,13 @@ class Collector:
             lock = Project().out(self.root) / "collection.lock"
             lock.parent.mkdir(parents=True, exist_ok=True)
             with FileLock(lock, timeout=self.transport.deadline):
-                pending = self._pending(staged)
-                return sum(self._publish(source, target=target) for source, target in pending)
+                published = [
+                    target
+                    for source, target in self._pending(staged)
+                    if self._publish(source, target=target)
+                ]
+        EvidenceTree(self.root).keep(published)
+        return len(published)
 
     def pull(self, host: str, *, root: str, path: str, python: str = "python3") -> int:
         """Collect a remote path and return the number of new local files.

@@ -122,4 +122,5 @@ class Tree:
             changed=len(changes) - untracked,
             untracked=untracked,
             published=upstream if upstream in homes else next(iter(homes), ""),
+            broken=repo.unreadable(),
         )

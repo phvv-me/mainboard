@@ -18,15 +18,16 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..manifest.loading import load
 from ..manifest.schema.workspace import DATA
-from ..state.lake import ALIAS, Lake
+from ..state.blobs import Blobs
+from ..state.lake import ALIAS, Lake, insert
 from .sync import GitignoreFilter
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
+    import duckdb
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-# How many bytes of new source are staged before they are appended, bounding memory.
-_CHUNK_BYTES = 64 << 20
 
 
 class Status(StrEnum):
@@ -150,47 +151,43 @@ class SourceTree:
         listing's digest.
 
         Each listed file's bytes land in the lake's `blobs` once per content, a file unchanged
-        since any earlier dispatch costing nothing, and the listing in `closures`. A file that
-        changed since it was listed is refused rather than kept under the wrong digest.
+        since any earlier dispatch costing nothing, and the listing in `closures`, all in one
+        commit. A file that changed since it was listed is refused rather than kept under the
+        wrong digest.
         """
         rows = parsed(manifest)
         digest = hashlib.sha256(manifest.encode()).hexdigest()
-        session = Lake.at(self.root).session()
-        wanted = sorted({row.blob for row in rows})
-        held = {blob for (blob,) in session.rows(f"SELECT DISTINCT sha256 FROM {ALIAS}.blobs")}
-        held &= set(wanted)
-        staged: list[dict[str, object]] = []
-        size = 0
-        for row in rows:
-            if row.blob in held:
-                continue
-            payload = (self.root / row.path).read_bytes()
-            if hashlib.sha256(payload).hexdigest() != row.blob:
-                raise MissionError(f"{row.path} changed before source archival")
-            staged.append({"sha256": row.blob, "bytes": payload})
-            held.add(row.blob)
-            size += len(payload)
-            if size >= _CHUNK_BYTES:
-                session.append("blobs", staged)
-                staged, size = [], 0
-        session.append("blobs", staged)
-        closure, stamp = digest[:12], datetime.now(UTC)
-        if not session.rows(
-            f"SELECT 1 FROM {ALIAS}.closures WHERE closure = ? LIMIT 1", [closure]
-        ):
-            session.append(
-                "closures",
-                [
-                    {
-                        "ts": stamp,
-                        "closure": closure,
-                        "path": row.path,
-                        "blob": row.blob,
-                        "status": str(row.status),
-                    }
-                    for row in rows
-                ],
+        lake = Lake.at(self.root).ready()
+        blobs = Blobs(lake)
+        closure = digest[:12]
+
+        def keep(connection: duckdb.DuckDBPyConnection) -> None:
+            held = blobs.held(connection)
+            blobs.stage(
+                connection,
+                {row.blob: self.root / row.path for row in rows if row.blob not in held},
             )
+            listed = lake.execute(
+                connection, f"SELECT 1 FROM {ALIAS}.closures WHERE closure = ? LIMIT 1", [closure]
+            ).fetchone()
+            if listed is None:
+                stamp = datetime.now(UTC)
+                insert(
+                    connection,
+                    "closures",
+                    [
+                        {
+                            "ts": stamp,
+                            "closure": closure,
+                            "path": row.path,
+                            "blob": row.blob,
+                            "status": str(row.status),
+                        }
+                        for row in rows
+                    ],
+                )
+
+        lake.transact(keep)
         return digest
 
     def restore(self, digest: str, into: Path) -> list[Path]:
@@ -198,21 +195,22 @@ class SourceTree:
 
         Raises MissionError when the lake holds no such listing or misses one of its files.
         """
-        session = Lake.at(self.root).session()
-        rows = session.rows(
-            f"SELECT c.path, c.blob, b.bytes FROM {ALIAS}.closures c "
-            f"LEFT JOIN (SELECT DISTINCT ON (sha256) sha256, bytes FROM {ALIAS}.blobs) b "
-            "ON b.sha256 = c.blob WHERE c.closure = ? ORDER BY c.path",
-            [digest[:12]],
-        )
+        lake = Lake.at(self.root).current()
+        with lake.open() as connection:
+            rows = lake.execute(
+                connection,
+                f"SELECT path, blob FROM {ALIAS}.closures WHERE closure = ? ORDER BY path",
+                [digest[:12]],
+            ).fetchall()
+            payloads = Blobs(lake).read(connection, {blob for _, blob in rows})
         if not rows:
             raise MissionError(f"the lake keeps no source listing {digest[:12]}")
         written: list[Path] = []
-        for path, blob, payload in rows:
-            if payload is None:
+        for path, blob in rows:
+            if blob not in payloads:
                 raise MissionError(f"the lake keeps no bytes for {path} ({blob[:12]})")
             target = into / path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(payload)
+            target.write_bytes(payloads[blob])
             written.append(target)
         return written

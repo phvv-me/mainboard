@@ -25,6 +25,7 @@ from uuid import uuid7
 from pydantic import JsonValue
 
 from ..dispatch.provenance import registered
+from ..state.evidence import EvidenceTree
 from .artifacts import Artifact, Artifacts
 from .coverage import PROBED, Cell, LaneStatus, Probed
 from .dataset import ADMISSIBILITY, LEDGER, OPENED, PARTIAL
@@ -155,7 +156,8 @@ class Session:
 
         A store's `latest.jsonl` is reminted only when this run covers every lane the store has
         known (`Dataset.full`); a partial run lands beside it as `partial-<run>.jsonl`. Receipt
-        fragments stay immutable, so a concurrent fetch never sees a rewritten part.
+        fragments stay immutable, so a concurrent fetch never sees a rewritten part. The run's
+        receipt partitions and artifacts are then kept in the workspace lake.
         """
         refusals = []
         try:
@@ -164,12 +166,18 @@ class Session:
             refusals.append(str(residue))
         if self.leased is not None:
             self.leased.release()
-        for node in self.writers:
+        written: list[Path] = []
+        for node, writer in self.writers.items():
             store = self.declared.universe.dataset(node)
             if store.full(self.run):
                 store.as_jsonl(store.root / LEDGER)
             else:
                 store.as_jsonl(store.root / PARTIAL.format(self.run), self.run)
+            artifacts = store.root.parent / "artifacts" / self.run
+            written += [writer.directory, *([artifacts] if artifacts.is_dir() else [])]
+        # The run's receipts and artifacts go to the lake as soon as they exist, so the tree's
+        # copies are only a cache; on a job host with no lake the center keeps them on collection.
+        EvidenceTree(self.declared.universe.root).keep(written)
         drifted = moved(self.declared.flags, self.baseline)
         if not drifted:
             return "\n".join(refusals)

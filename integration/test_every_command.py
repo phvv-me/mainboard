@@ -13,7 +13,11 @@ from mainboard.cli import build
 
 _PACKAGE = Path(__file__).parents[1]
 # The package's README, and the workspace's agent skills when the package sits in its monorepo.
-_DOCS = [_PACKAGE / "README.md", *sorted(_PACKAGE.parents[1].glob(".agents/skills/*/SKILL.md"))]
+_DOCS = [
+    _PACKAGE / "README.md",
+    _PACKAGE.parents[1] / "AGENTS.md",
+    *sorted(_PACKAGE.parents[1].glob(".agents/skills/*/SKILL.md")),
+]
 # A call as a doc spells it in code: a shell line in a fenced block (`$ ` optional) or an inline
 # code span, `mb` or `mainboard` then the words of a command path.
 _WORDS = r"(?:mb|mainboard) ((?:[a-z][a-z-]*)(?: [a-z][a-z-]*)*)"

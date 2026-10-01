@@ -7,6 +7,7 @@ from typing import ClassVar
 
 from patos import FrozenModel
 
+from ..state.evidence import EvidenceTree
 from .dataset import Dataset
 from .ledger import NESTED
 
@@ -46,14 +47,10 @@ class Universe(FrozenModel):
     @property
     def nodes(self) -> tuple[str, ...]:
         """Every node that has ever written a receipt, in name order; the empty node when flat."""
+        stores = EvidenceTree(self.storage_root).directories(f"*/{self.evidence}")
+        depth = len(Path(self.evidence).parts) - 1
         found = tuple(
-            sorted(
-                path.name
-                for path in self.storage_root.iterdir()
-                if path.is_dir() and Dataset(path / self.evidence).parts
-            )
-            if self.storage_root.is_dir()
-            else ()
+            sorted(store.parents[depth].name for store in stores if Dataset(store).parts)
         )
         return found or (("",) if self.dataset("").parts else ())
 

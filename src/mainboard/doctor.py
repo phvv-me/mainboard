@@ -215,11 +215,13 @@ class Doctor:
         The same digest `environment` asks of this machine, compared against what each host was
         last provisioned from, since the manifest moves after a host is provisioned. A host with
         no recorded digest has nothing to compare against and never counts as diverged; one whose
-        environment the manifest no longer declares does.
+        environment the manifest no longer declares does. A record under an alias the manifest
+        dropped is left out: the fix named `host sync` on a host nothing can sync any more.
 
         setups: the onboarding records (see `sections`), read from the survey when None.
         """
-        setups = self.survey.onboarded() if setups is None else setups
+        found = self.survey.onboarded() if setups is None else setups
+        setups = {host: setup for host, setup in found.items() if self.board.declares(host)}
         provisioner = Provisioner(self.board.root, self.board.manifest)
         diverged = sorted(
             host

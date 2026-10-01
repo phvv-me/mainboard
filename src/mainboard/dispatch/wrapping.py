@@ -159,7 +159,9 @@ def missing(plan: ExecutionPlan, prefix: str) -> str:
     )
 
 
-def connection(host: str, ssh: SshTransport | None = None) -> BoundedSshMachine:
+def connection(
+    host: str, ssh: SshTransport | None = None, *, attempts: int = _CONNECT_ATTEMPTS
+) -> BoundedSshMachine:
     """Open an ssh connection to `host` with the per-user install dirs on PATH.
 
     A throwaway one-shot `ssh` first warms the host's `ControlMaster` from `~/.ssh/config`, so an
@@ -174,10 +176,13 @@ def connection(host: str, ssh: SshTransport | None = None) -> BoundedSshMachine:
     link) raises `HostUnreachable` and is retried a few times.
 
     ssh: the bounded SSH policy; the default policy when omitted.
+    attempts: how many knocks a transport fault gets. One for a state probe, whose callers report
+        the host quiet or ask again on their own cadence: a dead host cost every listing and
+        every pass of a wait four knocks and their backoff (gold, 2026-09-30).
     """
     retrying = tenacity_retry(
         retry=retry_if_exception_type(HostUnreachable),
-        stop=stop_after_attempt(_CONNECT_ATTEMPTS),
+        stop=stop_after_attempt(attempts),
         wait=wait_fixed(_CONNECT_BACKOFF),
         reraise=True,
     )

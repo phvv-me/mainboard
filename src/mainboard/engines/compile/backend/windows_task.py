@@ -8,8 +8,10 @@ from typing import TYPE_CHECKING, cast
 from plumbum import local
 
 from ....core import MissionError
+from ....core.host import WINDOWS
 from ....manifest.schema.spec import Json
 from .result import CommandResult
+from .tool import windows_launcher
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -264,7 +266,8 @@ class WindowsTaskRunner:
                 local.cwd(str(task.cwd)),
                 local.env(INIT_CWD=str(self.initial_cwd), **environment),
             ):
-                executable = local[invocation[0]][invocation[1:]]
+                program = windows_launcher(invocation[0]) if WINDOWS else local[invocation[0]]
+                executable = program[invocation[1:]]
                 result = action(executable)
             results.append(result)
             if not result.succeeded:

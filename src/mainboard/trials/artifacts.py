@@ -11,6 +11,7 @@ from tempfile import NamedTemporaryFile
 from patos import FrozenModel
 from pydantic import Field
 
+from ..state.evidence import EvidenceTree
 from .archive import ParquetArtifacts
 
 
@@ -33,11 +34,17 @@ class Artifact(FrozenModel):
 
         Dispatch mounts result directories outside its source snapshot. References remain
         project-relative across that mount and after fetching; their hash verifies the bytes.
+        Found on disk, else in a Parquet archive under `root`, else by digest in the lake of a
+        workspace holding `root`, once the file has left the tree.
         """
+        path = root / self.relative
         try:
-            data = (root / self.relative).read_bytes()
+            data = path.read_bytes()
         except FileNotFoundError:
-            data = ParquetArtifacts.read(root / self.relative, boundary=root, digest=self.sha256)
+            try:
+                data = ParquetArtifacts.read(path, boundary=root, digest=self.sha256)
+            except FileNotFoundError:
+                data = EvidenceTree(root).recall(self.sha256)
         if len(data) != self.size or hashlib.sha256(data).hexdigest() != self.sha256:
             raise ValueError(f"artifact content changed: {self.path}")
         return data

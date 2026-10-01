@@ -7,7 +7,7 @@ import json
 import shlex
 from pathlib import Path
 from sqlite3 import Error as SQLiteError
-from time import sleep
+from time import monotonic, sleep
 from typing import TYPE_CHECKING, Final
 
 from filelock import Timeout
@@ -15,6 +15,7 @@ from plumbum.commands.processes import ProcessExecutionError
 
 from .batch.receipts import Topic, latest, publish
 from .core.errors import MissionError
+from .core.project import Project
 from .dispatch import vocabulary
 from .dispatch.backends.base import route
 from .dispatch.dispatcher import Verdict
@@ -27,7 +28,7 @@ from .log import logger
 from .tracking import is_batched, streamed
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
 
     from pydantic import JsonValue
 
@@ -38,6 +39,12 @@ if TYPE_CHECKING:
 # The routing answer for the schedulers reached over ssh, the one family whose whole host can be
 # asked about in a single query. A provider has no such listing and is asked run by run.
 _QUEUED: Final = "ssh-family"
+
+# How long one process leaves a target alone after it did not answer a pass.
+_SILENT_SECONDS: Final = 30.0
+
+# How many of an undeclared target's runs are named by handle before the rest are counted.
+_NAMED: Final = 4
 
 # What a resubmission may fail with before it becomes this run's row rather than the end of the
 # sweep, the set a batch dispatch absorbs: one target refusing says nothing about the next run.
@@ -66,12 +73,19 @@ class Sweep:
     down: why a target could not be resolved, one entry per target.
     """
 
-    def __init__(self, board: Board, records: Sequence[RunRecord]) -> None:
-        """records: every run the sweep still owes an outcome for, in the order it reports them."""
+    def __init__(
+        self, board: Board, records: Sequence[RunRecord], *, down: Mapping[str, str] | None = None
+    ) -> None:
+        """records: every run the sweep still owes an outcome for, in the order it reports them.
+
+        down: targets already found unanswering moments ago, each with why, which are not asked
+            again: a listing sweeps right after the settling pass, and knocking twice on one
+            dead host doubled what it cost (34 s of a `job list`, 2026-09-30).
+        """
         self.board = board
         self.runs: dict[RunRecord, Run] = {}
         self.states: dict[RunRecord, JobState] = {}
-        self.down: dict[str, str] = {}
+        self.down: dict[str, str] = dict(down or {})
         # The kind rides in the key because it picks the scheduler and was recorded at dispatch,
         # so a run is asked about the way it was submitted even if its host was redeclared. A
         # held or uncreated dispatch has no handle any target heard of; `Monitor.held` asks again.
@@ -83,12 +97,28 @@ class Sweep:
             if target in self.down:
                 continue
             if not board.declares(target):
-                self.down[target] = f"{target} is no longer declared; `cancel` settles its runs"
+                self.down[target] = self.undeclared(target, owned)
                 continue
             try:
                 self.settle(kind, owned)
             except (HostUnreachable, MissionError, OSError) as fault:
                 self.down[target] = str(fault)
+
+    @staticmethod
+    def undeclared(target: str, records: Sequence[RunRecord]) -> str:
+        """Why `target`'s runs never settle on their own, and the commands that settle them.
+
+        The handles are named with their host, since a rental's are small integers several
+        hosts share and a run that already ended is on no listing of live ones: two such runs
+        were announced on every sweep for a day with nothing saying which to cancel.
+        """
+        cancel = f"`{Project().name} job cancel {{}} --on {target}`"
+        named = ", ".join(cancel.format(record.handle) for record in records[:_NAMED])
+        more = f" and {len(records) - _NAMED} more" if len(records) > _NAMED else ""
+        return (
+            f"{target} is no longer declared, so it is never asked; "
+            f"settle its runs with {named}{more}"
+        )
 
     def settle(self, kind: str, records: Sequence[RunRecord]) -> None:
         """Rebuild every run in `records` and resolve the ones still owed a probe.
@@ -138,6 +168,21 @@ class Monitor:
         self.captured = Captured(self.cache.session)
         self.streams: dict[str, Bus] = {}
         self.quiet: dict[str, str] = {}
+        self.silent: dict[str, tuple[float, str]] = {}
+
+    def silenced(self) -> dict[str, str]:
+        """The targets that did not answer a pass of this process too recently to ask again.
+
+        A wait sweeps every few seconds, and a dead host cost each of its passes a connect
+        timeout, whichever host the waited job ran on.
+        """
+        now = monotonic()
+        self.silent = {
+            target: (since, why)
+            for target, (since, why) in self.silent.items()
+            if now - since < _SILENT_SECONDS
+        }
+        return {target: why for target, (_, why) in self.silent.items()}
 
     def capture(self, record: RunRecord, job: Run) -> tuple[str, ...]:
         """Save the native log and deduplicated receipts before a rental can be destroyed.
@@ -398,7 +443,9 @@ class Monitor:
             for record in records
             if (reason := _UNCREATED.get(record.verdict or ""))
         )
-        resolved = Sweep(self.board, records)
+        resolved = Sweep(self.board, records, down=self.silenced())
+        asked = monotonic()
+        self.silent = {target: (asked, why) for target, why in resolved.down.items()} | self.silent
         for record in records:
             state = resolved.states.get(record)
             if state is None:

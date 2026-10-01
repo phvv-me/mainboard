@@ -14,6 +14,9 @@ if TYPE_CHECKING:
 # How many withheld paths a step names before it only counts the rest.
 _NAMED = 3
 
+# What a repository with no commit identity is held for, and the fix.
+NO_IDENTITY = "git knows no author here; set `git config --global user.name` and `user.email`"
+
 
 class Commit:
     """Commit every dirty owned repository, submodules first so each parent records their commits.
@@ -28,7 +31,8 @@ class Commit:
     `never-commit` pattern, which git is asked never to list, and any file over the size ceiling
     that Git LFS does not carry. Those stay in the working tree, unstaged. The step names the
     oversized files and any `never-commit` path somebody had staged by hand, since those are the
-    ones a person expected to go in.
+    ones a person expected to go in. A repository git knows no author for is held before
+    anything is staged.
     """
 
     def __init__(self, tree: Tree, message: str) -> None:
@@ -44,6 +48,8 @@ class Commit:
         changes = repo.changes(self.tree.policy.outside)
         if not changes:
             return Step(repo=repo.name, outcome=Outcome.CURRENT, detail="clean")
+        if not repo.identified():
+            return Step(repo=repo.name, outcome=Outcome.HELD, detail=NO_IDENTITY)
         if not repo.branch() and not repo.attach():
             detail = f"detached at {repo.short('HEAD')}, off the line of {repo.trunk()}"
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)

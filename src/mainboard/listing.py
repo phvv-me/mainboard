@@ -6,10 +6,12 @@
 # operator ran `qstat` over ssh to learn the debug queue was starting two at a time. So live runs
 # are never truncated, carry their backend's live state, and any truncation left says so.
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from .core.project import Project
 from .diagnosis import reason
 from .dispatch import vocabulary
 from .jobs.beacon import Progress
@@ -82,24 +84,34 @@ class Listing:
     """
 
     def __init__(
-        self, board: Board, *, limit: int, project: str = "", pulses: Pulses | None = None
+        self,
+        board: Board,
+        *,
+        limit: int,
+        project: str = "",
+        pulses: Pulses | None = None,
+        quiet: Mapping[str, str] | None = None,
     ) -> None:
         """limit: how many settled runs to show behind the live ones.
 
         project: only the runs dispatched from this project; every run when empty.
 
         pulses: the look at running jobs' output and cards, the workspace's own when None.
+
+        quiet: the hosts the settling pass just found unanswering, each with why, which this
+            listing reports without knocking on them a second time.
         """
         self.board = board
         self.limit = limit
         self.project = project
         self.cache = board.dispatcher.cache
         self.pulses = pulses or Pulses(board)
+        self.quiet = quiet or {}
 
     def taken(self) -> Listed:
         """The listing as it stands: every live run resolved now, then the settled tail."""
         live = self.cache.live(self.project)
-        resolved = Sweep(self.board, live)
+        resolved = Sweep(self.board, live, down=self.quiet)
         running = [
             record
             for record in live
@@ -108,27 +120,43 @@ class Listing:
             and state.stage != vocabulary.QUEUED
         ]
         pulses = self.pulses.taken(running)
+        unasked = {record for record in live if record.target in resolved.down}
         rows = [
             *(
-                self.flying(record, resolved.states.get(record), pulses.get(record))
+                self.flying(
+                    record,
+                    resolved.states.get(record),
+                    pulses.get(record),
+                    unanswered=record in unasked,
+                )
                 for record in live
             ),
             *(self.landed(record) for record in self.cache.settled(self.limit, self.project)),
         ]
-        return Listed(rows=tuple(rows), note=self.note(shown=len(rows), quiet=resolved.down))
+        owed = Counter(record.target for record in unasked)
+        return Listed(
+            rows=tuple(rows), note=self.note(shown=len(rows), quiet=resolved.down, owed=owed)
+        )
 
     @staticmethod
-    def flying(record: RunRecord, state: JobState | None, pulse: Pulse | None) -> JobRow:
+    def flying(
+        record: RunRecord, state: JobState | None, pulse: Pulse | None, *, unanswered: bool = False
+    ) -> JobRow:
         """One live run's row, from what its host just said or from the cache when it went quiet.
 
         The state is the lifecycle's live word, `queued`, `running`, or `finished` for a job its
         queue is done with but the sweep has not settled, the distinctions a reader wants. A
         backend mapping neither stage leaves its raw word (`Queued` in a pueue status). A running
         job carries its pulse: cells landed, output quiet time, and its host's busiest card.
+
+        unanswered: the run's host was not asked or did not answer, so the row says what was
+            last recorded instead of reading as a run that stopped moving.
         """
         live = state.phase if state else ""
         progress = pulse.progress if pulse else Progress()
         failed = f" ({progress.failed} failed)" if progress.failed else ""
+        recorded = record.state or record.verdict
+        last = f"last recorded {recorded}" if recorded else "no state recorded since dispatch"
         return JobRow(
             state=live or record.state or vocabulary.UNKNOWN,
             host=record.target,
@@ -138,6 +166,7 @@ class Listing:
             since=(state.since if state else "") or record.submitted_at,
             starts=state.estimated_start if state else "",
             submitted_at=record.submitted_at,
+            cause=f"{record.target} not heard from; {last}" if unanswered else "",
             cells=f"{progress.counted}{failed}",
             quiet_s=pulse.quiet_s if pulse else None,
             gpu_pct=pulse.gpu_pct if pulse else None,
@@ -159,14 +188,34 @@ class Listing:
             cause=reason(self.board, record) if verdict in _FAILURES else "",
         )
 
-    def note(self, *, shown: int, quiet: Mapping[str, str]) -> str:
+    def silence(self, host: str, why: str, live: int) -> str:
+        """One quiet host's line: why it is quiet, and what to do about the runs it holds.
+
+        A host the manifest dropped already says which commands settle its runs.
+
+        live: how many live runs the host holds; with none it holds only ended ones.
+        """
+        if not self.board.declares(host):
+            return why
+        waiting = (
+            f"its {live} live run(s) keep what was last recorded and settle once it answers; "
+            f"`{Project().name} job cancel <handle>` gives one up now without stopping it there"
+            if live
+            else "the ended runs it still holds settle once it answers"
+        )
+        return f"{host} did not answer ({why}): {waiting}"
+
+    def note(self, *, shown: int, quiet: Mapping[str, str], owed: Mapping[str, int]) -> str:
         """What this listing leaves out and which hosts went quiet, empty when it leaves nothing.
 
         A table silently stopping at its limit is the fault this verb was fixed for, and a quiet
-        host is named rather than left to read as runs that stopped moving.
+        host is named rather than left to read as runs that stopped moving, with what to do
+        about the runs it still owes.
+
+        owed: how many live runs each quiet host holds.
         """
         total = self.cache.total()
-        said = [f"{host} did not answer: {why}" for host, why in quiet.items()]
+        said = [self.silence(host, why, owed.get(host, 0)) for host, why in quiet.items()]
         if shown < total:
             said.insert(
                 0,

@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 from cyclopts import App, Parameter
 from plumbum import local as localhost
-from pydantic import JsonValue
 from rich.console import Console
 
 from . import staleness, upkeep
@@ -29,6 +28,7 @@ from .core.project import Project
 from .core.section import Section, Verdict, failed
 from .core.shell import become
 from .delimiter import Delimiter
+from .diagnostics import Diagnostics
 from .dispatch import keys, vocabulary
 from .dispatch.commandline import joined, vetted
 from .dispatch.evidence import printed
@@ -50,7 +50,7 @@ from .render import diverted, mode_of, plain, progress, record, rows, totals
 from .render.values import to_row
 from .runtime.job import Job
 from .runtime.runner import Runner
-from .state import Importer, Lake
+from .state import DirectoryReplica, Evidence, Importer, Lake
 from .state.lake import PORT
 from .vigil import STALL_SECONDS
 
@@ -182,7 +182,10 @@ def build(root: Path | None = None) -> App:
     host = App(name="host", help="Set up, list, inspect and reach the machines jobs run on.")
     job = App(name="job", help="Dispatch jobs to hosts and follow them until they settle.")
     self_ = App(name="self", help=f"Manage the {project.name} installation itself.")
-    lake = App(name="lake", help="Keep the workspace's state lake: check, compact, serve.")
+    lake = App(
+        name="lake",
+        help="Keep the workspace's state lake and its evidence: check, compact, serve.",
+    )
     app.command(host)
     app.command(job)
     paper = App(name="paper", help="Build a declared manuscript and plot figures from results.")
@@ -263,7 +266,7 @@ def build(root: Path | None = None) -> App:
         One job: a command, or `path/to/file.py::name` (which ships only the code it imports),
         on `--on HOST`. A batch: `--batch spec.toml`, or `--job target:command` repeated, each
         job to its own target; a target refusing is that job's row and the rest still go. A
-        lane: `path/to/test.py::test --on a,b --split model` runs the test's cells as one job
+        lane: `--on a,b --split model path/to/test.py::test` runs the test's cells as one job
         per `model` value on every named host (`--per-job N` slices instead).
 
         What it will cost prints first (target, queue admission, the meter); at a terminal it
@@ -578,7 +581,8 @@ def build(root: Path | None = None) -> App:
             workspace = board("local")
             with progress("settling and asking every host about its live jobs"):
                 report = workspace.monitor().once()
-                taken = Listing(workspace, limit=limit, project=project).taken()
+                quiet = {down.host: down.reason for down in report.unreachable_hosts}
+                taken = Listing(workspace, limit=limit, project=project, quiet=quiet).taken()
             if output.json and not watch:
                 # The periodic pass reads this document: the rows and what the sweep moved.
                 sweep = {**report.model_dump(), "changed": report.changed}
@@ -752,6 +756,36 @@ def build(root: Path | None = None) -> App:
         output.print_record(payload, title="new")
 
     @app.command
+    def diagnose(*, days: int = 7, out: Path | None = None, output: Output = _COMPACT) -> int:
+        """Preserve recent operating-system incidents and explain what their evidence establishes.
+
+        Every read-only probe is bounded. The report keeps raw records, device identities,
+        missing permissions and submission times separately from original incident times.
+        No repair, restart, elevation or settings change happens here. Works without a manifest.
+
+        Args:
+            days: the recent event window, from 1 to 365 days.
+            out: the evidence directory; a new timestamped directory under .mainboard when omitted.
+        """
+        if not 1 <= days <= 365:
+            raise MissionError("days must be between 1 and 365")
+        with progress("collecting operating-system evidence"):
+            report = Diagnostics(days=days).collect()
+            destination = (
+                out
+                or Path.cwd()
+                / ".mainboard"
+                / "diagnostics"
+                / report.collected_at.strftime("%Y%m%dT%H%M%S.%fZ")
+            )
+            saved = report.save(destination)
+        sections = [
+            *report.findings,
+            Section(section="evidence", verdict=Verdict.PASS, detail=str(saved.resolve())),
+        ]
+        return _sectioned(sections, output, title="diagnose")
+
+    @app.command
     def doctor(
         env: str = "", *, center: bool = False, members: bool = False, output: Output = _COMPACT
     ) -> int:
@@ -882,10 +916,11 @@ def build(root: Path | None = None) -> App:
     def unlock(*hosts: str) -> None:
         """Unlock each host's ssh key once, so every later connection this tool opens is silent.
 
-        Keeps one ssh-agent on a fixed socket beside the ssh config, started on demand and
-        outliving this process; every command this tool runs afterwards uses it. On Windows no ssh
-        can share a connection, so this is what makes a passphrase-protected host (miyabi-g)
-        reachable without a prompt per connection. Asks each key's passphrase once per boot.
+        Keeps one ssh-agent on a fixed socket beside the ssh config, and for a host that still
+        asks for more (miyabi-g's one-time code) one shared login every later ssh rides. Both
+        run as daemons, outliving this process and the terminal it ran in; the login's questions
+        are asked here and relayed to it. A key's passphrase is kept in the system keystore where
+        the session has one, and asked again only when a new agent cannot be loaded from it.
 
         Args:
             hosts: the ssh aliases whose keys to add.
@@ -1013,8 +1048,12 @@ def build(root: Path | None = None) -> App:
         """Onboard a host until it can run jobs, then show what it became and what that means.
 
         The host installs the environment its declared profile names from the lock this
-        workspace solved, shipped with the mirror. Then the findings `host list --facts` shows,
-        judged from the census read back through the new activation.
+        workspace solved, shipped with the mirror: the mirror's own environment, which `run
+        --on`, `shell --on` and every dispatch's preflight enter. A job activates a pinned copy
+        of it instead, addressed by the lock's content and built by the first dispatch of each
+        lock (`built <env> on <host>`), from the packages this setup already fetched. Then the
+        findings `host list --facts` shows, judged from the census read back through the new
+        activation.
 
         `--center` instead moves the center there (Windows, macOS or Linux): probes it, signs gh
         in, carries ssh config and keys, clones the monorepo at this HEAD with every owned
@@ -1156,7 +1195,7 @@ def build(root: Path | None = None) -> App:
         span = spanned(arch) if arch else None
         asking = [part for part in (f"{count}x", gpu, span and span.spelled) if part]
         wanted = True if spot else False if on_demand else None
-        with progress(f"asking every cloud for {' '.join(asking)} GPUs"):
+        with progress(f"asking every cloud for {' '.join(map(str, asking))} GPUs"):
             others = [name for name in provider if name != "hpc-ai"]
             found = (
                 []
@@ -1667,7 +1706,9 @@ def build(root: Path | None = None) -> App:
         provider API, writes the terminal verdict, publishes the settled receipt, and ends the
         rental, which is the only thing that stops a provider charging. A run on a host the
         manifest no longer declares, a released rental say, has nothing left to ask, so it
-        settles cancelled with that cause and its evidence marked unverified.
+        settles cancelled with that cause and its evidence marked unverified. A run on a declared
+        host that does not answer settles cancelled too, and a warning says nothing was stopped
+        there.
 
         Exits the settled code, so a cancelled run exits 1: the stop was deliberate, and a
         completion check must still never call a stopped run complete.
@@ -1767,17 +1808,72 @@ def build(root: Path | None = None) -> App:
         """Compare what the lake's catalog references with what is on disk; exit 1 on a loss.
 
         A deleted data file breaks only its table and `count(*)` hides it, so this is what finds
-        one; a catalog WAL lost after a crash is named too.
+        one; a catalog WAL lost after a crash is named too. Then DuckDB recomputes every kept
+        chunk's checksum in parallel against the one recorded at ingest, reading every byte the
+        lake keeps once and none into Python, and every indexed evidence file must be held whole
+        at its size. A chunk kept before checksums existed has its checksum recorded by that
+        read, so the first check after an upgrade is also the backfill.
 
         Args:
         """
-        health = Lake.at(workspace_root()).ready().check()
+        lake_ = Lake.at(workspace_root()).ready()
+        health = lake_.check()
+        readable = all(finding.kind == "bloat" for finding in health.findings)
+        findings = [*health.findings, *(Evidence(lake_).verify() if readable else ())]
         output.print_rows(
-            [finding.model_dump() for finding in health.findings],
+            [finding.model_dump() for finding in findings],
             title="lake check",
             columns=("table", "kind", "detail"),
         )
-        return 0 if health.ok else 1
+        return 0 if not findings else 1
+
+    @lake.command
+    def ingest(*paths: Path, output: Output = _COMPACT) -> None:
+        """Keep evidence files in the lake byte for byte, so they can leave version control.
+
+        Every file at or under each path lands once per content in the lake's `blobs`, and its
+        workspace-relative path in `lake.evidence`; readers of receipts, artifacts and events
+        then find it there once it is gone from disk. A file already kept costs nothing, so a
+        rerun finishes an interrupted ingest. Nothing on disk is moved or changed.
+
+        Args:
+            paths: evidence files or directories inside this workspace.
+        """
+        with progress("keeping evidence in the lake"):
+            kept = Evidence(Lake.at(workspace_root())).ingest(paths)
+        output.print_rows([kept.model_dump()], title="lake ingest")
+
+    @lake.command
+    def materialize(*paths: Path, output: Output = _COMPACT) -> None:
+        """Write evidence the lake keeps back to where it stood in the tree.
+
+        A file already there with the right bytes is left alone; every written file is verified
+        against its digest first.
+
+        Args:
+            paths: indexed evidence files or directories, as they stood in this workspace.
+        """
+        written = Evidence(Lake.at(workspace_root())).materialize(paths)
+        output.print_rows(
+            [{"path": str(path)} for path in written], title="lake materialize", columns=("path",)
+        )
+
+    @lake.command
+    def replicate(directory: Path, output: Output = _COMPACT) -> None:
+        """Copy every evidence object the lake keeps, and its path index, to a second disk.
+
+        Only objects the replica lacks are read, each verified before it takes its name, so a
+        rerun after new ingests copies just those. Run it after every `ingest` whose files are
+        leaving version control: until then the lake is their only copy.
+
+        Args:
+            directory: the replica's root on another disk, created when missing.
+        """
+        with progress("replicating the lake's evidence"):
+            copied = Evidence(Lake.at(workspace_root())).replicate(DirectoryReplica(directory))
+        output.print_rows(
+            [{"directory": str(directory), "copied": copied}], title="lake replicate"
+        )
 
     @lake.command
     def compact() -> int:
@@ -1887,7 +1983,9 @@ def build(root: Path | None = None) -> App:
         owners` names; reference code pinned from anybody else is left out. Each row says the
         branch (or `detached`), how far HEAD is ahead of and behind its upstream as last
         fetched, how many paths are changed and untracked, and which remote branch already
-        holds HEAD, empty for a commit a parent pointer could not yet be cloned at.
+        holds HEAD, empty for a commit a parent pointer could not yet be cloned at. `broken`
+        carries git's own words for a submodule checkout it cannot read, the one a bare `git
+        status` aborts on, which this verb survives.
 
         Args:
         """
@@ -1992,6 +2090,7 @@ _GIT_STATUS_COLUMNS = (
     "changed",
     "untracked",
     "published",
+    "broken",
 )
 _GIT_STEP_COLUMNS = ("repo", "outcome", "detail")
 _CI_COLUMNS = ("leg", "os", "step", "verdict", "seconds")
@@ -2260,7 +2359,7 @@ def _facts(workspace: Board, alias: str, output: Output) -> None:
 def _gpus(board: Callable[[str], Board], names: Sequence[str], output: Output) -> None:
     """Print who holds each card on each named host; an unreachable host is a row saying why."""
     listed: list[dict[str, str | int | float | bool]] = []
-    readings: dict[str, JsonValue] = {}
+    readings: dict[str, Node] = {}
     for name in names:
         try:
             with progress(f"reading the cards of {name}"):
@@ -2391,8 +2490,9 @@ def _answers(given: Sequence[str]) -> dict[str, str]:
 
 
 def _changes(report: MonitorReport) -> list[dict[str, str]]:
-    """What moved this pass, one row each: every job that settled or was re-dispatched, every
-    dispatch a quota is still holding, and every host that could not be reached.
+    """What moved this pass, one row each: every job that settled or was re-dispatched and every
+    dispatch a quota is still holding. A host that did not answer moved nothing, and the
+    listing's own note names it with what to do about its runs.
 
     A held dispatch is here because nothing else reports it: it has no handle a scheduler knows
     and no verdict to settle, so a sweep silent about it is a job waiting in silence.
@@ -2402,7 +2502,6 @@ def _changes(report: MonitorReport) -> list[dict[str, str]]:
         *((run.target, run.handle, "held", run.reason) for run in report.held),
         *((job.target, job.handle, "ok", job.pulled_path or "") for job in report.finished),
         *((job.target, job.handle, "failed", job.reason) for job in report.failed),
-        *((host.host, "", "unreachable", host.reason) for host in report.unreachable_hosts),
     ]
     return [dict(zip(_CHANGE_COLUMNS, row, strict=True)) for row in moved]
 
@@ -2443,7 +2542,9 @@ def main() -> None:
             _profiled(Path(profiled), lambda: app(Delimiter(app).placed(sys.argv[1:])))
         else:
             app(Delimiter(app).placed(sys.argv[1:]))
-    except (MissionError, NoWorkspace) as error:
+    except (MissionError, NoWorkspace, HostUnreachable) as error:
+        # A host that will not answer is an answer, not a crash: it used to end a verb as a
+        # traceback forty lines long with the one sentence that mattered last.
         print(error, file=sys.stderr)
         raise SystemExit(1) from None
 

@@ -563,7 +563,7 @@ class Dispatcher:
         The unabsorbed `probe`, for a caller that must name the dead host and why (a durable
         sweep reporting it once and moving on) rather than retrying it next tick.
         """
-        with connection(handle.host) as remote:
+        with connection(handle.host, attempts=1) as remote:
             scheduler = registry.SCHEDULERS.select(handle.kind, default="ssh")
             return scheduler.state(remote, handle.root, handle=handle.id)
 
@@ -582,7 +582,7 @@ class Dispatcher:
         shared = handles[0]
         scheduler = registry.SCHEDULERS.select(shared.kind, default="ssh")
         ids = list(dict.fromkeys(handle.id for handle in handles))
-        with connection(shared.host) as remote:
+        with connection(shared.host, attempts=1) as remote:
             listed = scheduler.states(remote, shared.root, ids)
             return {
                 job_id: listed.get(job_id) or scheduler.state(remote, shared.root, handle=job_id)

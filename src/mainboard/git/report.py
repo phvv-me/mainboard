@@ -49,6 +49,8 @@ class RepoState(FrozenModel):
         both say what the next commit would take.
     published: a remote branch already holding HEAD, empty when none does, which is a commit a
         parent pointer cannot yet be fetched at.
+    broken: git's own words for a submodule checkout under here that it cannot read, which a
+        bare `git status` aborts on; empty for a readable tree.
     """
 
     repo: str
@@ -61,6 +63,7 @@ class RepoState(FrozenModel):
     changed: int
     untracked: int
     published: str
+    broken: str = ""
 
 
 class Finding(FrozenModel):

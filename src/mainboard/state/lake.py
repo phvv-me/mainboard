@@ -243,19 +243,32 @@ def insert(
     ISO strings or datetimes, JSON columns documents or Python values, BLOB columns bytes. The
     batch travels as one NDJSON file DuckDB reads itself, never row by row.
     """
-    schema = BY_NAME[table]
-    staged = [
-        {column: _cell(kind, row.get(column)) for column, kind in schema.columns} for row in rows
-    ]
-    if not staged:
+    listed = list(rows)
+    if not listed:
         return 0
+    with staged(table, listed) as select:
+        connection.execute(f"INSERT INTO {ALIAS}.{table} BY NAME {select}")
+    return len(listed)
+
+
+@contextmanager
+def staged(table: str, rows: Iterable[Mapping[str, object]]) -> Generator[str]:
+    """Stage `rows` for one statement as a SELECT typed like `table`'s columns (see `insert`).
+
+    The rows wait in a temporary NDJSON file while the block runs, which the SELECT reads.
+    """
+    schema = BY_NAME[table]
     columns = ", ".join(_decoded(column, kind) for column, kind in schema.columns)
-    with ndjson(staged) as path:
+    cells = (
+        {column: _cell(kind, row.get(column)) for column, kind in schema.columns} for row in rows
+    )
+    with ndjson(cells) as path:
         # A row carries a source file base64-encoded, and DuckDB refuses a JSON object over 16 MB
         # by default: a 25 MB file in an experiment's tree failed its seal (2026-09-29).
-        source = f"read_ndjson_objects({path}, maximum_object_size = {_MAX_ROW_BYTES})"
-        connection.execute(f"INSERT INTO {ALIAS}.{table} BY NAME SELECT {columns} FROM {source}")
-    return len(staged)
+        yield (
+            f"SELECT {columns} FROM "
+            f"read_ndjson_objects({path}, maximum_object_size = {_MAX_ROW_BYTES})"
+        )
 
 
 def _decoded(column: str, kind: str) -> str:
@@ -272,8 +285,10 @@ class Finding(FrozenModel):
 
     table: the table it breaks, empty for the catalog as a whole.
     kind: `catalog` (missing or unreadable), `wal` (committed catalog frames lost), `missing`
-        (a data or delete file the catalog references is not on disk), or `bloat` (a catalog
-        grown past what a compaction would leave).
+        (a data or delete file the catalog references is not on disk), `bloat` (a catalog
+        grown past what a compaction would leave), `evidence` (an indexed file's object absent,
+        short of a chunk or failing a checksum) or `unreadable` (kept chunks DuckDB cannot
+        read back).
     detail: what exactly, a path or the error.
     """
 
@@ -504,6 +519,23 @@ class Lake(FrozenModel):
             with attempt, self.open(write=True) as connection:
                 insert(connection, table, staged)
         return len(staged)
+
+    def transact[T](self, work: Callable[[duckdb.DuckDBPyConnection], T]) -> T:
+        """`work` in one transaction on a fresh write attach, committed whole or not at all.
+
+        The lake is brought to this release's schema first. Retried with a fresh attach while
+        SQLite answers that the catalog is locked; a failure commits nothing, so a retry cannot
+        double what `work` appends.
+        """
+        return _patiently()(lambda: self._transacted(work))
+
+    def _transacted[T](self, work: Callable[[duckdb.DuckDBPyConnection], T]) -> T:
+        with self.open(write=True) as connection:
+            self.evolve(connection)
+            connection.execute("BEGIN")
+            done = work(connection)
+            connection.execute("COMMIT")
+        return done
 
     def query(self, sql: str, parameters: Iterable[object] = ()) -> list[tuple[Any, ...]]:
         """One read-only query's rows; tables and views are named `lake.<name>`."""
