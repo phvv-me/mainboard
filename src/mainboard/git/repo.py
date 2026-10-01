@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, NamedTuple
 
-from .process import Git
+from .process import Git, said
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -17,8 +17,9 @@ REMOTE = "origin"
 # The branch a repository with no declared branch and no remote HEAD is assumed to follow.
 _DEFAULT_TRUNK = "main"
 
-# The mode git records a submodule pointer (a gitlink) under in a tree.
+# The modes git records a submodule pointer (a gitlink) and a symbolic link under in a tree.
 _GITLINK = "160000"
+_SYMLINK = "120000"
 
 # Porcelain status codes: `??` is a file git does not track, `D` in either column a deletion.
 _UNTRACKED = "??"
@@ -153,7 +154,12 @@ class Repo:
     def stale(self) -> list[str]:
         """Every path `.gitmodules` declares a submodule at with no gitlink in the index."""
         linked = self._gitlinks
-        return [entry["path"] for entry in self._declared if entry["path"] not in linked]
+        return [path for path in self.submodule_paths if path not in linked]
+
+    @property
+    def submodule_paths(self) -> list[str]:
+        """Every path `.gitmodules` declares a submodule at, recorded in the index or not."""
+        return [entry["path"] for entry in self._declared]
 
     @cached_property
     def _declared(self) -> list[dict[str, str]]:
@@ -272,6 +278,52 @@ class Repo:
             *(("--", ".", *outside) if outside else ()),
         )
         return [Change(entry[:2], entry[3:]) for entry in listing.split("\0") if entry]
+
+    def unlinked(self) -> list[str]:
+        """Every symbolic link the index records that the working tree holds as a changed file.
+
+        A Windows checkout that could not make links wrote each one as a file, the target copied
+        or the target's path as text (`.codex/config.toml`, 2026-10-01). Where git makes links it
+        sees a type change, and staging it replaces the link for every other checkout; where it
+        does not (`core.symlinks=false`) it reads the file as the link's text, and staging a copy
+        points the link at a path spelled like the target's contents.
+        """
+        listing = self.git.out(
+            "diff", "--raw", "-z", "--no-renames", "--ignore-submodules=all", "--diff-filter=TM"
+        )
+        # `--raw -z` answers in pairs: `:old_mode new_mode old new T`, then the path.
+        fields = listing.split("\0")
+        return [
+            path
+            for meta, path in zip(fields[::2], fields[1::2], strict=False)
+            if meta.startswith(f":{_SYMLINK} ") and not (self.path / path).is_symlink()
+        ]
+
+    def faithful(self, path: str) -> bool:
+        """Whether the file at `path` is only its link written out: the link's own target path
+        as text, or the very bytes of the file the link points at."""
+        target = self.git.out("cat-file", "blob", f":{path}")
+        written = (self.path / path).read_bytes()
+        if written == target.encode():
+            return True
+        try:
+            return written == ((self.path / path).parent / target).read_bytes()
+        except OSError:
+            return False
+
+    def merge(self, upstream: str) -> str:
+        """Merge `upstream` into the checked-out branch, returning what stopped it, or nothing.
+
+        A merge that conflicts is aborted rather than left half done, so the working tree is as
+        it was and the conflicting paths are named for one `git merge` by hand.
+        """
+        merged = self.git.run("merge", "--no-edit", "-q", upstream)
+        if merged.succeeded:
+            return ""
+        listing = self.git.run("diff", "--name-only", "-z", "--diff-filter=U").stdout
+        conflicts = [path for path in listing.split("\0") if path]
+        self.git.run("merge", "--abort")
+        return f"conflicts in {', '.join(conflicts)}" if conflicts else said(merged)
 
     def unreadable(self) -> str:
         """Git's own words when a plain `git status` here aborts on a submodule checkout it

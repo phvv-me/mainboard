@@ -9,13 +9,15 @@ if TYPE_CHECKING:
 
 
 class Pull:
-    """Fast-forward every owned repository and bring submodule checkouts along, parents first.
+    """Bring every owned repository level with its upstream and submodule checkouts along,
+    parents first.
 
-    Nothing is merged or rebased. A branch that diverged from its upstream is held and named,
-    and git's own refusal to overwrite local changes is what keeps a dirty checkout safe through
-    a fast-forward. A submodule follows its parent's pointer only when it sat exactly on the old
-    one, so a checkout somebody moved on purpose stays where it was put, and one never checked
-    out is cloned at the pointer its parent records.
+    A branch behind its upstream fast-forwards, and one that diverged from it merges the upstream
+    in; a merge that conflicts is aborted and held with its paths named, nothing ever rebased.
+    Git's own refusal to overwrite local changes keeps a dirty checkout safe through either. A
+    submodule follows its parent's pointer only when it sat exactly on the old one, so a checkout
+    somebody moved on purpose stays where it was put, and one never checked out is cloned at the
+    pointer its parent records.
     """
 
     def __init__(self, tree: Tree) -> None:
@@ -65,17 +67,21 @@ class Pull:
                 detail = f"detached at {repo.short('HEAD')}, off the line of {repo.trunk()}"
                 return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
             notes.append(f"attached to {trunk}")
-        return self._fast_forwarded(repo, notes)
+        return self._caught_up(repo, notes)
 
     @staticmethod
-    def _fast_forwarded(repo: Repo, notes: list[str]) -> Step:
-        """Fast-forward the checked-out branch to its upstream, holding a divergence."""
+    def _caught_up(repo: Repo, notes: list[str]) -> Step:
+        """Level the checked-out branch with its upstream: fast-forward, or merge a divergence."""
         upstream = repo.upstream()
         ahead, behind = repo.counts(upstream)
         if ahead and behind:
-            detail = f"diverged from {upstream}: {ahead} ahead, {behind} behind"
-            return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
-        if behind:
+            if stopped := repo.merge(upstream):
+                detail = (
+                    f"diverged from {upstream}: {stopped}; resolve with `git merge {upstream}`"
+                )
+                return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
+            notes.append(f"merged {behind} from {upstream}")
+        elif behind:
             merged = repo.git.run("merge", "--ff-only", "-q", upstream)
             if not merged.succeeded:
                 return Step(repo=repo.name, outcome=Outcome.HELD, detail=said(merged))

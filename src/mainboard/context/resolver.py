@@ -5,6 +5,9 @@ from ..manifest.schema.container import Container
 from ..manifest.schema.root import Manifest
 from .plan import ExecutionPlan
 
+# The forms a Python path dependency takes when it names a built distribution, not a project.
+_ARCHIVES = (".whl", ".tar.gz", ".zip")
+
 
 class Resolver:
     """Turns the manifest plus a host alias into one concrete `ExecutionPlan`."""
@@ -26,9 +29,11 @@ class Resolver:
             # beside whichever manifest name this workspace uses (a missing one is skipped), and
             # every local project's metadata: the lock's digest reads each one, and a host
             # missing one refused the lock the workstation had just vouched for (2026-09-29).
+            # A built archive is a file with no metadata beside it, so it ships no such path.
             metadata = [
                 f"{relocated(name, path)}/pyproject.toml"
                 for name, path in sorted(path_deps(self.manifest).items())
+                if not path.endswith(_ARCHIVES)
             ]
             include = [*Project().manifests, *spec.sources, *metadata]
             narrowed = profile.sync.model_copy(update={"include": include})

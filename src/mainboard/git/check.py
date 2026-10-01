@@ -25,8 +25,9 @@ class Check:
     diverged from its upstream, a file in HEAD over the size ceiling, LFS content with no
     git-lfs to move it, no commit author configured. A `warn` is the ordinary state of work in
     progress: detached, unpushed, behind, a checkout off its recorded pointer, a pointer the
-    next push will carry, a stale `.gitmodules` entry every verb skips, or files under a
-    `never-commit` pattern still tracked, whose bytes belong in the lake.
+    next push will carry, a `.gitmodules` entry with no gitlink, a symbolic link checked out as
+    a plain file, or files under a `never-commit` pattern still tracked, whose bytes belong in
+    the lake.
     """
 
     def __init__(self, tree: Tree) -> None:
@@ -54,6 +55,7 @@ class Check:
             *self._fetched(repo),
             *self._identity(repo),
             *self._stale(repo),
+            *self._links(repo),
             *self._readable(repo),
             *self._line(repo),
             *self._pointers(repo),
@@ -75,9 +77,32 @@ class Check:
 
     @staticmethod
     def _stale(repo: Repo) -> list[Finding]:
-        """A `.gitmodules` entry with no gitlink, which git refuses as a pathspec."""
-        detail = "stale .gitmodules entry with no gitlink; remove it"
-        return [_warn(repo, "gitmodules", f"{path}: {detail}") for path in repo.stale]
+        """A `.gitmodules` entry with no gitlink, which git refuses as a pathspec: one whose
+        checkout is there waits for a commit to record it, any other is stale."""
+        return [
+            _warn(
+                repo,
+                "gitmodules",
+                f"{path}: checked out but not recorded yet; commit records it"
+                if (repo.path / path / ".git").exists()
+                else f"{path}: stale .gitmodules entry with no gitlink or checkout; remove it",
+            )
+            for path in repo.stale
+        ]
+
+    @staticmethod
+    def _links(repo: Repo) -> list[Finding]:
+        """Symbolic links this checkout holds as plain files, which a commit must not take."""
+        return [
+            _warn(
+                repo,
+                "symlink",
+                f"{path} is a plain file here; commit puts the link back"
+                if repo.faithful(path)
+                else f"{path} is a plain file edited through; move the edit to its target",
+            )
+            for path in repo.unlinked()
+        ]
 
     @staticmethod
     def _readable(repo: Repo) -> list[Finding]:
@@ -101,7 +126,7 @@ class Check:
             findings.append(_warn(repo, "branch", f"{branch} tracks no upstream; push sets one"))
         ahead, behind = repo.counts(upstream)
         if ahead and behind:
-            detail = f"diverged from {upstream}: {ahead} ahead, {behind} behind"
+            detail = f"diverged from {upstream}: {ahead} ahead, {behind} behind; pull merges it"
             findings.append(_fail(repo, "branch", detail))
         elif ahead:
             findings.append(_warn(repo, "branch", f"{ahead} commits not on {upstream}; push"))

@@ -1,8 +1,12 @@
-"""The tree verbs on a repository git itself cannot walk.
+"""The tree verbs on the states a real workspace drifts into.
 
 A nested submodule checkout whose `.git` names a directory that is gone aborts a bare `git
 status` in every repository above it (research/llm's googletest, 2026-09-30). `mb git status` and
 `mb git check` never recurse, so they survive it, and they are the ones that name the path.
+
+The center moving to Windows (2026-10-01) brought the rest: links checked out as plain files, a
+workspace behind an upstream another machine pushed to, and a repository nested in the tree with
+no `.gitmodules` entry. `mb git commit` settles each of them rather than stopping on it.
 """
 
 import json
@@ -63,6 +67,27 @@ def broken(workspace: Path, tmp_path_factory) -> Path:
     return workspace
 
 
+@pytest.fixture
+def tracked(workspace: Path, tmp_path_factory) -> Path:
+    """The workspace as a repository with an author, its manifest committed and pushed to a bare
+    `origin`, the remote that makes it the workspace's own."""
+    remote = tmp_path_factory.mktemp("remotes") / "root.git"
+    git(workspace, "init", "--quiet", "--bare", "--initial-branch=main", remote.as_posix())
+    git(workspace, "init", "--quiet", "--initial-branch=main")
+    git(workspace, "config", "user.name", "it")
+    git(workspace, "config", "user.email", "it@example.invalid")
+    git(workspace, "remote", "add", "origin", remote.as_posix())
+    git(workspace, "add", "-A")
+    git(workspace, "commit", "--quiet", "-m", "manifest")
+    git(workspace, "push", "--quiet", "-u", "origin", "main")
+    return workspace
+
+
+def steps(ran) -> dict[str, dict[str, str]]:
+    """The rows of a verb's `--json` answer, keyed by repository."""
+    return {row["repo"]: row for row in json.loads(ran.out)}
+
+
 def test_status_survives_an_unreadable_checkout_and_names_it(mb, broken: Path) -> None:
     ran = mb("git", "status", "--json")
     assert ran.code == 0, ran.said
@@ -76,3 +101,71 @@ def test_check_survives_an_unreadable_checkout_and_names_it(mb, broken: Path) ->
     assert [row["repo"] for row in found] == ["."]
     detail = found[0]["detail"]
     assert "deps/nested" in detail and "git submodule update --init" in detail
+
+
+@pytest.mark.parametrize("makes_links", ["true", "false"])
+def test_commit_puts_back_links_written_as_files_and_withholds_an_edited_one(
+    mb, tracked: Path, makes_links: str
+) -> None:
+    git(tracked, "config", "core.symlinks", makes_links)
+    (tracked / "target.txt").write_text("kept\n", encoding="utf-8", newline="\n")
+    links = ("copied", "spelled", "edited")
+    try:
+        for name in links:
+            (tracked / name).symlink_to("target.txt")
+    except OSError:
+        pytest.skip("this machine cannot make symbolic links")
+    git(tracked, "add", "-A")
+    git(tracked, "commit", "--quiet", "-m", "links")
+    head = git(tracked, "rev-parse", "HEAD").stdout
+    for name in links:
+        (tracked / name).unlink()
+    (tracked / "copied").write_bytes((tracked / "target.txt").read_bytes())
+    (tracked / "spelled").write_text("target.txt", encoding="utf-8", newline="")
+    (tracked / "edited").write_text("changed through the copy\n", encoding="utf-8")
+    ran = mb("git", "commit", "-m", "nothing to take", "--json")
+    detail = steps(ran)["."]["detail"]
+    # Without links git reads `spelled` as the link itself, so only the copy needs putting back.
+    relinked = "copied, spelled" if makes_links == "true" else "copied"
+    assert f"relinked {relinked};" in detail and "withheld edited" in detail
+    assert not git(tracked, "status", "--porcelain", "--", "copied", "spelled").stdout
+    assert git(tracked, "rev-parse", "HEAD").stdout == head
+
+
+@pytest.mark.parametrize("verb", ["commit", "pull"])
+@pytest.mark.parametrize("edited", ["mine.txt", "shared.txt"])
+def test_a_diverged_workspace_merges_its_upstream_or_names_the_conflict(
+    mb, tracked: Path, tmp_path_factory, verb: str, edited: str
+) -> None:
+    remote = git(tracked, "remote", "get-url", "origin").stdout.strip()
+    other = tmp_path_factory.mktemp("other") / "root"
+    git(tracked, "clone", "--quiet", remote, other.as_posix())
+    (other / "shared.txt").write_text("theirs\n", encoding="utf-8", newline="\n")
+    git(other, "add", "-A")
+    git(other, "commit", "--quiet", "-m", "theirs")
+    git(other, "push", "--quiet")
+    git(tracked, "fetch", "--quiet")
+    (tracked / edited).write_text("mine\n", encoding="utf-8", newline="\n")
+    if verb == "pull":
+        git(tracked, "add", "-A")
+        git(tracked, "commit", "--quiet", "-m", "mine")
+    root = steps(mb("git", verb, "--json", *(("-m", "mine") if verb == "commit" else ())))["."]
+    assert not (tracked / ".git" / "MERGE_HEAD").exists()
+    if edited == "shared.txt":
+        assert "conflicts in shared.txt" in root["detail"]
+        assert root["outcome"] == ("done" if verb == "commit" else "held")
+    else:
+        assert "merged 1 from origin/main" in root["detail"]
+        assert (tracked / "shared.txt").read_text(encoding="utf-8") == "theirs\n"
+    assert "mine" in git(tracked, "log", "--format=%s").stdout.split("\n")
+
+
+def test_commit_withholds_a_nested_repository_gitmodules_does_not_declare(
+    mb, tracked: Path
+) -> None:
+    committed(tracked / "nested")
+    (tracked / "plain.txt").write_text("plain\n", encoding="utf-8", newline="\n")
+    root = steps(mb("git", "commit", "-m", "plain", "--json"))["."]
+    assert root["outcome"] == "done" and "withheld nested/" in root["detail"]
+    listed = git(tracked, "ls-tree", "--name-only", "HEAD").stdout.split()
+    assert "plain.txt" in listed and "nested" not in listed

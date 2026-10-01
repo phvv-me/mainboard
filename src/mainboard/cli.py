@@ -1999,11 +1999,12 @@ def build(root: Path | None = None) -> App:
 
     @git.command(name="pull")
     def git_pull(*, output: Output = _COMPACT) -> int:
-        """Fast-forward every owned repository and bring submodule checkouts along, root first.
+        """Bring every owned repository level with its upstream and submodule checkouts along.
 
-        Every owned remote is fetched at once, then the tree is walked from the root down.
-        Nothing is merged or rebased: a diverged branch is held and named, and a fast-forward
-        that would overwrite local changes is refused by git itself. A detached HEAD is put back
+        Every owned remote is fetched at once, then the tree is walked from the root down. A
+        branch behind fast-forwards and a diverged one merges its upstream; a merge that
+        conflicts is aborted and held with the paths named, and nothing is ever rebased. Git
+        itself refuses to overwrite local changes. A detached HEAD is put back
         on its trunk where that moves no commit. A submodule follows its parent's new pointer
         only when it sat on the old one, and one never checked out is cloned at the recorded
         pointer. Exits 1 when any repository was held or failed.
@@ -2021,11 +2022,13 @@ def build(root: Path | None = None) -> App:
         """Commit every dirty owned repository, submodules first, then the pointers to them.
 
         Each commit lands on a branch: a detached HEAD is attached to its trunk when that is a
-        fast-forward of the branch, and held otherwise, as is a repository behind its upstream
-        and a parent whose submodule did not commit. Anything under a `[git] never-commit`
-        pattern and files over the size ceiling that Git LFS does not carry stay out of the
-        commit, unstaged; the row names the oversized ones and any never-commit path that was
-        staged by hand. Exits 1 when any repository was held or failed.
+        fast-forward of the branch, and held otherwise, as is a parent whose submodule did not
+        commit. A repository behind its upstream commits, then merges the upstream in, aborting
+        a conflicting merge with its paths named. Symbolic links a Windows checkout wrote as
+        files are put back first. Anything under a `[git] never-commit` pattern, files over the
+        size ceiling that Git LFS does not carry, links edited through as files, and nested
+        repositories `.gitmodules` does not declare stay out of the commit, unstaged, and the
+        row names them. Exits 1 when any repository was held or failed.
 
         Args:
             message: the commit message, the same for every repository committed.

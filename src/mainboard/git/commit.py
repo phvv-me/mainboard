@@ -23,16 +23,18 @@ class Commit:
 
     Each repository commits on a branch. A detached HEAD is put back on its trunk first when that
     moves no commit, and held otherwise, since a commit on a detached HEAD is one no branch will
-    ever push. A repository behind its upstream is held too, because committing there makes the
-    divergence the next push is refused for. A parent whose submodule did not commit is held as
-    well, rather than recording a pointer that leaves that submodule's work out.
+    ever push. A repository behind its upstream commits and then merges the upstream in, so the
+    next push is not refused; a merge that conflicts is aborted with its paths named and the
+    commit kept. A parent whose submodule did not commit is held, rather than recording a
+    pointer that leaves that submodule's work out.
 
-    What enters a commit is everything changed except what `[git]` withholds: anything under a
-    `never-commit` pattern, which git is asked never to list, and any file over the size ceiling
-    that Git LFS does not carry. Those stay in the working tree, unstaged. The step names the
-    oversized files and any `never-commit` path somebody had staged by hand, since those are the
-    ones a person expected to go in. A repository git knows no author for is held before
-    anything is staged.
+    Symbolic links a Windows checkout wrote as plain files are put back first when the file is
+    only the link written out. What enters a commit is everything changed except what has to
+    stay out: anything under a `never-commit` pattern, which git is asked never to list, a file
+    over the size ceiling that Git LFS does not carry, a link still a file because it was edited
+    through, and a repository nested in the tree that `.gitmodules` does not declare, whose
+    pointer no clone could follow. Those stay in the working tree, unstaged, and the step names
+    them. A repository git knows no author for is held before anything is staged.
     """
 
     def __init__(self, tree: Tree, message: str) -> None:
@@ -45,30 +47,29 @@ class Commit:
 
     def _committed(self, repo: Repo) -> Step:
         """Commit one repository's changes, or say why it was left alone."""
+        relinked = [path for path in repo.unlinked() if repo.faithful(path)]
+        _stage(repo, relinked, "checkout")
+        notes = [_named("relinked", set(relinked))]
         changes = repo.changes(self.tree.policy.outside)
         if not changes:
-            return Step(repo=repo.name, outcome=Outcome.CURRENT, detail="clean")
+            return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=notes[0] or "clean")
         if not repo.identified():
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=NO_IDENTITY)
         if not repo.branch() and not repo.attach():
             detail = f"detached at {repo.short('HEAD')}, off the line of {repo.trunk()}"
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
-        upstream = repo.upstream()
-        _, behind = repo.counts(upstream)
-        if behind:
-            detail = f"{behind} behind {upstream}; pull first"
-            return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
         withheld = Intake(repo, self.tree.policy).withheld(changes)
         _stage(repo, [c.path for c in changes if not c.staged and c.path not in withheld])
         _stage(repo, sorted(withheld), "reset", "-q")
-        note = _withheld(withheld)
+        notes.append(_named("withheld", withheld))
         if repo.git.ok("diff", "--cached", "--quiet"):
-            return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=note or "nothing staged")
+            detail = "; ".join(filter(None, notes)) or "nothing staged"
+            return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
         committed = repo.git.run("commit", "-q", "-m", self.message)
         if not committed.succeeded:
             return Step(repo=repo.name, outcome=Outcome.FAILED, detail=said(committed))
-        detail = "; ".join(filter(None, [f"{repo.short('HEAD')} on {repo.branch()}", note]))
-        return Step(repo=repo.name, outcome=Outcome.DONE, detail=detail)
+        notes = [f"{repo.short('HEAD')} on {repo.branch()}", *notes, _merged(repo)]
+        return Step(repo=repo.name, outcome=Outcome.DONE, detail="; ".join(filter(None, notes)))
 
 
 class Intake:
@@ -79,13 +80,31 @@ class Intake:
         self.policy = policy
 
     def withheld(self, changes: Sequence[Change]) -> set[str]:
-        """The paths that must stay out: `never-commit` content in the index, or an oversized file.
+        """The paths that must stay out: `never-commit` content in the index, an oversized file,
+        a link checked out as a file, or a nested repository `.gitmodules` does not declare.
 
         `changes` was listed with every `never-commit` path already left out, so the one place
         such a path can still be is the index, staged by hand. A deletion there goes through,
         which is how something tracked by mistake leaves history.
         """
-        return self._patterned() | self._heavy([c.path for c in changes if not c.deleted])
+        return (
+            self._patterned()
+            | self._heavy([c.path for c in changes if not c.deleted])
+            | set(self.repo.unlinked())
+            | self._embedded(changes)
+        )
+
+    def _embedded(self, changes: Sequence[Change]) -> set[str]:
+        """Every untracked nested repository `.gitmodules` does not declare, which `add` would
+        record as a pointer with no URL. Git lists such a repository as one path ending in `/`."""
+        declared = set(self.repo.submodule_paths)
+        return {
+            change.path
+            for change in changes
+            if change.untracked
+            and change.path.endswith("/")
+            and change.path.removesuffix("/") not in declared
+        }
 
     def _patterned(self) -> set[str]:
         """The `never-commit` paths staged with content, a deletion aside."""
@@ -142,10 +161,21 @@ def _stage(repo: Repo, paths: Sequence[str], *command: str) -> None:
     )
 
 
-def _withheld(paths: set[str]) -> str:
-    """The step's note naming what stayed out of the commit, empty when nothing did."""
+def _merged(repo: Repo) -> str:
+    """Merge the upstream a freshly committed repository is behind, saying how that went."""
+    upstream = repo.upstream()
+    _, behind = repo.counts(upstream)
+    if not behind:
+        return ""
+    if stopped := repo.merge(upstream):
+        return f"merging {upstream} stopped on {stopped}; resolve with `git merge {upstream}`"
+    return f"merged {behind} from {upstream}"
+
+
+def _named(verb: str, paths: set[str]) -> str:
+    """The step's note naming what `verb` happened to, empty when nothing."""
     if not paths:
         return ""
     named = sorted(paths)[:_NAMED]
     rest = len(paths) - len(named)
-    return f"withheld {', '.join(named)}" + (f" and {rest} more" if rest else "")
+    return f"{verb} {', '.join(named)}" + (f" and {rest} more" if rest else "")
