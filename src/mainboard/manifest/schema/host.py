@@ -49,6 +49,9 @@ class HostProfile(Declared):
     vars: read by this machine's backends (an API key, rental parameters), never shipped.
     exports: set for every job after its environment is entered, for facts about the host's
         world (`HF_HUB_OFFLINE = "1"` where compute nodes must never ask the Hub).
+    login_memory_gb: what the login node lets one user hold in all, on a site that kills the
+        largest tasks past it; setup and environment builds run there stop at a share of it
+        (`dispatch.wrapping.guarded`). Zero where the login node sets no such limit.
     """
 
     kind: str = "auto"
@@ -57,6 +60,7 @@ class HostProfile(Declared):
     python: str = "python3"
     account: str = ""
     login_shell: bool = True
+    login_memory_gb: float = 0.0
     env: str = "default"
     container: str = ""
     modules: dict[str, str] = {}

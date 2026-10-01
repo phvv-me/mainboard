@@ -14,15 +14,26 @@
 # OpenSSH 7.4) speaks the SSH protocol over that socket instead and works on Git's and MSYS2's
 # builds. Microsoft's build has no multiplexing at all and fails outright when asked, so on Windows
 # this tool runs Git's or MSYS2's ssh whenever one is installed.
+#
+# A key's passphrase is asked for once and kept in the system's keystore (Credential Manager,
+# the Keychain, the Secret Service), as the Mac's `UseKeychain` keeps it, so an agent started
+# after a reboot is loaded again without asking. `ssh-add` reads it through an askpass script
+# from its own environment, never from an argv.
 
 import os
 import subprocess  # ruff:ignore[suspicious-subprocess-import]  reason=runs the ssh client's own agent tools with fixed argv since=2026-09-28
 from functools import cache
+from getpass import getpass
 from pathlib import Path
 from shutil import which
 
+import keyring
+from keyring.errors import KeyringError
+
 from ..core.errors import MissionError
 from ..core.host import WINDOWS
+from ..core.project import Project
+from ..log import logger
 
 # The sockets this tool owns, beside the user's ssh config: its agent's and one per shared login.
 CONTROL = Path.home() / ".ssh" / "cm"
@@ -38,6 +49,22 @@ PERSIST = "72h"
 
 # `ssh-add -l`'s answers: 0 lists keys, 1 holds none; anything else means no agent listens.
 _LISTENING = frozenset({0, 1})
+
+# The keystore service a key's passphrase is filed under, the key's path as the account; the
+# keys kept there, one path per line, which a new agent is loaded with; and the script answering
+# `ssh-add` from the variable `_PASSPHRASE` it is started with. `ssh-add` asks again after a wrong
+# passphrase until it hears an empty one, so the script answers once, marking `_ASKED`, and
+# empty after that.
+_KEYSTORE = f"{Project().name} ssh key"
+_KEPT = CONTROL / "kept"
+_ASKPASS = CONTROL / "askpass.sh"
+_PASSPHRASE = "MB_SSH_PASSPHRASE"
+_ASKED = "MB_SSH_ASKED"
+_ANSWER = f"""#!/bin/sh
+[ -e "${_ASKED}" ] && exit 0
+: > "${_ASKED}"
+printf '%s\\n' "${_PASSPHRASE}"
+"""
 
 
 @cache
@@ -84,17 +111,19 @@ def serving(socket: str | None = None) -> bool:
 
 @cache
 def adopt() -> None:
-    """Point every ssh this process starts at the tool's agent, unless the user runs their own.
+    """Point every ssh this process starts at the tool's agent, unless the user runs their own,
+    starting it when the keystore keeps keys to load it with.
 
     Asked by whatever is about to start ssh, once per process, so a command that never reaches
     another machine never looks for an agent.
     """
-    if not os.environ.get("SSH_AUTH_SOCK") and serving():
+    if not os.environ.get("SSH_AUTH_SOCK") and (serving() or (_kept() and started())):
         os.environ["SSH_AUTH_SOCK"] = address()
 
 
 def started() -> str:
-    """The tool's agent, started when none answers; its address."""
+    """The tool's agent, started when none answers and loaded with every key the keystore
+    keeps; its address."""
     if serving():
         return address()
     if microsoft():
@@ -107,6 +136,10 @@ def started() -> str:
     subprocess.run([_tool("ssh-agent"), "-a", SOCKET], capture_output=True, timeout=10, check=True)
     if not serving():
         raise MissionError(f"ssh-agent did not start listening on {SOCKET}")
+    for key in _kept():
+        passphrase = _keystore(key)
+        if passphrase is None or not _add(key, passphrase, SOCKET):
+            logger.warning("the keystore no longer opens {}; `unlock` asks for it again", key)
     return SOCKET
 
 
@@ -130,17 +163,19 @@ def identities(host: str) -> list[str]:
 
 
 def unlock(host: str) -> int:
-    """Make `host` answer without a prompt: add its keys to the tool's agent, asking for each
-    passphrase once, and when it still asks for more, log in once by hand and keep that login for
-    every later ssh; the last check's exit status."""
-    environ = {**os.environ, "SSH_AUTH_SOCK": started()}
+    """Make `host` answer without a prompt: add its keys to the tool's agent, asking for a
+    passphrase only when the keystore holds none that opens the key, and when it still asks for
+    more, log in once by hand and keep that login for every later ssh; the last check's exit
+    status."""
+    socket = started()
+    environ = {**os.environ, "SSH_AUTH_SOCK": socket}
     if not _silent(host, environ):
         return 0
     keys = identities(host)
     if not keys:
         raise MissionError(f"ssh names no key file for {host}; add an IdentityFile to its config")
     for key in keys:
-        subprocess.run([_tool("ssh-add"), key], env=environ, check=False)
+        _remember(key, socket)
     if not _silent(host, environ):
         return 0
     CONTROL.mkdir(parents=True, exist_ok=True)
@@ -155,6 +190,78 @@ def unlock(host: str) -> int:
     )
     _live.cache_clear()
     return _silent(host, environ)
+
+
+def _remember(key: str, socket: str) -> None:
+    """Add `key` to the agent at `socket` from the keystore, asking for its passphrase only when
+    the keystore holds none that opens it, then keeping the one that did.
+
+    Windows' agent service keeps what it is given across reboots on its own, so a key added
+    there is asked for once by `ssh-add` itself and never filed.
+    """
+    if microsoft():
+        subprocess.run(
+            [_tool("ssh-add"), key], env={**os.environ, "SSH_AUTH_SOCK": socket}, check=False
+        )
+        return
+    kept = _keystore(key)
+    if kept is not None and _add(key, kept, socket):
+        return
+    passphrase = getpass(f"passphrase for {key} (kept in the system keystore): ")
+    if not _add(key, passphrase, socket):
+        raise MissionError(f"ssh-add refused {key}; was the passphrase right?")
+    try:
+        keyring.set_password(_KEYSTORE, key, passphrase)
+    except KeyringError as refusal:
+        logger.warning(
+            "the system keystore refused {}, so a new agent asks again: {}", key, refusal
+        )
+        return
+    _KEPT.write_text("".join(f"{path}\n" for path in sorted({*_kept(), key})), newline="\n")
+
+
+def _kept() -> list[str]:
+    """The keys whose passphrases the keystore holds."""
+    try:
+        return _KEPT.read_text(encoding="utf-8").split()
+    except FileNotFoundError:
+        return []
+
+
+def _keystore(key: str) -> str | None:
+    """`key`'s passphrase as the keystore keeps it, None when it keeps none or cannot be read."""
+    try:
+        return keyring.get_password(_KEYSTORE, key)
+    except KeyringError as refusal:
+        logger.warning("the system keystore could not be read for {}: {}", key, refusal)
+        return None
+
+
+def _add(key: str, passphrase: str, socket: str) -> bool:
+    """Whether the agent at `socket` took `key`, its passphrase answered once by `_ASKPASS`."""
+    _ASKPASS.write_text(_ANSWER, newline="\n")
+    _ASKPASS.chmod(0o700)
+    asked = CONTROL / f"asked-{os.getpid()}"
+    asked.unlink(missing_ok=True)
+    try:
+        added = subprocess.run(
+            [_tool("ssh-add"), key],
+            env={
+                **os.environ,
+                "SSH_AUTH_SOCK": socket,
+                "SSH_ASKPASS": _ASKPASS.as_posix(),
+                "SSH_ASKPASS_REQUIRE": "force",
+                _PASSPHRASE: passphrase,
+                _ASKED: asked.as_posix(),
+            },
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        asked.unlink(missing_ok=True)
+    return added.returncode == 0
 
 
 def _posix_builds() -> list[Path]:

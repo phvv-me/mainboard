@@ -22,7 +22,7 @@ from ..engines.compile.backend import POSIX_INSTALLER, WINDOWS_INSTALLER
 from .keys import client, shared
 from .schedulers.base import failure_reason
 from .transport import BoundedSshMachine, SshTransport
-from .wrapping import activation, connection, wrap
+from .wrapping import activation, connection, guarded, wrap
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -388,7 +388,7 @@ class PosixShell(HostShell):
             self.remote.close()
 
     def execute(self, line: str) -> tuple[int, str, str]:
-        return self.remote["bash"][["-lc", line]].run(retcode=None)
+        return self.remote["bash"][["-lc", guarded(line, self.plan)]].run(retcode=None)
 
     def foreground(self, command: str, *, activate: bool = True) -> int:
         return foreground(self.remote["bash"]["-lc", self.stage(command, activate=activate)])

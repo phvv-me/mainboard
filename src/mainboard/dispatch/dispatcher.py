@@ -41,7 +41,7 @@ from .state.cache import Cache, RunRecord
 from .sync import CARD_LEASES, GitignoreFilter, SyncLock, denied, patterns
 from .transport import SshTransport
 from .vocabulary import JobState, Request, Resources
-from .wrapping import connection, wrap
+from .wrapping import connection, guarded, wrap
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -858,7 +858,7 @@ class Dispatcher:
             return
         command = f"{shlex.join([_TOOL, *call.args])} >/dev/null"
         retcode, _, err = remote["bash"][
-            ["-lc", wrap(plan, root, command=command, activate=False)]
+            ["-lc", guarded(wrap(plan, root, command=command, activate=False), plan)]
         ].run(retcode=None)
         if retcode:
             raise SystemExit(

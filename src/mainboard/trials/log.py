@@ -32,6 +32,16 @@ _LEVELS = frozenset(("debug", "info", "warning", "error", "critical", "exception
 _IDENTITY = frozenset(("project", "node", "trial", "run", "params", SINK))
 # What every event carries that is the logger's envelope rather than the caller's metadata.
 _ENVELOPE = frozenset(("event", "level", "timestamp", "exc_info", "stack_info"))
+# The media types an attached image or video is recorded under, by its file's suffix.
+_IMAGES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".avif": "image/avif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+}
+_VIDEOS = {".mp4": "video/mp4", ".webm": "video/webm"}
 
 
 class Log:
@@ -153,15 +163,15 @@ class Log:
         )
 
     def image(self, path: Path, *, name: str = "") -> Artifact:
-        """Attach a rendered PNG, JPEG, or SVG without importing a plotting library."""
-        types = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".svg": "image/svg+xml",
-        }
+        """Attach a rendered PNG, JPEG, AVIF, WebP or SVG without importing a plotting library."""
         return self.artifact(
-            path, name=name or self._name("image"), media_type=types[path.suffix.lower()]
+            path, name=name or self._name("image"), media_type=_IMAGES[path.suffix.lower()]
+        )
+
+    def video(self, path: Path, *, name: str = "") -> Artifact:
+        """Attach an encoded MP4 or WebM, AV1 or otherwise, as the bytes the encoder wrote."""
+        return self.artifact(
+            path, name=name or self._name("video"), media_type=_VIDEOS[path.suffix.lower()]
         )
 
     def read(self, alias: str) -> bytes:

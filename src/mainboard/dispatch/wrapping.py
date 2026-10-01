@@ -31,6 +31,36 @@ USER_BINS = (
 _CONNECT_ATTEMPTS = 4
 _CONNECT_BACKOFF = 2.0
 
+# The share of a login node's per-user limit a guarded line may let the user reach, the bound
+# the owner set (2026-10-01), and how many seconds apart the guard reads the user's memory.
+_LOGIN_SHARE = 0.75
+_LOGIN_POLL = 2
+
+
+def guarded(line: str, plan: ExecutionPlan) -> str:
+    """`line`, stopped with everything it started once all of this user's processes on the
+    login node hold `_LOGIN_SHARE` of the host's `login_memory_gb`; unchanged where it has none.
+
+    A site enforcing a per-user limit kills the largest tasks itself, and on miyabi-g that ended
+    the one login its owner unlocks every 72 hours, mid-install (2026-10-01); stopping short
+    turns that into an ordinary failure that names the memory. The line runs in a session of its
+    own, so the stop reaches its whole process tree and nothing of the shell it rides.
+    """
+    if not plan.profile.login_memory_gb:
+        return line
+    budget = plan.profile.login_memory_gb * _LOGIN_SHARE
+    limit = int(budget * 2**20)  # KiB, the unit ps reports resident memory in
+    held = """$(ps -u "$(id -u)" -o rss= | awk '{s += $1} END {print s + 0}')"""
+    stop = (
+        f"echo \"stopped: this user held $used KiB on {plan.host}'s login node, past "
+        f'{budget:g} GB, {_LOGIN_SHARE:.0%} of its limit" >&2; kill -- -$pid; wait $pid; exit 137'
+    )
+    return (
+        f"setsid bash -c {shlex.quote(line)} & pid=$!; "
+        f"while kill -0 $pid 2>/dev/null; do used={held}; "
+        f'if [ "$used" -gt {limit} ]; then {stop}; fi; sleep {_LOGIN_POLL}; done; wait $pid'
+    )
+
 
 def activation(root: str, *, env: str = "default") -> str:
     """The activation script a provisioned workspace under `root` carries for `env`, under the
