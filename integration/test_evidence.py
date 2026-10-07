@@ -217,11 +217,16 @@ def test_ingest_deduplicates_within_and_across_windows(workspace, monkeypatch) -
         again = keeper.ingest([root])
     assert first.model_dump() == {"files": 5, "indexed": 5, "objects": 2, "size": 8}
     assert again.model_dump() == {"files": 5, "indexed": 0, "objects": 0, "size": 0}
-    assert [call.args[2] for call in membership.call_args_list] == [
-        {same},
-        {same, different},
-        {kept},
-    ] * 2
+    asked = [call.kwargs.get("digests", call.args[-1]) for call in membership.call_args_list]
+    assert (
+        asked
+        == [
+            {same},
+            {same, different},
+            {kept},
+        ]
+        * 2
+    )
     assert lake.query(
         "SELECT (SELECT count(*) FROM lake.blobs), (SELECT count(*) FROM lake.evidence_log)"
     ) == [(3, 6)]

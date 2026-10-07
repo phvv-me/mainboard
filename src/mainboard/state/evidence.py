@@ -32,7 +32,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from functools import cache, cached_property
+from functools import cache, cached_property, partial
 from pathlib import Path, PurePosixPath
 
 import duckdb
@@ -209,16 +209,14 @@ class Evidence:
         given = list(paths)
         sources = self._files(given)
         self.lake.ready()
-        kept = schema.evidence
-        current = dict(self.session.rows(select(kept.c.path, kept.c.sha256)))
+        index = schema.evidence
+        current = dict(self.session.rows(select(index.c.path, index.c.sha256)))
         indexed = objects = size = 0
         with ThreadPoolExecutor(max_workers=_READERS) as pool:
             for window in _windows(sources):
                 batch = list(pool.map(self._read, window))
                 held = self.session.run(
-                    lambda connection, digests={entry.sha256 for entry in batch}: self.blobs.held(
-                        connection, digests
-                    )
+                    partial(self.blobs.held, digests={entry.sha256 for entry in batch})
                 )
                 entries: list[_Entry] = []
                 for entry in batch:
@@ -227,9 +225,7 @@ class Evidence:
                     if new or current.get(entry.path) != entry.sha256:
                         entries.append(entry.model_copy(update={"new": new}))
                 if entries:
-                    self.lake.transact(
-                        lambda connection, entries=entries: self._commit(connection, entries)
-                    )
+                    self.lake.transact(partial(self._commit, group=entries))
                 indexed += len(entries)
                 objects += sum(entry.new for entry in entries)
                 size += sum(entry.size for entry in entries if entry.new)
@@ -280,11 +276,7 @@ class Evidence:
         digests = {row.sha256 for row in rows}
         missing = sorted(digests - replica.holds(digests))
         for digest in missing:
-            self.session.run(
-                lambda connection, digest=digest: replica.put(
-                    digest, self.blobs.chunks(connection, digest)
-                )
-            )
+            self.session.run(partial(self._copy, replica, digest))
         replica.index(rows)
         return len(missing)
 
@@ -335,6 +327,10 @@ class Evidence:
             media_type=_media_type(source, head),
             payload=payload,
         )
+
+    def _copy(self, replica: Replica, digest: str, connection: duckdb.DuckDBPyConnection) -> None:
+        """Put the object `digest` into `replica`, a chunk at a time from this lake."""
+        replica.put(digest, self.blobs.chunks(connection, digest))
 
     def _commit(self, connection: duckdb.DuckDBPyConnection, group: Sequence[_Entry]) -> None:
         """One window's new objects and index rows, inside the caller's transaction."""

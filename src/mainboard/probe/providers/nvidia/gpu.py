@@ -168,7 +168,7 @@ class NvidiaGPU(GPU):
             return nvml.device_get_handle_by_index_v2(self.index)
         entry = visible[self.index]
         if entry.startswith(("GPU-", "MIG-")):
-            return nvml.device_get_handle_by_uuid(entry.encode())
+            return nvml.device_get_handle_by_uuid(entry)
         return nvml.device_get_handle_by_index_v2(int(entry))
 
     @cached_property

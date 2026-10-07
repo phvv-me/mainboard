@@ -300,7 +300,11 @@ class CloudBackend(ProviderBackend, Account, Inventory, LogSource, Market, Renta
         if not found:
             asked = " ".join(
                 part
-                for part in (resources.gpu_name, span and span.spelled, resources.spot and "spot")
+                for part in (
+                    resources.gpu_name,
+                    span.spelled if span else "",
+                    "spot" if resources.spot else "",
+                )
                 if part
             )
             raise MissionError(
