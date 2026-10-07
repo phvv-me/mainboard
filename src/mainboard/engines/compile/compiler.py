@@ -8,10 +8,12 @@ from ...core import MissionError, Project
 from .generated import GeneratedFiles
 from .lockfile import Lockfile, Solved
 from .pixi_manifest import PixiManifest, cleared, rerooted, selected_manifest
+from .policy import LockPolicy
 from .state import SyncState
 from .vendor import path_deps, relocated
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
     from ...manifest import Manifest
@@ -63,23 +65,43 @@ class Compiler:
         )
         return hashlib.sha256(_canonical(payload)).hexdigest()
 
-    def install_locked(self, files: Writer, *, resolve: bool) -> None:
-        """Install this shard, committing its lock only after a solve returned without raising.
+    def locked(
+        self, files: Writer, *, policy: LockPolicy, update: Sequence[str] | None = None
+    ) -> bool:
+        """Bring this shard's lock to what `policy` allows, as pixi's verbs do; whether it moved.
 
-        The commit records the digest solved from and the pixi that wrote the lock, in the
-        workspace's committed lock and in the state beside the shard's copy, so a host that
-        never solved installs any lock matching what it received, and a host reaching a
-        different address can name which two pixis disagreed.
+        `update` (`pixi update`) first takes the newest releases the manifest allows, every
+        package when it names none. Otherwise `update` solves only a lock that no longer answers
+        the manifest, `locked` refuses one, and `frozen` takes the lock as it stands. Either way
+        a lock is needed to install from.
         """
-        if not resolve:
+        if update is not None:
+            self.pixi.update(self.environment, update)
+            self.__commit(files)
+            return True
+        if policy is LockPolicy.UPDATE and not self.fresh():
+            self.pixi.solve()
+            self.__commit(files)
+            return True
+        if policy is LockPolicy.LOCKED:
             self.vouch()
-            if not self.pixi.lock.exists():
-                raise MissionError(self.__missing())
-            self.pixi.install(self.environment)
-            return
-        # Solved and committed before any install, so a platform this machine cannot run (a
-        # CUDA card, from macOS) still leaves a lock to ship.
-        self.pixi.solve()
+        if not self.pixi.lock.exists():
+            raise MissionError(self.__missing())
+        return False
+
+    def install(self) -> None:
+        """Install this shard from its lock, which `locked` has already brought up to policy."""
+        self.pixi.install(self.environment)
+
+    def __commit(self, files: Writer) -> None:
+        """Record the shard's freshly solved lock in the workspace's committed lock.
+
+        The commit names the digest solved from and the pixi that wrote the lock, in the committed
+        lock and in the state beside the shard's copy, so a host that never solved installs any
+        lock matching what it received, and a host reaching a different address can name which
+        two pixis disagreed. Committed before any install, so a platform this machine cannot run
+        (a CUDA card, from macOS) still leaves a lock to ship.
+        """
         solved = Solved(
             solved_from=self.resolution_digest(),
             solved_by=self.pixi.version(),
@@ -94,8 +116,6 @@ class Compiler:
                 + ". Pin it to its source in that environment (a `no-default` one included)."
             )
         self.__bless(files, solved)
-        if self.pixi.runs_here():
-            self.pixi.install(self.environment)
 
     def materialize(self, files: Writer) -> Solved | None:
         """Bring the shard's lock and blessing in line with the committed lock, returning it.
@@ -138,24 +158,38 @@ class Compiler:
         )
         return solved
 
+    def fresh(self) -> bool:
+        """Whether a committed lock answers the manifest compiled now, so nothing need solve."""
+        # Asked first, since it materializes the committed lock the existence check then sees.
+        refusal = self.__refusal()
+        return refusal is None and self.pixi.lock.exists()
+
     def vouch(self) -> None:
         """Refuse unless the committed lock was solved from this manifest and package metadata.
 
         The shard's copy is materialized from it first, so what ships is what was vouched for. A
         host's own question, asked before the mirror leaves so a stale lock fails in a second.
+        Nothing compiled yet has nothing to vouch for; shipping it refuses by name.
+        """
+        if (refusal := self.__refusal()) is not None:
+            raise MissionError(refusal)
+
+    def __refusal(self) -> str | None:
+        """Why the committed lock does not answer the manifest compiled now; None when it does,
+        or when nothing is compiled or locked yet.
+
         Asked under the (reentrant) workspace-root lock the compile takes, since a compile landing
         between a solve and this read made the refusal name the command that had just succeeded.
-        Nothing compiled yet has nothing to vouch for; shipping it refuses by name.
         """
         with GeneratedFiles(directory=Project().out(self.root)).locked() as files:
             solved = self.materialize(files)
             if not self.pixi.lock.exists() or not self.pixi.manifest.exists():
-                return
+                return None
             current = self.resolution_digest()
             if solved is not None and solved.solved_from == current:
-                return
+                return None
             state = SyncState.load(self.out)
-        raise MissionError(self.__unvouched(state, current, committed=solved is not None))
+        return self.__unvouched(state, current, committed=solved is not None)
 
     def __unvouched(self, state: SyncState, current: str, *, committed: bool) -> str:
         """Why the lock could not be vouched for, naming both ways out of a digest mismatch.

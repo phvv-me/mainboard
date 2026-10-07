@@ -59,6 +59,7 @@ from .dispatch.wrapping import connection, missing, wrap
 from .doctor import Doctor
 from .engines.compile.backend import PIXI_VERSION
 from .engines.compile.pixi_manifest import self_installed
+from .engines.compile.policy import LockPolicy
 from .engines.compile.prefixes import MANIFEST, Prefixes, digest_of, prefix_path
 from .engines.compile.provisioner import Provisioner, environment_shard, task_line
 from .engines.compile.state import SyncState
@@ -539,7 +540,8 @@ class Board:
         self,
         env: str = "",
         *,
-        resolve: bool = False,
+        policy: LockPolicy = LockPolicy.UPDATE,
+        install: bool = True,
         profile: str = "",
         watch: Watcher | None = None,
         sync_only: bool = False,
@@ -554,9 +556,9 @@ class Board:
         workspace already solved, so its own compiler never enters the lock's dependency path.
 
         env: the environment name, the host profile's own when empty.
-        resolve: allow a fresh dependency solve, refused otherwise when the lock cannot vouch
-            for what is on disk. For a host it means solving there instead of installing the
-            shipped artifact.
+        policy: what may happen to the lock first, as pixi's flags say it; a host is passed the
+            same policy, `locked` being how it refuses a lock this manifest did not solve.
+        install: install what the lock pins; off, this machine's lock alone moves.
         profile: the declared host profile describing this machine, so the generated activation
             carries that host's module stack; this board's own host when empty.
         watch: announces each onboarding stage as it begins.
@@ -575,7 +577,7 @@ class Board:
         provisioner = Provisioner(self.root, self.manifest)
         if not self.local:
             compiler = provisioner.compiler_for(plan.env)
-            if not resolve:
+            if policy is LockPolicy.LOCKED:
                 # The host will refuse a lock this manifest did not solve; ask here first,
                 # before the mirror and the remote install spend minutes reaching that answer.
                 compiler.vouch()
@@ -583,7 +585,7 @@ class Board:
                 self.dispatcher,
                 plan,
                 artifact=provisioner.artifact_for(plan.env),
-                resolve=resolve,
+                policy=policy,
                 watch=watch,
                 digest=compiler.digest(),
                 floor=self.floor,
@@ -591,12 +593,12 @@ class Board:
                 if not (self._dotfiles() if sync_only else dotfiles)
                 else self.manifest.workspace.dotfiles,
             ).run(sync_only=sync_only)
-        provisioner.provision(plan.env, resolve=resolve)
+        provisioner.provision(plan.env, policy=policy, install=install)
         # A platform this machine cannot run has no prefix to activate here; its lock ships with
         # `setup`.
         activate = (
             str(provisioner.activate(plan.env, modules=plan.profile.modules))
-            if provisioner.runs_here(plan.env)
+            if install and provisioner.runs_here(plan.env)
             else ""
         )
         return HostSetup(
@@ -1070,7 +1072,15 @@ class Board:
             arch=arch or ("" if gpu_name else defaults.arch),
         )
 
-    def run(self, command: Sequence[str], *, env: str = "", container: str = "") -> int:
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        env: str = "",
+        container: str = "",
+        policy: LockPolicy = LockPolicy.UPDATE,
+        install: bool = True,
+    ) -> int:
         """Run `command` through the host's activated plan, returning its exit code.
 
         Local commands execute in place; remote ones use one ssh connection, a batch cluster's
@@ -1082,6 +1092,9 @@ class Board:
 
         command: exact command argv, or a declared task name and its arguments, or a job.
         container: a container override, `none` forcing bare.
+        policy: what may happen to the lock before a local run, as `pixi run` takes it; a host
+            runs what its setup installed.
+        install: bring the local prefix in line with the lock first.
         """
         plan = self.plan(env=env, container=container)
         target = Target.spelled(command, self.root)
@@ -1095,7 +1108,9 @@ class Board:
             shipment = self.sealed(target, plan)
             command = shipment.locally(self.root, closure=self.dispatcher.stage_listing(shipment))
         if self.local and not plan.containerized:
-            return Provisioner(self.root, self.manifest).run(command, plan.env)
+            return Provisioner(self.root, self.manifest).run(
+                command, plan.env, policy=policy, install=install
+            )
         line = self.line(joined(command), env=env, container=container)
         if self.local:
             return foreground(localhost["bash"]["-lc", line])
@@ -1153,16 +1168,21 @@ class Board:
         self,
         env: str = "",
         *,
+        policy: LockPolicy = LockPolicy.UPDATE,
+        install: bool = True,
         replace: Callable[[str, list[str], Mapping[str, str]], NoReturn] = become,
     ) -> NoReturn:
         """Hand this terminal to the user's own shell with the workspace environment entered.
 
-        The activation `install` computed from the manifest is applied here, then this process
-        becomes the shell, so it owns the terminal and leaving it lands where the user began.
-        The environment's `activate.sh` (modules, pixi, second-stage tools) is sourced by `sh`,
-        which then becomes the shell. An unprovisioned environment is refused naming the fix.
+        As `pixi shell` does, the lock is first brought to `policy` and the environment installed
+        when it is not, then its activation applied and this process becomes the shell, so it
+        owns the terminal and leaving it lands where the user began. The environment's
+        `activate.sh` (modules, pixi, second-stage tools) is sourced by `sh`, which then becomes
+        the shell. With `install` off, an unprovisioned environment is refused naming the fix.
 
         env: the environment name, the host profile's own when empty.
+        policy: what may happen to the lock first, as pixi's flags say it.
+        install: install the environment, or bring it in line with its lock, first.
         replace: the process-replacing exec, injectable so a test can read what it was handed.
         """
         if not self.local:
@@ -1171,13 +1191,17 @@ class Board:
                 f"`{self.project.name} shell --on {self.host}` for a session there."
             )
         plan = self.plan(env=env, container="none")
-        pixi = Provisioner(self.root, self.manifest).pixi_for(plan.env)
+        provisioner = Provisioner(self.root, self.manifest)
+        provisioner.refreshed(plan.env, policy=policy, install=install)
+        pixi = provisioner.pixi_for(plan.env)
         if not pixi.ready(plan.env):
             raise MissionError(missing(plan, plan.prefix(str(self.root))))
         script = self.root / self.project.activation(plan.env, self.root)
         if not script.is_file():
-            tool = self.project.name
-            raise MissionError(f"{plan.env!r} has no activation; run `{tool} install`")
+            if not install:
+                tool = self.project.name
+                raise MissionError(f"{plan.env!r} has no activation; run `{tool} install`")
+            script = provisioner.activate(plan.env, modules=plan.profile.modules)
         entering = ["/bin/sh", "-c", '. "$1" && shift && exec "$@"', "mb-shell", str(script)]
         replace(entering[0], [*entering, *interactive_shell()], os.environ | pixi.overrides)
 

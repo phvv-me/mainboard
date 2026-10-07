@@ -110,7 +110,7 @@ def test_relation_queries_execute_once(workspace, monkeypatch) -> None:
 
 
 def test_an_environment_never_installed_is_named_not_crashed_on(mb) -> None:
-    ran = mb("shell")
+    ran = mb("shell", "--as-is")
     assert ran.code == 1
     assert "no default environment" in ran.err and "mb install" in ran.err
 

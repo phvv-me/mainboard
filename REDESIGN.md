@@ -1024,3 +1024,26 @@ node to be wiped and set up again on one published release.
 - [ ] A commit hook running `mb lint` on what a commit takes works, but every touched file
       still carries its share of about 110,000 older findings (mcmr alone about 60,000). How
       a hook treats that debt (a recorded baseline, or fixing it first) waits for the owner
+
+## Round 15 (2026-10-07): 0.5.1, the environment verbs are pixi's
+
+The owner read `install never solves` and `lock solves, then installs` as nonsense next to pixi,
+whose verbs everyone already knows, and asked for mb's to work the same way:
+
+- [x] `install` solves a lock the manifest moved past, then installs; `--locked` refuses such a
+      lock, `--frozen` installs the lock as it stands, `--all` takes every environment
+- [x] `lock` solves without installing, every environment unless one is named, and `--check`
+      exits 1 when the lock had to change
+- [x] `update [NAME...]` moves the lock to the newest releases inside the declared bounds;
+      `upgrade [NAME...]` raises the requirements themselves, every one when none is named
+      (`--exclude` keeps some), a table-style requirement keeping every field but its version
+      and a path, git or url source left alone. Both re-lock every environment unless one is
+      named, since a host refuses any environment the committed lock left stale
+- [x] `add` and `remove` re-lock and install; `--no-install` and `--frozen` replace
+      `--no-resolve`
+- [x] `run` and `shell` solve and install as needed first, as `pixi run` and `pixi shell` do,
+      with `--locked`, `--frozen`, `--no-install` and `--as-is`; an environment never installed
+      is installed rather than refused
+- [x] A host never solves: `host setup` and `host sync` run `install --locked` there (`setup
+      --resolve` runs plain `install`), and a stale lock is refused on the center before the
+      mirror leaves

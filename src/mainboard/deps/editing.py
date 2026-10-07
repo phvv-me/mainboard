@@ -19,11 +19,20 @@ class ManifestText:
         self.document = tomlkit.parse(text)
 
     def constraint(self, path: tuple[str, ...], name: str) -> str:
-        """What `name` is pinned to in the table at `path`, or a source spec as written."""
+        """What `name` is pinned to in the table at `path`, its version when written as a
+        table, or a source spec as written."""
         declared = self.table(path)[name]
         if isinstance(declared, str):
             return declared
+        if isinstance(declared, dict) and "version" in declared:
+            return str(declared["version"])
         return tomlkit.dumps({name: declared}).partition("=")[2].strip()
+
+    def versioned(self, path: tuple[str, ...], name: str) -> bool:
+        """Whether `name` in the table at `path` names a version to raise: a bare requirement
+        or a table carrying one, not a path, git or url source."""
+        declared = self.table(path)[name]
+        return isinstance(declared, str) or (isinstance(declared, dict) and "version" in declared)
 
     def declares(self, path: Sequence[str], name: str) -> bool:
         """Whether the table at `path` exists and carries `name`."""
@@ -46,12 +55,16 @@ class ManifestText:
     def put(self, path: tuple[str, ...], name: str, *, spec: str) -> None:
         """Declare `name` as `spec` in the table at `path`, creating the table when absent.
 
-        A replaced entry keeps its alignment and comment; a new one is padded to the column and
-        lands beneath the last requirement, above the trailing heading comment.
+        A replaced entry keeps its alignment and comment, and one written as a table (`{ version
+        = ..., extras = [...] }`) keeps every field but its version; a new one is padded to the
+        column and lands beneath the last requirement, above the trailing heading comment.
         """
         table = self.table(path, create=True)
         if name in table:
-            table[name] = spec
+            if isinstance(table[name], dict):
+                table[name]["version"] = spec
+            else:
+                table[name] = spec
             return
         key = tomlkit.key(name)
         key.sep = " " * max(ManifestText._column(table) - len(name) - _ASSIGN, 1) + "= "

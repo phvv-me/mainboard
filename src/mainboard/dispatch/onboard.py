@@ -24,6 +24,7 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..engines.compile.backend import PIXI_VERSION
 from ..engines.compile.backend.process import Process
+from ..engines.compile.policy import LockPolicy
 from ..log import logger
 from ..probe.snapshot import HostFacts
 from .schedulers.pueue import Pueue
@@ -252,7 +253,8 @@ class Bootstrap:
     synced manifest and install the environment from the lock this workspace already solved. A
     declared host and a machine rented for one job both drive this one class.
 
-    resolve: let the machine run its own dependency solve instead of installing the shipped lock.
+    policy: what the machine's install may do to the shipped lock: `locked` refuses one this
+        manifest did not solve, the default, and `update` lets the machine solve for itself.
     floor: the version the workspace declares for the tool, used only when the workspace vendors
         no source and the tool therefore comes from an index.
     extras: the tool's optional extras to install with it.
@@ -262,12 +264,12 @@ class Bootstrap:
         self,
         shell: HostShell,
         *,
-        resolve: bool = False,
+        policy: LockPolicy = LockPolicy.LOCKED,
         floor: str = "",
         extras: Sequence[str] = (),
     ) -> None:
         self.shell = shell
-        self.resolve = resolve
+        self.policy = policy
         self.floor = floor
         self.extras = tuple(extras)
 
@@ -309,8 +311,10 @@ class Bootstrap:
         that profile's module stack rather than this machine's.
         """
         host = self.shell.plan.host
-        verb = "lock" if self.resolve else "install"
-        self.shell.run(f"{_TOOL} {verb} {shlex.quote(self.env)} --profile {shlex.quote(host)}")
+        flag = f" {self.policy.flag}" if self.policy.flag else ""
+        self.shell.run(
+            f"{_TOOL} install {shlex.quote(self.env)}{flag} --profile {shlex.quote(host)}"
+        )
         if not self.shell.ok(self.shell.provisioned):
             raise MissionError(
                 f"{host!r} has no {self.shell.proof} after installing {self.env!r}; "
@@ -369,7 +373,8 @@ class Onboarding:
 
     artifact: the compiled manifest, lock and state shipped with the mirror; empty leaves the
         host to solve.
-    resolve: the escape hatch for the rare host that genuinely must solve for itself.
+    policy: what the host's install may do to the shipped lock, `locked` unless a host
+        genuinely must solve for itself (`update`).
     watch: announces each stage as it begins.
     digest: the manifest digest stamped onto the recorded `HostSetup`, for `doctor`.
     floor: the version this workspace declares for the tool, which a host with no vendored
@@ -383,7 +388,7 @@ class Onboarding:
         plan: ExecutionPlan,
         *,
         artifact: Sequence[str] = (),
-        resolve: bool = False,
+        policy: LockPolicy = LockPolicy.LOCKED,
         watch: Watcher | None = None,
         digest: str = "",
         floor: str = "",
@@ -392,7 +397,7 @@ class Onboarding:
         self.dispatcher = dispatcher
         self.plan = plan
         self.artifact = tuple(artifact)
-        self.resolve = resolve
+        self.policy = policy
         self.watch = watch or announce
         self.digest = digest
         self.floor = floor
@@ -530,7 +535,7 @@ class Onboarding:
         self.plan = self.resolved(capabilities)
         root = rooted(self.plan.profile, host=host)
         with open_shell(self.plan, root) as shell:
-            bootstrap = Bootstrap(shell, resolve=self.resolve, floor=self.floor)
+            bootstrap = Bootstrap(shell, policy=self.policy, floor=self.floor)
             self._mirror(host, root)
             self.watch(f"installing {_TOOL} on {host}")
             winner = bootstrap.tool()
@@ -613,7 +618,7 @@ class Onboarding:
             tool: dict[str, str | tuple[tuple[str, str], ...]] = {}
             if recorded.requires != (requirements := _requirements()):
                 self.watch(f"reinstalling {_TOOL} on {host}, its requirements moved")
-                winner = Bootstrap(shell, resolve=self.resolve, floor=self.floor).tool()
+                winner = Bootstrap(shell, policy=self.policy, floor=self.floor).tool()
                 tool = {
                     "installer": winner.winner,
                     "rejected": winner.rejected,
@@ -622,7 +627,7 @@ class Onboarding:
                 }
             pixi = self.align_pixi(shell, host=host)
             self.watch(self._installing(host))
-            Bootstrap(shell, resolve=self.resolve).environment()
+            Bootstrap(shell, policy=self.policy).environment()
             # A daemon that died or a host cleaned since setup would refuse every submit.
             self.verify_queue(shell, host=host)
             self.apply_dotfiles(shell, host=host)

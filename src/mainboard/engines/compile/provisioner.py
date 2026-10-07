@@ -15,6 +15,7 @@ from .ecosystems import SecondStage
 from .generated import GeneratedFiles
 from .generated.activation import write
 from .pixi_manifest import local_sources, selected_manifest
+from .policy import LockPolicy
 from .state import SyncState
 from .vendor import Vendor
 
@@ -232,9 +233,16 @@ class Provisioner:
         with shard.pixi.activated(env), self.leading(env):
             yield
 
-    def run(self, command: Sequence[str], env: str = "default") -> int:
-        """Compile stale generated files, then let Pixi's runner run `command`."""
-        shard = self.refreshed(env)
+    def run(
+        self,
+        command: Sequence[str],
+        env: str = "default",
+        *,
+        policy: LockPolicy = LockPolicy.UPDATE,
+        install: bool = True,
+    ) -> int:
+        """Bring `env` to `policy` as `pixi run` does, then let Pixi's runner run `command`."""
+        shard = self.refreshed(env, policy=policy, install=install)
         with local.cwd(str(self.root)), self.runtime(shard, env), self.leading(env):
             return shard.pixi.run(command, env)
 
@@ -257,13 +265,20 @@ class Provisioner:
         with local.env(**added):
             yield
 
-    def refreshed(self, env: str) -> _EnvironmentShard:
-        """`env`'s compile stack with its generated files current, ready to run a command in."""
+    def refreshed(
+        self, env: str, *, policy: LockPolicy = LockPolicy.FROZEN, install: bool = True
+    ) -> _EnvironmentShard:
+        """`env`'s compile stack ready to run a command in: its generated files current, its lock
+        brought to `policy` and, unless `install` is off, its prefix in line with that lock."""
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
-            if shard.compiler.stale():
+            if shard.compiler.stale() or not shard.pixi.manifest.exists():
                 shard.compiler.write(files)
-            self.synchronized(shard, env)
+            if policy is not LockPolicy.FROZEN:
+                shard.compiler.materialize(files)
+                shard.compiler.locked(files, policy=policy)
+            if install:
+                self.synchronized(shard, env)
         return shard
 
     def synchronized(self, shard: _EnvironmentShard, env: str) -> None:
@@ -272,15 +287,22 @@ class Provisioner:
         pixi's own per-command sync races when a wave shares a prefix (see `Pixi.sync`). The
         stamp names the lock revision and resolver inputs, so tasks and activation never force a
         reinstall; tool configuration and editable native sources still need an explicit one.
-        An uninstalled or unlocked environment is left for activation to refuse by name.
+        An environment never installed is installed whole, second stage included, as `pixi run`
+        installs one; an unlocked one is left for activation to refuse by name.
         """
-        if not shard.pixi.ready(env) or not shard.pixi.lock.is_file():
+        if not shard.pixi.lock.is_file():
             return
         current = f"{shard.compiler.resolution_digest()}:{shard.pixi.lock.stat().st_mtime_ns}"
-        with suppress(OSError):
-            if Project().marked(shard.directory, _SYNCED).read_text(encoding="utf-8") == current:
-                return
-        shard.pixi.sync(env)
+        if not shard.pixi.ready(env):
+            if shard.pixi.runs_here():
+                shard.compiler.install()
+                shard.stage.install(env)
+        else:
+            with suppress(OSError):
+                marked = Project().marked(shard.directory, _SYNCED).read_text(encoding="utf-8")
+                if marked == current:
+                    return
+            shard.pixi.sync(env)
         with suppress(OSError):
             (shard.directory / Project().marker(_SYNCED)).write_text(
                 current, encoding="utf-8", newline="\n"
@@ -305,27 +327,33 @@ class Provisioner:
             yield
 
     def provision(
-        self, env: str = "default", *, resolve: bool = False, refresh: bool = False
+        self,
+        env: str = "default",
+        *,
+        policy: LockPolicy = LockPolicy.UPDATE,
+        update: Sequence[str] | None = None,
+        install: bool = True,
     ) -> None:
-        """Compile `env` unconditionally, then install it, all under the workspace lock.
+        """Compile `env`, bring its lock to `policy`, then install it, all under the workspace
+        lock, as `pixi install` does.
 
         The whole run holds the lock so no agent rewrites the manifest mid-solve; the second
-        stage runs last since its managers are conda packages pixi just installed.
+        stage runs last since its managers are conda packages pixi just installed, and re-solves
+        its own locks only when the pixi lock moved.
 
-        refresh: take the newest releases the manifest allows first, a solve implying `resolve`.
+        update: take the newest releases the manifest allows first (`pixi update`), only these
+            packages when any are named.
+        install: install what the lock pins; off, only the lock moves (`pixi lock`).
         """
         shard = self._shard(env)
         with GeneratedFiles(directory=self.out).locked() as files:
             shard.compiler.write(files)
-            if resolve or refresh:
-                # A solve starts from the committed lock, so it moves only what the manifest
-                # moved; an install materializes it while vouching for it.
-                shard.compiler.materialize(files)
-            if refresh:
-                shard.pixi.update(env)
-            shard.compiler.install_locked(files, resolve=resolve or refresh)
-            if not shard.pixi.runs_here():
+            # A solve starts from the committed lock, so it moves only what the manifest moved.
+            shard.compiler.materialize(files)
+            moved = shard.compiler.locked(files, policy=policy, update=update)
+            if not install or not shard.pixi.runs_here():
                 # Solved for platforms this machine cannot run: the lock ships with `setup`,
                 # and the host that runs it installs the second stage and its activation.
                 return
-            shard.stage.install(env, resolve=resolve or refresh)
+            shard.compiler.install()
+            shard.stage.install(env, resolve=moved)

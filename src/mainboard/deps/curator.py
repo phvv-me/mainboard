@@ -9,6 +9,7 @@ from .indexes import Index
 from .slots import Slot, candidates, declared
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
     from ..board import Board
@@ -39,10 +40,11 @@ class Change(FrozenModel):
 
 
 class Dependencies:
-    """What the workspace declares: add, remove or upgrade in the manifest, then re-solve.
+    """What the workspace declares, edited as pixi's verbs edit it, then re-locked and installed.
 
-    Each verb ends in `install`'s provisioner, so nothing is left declared but unsolved, and
-    reports every constraint and locked version that moved.
+    `add`, `remove` and `upgrade` change the manifest, `update` only the lock; each then ends in
+    `install`'s provisioner, so nothing is left declared but unsolved unless `--frozen` asked
+    for the manifest alone, and reports every constraint and locked version that moved.
     """
 
     def __init__(self, board: Board) -> None:
@@ -59,13 +61,16 @@ class Dependencies:
         ecosystem: str = "conda",
         env: str = "",
         dev: bool = False,
-        resolve: bool = True,
+        install: bool = True,
+        frozen: bool = False,
     ) -> list[Change]:
-        """Declare `spec` in the table its flags name, then re-solve.
+        """Declare `spec` in the table its flags name, then re-lock and install, as `pixi add`.
 
         A bare name is pinned to what the ecosystem's index publishes, as `upgrade` would.
 
         env: an environment name, the workspace-wide table when empty.
+        install: install what the new lock pins (`--no-install` leaves the environment).
+        frozen: edit the manifest alone, leaving the lock as it stands (`--frozen`).
         """
         self.environment(env)
         name, constraint = Dependencies._split(spec)
@@ -75,7 +80,7 @@ class Dependencies:
         after = constraint or self.pinned(name, slot)
         manifest.put(slot.path, name, spec=after)
         change = Change(name=name, where=slot.table, before=before or _ABSENT, after=after)
-        return self.settled(manifest, change, env=env, resolve=resolve)
+        return self.settled(manifest, [change], env=env, install=install, frozen=frozen)
 
     def environment(self, env: str) -> str:
         """`env` confirmed against the manifest, the default environment when empty."""
@@ -121,9 +126,10 @@ class Dependencies:
         ecosystem: str = "",
         env: str = "",
         dev: bool = False,
-        resolve: bool = True,
+        install: bool = True,
+        frozen: bool = False,
     ) -> list[Change]:
-        """Drop `name` from the one table declaring it, then re-solve.
+        """Drop `name` from the one table declaring it, then re-lock and install, as `pixi remove`.
 
         The whole manifest is searched unless the flags narrow it to the tables they name.
         """
@@ -136,29 +142,46 @@ class Dependencies:
             after=_ABSENT,
         )
         manifest.drop(slot.path, name)
-        return self.settled(manifest, change, env=env, resolve=resolve)
+        return self.settled(manifest, [change], env=env, install=install, frozen=frozen)
 
-    def resolved(self, manifest: Manifest, *, env: str, refresh: bool = False) -> list[Change]:
-        """Re-solve `env` and report every pin the solve itself moved, read via `pixi list`.
+    def resolved(
+        self,
+        manifest: Manifest,
+        *,
+        env: str,
+        update: Sequence[str] | None = None,
+        install: bool = True,
+    ) -> list[Change]:
+        """Re-lock and report every pin the solve itself moved, read via `pixi list`.
 
-        refresh: ask the indexes for newer releases inside the declared bounds.
+        `env` alone when named; otherwise every declared environment, as pixi re-locks its one
+        lock file whole, since a host refuses any environment the committed lock left stale.
+        Only `env`, or `default`, is installed.
+
+        update: ask the indexes for newer releases inside the declared bounds (`pixi update`),
+            for these packages alone when any are named.
+        install: install what the lock now pins.
         """
         provisioner = Provisioner(self.board.root, manifest)
-        target = env or _DEFAULT
-        pixi = provisioner.pixi_for(target)
-        before = pixi.locked(target)
-        provisioner.provision(target, resolve=True, refresh=refresh)
-        after = pixi.locked(target)
-        return [
-            Change(
-                name=name,
-                where=_LOCK,
-                before=before.get(name, _ABSENT),
-                after=after.get(name, _ABSENT),
-            )
-            for name in sorted(before.keys() | after.keys())
-            if before.get(name) != after.get(name)
-        ]
+        installed = env or _DEFAULT
+        changes: list[Change] = []
+        for target in [env] if env else [_DEFAULT, *manifest.envs]:
+            pixi = provisioner.pixi_for(target)
+            before = pixi.locked(target)
+            provisioner.provision(target, update=update, install=install and target == installed)
+            after = pixi.locked(target)
+            where = _LOCK if target == _DEFAULT else f"{_LOCK} [{target}]"
+            changes += [
+                Change(
+                    name=name,
+                    where=where,
+                    before=before.get(name, _ABSENT),
+                    after=after.get(name, _ABSENT),
+                )
+                for name in sorted(before.keys() | after.keys())
+                if before.get(name) != after.get(name)
+            ]
+        return changes
 
     def searched(self, *, ecosystem: str, env: str, dev: bool) -> dict[Slot, tuple[str, ...]]:
         """The tables a lookup covers, every declared one until a flag narrows it."""
@@ -169,16 +192,23 @@ class Dependencies:
         return {slot: names for slot, names in found.items() if slot in wanted}
 
     def settled(
-        self, manifest: ManifestText, change: Change, *, env: str, resolve: bool
+        self,
+        manifest: ManifestText,
+        changes: list[Change],
+        *,
+        env: str,
+        install: bool,
+        frozen: bool = False,
     ) -> list[Change]:
-        """Write the edited manifest, reload it (failing fast on a bad edit), then re-solve."""
+        """Write the edited manifest, reload it (failing fast on a bad edit), then re-lock,
+        unless `frozen` leaves the lock for a later solve."""
         self.path.write_text(manifest.text(), encoding="utf-8", newline="\n")
         self.board.shared.pop("manifest", None)
         self.board.shared.pop("resolver", None)
         reloaded = self.board.manifest
-        if not resolve:
-            return [change]
-        return [change, *self.resolved(reloaded, env=env)]
+        if frozen:
+            return changes
+        return [*changes, *self.resolved(reloaded, env=env, install=install)]
 
     def slot(self, *, ecosystem: str, env: str, dev: bool) -> Slot:
         """Where a new requirement of this shape belongs, preferring a table already there."""
@@ -192,17 +222,51 @@ class Dependencies:
         cut = next((at for at, mark in enumerate(spec) if at and mark in _OPERATORS), len(spec))
         return spec[:cut].strip(), spec[cut:].strip().removeprefix("@").strip()
 
-    def upgrade(
-        self, name: str = "", *, ecosystem: str = "", env: str = "", dev: bool = False
+    def update(
+        self, names: Sequence[str] = (), *, env: str = "", install: bool = True
     ) -> list[Change]:
-        """Move `name` to its newest release, past its ceiling, or the whole lock within bounds."""
-        if not name:
-            self.environment(env)
-            return self.resolved(self.board.manifest, env=env, refresh=True)
-        slot = self.locate(name, ecosystem=ecosystem, env=env, dev=dev)
+        """Move the lock to the newest releases the manifest already allows, the named packages
+        alone when any are named, as `pixi update` does; the manifest is left as written."""
+        self.environment(env)
+        return self.resolved(self.board.manifest, env=env, update=tuple(names), install=install)
+
+    def upgrade(
+        self,
+        names: Sequence[str] = (),
+        *,
+        ecosystem: str = "",
+        env: str = "",
+        dev: bool = False,
+        exclude: Sequence[str] = (),
+        install: bool = True,
+    ) -> list[Change]:
+        """Raise requirements to the newest releases their ecosystems publish, then re-lock, as
+        `pixi upgrade` does: the named ones, or every declared one but `exclude` when none is.
+
+        A requirement with no version to raise (a path, git or url source) is left as written,
+        and one written as a table keeps every field but its version.
+        """
+        if names:
+            targets = [
+                (name, self.locate(name, ecosystem=ecosystem, env=env, dev=dev)) for name in names
+            ]
+        else:
+            targets = [
+                (name, slot)
+                for slot, declared_names in self.searched(
+                    ecosystem=ecosystem, env=env, dev=dev
+                ).items()
+                for name in declared_names
+                if name not in exclude
+            ]
         manifest = ManifestText(self.path.read_text(encoding="utf-8"))
-        before = manifest.constraint(slot.path, name)
-        after = self.pinned(name, slot)
-        manifest.put(slot.path, name, spec=after)
-        change = Change(name=name, where=slot.table, before=before, after=after)
-        return self.settled(manifest, change, env=env, resolve=True)
+        changes: list[Change] = []
+        for name, slot in targets:
+            if not manifest.versioned(slot.path, name):
+                continue
+            before = manifest.constraint(slot.path, name)
+            after = self.pinned(name, slot)
+            if after != before:
+                manifest.put(slot.path, name, spec=after)
+                changes.append(Change(name=name, where=slot.table, before=before, after=after))
+        return self.settled(manifest, changes, env=env, install=install)

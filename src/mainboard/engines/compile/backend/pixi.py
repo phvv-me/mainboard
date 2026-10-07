@@ -92,23 +92,22 @@ class Pixi(Tool):
     def env_prefix(self, env: str) -> Path:
         return self.manifest.parent / ".pixi" / "envs" / env
 
-    def environment_result(self, verb: str, *args: str, resolve: bool = False) -> CommandResult:
-        """Run an environment verb and retain its streamed native output."""
-        if not resolve and not self.lock.exists():
+    def environment_result(self, verb: str, *args: str) -> CommandResult:
+        """Run an environment verb over the lock as it stands, retaining its streamed output.
+
+        `--locked` unless an editable source is declared, whose metadata pixi re-reads and so
+        would call stale on every edit; such a lock is installed `--frozen`, the caller having
+        already asked whether it answers the manifest.
+        """
+        if not self.lock.exists():
             project = Project()
             raise MissionError(
-                f"pixi.lock is missing. Run `{project.name} lock ` on a "
+                f"pixi.lock is missing. Run `{project.name} lock` on a "
                 "solve-capable machine to create and verify the generated manifest/lock pair, "
                 f"and commit the {project.locks[0]} it writes."
             )
         editable = self._has_editable_paths()
-        return self.within_cwd(
-            Process.stream,
-            verb,
-            *args,
-            locked=not resolve and not editable,
-            frozen=not resolve and editable,
-        )
+        return self.within_cwd(Process.stream, verb, *args, locked=not editable, frozen=editable)
 
     def solve(self) -> None:
         """Solve the lock for every declared platform, installing nothing, even ones not this."""
@@ -129,18 +128,13 @@ class Pixi(Tool):
         }
         return not names or current_platform() in names
 
-    def install(self, env: str, *, resolve: bool = False) -> None:
-        """Install `env` locked by default and verify every explicitly resolved lock."""
-        result = self.environment_result("install", "-e", env, resolve=resolve)
-        self._raise_on_lock_drift(result, locked=not resolve)
+    def install(self, env: str) -> None:
+        """Install `env` from its lock, then repair whatever it holds that is incomplete."""
+        result = self.environment_result("install", "-e", env)
+        self._raise_on_lock_drift(result)
         if result.returncode:
             raise MissionError("`pixi install` failed (see its output above)")
-        # Known wart from chefe: a resolve installs twice, the repair riding the second, locked
-        # call, so an environment is audited once against a verified lock.
-        if resolve:
-            self.install(env)
-        else:
-            self.repair(env)
+        self.repair(env)
 
     def sync(self, env: str) -> None:
         """Bring the installed prefix in line with the lock, frozen, raising what pixi said.
@@ -245,25 +239,25 @@ class Pixi(Tool):
         command = self.command["shell-hook", "--frozen", "-s", shell, "-e", env, *self.scope()]
         return Process.output(command, "pixi shell-hook")
 
-    def update(self, env: str) -> None:
-        """Move `env`'s lock to the newest releases the manifest allows, which `install` keeps."""
-        if self.within_cwd(Process.stream, "update", "-e", env).returncode:
+    def update(self, env: str, names: Sequence[str] = ()) -> None:
+        """Move `env`'s lock to the newest releases the manifest allows, `names` alone when given,
+        installing nothing: the caller installs once the lock is committed."""
+        if self.within_cwd(Process.stream, "update", "--no-install", "-e", env, *names).returncode:
             raise MissionError("`pixi update` failed (see its output above)")
 
     @staticmethod
-    def _raise_on_lock_drift(result: CommandResult, *, locked: bool) -> None:
+    def _raise_on_lock_drift(result: CommandResult) -> None:
         """Turn Pixi's pre-task lock rejection into an actionable recovery message."""
         failure = f"{result.stdout}\n{result.stderr}".lower().replace("-", " ")
         if (
             result.returncode
-            and locked
             and "pixi task (" not in failure
             and "lock file" in failure
             and "not up to date" in failure
         ):
             raise MissionError(
-                f"the manifest drifted from pixi.lock. Run `{Project().name} lock ` "
-                "on a solve-capable machine, which is also what a host is then sent."
+                f"the manifest drifted from pixi.lock. Run `{Project().name} lock` on a "
+                "solve-capable machine, which is also what a host is then sent."
             )
 
     def _has_editable_paths(self) -> bool:

@@ -33,6 +33,7 @@ from .dispatch.commandline import joined, vetted
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
 from .durable import schedule
+from .engines.compile.policy import LockPolicy
 from .engines.compile.provisioner import Provisioner
 from .help import Help
 from .holds import Holds
@@ -213,13 +214,25 @@ def build(root: Path | None = None) -> App:
     # its version flag, so these verbs give up `--version` (the root app still answers it) rather
     # than answer `run python --version` with this tool's version.
     @app.command(version_flags=[])
-    def run(*command: str, on: str = "local", env: str = "", container: str = "") -> int:
+    def run(
+        *command: str,
+        on: str = "local",
+        env: str = "",
+        container: str = "",
+        locked: bool = False,
+        frozen: bool = False,
+        no_install: bool = False,
+        as_is: bool = False,
+    ) -> int:
         """Run a command, or a job spelled `path/to/file.py::name`, through the host's plan.
 
-        Native file targets run locally with the same runner and closure format as submitted
-        jobs; use submit for remote file targets, and run collection and help locally. Plain
-        remote diagnostic commands execute over SSH, on a cluster's login endpoint rather than in
-        a batch allocation. The exit code is the command's own.
+        As `pixi run` does, a local run first solves a lock that no longer answers the manifest
+        and installs the environment when it is not in line with that lock; `--locked`,
+        `--frozen`, `--no-install` and `--as-is` say so as pixi does. Native file targets run
+        locally with the same runner and closure format as submitted jobs; use submit for remote
+        file targets, and run collection and help locally. Plain remote diagnostic commands
+        execute over SSH, on a cluster's login endpoint rather than in a batch allocation, in
+        what that host's setup installed. The exit code is the command's own.
 
         Args:
             command: the command tokens, from the first token that is not an option of this verb,
@@ -227,8 +240,15 @@ def build(root: Path | None = None) -> App:
             on: the host alias, `local` for this machine.
             env: an environment name overriding the profile's choice.
             container: a container override, `none` forcing bare.
+            locked: refuse a lock that no longer answers the manifest.
+            frozen: take the lock as it stands, never comparing it with the manifest.
+            no_install: leave the environment as it is installed.
+            as_is: `--frozen` and `--no-install` together: run what is installed, as it is.
         """
-        return board(on).run(command, env=env, container=container)
+        policy = LockPolicy.of(locked=locked, frozen=frozen or as_is)
+        return board(on).run(
+            command, env=env, container=container, policy=policy, install=not (no_install or as_is)
+        )
 
     @job.command(version_flags=[])
     def submit(
@@ -622,25 +642,30 @@ def build(root: Path | None = None) -> App:
         lang: Annotated[str, Parameter(name=["--lang", "-l"])] = "conda",
         env: str = "",
         dev: bool = False,
-        resolve: bool = True,
+        no_install: bool = False,
+        frozen: bool = False,
         output: Output = _COMPACT,
     ) -> None:
-        """Declare a dependency in the manifest and re-solve, showing what the lock did.
+        """Declare a dependency in the manifest, re-lock and install, as `pixi add` does.
 
         A bare name is pinned to whatever the ecosystem's index publishes right now, and a name
         carrying its own constraint is written exactly as given. The table it lands in is the
         one the flags name, and where the manifest already writes that kind of requirement in a
-        particular table, the edit joins it there.
+        particular table, the edit joins it there. Shows what the manifest and the lock did.
 
         Args:
             lang: the ecosystem whose resolver installs it.
             env: an environment name, the workspace-wide table when omitted.
             dev: declare it as a development-only requirement.
-            resolve: `--no-resolve` stages several edits to solve once.
+            no_install: re-lock without installing.
+            frozen: edit the manifest alone, leaving the lock as it stands, to solve several
+                edits once.
         """
         with progress(f"adding {spec}"):
             changes = (
-                board("local").deps().add(spec, ecosystem=lang, env=env, dev=dev, resolve=resolve)
+                board("local")
+                .deps()
+                .add(spec, ecosystem=lang, env=env, dev=dev, install=not no_install, frozen=frozen)
             )
         _changed(changes, output, title="add")
 
@@ -651,10 +676,11 @@ def build(root: Path | None = None) -> App:
         lang: Annotated[str, Parameter(name=["--lang", "-l"])] = "",
         env: str = "",
         dev: bool = False,
-        resolve: bool = True,
+        no_install: bool = False,
+        frozen: bool = False,
         output: Output = _COMPACT,
     ) -> None:
-        """Drop a dependency from the manifest and re-solve, showing what the lock did.
+        """Drop a dependency from the manifest, re-lock and install, as `pixi remove` does.
 
         With no flags the whole manifest is searched, so dropping a requirement never asks
         which table it was written into. `--lang`, `--env` and `--dev` narrow that search to one
@@ -666,41 +692,77 @@ def build(root: Path | None = None) -> App:
             lang: only this ecosystem's tables (`python`, `conda`, `nodejs`, ...).
             env: only this environment's tables.
             dev: only the development-only tables.
-            resolve: `--no-resolve` stages several edits to solve once.
+            no_install: re-lock without installing.
+            frozen: edit the manifest alone, leaving the lock as it stands.
         """
         with progress(f"removing {name}"):
             changes = (
                 board("local")
                 .deps()
-                .remove(name, ecosystem=lang, env=env, dev=dev, resolve=resolve)
+                .remove(
+                    name, ecosystem=lang, env=env, dev=dev, install=not no_install, frozen=frozen
+                )
             )
         _changed(changes, output, title="remove")
 
+    @app.command(name="update")
+    def update_lock(
+        *names: str, env: str = "", no_install: bool = False, output: Output = _COMPACT
+    ) -> None:
+        """Move the lock to the newest releases the manifest allows, as `pixi update` does.
+
+        The manifest is left as written, so no requirement moves past its declared bounds; that
+        is `upgrade`. Every locked package moves unless some are named, and every environment
+        is re-locked unless one is named.
+
+        Args:
+            names: the packages to move, every one when none is named.
+            env: only this environment's lock.
+            no_install: re-lock without installing.
+        """
+        with progress(f"updating {', '.join(names) or 'the lock'}"):
+            changes = board("local").deps().update(names, env=env, install=not no_install)
+        _changed(changes, output, title="update")
+
     @app.command
     def upgrade(
-        name: str = "",
-        *,
+        *names: str,
         lang: Annotated[str, Parameter(name=["--lang", "-l"])] = "",
         env: str = "",
         dev: bool = False,
+        exclude: tuple[str, ...] = (),
+        no_install: bool = False,
         output: Output = _COMPACT,
     ) -> None:
-        """Move one dependency to its newest release, or the whole lock forward in its bounds.
+        """Raise requirements to their newest releases, re-lock and install, as `pixi upgrade`.
 
-        Named, the constraint itself is rewritten to what the ecosystem publishes now, which is
-        the only way past a ceiling the manifest declares. Unnamed, the manifest is untouched
-        and the lock is re-solved against the indexes, moving every pin as far as the declared
-        constraints already allow. `--lang`, `--env` and `--dev` narrow the search for the name
-        to one ecosystem's, one environment's or the development-only tables.
+        The manifest's constraint is rewritten to what each ecosystem publishes now, which is
+        the way past a ceiling the manifest declares; staying inside the bounds is `update`.
+        Every declared requirement moves unless some are named; one written as a table keeps
+        every field but its version, and a path, git or url source is left alone. `--lang`,
+        `--env` and `--dev` narrow which tables are searched.
 
         Args:
-            name: the dependency to move to its newest release; the whole lock when omitted.
+            names: the requirements to raise, every declared one when none is named.
             lang: only this ecosystem's tables.
             env: only this environment's tables.
             dev: only the development-only tables.
+            exclude: a requirement to leave as written when raising every one, repeatable.
+            no_install: re-lock without installing.
         """
-        with progress(f"upgrading {name or 'the lock'}"):
-            changes = board("local").deps().upgrade(name, ecosystem=lang, env=env, dev=dev)
+        with progress(f"upgrading {', '.join(names) or 'every requirement'}"):
+            changes = (
+                board("local")
+                .deps()
+                .upgrade(
+                    names,
+                    ecosystem=lang,
+                    env=env,
+                    dev=dev,
+                    exclude=exclude,
+                    install=not no_install,
+                )
+            )
         _changed(changes, output, title="upgrade")
 
     @app.command
@@ -783,37 +845,58 @@ def build(root: Path | None = None) -> App:
         return code
 
     @app.command
-    def install(env: str = "", *, profile: str = "") -> None:
-        """Compile the manifest and install the environment on this machine.
+    def install(
+        env: str = "",
+        *,
+        all_: Annotated[bool, Parameter(name=["--all", "-a"])] = False,
+        locked: bool = False,
+        frozen: bool = False,
+        profile: str = "",
+    ) -> None:
+        """Install an environment, solving the lock first when it no longer answers the manifest.
 
-        Another machine is onboarded with `setup`, which ends by running this verb there.
+        What `pixi install` does: `--locked` refuses a lock that no longer answers the manifest
+        instead of solving it, and `--frozen` installs the lock as it stands without asking.
+        Another machine is onboarded with `host setup`, which runs `install --locked` there, so a
+        host installs what this machine solved and never solves for itself.
 
         Args:
             env: the environment name, this machine's declared profile choice when omitted.
+            all_: install every declared environment.
+            locked: refuse a lock that no longer answers the manifest.
+            frozen: install the lock as it stands, never comparing it with the manifest.
             profile: the declared host profile describing this machine, so the environment's
                 activation carries that host's modules; what `setup` passes when a host installs.
         """
-        with progress(f"installing {env or 'the environment'}") as stage:
-            board("local").install(env, profile=profile, watch=stage)
+        policy = LockPolicy.of(locked=locked, frozen=frozen)
+        names = environments() if all_ else [env]
+        for name in names:
+            with progress(f"installing {name or 'the environment'}") as stage:
+                board("local").install(name, policy=policy, profile=profile, watch=stage)
 
     @app.command
-    def lock(env: str = "", *, profile: str = "") -> None:
-        """Solve the manifest into the committed lock, then install what it pinned here.
+    def lock(env: str = "", *, check: bool = False) -> int:
+        """Solve the lock where it no longer answers the manifest, installing nothing.
 
-        `install` never solves: it installs exactly the lock, so a host installs what this
-        machine solved. This is the one verb that moves the lock. With no environment named,
-        every declared one is solved, as `pixi lock` does: a shared input (a workspace
-        package's pyproject.toml) moves them all at once, and a lock left behind fails on the
-        host that installs it.
+        What `pixi lock` does. Every declared environment is locked unless one is named, since
+        a shared input (a workspace package's pyproject.toml) moves them all at once and a lock
+        left behind fails on the host that installs it. A lock that already answers is left as
+        it is.
 
         Args:
-            env: the environment to solve, every declared one when omitted.
-            profile: the declared host profile describing this machine.
+            env: the environment to lock, every declared one when omitted.
+            check: exit nonzero when the lock had to change, the gate for a commit or CI.
         """
-        names = [env] if env else ["default", *load(project.manifest(workspace_root())).envs]
-        for name in names:
-            with progress(f"solving {name}") as stage:
-                board("local").install(name, resolve=True, profile=profile, watch=stage)
+        committed = project.lock(workspace_root())
+        before = committed.read_bytes() if committed.is_file() else b""
+        for name in [env] if env else environments():
+            with progress(f"locking {name}") as stage:
+                board("local").install(name, install=False, watch=stage)
+        return int(check and committed.read_bytes() != before)
+
+    def environments() -> list[str]:
+        """Every environment the workspace declares, `default` first."""
+        return ["default", *load(project.manifest(workspace_root())).envs]
 
     @self_.command
     def update() -> None:
@@ -949,14 +1032,21 @@ def build(root: Path | None = None) -> App:
         queue: str = "",
         walltime: str = "",
         keep: bool = False,
+        locked: bool = False,
+        frozen: bool = False,
+        no_install: bool = False,
+        as_is: bool = False,
     ) -> NoReturn:
         """Open an interactive shell in this workspace's environment, here or on a host.
 
         The daily way in, and the one verb that works from a terminal where nothing is
         activated yet. This process becomes the shell, so quitting it returns to the terminal
-        that asked. On a host the shell opens inside its mirrored workspace, and a queued host
-        is asked for an interactive allocation first, so the terminal lands on a compute node
-        rather than on the login node the request was made from.
+        that asked. Here, as `pixi shell` does, a lock that no longer answers the manifest is
+        solved and the environment installed first, unless `--locked`, `--frozen`,
+        `--no-install` or `--as-is` say otherwise. On a host the shell opens inside its mirrored
+        workspace, and a queued host is asked for an interactive allocation first, so the
+        terminal lands on a compute node rather than on the login node the request was made
+        from.
 
         Args:
             command: on a host, a command to run instead of handing over the terminal, from the
@@ -967,6 +1057,10 @@ def build(root: Path | None = None) -> App:
             walltime: on a queued host, the session's wall-clock limit, the profile's when omitted.
             keep: on a host, hold the session in tmux on the far side so a dropped terminal leaves
                 the allocation up, and reattach to one already held.
+            locked: here, refuse a lock that no longer answers the manifest.
+            frozen: here, take the lock as it stands, never comparing it with the manifest.
+            no_install: here, leave the environment as it is installed.
+            as_is: here, `--frozen` and `--no-install` together.
         """
         if on != "local":
             board(on).interact(*command, env=env, queue=queue, walltime=walltime, keep=keep)
@@ -976,7 +1070,8 @@ def build(root: Path | None = None) -> App:
                 f"command here with `{project.name} run -- <command>`"
             )
         else:
-            board("local").shell(env)
+            policy = LockPolicy.of(locked=locked, frozen=frozen or as_is)
+            board("local").shell(env, policy=policy, install=not (no_install or as_is))
 
     @host.command
     def setup(
@@ -1007,7 +1102,8 @@ def build(root: Path | None = None) -> App:
 
         Args:
             env: an environment name overriding the host profile's own.
-            resolve: let the host solve for itself instead of installing the shipped lock.
+            resolve: let the host solve for itself (`install` there) instead of installing the
+                shipped lock (`install --locked`).
             dotfiles: also apply the workspace's dotfiles (zsh, lvim, the pixi toolbox, herdr);
                 every later sync keeps them. Without it a host gets only what jobs need: this
                 tool, pixi, pueue and the environment.
@@ -1020,7 +1116,8 @@ def build(root: Path | None = None) -> App:
             return _sectioned(sections, output, title="center")
         workspace = board(host)
         with progress(f"setting up {host}") as stage:
-            report = workspace.install(env, resolve=resolve, watch=stage, dotfiles=dotfiles)
+            policy = LockPolicy.UPDATE if resolve else LockPolicy.LOCKED
+            report = workspace.install(env, policy=policy, watch=stage, dotfiles=dotfiles)
         _onboarded(workspace, report, output, title="setup")
         return 0
 
@@ -1037,7 +1134,7 @@ def build(root: Path | None = None) -> App:
         """
         workspace = board(host)
         with progress(f"syncing {host}") as stage:
-            report = workspace.install(env, resolve=False, watch=stage, sync_only=True)
+            report = workspace.install(env, policy=LockPolicy.LOCKED, watch=stage, sync_only=True)
         _onboarded(workspace, report, output, title="sync")
 
     @host.command

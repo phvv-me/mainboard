@@ -262,12 +262,28 @@ Profiles inherit `[hosts.defaults]`, values interpolate (`{{ env('LOCALDIR') }}`
 `{{ num_cpus() }}`), and queue policies are data the tool enforces at submit
 time with the error you wish the scheduler gave you.
 
-The solve is source: `lock` (and `add`, `remove`, `upgrade`) writes
+The environment verbs are pixi's, with pixi's flags:
+
+```console
+$ mb install [ENV] [--all]     # solve a lock the manifest moved past, then install
+$ mb install --locked          # refuse a stale lock instead (what a host runs)
+$ mb install --frozen          # install the lock as it stands, never comparing
+$ mb lock [ENV] [--check]      # solve without installing; --check exits 1 when it moved
+$ mb update [NAME...]          # newest releases inside the declared bounds
+$ mb upgrade [NAME...]         # raise requirements past their bounds, every one unnamed
+$ mb add SPEC / mb remove NAME # edit, re-lock, install; --no-install, --frozen
+$ mb run / mb shell            # lock and install as needed first; --locked, --frozen,
+                               # --no-install, --as-is
+```
+
+The solve is source: every verb that solves writes
 each environment's pixi lock byte for byte into `mb.lock` beside the manifest,
 one sorted section per environment with the digest it was solved from and the
 pixi that solved it. Commit it. `install` copies a section into the ignored
-state directory, where pixi reads it, and refuses a section the manifest has
-moved past. A workspace still on `mainboard.toml` gets `mb.lock` too, since
+state directory, where pixi reads it, solving first when the manifest has moved
+past it. A host never solves: `host setup` and `host sync` run `install --locked`
+there, so a stale lock fails on the center, before anything ships. A workspace
+still on `mainboard.toml` gets `mb.lock` too, since
 the file travels with the tree (one already holding `mainboard.lock` keeps
 it). A workspace solved before `mb.lock` existed has its cached lock
 adopted into it on the next `install` (one line says so), and `doctor` names a
