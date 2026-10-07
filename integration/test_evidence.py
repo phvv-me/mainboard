@@ -374,6 +374,27 @@ def test_a_directory_replica_keeps_each_object_once_and_the_index(
     assert not list(root.rglob("*.partial"))
 
 
+def test_a_replica_reads_objects_in_windows_and_a_larger_one_alone(
+    workspace, evidence, tmp_path_factory, monkeypatch
+) -> None:
+    kept = Evidence(Lake.at(workspace))
+    kept.ingest([evidence])
+    sizes = sorted({row.sha256: row.size for row in kept.indexed()}.items(), key=lambda kv: kv[1])
+    # The second largest fills a window alone, so the rest take more than one, and the largest
+    # exceeds every window.
+    monkeypatch.setattr(evidence_module, "_WINDOW_BYTES", sizes[-2][1])
+    root = tmp_path_factory.mktemp("replica")
+    with (
+        patch.object(Blobs, "read", autospec=True, side_effect=Blobs.read) as read,
+        patch.object(Evidence, "_copy", autospec=True, side_effect=Evidence._copy) as alone,
+    ):
+        assert kept.replicate(DirectoryReplica(root)) == len(sizes)
+    assert read.call_count >= 2
+    assert [call.args[2] for call in alone.call_args_list] == [sizes[-1][0]]
+    for digest, _ in sizes:
+        assert hashlib.sha256((root / digest[:2] / digest).read_bytes()).hexdigest() == digest
+
+
 def test_ingest_refuses_what_lies_outside_the_workspace(mb, tmp_path_factory) -> None:
     stranger = tmp_path_factory.mktemp("stranger") / "file.bin"
     stranger.write_bytes(b"x")

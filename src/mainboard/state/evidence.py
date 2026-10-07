@@ -23,13 +23,13 @@
 # on another disk is what makes that safe. `Replica` is the shape any home implements and
 # `Evidence.replicate` the one call that fills it: every object the replica lacks, then the whole
 # path index, so both the bytes and which path held them survive the lake's disk.
-# `DirectoryReplica` keeps them on a mounted disk (the center's 24 TB data drive).
+# `DirectoryReplica` keeps them on a mounted disk (the center's external drive).
 
 import hashlib
 import mimetypes
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from functools import cache, cached_property, partial
@@ -52,6 +52,10 @@ CACHE = "evidence"
 # the opens overlap. The largest file a read holds in memory; a larger one streams when staged.
 _READERS = 16
 _HELD_BYTES = 32 << 20
+
+# The most object bytes one replicating read gathers: DuckDB holds a read's whole answer (half
+# the center lake in one read peaked at 32 GB), and a window costs one scan of `blobs`.
+_WINDOW_BYTES = 1 << 30
 
 # The media types an evidence file's suffix does not name through `mimetypes`, and the bytes a
 # Parquet file begins with, since a content-addressed object has no suffix at all.
@@ -213,7 +217,9 @@ class Evidence:
         current = dict(self.session.rows(select(index.c.path, index.c.sha256)))
         indexed = objects = size = 0
         with ThreadPoolExecutor(max_workers=_READERS) as pool:
-            for window in _windows(sources):
+            # Each window of files is read, then committed as one insert, so memory stays
+            # bounded and an interrupted ingest never leaves half an object.
+            for window in _windows(sources, lambda source: source.stat().st_size, STAGED_BYTES):
                 batch = list(pool.map(self._read, window))
                 held = self.session.run(
                     partial(self.blobs.held, digests={entry.sha256 for entry in batch})
@@ -271,11 +277,24 @@ class Evidence:
 
     def replicate(self, replica: Replica) -> int:
         """Copy every indexed object `replica` lacks into it, then the whole index; how many
-        objects were copied."""
+        objects were copied.
+
+        The missing objects are read in windows of at most `_WINDOW_BYTES`, one scan of `blobs`
+        each, since a query per object pays its planning every time (nine objects a second
+        across 330,000). An object larger than a window, or one a window could not read whole,
+        is copied on its own a chunk at a time.
+        """
         rows = self.indexed()
-        digests = {row.sha256 for row in rows}
-        missing = sorted(digests - replica.holds(digests))
-        for digest in missing:
+        sizes = {row.sha256: row.size for row in rows}
+        missing = sorted(set(sizes) - replica.holds(sizes))
+        alone = [digest for digest in missing if sizes[digest] > _WINDOW_BYTES]
+        windowed = [digest for digest in missing if sizes[digest] <= _WINDOW_BYTES]
+        for window in _windows(windowed, sizes.__getitem__, _WINDOW_BYTES):
+            found = self.session.run(partial(self.blobs.read, digests=window))
+            for digest, whole in found.items():
+                replica.put(digest, iter((whole,)))
+            alone += [digest for digest in window if digest not in found]
+        for digest in alone:
             self.session.run(partial(self._copy, replica, digest))
         replica.index(rows)
         return len(missing)
@@ -507,19 +526,18 @@ def _digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def _windows(sources: Sequence[Path]) -> Iterator[list[Path]]:
-    """`sources` in windows of whole files holding at most `STAGED_BYTES` on disk, unless one
-    file alone is larger: each window is read, then committed as one insert, so memory stays
-    bounded and an interrupted ingest never leaves half an object."""
-    window: list[Path] = []
+def _windows[T](items: Sequence[T], weight: Callable[[T], int], limit: int) -> Iterator[list[T]]:
+    """`items` in order, in windows weighing at most `limit` together unless one item alone is
+    heavier, so whatever a window holds at once stays bounded."""
+    window: list[T] = []
     size = 0
-    for source in sources:
-        weight = source.stat().st_size
-        if window and size + weight > STAGED_BYTES:
+    for item in items:
+        heft = weight(item)
+        if window and size + heft > limit:
             yield window
             window, size = [], 0
-        window.append(source)
-        size += weight
+        window.append(item)
+        size += heft
     if window:
         yield window
 

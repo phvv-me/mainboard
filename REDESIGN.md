@@ -986,3 +986,21 @@ for the frames plots took. Mainboard no longer depends on it:
       settlement reproduces its committed values
 - [ ] The architecture_policy_control and fresh_precision_transport registrations had already
       drifted at HEAD (their shared gpu.py and experiments/conftest.py moved on 2026-09-25)
+
+## Round 13 (2026-10-07): data leaves git for the lake
+
+The owner moved every dataset tree and Parquet file out of version control. Each was first found
+in the center lake by path and SHA-256, then untracked (root 11,033 files, reproducibility 3,914,
+llm-head 680); the root `[git] never-commit` adds `**/*.parquet`.
+
+- [x] `mb git commit -m` without paths committed only the moved pointers in a parent, `--only`,
+      and left the parent's own index staged (the root's 11,033 deletions); with no path named, a
+      parent commits its whole index with those pointers
+- [x] `lake replicate` asked for each object in its own query, nine objects a second, about
+      eight hours for the center's 330,000. It reads the missing objects in 1 GB windows, one
+      scan of `blobs` each, and copies only an object larger than a window on its own. One
+      streamed read of everything is not an option: DuckDB holds a read's whole answer, and half
+      the lake in one read peaked at 32 GB
+- [ ] `never-commit`'s `**/evidence/**` and `**/datasets/**` also match source code (mcmr's
+      `evidence/` packages, research/llm's `scripts/datasets/*.py`, compression's
+      `evidence/*.py`), so a commit silently leaves edits there out
