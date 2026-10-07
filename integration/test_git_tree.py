@@ -145,6 +145,19 @@ def test_commit_takes_only_the_named_paths_and_leaves_the_index_alone(mb, tracke
     assert "A  staged.txt" in status and "?? theirs.txt" in status
 
 
+def test_commit_takes_a_directory_already_removed_with_git_rm(mb, tracked: Path) -> None:
+    scratch = tracked / "scratch"
+    scratch.mkdir()
+    (scratch / "probe.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    git(tracked, "add", "scratch")
+    git(tracked, "commit", "--quiet", "-m", "scratch")
+    git(tracked, "rm", "-r", "--quiet", "scratch")
+    root = steps(mb("git", "commit", "-m", "drop scratch", "scratch", "--json"))["."]
+    assert root["outcome"] == "done", root
+    shown = git(tracked, "show", "--name-status", "--format=", "HEAD").stdout.split()
+    assert shown == ["D", "scratch/probe.py"]
+
+
 def test_commit_takes_a_named_file_that_replaced_a_link_and_refuses_a_flattened_one(
     mb, tracked: Path
 ) -> None:

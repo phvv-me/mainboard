@@ -86,6 +86,9 @@ class Commit:
             detail = _named("refused", refused) + ", which a commit may not take"
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
         specs = [*_literal(paths), *self._unmoved(repo, paths)]
+        # Resetting first puts back what `git rm` took out of the index, so `add -A` stages
+        # that deletion again instead of matching nothing and failing.
+        _stage(repo, specs, "reset", "-q")
         _stage(repo, specs)
         return self._finish(repo, specs, notes=[])
 
@@ -248,8 +251,8 @@ def _routed(tree: Tree, paths: Sequence[Path]) -> dict[str, list[str]]:
 
     A path resolves from the current directory, as git resolves it. It belongs to the deepest
     owned repository holding it, and a directory also takes every owned repository under it
-    whole. A path inside a foreign submodule, outside the workspace, or naming nothing on disk
-    or in the index is refused before anything is staged.
+    whole. A path inside a foreign submodule, outside the workspace, or naming nothing on disk,
+    in the index or at HEAD is refused before anything is staged.
     """
     owned = sorted(tree.owned(), key=lambda repo: len(repo.path.parts), reverse=True)
     routed: dict[str, list[str]] = {}
@@ -275,13 +278,19 @@ def _routed(tree: Tree, paths: Sequence[Path]) -> dict[str, list[str]]:
                 f"{given} lies in {foreign.name}, which this workspace does not own; name "
                 f"{foreign.name} itself to record its pointer"
             )
-        if not (absolute.exists() or holder.git.out("ls-files", "-z", "--", relative)):
+        if not (absolute.exists() or _tracked(holder, relative)):
             raise MissionError(f"{given} is neither on disk nor tracked; nothing by that name")
         routed.setdefault(holder.name, []).append(relative or ".")
         for repo in owned:
             if repo is not holder and absolute in repo.path.parents:
                 routed.setdefault(repo.name, []).append(".")
     return routed
+
+
+def _tracked(repo: Repo, path: str) -> bool:
+    """Whether the index or HEAD names `path`: a deletion staged with `git rm` is in HEAD alone."""
+    tree = ("--with-tree=HEAD",) if repo.exists("HEAD") else ()
+    return bool(repo.git.out("ls-files", "-z", *tree, "--", path))
 
 
 def _unready(repo: Repo) -> Step | None:
