@@ -3,9 +3,10 @@
 # runs over the transports dispatch already owns rather than a second, parallel way to reach a
 # host, and succeeds the shell script the previous generation shipped.
 
+import hashlib
 import shlex
 import shutil
-from importlib.metadata import metadata
+from importlib.metadata import metadata, requires
 from typing import TYPE_CHECKING
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -91,6 +92,9 @@ class HostSetup(FrozenModel):
     digest: the manifest digest this host was last provisioned from, empty for a host onboarded
         before this field existed; `doctor` compares it with the manifest to spot drift.
     dotfiles: set up with `--dotfiles`, which every later sync keeps.
+    requires: the digest of the tool's declared requirements as installed there; a sync whose
+        tool declares others reinstalls it, since an editable install follows the mirrored
+        source but never gains a dependency the source added. Empty for an older setup.
     """
 
     host: str
@@ -107,6 +111,7 @@ class HostSetup(FrozenModel):
     synced_at: str = ""
     digest: str = ""
     dotfiles: bool = False
+    requires: str = ""
 
     @property
     def mirrored_at(self) -> str:
@@ -612,6 +617,7 @@ class Onboarding:
                 hardware=hardware,
                 digest=self.digest,
                 dotfiles=bool(self.dotfiles),
+                requires=_requirements(),
             )
         recorded = self.dispatcher.cache.save_host(setup)
         logger.info("onboarded {} at {} through {}", host, root, recorded.installer)
@@ -646,8 +652,9 @@ class Onboarding:
     def _sync(self, host: str) -> HostSetup:
         """Re-mirror and re-provision `host`, its bootstrap and hardware probe skipped.
 
-        The fast path back to a host whose manifest moved since setup: neither the tool nor the
-        hardware changed, so nothing reinstalls or re-probes. Refuses a host never onboarded.
+        The fast path back to a host whose manifest moved since setup: the hardware is not probed
+        again, and the tool is reinstalled only when its declared requirements moved since the
+        host last installed it (`HostSetup.requires`). Refuses a host never onboarded.
 
         THE RECORD IS RE-READ AFTER THE MIRROR, NOT BEFORE. `mirror` stamps `synced_at` on
         its own, mid-block, and building the saved record from a copy taken before that would
@@ -662,6 +669,16 @@ class Onboarding:
         root = rooted(self.plan.profile, host=host)
         with open_shell(self.plan, root) as shell:
             self._mirror(host, root)
+            tool: dict[str, str | tuple[tuple[str, str], ...]] = {}
+            if recorded.requires != (requirements := _requirements()):
+                self.watch(f"reinstalling {_TOOL} on {host}, its requirements moved")
+                winner = Bootstrap(shell, resolve=self.resolve, floor=self.floor).tool()
+                tool = {
+                    "installer": winner.winner,
+                    "rejected": winner.rejected,
+                    "tool": shell.run(f"{_TOOL} --version").strip(),
+                    "requires": requirements,
+                }
             pixi = self.align_pixi(shell, host=host)
             self.watch(self._installing(host))
             Bootstrap(shell, resolve=self.resolve).environment()
@@ -678,8 +695,15 @@ class Onboarding:
                     "activate": activate,
                     "pixi": pixi,
                     "digest": self.digest or fresh.digest,
+                    **tool,
                 }
             )
         )
         logger.info("synced {} at {}", host, root)
         return updated
+
+
+def _requirements() -> str:
+    """A digest of the requirements this tool declares, the ones a host's install must carry."""
+    declared = "\n".join(sorted(requires(_TOOL) or ()))
+    return hashlib.sha256(declared.encode()).hexdigest()[:16]
