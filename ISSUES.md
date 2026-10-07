@@ -67,12 +67,16 @@ campaign first; move an entry to the bottom section once fixed and verified.
     object, decompression, hashing) and batch it.
 13b. **Materializing a whole experiment's datasets** wrote 9.6 GB without reaching the one file a
     renderer needed, on a center disk 93% full. Renderers should read through the lake, or say
-    exactly which paths to materialize.
+    exactly which paths to materialize. Since 0.5.4 `mb lake evict` gives the disk back after a
+    materialize, but renderers that read through `Path` still need the tree.
 13c. **The center's disk is nearly full** (2026-10-08 03:20: 12 GiB free of 460, 98%). The lake
     keeps 48 GB under `.mainboard/lake` on the internal disk, and tree copies under
     `research/cuda-tokenization/datasets` hold 29 GB, much of it duplicates of lake objects.
     There is no `mb lake evict` to drop tree copies the lake verifiably holds, and no way to see
     which tree files are cached copies. Add both, and consider the lake on `/Volumes/PORTABLE`.
+    Done 2026-10-08: the lake moved to PORTABLE (0.5.3, 52 GiB free) and `mb lake evict`
+    (0.5.4) dropped 151,166 cutok tree copies (87 GiB free). Still missing: a listing of which
+    tree files are cached copies.
 13d. **`[workspace] lake` (2026-10-08) is not yet known to center migration.**
     `center/state.py` ships `lake.sqlite` and the data as part of `.mainboard`; with the lake
     elsewhere, `host setup --center` should carry it from `Lake.home` (or leave an external

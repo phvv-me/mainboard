@@ -31,6 +31,7 @@ import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import UTC, datetime
 from functools import cache, cached_property, partial
 from pathlib import Path, PurePosixPath
@@ -267,6 +268,35 @@ class Evidence:
                     self._write(row, target)
                     written.append(target)
         return written
+
+    def evict(self, paths: Sequence[Path]) -> list[Path]:
+        """Delete the tree copy of every file at or under `paths` that the lake indexes at that
+        path with the same bytes and holds intact, returning those deleted; any other file stays.
+
+        The tree is a cache of the lake: readers of artifacts and receipts recall an evicted
+        file by digest, and `materialize` writes it back.
+        """
+        sources = self._files(paths)
+        index = schema.evidence
+        current = dict(self.session.rows(select(index.c.path, index.c.sha256)))
+        claimed = {self._relative(source): source for source in sources}
+        wanted = {current[path] for path in claimed if path in current}
+        held = self.session.run(partial(self.blobs.held, digests=wanted))
+        candidates = [source for path, source in claimed.items() if current.get(path) in held]
+        with ThreadPoolExecutor(max_workers=_READERS) as pool:
+            digests = pool.map(_digest, candidates)
+        evicted = [
+            source
+            for source, digest in zip(candidates, digests, strict=True)
+            if digest == current[self._relative(source)]
+        ]
+        for source in evicted:
+            source.unlink()
+        for given in paths:
+            for folder in sorted(Path(given).rglob("*"), reverse=True):
+                with suppress(OSError):
+                    folder.rmdir()
+        return evicted
 
     def recall(self, sha256: str) -> bytes | None:
         """The object with `sha256`, verified, None when this lake holds no intact copy."""

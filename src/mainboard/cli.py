@@ -1949,6 +1949,21 @@ def build(root: Path | None = None) -> App:
         )
 
     @lake.command
+    def evict(*paths: Path, output: Output = _COMPACT) -> None:
+        """Delete tree copies of evidence the lake keeps, to give the disk back.
+
+        A file goes only when the lake indexes that path with the same bytes and holds an
+        intact object; anything else stays. Readers recall evicted files from the lake, and
+        `materialize` writes them back.
+
+        Args:
+            paths: evidence files or directories inside this workspace.
+        """
+        with progress("evicting tree copies the lake keeps"):
+            evicted = Evidence(Lake.at(workspace_root())).evict(paths)
+        output.print_rows([{"evicted": len(evicted)}], title="lake evict", columns=("evicted",))
+
+    @lake.command
     def replicate(directory: Path, output: Output = _COMPACT) -> None:
         """Copy every evidence object the lake keeps, and its path index, to a second disk.
 

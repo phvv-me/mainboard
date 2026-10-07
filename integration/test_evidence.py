@@ -87,6 +87,23 @@ def test_ingest_materialize_and_check_round_trip(
     assert json.loads(imports.out) == [{"destination": "evidence_log"}] * 2
 
 
+def test_evict_deletes_only_what_the_lake_keeps_intact(workspace, evidence) -> None:
+    before = _snapshot(evidence)
+    lake = Evidence(Lake.at(workspace))
+    lake.ingest([evidence])
+    (evidence / "noise.bin").write_bytes(b"changed after ingest")
+    (evidence / "late.txt").write_bytes(b"never ingested")
+    evicted = lake.evict([evidence])
+    assert {path.name for path in evicted} == {
+        "empty.txt",
+        "part-00000.parquet",
+        Path(next(name for name in before if name.startswith("artifacts"))).name,
+    }
+    assert sorted(_snapshot(evidence)) == ["late.txt", "noise.bin"]
+    lake.materialize([evidence / "receipts"])
+    assert (evidence / "receipts" / "run=run1" / "part-00000.parquet").is_file()
+
+
 def test_readers_find_evidence_that_left_the_tree(workspace, evidence, tmp_path_factory) -> None:
     project = workspace / "research" / "lab"
     Evidence(Lake.at(workspace)).ingest([evidence])
