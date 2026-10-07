@@ -50,7 +50,11 @@ class Commit:
         self.committed: set[str] = set()
 
     def run(self) -> list[Step]:
-        """Commit bottom-up, refusing up front when there is nothing to commit anywhere."""
+        """Commit bottom-up, refusing up front when there is nothing to commit anywhere or no
+        message to commit it with: git refuses an empty message only after the paths are staged,
+        and the next commit would carry them under its own."""
+        if not self.message.strip():
+            raise MissionError("a commit needs a message; nothing was staged")
         if not (self.everything or self.named or self._staged()):
             name = Project().name
             raise MissionError(

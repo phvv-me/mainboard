@@ -225,6 +225,15 @@ def test_commit_without_paths_commits_the_index_and_refuses_an_empty_one(
     assert "?? loose.txt" in git(tracked, "status", "--porcelain").stdout
 
 
+def test_commit_refuses_an_empty_message_before_staging_anything(mb, tracked: Path) -> None:
+    (tracked / "named.txt").write_text("named\n", encoding="utf-8", newline="\n")
+
+    refused = mb("git", "commit", "-m", " ", "named.txt")
+
+    assert refused.code != 0 and "message" in refused.said
+    assert "?? named.txt" in git(tracked, "status", "--porcelain").stdout
+
+
 def test_commit_refuses_a_named_never_commit_path(mb, tracked: Path) -> None:
     data = tracked / "datasets" / "rows.csv"
     data.parent.mkdir()
