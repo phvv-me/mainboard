@@ -426,11 +426,11 @@ class LaunchdAgent(Settler):
     @property
     def _domain(self) -> str:
         """The GUI domain while someone is logged in at the console, else the background one."""
-        if sys.platform == "win32":
-            raise MissionError("launchd domains exist on macOS only")
-        uid = os.getuid()
-        gui = self.shell(("launchctl", "print", f"gui/{uid}"))[0] == 0
-        return f"gui/{uid}" if gui else f"user/{uid}"
+        if sys.platform != "win32":
+            uid = os.getuid()
+            gui = self.shell(("launchctl", "print", f"gui/{uid}"))[0] == 0
+            return f"gui/{uid}" if gui else f"user/{uid}"
+        raise MissionError("launchd domains exist on macOS only")
 
     @property
     def _target(self) -> str:
