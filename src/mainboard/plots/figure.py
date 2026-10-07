@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, cast
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.style as mplstyle
-import polars as pl
 
+from .columns import Columns
 from .panel import PanelPlot
 from .table import Plot
 
@@ -20,25 +20,27 @@ if TYPE_CHECKING:
 
     from ..manifest import FigureSpec
     from ..manifest.schema.plot import PlotStyle
+    from ..state.relations import Relation
 
 
 class FigurePlot(Plot):
     """SQL supplies values and bounds; native libraries supply marks and geometry."""
 
     def __init__(self, style: PlotStyle | None = None) -> None:
-        super().__init__(pl.DataFrame(), style)
+        super().__init__(Columns(), style)
 
     def render(
         self,
         specification: FigureSpec,
-        query: Callable[[str | Path], pl.DataFrame],
+        query: Callable[[str | Path], Relation],
         *paths: Path,
         dpi: int | None = None,
     ) -> tuple[Path, ...]:
         """Render one named figure; all SQL and output paths use the caller's cwd."""
         paths = self._outputs(paths or specification.out, dpi)
         tables = {
-            name: query(panel.file or panel.sql) for name, panel in specification.panels.items()
+            name: Columns.of(query(panel.file or panel.sql))
+            for name, panel in specification.panels.items()
         }
         with mplstyle.context([self.style.theme, self.style.rc]), ExitStack() as cleanup:
             mpl.rcParams["savefig.dpi"] = dpi or self.style.dpi
@@ -60,7 +62,7 @@ class FigurePlot(Plot):
                     grid[min(rows) : max(rows) + 1, min(columns) : max(columns) + 1]
                 )
                 layers = [
-                    query(layer.file or layer.sql)
+                    Columns.of(query(layer.file or layer.sql))
                     if layer.file or layer.sql.strip()
                     else tables[name]
                     for layer in panel.layers

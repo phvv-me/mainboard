@@ -1391,6 +1391,7 @@ def build(root: Path | None = None) -> App:
             raise MissionError("plot requires --x and --y without --figure")
         # Plotting is a genuine optional dependency boundary; other verbs do not import it.
         try:
+            from .plots.columns import Columns
             from .plots.figure import FigurePlot
             from .plots.table import Plot
         except ModuleNotFoundError as fault:
@@ -1420,9 +1421,7 @@ def build(root: Path | None = None) -> App:
                 raise MissionError(
                     f"no plot style {style!r}; declared styles are {sorted(manifest.plots)}"
                 ) from None
-        from .results import (
-            Results,  # its dataframe engine is paid only by the verbs reading results
-        )
+        from .results import Results  # paid only by the verbs reading results
 
         results = Results(workspace_root())
         if specification is not None:
@@ -1431,7 +1430,7 @@ def build(root: Path | None = None) -> App:
             )
         else:
             assert source is not None
-            saved = Plot(results.query(source, project=project), settings).save(
+            saved = Plot(Columns.of(results.query(source, project=project)), settings).save(
                 *out, x=x, y=y, hue=hue, kind=kind, dpi=dpi, title=title
             )
         for path in saved:

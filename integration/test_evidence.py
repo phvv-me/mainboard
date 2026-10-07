@@ -17,10 +17,9 @@ from mainboard.state import DirectoryReplica, Evidence, EvidenceTree, Lake, sche
 from mainboard.state import blobs as blobs_module
 from mainboard.state import evidence as evidence_module
 from mainboard.state.blobs import Blobs
+from mainboard.state.relations import Relations, write_parquet
 from mainboard.trials.artifacts import Artifact
 from mainboard.trials.dataset import Dataset
-
-pl = pytest.importorskip("polars")
 
 NODE = "research/lab/datasets/experiments/law"
 
@@ -30,10 +29,9 @@ def evidence(workspace: Path) -> Path:
     """A node's evidence: a receipt partition, a content-addressed object the receipt pins, an
     empty file and a file of random bytes."""
     root = workspace / NODE / "evidence"
-    table = pl.DataFrame({"bits": [1, 2, 3]})
     payload = root / "artifacts" / "run1" / "objects" / "table"
     payload.parent.mkdir(parents=True)
-    table.write_parquet(payload)
+    write_parquet(Relations().rows([{"bits": bits} for bits in (1, 2, 3)]), payload)
     digest = hashlib.sha256(payload.read_bytes()).hexdigest()
     reference = Artifact(
         path=f"datasets/experiments/law/evidence/artifacts/run1/objects/{digest}",
@@ -44,14 +42,8 @@ def evidence(workspace: Path) -> Path:
     payload.rename(payload.with_name(digest))
     part = root / "receipts" / "run=run1" / "part-00000.parquet"
     part.parent.mkdir(parents=True)
-    pl.DataFrame(
-        {
-            "run": ["run1"],
-            "lane": ["law"],
-            "key": ["a"],
-            "artifacts": [reference.model_dump_json()],
-        }
-    ).write_parquet(part)
+    receipt = {"run": "run1", "lane": "law", "key": "a", "artifacts": reference.model_dump_json()}
+    write_parquet(Relations().rows([receipt]), part)
     (root / "empty.txt").write_bytes(b"")
     (root / "noise.bin").write_bytes(os.urandom(70_000))
     return root

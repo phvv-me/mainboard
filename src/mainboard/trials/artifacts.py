@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 from collections.abc import Iterable
-from ntpath import isreserved
 from pathlib import Path, PurePosixPath
 from tempfile import NamedTemporaryFile
 
@@ -13,6 +12,10 @@ from pydantic import Field
 
 from ..state.evidence import EvidenceTree
 from .archive import ParquetArtifacts
+
+# What a read of table artifacts answers when none holds the schema: no rows, and the `_trial`
+# provenance column every such read adds beside the table's own.
+NO_TABLE = "SELECT NULL::VARCHAR AS _trial WHERE false"
 
 
 class Artifact(FrozenModel):
@@ -59,8 +62,6 @@ def relative_path(value: str) -> PurePosixPath:
         or ".." in path.parts
         or path.as_posix() != value
         or "\\" in value
-        or ":" in value
-        or isreserved(value)
     ):
         raise ValueError(f"artifact path must stay canonical and project-relative: {value}")
     return path

@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ..state.relations import records
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
@@ -126,7 +128,7 @@ class Figures(abc.ABC):
         store = self.universe.dataset(node)
         return [
             store.decoded(row)
-            for row in store.passing(every=every).to_dicts()
+            for row in records(store.passing(every=every))
             if not lane or lane in str(row.get("lane", ""))
         ]
 

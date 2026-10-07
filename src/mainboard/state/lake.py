@@ -164,7 +164,7 @@ def _extensions() -> Path:
     return cache_home() / Project().name / "duckdb"
 
 
-def _quoted(text: str) -> str:
+def quoted(text: str) -> str:
     """`text` as a SQL string literal."""
     return "'" + text.replace("'", "''") + "'"
 
@@ -178,10 +178,10 @@ def _literal(value: object) -> str:
     if isinstance(value, int | float):
         return repr(value)
     if isinstance(value, datetime):
-        return f"TIMESTAMPTZ {_quoted(value.isoformat())}"
+        return f"TIMESTAMPTZ {quoted(value.isoformat())}"
     if isinstance(value, date):
-        return f"DATE {_quoted(value.isoformat())}"
-    return _quoted(str(value))
+        return f"DATE {quoted(value.isoformat())}"
+    return quoted(str(value))
 
 
 def inlined(sql: str, parameters: Sequence[object]) -> str:
@@ -230,9 +230,12 @@ def _cell(column: Column, value: object) -> object:
 
 
 @contextmanager
-def ndjson(records: Iterable[Mapping[str, object] | str]) -> Generator[str]:
+def ndjson(
+    records: Iterable[Mapping[str, object] | str], *, typed: bool = False
+) -> Generator[str]:
     """`records` (mappings, or lines already JSON) as a temporary NDJSON file, answered as the
-    `read_ndjson_objects` call reading it, its object limit the longest line's.
+    call reading it, its object limit the longest line's: one `json` object per record, or
+    `typed`, the columns `read_json` infers from every record, a key one lacks read as null.
 
     DuckDB reads a file like this in a fraction of a second, while this build binds a list
     parameter at two milliseconds an element: twenty thousand rows took forty seconds.
@@ -245,9 +248,12 @@ def ndjson(records: Iterable[Mapping[str, object] | str]) -> Generator[str]:
                 line = record if isinstance(record, str) else json.dumps(record, default=str)
                 longest = max(longest, len(line.encode()))
                 staged.write(line + "\n")
-        limit = max(_JSON_OBJECT_BYTES, longest + 1)
+        path, limit = quoted(Path(name).as_posix()), max(_JSON_OBJECT_BYTES, longest + 1)
         yield (
-            f"read_ndjson_objects({_quoted(Path(name).as_posix())}, maximum_object_size = {limit})"
+            f"read_json({path}, format = 'newline_delimited', sample_size = -1, "
+            f"maximum_object_size = {limit})"
+            if typed
+            else f"read_ndjson_objects({path}, maximum_object_size = {limit})"
         )
     finally:
         Path(name).unlink(missing_ok=True)
@@ -704,7 +710,7 @@ class Lake(FrozenModel):
         self._load(connection, _EXTENSIONS)
         connection.execute(f"SET ducklake_max_retry_count = {_RETRIES}")
         options = [
-            f"DATA_PATH {_quoted(self.data.as_posix() + '/')}",
+            f"DATA_PATH {quoted(self.data.as_posix() + '/')}",
             "OVERRIDE_DATA_PATH true",
             f"CREATE_IF_NOT_EXISTS {str(create).lower()}",
             f"META_BUSY_TIMEOUT {_BUSY_MS}",
@@ -712,7 +718,7 @@ class Lake(FrozenModel):
         if migrate:
             options.append("AUTOMATIC_MIGRATION true")
         options.append("META_JOURNAL_MODE 'WAL'" if write else "READ_ONLY")
-        target = _quoted(f"ducklake:sqlite:{self.catalog.as_posix()}")
+        target = quoted(f"ducklake:sqlite:{self.catalog.as_posix()}")
         connection.execute(f"ATTACH {target} AS {ALIAS} ({', '.join(options)})")
 
     @contextmanager
@@ -748,9 +754,9 @@ class Lake(FrozenModel):
                 served.execute(f"SET GLOBAL ducklake_max_retry_count = {_RETRIES}")
                 served.execute("SET GLOBAL TimeZone = 'UTC'")
                 self._load(served, _QUACK)
-                served.execute(f"CALL quack_serve({_quoted(uri)}, token => {_quoted(token)})")
+                served.execute(f"CALL quack_serve({quoted(uri)}, token => {quoted(token)})")
                 yield uri, token
-                served.execute(f"CALL quack_stop({_quoted(uri)})")
+                served.execute(f"CALL quack_stop({quoted(uri)})")
             except duckdb.Error as fault:
                 raise MissionError(
                     f"could not serve the lake at {uri}: {_first(fault)}"
@@ -783,9 +789,9 @@ class Lake(FrozenModel):
         """Attach the lake served at `served` as `lake`, saying plainly why when it cannot be."""
         self._load(connection, _QUACK)
         token = Project().variable("LAKE_TOKEN").read()
-        options = f" (TOKEN {_quoted(token)})" if token else ""
+        options = f" (TOKEN {quoted(token)})" if token else ""
         try:
-            connection.execute(f"ATTACH {_quoted(self.served)} AS {ALIAS}{options}")
+            connection.execute(f"ATTACH {quoted(self.served)} AS {ALIAS}{options}")
         except duckdb.Error as fault:
             said = _first(fault)
             if "deserialize" in said.lower():
@@ -811,7 +817,7 @@ class Lake(FrozenModel):
         Raises MissionError naming the directory when an extension is neither there nor
         installable, as on a machine that never went online.
         """
-        connection.execute(f"SET extension_directory = {_quoted(self.extensions.as_posix())}")
+        connection.execute(f"SET extension_directory = {quoted(self.extensions.as_posix())}")
         for name in names:
             try:
                 connection.load_extension(name)

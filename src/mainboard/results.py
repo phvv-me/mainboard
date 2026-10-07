@@ -5,10 +5,8 @@ import os
 from collections.abc import Collection, Generator
 from contextlib import contextmanager
 from datetime import UTC
-from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING
 
 import duckdb
 
@@ -17,10 +15,8 @@ from .dispatch import vocabulary
 from .observe.files import FrameFile
 from .runtime.tree import FileBudget
 from .state.evidence import EvidenceTree
-from .state.lake import ALIAS, Lake, ndjson
-
-if TYPE_CHECKING:
-    import polars as pl
+from .state.lake import ALIAS, Lake, ndjson, quoted
+from .state.relations import Relation, Relations, records
 
 
 class Results:
@@ -46,21 +42,16 @@ class Results:
         project: a research directory name; omitted means all projects, still labeled.
         Network refresh belongs to `mb job list`, never an SQL side effect.
         """
-        with self._connected(sql, project) as (connection, text):
-            result = connection.execute(text)
-            names = [column[0] for column in result.description]
-            return [dict(zip(names, row, strict=True)) for row in result.fetchall()]
+        relations = Relations()
+        with self._connected(sql, project, relations.connection) as text:
+            return records(relations.connection.sql(text))
 
-    def query(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> pl.DataFrame:
-        """`rows` as a polars frame, for plotting and experiments; polars comes from the
-        environment that calls this, never from this tool's own dependencies."""
-        import polars as pl
-
-        with self._connected(sql, project) as (connection, text):
-            try:
-                return pl.DataFrame(connection.sql(text))
-            except pl.exceptions.ComputeError as fault:
-                raise MissionError(str(fault).strip()) from None
+    def query(self, sql: str | Path = "SELECT * FROM runs", *, project: str = "") -> Relation:
+        """`rows` as a DuckDB relation, for plotting and experiments, read in whole so it
+        outlives the lake and every file the query read."""
+        relations = Relations()
+        with self._connected(sql, project, relations.connection) as text:
+            return relations.kept(text)
 
     def export(self, sql: str | Path, path: Path, *, project: str = "") -> Path:
         """Export one SELECT to a new CSV, Parquet, or JSON file, inferred from its suffix.
@@ -80,9 +71,10 @@ class Results:
         path.parent.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(dir=path.parent) as staged:
             temporary = Path(staged) / path.name
-            with self._connected(sql, project) as (connection, text):
+            relations = Relations()
+            with self._connected(sql, project, relations.connection) as text:
                 target = temporary.as_posix().replace("'", "''")
-                connection.execute(f"COPY ({text}) TO '{target}' ({options})")
+                relations.connection.execute(f"COPY ({text}) TO '{target}' ({options})")
             with temporary.open("rb+") as completed:
                 os.fsync(completed.fileno())
             os.link(temporary, path)
@@ -90,51 +82,51 @@ class Results:
 
     @contextmanager
     def _connected(
-        self, sql: str | Path, project: str
-    ) -> Generator[tuple[duckdb.DuckDBPyConnection, str]]:
-        """A connection holding every results view, and the lake when the SQL names it."""
+        self, sql: str | Path, project: str, connection: duckdb.DuckDBPyConnection
+    ) -> Generator[str]:
+        """`connection` holding every results view, and the lake while the SQL that names it
+        runs; the SQL text."""
         if isinstance(sql, Path):
             try:
                 sql = sql.expanduser().read_text(encoding="utf-8")
             except UnicodeError as fault:
                 raise ValueError(f"SQL file {sql} must contain UTF-8 text: {fault}") from fault
-        with (
-            FileBudget.permitted(),
-            duckdb.connect(config={"autoinstall_known_extensions": False}) as connection,
-        ):
-            statements = connection.extract_statements(sql)
-            if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
-                raise ValueError("results queries must be one SELECT statement")
+        statements = connection.extract_statements(sql)
+        if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
+            raise ValueError("results queries must be one SELECT statement")
+        attached = f"{ALIAS}." in sql.lower()
+        with FileBudget.permitted():
             self._views(connection, project, sql)
-            if f"{ALIAS}." in sql.lower():
+            if attached:
                 # Everything the workspace recorded, read-only beside the collected results; a
                 # workspace that recorded nothing yet gets its empty lake, not a missing schema.
                 Lake.at(self.root).current().attach(connection)
             try:
-                yield connection, sql
+                yield sql
             except duckdb.Error as fault:
                 raise MissionError(str(fault).strip()) from None
+            finally:
+                if attached:
+                    connection.execute(f"DETACH {ALIAS}")
 
     def table(
         self, schema: str, *, project: str = "", runs: Collection[str] | None = None
-    ) -> pl.DataFrame:
+    ) -> Relation:
         """Read verified Parquet tables from collected storage, never a source host's path.
 
         Original repository and machine metadata remain in the _trial provenance column.
         runs: select run identities before reading their artifacts; None selects all runs.
             An empty collection selects none. Selected artifacts still require valid bytes.
         """
-        import polars as pl
+        from .trials.artifacts import NO_TABLE, Artifact
 
-        from .trials.artifacts import Artifact
-
-        artifacts = self.query("SELECT * FROM artifacts", project=project)
+        listed = self.rows("SELECT root, context, reference FROM artifacts", project=project)
         if runs is not None:
-            artifacts = artifacts.filter(
-                pl.col("context").str.json_path_match("$.run").is_in(list(runs))
-            )
-        frames = []
-        for row in artifacts.iter_rows(named=True):
+            wanted = set(runs)
+            listed = [row for row in listed if json.loads(row["context"]).get("run") in wanted]
+        relations = Relations()
+        tables = []
+        for row in listed:
             reference = Artifact.model_validate_json(row["reference"])
             if reference.schema_name != schema:
                 continue
@@ -151,11 +143,11 @@ class Results:
                 ),
                 root,
             )
-            frame = pl.read_parquet(BytesIO(reference.read(root)))
-            if "_trial" in frame.columns:
+            table = relations.parquet(reference.read(root))
+            if "_trial" in table.columns:
                 raise ValueError("artifact payload reserves the _trial provenance column")
-            frames.append(frame.with_columns(pl.lit(row["context"]).alias("_trial")))
-        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+            tables.append(table.project(f"*, {quoted(str(row['context']))} AS _trial"))
+        return relations.union(tables, empty=NO_TABLE)
 
     def _projects(self, project: str) -> list[Path]:
         tree = EvidenceTree(self.root)
@@ -214,6 +206,8 @@ class Results:
     def _trials(self, connection: duckdb.DuckDBPyConnection, roots: list[Path]) -> None:
         # Explicit file inventory per query is the snapshot. Temporary transfer/Parquet files
         # never match; a later query sees newly published immutable fragments automatically.
+        # Read in once as a table: every view below reads it again, and a lazy DISTINCT over
+        # cutok's 3,625 fragments feeding an expansion took 19 GiB where the table takes 0.14.
         connection.execute(
             "CREATE TABLE _receipt_schema(project VARCHAR, run VARCHAR, trial VARCHAR, "
             "verdict VARCHAR, artifacts JSON, host VARCHAR, card_name VARCHAR, commit VARCHAR, "
@@ -236,7 +230,7 @@ class Results:
                 ).create_view(name)
                 inventories.append(f"SELECT * FROM {name}")
         connection.execute(
-            "CREATE VIEW trials AS SELECT DISTINCT * FROM ("
+            "CREATE TABLE trials AS SELECT DISTINCT * FROM ("
             + " UNION ALL BY NAME ".join(inventories)
             + ")"
         )
@@ -297,27 +291,36 @@ class Results:
         # Preserve surviving events verbatim; this fallback does not invent their lost times.
         # An artifact's provenance does not contain its siblings' references. Replicating the
         # full artifact index into every row made a wide trial consume quadratic memory.
+        #
+        # Each step is its own table. `json_each` hands every entry the whole document it came
+        # from, and parsing a receipt's artifacts in the statement that expands them did the
+        # same, so cutok's 230,000 references (a receipt holds up to 1.5 MB of them) ran a
+        # 24 GB machine out of memory; parsed once into a map, then expanded, they take 0.9 GiB.
         connection.execute("""
-            CREATE VIEW receipt_contexts AS SELECT project, run, trial,
+            CREATE TABLE receipt_contexts AS SELECT project, run, trial,
                 json_merge_patch(to_json(t), json_object('params', t.params::JSON)) AS context
             FROM (SELECT * EXCLUDE (artifacts) FROM trials) t;
+            CREATE TABLE receipt_maps AS SELECT project, run, trial,
+                regexp_extract(artifacts::JSON->>'events',
+                    'artifacts/([^/]+/[^/]+)/events$', 1) AS stream,
+                json_transform(artifacts::JSON, '"MAP(VARCHAR, JSON)"') AS listed
+            FROM trials;
+            CREATE TABLE receipt_entries AS SELECT project, run, trial, stream,
+                unnest(map_entries(listed)) AS entry
+            FROM receipt_maps;
+            DROP TABLE receipt_maps;
         """)
         connection.execute(
             """
             CREATE TABLE receipt_artifacts AS SELECT DISTINCT
-                t.project,
-                regexp_extract(t.artifacts::JSON->>'events',
-                    'artifacts/([^/]+/[^/]+)/events$', 1) AS stream,
-                p.row->>'root' AS root,
-                c.context AS context,
-                a.key AS name, a.value AS reference
-            FROM trials t JOIN receipt_contexts c USING (project, run, trial),
-                json_each(t.artifacts::JSON) a,
+                r.project, r.stream, p.row->>'root' AS root, c.context AS context,
+                r.entry.key AS name, r.entry.value AS reference
+            FROM receipt_entries r JOIN receipt_contexts c USING (project, run, trial),
                 unnest(?::JSON[]) AS p(row)
-            WHERE t.project = (p.row->>'project')
-                AND json_type(a.value) = 'OBJECT'
-                AND (a.value->>'media_type') IS NOT NULL
-                AND (a.value->>'path') IS NOT NULL;
+            WHERE r.project = (p.row->>'project')
+                AND json_type(r.entry.value) = 'OBJECT'
+                AND (r.entry.value->>'media_type') IS NOT NULL
+                AND (r.entry.value->>'path') IS NOT NULL;
             """,
             [
                 [
@@ -326,6 +329,7 @@ class Results:
                 ]
             ],
         )
+        connection.execute("DROP TABLE receipt_entries")
         connection.execute("""
             CREATE VIEW artifacts AS SELECT * FROM emitted_artifacts
             UNION ALL SELECT r.* FROM receipt_artifacts r

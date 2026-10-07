@@ -16,9 +16,8 @@ import csv
 import json
 from typing import TYPE_CHECKING
 
-import polars as pl
-
 from ..dispatch.evidence import RECEIPTS_VAR
+from ..state.relations import Relations, write_parquet
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -29,6 +28,9 @@ if TYPE_CHECKING:
 # The fields holding a whole object, stored as JSON text so one lane's measurement shape is not
 # forced into every other lane's fragment. Writer and reader both read this one tuple.
 NESTED = ("params", "measured", "versions", "gates", "artifacts")
+
+# The zstd level a finished run's one compacted file is written at, worth the time once.
+_COMPACTED = 9
 
 # The printed receipt's key, spelled here as `mainboard.verdicts` and `mainboard.dispatch.evidence`
 # each spell it, so writing a receipt never imports a lab framework to name a wire contract.
@@ -118,9 +120,8 @@ class TrialReceipts:
         parts = self.parts
         if len(parts) < 2:
             return
-        frame = pl.concat([pl.read_parquet(part) for part in parts], how="diagonal_relaxed")
         staged = self.directory / "compacting.tmp"
-        frame.write_parquet(staged, compression="zstd", compression_level=9)
+        write_parquet(Relations().files(parts), staged, level=_COMPACTED)
         staged.replace(parts[0])
         for part in parts[1:]:
             part.unlink()
@@ -133,7 +134,7 @@ class TrialReceipts:
             key: json.dumps(value) if key in self.nested else value for key, value in row.items()
         }
         staged = self.directory / f"part-{self.written:05d}.parquet.tmp"
-        pl.DataFrame([flat], infer_schema_length=None).write_parquet(staged, compression="zstd")
+        write_parquet(Relations().rows([flat]), staged)
         staged.replace(staged.with_suffix(""))
         self.written += 1
         if self.framed:

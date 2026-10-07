@@ -21,14 +21,13 @@
 
 import json
 from datetime import UTC, datetime
-from io import BytesIO
 from itertools import chain
 from typing import TYPE_CHECKING
 
-import polars as pl
-
 from ..state.evidence import EvidenceTree
-from .artifacts import Artifact
+from ..state.lake import quoted
+from ..state.relations import Relations, records
+from .artifacts import NO_TABLE, Artifact
 from .coverage import PROBED, Cell, LaneStatus
 from .ledger import NESTED, TrialReceipts, wire
 from .provenance import Admissibility
@@ -39,6 +38,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pydantic import JsonValue
+
+    from ..state.relations import Relation
 
 # The two columns every receipt carries, which a coverage read and a current view both group on.
 _LANE, _KEY = "lane", "key"
@@ -53,9 +54,9 @@ OPENED, ADMISSIBILITY = "opened_at_ns", "admissibility"
 # creation coordinate knew about its own age.
 STAMP, DATED = "%Y%m%dT%H%M%SZ", 16
 
-# A recency rank a read carries while ordering and drops before returning, so one comparison
-# covers runs that recorded a coordinate and runs that only have a name.
-_ORDER = "_recency"
+# Where each receipt was written, the fragment's place in `parts` and the row's in its fragment,
+# carried by a read so one ordering covers rows a run wrote within one instant, then dropped.
+_WRITTEN = ("_part", "_row")
 
 # Where a retired generation lands beside a store, and the store's one human-readable file, named
 # once so `retire` moves exactly the ledger `as_jsonl` mints.
@@ -95,6 +96,16 @@ def opened_at(run: str, recorded: int | None) -> tuple[int, int, str]:
     return (1, int(named.timestamp()) * 1_000_000_000, "")
 
 
+def _named(column: str) -> str:
+    """`column` as a SQL identifier, whatever it is spelled with."""
+    return '"' + column.replace('"', '""') + '"'
+
+
+def _listed(values: Sequence[str]) -> str:
+    """`values` as a SQL list of text, typed even when empty."""
+    return f"[{', '.join(quoted(value) for value in values)}]::VARCHAR[]"
+
+
 class Dataset:
     """One store of trial receipts, read across every run it has ever held.
 
@@ -121,15 +132,15 @@ class Dataset:
         self.samples = samples
 
     @property
-    def admissible(self) -> tuple[pl.Expr, ...]:
+    def admissible(self) -> str:
         """What a row must be for a claim to lean on it: passed, with an identifiable tree.
 
         One filter, because a broken lane and an unidentifiable tree fail a claim the same way, and
         a query remembering only the first was the one every review had to correct.
         """
         return (
-            pl.col("outcome") == Outcome.PASSED,
-            pl.col(ADMISSIBILITY) == Admissibility.ADMISSIBLE,
+            f"outcome = {quoted(Outcome.PASSED)} "
+            f"AND {ADMISSIBILITY} = {quoted(Admissibility.ADMISSIBLE)}"
         )
 
     @property
@@ -149,14 +160,8 @@ class Dataset:
 
         Asked over the whole store, so every reader orders runs the same way.
         """
-        frame = self.scan()
-        if not frame.collect_schema().names():
-            return {}
-        held = frame.group_by("run").agg(pl.col(OPENED).max()).collect()
-        found = {
-            str(run): opened_at(str(run), recorded)
-            for run, recorded in zip(held["run"], held[OPENED], strict=True)
-        }
+        held = self._read().aggregate(f"run, max({OPENED})", "run").fetchall()
+        found = {str(run): opened_at(str(run), recorded) for run, recorded in held}
         shared: dict[tuple[int, int, str], list[str]] = {}
         for run, coordinate in found.items():
             shared.setdefault(coordinate, []).append(run)
@@ -180,17 +185,13 @@ class Dataset:
     @property
     def stored(self) -> frozenset[str]:
         """Every run this store holds, as membership only, so it answers even when `runs` ties."""
-        frame = self.scan()
-        if not frame.collect_schema().names():
-            return frozenset()
-        return frozenset(str(run) for run in frame.select("run").unique().collect()["run"])
+        return frozenset(str(run) for (run,) in self._read().project("run").distinct().fetchall())
 
-    def ranked(self, frame: pl.DataFrame, order: Sequence[str]) -> pl.DataFrame:
-        """`frame` with each row's run index in `order`, so a sort reads time and not a name."""
-        ranks = {run: index for index, run in enumerate(order)}
-        return frame.with_columns(
-            pl.col("run").replace_strict(ranks, return_dtype=pl.Int64).alias(_ORDER)
-        )
+    @property
+    def recency(self) -> str:
+        """Each row's run's place among `runs`, oldest first, so a sort reads time and not a
+        name."""
+        return f"list_position({_listed(self.runs)}, run)"
 
     @classmethod
     def holding(
@@ -219,12 +220,10 @@ class Dataset:
 
     def lanes(self, run: str = "") -> frozenset[str]:
         """Every lane recorded in `run`, or in the whole store when empty."""
-        frame = self.scan()
-        if not frame.collect_schema().names():
-            return frozenset()
+        read = self._read()
         if run:
-            frame = frame.filter(pl.col("run") == run)
-        return frozenset(str(lane) for lane in frame.select(_LANE).unique().collect()[_LANE])
+            read = read.filter(f"run = {quoted(run)}")
+        return frozenset(str(lane) for (lane,) in read.project(_LANE).distinct().fetchall())
 
     def retire(self, generation: str, runs: Sequence[str]) -> Path:
         """Move `runs` into `retired/generation=<name>/` beside this store, the ledger with them.
@@ -261,35 +260,37 @@ class Dataset:
             for key, value in row.items()
         }
 
-    def passing(self, *, every: bool = False) -> pl.DataFrame:
+    def passing(self, *, every: bool = False) -> Relation:
         """The store's admissible passing rows, one per cell by default and all of them when asked.
 
         The default is what a table renders from: each cell's row from the run that most recently
         produced it, by creation coordinate, so a re-run supersedes without anyone choosing a run.
         A program whose cells owe several samples asks for `every` instead.
         """
-        frame = self.scan()
-        if not frame.collect_schema().names():
-            return pl.DataFrame()
-        grouped = [_LANE, _KEY, *self.coordinates]
-        passed = self.ranked(frame.filter(*self.admissible).collect(), self.runs)
+        read = self._read()
+        grouped = ", ".join(_named(column) for column in (_LANE, _KEY, *self.coordinates))
+        written = ", ".join(_WRITTEN)
         if every:
-            return passed.sort([*grouped, _ORDER]).drop(_ORDER)
-        return (
-            passed.sort(_ORDER).group_by(grouped, maintain_order=True).last().sort(grouped)
-        ).drop(_ORDER)
+            query = (
+                f"SELECT * EXCLUDE ({written}) FROM receipts WHERE {self.admissible} "
+                f"ORDER BY {grouped}, {self.recency}, {written}"
+            )
+        else:
+            query = (
+                f"SELECT * EXCLUDE ({written}, _latest) FROM (SELECT *, row_number() OVER "
+                f"(PARTITION BY {grouped} ORDER BY {self.recency} DESC, _part DESC, _row DESC) "
+                f"AS _latest FROM receipts WHERE {self.admissible}) WHERE _latest = 1 "
+                f"ORDER BY {grouped}"
+            )
+        return read.query("receipts", query)
 
     def rows(self, run: str = "") -> list[dict[str, JsonValue]]:
         """One run's receipts, the newest run when empty, as plain records with JSON decoded."""
-        frame = self.scan()
-        if not frame.collect_schema().names():
-            return []
         chosen = run or self.newest
-        return [
-            self.decoded(row) for row in frame.filter(pl.col("run") == chosen).collect().to_dicts()
-        ]
+        held = records(self.scan().filter(f"run = {quoted(chosen)}"))
+        return [self.decoded(row) for row in held]
 
-    def tables(self, root: Path, *, schema_name: str, run: str = "") -> pl.DataFrame:
+    def tables(self, root: Path, *, schema_name: str, run: str = "") -> Relation:
         """Read verified table artifacts across hardware without selecting a winning run.
 
         root: the project root that artifact references are relative to.
@@ -298,12 +299,11 @@ class Dataset:
             ordinary columns retain the experiment's data and units unchanged.
         """
         receipts = self.scan()
-        if not receipts.collect_schema().names():
-            return pl.DataFrame()
         if run:
-            receipts = receipts.filter(pl.col("run") == run)
-        tables: list[pl.DataFrame] = []
-        for raw in receipts.collect().to_dicts():
+            receipts = receipts.filter(f"run = {quoted(run)}")
+        relations = Relations()
+        tables: list[Relation] = []
+        for raw in records(receipts):
             receipt = self.decoded(raw)
             references = receipt.get("artifacts")
             if not isinstance(references, dict):
@@ -319,50 +319,71 @@ class Dataset:
                 reference = Artifact.model_validate(value)
                 if reference.media_type != "application/vnd.apache.parquet":
                     raise ValueError(f"{schema_name} names a non-Parquet artifact")
-                table = pl.read_parquet(BytesIO(reference.read(root)))
-                if "_trial" in table.columns:
-                    raise ValueError("table payload uses the reserved _trial provenance column")
                 provenance = {
                     **metadata,
                     "artifact_name": label,
                     "artifact_sha256": reference.sha256,
                 }
-                tables.append(
-                    table.with_columns(
-                        pl.lit(json.dumps(provenance, sort_keys=True)).alias("_trial")
-                    )
-                )
-        return pl.concat(tables, how="diagonal_relaxed") if tables else pl.DataFrame()
+                table = relations.parquet(reference.read(root))
+                if "_trial" in table.columns:
+                    raise ValueError("table payload uses the reserved _trial provenance column")
+                trial = quoted(json.dumps(provenance, sort_keys=True))
+                tables.append(table.project(f"*, {trial} AS _trial"))
+        return relations.union(tables, empty=NO_TABLE)
 
-    def scan(self) -> pl.LazyFrame:
-        """Every receipt this store has ever held, across every run, or an empty frame.
+    def scan(self) -> Relation:
+        """Every receipt this store has ever held, across every run, in the order written.
 
         An axis a run predates reads empty, the same fact as a lane naming no subject.
         Admissibility a run predates reads `unrecorded`, never admissible. A creation coordinate a
         run predates stays null, since a run that never said when it opened has not claimed to be
         the oldest.
         """
+        written = ", ".join(_WRITTEN)
+        return self._read().order(written).project(f"* EXCLUDE ({written})")
+
+    def _read(self) -> Relation:
+        """Every receipt read in whole, normalized as `scan` says, beside where it was written.
+
+        An unwritten store reads as no rows of the columns every read groups or filters on.
+        """
+        relations = Relations()
+        # Each normalized column's SQL around the column it reads, NULL where a run predates it.
+        normalized = {
+            **dict.fromkeys(self.coordinates, "coalesce(CAST({} AS VARCHAR), '')"),
+            ADMISSIBILITY: f"coalesce(CAST({{}} AS VARCHAR), {quoted(Admissibility.UNRECORDED)})",
+            OPENED: "CAST({} AS BIGINT)",
+        }
         parts = self.parts
         if not parts:
-            return pl.LazyFrame()
-        frame = pl.concat(
-            [pl.scan_parquet(part, hive_partitioning=False) for part in parts],
-            how="diagonal_relaxed",
+            columns = ", ".join(
+                f"{template.format('NULL')} AS {_named(column)}"
+                for column, template in {
+                    **dict.fromkeys(("run", "outcome", _LANE, _KEY), "CAST({} AS VARCHAR)"),
+                    **normalized,
+                }.items()
+            )
+            return relations.kept(f"SELECT {columns}, 0 AS _part, 0 AS _row WHERE false")
+        listed = _listed([str(part) for part in parts])
+        source = (
+            f"read_parquet({listed}, union_by_name = true, hive_partitioning = false, "
+            "filename = true, file_row_number = true)"
         )
-        held = frame.collect_schema().names()
-        return frame.with_columns(
-            *(
-                pl.col(column).cast(pl.String).fill_null("")
-                if column in held
-                else pl.lit("").alias(column)
-                for column in self.coordinates
-            ),
-            pl.col(ADMISSIBILITY).cast(pl.String).fill_null(str(Admissibility.UNRECORDED))
-            if ADMISSIBILITY in held
-            else pl.lit(str(Admissibility.UNRECORDED)).alias(ADMISSIBILITY),
-            pl.col(OPENED).cast(pl.Int64)
-            if OPENED in held
-            else pl.lit(None, dtype=pl.Int64).alias(OPENED),
+        held = set(relations.files(parts).columns)
+        replaced = ", ".join(
+            f"{template.format(_named(column))} AS {_named(column)}"
+            for column, template in normalized.items()
+            if column in held
+        )
+        added = "".join(
+            f", {template.format('NULL')} AS {_named(column)}"
+            for column, template in normalized.items()
+            if column not in held
+        )
+        return relations.kept(
+            "SELECT * EXCLUDE (filename, file_row_number)"
+            f"{f' REPLACE ({replaced})' if replaced else ''}{added}, "
+            f"list_position({listed}, filename) AS _part, file_row_number AS _row FROM {source}"
         )
 
     def status(self, lane: str, expected: Collection[str], cell: Cell) -> LaneStatus:
@@ -375,23 +396,16 @@ class Dataset:
         Rows from an unidentified tree never count, so a dirty session measures and writes and the
         next clean one still finds the lane owed: scratch work costs the claim nothing.
         """
-        frame = self.scan()
         names = self.runs
-        taken: dict[str, tuple[int, int]] = {}
-        if frame.collect_schema().names():
-            wanted = [pl.col(_LANE) == lane, *self.admissible]
-            wanted += [pl.col(column) == value for column, value in cell.filters.items()]
-            found = (
-                self.ranked(frame.filter(*wanted).collect(), names)
-                .group_by(_KEY)
-                .agg(pl.len().alias("taken"), pl.col(_ORDER).max())
-            )
-            taken = {
-                str(key): (int(count), int(order))
-                for key, count, order in zip(
-                    found[_KEY], found["taken"], found[_ORDER], strict=True
-                )
-            }
+        pinned = (f"{_named(name)} = {quoted(str(value))}" for name, value in cell.filters.items())
+        wanted = " AND ".join([f"{_LANE} = {quoted(lane)}", self.admissible, *pinned])
+        found = (
+            self._read()
+            .filter(wanted)
+            .aggregate(f"{_KEY}, count(*), max(list_position({_listed(names)}, run)) - 1", _KEY)
+            .fetchall()
+        )
+        taken = {str(key): (int(count), int(order)) for key, count, order in found}
         counts = {key: taken.get(key, (0, -1))[0] for key in expected}
         latest = max((taken[key][1] for key in counts if key in taken), default=-1)
         return LaneStatus(

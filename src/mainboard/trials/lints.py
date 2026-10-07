@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from patos import FrozenModel
 
+from ..state.relations import records
 from .vocabulary import Outcome, Stance
 
 if TYPE_CHECKING:
@@ -184,7 +185,7 @@ def findings(store: Dataset, vocabulary: Vocabulary) -> tuple[Finding, ...]:
     """
     rows = [
         row
-        for row in (store.decoded(record) for record in store.scan().collect().to_dicts())
+        for row in (store.decoded(record) for record in records(store.scan()))
         if str(row.get("outcome", "")) == Outcome.PASSED
     ]
     if not rows:

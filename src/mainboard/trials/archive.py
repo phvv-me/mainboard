@@ -5,8 +5,9 @@ from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 
-import polars as pl
 from patos import FrozenModel
+
+from ..state.relations import Relations, write_parquet
 
 
 class ArtifactChunk(FrozenModel):
@@ -38,16 +39,19 @@ class ParquetArtifacts:
             bucket = archive.directory / digest[:2]
             if bucket.is_dir():
                 rows = (
-                    pl.scan_parquet(bucket / "*.parquet")
-                    .filter(pl.col("sha256") == digest)
-                    .sort("ordinal")
-                    .collect()
+                    Relations()
+                    .sql(
+                        "SELECT ordinal, paths, payload FROM read_parquet(?) WHERE sha256 = ? "
+                        "ORDER BY ordinal",
+                        [str(bucket / "*.parquet"), digest],
+                    )
+                    .fetchall()
                 )
-                if rows.is_empty() or path.relative_to(parent).as_posix() not in rows["paths"][0]:
+                if not rows or path.relative_to(parent).as_posix() not in rows[0][1]:
                     continue
-                if rows["ordinal"].to_list() != list(range(rows.height)):
+                if [ordinal for ordinal, _, _ in rows] != list(range(len(rows))):
                     raise ValueError(f"incomplete archived artifact: {path}")
-                return b"".join(rows["payload"].to_list())
+                return b"".join(payload for _, _, payload in rows)
         raise FileNotFoundError(path)
 
     def pack(self, paths: Iterable[Path]) -> None:
@@ -95,15 +99,14 @@ class ParquetArtifacts:
     @staticmethod
     def _write_part(directory: Path, part: int, chunks: list[ArtifactChunk]) -> None:
         target = directory / f"part-{part:05d}.parquet"
-        frame = pl.DataFrame(
-            [chunk.model_dump() for chunk in chunks],
-            schema={
-                "sha256": pl.String,
-                "ordinal": pl.UInt32,
-                "paths": pl.List(pl.String),
-                "payload": pl.Binary,
-            },
+        relations = Relations()
+        relations.connection.execute(
+            "CREATE TABLE chunks (sha256 VARCHAR, ordinal UINTEGER, paths VARCHAR[], payload BLOB)"
         )
-        frame.write_parquet(target, compression="zstd", compression_level=19)
+        relations.connection.executemany(
+            "INSERT INTO chunks VALUES (?, ?, ?, ?)",
+            [(chunk.sha256, chunk.ordinal, chunk.paths, chunk.payload) for chunk in chunks],
+        )
+        write_parquet(relations.connection.table("chunks"), target, level=19)
         if target.stat().st_size >= 1000000:
             raise ValueError(f"archive shard exceeds the artifact size budget: {target}")

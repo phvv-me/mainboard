@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from ..log import logger
+from ..state.relations import Relations, records, write_parquet
 
 # The knee of the size against speed curve for zstd on tabular rows.
 _ZSTD_LEVEL = 9
@@ -68,11 +69,8 @@ class RowLog:
         if not self.rows:
             return
         self.dir.mkdir(parents=True, exist_ok=True)
-        import polars as pl  # loaded by the one verb that writes rows, not every command
-
-        frame = pl.DataFrame(self.rows, infer_schema_length=None)
         temporary = self.part.with_suffix(".parquet.tmp")
-        frame.write_parquet(temporary, compression="zstd", compression_level=_ZSTD_LEVEL)
+        write_parquet(Relations().rows(self.rows), temporary, level=_ZSTD_LEVEL)
         temporary.replace(self.part)
         logger.info("wrote {} rows to {}", len(self.rows), self.part)
 
@@ -83,8 +81,4 @@ class RowLog:
         return tuple(str(row[field]) for field in self.id_fields)
 
     def _read(self, file: Path) -> list[dict]:
-        if not file.exists():
-            return []
-        import polars as pl
-
-        return pl.read_parquet(file).to_dicts()
+        return records(Relations().files([file])) if file.exists() else []

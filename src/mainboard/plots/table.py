@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Literal
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.style as mplstyle
-import polars as pl
 import seaborn as sns
 
 from ..manifest.schema.plot import PlotStyle
+from .columns import Columns, Value
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -32,7 +32,7 @@ _KINDS: dict[str, tuple[Callable[..., Axes], dict[str, str | int | bool | None]]
 class Plot:
     """One already selected table; SQL owns filtering, grouping, and aggregation."""
 
-    def __init__(self, frame: pl.DataFrame, style: PlotStyle | None = None) -> None:
+    def __init__(self, frame: Columns, style: PlotStyle | None = None) -> None:
         self.frame = frame
         self.style = style if style is not None else PlotStyle()
 
@@ -54,11 +54,11 @@ class Plot:
         dpi = self.style.dpi if dpi is None else dpi
         paths = self._outputs(paths, dpi)
         hues = [hue] if hue else []
-        data = self.frame.select(list(dict.fromkeys([x, y, *hues])))
-        self._data(data)
-        if not data[y].dtype.is_numeric():
+        data = self.frame.select([x, y, *hues])
+        data.checked()
+        if y not in data.numbers:
             raise ValueError("plot y column must be numeric")
-        if kind == "bar" and data.n_unique([x, *hues]) != data.height:
+        if kind == "bar" and data.distinct([x, *hues]) != data.height:
             raise ValueError("bar groups repeat; aggregate each x/hue group in SQL first")
         with mplstyle.context([self.style.theme, self.style.rc]), ExitStack() as cleanup:
             mpl.rcParams["savefig.dpi"] = dpi
@@ -71,34 +71,20 @@ class Plot:
             self._publish(canvas, paths)
         return paths
 
-    @staticmethod
-    def _data(frame: pl.DataFrame) -> None:
-        """Reject missing and nonfinite values before any plotting library sees them."""
-        if frame.is_empty() or any(frame.null_count().row(0)):
-            raise ValueError("plot columns must contain rows without null values")
-        if any(
-            not series.cast(pl.Float64).is_finite().all()
-            for series in frame
-            if series.dtype.is_numeric()
-        ):
-            raise ValueError("plot columns must contain finite values")
-
     def _named(self, levels: Iterable[str]) -> None:
         """A named color is an identity, so a level the style leaves unnamed is refused."""
         if absent := set(levels) - self.style.colors.keys():
             raise ValueError(f"style has no explicit colors for {sorted(absent)}")
 
-    def _draw(
-        self, axis: Axes, data: pl.DataFrame, *, x: str, y: str, hue: str, kind: str
-    ) -> None:
+    def _draw(self, axis: Axes, data: Columns, *, x: str, y: str, hue: str, kind: str) -> None:
         """Use Seaborn's native axes functions, with SQL order retained for lines."""
         palette = sns.color_palette(self.style.palette)
-        levels = data[hue].unique(maintain_order=True).to_list() if hue else []
+        levels = data.unique(hue) if hue else []
         if len(levels) > len(palette) and not self.style.colors:
             raise ValueError(
                 f"palette has {len(palette)} slots; fold the tail into Other or facet"
             )
-        colors = None
+        colors: dict[Value, str | tuple[float, float, float]] | None = None
         if hue and not self.style.colors:
             colors = dict(zip(levels, palette[: len(levels)], strict=True))
         elif hue:
@@ -109,7 +95,7 @@ class Plot:
         except KeyError:
             raise ValueError("plot kind must be scatter, line, or bar") from None
         draw(
-            data=data.to_dict(as_series=False),
+            data=data.plain(),
             x=x,
             y=y,
             hue=hue or None,

@@ -7,17 +7,17 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import UTC, datetime
 from functools import partial
-from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import polars as pl
+import duckdb
 from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from ..log import SINK, EventDict, logger, sinks
 from ..observe.frames import Frame, Kind
 from ..observe.spool import Spool
 from ..profile.profiler import Collection, Profiler
+from ..state.relations import ArrowStream, Relations, parquet_bytes
 from .artifacts import Artifact, Artifacts
 from .session import params_of
 from .vocabulary import Outcome
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel, JsonValue
 
+    from ..state.relations import Relation
     from .session import Trial
 
 _LEVELS = frozenset(("debug", "info", "warning", "error", "critical", "exception"))
@@ -147,17 +148,21 @@ class Log:
 
     def table(
         self,
-        rows: pl.DataFrame | Sequence[Mapping[str, JsonValue]],
+        rows: Relation | ArrowStream | Sequence[Mapping[str, JsonValue]],
         *,
         name: str = "",
         schema_name: str = "",
     ) -> Artifact:
-        """Write a Parquet table readable directly by Polars or DuckDB."""
-        frame = rows if isinstance(rows, pl.DataFrame) else pl.DataFrame(rows)
-        buffer = BytesIO()
-        frame.write_parquet(buffer, compression="zstd")
+        """Write a Parquet table: a DuckDB relation or an Arrow stream (a polars frame) as its
+        own columns, or rows whose column types are read from all of them."""
+        if isinstance(rows, duckdb.DuckDBPyRelation):
+            relation = rows
+        elif isinstance(rows, ArrowStream):
+            relation = Relations().arrow(rows)
+        else:
+            relation = Relations().rows(rows)
         return self.artifact(
-            buffer.getvalue(),
+            parquet_bytes(relation),
             name=name or self._name("table"),
             media_type="application/vnd.apache.parquet",
             schema_name=schema_name,
@@ -182,9 +187,9 @@ class Log:
         self._event("input", {"alias": alias, **reference.model_dump()})
         return data
 
-    def read_table(self, alias: str) -> pl.DataFrame:
-        """Read a pinned Parquet input without giving experiments storage plumbing."""
-        return pl.read_parquet(BytesIO(self.read(alias)))
+    def read_table(self, alias: str) -> Relation:
+        """Read a pinned Parquet input as a DuckDB relation, no storage plumbing in sight."""
+        return Relations().parquet(self.read(alias))
 
     @contextmanager
     def profile(

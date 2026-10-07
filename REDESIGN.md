@@ -961,3 +961,28 @@ outright rather than keep carrying it for pedro-home alone. About 3,300 lines we
       back only as a Linux host (WSL2 or a Linux install)
 - [x] A host whose file system cannot hold links now warns in `doctor --center` whatever the
       platform, since PORTABLE (exFAT) is one
+
+## Round 12 (2026-10-07): DuckDB is the one table engine
+
+Polars predated DuckDB as the lake engine and stayed for Parquet in and out of the trials API and
+for the frames plots took. Mainboard no longer depends on it:
+
+- [x] `state/relations.py`: one in-memory database per read whose relations union and join;
+      rows (types read from every row), Parquet bytes, Parquet files and Arrow streams in,
+      Parquet and plain records out, every file opened under the permitted file limit
+- [x] `Log.table` takes a relation, an Arrow stream (a polars frame, read through the caller's
+      pyarrow) or rows; `Log.read_table`, `Results.query`/`table` and `Dataset.passing`/`scan`/
+      `tables` answer DuckDB relations, which a caller wanting polars turns with `.pl()`
+- [x] The receipt store's reads are SQL over one materialized table per read, ordered by where
+      each receipt was written; on 40 real stores runs, rows, lanes, `passing` (both shapes) and
+      116 `status` readings match the polars implementation exactly
+- [x] `mb plot` hands Seaborn plain columns read off the relation (`plots/columns.py`)
+- [x] cutok's settlement and figure scripts and the reproducibility readers call `.pl()`; no
+      registered source set names any of them
+- [x] `Results` expanded receipt artifacts with `json_each` over a lazy DISTINCT of every
+      fragment, which needed more than 19 GiB for cutok (230,000 references, 1.5 MB in one
+      receipt) and could not run on the Mac center at all. `trials` is a table now and the
+      references are parsed once into a map, then expanded: 0.9 GiB, and the stage_shares
+      settlement reproduces its committed values
+- [ ] The architecture_policy_control and fresh_precision_transport registrations had already
+      drifted at HEAD (their shared gpu.py and experiments/conftest.py moved on 2026-09-25)

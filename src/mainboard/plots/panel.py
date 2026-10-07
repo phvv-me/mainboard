@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, cast, get_args
 
 import matplotlib as mpl
 import numpy as np
-import polars as pl
 import seaborn.objects as so
 from matplotlib.colors import LogNorm, Normalize
 from matplotlib.lines import Line2D
@@ -24,6 +23,7 @@ if TYPE_CHECKING:
 
     from ..manifest import Panel
     from ..manifest.schema.plot import PlotStyle
+    from .columns import Columns
 
 # Every manifest mark but Heatmap, which the panel draws itself, is a Seaborn mark of that name.
 _MARKS: dict[str, Callable[..., so.Mark]] = {
@@ -39,11 +39,11 @@ _PLAIN_KEY: dict[str, JsonValue] = {"loc": "best", "frameon": False}
 class PanelPlot(Plot):
     """One panel and its native layers, with no hidden data transformation."""
 
-    def __init__(self, frame: pl.DataFrame, panel: Panel, style: PlotStyle) -> None:
+    def __init__(self, frame: Columns, panel: Panel, style: PlotStyle) -> None:
         super().__init__(frame, style)
         self.panel = panel
 
-    def draw(self, target: SubFigure, tables: list[pl.DataFrame]) -> dict[str, Artist]:
+    def draw(self, target: SubFigure, tables: list[Columns]) -> dict[str, Artist]:
         """Compile marks, apply axes, and return the shared color legend."""
         if any(layer.mark == "Heatmap" for layer in self.panel.layers):
             return self._heatmap(target, tables)
@@ -75,44 +75,35 @@ class PanelPlot(Plot):
             mapped |= layer.variables
         return mapped
 
-    @staticmethod
-    def _numeric(frame: pl.DataFrame) -> pl.DataFrame:
-        """Plot decimal SQL literals as floats without changing the selected evidence."""
-        return frame.with_columns(
-            pl.col(name).cast(pl.Float64)
-            for name, dtype in frame.schema.items()
-            if isinstance(dtype, pl.Decimal)
-        )
-
-    def _drawing(self, tables: list[pl.DataFrame]) -> so.Plot:
+    def _drawing(self, tables: list[Columns]) -> so.Plot:
         """Bind each layer's complete mappings before native Seaborn composition."""
         drawing = cast("Callable[..., so.Plot]", so.Plot)(
-            self._numeric(self.frame).to_dict(as_series=False), **self.panel.variables
+            self.frame.plain(), **self.panel.variables
         ).theme(dict(mpl.rcParams.items()))
         for layer, selected in zip(self.panel.layers, tables, strict=True):
             self._validate(selected, layer)
             drawing = cast("Callable[..., so.Plot]", drawing.add)(
                 _MARKS[layer.mark](**layer.kws),
                 *[_MOVES[name](**kws) for name, kws in layer.moves.items()],
-                data=self._numeric(selected).to_dict(as_series=False),
+                data=selected.plain(),
                 **self._variables(layer),
             )
         return self._scales(drawing)
 
-    def _validate(self, frame: pl.DataFrame, layer: Layer) -> None:
+    def _validate(self, frame: Columns, layer: Layer) -> None:
         """Missing data and absent interval bounds are never silently estimated."""
         variables = self._variables(layer)
-        self._data(frame.select(list(dict.fromkeys(variables.values()))))
+        frame.select(list(variables.values())).checked()
         self._bounds(frame, variables)
         if layer.mark in {"Range", "Band"} and not ({"xmin", "ymin"} & variables.keys()):
             raise ValueError("Range/Band requires explicit bounds from SQL, never estimation")
         if layer.mark in {"Bar", "Bars"}:
             self._bars(frame, variables)
         if self.style.colors and "color" in variables:
-            self._named(frame[variables["color"]].cast(pl.String).unique())
+            self._named(str(value) for value in frame.unique(variables["color"]))
 
     @staticmethod
-    def _bounds(frame: pl.DataFrame, variables: Mapping[str, str]) -> None:
+    def _bounds(frame: Columns, variables: Mapping[str, str]) -> None:
         """Supplied interval endpoints are numeric, ordered, and contain a numeric center."""
         for coordinate in ("x", "y"):
             low, high = f"{coordinate}min", f"{coordinate}max"
@@ -120,27 +111,27 @@ class PanelPlot(Plot):
                 raise ValueError("intervals require both lower and upper bound columns")
             if low not in variables:
                 continue
-            lower, upper = frame[variables[low]], frame[variables[high]]
-            if not lower.dtype.is_numeric() or not upper.dtype.is_numeric():
+            if not {variables[low], variables[high]} <= frame.numbers:
                 raise ValueError("interval bounds must be numeric")
-            if (lower > upper).any():
+            lower, upper = frame.floats(variables[low]), frame.floats(variables[high])
+            if any(below > above for below, above in zip(lower, upper, strict=True)):
                 raise ValueError("interval lower bound exceeds upper bound")
-            center = frame[variables.get(coordinate, variables[low])]
-            if center.dtype.is_numeric() and ((lower > center) | (center > upper)).any():
+            center = variables.get(coordinate, variables[low])
+            if center in frame.numbers and any(
+                not below <= value <= above
+                for below, value, above in zip(lower, frame.floats(center), upper, strict=True)
+            ):
                 raise ValueError("interval bounds must contain the plotted value")
 
-    def _bars(self, frame: pl.DataFrame, variables: Mapping[str, str]) -> None:
+    def _bars(self, frame: Columns, variables: Mapping[str, str]) -> None:
         """Bars require one row per category, semantic group, and facet."""
-        orient = "y" if "y" in variables and not frame[variables["y"]].dtype.is_numeric() else "x"
+        orient = "y" if "y" in variables and variables["y"] not in frame.numbers else "x"
         grouping = [
             column
             for key, column in variables.items()
             if key in {orient, "color", "group", "marker"}
         ]
-        if (
-            frame.n_unique(list(dict.fromkeys([*grouping, *self._facets.values()])))
-            != frame.height
-        ):
+        if frame.distinct([*grouping, *self._facets.values()]) != frame.height:
             raise ValueError("bar groups repeat; aggregate each group in SQL first")
 
     def _scales(self, drawing: so.Plot) -> so.Plot:
@@ -198,7 +189,7 @@ class PanelPlot(Plot):
                         [self.style.labels.get(text, text) for text in texts],
                     )
 
-    def _heatmap(self, target: SubFigure, tables: list[pl.DataFrame]) -> dict[str, Artist]:
+    def _heatmap(self, target: SubFigure, tables: list[Columns]) -> dict[str, Artist]:
         """One grid of cells at the distinct x and y values, colored by a value column.
 
         A Heatmap panel holds exactly one layer. `x` and `y` are numeric columns whose distinct
@@ -212,23 +203,21 @@ class PanelPlot(Plot):
         panel = self.panel
         if len(panel.layers) != 1:
             raise ValueError("a Heatmap panel holds exactly one layer")
-        (layer,), (frame,) = panel.layers, tables
+        (layer,), (selected,) = panel.layers, tables
         variables = self._variables(layer)
-        frame = self._numeric(frame)
         columns = [variables[key] for key in ("x", "y", "color") if key in variables]
         if len(columns) != 3:
             raise ValueError("Heatmap needs x, y and color columns")
-        self._data(frame.select(columns))
-        if not all(frame[column].dtype.is_numeric() for column in columns):
+        selected.select(columns).checked()
+        if not set(columns) <= selected.numbers:
             raise ValueError("Heatmap x, y and color columns must be numeric")
-        x, y, color = columns
-        if frame.n_unique([x, y]) != frame.height:
+        if selected.distinct(columns[:2]) != selected.height:
             raise ValueError("heatmap cells repeat; aggregate each cell in SQL first")
-        xs = sorted(frame[x].unique().to_list())
-        ys = sorted(frame[y].unique().to_list())
+        across, up, cells = (selected.floats(column) for column in columns)
+        xs, ys = sorted(set(across)), sorted(set(up))
         grid = np.full((len(ys), len(xs)), np.nan)
-        for row in frame.iter_rows(named=True):
-            grid[ys.index(row[y]), xs.index(row[x])] = row[color]
+        for x, y, cell in zip(across, up, cells, strict=True):
+            grid[ys.index(y), xs.index(x)] = cell
         kws = dict(layer.kws)
         fmt = str(kws.pop("fmt", "{:g}"))
         bar_fmt = str(kws.pop("cbar_fmt", fmt))
@@ -248,13 +237,13 @@ class PanelPlot(Plot):
         axis.set_yticks(range(len(ys)), [fmt.format(value) for value in ys])
         axis.grid(False)
         if "text" in variables:
-            for row in frame.iter_rows(named=True):
-                column, line = xs.index(row[x]), ys.index(row[y])
+            for x, y, text in zip(across, up, selected[variables["text"]], strict=True):
+                column, line = xs.index(x), ys.index(y)
                 red, green, blue, _ = colormap(norm(grid[line, column]))
                 axis.text(
                     column,
                     line,
-                    str(row[variables["text"]]),
+                    str(text),
                     ha="center",
                     va="center",
                     fontsize=fontsize,
@@ -289,7 +278,7 @@ class PanelPlot(Plot):
         }
 
     def _legends(
-        self, target: SubFigure, tables: list[pl.DataFrame], native: dict[str, Artist]
+        self, target: SubFigure, tables: list[Columns], native: dict[str, Artist]
     ) -> dict[str, Artist]:
         """Replace native combined guides with explicit shared and secondary keys."""
         panel = self.panel
@@ -347,7 +336,7 @@ class PanelPlot(Plot):
         ink = mpl.rcParams["text.color"]
         proxy = cast("Callable[..., Line2D]", Line2D)
         for variable in sorted(_SECONDARY & mapped.keys()):
-            for value in self.frame[mapped[variable]].unique(maintain_order=True):
+            for value in self.frame.unique(mapped[variable]):
                 label = str(value)
                 secondary[label] = proxy(
                     [],
@@ -359,12 +348,12 @@ class PanelPlot(Plot):
                 )
         return secondary
 
-    def _swatches(self, tables: list[pl.DataFrame], **options: JsonValue) -> dict[str, Artist]:
+    def _swatches(self, tables: list[Columns], **options: JsonValue) -> dict[str, Artist]:
         """One proxy line per style color the layers draw, in style order."""
         present: set[str] = set()
         for layer, selected in zip(self.panel.layers, tables, strict=True):
             if "color" in (variables := self._variables(layer)):
-                present.update(selected[variables["color"]].cast(pl.String).unique())
+                present.update(str(value) for value in selected.unique(variables["color"]))
         return {
             name: cast("Callable[..., Line2D]", Line2D)([], [], color=color, **options)
             for name, color in self.style.colors.items()
