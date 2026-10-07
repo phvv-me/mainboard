@@ -916,3 +916,27 @@ two critics (evidence in `UNIFY-evidence.md`).
 - [ ] The study/fleet layer stays: `research/compression/experiments/dispatch.py` is built on
       `Fleet`, `Study` and `StudyLedger`, though the lake records no study since the migration
 - [ ] `mb host sync` every host: their environments predate duckdb-sqlalchemy and the dotenv fix
+
+## Round 10 (2026-10-07): what running the move through mb taught
+
+- [x] `mb git commit PATH...` carried the whole commit (402 named paths in the root, a directory
+      for each submodule), and `mb git push` sent eleven repositories, protected mains to
+      `mainboard/main` with the pull request named. A named file that replaced a link on purpose
+      (`.codex/config.toml`) was refused as a flattened link; only an explicitly named file that is
+      more than the link written out goes through now, and a sweep stays conservative
+- [x] Repositories cloned on Windows lack `core.precomposeunicode`, so on macOS every tracked
+      accented or Japanese name listed twice; `doctor --center` sets it on macOS
+- [x] `host sync` never reinstalled the editable tool, so a new dependency (duckdb-sqlalchemy)
+      broke hosts until a full setup; setup records a digest of the tool's requirements and a
+      sync reinstalls when it moved
+- [x] pedro-home's bootstrap `python` named the interpreter of an environment setup had not built
+- [ ] A mirror prunes what the center lacks, and after the move the center lacked the lake-held
+      reproducibility inputs: three hosts lost 19 `.pt` files until `lake materialize` and a sync
+      put them back. A mirror should not delete a file the lake indexes but the center has not
+      materialized; until it refuses, materialize mirrored inputs before the first sync from a new
+      center
+- [ ] `git status` counts line-ending-only changes as changes: ~3,700 CRLF artifacts across 15
+      owned repositories hide the real edits and would be swept by `--all`; report them apart
+- [ ] pedro-home setup waits on the Codex app there, whose MCP server holds the installed tool
+- [x] Gemini dropped (the owner does not use it); the study/fleet layer removed, compression's
+      dispatcher set aside with it
