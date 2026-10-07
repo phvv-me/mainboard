@@ -28,10 +28,10 @@ class Commit:
     Named paths are committed alone, the way `git commit <paths>` does: each path goes to the
     deepest owned repository holding it, a directory takes every owned repository under it whole,
     and `git commit --only` leaves anything else in that repository's index for whoever staged it.
-    Without paths each repository commits what is already staged. Either way a parent stages the
-    pointer of a submodule that committed in this run, which is the bookkeeping this verb exists
-    for, and never another one. `everything` is the deliberate sweep: every change in every owned
-    repository, under one message.
+    Without paths each repository commits what is already staged, a parent its whole index.
+    Either way a parent stages the pointer of a submodule that committed in this run, which is the
+    bookkeeping this verb exists for, and never another one. `everything` is the deliberate
+    sweep: every change in every owned repository, under one message.
 
     A named path that must not enter a commit (a `never-commit` pattern, a file over the size
     ceiling Git LFS does not carry, a link checked out as a file, a nested repository
@@ -70,13 +70,16 @@ class Commit:
         return step
 
     def _chosen(self, repo: Repo) -> Step:
-        """Commit the paths named under `repo` and the pointers this run moved, or its index."""
-        paths = [*self.named.get(repo.name, ()), *self._pointers(repo)]
+        """Commit the paths named under `repo` and the pointers this run moved, or, when the run
+        names no path, its whole index with those pointers."""
+        pointers = self._pointers(repo)
+        paths = [*self.named.get(repo.name, ()), *pointers]
         if not paths and repo.git.ok("diff", "--cached", "--quiet"):
             return Step(repo=repo.name, outcome=Outcome.CURRENT, detail="nothing named")
         if held := _unready(repo):
             return held
-        if not paths:
+        if not self.named:
+            _stage(repo, pointers)
             return self._finish(repo, [], notes=[])
         changes = repo.changes(within=paths)
         if refused := Intake(repo, self.tree.policy, named=paths).withheld(changes):

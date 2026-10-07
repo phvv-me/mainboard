@@ -243,8 +243,9 @@ def test_commit_refuses_a_named_never_commit_path(mb, tracked: Path) -> None:
     assert git(tracked, "rev-parse", "HEAD").stdout == head
 
 
-def test_commit_records_the_pointer_of_a_submodule_that_committed(mb, tracked: Path) -> None:
-    # Beside the root's own remote, so its URL names the same owner and the tree owns it.
+def owned_submodule(tracked: Path) -> Path:
+    """A checkout at `library` holding a new `change.txt`, its repository beside the root's own
+    remote so its URL names the same owner and the tree owns it."""
     remote = Path(git(tracked, "remote", "get-url", "origin").stdout.strip())
     library = committed(remote.parent / "library")
     git(tracked, "submodule", "add", "--quiet", library.as_posix(), "library")
@@ -253,8 +254,24 @@ def test_commit_records_the_pointer_of_a_submodule_that_committed(mb, tracked: P
     git(checkout, "config", "user.name", "it")
     git(checkout, "config", "user.email", "it@example.invalid")
     (checkout / "change.txt").write_text("change\n", encoding="utf-8", newline="\n")
+    return checkout
+
+
+def test_commit_records_the_pointer_of_a_submodule_that_committed(mb, tracked: Path) -> None:
+    owned_submodule(tracked)
     (tracked / "unrelated.txt").write_text("unrelated\n", encoding="utf-8", newline="\n")
     ran = steps(mb("git", "commit", "-m", "change", "library/change.txt", "--json"))
     assert ran["library"]["outcome"] == "done" and ran["."]["outcome"] == "done", ran
     assert git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split() == ["library"]
     assert "?? unrelated.txt" in git(tracked, "status", "--porcelain").stdout
+
+
+def test_commit_without_paths_takes_the_parents_index_with_the_pointer(mb, tracked: Path) -> None:
+    git(owned_submodule(tracked), "add", "change.txt")
+    (tracked / "staged.txt").write_text("staged\n", encoding="utf-8", newline="\n")
+    git(tracked, "add", "staged.txt")
+    ran = steps(mb("git", "commit", "-m", "both", "--json"))
+    assert ran["library"]["outcome"] == "done" and ran["."]["outcome"] == "done", ran
+    taken = git(tracked, "show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert sorted(taken) == ["library", "staged.txt"]
+    assert not git(tracked, "diff", "--cached", "--name-only").stdout
