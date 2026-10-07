@@ -274,7 +274,7 @@ class Results:
                     row->'payload'->>'topic' AS topic,
                     row->'payload'->'metadata' AS metadata,
                     row->'payload'->'data' AS data
-                FROM (SELECT json AS row FROM read_ndjson_objects({staged}))
+                FROM (SELECT json AS row FROM {staged})
             """)
 
     @staticmethod
@@ -351,5 +351,5 @@ class Results:
                     coalesce((row->>'reported') = (row->>'verdict')
                         AND (row->>'verdict') IN ({terminal}), false) AS settled,
                     row->>'fetch_path' AS results, row AS metadata
-                FROM (SELECT json AS row FROM read_ndjson_objects({staged}))
+                FROM (SELECT json AS row FROM {staged})
             """)

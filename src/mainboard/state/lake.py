@@ -116,8 +116,11 @@ _BYTES_OPTIONS = (
 # The catalog size past which `check` suggests a compaction.
 _CATALOG_FLOOR_BYTES = 64 << 20
 
-# The largest staged row, a base64 source file among them, that an append accepts.
-_MAX_ROW_BYTES = 1 << 31
+# DuckDB's own largest JSON object by default, the floor of a staged file's object limit. A
+# reader buffers twice its limit, so the limit follows the longest staged line: a fixed 2 GiB,
+# set so a 25 MB source file could be sealed (2026-09-29), reserved 4 GiB for every append and
+# ran the 7 GB macOS CI runner out of memory (2026-10-07).
+_JSON_OBJECT_BYTES = 16 << 20
 
 # How many times a commit that lost a race to another writer's snapshot is retried.
 _RETRIES = 100
@@ -232,19 +235,24 @@ def _cell(column: Column, value: object) -> object:
 
 @contextmanager
 def ndjson(records: Iterable[Mapping[str, object] | str]) -> Generator[str]:
-    """`records` (mappings, or lines already JSON) as a temporary NDJSON file, answered as a
-    quoted SQL string of its path.
+    """`records` (mappings, or lines already JSON) as a temporary NDJSON file, answered as the
+    `read_ndjson_objects` call reading it, its object limit the longest line's.
 
     DuckDB reads a file like this in a fraction of a second, while this build binds a list
     parameter at two milliseconds an element: twenty thousand rows took forty seconds.
     """
     descriptor, name = tempfile.mkstemp(prefix="mb-", suffix=".ndjson")
+    longest = 0
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as staged:
             for record in records:
                 line = record if isinstance(record, str) else json.dumps(record, default=str)
+                longest = max(longest, len(line.encode()))
                 staged.write(line + "\n")
-        yield _quoted(Path(name).as_posix())
+        limit = max(_JSON_OBJECT_BYTES, longest + 1)
+        yield (
+            f"read_ndjson_objects({_quoted(Path(name).as_posix())}, maximum_object_size = {limit})"
+        )
     finally:
         Path(name).unlink(missing_ok=True)
 
@@ -277,13 +285,8 @@ def staged(table: Table, rows: Iterable[Mapping[str, object]]) -> Generator[str]
         {column.name: _cell(column, row.get(column.name)) for column in table.columns}
         for row in rows
     )
-    with ndjson(cells) as path:
-        # A row carries a source file base64-encoded, and DuckDB refuses a JSON object over 16 MB
-        # by default: a 25 MB file in an experiment's tree failed its seal (2026-09-29).
-        yield (
-            f"SELECT {columns} FROM "
-            f"read_ndjson_objects({path}, maximum_object_size = {_MAX_ROW_BYTES})"
-        )
+    with ndjson(cells) as source:
+        yield f"SELECT {columns} FROM {source}"
 
 
 def _decoded(column: Column) -> str:
