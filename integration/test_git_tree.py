@@ -184,6 +184,31 @@ def test_commit_takes_only_the_named_paths_and_leaves_the_index_alone(mb, tracke
     assert "A  staged.txt" in status and "?? theirs.txt" in status
 
 
+def test_commit_takes_a_named_file_that_replaced_a_link_and_refuses_a_flattened_one(
+    mb, tracked: Path
+) -> None:
+    git(tracked, "config", "core.symlinks", "true")
+    (tracked / "target.txt").write_text("kept\n", encoding="utf-8", newline="\n")
+    try:
+        for name in ("rendered", "flattened"):
+            (tracked / name).symlink_to("target.txt")
+    except OSError:
+        pytest.skip("this machine cannot make symbolic links")
+    git(tracked, "add", "-A")
+    git(tracked, "commit", "--quiet", "-m", "links")
+    for name in ("rendered", "flattened"):
+        (tracked / name).unlink()
+    (tracked / "rendered").write_text("rendered on purpose\n", encoding="utf-8", newline="\n")
+    (tracked / "flattened").write_text("target.txt", encoding="utf-8", newline="")
+
+    refused = steps(mb("git", "commit", "-m", "flat", "flattened", "--json"))["."]
+    taken = steps(mb("git", "commit", "-m", "render", "rendered", "--json"))["."]
+
+    assert refused["outcome"] == "held" and "refused flattened" in refused["detail"]
+    assert taken["outcome"] == "done", taken
+    assert git(tracked, "ls-files", "-s", "rendered").stdout.startswith("100644")
+
+
 def test_commit_without_paths_commits_the_index_and_refuses_an_empty_one(
     mb, tracked: Path
 ) -> None:

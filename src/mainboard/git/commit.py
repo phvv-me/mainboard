@@ -9,7 +9,7 @@ from .process import said
 from .report import Outcome, Step
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Collection, Sequence
 
     from ..manifest.schema.git import GitPolicy
     from .repo import Change, Repo
@@ -75,7 +75,7 @@ class Commit:
         if not paths:
             return self._finish(repo, [], notes=[])
         changes = repo.changes(within=paths)
-        if refused := Intake(repo, self.tree.policy).withheld(changes):
+        if refused := Intake(repo, self.tree.policy, named=paths).withheld(changes):
             detail = _named("refused", refused) + ", which a commit may not take"
             return Step(repo=repo.name, outcome=Outcome.HELD, detail=detail)
         specs = [*_literal(paths), *self._unmoved(repo, paths)]
@@ -112,9 +112,7 @@ class Commit:
                 "nothing changed there" if specs else "nothing staged"
             )
             return Step(repo=repo.name, outcome=Outcome.CURRENT, detail=detail)
-        committed = repo.git.run(
-            "commit", "-q", "-m", self.message, *only, stdin="\0".join(specs)
-        )
+        committed = repo.git.run("commit", "-q", "-m", self.message, *only, stdin="\0".join(specs))
         if not committed.succeeded:
             return Step(repo=repo.name, outcome=Outcome.FAILED, detail=said(committed))
         done = [f"{repo.short('HEAD')} on {repo.branch()}", *notes]
@@ -145,9 +143,10 @@ class Commit:
 class Intake:
     """Which of a repository's changed paths `[git]` keeps out of a commit."""
 
-    def __init__(self, repo: Repo, policy: GitPolicy) -> None:
+    def __init__(self, repo: Repo, policy: GitPolicy, *, named: Collection[str] = ()) -> None:
         self.repo = repo
         self.policy = policy
+        self.named = named
 
     def withheld(self, changes: Sequence[Change]) -> set[str]:
         """The paths that must stay out: `never-commit` content, an oversized file, a link checked
@@ -159,9 +158,26 @@ class Intake:
         return (
             self._patterned(changes)
             | self._heavy([c.path for c in changes if not c.deleted])
-            | set(self.repo.unlinked()).intersection(c.path for c in changes)
+            | self._flattened(changes)
             | self._embedded(changes)
         )
+
+    def _flattened(self, changes: Sequence[Change]) -> set[str]:
+        """Every link the working tree holds as a file, unless the file was named on purpose.
+
+        A file named outright that is more than the link written out replaced it, as `mb agents
+        sync` renders `.codex/config.toml` over the link it was, and goes through as the type
+        change it is; where git records no file in a link's place (`core.symlinks=false` stages
+        the text as the link's target) nothing does.
+        """
+        linking = self.repo.git.run("config", "--type=bool", "core.symlinks").stdout.strip()
+        changed = {change.path for change in changes}
+        return {
+            path
+            for path in self.repo.unlinked()
+            if path in changed
+            and (path not in self.named or linking == "false" or self.repo.faithful(path))
+        }
 
     def _embedded(self, changes: Sequence[Change]) -> set[str]:
         """Every untracked nested repository `.gitmodules` does not declare, which `add` would
@@ -194,7 +210,9 @@ class Intake:
             change.path
             for change in changes
             if not change.deleted
-            and any(PurePosixPath(change.path).full_match(glob) for glob in self.policy.never_commit)
+            and any(
+                PurePosixPath(change.path).full_match(glob) for glob in self.policy.never_commit
+            )
         }
         return set(filter(None, staged.split("\0"))) | named
 
@@ -230,12 +248,19 @@ def _routed(tree: Tree, paths: Sequence[Path]) -> dict[str, list[str]]:
     routed: dict[str, list[str]] = {}
     for given in paths:
         absolute = Path(os.path.abspath(given))
-        holder = next((repo for repo in owned if absolute == repo.path or repo.path in absolute.parents), None)
+        holder = next(
+            (repo for repo in owned if absolute == repo.path or repo.path in absolute.parents),
+            None,
+        )
         if holder is None:
             raise MissionError(f"{given} lies outside the workspace's owned repositories")
         relative = absolute.relative_to(holder.path).as_posix()
         foreign = next(
-            (child for child in holder.children if not child.owned and child.path in absolute.parents),
+            (
+                child
+                for child in holder.children
+                if not child.owned and child.path in absolute.parents
+            ),
             None,
         )
         if foreign is not None:
