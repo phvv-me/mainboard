@@ -30,7 +30,7 @@ from .core.section import Section, Verdict, failed
 from .core.shell import become
 from .delimiter import Delimiter
 from .diagnostics import Diagnostics
-from .dispatch import keys, vocabulary
+from .dispatch import vocabulary
 from .dispatch.commandline import joined, vetted
 from .dispatch.evidence import printed
 from .dispatch.schedulers import HostUnreachable, standing
@@ -914,24 +914,6 @@ def build(root: Path | None = None) -> App:
             flags = ("--dry-run",) if dry_run else ()
             board(on).interact(project.name, "host", "upgrade", *flags)
         return upkeep.upgrade(dry_run=dry_run)
-
-    @host.command
-    def unlock(*hosts: str) -> None:
-        """Unlock each host's ssh key once, so every later connection this tool opens is silent.
-
-        Keeps one ssh-agent on a fixed socket beside the ssh config, and for a host that still
-        asks for more (miyabi-g's one-time code) one shared login every later ssh rides. Both
-        run as daemons, outliving this process and the terminal it ran in; the login's questions
-        are asked here and relayed to it. A key's passphrase is kept in the system keystore where
-        the session has one, and asked again only when a new agent cannot be loaded from it.
-
-        Args:
-            hosts: the ssh aliases whose keys to add.
-        """
-        for host in hosts:
-            if status := keys.unlock(host):
-                raise MissionError(f"{host} still refuses a silent login (exit {status})")
-            print(f"{host}: reachable without a prompt")
 
     @app.command(name="pack")
     def pack_(

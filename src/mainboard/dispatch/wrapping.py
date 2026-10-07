@@ -167,8 +167,8 @@ def connection(
     A throwaway one-shot `ssh` first warms the host's `ControlMaster` from `~/.ssh/config`, so an
     expired master relogs on a robust channel and plumbum's persistent session rides a live one
     instead of dying mid-handshake. We never open a master here: the user's config owns
-    multiplexing, and the only master this tool opens is the one `mb host unlock` logs into by
-    hand, which every ssh then rides in proxy mode.
+    multiplexing, and a host asking for a one-time code is logged into by hand once with
+    `ssh <host>`, a login every later ssh rides.
 
     The warm-up doubles as a host-key check: a failed verification (a rotated key on the host or
     its ProxyJump, a missing entry) raises a clear `ConnectionError` instead of an opaque plumbum

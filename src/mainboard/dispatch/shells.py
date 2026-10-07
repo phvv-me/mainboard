@@ -19,8 +19,8 @@ from ..core.host import platform_family
 from ..core.project import Project
 from ..core.shell import foreground
 from ..engines.compile.backend import POSIX_INSTALLER, WINDOWS_INSTALLER
-from .keys import client, shared
 from .schedulers.base import failure_reason
+from .ssh import client
 from .transport import BoundedSshMachine, SshTransport
 from .wrapping import activation, connection, guarded, wrap
 
@@ -168,7 +168,7 @@ class Posix(Dialect):
     # `-t` forces the pty the far side needs, and the staged line is quoted whole because ssh
     # joins its argv back into one string for the remote login shell to parse.
     def session(self, host: str, line: str) -> list[str]:
-        return [str(client()), *shared(host), "-t", host, f"bash -lc {shlex.quote(line)}"]
+        return [str(client()), "-t", host, f"bash -lc {shlex.quote(line)}"]
 
     def one_shot(self, ssh: SshTransport, host: str, line: str) -> tuple[str, ...]:
         return (*ssh.command(host), f"bash -lc {shlex.quote(line)}")
@@ -246,7 +246,6 @@ class Windows(Dialect):
     def session(self, host: str, line: str) -> list[str]:
         return [
             str(client()),
-            *shared(host),
             "-t",
             host,
             *POWERSHELL[:1],

@@ -20,7 +20,7 @@ from plumbum.machines.ssh_machine import SshMachine
 from pydantic import Field, field_validator
 
 from ..core.host import WINDOWS
-from .keys import adopt, client, microsoft, shared
+from .ssh import client, microsoft
 
 # ssh's own exit status when the transport fails, with the stderr phrases naming the fault. A
 # name that does not resolve belongs here too: the host cannot be reached right now (a dropped
@@ -197,8 +197,8 @@ class SshTransport(FrozenModel):
 
     def command(self, host: str) -> tuple[str, ...]:
         """The argv that reaches `host` under this policy, up to the remote command: the tool's
-        ssh, riding `host`'s shared login when one answers."""
-        return (str(client()), *shared(host), *self.options, self.destination(host))
+        ssh, which rides any shared login the user's config keeps for `host`."""
+        return (str(client()), *self.options, self.destination(host))
 
     @staticmethod
     def terminate(process: subprocess.Popen[bytes]) -> None:
@@ -215,11 +215,10 @@ class SshTransport(FrozenModel):
 
     def machine(self, host: str) -> BoundedSshMachine:
         """A persistent SSH session with a dedicated local process group."""
-        adopt()
         return BoundedSshMachine(
             host,
             ssh_command=local[str(client())],
-            ssh_opts=(*shared(host), *self.options),
+            ssh_opts=self.options,
             connect_timeout=self.deadline,
             new_session=True,
         )
@@ -244,7 +243,6 @@ class SshTransport(FrozenModel):
         timeout: seconds, the control deadline when None; `math.inf` lets an install run its
             course.
         """
-        adopt()
         returncode, stdout, stderr = self.__communicate(
             command,
             host,
@@ -396,7 +394,7 @@ def _detail(stderr: str, returncode: int) -> str:
     the agent does not hold yet."""
     said = stderr.strip().splitlines()[-1] if stderr.strip() else f"exit {returncode}"
     if "permission denied (publickey" in said.lower():
-        said += "; unlock its key once with `mb host unlock <host>`"
+        said += "; load its key into the agent once (`ssh-add --apple-use-keychain KEY` on macOS)"
     return said
 
 

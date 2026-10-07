@@ -29,7 +29,7 @@ from .core.project import Project
 from .core.section import Section
 from .core.shell import become, foreground, interactive_shell
 from .deps import Dependencies
-from .dispatch import keys, vocabulary
+from .dispatch import vocabulary
 from .dispatch.backends.base import (
     Delivery,
     LogSource,
@@ -675,7 +675,6 @@ class Board:
             held = f"{self.project.package}-{self.host}"
             staged = f"tmux new-session -A -s {shlex.quote(held)} {shlex.quote(staged)}"
         # A bounded transport suits a poll, not a session, so the user's ssh config owns this one.
-        keys.adopt()
         argv = dialect.session(self.host, staged)
         replace(argv[0], argv)
 
