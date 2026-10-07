@@ -34,7 +34,8 @@ class Manifest(Scope):
     `[templates.*]` what `new` renders, `[tracking]` how often a job samples itself, `[papers.*]`
     what `paper` builds, `[plots.*]` how charts look, `[admission.<card>]` how idle a card must
     be before a trial, `[git]` whose repositories `git` may write and what never commits,
-    `[lint]` what `lint` runs and leaves alone, `[ci]` the hosts `ci --matrix` runs on.
+    `[lint]` what `lint` runs and leaves alone, `[ci]` the hosts `ci --matrix` runs on,
+    `[duckdb]` the settings every DuckDB connection takes (`MB_DUCKDB_<NAME>` overrides one).
 
     `[env]` sets a variable with a string and clears one with `false`, which an empty string
     (still defined for `${VAR:-default}` and `[ -n "$VAR" ]`) cannot do; `true` is refused.
@@ -49,6 +50,7 @@ class Manifest(Scope):
             "admission",
             "ci",
             "containers",
+            "duckdb",
             "figures",
             "gates",
             "git",
@@ -78,6 +80,7 @@ class Manifest(Scope):
     admission: dict[str, Admission] = {}
     papers: dict[str, Paper] = {}
     plots: dict[str, PlotStyle] = {}
+    duckdb: dict[str, str | int | float | bool] = {}
     figures: dict[str, FigureSpec] = {}
     git: GitPolicy = GitPolicy()
     lint: Lint = Lint()

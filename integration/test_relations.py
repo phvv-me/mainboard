@@ -131,6 +131,23 @@ def test_rows_round_trip_through_parquet() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "text",
+    (
+        "2026-09-09T08:50:03+00:00",
+        "2026-10-07",
+        "08:50:03",
+        "0b1e8c2a-1f2d-4c3b-9a8e-2b6f1c3d4e5f",
+    ),
+)
+def test_text_a_receipt_wrote_reads_back_as_written(tmp_path: Path, text: str) -> None:
+    dataset = Dataset(tmp_path / "receipts", axes=("card",))
+    dataset.writer(OLDER, {"opened_at_ns": 1}).write(_receipt("a", 3) | {"at": text})
+    dataset.as_jsonl(tmp_path / "latest.jsonl")
+    [line] = (tmp_path / "latest.jsonl").read_text().splitlines()
+    assert json.loads(line)["trial_receipt"]["at"] == text
+
+
 def test_archives_keep_exact_bytes_under_every_path(tmp_path: Path) -> None:
     payload = bytes(range(256)) * 600
     for name in ("one.bin", "two.bin"):

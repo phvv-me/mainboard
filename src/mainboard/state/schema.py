@@ -211,7 +211,8 @@ def latest(log: Table, *key: str, where: tuple[ColumnElement[bool], ...] = ()) -
         .subquery()
     )
     kept = [column for column in ranked.c if column.name not in {"dropped", "rank"}]
-    return select(*kept).where(ranked.c.rank == 1, ranked.c.dropped.is_not(True))
+    drops = (ranked.c.dropped.is_not(True),) if "dropped" in ranked.c else ()
+    return select(*kept).where(ranked.c.rank == 1, *drops)
 
 
 def _runs() -> Select:

@@ -64,7 +64,7 @@ class Agents:
             root,
             home=home or Path.home(),
             environment=os.environ,
-            dotenv=_dotenv(root / ".env"),
+            dotenv=Project().dotenv(root),
             which=shutil.which,
         )
 
@@ -382,15 +382,3 @@ def _text(path: Path) -> str:
         return path.read_bytes().decode()
     except FileNotFoundError:
         return ""
-
-
-def _dotenv(path: Path) -> dict[str, str]:
-    """The variables a `.env` file defines, by name; values are never read back out."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    pairs = (line.lstrip().removeprefix("export ").partition("=") for line in text.splitlines())
-    return {
-        name.strip(): value for name, sign, value in pairs if sign and not name.startswith("#")
-    }

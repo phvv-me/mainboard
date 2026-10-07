@@ -136,6 +136,20 @@ class Project(FrozenModel):
         """
         return self._declared(directory) or directory / self.manifests[0]
 
+    def dotenv(self, root: Path) -> dict[str, str]:
+        """The variables workspace `root`'s `.env` defines, by name, quotes around a value gone."""
+        try:
+            text = (root / ".env").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        lines = (line.lstrip().removeprefix("export ") for line in text.splitlines())
+        pairs = (line.partition("=") for line in lines)
+        return {
+            name.strip(): value.strip().strip("'\"")
+            for name, sign, value in pairs
+            if sign and not name.startswith("#")
+        }
+
     def lock(self, root: Path | None = None) -> Path:
         """The committed lock at workspace `root` (the cwd's workspace), or where a new one goes.
 

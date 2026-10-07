@@ -81,6 +81,7 @@ from ..core.errors import MissionError
 from ..core.project import Project
 from ..runtime.tree import FileBudget
 from . import schema
+from .database import connect, quoted
 from .schema import ALIAS, DIALECT, TABLES, VERSION, VIEWS, ddl, kind
 
 # The DuckDB extensions an attach needs, and the ones reaching or serving a lake over Quack.
@@ -164,11 +165,6 @@ def _extensions() -> Path:
     return cache_home() / Project().name / "duckdb"
 
 
-def quoted(text: str) -> str:
-    """`text` as a SQL string literal."""
-    return "'" + text.replace("'", "''") + "'"
-
-
 def _literal(value: object) -> str:
     """`value` as a SQL literal."""
     if value is None:
@@ -231,11 +227,15 @@ def _cell(column: Column, value: object) -> object:
 
 @contextmanager
 def ndjson(
-    records: Iterable[Mapping[str, object] | str], *, typed: bool = False
+    records: Iterable[Mapping[str, object] | str],
+    *,
+    typed: bool = False,
+    columns: Mapping[str, str] | None = None,
 ) -> Generator[str]:
     """`records` (mappings, or lines already JSON) as a temporary NDJSON file, answered as the
     call reading it, its object limit the longest line's: one `json` object per record, or
-    `typed`, the columns `read_json` infers from every record, a key one lacks read as null.
+    `typed`, the columns `read_json` infers from every record, a key one lacks read as null, or
+    exactly `columns`, each name to its DuckDB type, when given.
 
     DuckDB reads a file like this in a fraction of a second, while this build binds a list
     parameter at two milliseconds an element: twenty thousand rows took forty seconds.
@@ -249,9 +249,13 @@ def ndjson(
                 longest = max(longest, len(line.encode()))
                 staged.write(line + "\n")
         path, limit = quoted(Path(name).as_posix()), max(_JSON_OBJECT_BYTES, longest + 1)
+        kinds = ", ".join(
+            f"{quoted(column)}: {quoted(kind)}" for column, kind in (columns or {}).items()
+        )
+        pinned = f", columns = {{{kinds}}}" if columns else ""
         yield (
             f"read_json({path}, format = 'newline_delimited', sample_size = -1, "
-            f"maximum_object_size = {limit})"
+            f"maximum_object_size = {limit}{pinned})"
             if typed
             else f"read_ndjson_objects({path}, maximum_object_size = {limit})"
         )
@@ -677,7 +681,7 @@ class Lake(FrozenModel):
             raise MissionError(
                 f"no state lake at {self.catalog}; the first command recording state creates it"
             )
-        connection = duckdb.connect(
+        connection = connect(
             config={"autoinstall_known_extensions": False, "autoload_known_extensions": False}
         )
         try:
@@ -741,7 +745,7 @@ class Lake(FrozenModel):
         with (
             FileBudget.permitted(),
             closing(
-                duckdb.connect(
+                connect(
                     f"ducklake:sqlite:{self.catalog.as_posix()}",
                     config={
                         "extension_directory": self.extensions.as_posix(),

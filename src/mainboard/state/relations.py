@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import duckdb
 
 from ..runtime.tree import FileBudget
+from .database import connect
 from .lake import ndjson
 
 if TYPE_CHECKING:
@@ -41,15 +42,27 @@ class Relations:
     """One in-memory DuckDB database that the relations of one read share."""
 
     def __init__(self) -> None:
-        self.connection = duckdb.connect(config={"autoinstall_known_extensions": False})
+        self.connection = connect(config={"autoinstall_known_extensions": False})
         self._made = 0
 
     def rows(self, rows: Sequence[Mapping[str, JsonValue]]) -> Relation:
         """`rows` as one table, each column's type read from every row and a key a row lacks
-        read as null."""
+        read as null.
+
+        A key holding text stays text. Left to infer, DuckDB reads an instant, a date, a clock
+        time or a UUID out of a string, and the value comes back as another object, an instant
+        in the reader's time zone, rather than as written.
+        """
         if not rows:
             raise ValueError("a table needs at least one row to read its columns from")
+        texts = {key for row in rows for key, value in row.items() if isinstance(value, str)}
         with ndjson(rows, typed=True) as source:
+            inferred = self.connection.sql(f"SELECT * FROM {source}")
+            kinds = {
+                name: "VARCHAR" if name in texts else str(kind)
+                for name, kind in zip(inferred.columns, inferred.types, strict=True)
+            }
+        with ndjson(rows, typed=True, columns=kinds) as source:
             return self.kept(f"SELECT * FROM {source}")
 
     def arrow(self, table: ArrowStream) -> Relation:
